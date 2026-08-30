@@ -230,6 +230,10 @@ pub enum Confidence {
 pub enum MatchedVia {
     /// Hand-curated nickname table.
     Alias,
+    /// A word-suffix or single word of a multi-word span is a nickname in the
+    /// alias table and nothing else in the span is ("mirage LED" → `led`):
+    /// a printing / set / frame qualifier in front of a nickname.
+    AliasSuffix,
     /// `[[Card Name]]` syntax.
     Bracket,
     /// Exact current name.
@@ -308,6 +312,18 @@ pub enum Citation {
         /// Verbatim span of the call's answer.
         quote: String,
     },
+    /// The current Oracle text of face `face` of `card`, for answers that
+    /// hinge on the card's current wording (errata, "what does it do now").
+    /// The face *name* is not quotable: a name carries no rule content, so a
+    /// name-only citation would satisfy "cite something" with nothing.
+    OracleText {
+        /// The card.
+        card: CardId,
+        /// Face index (0 for single-faced cards).
+        face: u32,
+        /// Verbatim span of that face's Oracle text.
+        quote: String,
+    },
 }
 
 impl Citation {
@@ -317,7 +333,8 @@ impl Citation {
         match self {
             Citation::Rule { quote, .. }
             | Citation::ScryfallRuling { quote, .. }
-            | Citation::PriorCall { quote, .. } => quote,
+            | Citation::PriorCall { quote, .. }
+            | Citation::OracleText { quote, .. } => quote,
         }
     }
 }
@@ -328,6 +345,7 @@ impl fmt::Display for Citation {
             Citation::Rule { id, quote } => write!(f, "rule {id}: {quote:?}"),
             Citation::ScryfallRuling { card, idx, quote } => write!(f, "ruling {card}#{idx}: {quote:?}"),
             Citation::PriorCall { id, quote } => write!(f, "prior call {id}: {quote:?}"),
+            Citation::OracleText { card, face, quote } => write!(f, "oracle {card}#{face}: {quote:?}"),
         }
     }
 }
@@ -349,6 +367,22 @@ pub struct RuleChunk {
     pub examples: Vec<String>,
     /// CR release this chunk was parsed from.
     pub cr_version: CrVersion,
+}
+
+impl Face {
+    /// True if `quote` appears verbatim in the Oracle text (not the name).
+    #[must_use]
+    pub fn contains_quote(&self, quote: &str) -> bool {
+        self.oracle_text.contains(quote)
+    }
+}
+
+impl Card {
+    /// Face `idx` (0-based, in Scryfall face order), if it exists.
+    #[must_use]
+    pub fn face(&self, idx: u32) -> Option<&Face> {
+        usize::try_from(idx).ok().and_then(|i| self.faces.get(i))
+    }
 }
 
 impl RuleChunk {
@@ -581,6 +615,12 @@ impl Context {
         self.rules.iter().find(|r| &r.id == id)
     }
 
+    /// The card with this oracle id, if present.
+    #[must_use]
+    pub fn card(&self, id: CardId) -> Option<&Card> {
+        self.cards.iter().find(|c| c.id == id)
+    }
+
     /// The Scryfall ruling `idx` of `card`, if present.
     #[must_use]
     pub fn ruling(&self, card: CardId, idx: u32) -> Option<&Ruling> {
@@ -656,6 +696,13 @@ mod tests {
     fn citation_displays_for_humans() -> Result<(), Box<dyn std::error::Error>> {
         let c = Citation::Rule { id: RuleId::try_new("702.19b".to_owned())?, quote: "quote".into() };
         assert_eq!(c.to_string(), "rule 702.19b: \"quote\"");
+        let o = Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 1, quote: "q".into() };
+        assert_eq!(o.to_string(), "oracle 00000000-0000-0000-0000-000000000007#1: \"q\"");
+        assert_eq!(o.quote(), "q");
+        // Serde tag is consistent with the other variants.
+        let v = serde_json::to_value(&o)?;
+        assert_eq!(v.get("kind").and_then(|k| k.as_str()), Some("oracle_text"));
+        assert_eq!(v.get("face").and_then(serde_json::Value::as_u64), Some(1));
         Ok(())
     }
 

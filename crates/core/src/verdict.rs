@@ -113,8 +113,10 @@ impl Verdict<Unvalidated> {
     /// Check the verdict against `ctx`:
     /// (0) the answer is at least [`MIN_ANSWER_CHARS`] long and cites
     ///     something at all;
-    /// (a) each referenced rule / ruling / prior call exists in Context, and
-    /// (b) each quote is a non-empty verbatim substring of that source;
+    /// (a) each referenced rule / ruling / prior call / card face exists in
+    ///     Context, and
+    /// (b) each quote is a non-empty verbatim substring of that source (for
+    ///     Oracle text: the face's current text or its name);
     /// then stamp the CR version of the retrieved chunks and `source`, which
     /// is the extraction's classification (only answerable sources reach
     /// synthesis, and the type says so).
@@ -203,14 +205,40 @@ fn citation_ok(c: &Citation, ctx: &Context) -> bool {
             ctx.ruling(*card, *idx).is_some_and(|r| r.text.contains(quote))
         }
         Citation::PriorCall { id, .. } => ctx.prior_call(*id).is_some_and(|p| p.answer.contains(quote)),
+        Citation::OracleText { card, face, .. } => {
+            ctx.card(*card).and_then(|c| c.face(*face)).is_some_and(|f| f.contains_quote(quote))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallId, CardId, RuleChunk, RuleId, Ruling};
+    use crate::{CallId, Card, CardId, Face, Layout, RuleChunk, RuleId, Ruling};
+    use nonempty::NonEmpty;
     use uuid::Uuid;
+
+    fn waylay_id() -> CardId {
+        CardId::new(Uuid::from_u128(9))
+    }
+
+    fn waylay() -> Card {
+        let face = |name: &str, text: &str| Face {
+            name: name.into(),
+            oracle_text: text.into(),
+            mana_cost: "{2}{W}".into(),
+            type_line: "Instant".into(),
+        };
+        Card {
+            id: waylay_id(),
+            name: "Waylay".into(),
+            layout: Layout::Normal,
+            faces: NonEmpty::from((
+                face("Waylay", "Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step."),
+                vec![face("Back", "Nothing here.")],
+            )),
+        }
+    }
 
     fn rule(id: &str, body: &str) -> Result<RuleChunk, Box<dyn std::error::Error>> {
         Ok(RuleChunk {
@@ -227,6 +255,7 @@ mod tests {
     fn ctx() -> Result<Context, Box<dyn std::error::Error>> {
         let card = CardId::new(Uuid::from_u128(7));
         Ok(Context {
+            cards: vec![waylay()],
             rules: vec![rule("702.15b", "Damage dealt by a source with lifelink causes that source's controller to gain that much life.")?],
             rulings: vec![Ruling { card, idx: 0, published_at: "2020-01-01".into(), text: "Lifelink is not a triggered ability.".into() }],
             ..Context::default()
@@ -314,6 +343,37 @@ mod tests {
         // Commander verdicts carry their source through validation.
         let cmd = Verdict::new(ANSWER.into(), Confidence::High, vec![good_citation()?], Category::Commander);
         assert_eq!(cmd.validate(&c, AnswerableSource::Commander)?.source(), Source::Commander);
+        Ok(())
+    }
+
+    #[test]
+    fn oracle_text_citations() -> Result<(), Box<dyn std::error::Error>> {
+        let c = ctx()?;
+        let waylay = waylay_id();
+        // Valid: a substring of face 0's Oracle text; of face 1's.
+        let ok = verdict(vec![
+            Citation::OracleText { card: waylay, face: 0, quote: "Exile them at the beginning of the next cleanup step.".into() },
+            Citation::OracleText { card: waylay, face: 1, quote: "Nothing here".into() },
+        ]);
+        assert_eq!(ok.validate(&c, CR).map_err(|e| e.to_string())?.citations().len(), 2);
+        // The face name alone is not Oracle text: a name-only quote proves nothing.
+        let name_only = Citation::OracleText { card: waylay, face: 0, quote: "Waylay".into() };
+        assert!(matches!(verdict(vec![name_only.clone()]).validate(&c, CR), Err(JudgeError::BadCitation(ref x)) if *x == name_only));
+        // Wrong face: the quote is from face 0 but face 1 is cited; and face 2 does not exist.
+        let wrong_face = Citation::OracleText { card: waylay, face: 1, quote: "cleanup step".into() };
+        assert!(matches!(verdict(vec![wrong_face.clone()]).validate(&c, CR), Err(JudgeError::BadCitation(ref x)) if *x == wrong_face));
+        let no_face = Citation::OracleText { card: waylay, face: 2, quote: "Nothing".into() };
+        assert!(matches!(verdict(vec![no_face]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
+        // Not a substring (the old, pre-errata wording).
+        let paraphrase = Citation::OracleText { card: waylay, face: 0, quote: "At end of turn, remove them from the game".into() };
+        assert!(matches!(verdict(vec![paraphrase]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
+        // Unknown card.
+        let unknown = Citation::OracleText { card: CardId::new(Uuid::from_u128(77)), face: 0, quote: "Exile them".into() };
+        assert!(matches!(verdict(vec![unknown]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
+        // Deserializes from the model's tagged form.
+        let json = r#"{"answer":"a","confidence":"low","citations":[{"kind":"oracle_text","card":"00000000-0000-0000-0000-000000000009","face":0,"quote":"q"}],"category":"layers"}"#;
+        let v: Verdict<Unvalidated> = serde_json::from_str(json)?;
+        assert!(matches!(v.citations().first(), Some(Citation::OracleText { card, face: 0, .. }) if *card == waylay));
         Ok(())
     }
 

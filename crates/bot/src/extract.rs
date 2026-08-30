@@ -95,10 +95,20 @@ fn system_prompt() -> String {
          for a specific card or for a fixed group of cards (\"the tron lands\", \"the Urza's lands\", \
          \"the Titans\"), ALSO add the full Oracle name of each card it stands for as extra spans (e.g. \
          \"Urza's Tower\", \"Urza's Mine\", \"Urza's Power Plant\"); exact copying matters only for spans \
-         taken from the message. Do not include basic land names used generically (\"is it just a \
-         Mountain now\", \"tap a Forest\"), rules vocabulary, keyword abilities, card types, token names or \
-         generic words like \"creature\" or \"token\". If nothing looks like a card name, return an empty \
-         array.\n\n\
+         taken from the message. Do not include rules vocabulary, keyword abilities, card types, token \
+         names or generic words like \"creature\" or \"token\". If nothing looks like a card name, return \
+         an empty array. Three further rules:\n\
+         - Drop set, printing, frame and finish qualifiers from a span; the qualifier is not part of the \
+         name. \"mirage LED\" -> \"LED\"; \"Urza's Saga Waylay\" -> \"Waylay\"; \"my foil Bolt\" -> \"Bolt\"; \
+         \"alpha Lotus\" -> \"Lotus\"; \"the promo one\", \"the borderless version\", \"the old frame\" add \
+         nothing (this is the one case where a span is a trimmed substring rather than a full copy).\n\
+         - Do not emit a collective nickname (\"the tron lands\", \"the fetches\", \"my wraths\", \"the \
+         Titans\", \"the swords\") when the specific cards it stands for are named elsewhere in the \
+         message: emit only the specific names. Emit the collective only when nothing else in the \
+         message names its members, and then also add the members' full Oracle names as above.\n\
+         - Do not emit generic basic land words (\"is it just a Mountain now\", \"tap a Forest\", \"my \
+         Islands\") unless the question is about that basic land itself (\"does Plains have a mana \
+         ability?\").\n\n\
          2. concepts: short rules-vocabulary phrases a keyword search over the Comprehensive Rules should \
          see: keyword abilities, keyword actions, zone names, game actions, rule concepts (e.g. \
          \"lifelink\", \"state-based actions\", \"copy\", \"leaves-the-battlefield trigger\", \"layer 7b\"). \
@@ -307,6 +317,10 @@ mod tests {
             assert!(sys.contains(src), "missing {src}");
         }
         assert!(sys.contains("3. primary:") && sys.contains("4. secondary:") && sys.contains("5. source:"), "{sys}");
+        // Nickname-artefact rules: printing qualifiers, collectives beside their members, generic basics.
+        assert!(sys.contains("\"mirage LED\" -> \"LED\"") && sys.contains("\"Urza's Saga Waylay\" -> \"Waylay\""), "{sys}");
+        assert!(sys.contains("Do not emit a collective nickname") && sys.contains("\"the tron lands\""), "{sys}");
+        assert!(sys.contains("Do not emit generic basic land words"), "{sys}");
         let user = at(&v, "/messages/0/content/0/text")
             .as_str()
             .unwrap_or_default();

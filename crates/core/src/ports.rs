@@ -73,4 +73,8 @@ pub trait CallStore: Send + Sync {
     async fn persist(&self, q: &Question, v: &Verdict<Validated>, ctx: &Context) -> Result<CallId, JudgeError>;
     /// Record (or replace) one user's rating of a call.
     async fn rate(&self, call: CallId, user_id: &str, score: Score, is_judge: bool) -> Result<(), JudgeError>;
+    /// The last `n` question/answer pairs persisted in `thread_id`, oldest
+    /// first: the shape [`crate::judge`] takes as thread history. `n == 0`
+    /// yields nothing.
+    async fn history(&self, thread_id: &str, n: usize) -> Result<Vec<Qa>, JudgeError>;
 }

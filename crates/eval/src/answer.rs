@@ -320,8 +320,8 @@ pub fn table(run: &Run) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "{:<width$}  {:<12}  {:>6}  {:<3}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7}  {:>5}  {:>8}",
-        "question", "outcome", "recall", "any", "rules", "rlngs", "src", "ok", "secs", "calls", "usd"
+        "{:<width$}  {:<12}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7}  {:>5}  {:>8}",
+        "question", "outcome", "recall", "any", "rules", "rlngs", "orcl", "src", "ok", "secs", "calls", "usd"
     );
     for r in &run.rows {
         let outcome = match &r.outcome {
@@ -331,13 +331,14 @@ pub fn table(run: &Run) -> String {
         let recall = format!("{}/{}", r.recall.hit.len(), r.recall.hit.len() + r.recall.missed.len());
         let _ = writeln!(
             s,
-            "{:<width$}  {:<12}  {:>6}  {:<3}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7.1}  {:>5}  {:>8.4}",
+            "{:<width$}  {:<12}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7.1}  {:>5}  {:>8.4}",
             r.id,
             outcome,
             recall,
             if r.any_expected_cited { "yes" } else { "no" },
             r.cites.n_rule_cites,
             r.cites.n_ruling_cites,
+            r.cites.n_oracle_cites,
             if r.source_ok { "yes" } else { "no" },
             if r.correct_shape { "yes" } else { "NO" },
             secs(r.elapsed_ms),
@@ -350,6 +351,7 @@ pub fn table(run: &Run) -> String {
     let (any, expecting) = run.any_expected_cited();
     let n_rules: usize = run.rows.iter().map(|r| r.cites.n_rule_cites).sum();
     let n_rulings: usize = run.rows.iter().map(|r| r.cites.n_ruling_cites).sum();
+    let n_oracle: usize = run.rows.iter().map(|r| r.cites.n_oracle_cites).sum();
     let _ = writeln!(
         s,
         "\n{} questions: {ok} correct shape, {src} source match, citation recall {}, {} calls, TOTAL ${:.4} (cap ${:.2})",
@@ -359,7 +361,7 @@ pub fn table(run: &Run) -> String {
         run.total_usd,
         run.max_usd
     );
-    let _ = writeln!(s, "questions with ≥1 expected id cited: {any}/{expecting}; {n_rules} rule citations, {n_rulings} ruling citations");
+    let _ = writeln!(s, "questions with ≥1 expected id cited: {any}/{expecting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations");
     s
 }
 
@@ -390,12 +392,13 @@ pub fn show(path: &std::path::Path) -> anyhow::Result<String> {
         }
         let _ = writeln!(
             s,
-            "\nrecall {}/{} (missed: {})  cites {} rule / {} ruling  source {}  {:.1}s  ${:.4}\n",
+            "\nrecall {}/{} (missed: {})  cites {} rule / {} ruling / {} oracle  source {}  {:.1}s  ${:.4}\n",
             r.recall.hit.len(),
             r.recall.hit.len() + r.recall.missed.len(),
             r.recall.missed.join(" "),
             r.cites.n_rule_cites,
             r.cites.n_ruling_cites,
+            r.cites.n_oracle_cites,
             if r.source_ok { "ok" } else { "MISMATCH" },
             secs(r.elapsed_ms),
             r.usd
@@ -491,7 +494,7 @@ mod tests {
         let run = Run { label: "l".into(), gold: "g".into(), max_usd: 1.0, rows: vec![r], total_usd: 0.01, total_calls: 1 };
         assert_eq!(run.any_expected_cited(), (1, 1));
         let t = table(&run);
-        assert!(t.contains("questions with ≥1 expected id cited: 1/1; 1 rule citations, 0 ruling citations"), "{t}");
+        assert!(t.contains("questions with ≥1 expected id cited: 1/1; 1 rule citations, 0 ruling citations, 0 oracle citations"), "{t}");
         // Old run files without the new fields still load.
         let json = serde_json::to_string(&run)?.replace(",\"any_expected_cited\":true", "").replace(",\"n_rule_cites\":1", "");
         let old: Run = serde_json::from_str(&json)?;

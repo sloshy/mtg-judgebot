@@ -1,7 +1,7 @@
 //! [`PgResolver`]: the card resolution ladder (ARCHITECTURE.md §3 step 2).
 //!
 //! `card_aliases` → `[[bracket]]` exact name → exact current name →
-//! `printed_names` → name-before-the-comma → `pg_trgm` fuzzy (the `judge_core::MatchedVia` order).
+//! `printed_names` → name-before-the-comma → alias suffix → `pg_trgm` fuzzy.
 //! Exact rungs match case-insensitively on both `cards.name` and
 //! `card_faces.name` (so "Stomp" finds "Bonecrusher Giant // Stomp"); every
 //! current name is also a printed name, so `Exact` runs first to keep `via`
@@ -12,6 +12,16 @@
 //! does not match; the ladder never guesses. When an exact rung matches several
 //! cards, one whose *full* name is the span wins over face-name matches
 //! ("Lightning Bolt" beats "Emeritus of Conflict // Lightning Bolt").
+//! Just before the fuzzy rung, an unbracketed multi-word span is retried
+//! against the alias table on each of its word-suffixes ("mirage LED" →
+//! `led`), so a set / printing qualifier in front of a nickname does not fuzz
+//! onto an unrelated card. The rung is deliberately narrow: it counts only when
+//! exactly one suffix is an alias *and* every word before it is a known
+//! qualifier ([`QUALIFIERS`]: articles, printing words, classic set names).
+//! Otherwise a typo'd real name whose last word happens to be a nickname
+//! ("Warleaders Helix" → `helix` → Lightning Helix) would be resolved with
+//! confidence instead of reaching fuzzy, which finds the right card
+//! (`MatchedVia::AliasSuffix`).
 
 use async_trait::async_trait;
 use judge_core::{JudgeError, MatchedVia, Resolution, Resolver};
@@ -32,7 +42,7 @@ pub const MAX_CANDIDATES: usize = 5;
 /// Fetch one more than offered so the margin rule can see the runner-up.
 const FUZZY_FETCH: i64 = 6;
 
-/// alias table → `[[bracket]]` syntax → printed-name table → short name → `pg_trgm` fuzzy.
+/// alias table → `[[bracket]]` syntax → printed-name table → short name → alias suffix → `pg_trgm` fuzzy.
 #[derive(Clone, Debug)]
 pub struct PgResolver {
     pool: PgPool,
@@ -53,6 +63,43 @@ impl PgResolver {
         .fetch_optional(&self.pool)
         .await
         .map_err(upstream("alias lookup"))
+    }
+
+    /// Aliases among `candidates` (already lowercased), with their cards.
+    async fn aliases_among(&self, candidates: &[String]) -> Result<Vec<(String, Uuid)>, JudgeError> {
+        let rows = sqlx::query!(
+            "SELECT alias, oracle_id FROM card_aliases WHERE alias = ANY($1) ORDER BY alias",
+            candidates
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(upstream("alias suffix lookup"))?;
+        Ok(rows.into_iter().map(|r| (r.alias, r.oracle_id)).collect())
+    }
+
+    /// The alias-suffix rung: `None` unless exactly one word-suffix of a
+    /// multi-word span is an alias and the words before it are all
+    /// [`QUALIFIERS`].
+    async fn alias_suffix(&self, query: &str, lowered: &str) -> Result<Option<Resolution>, JudgeError> {
+        let candidates = alias_suffix_candidates(lowered);
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        match self.aliases_among(&candidates).await?.as_slice() {
+            [(alias, id)] => {
+                if !only_qualifiers_before(lowered, alias) {
+                    tracing::debug!(span = query, alias, "alias suffix preceded by a non-qualifier; skipping rung");
+                    return Ok(None);
+                }
+                tracing::debug!(span = query, alias, "alias suffix matched");
+                self.resolved(query, *id, MatchedVia::AliasSuffix).await.map(Some)
+            }
+            [] => Ok(None),
+            many => {
+                tracing::debug!(span = query, aliases = ?many.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(), "several alias suffixes; skipping rung");
+                Ok(None)
+            }
+        }
     }
 
     /// Case-insensitive exact match on current card names and face names.
@@ -242,6 +289,63 @@ impl PgResolver {
     }
 }
 
+/// Words allowed in front of a nickname for the alias-suffix rung: articles
+/// and possessives, printing / finish qualifiers, and classic set names. Not
+/// exhaustive on purpose — an unknown word means "this is probably a card
+/// name", and fuzzy gets the span instead.
+pub const QUALIFIERS: &[&str] = &[
+    // articles, possessives, filler
+    "a", "an", "the", "my", "your", "his", "her", "their", "our", "this", "that", "of",
+    // printings and finishes
+    "foil", "nonfoil", "promo", "borderless", "showcase", "extended", "retro", "etched",
+    "textless", "old", "new", "frame", "judge", "fnm", "prerelease", "misprint", "altered",
+    "signed", "proxy", "card", "copy", "version", "printing", "printed", "edition",
+    "original", "reprint", "reprinted", "reserved", "list", "secret", "lair", "mystical",
+    "archive", "masters", "modern", "eternal", "vintage", "legacy", "commander", "collectors",
+    // classic set names (single words only)
+    "alpha", "beta", "unlimited", "revised", "arabian", "nights", "antiquities", "legends",
+    "dark", "fallen", "empires", "ice", "age", "homelands", "alliances", "mirage", "visions",
+    "weatherlight", "tempest", "stronghold", "exodus", "urza's", "saga", "destiny", "mercadian",
+    "masques", "nemesis", "prophecy", "invasion", "planeshift", "apocalypse", "odyssey",
+    "torment", "judgment", "onslaught", "mirrodin", "kamigawa", "ravnica", "chronicles",
+    "portal", "starter", "conspiracy", "jumpstart", "horizons",
+];
+
+/// For a multi-word span, every proper word-suffix ("b c", "c" of "a b c"),
+/// deduplicated; empty for a single word (the whole span was already tried
+/// against the alias table).
+fn alias_suffix_candidates(lowered: &str) -> Vec<String> {
+    let words: Vec<&str> = lowered.split_whitespace().collect();
+    if words.len() < 2 {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for i in 1..words.len() {
+        let suffix = words.get(i..).unwrap_or_default().join(" ");
+        if !out.contains(&suffix) {
+            out.push(suffix);
+        }
+    }
+    out
+}
+
+/// True if every word of `lowered` before the trailing `alias` is a
+/// [`QUALIFIERS`] entry. False if `alias` is not a word-suffix of `lowered`
+/// or nothing precedes it.
+fn only_qualifiers_before(lowered: &str, alias: &str) -> bool {
+    let words: Vec<&str> = lowered.split_whitespace().collect();
+    let alias_words: Vec<&str> = alias.split_whitespace().collect();
+    let Some(prefix_len) = words.len().checked_sub(alias_words.len()) else {
+        return false;
+    };
+    if prefix_len == 0 || words.get(prefix_len..) != Some(alias_words.as_slice()) {
+        return false;
+    }
+    words
+        .get(..prefix_len)
+        .is_some_and(|prefix| prefix.iter().all(|w| QUALIFIERS.contains(w)))
+}
+
 /// `[[Card Name]]` → (`Card Name`, true); anything else → (as is, false).
 fn strip_brackets(s: &str) -> (&str, bool) {
     s.strip_prefix("[[")
@@ -293,13 +397,39 @@ impl Resolver for PgResolver {
         {
             return Ok(r);
         }
+        // A bracketed span is the user's exact spelling: a nickname at its end is not a hint.
+        if !bracketed
+            && let Some(r) = self.alias_suffix(&query, &lowered).await?
+        {
+            return Ok(r);
+        }
         self.fuzzy(&query, text).await
     }
 }
 
 #[cfg(test)]
 mod unit {
-    use super::strip_brackets;
+    use super::{alias_suffix_candidates, only_qualifiers_before, strip_brackets};
+
+    #[test]
+    fn suffix_candidates() {
+        assert!(alias_suffix_candidates("led").is_empty());
+        assert_eq!(alias_suffix_candidates("mirage led"), ["led"]);
+        assert_eq!(alias_suffix_candidates("the foil  bob"), ["foil bob", "bob"]);
+        assert_eq!(alias_suffix_candidates("a b a"), ["b a", "a"]);
+    }
+
+    #[test]
+    fn qualifier_gate() {
+        assert!(only_qualifiers_before("mirage led", "led"));
+        assert!(only_qualifiers_before("the foil bob", "bob"));
+        assert!(only_qualifiers_before("the foil bob", "foil bob"));
+        assert!(!only_qualifiers_before("warleaders helix", "helix"));
+        assert!(!only_qualifiers_before("lattice blade mantis", "lattice"), "not a suffix");
+        assert!(!only_qualifiers_before("bob led", "led"));
+        assert!(!only_qualifiers_before("led", "led"), "nothing precedes it");
+        assert!(!only_qualifiers_before("foil", "foil bob"));
+    }
 
     #[test]
     fn brackets() {
@@ -309,5 +439,85 @@ mod unit {
         );
         assert_eq!(strip_brackets("Dark Confidant"), ("Dark Confidant", false));
         assert_eq!(strip_brackets("[[oops"), ("[[oops", false));
+    }
+}
+
+#[cfg(test)]
+mod pg {
+    //! The alias-suffix rung against a throwaway database (`DATABASE_URL`
+    //! via dotenvy; `#[sqlx::test]` applies `./migrations`).
+
+    use judge_core::{MatchedVia, Resolution, Resolver};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::PgResolver;
+
+    const LED: Uuid = Uuid::from_u128(101);
+    const BOB: Uuid = Uuid::from_u128(102);
+    const GRIZZLED: Uuid = Uuid::from_u128(103);
+    const LIGHTNING_HELIX: Uuid = Uuid::from_u128(104);
+    const WARLEADERS_HELIX: Uuid = Uuid::from_u128(105);
+    const BAZAAR: Uuid = Uuid::from_u128(106);
+
+    async fn seed(pool: &PgPool) -> anyhow::Result<()> {
+        for (id, name, text) in [
+            (LED, "Lion's Eye Diamond", "Sacrifice this artifact, Discard your hand: Add three mana of any one color."),
+            (BOB, "Dark Confidant", "At the beginning of your upkeep, reveal the top card of your library."),
+            (GRIZZLED, "Grizzled Leotau", ""),
+            (LIGHTNING_HELIX, "Lightning Helix", "Lightning Helix deals 3 damage to any target and you gain 3 life."),
+            (WARLEADERS_HELIX, "Warleader's Helix", "Warleader's Helix deals 4 damage to any target and you gain 4 life."),
+            (BAZAAR, "Bazaar of Baghdad", "{T}: Draw two cards, then discard three cards."),
+        ] {
+            sqlx::query("INSERT INTO cards (oracle_id, name, layout) VALUES ($1, $2, 'normal')").bind(id).bind(name).execute(pool).await?;
+            sqlx::query("INSERT INTO card_faces (oracle_id, face_idx, name, oracle_text) VALUES ($1, 0, $2, $3)")
+                .bind(id).bind(name).bind(text).execute(pool).await?;
+        }
+        sqlx::query("INSERT INTO card_aliases (alias, oracle_id) VALUES ('led', $1), ('bob', $2), ('confidant', $2), ('helix', $3), ('bazaar', $4)")
+            .bind(LED).bind(BOB).bind(LIGHTNING_HELIX).bind(BAZAAR).execute(pool).await?;
+        Ok(())
+    }
+
+    fn resolved(r: &Resolution) -> Option<(&str, MatchedVia)> {
+        match r {
+            Resolution::Resolved { card, via } => Some((card.name.as_str(), *via)),
+            _ => None,
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn qualifier_before_a_nickname_resolves_via_alias_suffix(pool: PgPool) -> anyhow::Result<()> {
+        seed(&pool).await?;
+        let resolver = PgResolver::new(pool);
+        assert_eq!(resolved(&resolver.resolve("mirage LED").await?), Some(("Lion's Eye Diamond", MatchedVia::AliasSuffix)));
+        assert_eq!(resolved(&resolver.resolve("the foil Bob").await?), Some(("Dark Confidant", MatchedVia::AliasSuffix)));
+        // A plain alias still reports `Alias`; a single non-alias word never reaches the rung.
+        assert_eq!(resolved(&resolver.resolve("LED").await?), Some(("Lion's Eye Diamond", MatchedVia::Alias)));
+        assert!(matches!(resolver.resolve("mirage").await?, Resolution::NotFound { .. }));
+        // Two different aliases in one span: the rung stands down and the ladder falls through.
+        let r = resolver.resolve("bob led").await?;
+        assert!(!matches!(&r, Resolution::Resolved { via: MatchedVia::AliasSuffix, .. }), "{r:?}");
+        // Exact rungs still win over the suffix rung.
+        assert_eq!(resolved(&resolver.resolve("dark confidant").await?), Some(("Dark Confidant", MatchedVia::Exact)));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn alias_suffix_does_not_fire_on_typoed_names_or_brackets(pool: PgPool) -> anyhow::Result<()> {
+        seed(&pool).await?;
+        let resolver = PgResolver::new(pool);
+        // A dropped apostrophe: "warleaders" is no qualifier, so the rung stands down and fuzzy finds the real card.
+        let r = resolver.resolve("Warleaders Helix").await?;
+        assert!(!matches!(&r, Resolution::Resolved { via: MatchedVia::AliasSuffix, .. }), "{r:?}");
+        assert_eq!(resolved(&r), Some(("Warleader's Helix", MatchedVia::Fuzzy)));
+        // The alias is not the suffix ("bazaar traders"): nothing to match.
+        let r = resolver.resolve("bazaar traders").await?;
+        assert!(!matches!(&r, Resolution::Resolved { via: MatchedVia::AliasSuffix, .. }), "{r:?}");
+        // A bracketed span is exact spelling; the rung is skipped even with a qualifier prefix.
+        let r = resolver.resolve("[[foil helix]]").await?;
+        assert!(!matches!(&r, Resolution::Resolved { via: MatchedVia::AliasSuffix, .. }), "{r:?}");
+        // The intended case still works with a qualifier prefix.
+        assert_eq!(resolved(&resolver.resolve("foil helix").await?), Some(("Lightning Helix", MatchedVia::AliasSuffix)));
+        Ok(())
     }
 }

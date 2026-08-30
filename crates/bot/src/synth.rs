@@ -240,12 +240,12 @@ fn render_cards(s: &mut String, cards: &[Card]) {
     if cards.is_empty() {
         return;
     }
-    s.push_str("## Cards (current Oracle text)\n");
+    s.push_str("## Cards (current Oracle text; cite as oracle_text with the card uuid and face index from the face label)\n");
     for c in cards {
         let _ = writeln!(s, "### {} — card {} — layout {:?}", c.name, c.id, c.layout);
-        for f in &c.faces {
+        for (i, f) in c.faces.iter().enumerate() {
             let cost = if f.mana_cost.is_empty() { String::new() } else { format!(" {}", f.mana_cost) };
-            let _ = writeln!(s, "**{}**{cost} — {}\n{}", f.name, f.type_line, f.oracle_text);
+            let _ = writeln!(s, "[oracle {}#{i}] **{}**{cost} — {}\n{}", c.id, f.name, f.type_line, f.oracle_text);
         }
     }
 }
@@ -349,6 +349,9 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &Rejection) {
                 }
                 Citation::PriorCall { id, .. } if ctx.prior_call(*id).is_none() => {
                     format!("there is no prior call labelled [call {id}] in the material")
+                }
+                Citation::OracleText { card, face, .. } if ctx.card(*card).and_then(|c| c.face(*face)).is_none() => {
+                    format!("there is no card face labelled [oracle {card}#{face}] in the material")
                 }
                 _ => "the quote is not a verbatim substring of that source; copy the text exactly, within one line".to_owned(),
             };
@@ -477,8 +480,8 @@ mod tests {
         };
         let bad = Rejection::BadCitation(Citation::Rule { id: rid("702.15")?, quote: "nope".into() });
         let s = render_user_turn(&q(), &ctx, Some(&bad), &[], &Budget::default());
-        assert!(s.starts_with("# Material\n## Cards (current Oracle text)\n### Dark Confidant — card 00000000-0000-0000-0000-000000000007"), "{s}");
-        assert!(s.contains("**Dark Confidant** {1}{B} — Creature — Human Wizard\nAt the beginning"), "{s}");
+        assert!(s.starts_with("# Material\n## Cards (current Oracle text; cite as oracle_text with the card uuid and face index from the face label)\n### Dark Confidant — card 00000000-0000-0000-0000-000000000007"), "{s}");
+        assert!(s.contains("[oracle 00000000-0000-0000-0000-000000000007#0] **Dark Confidant** {1}{B} — Creature — Human Wizard\nAt the beginning"), "{s}");
         assert!(s.contains("## Comprehensive Rules (effective 20250801)\n### [702.15] Heading\n702.15. Lifelink\n702.15b"), "{s}");
         assert!(s.contains("### Dark Confidant — card 00000000-0000-0000-0000-000000000007\n[ruling #2] (2020-01-01) Bob is sad."), "{s}");
         assert!(s.contains("## Earlier in this thread (context only; not citable)\nQ: earlier?\nA: yes"), "{s}");
@@ -491,6 +494,12 @@ mod tests {
         let missing = Rejection::BadCitation(Citation::Rule { id: rid("999.1")?, quote: "x".into() });
         let s = render_user_turn(&q(), &ctx, Some(&missing), &[], &Budget::default());
         assert!(s.contains("rule 999.1 is not among the excerpts"), "{s}");
+        let no_face = Rejection::BadCitation(Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 3, quote: "x".into() });
+        let s = render_user_turn(&q(), &ctx, Some(&no_face), &[], &Budget::default());
+        assert!(s.contains("there is no card face labelled [oracle 00000000-0000-0000-0000-000000000007#3]"), "{s}");
+        let bad_quote = Rejection::BadCitation(Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 0, quote: "x".into() });
+        let s = render_user_turn(&q(), &ctx, Some(&bad_quote), &[], &Budget::default());
+        assert!(s.contains("oracle 00000000-0000-0000-0000-000000000007#0: \"x\", which failed validation: the quote is not a verbatim substring"), "{s}");
 
         // Empty verdicts get their own notice, explaining what "empty" meant.
         let s = render_user_turn(&q(), &ctx, Some(&Rejection::Empty(EmptyVerdict::NoCitations)), &[], &Budget::default());

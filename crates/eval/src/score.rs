@@ -34,6 +34,8 @@ pub fn cited_rule_ids(citations: &[Citation]) -> Vec<String> {
 }
 
 /// How many citations of each kind a verdict carried.
+// The field names are the keys in persisted run JSON (`eval/runs/*.json`); keep them.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct CiteCounts {
@@ -41,15 +43,18 @@ pub struct CiteCounts {
     pub n_rule_cites: usize,
     /// `Citation::ScryfallRuling` entries.
     pub n_ruling_cites: usize,
+    /// `Citation::OracleText` entries.
+    pub n_oracle_cites: usize,
 }
 
-/// Count rule and ruling citations (prior-call citations are neither).
+/// Count rule, ruling and Oracle-text citations (prior-call citations are none of these).
 #[must_use]
 pub fn cite_counts(citations: &[Citation]) -> CiteCounts {
     citations.iter().fold(CiteCounts::default(), |mut n, c| {
         match c {
             Citation::Rule { .. } => n.n_rule_cites += 1,
             Citation::ScryfallRuling { .. } => n.n_ruling_cites += 1,
+            Citation::OracleText { .. } => n.n_oracle_cites += 1,
             Citation::PriorCall { .. } => {}
         }
         n
@@ -159,8 +164,9 @@ mod tests {
             Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), idx: 0, quote: "y".into() },
             Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), idx: 1, quote: "y".into() },
             Citation::PriorCall { id: judge_core::CallId::new(uuid_nil()), quote: "z".into() },
+            Citation::OracleText { card: judge_core::CardId::new(uuid_nil()), face: 0, quote: "w".into() },
         ];
-        assert_eq!(cite_counts(&c), CiteCounts { n_rule_cites: 1, n_ruling_cites: 2 });
+        assert_eq!(cite_counts(&c), CiteCounts { n_rule_cites: 1, n_ruling_cites: 2, n_oracle_cites: 1 });
         assert_eq!(cite_counts(&[]), CiteCounts::default());
         let r = recall(&v(&["702.15b"]), &v(&["702.15", "1.1"]));
         assert!(r.any_hit() && r.expects_any());

@@ -3,6 +3,7 @@
 //! `bot` and `eval` binaries.
 
 pub mod db;
+pub mod discord;
 pub mod extract;
 pub mod synth;
 

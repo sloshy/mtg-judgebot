@@ -4,7 +4,7 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    CallId, CallStore, Context, Embedder, InputKind, JudgeError, Question, Score, Validated,
+    CallId, CallStore, Context, Embedder, InputKind, JudgeError, Qa, Question, Score, Validated,
     Verdict,
 };
 use pgvector::Vector;
@@ -135,5 +135,35 @@ impl CallStore for PgCallStore {
         .await
         .map_err(upstream("upsert rating"))?;
         Ok(())
+    }
+
+    async fn history(&self, thread_id: &str, n: usize) -> Result<Vec<Qa>, JudgeError> {
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        let limit = i64::try_from(n).unwrap_or(i64::MAX);
+        // Newest `n` first, then reversed: the caller wants them oldest first.
+        let rows = sqlx::query!(
+            r#"
+            SELECT question, answer
+            FROM calls
+            WHERE thread_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+            thread_id,
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(upstream("thread history"))?;
+        Ok(rows
+            .into_iter()
+            .rev()
+            .map(|r| Qa {
+                question: r.question,
+                answer: r.answer,
+            })
+            .collect())
     }
 }

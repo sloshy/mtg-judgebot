@@ -3,7 +3,7 @@
 //! dotenvy, so the workspace `.env` is enough.
 
 use judge_core::{
-    AnswerableSource, CallStore, Category, CategoryGuess, Confidence, Extraction, JudgeError, MatchedVia, Question,
+    AnswerableSource, CallStore, Category, CategoryGuess, Confidence, Extraction, JudgeError, MatchedVia, Qa, Question,
     Resolution, Resolver, Retriever, RuleId, Score, Source, Verdict,
 };
 use sqlx::PgPool;
@@ -28,6 +28,8 @@ const BRUNA_ALABASTER: Uuid = Uuid::from_u128(13);
 /// `(face_idx, face name, oracle text)`.
 type FaceSeed = (i16, &'static str, &'static str);
 
+/// One fixture for every sqlx test; its length is the data, not logic.
+#[expect(clippy::too_many_lines, reason = "test fixture: one row per seeded card")]
 async fn seed(pool: &PgPool) -> anyhow::Result<()> {
     let cards: [(Uuid, &str, &str, &[FaceSeed]); 13] = [
         (
@@ -650,5 +652,40 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
         .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
         .await?;
     assert_eq!(ctx5.prior.len(), 1);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn history_returns_the_last_n_oldest_first(pool: PgPool) -> anyhow::Result<()> {
+    let store = PgCallStore::new(pool.clone());
+    assert!(store.history("t1", 5).await?.is_empty());
+    // Explicit timestamps: `now()` is per statement here, but ordering must not
+    // depend on how fast the inserts run.
+    for (q, a, secs) in [("q1", "a1", 0.0_f64), ("q2", "a2", 1.0), ("q3", "a3", 2.0)] {
+        sqlx::query(
+            "INSERT INTO calls (thread_id, question, answer, category, source, cr_version, created_at) \
+             VALUES ('t1', $1, $2, 'layers', 'cr', '20260819', timestamptz '2026-08-29 12:00:00+00' + make_interval(secs => $3))",
+        )
+        .bind(q)
+        .bind(a)
+        .bind(secs)
+        .execute(&pool)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO calls (thread_id, question, answer, category, source, cr_version) \
+         VALUES ('t2', 'elsewhere', 'x', 'layers', 'cr', '20260819')",
+    )
+    .execute(&pool)
+    .await?;
+    let qa = |q: &str, a: &str| Qa { question: q.into(), answer: a.into() };
+    assert_eq!(store.history("t1", 2).await?, vec![qa("q2", "a2"), qa("q3", "a3")]);
+    assert_eq!(
+        store.history("t1", 10).await?,
+        vec![qa("q1", "a1"), qa("q2", "a2"), qa("q3", "a3")]
+    );
+    assert!(store.history("t1", 0).await?.is_empty());
+    assert_eq!(store.history("t2", 5).await?, vec![qa("elsewhere", "x")]);
+    assert!(store.history("nope", 5).await?.is_empty());
     Ok(())
 }
