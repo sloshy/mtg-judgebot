@@ -346,6 +346,19 @@ fn only_qualifiers_before(lowered: &str, alias: &str) -> bool {
         .is_some_and(|prefix| prefix.iter().all(|w| QUALIFIERS.contains(w)))
 }
 
+/// Drop a trailing English possessive (`bob's`, `goyf’s`, `Jace's`) and
+/// trailing punctuation so nicknames written in running prose still reach
+/// the alias and name rungs. Returns `None` when nothing was stripped.
+fn strip_possessive(lowered: &str) -> Option<String> {
+    let t = lowered.trim_end_matches(['?', '!', '.', ',', ':', ';']);
+    let t = t
+        .strip_suffix("'s")
+        .or_else(|| t.strip_suffix("\u{2019}s"))
+        .unwrap_or(t)
+        .trim_end();
+    (!t.is_empty() && t != lowered).then(|| t.to_owned())
+}
+
 /// `[[Card Name]]` → (`Card Name`, true); anything else → (as is, false).
 fn strip_brackets(s: &str) -> (&str, bool) {
     s.strip_prefix("[[")
@@ -364,6 +377,21 @@ impl Resolver for PgResolver {
         }
         if let Some(id) = self.alias(&lowered).await? {
             return self.resolved(&query, id, MatchedVia::Alias).await;
+        }
+        // "bob's trigger", "goyf's toughness": retry the alias, exact and short-name
+        // rungs on the span with its possessive/punctuation removed.
+        if let Some(stripped) = strip_possessive(&lowered) {
+            if let Some(id) = self.alias(&stripped).await? {
+                return self.resolved(&query, id, MatchedVia::Alias).await;
+            }
+            let ids = self.exact_name(&stripped).await?;
+            if let Some(r) = self.decide(&query, &stripped, ids, MatchedVia::Exact).await? {
+                return Ok(r);
+            }
+            let ids = self.short_name(&stripped).await?;
+            if let Some(r) = self.decide(&query, &stripped, ids, MatchedVia::ShortName).await? {
+                return Ok(r);
+            }
         }
         if bracketed {
             let ids = self.exact_name(&lowered).await?;
@@ -409,7 +437,7 @@ impl Resolver for PgResolver {
 
 #[cfg(test)]
 mod unit {
-    use super::{alias_suffix_candidates, only_qualifiers_before, strip_brackets};
+    use super::{alias_suffix_candidates, only_qualifiers_before, strip_brackets, strip_possessive};
 
     #[test]
     fn suffix_candidates() {
@@ -439,6 +467,15 @@ mod unit {
         );
         assert_eq!(strip_brackets("Dark Confidant"), ("Dark Confidant", false));
         assert_eq!(strip_brackets("[[oops"), ("[[oops", false));
+    }
+
+    #[test]
+    fn strip_possessive_handles_ascii_and_curly_apostrophes() {
+        assert_eq!(strip_possessive("bob's").as_deref(), Some("bob"));
+        assert_eq!(strip_possessive("goyf\u{2019}s?").as_deref(), Some("goyf"));
+        assert_eq!(strip_possessive("tibalt's,").as_deref(), Some("tibalt"));
+        assert_eq!(strip_possessive("dark confidant"), None);
+        assert_eq!(strip_possessive("'s"), None);
     }
 }
 

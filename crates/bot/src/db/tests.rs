@@ -689,3 +689,17 @@ async fn history_returns_the_last_n_oldest_first(pool: PgPool) -> anyhow::Result
     assert!(store.history("nope", 5).await?.is_empty());
     Ok(())
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn possessive_nickname_hits_the_alias_rung(pool: PgPool) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    let r = PgResolver::new(pool).resolve("bob's").await?;
+    match r {
+        Resolution::Resolved { card, via } => {
+            assert_eq!(card.name, "Dark Confidant");
+            assert_eq!(via, MatchedVia::Alias);
+        }
+        other => anyhow::bail!("expected Resolved, got {other:?}"),
+    }
+    Ok(())
+}
