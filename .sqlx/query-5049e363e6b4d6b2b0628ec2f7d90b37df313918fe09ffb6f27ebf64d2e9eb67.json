@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT DISTINCT ON (lower(printed_name)) lower(printed_name) AS \"name!\", oracle_id\n        FROM printed_names\n        WHERE lower(printed_name) = ANY($1)\n        ORDER BY lower(printed_name), oracle_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "oracle_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "printed_names",
+            "name": "oracle_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      false
+    ]
+  },
+  "hash": "5049e363e6b4d6b2b0628ec2f7d90b37df313918fe09ffb6f27ebf64d2e9eb67"
+}

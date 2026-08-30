@@ -11,10 +11,11 @@ use uuid::Uuid;
 
 use crate::Category;
 
-/// Regex for `RuleId`: `702` | `702.19` | `702.19b`. ASCII digits only: the
-/// `regex` crate's `\d` would accept any Unicode `Nd` digit, which can never
-/// match a `rules.id` row. Shared by the nutype validator below.
-pub const RULE_ID_PATTERN: &str = r"^[0-9]{3}(\.[0-9]+[a-z]?)?$";
+/// Regex for `RuleId`: `702` | `702.19` | `702.19b` | `704.5aa` (the CR runs
+/// past `z` into two-letter sub-rules). ASCII digits only: the `regex` crate's
+/// `\d` would accept any Unicode `Nd` digit, which can never match a
+/// `rules.id` row. Shared by the nutype validator below.
+pub const RULE_ID_PATTERN: &str = r"^[0-9]{3}(\.[0-9]+[a-z]{0,2})?$";
 /// Regex for `CrVersion`: the CR effective date as `YYYYMMDD` (ASCII digits).
 pub const CR_VERSION_PATTERN: &str = r"^[0-9]{8}$";
 
@@ -27,7 +28,7 @@ static CR_VERSION_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(CR_VERSION_PATTERN).expect("CR_VERSION_PATTERN is a valid regex")
 });
 
-/// A Comprehensive Rules identifier such as `702.19` or `702.19b`.
+/// A Comprehensive Rules identifier such as `702.19`, `702.19b` or `704.5aa`.
 #[nutype(
     sanitize(trim),
     validate(regex = RULE_ID_RE),
@@ -44,7 +45,7 @@ impl JsonSchema for RuleId {
             "type": "string",
             // No "pattern": Anthropic's structured-output subset rejects it. nutype
             // still enforces RULE_ID_PATTERN when the response is deserialized.
-            "description": "Comprehensive Rules id such as 702.19 or 702.19b (three digits, optional .number and letter)"
+            "description": "Comprehensive Rules id such as 702.19 or 702.19b (three digits, optional .number and one or two letters)"
         })
     }
 }
@@ -111,6 +112,7 @@ pub enum Layout {
     Adventure,
     Mutate,
     Prototype,
+    Prepare,
     Battle,
     Planar,
     Scheme,
@@ -503,7 +505,7 @@ mod tests {
 
     #[test]
     fn rule_id_accepts_ascii_forms() {
-        for ok in ["702", "702.19", "702.19b", " 613 "] {
+        for ok in ["702", "702.19", "702.19b", "704.5aa", " 613 "] {
             assert!(RuleId::try_new(ok.to_owned()).is_ok(), "{ok}");
         }
     }
@@ -514,6 +516,7 @@ mod tests {
         assert!(RuleId::try_new("٧٠٢.١٩".to_owned()).is_err());
         assert!(RuleId::try_new("70".to_owned()).is_err());
         assert!(RuleId::try_new("702.19B".to_owned()).is_err());
+        assert!(RuleId::try_new("704.5aaa".to_owned()).is_err());
         assert!(CrVersion::try_new("٢٠٢٥٠٨٠١".to_owned()).is_err());
         assert!(CrVersion::try_new("2025080".to_owned()).is_err());
         assert!(CrVersion::try_new("20250801".to_owned()).is_ok());

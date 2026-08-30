@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH txt AS (\n                SELECT ' ' || lower(regexp_replace(t, '[^[:alnum:]]+', ' ', 'g')) || ' ' AS norm\n                FROM unnest($1::text[]) AS u(t)\n            ), g AS (\n                -- Compound headwords (\"Control, Controller\", \"Base Power, Base Toughness\")\n                -- match on any of their comma-separated parts; \"(Obsolete)\" is dropped.\n                SELECT term, text, trim(lower(regexp_replace(part, '[^[:alnum:]]+', ' ', 'g'))) AS norm_term\n                FROM glossary,\n                     regexp_split_to_table(regexp_replace(term, '\\s*\\(Obsolete\\)$', ''), '\\s*,\\s*') AS part\n            )\n            SELECT DISTINCT g.term AS \"term!\", g.text AS \"text!\"\n            FROM g\n            WHERE g.norm_term <> ''\n              AND EXISTS (SELECT 1 FROM txt WHERE position((' ' || g.norm_term || ' ') IN txt.norm) > 0)\n            ORDER BY g.term\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "term!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "glossary",
+            "name": "term"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "text!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "glossary",
+            "name": "text"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a72e383cb204eca7c083d866cdc521aabf98bcbcb6c4d4402d02883c086ea931"
+}

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/anthropic", "crates/ingest", "crates/bot"]
+members = ["crates/core", "crates/anthropic", "crates/embed", "crates/ingest", "crates/bot", "crates/eval"]
 
 [workspace.package]
 edition = "2024"
@@ -11,6 +11,8 @@ publish = false
 [workspace.dependencies]
 judge-core = { path = "crates/core" }
 judge-anthropic = { path = "crates/anthropic" }
+judge-embed = { path = "crates/embed" }
+judge-bot = { path = "crates/bot" }
 
 anyhow = "1"
 async-trait = "0.1"

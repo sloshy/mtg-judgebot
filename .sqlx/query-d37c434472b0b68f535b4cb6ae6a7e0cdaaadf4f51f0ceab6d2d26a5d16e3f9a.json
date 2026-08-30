@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT oracle_id AS \"oracle_id!\" FROM cards WHERE lower(name) = $1\n            UNION\n            SELECT oracle_id FROM card_faces WHERE lower(name) = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oracle_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d37c434472b0b68f535b4cb6ae6a7e0cdaaadf4f51f0ceab6d2d26a5d16e3f9a"
+}

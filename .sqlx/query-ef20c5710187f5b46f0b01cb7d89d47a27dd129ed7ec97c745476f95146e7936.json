@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM rules WHERE cr_version <> $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ef20c5710187f5b46f0b01cb7d89d47a27dd129ed7ec97c745476f95146e7936"
+}

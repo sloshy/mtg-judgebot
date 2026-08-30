@@ -81,7 +81,7 @@ Discord message (+ last N Q&A in the same thread)
 |---|---|---|
 | Scryfall bulk `oracle-cards.json` | weekly | `cards` (oracle_id, name, layout, type_line, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
 | Scryfall bulk `default-cards.json` (names only) | weekly | `printed_names` (printed_name, oracle_id) — old names, errata'd names |
-| Scryfall `/cards/:scryfall_id/rulings` | lazy, cached | `rulings` (oracle_id, idx, published_at, text) |
+| Scryfall bulk `rulings.json` | weekly (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, idx, published_at, text) |
 | Comprehensive Rules txt | on CR release | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
 | CR Glossary | same | `glossary` (term, text, embedding) |
 | Nicknames | hand-curated YAML | `card_aliases` (alias, oracle_id) |

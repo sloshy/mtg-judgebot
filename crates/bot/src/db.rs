@@ -1,79 +1,37 @@
-//! sqlx adapters for the DB-backed ports. Bodies are `todo!()` until a
-//! Postgres instance and `.sqlx` offline data exist (then use `query!`).
+//! sqlx adapters for the DB-backed ports: [`PgResolver`] (card resolution
+//! ladder), [`PgRetriever`] (category map + BM25 + vector, rulings, glossary,
+//! notes, prior calls) and [`PgCallStore`] (calls + ratings).
+//!
+//! Every query is a compile-time-checked `sqlx::query!` / `query_as!` against
+//! `DATABASE_URL` (or the `.sqlx` offline cache); every sqlx error becomes
+//! `JudgeError::Upstream` with a short context string.
 
-use async_trait::async_trait;
-use judge_core::{
-    CallId, CallStore, Card, Context, Extraction, JudgeError, Question, Resolution, Resolver, Retriever,
-    RuleChunk, RuleId, Score, Validated, Verdict,
-};
-use sqlx::PgPool;
+mod calls;
+mod cards;
+mod resolve;
+mod retrieve;
+mod rules;
+#[cfg(test)]
+mod tests;
 
-#[derive(Clone, Debug)]
-pub struct PgCallStore {
-    pool: PgPool,
+pub use calls::PgCallStore;
+pub use resolve::PgResolver;
+pub use retrieve::PgRetriever;
+
+use judge_core::JudgeError;
+
+/// Map a sqlx error to `JudgeError::Upstream`, naming the query that failed.
+pub(crate) fn upstream(what: &'static str) -> impl FnOnce(sqlx::Error) -> JudgeError {
+    move |e| JudgeError::Upstream(anyhow::Error::new(e).context(what))
 }
 
-impl PgCallStore {
-    #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
+/// A message-only data error (missing faces, negative idx) as `JudgeError::Upstream`.
+pub(crate) fn bad_row(what: impl std::fmt::Display) -> JudgeError {
+    JudgeError::Upstream(anyhow::anyhow!("{what}"))
 }
 
-#[async_trait]
-impl CallStore for PgCallStore {
-    async fn persist(&self, _q: &Question, _v: &Verdict<Validated>, _ctx: &Context) -> Result<CallId, JudgeError> {
-        let _ = &self.pool;
-        todo!("INSERT INTO calls (...) RETURNING id")
-    }
-
-    async fn rate(&self, _call: CallId, _user_id: &str, _score: Score, _is_judge: bool) -> Result<(), JudgeError> {
-        todo!("INSERT INTO ratings ... ON CONFLICT (call_id, user_id) DO UPDATE")
-    }
-}
-
-/// alias table → `[[bracket]]` syntax → printed-name table → `pg_trgm` fuzzy.
-#[derive(Clone, Debug)]
-pub struct PgResolver {
-    pool: PgPool,
-}
-
-impl PgResolver {
-    #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
-}
-
-#[async_trait]
-impl Resolver for PgResolver {
-    async fn resolve(&self, _span: &str) -> Result<Resolution, JudgeError> {
-        let _ = &self.pool;
-        todo!("resolution ladder")
-    }
-}
-
-/// Category map + tsvector BM25 + pgvector cosine, unioned and expanded to full chunks.
-#[derive(Clone, Debug)]
-pub struct PgRetriever {
-    pool: PgPool,
-}
-
-impl PgRetriever {
-    #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
-}
-
-#[async_trait]
-impl Retriever for PgRetriever {
-    async fn retrieve(&self, _q: &Question, _cards: &[Card], _e: &Extraction) -> Result<Context, JudgeError> {
-        let _ = &self.pool;
-        todo!("three retrieval legs + rulings + glossary + prior calls + notes")
-    }
-
-    async fn lookup_rules(&self, _ids: &[RuleId]) -> Result<Vec<RuleChunk>, JudgeError> {
-        todo!("SELECT ... FROM rules WHERE id = ANY($1) OR subsection = ANY($1)")
-    }
+/// Wrap a real error (serde, `RuleIdError`, …) as `JudgeError::Upstream` with
+/// context, keeping the source chain for `{:#}` / `source()`.
+pub(crate) fn bad_row_from(e: impl std::error::Error + Send + Sync + 'static, what: impl std::fmt::Display) -> JudgeError {
+    JudgeError::Upstream(anyhow::Error::new(e).context(what.to_string()))
 }

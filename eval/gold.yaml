@@ -39,8 +39,7 @@ questions:
   - Urza's Mine
   - Urza's Power Plant
   - Urza's Tower
-  nicknames_used:
-  - tron lands
+  nicknames_used: []
   categories:
   - layers
   - continuous-effects
@@ -248,8 +247,7 @@ questions:
   cards:
   - Blood Artist
   - Wrath of God
-  nicknames_used:
-  - wraths
+  nicknames_used: []
   categories:
   - triggered-abilities
   - zones

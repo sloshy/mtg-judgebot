@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM card_notes",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "3bd918664e14bdd235e1ddd8439e3b06f51441ca5ef11bbee089151575bd6f1d"
+}

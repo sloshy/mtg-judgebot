@@ -7,6 +7,10 @@ license.workspace = true
 publish.workspace = true
 description = "sqlx repos, Voyage embedder, serenity/poise Discord adapter, main (bin)."
 
+[lib]
+name = "judge_bot"
+path = "src/lib.rs"
+
 [[bin]]
 name = "bot"
 path = "src/main.rs"
@@ -16,6 +20,7 @@ judge-core.workspace = true
 judge-anthropic.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+nonempty.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -27,6 +32,9 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 pgvector = { version = "0.4", features = ["sqlx"] }
 poise = "0.6"
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model"] }
+
+[dev-dependencies]
+dotenvy = "0.15"
 
 [lints]
 workspace = true

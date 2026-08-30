@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.oracle_id, c.name, c.layout,\n               f.name AS face_name, f.oracle_text, f.mana_cost, f.type_line\n        FROM cards c\n        JOIN card_faces f ON f.oracle_id = c.oracle_id\n        WHERE c.oracle_id = ANY($1)\n        ORDER BY c.oracle_id, f.face_idx\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oracle_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "cards",
+            "name": "oracle_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "cards",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "layout",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "cards",
+            "name": "layout"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "face_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "card_faces",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "oracle_text",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "card_faces",
+            "name": "oracle_text"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "mana_cost",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "card_faces",
+            "name": "mana_cost"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "type_line",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "card_faces",
+            "name": "type_line"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a667ec6194d562c7ae3e04a66e897cacf0661c89473bdb2a2d483d49c80f5ee5"
+}

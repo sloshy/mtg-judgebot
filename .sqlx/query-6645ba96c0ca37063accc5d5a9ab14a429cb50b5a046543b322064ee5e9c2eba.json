@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO ratings (call_id, user_id, score, is_judge)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (call_id, user_id)\n            DO UPDATE SET score = EXCLUDED.score, is_judge = EXCLUDED.is_judge, ts = now()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int2",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6645ba96c0ca37063accc5d5a9ab14a429cb50b5a046543b322064ee5e9c2eba"
+}

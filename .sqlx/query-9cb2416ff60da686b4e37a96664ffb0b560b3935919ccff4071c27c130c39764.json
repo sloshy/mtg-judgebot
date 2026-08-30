@@ -1,0 +1,114 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT c.id, c.question, c.answer, c.category, c.citations, c.cr_version,\n                           r.effective_score AS \"rating!\", r.n AS \"n!\"\n                    FROM calls c\n                    JOIN calls_rated r ON r.call_id = c.id\n                    WHERE c.category = ANY($1)\n                      AND c.cr_version = (SELECT max(cr_version) FROM rules)\n                      AND NOT (r.effective_score < 1.5 AND r.n >= 5)\n                      AND (cardinality($3::uuid[]) = 0 OR EXISTS (\n                            SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)\n                            WHERE x.v::uuid = ANY($3)))\n                    ORDER BY c.created_at DESC\n                    LIMIT $2\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "question",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "question"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "answer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "answer"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "category",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "citations",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "citations"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "cr_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "cr_version"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "rating!",
+        "type_info": "Float4",
+        "origin": {
+          "Table": {
+            "table": "calls_rated",
+            "name": "effective_score"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "n!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "calls_rated",
+            "name": "n"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Int8",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "9cb2416ff60da686b4e37a96664ffb0b560b3935919ccff4071c27c130c39764"
+}

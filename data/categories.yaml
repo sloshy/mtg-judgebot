@@ -6,10 +6,10 @@
 categories:
   - id: game_concepts
     label: General game concepts (winning, losing, mana, numbers)
-    subsections: ["100", "101", "104", "106", "107"]
+    subsections: ["100", "101", "104", "106", "107", "108"]
   - id: card_types_and_characteristics
     label: Card characteristics, names, types, supertypes, subtypes
-    subsections: ["201", "202", "204", "205", "208"]
+    subsections: ["201", "202", "204", "205", "208", "305"]
   - id: colors_and_color_identity
     label: Colors, colorless, color indicator, color identity
     subsections: ["105", "202", "903.4"]
@@ -60,16 +60,21 @@ categories:
     subsections: ["119", "120", "702.15", "702.2"]
   - id: multi_faced_cards
     label: Double-faced, modal DFC, split, flip, adventure and meld cards
-    subsections: ["709", "710", "711", "712", "715", "716"]
+    subsections: ["709", "710", "711", "712", "715", "716", "701.42"]
   - id: keyword_abilities
     label: Keyword abilities (flying, trample, hexproof, ward, ...)
-    subsections: ["702"]
+    # Only the general rules: all 195 keyword chunks of 702 would swamp the prompt.
+    # Keyword names are strong lexemes, so BM25/vector (and the lookup_rules tool)
+    # bring in the specific keyword's rule.
+    subsections: ["702.1", "702.2"]
   - id: keyword_actions
     label: Keyword actions (destroy, exile, sacrifice, mill, ...)
-    subsections: ["701"]
+    # As for keyword_abilities: the general rule only; the specific action comes from the fuzzy legs.
+    subsections: ["701.1"]
   - id: mana_abilities
     label: Mana abilities and mana production
-    subsections: ["605", "106"]
+    # 602.5: activation timing ("Activate only as an instant" mana abilities); 605.3 defers to it.
+    subsections: ["605", "106", "602.5"]
   - id: commander
     label: Commander format rules (command zone, commander damage, tax)
     subsections: ["903"]

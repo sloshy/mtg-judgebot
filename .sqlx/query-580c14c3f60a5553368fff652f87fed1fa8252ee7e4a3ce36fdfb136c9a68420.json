@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT lower(printed_name) AS \"name!\", count(DISTINCT oracle_id) AS \"n!\" FROM printed_names WHERE lower(printed_name) = ANY($1) GROUP BY 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "580c14c3f60a5553368fff652f87fed1fa8252ee7e4a3ce36fdfb136c9a68420"
+}

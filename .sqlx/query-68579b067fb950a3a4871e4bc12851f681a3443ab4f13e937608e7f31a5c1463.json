@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH q AS (\n            SELECT (SELECT string_agg(DISTINCT lexeme, ' | ')\n                      FROM unnest(to_tsvector('english', $1)) AS t\n                     WHERE lexeme ~ '^[[:alpha:]][[:alnum:]]+$')::tsquery AS cq,\n                   (SELECT string_agg(DISTINCT lexeme, ' | ')\n                      FROM unnest(to_tsvector('english', $2)) AS t\n                     WHERE lexeme ~ '^[[:alpha:]][[:alnum:]]+$')::tsquery AS qq\n        )\n        SELECT r.id, r.parent_id, r.subsection, r.heading, r.body, r.examples, r.cr_version\n        FROM rules r, q\n        WHERE r.id ~ '^[0-9]{3}\\.[0-9]+$'\n          AND (r.tsv @@ q.cq OR r.tsv @@ q.qq)\n        ORDER BY coalesce(ts_rank_cd(r.tsv, q.cq, 1), 0) * 2 + coalesce(ts_rank_cd(r.tsv, q.qq, 1), 0) DESC,\n                 r.id\n        LIMIT $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "parent_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "parent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "subsection",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "subsection"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "heading",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "heading"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "body",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "examples",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "examples"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "cr_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "cr_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "68579b067fb950a3a4871e4bc12851f681a3443ab4f13e937608e7f31a5c1463"
+}
