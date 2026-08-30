@@ -5,10 +5,20 @@
 //! resolves its card names and nicknames, runs the retriever with the gold
 //! categories (no embedder) and reports which `expected_rule_ids` are in
 //! Context. Exits non-zero if aggregate recall is below the 90% gate.
+//!
+//! `eval answer --label L [--limit N] [--ids a,b] [--max-usd X] [--out p] [--gold p]`:
+//! runs the full `judge()` pipeline (live Anthropic calls, capped at
+//! `--max-usd`, default $2.00) over at most `--limit` (default 2) gold
+//! questions and writes `eval/runs/L.json`.
+//!
+//! `eval show <run.json>`: expected vs. bot answers side by side.
 
+mod answer;
 mod categories;
+mod deps;
 mod gold;
 mod recall;
+mod score;
 
 use std::process::ExitCode;
 
@@ -38,7 +48,9 @@ async fn main() -> ExitCode {
 }
 
 fn usage() -> anyhow::Error {
-    anyhow::anyhow!("usage: eval recall [gold.yaml]")
+    anyhow::anyhow!(
+        "usage:\n  eval recall [gold.yaml]\n  eval answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction]\n  eval show <run.json>"
+    )
 }
 
 /// `Ok(true)` when the run passed its gate.
@@ -49,16 +61,31 @@ async fn run() -> anyhow::Result<bool> {
         "recall" => {
             let path = args.next().map_or_else(gold::default_path, std::path::PathBuf::from);
             let gold = gold::load(&path)?;
-            let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL is not set")?;
-            let pool = sqlx::postgres::PgPoolOptions::new()
-                .max_connections(4)
-                .connect(&database_url)
-                .await
-                .context("connecting to DATABASE_URL")?;
+            let pool = connect().await?;
             let report = recall::run(&pool, &gold).await?;
             print!("{report}");
             Ok(report.recall() >= RECALL_GATE)
         }
+        "answer" => {
+            let opts = answer::Options::parse(args)?;
+            let pool = connect().await?;
+            let run = answer::run(pool, &opts).await?;
+            Ok(run.rows.iter().all(|r| r.correct_shape))
+        }
+        "show" => {
+            let path = args.next().ok_or_else(usage)?;
+            print!("{}", answer::show(std::path::Path::new(&path))?);
+            Ok(true)
+        }
         _ => Err(usage()),
     }
+}
+
+async fn connect() -> anyhow::Result<sqlx::PgPool> {
+    let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL is not set")?;
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to DATABASE_URL")
 }

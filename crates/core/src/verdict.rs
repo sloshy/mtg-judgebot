@@ -7,15 +7,22 @@
 //!   `serde_json::from_str::<Verdict<Validated>>(..)` does not compile.
 //! * `Validated` carries the `cr_version` stamped from Context and has a
 //!   private field, so no code outside `validate` can build one.
-//! * The model never reports `cr_version`: it is not in the model-facing
-//!   schema, and is taken from the retrieved CR chunks instead.
+//! * The model never reports `cr_version` or `source`: neither is in the
+//!   model-facing schema. `cr_version` is taken from the retrieved CR chunks
+//!   and `source` from the extraction, as an [`AnswerableSource`], so a
+//!   verdict cannot claim to be out of scope to dodge the citation check.
 
 use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::{Category, Citation, Confidence, Context, CrVersion, JudgeError, Source};
+use crate::{AnswerableSource, Category, Citation, Confidence, Context, CrVersion, EmptyVerdict, JudgeError, Source};
+
+/// An answer shorter than this (in characters, trimmed) is not an answer:
+/// `"pending"`, `"see above"` and the like fail validation as
+/// [`EmptyVerdict::ShortAnswer`].
+pub const MIN_ANSWER_CHARS: usize = 40;
 
 mod sealed {
     pub trait Sealed {}
@@ -29,7 +36,8 @@ pub trait State: sealed::Sealed + Clone + core::fmt::Debug + PartialEq + Seriali
 pub struct Unvalidated {}
 
 /// Every citation exists in Context and every quote is a substring of its
-/// source. Carries the CR version the context was retrieved under.
+/// source. Carries the CR version the context was retrieved under and the
+/// (answerable) source the extraction classified the question into.
 /// Deliberately **not** `Deserialize` and not constructible outside `validate`:
 ///
 /// ```compile_fail
@@ -38,6 +46,7 @@ pub struct Unvalidated {}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Validated {
     cr_version: CrVersion,
+    source: AnswerableSource,
 }
 
 impl sealed::Sealed for Unvalidated {}
@@ -59,8 +68,6 @@ struct VerdictData {
     citations: Vec<Citation>,
     /// The category that best fits the question.
     category: Category,
-    /// Which rules body the answer draws on.
-    source: Source,
 }
 
 /// The synthesizer's structured answer.
@@ -94,36 +101,33 @@ impl<S: State> Verdict<S> {
     pub fn category(&self) -> Category {
         self.data.category
     }
-    /// Rules body the answer draws on.
-    #[must_use]
-    pub fn source(&self) -> Source {
-        self.data.source
-    }
 }
 
 impl Verdict<Unvalidated> {
     /// Construct an unvalidated verdict (adapters and tests).
     #[must_use]
-    pub fn new(
-        answer: String,
-        confidence: Confidence,
-        citations: Vec<Citation>,
-        category: Category,
-        source: Source,
-    ) -> Self {
-        Self { data: VerdictData { answer, confidence, citations, category, source }, state: Unvalidated {} }
+    pub fn new(answer: String, confidence: Confidence, citations: Vec<Citation>, category: Category) -> Self {
+        Self { data: VerdictData { answer, confidence, citations, category }, state: Unvalidated {} }
     }
 
-    /// Check every citation against `ctx`:
-    /// (a) the referenced rule / ruling / prior call exists in Context, and
-    /// (b) the quote is a non-empty verbatim substring of that source;
-    /// then stamp the CR version of the retrieved chunks.
+    /// Check the verdict against `ctx`:
+    /// (0) the answer is at least [`MIN_ANSWER_CHARS`] long and cites
+    ///     something at all;
+    /// (a) each referenced rule / ruling / prior call exists in Context, and
+    /// (b) each quote is a non-empty verbatim substring of that source;
+    /// then stamp the CR version of the retrieved chunks and `source`, which
+    /// is the extraction's classification (only answerable sources reach
+    /// synthesis, and the type says so).
     ///
     /// # Errors
-    /// `JudgeError::BadCitation` carrying the first offending citation, or
-    /// `JudgeError::Upstream` if Context holds no CR chunks (the category map
-    /// always injects some, so this indicates a broken retriever).
-    pub fn validate(self, ctx: &Context) -> Result<Verdict<Validated>, JudgeError> {
+    /// `JudgeError::EmptyVerdict` for (0), `JudgeError::BadCitation` carrying
+    /// the first offending citation for (a)/(b), or `JudgeError::Upstream` if
+    /// Context holds no CR chunks (the category map always injects some, so
+    /// this indicates a broken retriever).
+    pub fn validate(self, ctx: &Context, source: AnswerableSource) -> Result<Verdict<Validated>, JudgeError> {
+        if let Some(e) = self.emptiness() {
+            return Err(JudgeError::EmptyVerdict(e));
+        }
         for c in &self.data.citations {
             if !citation_ok(c, ctx) {
                 return Err(JudgeError::BadCitation(c.clone()));
@@ -133,7 +137,21 @@ impl Verdict<Unvalidated> {
             .cr_version()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("context holds no CR chunks; cannot stamp cr_version"))?;
-        Ok(Verdict { data: self.data, state: Validated { cr_version } })
+        Ok(Verdict { data: self.data, state: Validated { cr_version, source } })
+    }
+}
+
+impl Verdict<Unvalidated> {
+    /// Why this verdict counts as empty, if it does (check (0) of `validate`).
+    fn emptiness(&self) -> Option<EmptyVerdict> {
+        let chars = self.data.answer.trim().chars().count();
+        if chars < MIN_ANSWER_CHARS {
+            return Some(EmptyVerdict::ShortAnswer { chars });
+        }
+        if self.data.citations.is_empty() {
+            return Some(EmptyVerdict::NoCitations);
+        }
+        None
     }
 }
 
@@ -142,6 +160,11 @@ impl Verdict<Validated> {
     #[must_use]
     pub fn cr_version(&self) -> &CrVersion {
         &self.state.cr_version
+    }
+    /// Rules body the answer draws on, as classified by the extraction.
+    #[must_use]
+    pub fn source(&self) -> Source {
+        self.state.source.into()
     }
 }
 
@@ -210,14 +233,16 @@ mod tests {
         })
     }
 
+    const ANSWER: &str = "You gain life simultaneously with the damage being dealt.";
+
     fn verdict(citations: Vec<Citation>) -> Verdict<Unvalidated> {
-        Verdict::new(
-            "You gain life simultaneously.".into(),
-            Confidence::High,
-            citations,
-            Category::KeywordAbilities,
-            Source::Cr,
-        )
+        Verdict::new(ANSWER.into(), Confidence::High, citations, Category::KeywordAbilities)
+    }
+
+    const CR: AnswerableSource = AnswerableSource::Cr;
+
+    fn good_citation() -> Result<Citation, Box<dyn std::error::Error>> {
+        Ok(Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "gain that much life".into() })
     }
 
     #[test]
@@ -228,10 +253,11 @@ mod tests {
             Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "Example: something.".into() },
             Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), idx: 0, quote: "not a triggered ability".into() },
         ]);
-        let ok = v.validate(&c).map_err(|e| e.to_string())?;
+        let ok = v.validate(&c, CR).map_err(|e| e.to_string())?;
         assert_eq!(ok.citations().len(), 3);
         assert_eq!(ok.confidence(), Confidence::High);
         assert_eq!(ok.cr_version().as_ref(), "20250801");
+        assert_eq!(ok.source(), Source::Cr);
         Ok(())
     }
 
@@ -239,14 +265,14 @@ mod tests {
     fn rejects_reference_not_in_context() -> Result<(), Box<dyn std::error::Error>> {
         let c = ctx()?;
         let bad = Citation::Rule { id: RuleId::try_new("702.19".to_owned())?, quote: "gain that much life".into() };
-        let err = verdict(vec![bad.clone()]).validate(&c).err();
+        let err = verdict(vec![bad.clone()]).validate(&c, CR).err();
         assert!(matches!(err, Some(JudgeError::BadCitation(ref x)) if *x == bad), "{err:?}");
 
         let bad_ruling = Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), idx: 9, quote: "Lifelink".into() };
-        assert!(matches!(verdict(vec![bad_ruling]).validate(&c), Err(JudgeError::BadCitation(_))));
+        assert!(matches!(verdict(vec![bad_ruling]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
 
         let bad_prior = Citation::PriorCall { id: CallId::new(Uuid::from_u128(1)), quote: "x".into() };
-        assert!(matches!(verdict(vec![bad_prior]).validate(&c), Err(JudgeError::BadCitation(_))));
+        assert!(matches!(verdict(vec![bad_prior]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
         Ok(())
     }
 
@@ -254,47 +280,78 @@ mod tests {
     fn rejects_quote_not_substring() -> Result<(), Box<dyn std::error::Error>> {
         let c = ctx()?;
         let bad = Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "gain twice that much life".into() };
-        assert!(matches!(verdict(vec![bad]).validate(&c), Err(JudgeError::BadCitation(_))));
+        assert!(matches!(verdict(vec![bad]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
         let empty = Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "   ".into() };
-        assert!(matches!(verdict(vec![empty]).validate(&c), Err(JudgeError::BadCitation(_))));
+        assert!(matches!(verdict(vec![empty]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
         Ok(())
     }
 
     #[test]
-    fn rejects_context_without_rules() {
-        assert!(matches!(verdict(vec![]).validate(&Context::default()), Err(JudgeError::Upstream(_))));
+    fn rejects_context_without_rules() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(matches!(verdict(vec![good_citation()?]).validate(&Context::default(), CR), Err(JudgeError::BadCitation(_))));
+        // Nothing to cite and nothing to stamp: the empty-citations check comes first.
+        assert!(matches!(verdict(vec![]).validate(&Context::default(), CR), Err(JudgeError::EmptyVerdict(EmptyVerdict::NoCitations))));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_empty_verdicts() -> Result<(), Box<dyn std::error::Error>> {
+        let c = ctx()?;
+        // No citations for a CR answer.
+        assert!(matches!(verdict(vec![]).validate(&c, CR), Err(JudgeError::EmptyVerdict(EmptyVerdict::NoCitations))));
+        // No citations for a Commander answer.
+        let cmd = Verdict::new(ANSWER.into(), Confidence::High, vec![], Category::Commander);
+        assert!(matches!(cmd.validate(&c, AnswerableSource::Commander), Err(JudgeError::EmptyVerdict(EmptyVerdict::NoCitations))));
+        // A "pending" answer, even with a valid citation.
+        let short = Verdict::new("pending".into(), Confidence::High, vec![good_citation()?], Category::KeywordAbilities);
+        assert!(matches!(short.validate(&c, CR), Err(JudgeError::EmptyVerdict(EmptyVerdict::ShortAnswer { chars: 7 }))));
+        // Whitespace does not count.
+        let blank = Verdict::new(" ".repeat(50), Confidence::High, vec![good_citation()?], Category::KeywordAbilities);
+        assert!(matches!(blank.validate(&c, CR), Err(JudgeError::EmptyVerdict(EmptyVerdict::ShortAnswer { chars: 0 }))));
+        // Exactly the minimum passes.
+        let exact = Verdict::new("x".repeat(MIN_ANSWER_CHARS), Confidence::High, vec![good_citation()?], Category::KeywordAbilities);
+        assert!(exact.validate(&c, CR).is_ok());
+        // Commander verdicts carry their source through validation.
+        let cmd = Verdict::new(ANSWER.into(), Confidence::High, vec![good_citation()?], Category::Commander);
+        assert_eq!(cmd.validate(&c, AnswerableSource::Commander)?.source(), Source::Commander);
+        Ok(())
     }
 
     #[test]
     fn deserializes_from_model_json_and_rejects_unknown_fields() -> Result<(), Box<dyn std::error::Error>> {
         let json = r#"{"answer":"a","confidence":"low","citations":[{"kind":"rule","id":"702.15b","quote":"q"}],
-                      "category":"layers","source":"cr"}"#;
+                      "category":"layers"}"#;
         let v: Verdict<Unvalidated> = serde_json::from_str(json)?;
         assert_eq!(v.category(), Category::Layers);
         assert!(serde_json::from_str::<Verdict<Unvalidated>>(&json.replace("\"answer\"", "\"extra\":1,\"answer\"")).is_err());
         assert!(serde_json::from_str::<Verdict<Unvalidated>>(&json.replace("702.15b", "abc")).is_err());
-        // cr_version is no longer model-provided; supplying it is an unknown field.
-        assert!(serde_json::from_str::<Verdict<Unvalidated>>(&json.replace("\"source\":\"cr\"", "\"source\":\"cr\",\"cr_version\":\"20250801\"")).is_err());
+        // cr_version and source are not model-provided; supplying either is an unknown field.
+        assert!(serde_json::from_str::<Verdict<Unvalidated>>(&json.replace("\"category\"", "\"cr_version\":\"20250801\",\"category\"")).is_err());
+        assert!(serde_json::from_str::<Verdict<Unvalidated>>(&json.replace("\"category\"", "\"source\":\"out_of_scope\",\"category\"")).is_err());
         Ok(())
     }
 
     #[test]
     fn validated_serializes_with_cr_version() -> Result<(), Box<dyn std::error::Error>> {
-        let ok = verdict(vec![]).validate(&ctx()?)?;
+        let ok = verdict(vec![good_citation()?]).validate(&ctx()?, CR)?;
         let v = serde_json::to_value(&ok)?;
         assert_eq!(v.get("cr_version").and_then(|x| x.as_str()), Some("20250801"));
-        assert_eq!(v.get("answer").and_then(|x| x.as_str()), Some("You gain life simultaneously."));
-        // Unvalidated serializes without it.
+        assert_eq!(v.get("source").and_then(|x| x.as_str()), Some("cr"));
+        assert_eq!(v.get("answer").and_then(|x| x.as_str()), Some(ANSWER));
+        // Unvalidated serializes without them.
         let u = serde_json::to_value(verdict(vec![]))?;
-        assert!(u.get("cr_version").is_none());
+        assert!(u.get("cr_version").is_none() && u.get("source").is_none());
         Ok(())
     }
 
     #[test]
-    fn schema_has_no_cr_version() {
+    fn schema_has_no_cr_version_or_source() {
         let s = schemars::schema_for!(Verdict).to_value();
         let props = s.get("properties").and_then(|p| p.as_object());
-        assert!(props.is_some_and(|p| !p.contains_key("cr_version") && p.contains_key("citations")), "{s}");
+        assert!(
+            props.is_some_and(|p| !p.contains_key("cr_version") && !p.contains_key("source") && p.contains_key("citations")),
+            "{s}"
+        );
         assert_eq!(s.get("title").and_then(|t| t.as_str()), Some("Verdict"));
     }
 

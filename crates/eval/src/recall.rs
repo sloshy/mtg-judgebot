@@ -2,11 +2,11 @@
 
 use std::fmt;
 
-use judge_core::{CategoryGuess, Confidence, Context, Extraction, Resolution, Resolver, Retriever, Source};
+use judge_core::{Context, Resolution, Resolver, Retriever};
 use judge_bot::db::{PgResolver, PgRetriever};
 use sqlx::PgPool;
 
-use crate::{categories, gold::Gold};
+use crate::gold::Gold;
 
 /// Per-question outcome.
 pub struct Row {
@@ -96,16 +96,7 @@ pub async fn run(pool: &PgPool, gold: &Gold) -> anyhow::Result<Report> {
                 cards.push(card);
             }
         }
-        let categories = categories::map_labels(&q.id, &q.categories);
-        let extraction = Extraction {
-            card_spans: q.cards.clone(),
-            concepts: q.categories.iter().map(|c| c.replace(['-', '_'], " ")).collect(),
-            categories: categories
-                .iter()
-                .map(|c| CategoryGuess { category: *c, confidence: Confidence::Medium })
-                .collect(),
-            source: if q.source.eq_ignore_ascii_case("commander") { Source::Commander } else { Source::Cr },
-        };
+        let extraction = q.extraction();
         let question = judge_core::Question { thread_id: q.id.clone(), text: q.question.clone() };
         let ctx = retriever.retrieve(&question, &cards, &extraction).await?;
         let (mut hit, mut missed) = (Vec::new(), Vec::new());

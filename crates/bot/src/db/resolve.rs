@@ -1,7 +1,7 @@
 //! [`PgResolver`]: the card resolution ladder (ARCHITECTURE.md §3 step 2).
 //!
 //! `card_aliases` → `[[bracket]]` exact name → exact current name →
-//! `printed_names` → `pg_trgm` fuzzy (the `judge_core::MatchedVia` order).
+//! `printed_names` → name-before-the-comma → `pg_trgm` fuzzy (the `judge_core::MatchedVia` order).
 //! Exact rungs match case-insensitively on both `cards.name` and
 //! `card_faces.name` (so "Stomp" finds "Bonecrusher Giant // Stomp"); every
 //! current name is also a printed name, so `Exact` runs first to keep `via`
@@ -32,7 +32,7 @@ pub const MAX_CANDIDATES: usize = 5;
 /// Fetch one more than offered so the margin rule can see the runner-up.
 const FUZZY_FETCH: i64 = 6;
 
-/// alias table → `[[bracket]]` syntax → printed-name table → `pg_trgm` fuzzy.
+/// alias table → `[[bracket]]` syntax → printed-name table → short name → `pg_trgm` fuzzy.
 #[derive(Clone, Debug)]
 pub struct PgResolver {
     pool: PgPool,
@@ -46,10 +46,13 @@ impl PgResolver {
     }
 
     async fn alias(&self, lowered: &str) -> Result<Option<Uuid>, JudgeError> {
-        sqlx::query_scalar!("SELECT oracle_id FROM card_aliases WHERE alias = $1", lowered)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(upstream("alias lookup"))
+        sqlx::query_scalar!(
+            "SELECT oracle_id FROM card_aliases WHERE alias = $1",
+            lowered
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(upstream("alias lookup"))
     }
 
     /// Case-insensitive exact match on current card names and face names.
@@ -77,8 +80,30 @@ impl PgResolver {
         .map_err(upstream("printed name lookup"))
     }
 
+    /// Cards (and faces) whose name before the first comma is `lowered`:
+    /// "Ragavan" for "Ragavan, Nimble Pilferer" but not "Rashmi and Ragavan".
+    async fn short_name(&self, lowered: &str) -> Result<Vec<Uuid>, JudgeError> {
+        sqlx::query_scalar!(
+            r#"
+            SELECT oracle_id AS "oracle_id!" FROM cards
+            WHERE position(',' IN name) > 0 AND lower(split_part(name, ',', 1)) = $1
+            UNION
+            SELECT oracle_id FROM card_faces
+            WHERE position(',' IN name) > 0 AND lower(split_part(name, ',', 1)) = $1
+            "#,
+            lowered
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(upstream("short name lookup"))
+    }
+
     /// Among `ids`, those whose full card name is exactly `lowered` (case-insensitive).
-    async fn full_name_matches(&self, lowered: &str, ids: &[Uuid]) -> Result<Vec<Uuid>, JudgeError> {
+    async fn full_name_matches(
+        &self,
+        lowered: &str,
+        ids: &[Uuid],
+    ) -> Result<Vec<Uuid>, JudgeError> {
         sqlx::query_scalar!(
             r#"SELECT oracle_id AS "oracle_id!" FROM cards WHERE lower(name) = $1 AND oracle_id = ANY($2)"#,
             lowered,
@@ -91,12 +116,19 @@ impl PgResolver {
 
     /// Candidates by `strict_word_similarity`, best first, deduplicated per card.
     async fn fuzzy_candidates(&self, text: &str) -> Result<Vec<(Uuid, f32)>, JudgeError> {
-        let mut tx = self.pool.begin().await.map_err(upstream("begin fuzzy lookup"))?;
-        // `<%` filters through the trigram GIN indexes at this (transaction-local) threshold.
-        sqlx::query_scalar!("SELECT set_config('pg_trgm.strict_word_similarity_threshold', $1, true)", FUZZY_LOW.to_string())
-            .fetch_one(&mut *tx)
+        let mut tx = self
+            .pool
+            .begin()
             .await
-            .map_err(upstream("set strict_word_similarity_threshold"))?;
+            .map_err(upstream("begin fuzzy lookup"))?;
+        // `<%` filters through the trigram GIN indexes at this (transaction-local) threshold.
+        sqlx::query_scalar!(
+            "SELECT set_config('pg_trgm.strict_word_similarity_threshold', $1, true)",
+            FUZZY_LOW.to_string()
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(upstream("set strict_word_similarity_threshold"))?;
         let rows = sqlx::query!(
             r#"
             WITH cand AS (
@@ -123,12 +155,21 @@ impl PgResolver {
         Ok(rows.into_iter().map(|r| (r.oracle_id, r.sim)).collect())
     }
 
-    async fn resolved(&self, query: &str, id: Uuid, via: MatchedVia) -> Result<Resolution, JudgeError> {
+    async fn resolved(
+        &self,
+        query: &str,
+        id: Uuid,
+        via: MatchedVia,
+    ) -> Result<Resolution, JudgeError> {
         let card = load_cards(&self.pool, &[id])
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| bad_row(format!("card {id} matched {query:?} but has no cards/card_faces row")))?;
+            .ok_or_else(|| {
+                bad_row(format!(
+                    "card {id} matched {query:?} but has no cards/card_faces row"
+                ))
+            })?;
         tracing::info!(span = query, card = %card.name, rung = ?via, "card resolved");
         Ok(Resolution::Resolved { card, via })
     }
@@ -155,13 +196,24 @@ impl PgResolver {
         }
     }
 
-    async fn ambiguous(&self, query: &str, ids: &[Uuid], rung: MatchedVia) -> Result<Resolution, JudgeError> {
+    async fn ambiguous(
+        &self,
+        query: &str,
+        ids: &[Uuid],
+        rung: MatchedVia,
+    ) -> Result<Resolution, JudgeError> {
         let ids: Vec<Uuid> = ids.iter().copied().take(MAX_CANDIDATES).collect();
         let cards = load_cards(&self.pool, &ids).await?;
         tracing::info!(span = query, candidates = cards.len(), rung = ?rung, "card ambiguous");
         Ok(match NonEmpty::from_vec(cards) {
-            Some(candidates) => Resolution::Ambiguous { query: query.to_owned(), candidates },
-            None => Resolution::NotFound { query: query.to_owned() },
+            Some(candidates) => Resolution::Ambiguous {
+                query: query.to_owned(),
+                candidates,
+                via: rung,
+            },
+            None => Resolution::NotFound {
+                query: query.to_owned(),
+            },
         })
     }
 
@@ -172,7 +224,8 @@ impl PgResolver {
             [(id, _)] => Some(*id),
             [(id, top), (_, second), ..] => {
                 let strong = cands.iter().filter(|(_, s)| *s >= FUZZY_STRONG).count();
-                ((strong == 1 && *top >= FUZZY_STRONG) || top - second >= FUZZY_MARGIN).then_some(*id)
+                ((strong == 1 && *top >= FUZZY_STRONG) || top - second >= FUZZY_MARGIN)
+                    .then_some(*id)
             }
         };
         if let Some(id) = winner {
@@ -180,7 +233,9 @@ impl PgResolver {
         }
         if cands.is_empty() {
             tracing::info!(span = query, "card not found");
-            return Ok(Resolution::NotFound { query: query.to_owned() });
+            return Ok(Resolution::NotFound {
+                query: query.to_owned(),
+            });
         }
         let ids: Vec<Uuid> = cands.iter().map(|(id, _)| *id).collect();
         self.ambiguous(query, &ids, MatchedVia::Fuzzy).await
@@ -208,18 +263,34 @@ impl Resolver for PgResolver {
         }
         if bracketed {
             let ids = self.exact_name(&lowered).await?;
-            if let Some(r) = self.decide(&query, &lowered, ids, MatchedVia::Bracket).await? {
+            if let Some(r) = self
+                .decide(&query, &lowered, ids, MatchedVia::Bracket)
+                .await?
+            {
                 return Ok(r);
             }
         }
         if !bracketed {
             let ids = self.exact_name(&lowered).await?;
-            if let Some(r) = self.decide(&query, &lowered, ids, MatchedVia::Exact).await? {
+            if let Some(r) = self
+                .decide(&query, &lowered, ids, MatchedVia::Exact)
+                .await?
+            {
                 return Ok(r);
             }
         }
         let ids = self.printed_name(&lowered).await?;
-        if let Some(r) = self.decide(&query, &lowered, ids, MatchedVia::PrintedName).await? {
+        if let Some(r) = self
+            .decide(&query, &lowered, ids, MatchedVia::PrintedName)
+            .await?
+        {
+            return Ok(r);
+        }
+        let ids = self.short_name(&lowered).await?;
+        if let Some(r) = self
+            .decide(&query, &lowered, ids, MatchedVia::ShortName)
+            .await?
+        {
             return Ok(r);
         }
         self.fuzzy(&query, text).await
@@ -232,7 +303,10 @@ mod unit {
 
     #[test]
     fn brackets() {
-        assert_eq!(strip_brackets("[[ Dark Confidant ]]"), ("Dark Confidant", true));
+        assert_eq!(
+            strip_brackets("[[ Dark Confidant ]]"),
+            ("Dark Confidant", true)
+        );
         assert_eq!(strip_brackets("Dark Confidant"), ("Dark Confidant", false));
         assert_eq!(strip_brackets("[[oops"), ("[[oops", false));
     }

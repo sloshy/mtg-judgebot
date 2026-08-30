@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    CallId, Card, Citation, Context, Extraction, JudgeError, Qa, Question, Resolution, RuleChunk, RuleId,
+    CallId, Card, Context, Extraction, JudgeError, Qa, Question, Rejection, Resolution, RuleChunk, RuleId,
     Score, Validated, Verdict, verdict::Unvalidated,
 };
 
@@ -36,13 +36,14 @@ pub trait Retriever: Send + Sync {
 /// `lookup_rules` round, so that validation sees them.
 #[async_trait]
 pub trait Synthesizer: Send + Sync {
-    /// Answer `q` from `ctx`. `rejected` is the citation a previous attempt
-    /// failed validation on, so the model can correct it on the retry.
+    /// Answer `q` from `ctx`. `rejected` is why a previous attempt failed
+    /// validation (a bad citation, or an empty verdict), so the model can
+    /// correct it on the retry.
     async fn answer(
         &self,
         q: &Question,
         ctx: &mut Context,
-        rejected: Option<&Citation>,
+        rejected: Option<&Rejection>,
     ) -> Result<Verdict<Unvalidated>, JudgeError>;
 }
 

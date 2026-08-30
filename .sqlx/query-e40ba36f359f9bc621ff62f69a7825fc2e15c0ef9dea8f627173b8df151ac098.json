@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT oracle_id AS \"oracle_id!\" FROM cards\n            WHERE position(',' IN name) > 0 AND lower(split_part(name, ',', 1)) = $1\n            UNION\n            SELECT oracle_id FROM card_faces\n            WHERE position(',' IN name) > 0 AND lower(split_part(name, ',', 1)) = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oracle_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e40ba36f359f9bc621ff62f69a7825fc2e15c0ef9dea8f627173b8df151ac098"
+}

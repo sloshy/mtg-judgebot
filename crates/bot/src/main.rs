@@ -1,19 +1,13 @@
-//! `bot` — composition root: Postgres adapters, Voyage embedder, Anthropic
-//! synthesizer, Discord (serenity/poise). Build-order step 6.
-
-mod extract;
-mod synth;
-mod voyage;
+//! `bot` — the Discord binary: reads the environment, builds the shared
+//! composition ([`judge_bot::build_deps`]) plus the call store, and runs
+//! serenity/poise. Build-order step 6.
 
 use std::sync::Arc;
 
 use anyhow::Result;
-use judge_bot::db::{PgCallStore, PgResolver, PgRetriever};
-use judge_core::{CallStore, Deps, Embedder, Retriever, Synthesizer};
-
-const SYSTEM_PROMPT: &str = "You are a Magic: The Gathering rules judge. Answer using only the provided \
-Comprehensive Rules, rulings and notes. Every citation must quote its source verbatim. Prior calls are \
-examples only; the Comprehensive Rules always outrank them.";
+use judge_bot::{build_deps, db::PgCallStore};
+use judge_core::{CallStore, Embedder};
+use judge_embed::VoyageEmbedder;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,21 +16,19 @@ async fn main() -> Result<()> {
     let pool = sqlx::postgres::PgPoolOptions::new().max_connections(5).connect(&database_url).await?;
     // One HTTP client (connection pool) shared by every Anthropic adapter.
     let anthropic = judge_anthropic::Client::from_env()?;
-    let embedder: Arc<dyn Embedder> = Arc::new(voyage::VoyageEmbedder::from_env()?);
-    // The store is handed to the Discord adapter (rating buttons) once it exists.
-    let _store: Arc<dyn CallStore> = Arc::new(PgCallStore::new(pool.clone()).with_embedder(Arc::clone(&embedder)));
-    let retriever: Arc<dyn Retriever> = Arc::new(PgRetriever::new(pool.clone()).with_embedder(embedder));
-    let synthesizer: Arc<dyn Synthesizer> = Arc::new(synth::AnthropicSynthesizer {
-        client: anthropic.clone(),
-        cfg: judge_anthropic::SynthConfig::default(),
-        retriever: Arc::clone(&retriever),
-        system_prompt: SYSTEM_PROMPT.to_owned(),
-    });
-    let _deps = Deps {
-        extractor: Arc::new(extract::AnthropicExtractor { client: anthropic }),
-        resolver: Arc::new(PgResolver::new(pool)),
-        retriever,
-        synthesizer,
+    // The embedder is optional: without a Voyage key the retriever skips its vector leg.
+    let embedder: Option<Arc<dyn Embedder>> = if std::env::var_os("VOYAGE_API_KEY").is_some() {
+        Some(Arc::new(VoyageEmbedder::from_env()?))
+    } else {
+        tracing::warn!("VOYAGE_API_KEY is not set; running without the vector leg");
+        None
     };
+    // The store is handed to the Discord adapter (rating buttons) once it exists.
+    let mut store = PgCallStore::new(pool.clone());
+    if let Some(e) = &embedder {
+        store = store.with_embedder(Arc::clone(e));
+    }
+    let _store: Arc<dyn CallStore> = Arc::new(store);
+    let _deps = build_deps(pool, anthropic, embedder);
     todo!("start serenity/poise")
 }

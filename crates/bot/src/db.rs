@@ -32,6 +32,9 @@ pub(crate) fn bad_row(what: impl std::fmt::Display) -> JudgeError {
 
 /// Wrap a real error (serde, `RuleIdError`, …) as `JudgeError::Upstream` with
 /// context, keeping the source chain for `{:#}` / `source()`.
-pub(crate) fn bad_row_from(e: impl std::error::Error + Send + Sync + 'static, what: impl std::fmt::Display) -> JudgeError {
+pub(crate) fn bad_row_from(
+    e: impl std::error::Error + Send + Sync + 'static,
+    what: impl std::fmt::Display,
+) -> JudgeError {
     JudgeError::Upstream(anyhow::Error::new(e).context(what.to_string()))
 }

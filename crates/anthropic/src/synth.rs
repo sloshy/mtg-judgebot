@@ -1,6 +1,10 @@
 //! `Synth<Fresh | ToolRequested | Final>` — invariant I4: the `lookup_rules`
 //! tool round happens at most once. `Synth<Final>` has no method to request
-//! tools again; `tool_choice: none` also tells the API so.
+//! tools again, and `finish` rejects a second `tool_use`. After a tool round
+//! `tool_choice` deliberately stays `auto`: changing it would invalidate the
+//! prompt cache of the (large) user turn, and the system prompt already tells
+//! the model it may call the tool once. `Synth::new_final` (used for the
+//! citation retry) starts with `tool_choice: none`.
 //!
 //! Stage-dependent data lives *in the stage type* (`ToolRequested` owns the
 //! `tool_use` ids and requested rule ids), so a `Synth<ToolRequested>` cannot
@@ -71,6 +75,10 @@ pub struct SynthConfig {
     /// Server-side refusal fallback. `Some` requires the client to send
     /// `Fallbacks::BETA` (see `Client::with_beta`); `Synth::new` adds it.
     pub fallbacks: Option<Fallbacks>,
+    /// Bytes of rule text inlined into a `lookup_rules` tool result; a whole
+    /// subsection such as `702` would otherwise inject tens of thousands of
+    /// tokens. Chunks past the cap are replaced by an "omitted" line.
+    pub max_tool_result_chars: usize,
 }
 
 impl Default for SynthConfig {
@@ -80,8 +88,19 @@ impl Default for SynthConfig {
             max_tokens: 16_000,
             effort: Effort::High,
             fallbacks: Some(Fallbacks::default_mode()),
+            max_tool_result_chars: 30_000,
         }
     }
+}
+
+/// The response hit `max_tokens` (thinking tokens count against it). Carried
+/// inside `JudgeError::Upstream` so a caller can downcast and retry at a
+/// lower effort.
+#[derive(Debug, thiserror::Error)]
+#[error("response truncated at max_tokens ({output_tokens} output tokens)")]
+pub struct Truncated {
+    /// `usage.output_tokens` of the truncated response.
+    pub output_tokens: u64,
 }
 
 /// Result of the first send.
@@ -99,53 +118,79 @@ pub enum SendOutcome {
 #[derive(Debug)]
 pub struct Synth<S: Stage> {
     client: Client,
+    cfg: SynthConfig,
     req: MessagesRequest,
     stage: S,
 }
 
+/// The first request: cached system prompt, the caller's user-turn blocks
+/// (the caller puts a cache breakpoint on the material block), the
+/// `lookup_rules` tool (single call per turn), adaptive thinking, and the
+/// `Verdict` schema as structured output.
+fn first_request(cfg: &SynthConfig, system: String, user: Vec<ContentBlock>, tool_choice: ToolChoice) -> MessagesRequest {
+    MessagesRequest {
+        model: cfg.model.clone(),
+        max_tokens: cfg.max_tokens,
+        system: vec![SystemBlock::cached(system)],
+        messages: vec![Message { role: Role::User, content: user }],
+        tools: vec![Tool {
+            name: LOOKUP_RULES.to_owned(),
+            description: "Fetch additional Comprehensive Rules text by id: rule ids such as \"613.7\" or \"702.19b\", \
+                          or a whole subsection such as \"613\". You may call this at most once, before answering, if \
+                          the provided rules are insufficient. Prefer specific rule ids: the result is truncated after \
+                          a fixed amount of text, so a large subsection (e.g. \"702\", \"701\", \"800\") comes back \
+                          incomplete."
+                .to_owned(),
+            input_schema: anthropic_schema::<LookupRulesInput>(),
+            strict: Some(true),
+            cache_control: None,
+        }],
+        tool_choice: Some(tool_choice),
+        thinking: Some(Thinking::adaptive()),
+        output_config: Some(OutputConfig {
+            effort: Some(cfg.effort),
+            format: Some(OutputFormat::JsonSchema { schema: anthropic_schema::<Verdict>() }),
+        }),
+        fallbacks: cfg.fallbacks.clone(),
+    }
+}
+
+impl<S: Stage> Synth<S> {
+    /// One round trip, logging output tokens against `max_tokens` so the
+    /// truncation margin is observable.
+    async fn round_trip(&self) -> Result<MessagesResponse, JudgeError> {
+        let resp = self.client.messages(&self.req).await.map_err(anyhow::Error::from)?;
+        tracing::info!(
+            output_tokens = resp.usage.output_tokens,
+            max_tokens = self.req.max_tokens,
+            stop = ?resp.stop_reason,
+            "synthesis response"
+        );
+        Ok(resp)
+    }
+}
+
 impl Synth<Fresh> {
-    /// Build the first request: cached system prompt, the context + question
-    /// as the user turn, the `lookup_rules` tool (single call per turn),
-    /// adaptive thinking, and the `Verdict` schema as structured output.
+    /// Build the first request (see [`first_request`]) with the tool allowed.
     #[must_use]
-    pub fn new(client: Client, cfg: &SynthConfig, system: impl Into<String>, user: impl Into<String>) -> Self {
+    pub fn new(client: Client, cfg: &SynthConfig, system: impl Into<String>, user: Vec<ContentBlock>) -> Self {
         let client = if cfg.fallbacks.is_some() { client.with_beta(Fallbacks::BETA) } else { client };
-        let req = MessagesRequest {
-            model: cfg.model.clone(),
-            max_tokens: cfg.max_tokens,
-            system: vec![SystemBlock::cached(system)],
-            messages: vec![Message::user_text(user)],
-            tools: vec![Tool {
-                name: LOOKUP_RULES.to_owned(),
-                description: "Fetch additional Comprehensive Rules sections by id (e.g. \"613\", \"702.19b\"). \
-                              You may call this at most once, before answering, if the provided rules are insufficient."
-                    .to_owned(),
-                input_schema: anthropic_schema::<LookupRulesInput>(),
-                strict: Some(true),
-                cache_control: None,
-            }],
-            tool_choice: Some(ToolChoice::auto_single()),
-            thinking: Some(Thinking::adaptive()),
-            output_config: Some(OutputConfig {
-                effort: Some(cfg.effort),
-                format: Some(OutputFormat::JsonSchema { schema: anthropic_schema::<Verdict>() }),
-            }),
-            fallbacks: cfg.fallbacks.clone(),
-        };
-        Self { client, req, stage: Fresh }
+        let req = first_request(cfg, system.into(), user, ToolChoice::auto_single());
+        Self { client, cfg: cfg.clone(), req, stage: Fresh }
     }
 
     /// # Errors
     /// `LlmRefused` on a refusal, `Upstream` on transport/parse problems or
     /// an unexpected stop reason.
     pub async fn send(mut self) -> Result<SendOutcome, JudgeError> {
-        let resp = self.client.messages(&self.req).await.map_err(anyhow::Error::from)?;
+        let resp = self.round_trip().await?;
         match classify(resp)? {
             Step::Verdict(v) => Ok(SendOutcome::Done(v)),
             Step::Tool { tool_use_ids, requested, content } => {
                 self.req.messages.push(Message { role: Role::Assistant, content });
                 Ok(SendOutcome::ToolRequested(Synth {
                     client: self.client,
+                    cfg: self.cfg,
                     req: self.req,
                     stage: ToolRequested { tool_use_ids, requested },
                 }))
@@ -161,18 +206,12 @@ impl Synth<ToolRequested> {
         &self.stage.requested
     }
 
-    /// Attach the fetched chunks as the tool result and forbid further tool use.
+    /// Attach the fetched chunks as the tool result, capped at
+    /// `SynthConfig::max_tool_result_chars`. `tool_choice` is left as is so
+    /// the cached user turn stays valid; `finish` rejects a second tool call.
     #[must_use]
     pub fn answer_tool(mut self, chunks: &[RuleChunk]) -> Synth<Final> {
-        let content = if chunks.is_empty() {
-            "No rules found for the requested ids.".to_owned()
-        } else {
-            chunks
-                .iter()
-                .map(|c| format!("[{}] {}\n{}\n{}", c.id, c.heading, c.body, c.examples.join("\n")))
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        };
+        let content = render_tool_result(chunks, self.cfg.max_tool_result_chars);
         // Every tool_use id must be answered in the same user message.
         let results = self
             .stage
@@ -181,16 +220,50 @@ impl Synth<ToolRequested> {
             .map(|tool_use_id| ContentBlock::ToolResult { tool_use_id, content: content.clone(), is_error: false })
             .collect();
         self.req.messages.push(Message { role: Role::User, content: results });
-        self.req.tool_choice = Some(ToolChoice::None);
-        Synth { client: self.client, req: self.req, stage: Final }
+        Synth { client: self.client, cfg: self.cfg, req: self.req, stage: Final }
     }
 }
 
+/// The tool result text: chunks in order until `max_chars` of rule text has
+/// been inlined, then one line naming how many were left out.
+fn render_tool_result(chunks: &[RuleChunk], max_chars: usize) -> String {
+    if chunks.is_empty() {
+        return "No rules found for the requested ids.".to_owned();
+    }
+    let mut parts = Vec::with_capacity(chunks.len());
+    let mut used = 0usize;
+    let mut omitted = 0usize;
+    for c in chunks {
+        let size = c.body.len() + c.examples.iter().map(String::len).sum::<usize>();
+        // A prefix in id order, so the "omitted" count is honest and the model can ask for the rest by id.
+        if omitted == 0 && (parts.is_empty() || used + size <= max_chars) {
+            used += size;
+            parts.push(format!("[{}] {}\n{}\n{}", c.id, c.heading, c.body, c.examples.join("\n")));
+        } else {
+            omitted += 1;
+        }
+    }
+    if omitted > 0 {
+        tracing::warn!(shown = parts.len(), omitted, "lookup_rules result truncated");
+        parts.push(format!("({omitted} more rules omitted: the request was too broad; cite only what is shown)"));
+    }
+    parts.join("\n\n")
+}
+
 impl Synth<Final> {
+    /// A conversation that may not call the tool at all (`tool_choice: none`):
+    /// the citation retry, whose Context already holds the earlier tool round.
+    #[must_use]
+    pub fn new_final(client: Client, cfg: &SynthConfig, system: impl Into<String>, user: Vec<ContentBlock>) -> Self {
+        let client = if cfg.fallbacks.is_some() { client.with_beta(Fallbacks::BETA) } else { client };
+        let req = first_request(cfg, system.into(), user, ToolChoice::None);
+        Self { client, cfg: cfg.clone(), req, stage: Final }
+    }
+
     /// # Errors
     /// `LlmRefused`, or `Upstream` if the model tries to call a tool again or returns bad JSON.
     pub async fn finish(self) -> Result<Verdict<Unvalidated>, JudgeError> {
-        let resp = self.client.messages(&self.req).await.map_err(anyhow::Error::from)?;
+        let resp = self.round_trip().await?;
         match classify(resp)? {
             Step::Verdict(v) => Ok(v),
             Step::Tool { .. } => Err(anyhow::anyhow!("model requested a second tool round; not allowed").into()),
@@ -227,7 +300,9 @@ pub fn classify(resp: MessagesResponse) -> Result<Step, JudgeError> {
             tracing::warn!(details = ?resp.stop_details, "model refused");
             Err(JudgeError::LlmRefused)
         }
-        Some(StopReason::MaxTokens) => Err(anyhow::anyhow!("response truncated at max_tokens").into()),
+        Some(StopReason::MaxTokens) => {
+            Err(anyhow::Error::from(Truncated { output_tokens: resp.usage.output_tokens }).into())
+        }
         Some(StopReason::ToolUse) => {
             let mut tool_use_ids = Vec::new();
             let mut requested: Vec<RuleId> = Vec::new();
@@ -273,6 +348,7 @@ fn parse_verdict(resp: &MessagesResponse) -> Result<Verdict<Unvalidated>, JudgeE
         last = Some(t);
     }
     let text = last.ok_or_else(|| anyhow::anyhow!("response contained no text block"))?;
+    tracing::debug!(raw = %crate::truncate_for_log(text, crate::LOG_TEXT_CHARS), "synthesis raw model text");
     serde_json::from_str(text)
         .with_context(|| format!("verdict JSON did not match schema: {text}"))
         .map_err(JudgeError::from)
@@ -295,7 +371,7 @@ mod tests {
         }))
     }
 
-    const VERDICT: &str = r#"{"answer":"a","confidence":"low","citations":[{"kind":"rule","id":"702.15b","quote":"q"}],"category":"layers","source":"cr"}"#;
+    const VERDICT: &str = r#"{"answer":"a","confidence":"low","citations":[{"kind":"rule","id":"702.15b","quote":"q"}],"category":"layers"}"#;
 
     #[test]
     fn lookup_rules_schema_is_strict() {
@@ -307,7 +383,7 @@ mod tests {
 
     #[test]
     fn fresh_request_has_tool_thinking_format_and_fallbacks() -> Result<(), Box<dyn std::error::Error>> {
-        let s = Synth::new(Client::new("k")?, &SynthConfig::default(), "sys", "q");
+        let s = Synth::new(Client::new("k")?, &SynthConfig::default(), "sys", vec![ContentBlock::text("q")]);
         let v = serde_json::to_value(&s.req)?;
         assert_eq!(at(&v, "/model"), "claude-opus-5");
         assert_eq!(at(&v, "/tools/0/name"), LOOKUP_RULES);
@@ -319,17 +395,34 @@ mod tests {
         assert_eq!(s.client.betas(), [Fallbacks::BETA]);
 
         let cfg = SynthConfig { fallbacks: None, ..SynthConfig::default() };
-        let s = Synth::new(Client::new("k")?, &cfg, "sys", "q");
+        let s = Synth::new(Client::new("k")?, &cfg, "sys", vec![ContentBlock::text("q")]);
         assert!(serde_json::to_value(&s.req)?.get("fallbacks").is_none());
         assert!(s.client.betas().is_empty());
+
+        let f = Synth::new_final(Client::new("k")?, &cfg, "sys", vec![ContentBlock::text("q")]);
+        assert_eq!(f.req.tool_choice, Some(ToolChoice::None));
+        assert_eq!(at(&serde_json::to_value(&f.req)?, "/tools/0/name"), LOOKUP_RULES);
         Ok(())
     }
 
+    fn chunk(id: &str, body: &str) -> Result<RuleChunk, Box<dyn std::error::Error>> {
+        Ok(RuleChunk {
+            id: RuleId::try_new(id.to_owned())?,
+            parent_id: None,
+            subsection: RuleId::try_new("613".to_owned())?,
+            heading: "H".into(),
+            body: body.into(),
+            examples: vec![],
+            cr_version: judge_core::CrVersion::try_new("20250801".to_owned())?,
+        })
+    }
+
     #[test]
-    fn answer_tool_answers_every_id_and_disables_further_tools() -> Result<(), Box<dyn std::error::Error>> {
-        let s = Synth::new(Client::new("k")?, &SynthConfig::default(), "sys", "q");
+    fn answer_tool_answers_every_id_and_keeps_tool_choice() -> Result<(), Box<dyn std::error::Error>> {
+        let s = Synth::new(Client::new("k")?, &SynthConfig::default(), "sys", vec![ContentBlock::text("q")]);
         let t: Synth<ToolRequested> = Synth {
             client: s.client,
+            cfg: s.cfg,
             req: s.req,
             stage: ToolRequested {
                 tool_use_ids: vec!["tu_1".into(), "tu_2".into()],
@@ -338,11 +431,26 @@ mod tests {
         };
         assert_eq!(t.requested().len(), 1);
         let f = t.answer_tool(&[]);
-        assert_eq!(f.req.tool_choice, Some(ToolChoice::None));
+        assert_eq!(f.req.tool_choice, Some(ToolChoice::auto_single()), "cache-preserving");
         let last = f.req.messages.last().map(serde_json::to_value).transpose()?.unwrap_or_default();
         assert_eq!(at(&last, "/role"), "user");
         assert_eq!(at(&last, "/content/0/tool_use_id"), "tu_1");
         assert_eq!(at(&last, "/content/1/tool_use_id"), "tu_2");
+        assert_eq!(at(&last, "/content/1/content"), "No rules found for the requested ids.");
+        Ok(())
+    }
+
+    #[test]
+    fn tool_result_is_capped() -> Result<(), Box<dyn std::error::Error>> {
+        let chunks = vec![chunk("613.1", &"a".repeat(60))?, chunk("613.2", &"b".repeat(60))?, chunk("613.3", "c")?];
+        let full = render_tool_result(&chunks, 1_000);
+        assert!(full.contains("[613.3]") && !full.contains("omitted"), "{full}");
+        let capped = render_tool_result(&chunks, 100);
+        assert!(capped.contains("[613.1]") && !capped.contains("[613.2]"), "{capped}");
+        assert!(capped.ends_with("(2 more rules omitted: the request was too broad; cite only what is shown)"), "{capped}");
+        // An over-sized first chunk is still shown.
+        let one = render_tool_result(&chunks, 10);
+        assert!(one.contains("[613.1]"), "{one}");
         Ok(())
     }
 
@@ -388,7 +496,7 @@ mod tests {
         assert!(matches!(classify(refusal), Err(JudgeError::LlmRefused)));
 
         let truncated = resp("max_tokens", &json!([{"type": "text", "text": "{\"answer\": \"a"}]))?;
-        assert!(matches!(classify(truncated), Err(JudgeError::Upstream(_))));
+        assert!(matches!(classify(truncated), Err(JudgeError::Upstream(e)) if e.downcast_ref::<Truncated>().is_some_and(|t| t.output_tokens == 1)));
 
         let unknown_tool = resp("tool_use", &json!([{"type": "tool_use", "id": "t", "name": "other", "input": {}}]))?;
         assert!(matches!(classify(unknown_tool), Err(JudgeError::Upstream(_))));

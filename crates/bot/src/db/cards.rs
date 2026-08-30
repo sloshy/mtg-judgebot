@@ -51,14 +51,26 @@ pub(super) async fn load_cards(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Card>,
             mana_cost: r.mana_cost,
             type_line: r.type_line,
         };
-        by_id.entry(r.oracle_id).or_insert_with(|| (r.name, r.layout, Vec::new())).2.push(face);
+        by_id
+            .entry(r.oracle_id)
+            .or_insert_with(|| (r.name, r.layout, Vec::new()))
+            .2
+            .push(face);
     }
 
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        let Some((name, layout, faces)) = by_id.remove(id) else { continue };
-        let faces = NonEmpty::from_vec(faces).ok_or_else(|| bad_row(format!("card {id} ({name}) has no faces")))?;
-        out.push(Card { id: CardId::new(*id), name, layout: parse_layout(&layout, *id), faces });
+        let Some((name, layout, faces)) = by_id.remove(id) else {
+            continue;
+        };
+        let faces = NonEmpty::from_vec(faces)
+            .ok_or_else(|| bad_row(format!("card {id} ({name}) has no faces")))?;
+        out.push(Card {
+            id: CardId::new(*id),
+            name,
+            layout: parse_layout(&layout, *id),
+            faces,
+        });
     }
     Ok(out)
 }

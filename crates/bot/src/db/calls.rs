@@ -3,7 +3,10 @@
 use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
-use judge_core::{CallId, CallStore, Context, Embedder, InputKind, JudgeError, Question, Score, Validated, Verdict};
+use judge_core::{
+    CallId, CallStore, Context, Embedder, InputKind, JudgeError, Question, Score, Validated,
+    Verdict,
+};
 use pgvector::Vector;
 use sqlx::PgPool;
 
@@ -18,7 +21,9 @@ pub struct PgCallStore {
 
 impl fmt::Debug for PgCallStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PgCallStore").field("embedder", &self.embedder.is_some()).finish_non_exhaustive()
+        f.debug_struct("PgCallStore")
+            .field("embedder", &self.embedder.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -26,7 +31,10 @@ impl PgCallStore {
     /// A store that leaves `calls.embedding` NULL (no embedder).
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self { pool, embedder: None }
+        Self {
+            pool,
+            embedder: None,
+        }
     }
 
     /// Embed each persisted question so later calls can be found by similarity.
@@ -52,14 +60,22 @@ impl PgCallStore {
 fn enum_id<T: serde::Serialize>(v: &T) -> Result<String, JudgeError> {
     match serde_json::to_value(v).map_err(|e| bad_row_from(e, "serialize enum"))? {
         serde_json::Value::String(s) => Ok(s),
-        other => Err(bad_row(format!("enum did not serialize to a string: {other}"))),
+        other => Err(bad_row(format!(
+            "enum did not serialize to a string: {other}"
+        ))),
     }
 }
 
 #[async_trait]
 impl CallStore for PgCallStore {
-    async fn persist(&self, q: &Question, v: &Verdict<Validated>, ctx: &Context) -> Result<CallId, JudgeError> {
-        let citations = serde_json::to_value(v.citations()).map_err(|e| bad_row_from(e, "serialize citations"))?;
+    async fn persist(
+        &self,
+        q: &Question,
+        v: &Verdict<Validated>,
+        ctx: &Context,
+    ) -> Result<CallId, JudgeError> {
+        let citations = serde_json::to_value(v.citations())
+            .map_err(|e| bad_row_from(e, "serialize citations"))?;
         let context_ids = serde_json::json!({
             "cards": ctx.cards.iter().map(|c| c.id).collect::<Vec<_>>(),
             "rules": ctx.rules.iter().map(|r| &r.id).collect::<Vec<_>>(),
@@ -95,7 +111,13 @@ impl CallStore for PgCallStore {
         Ok(CallId::new(id))
     }
 
-    async fn rate(&self, call: CallId, user_id: &str, score: Score, is_judge: bool) -> Result<(), JudgeError> {
+    async fn rate(
+        &self,
+        call: CallId,
+        user_id: &str,
+        score: Score,
+        is_judge: bool,
+    ) -> Result<(), JudgeError> {
         let score = i16::from(score as u8);
         sqlx::query!(
             r#"

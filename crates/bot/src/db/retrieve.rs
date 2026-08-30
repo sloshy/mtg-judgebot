@@ -12,8 +12,9 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    CallId, Card, CardId, CardNote, Category, Context, CrVersion, Embedder, Extraction, GlossaryEntry,
-    InputKind, JudgeError, PriorCall, Question, Retriever, RuleChunk, RuleId, Ruling,
+    CallId, Card, CardId, CardNote, Category, Context, CrVersion, Embedder, Extraction,
+    GlossaryEntry, InputKind, JudgeError, PriorCall, Question, Retriever, RuleChunk, RuleId,
+    Ruling,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
@@ -37,7 +38,9 @@ pub struct PgRetriever {
 
 impl fmt::Debug for PgRetriever {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PgRetriever").field("embedder", &self.embedder.is_some()).finish_non_exhaustive()
+        f.debug_struct("PgRetriever")
+            .field("embedder", &self.embedder.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -46,7 +49,10 @@ impl PgRetriever {
     /// prior calls are skipped (with a warning) until [`Self::with_embedder`].
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self { pool, embedder: None }
+        Self {
+            pool,
+            embedder: None,
+        }
     }
 
     /// Enable the vector leg and similarity ordering of prior calls.
@@ -59,7 +65,9 @@ impl PgRetriever {
     /// Embed the question, or `None` (logged) when no embedder is configured or it fails.
     async fn embed_query(&self, text: &str) -> Option<Vector> {
         let Some(embedder) = &self.embedder else {
-            tracing::warn!("no embedder configured; skipping the vector leg and prior-call similarity");
+            tracing::warn!(
+                "no embedder configured; skipping the vector leg and prior-call similarity"
+            );
             return None;
         };
         let first = match embedder.embed(&[text], InputKind::Query).await {
@@ -81,10 +89,13 @@ impl PgRetriever {
             return Ok(Vec::new());
         }
         let ids: Vec<String> = categories.iter().map(|c| c.id().to_owned()).collect();
-        let rows = sqlx::query!("SELECT id, subsections FROM categories WHERE id = ANY($1)", &ids)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(upstream("categories"))?;
+        let rows = sqlx::query!(
+            "SELECT id, subsections FROM categories WHERE id = ANY($1)",
+            &ids
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(upstream("categories"))?;
         let mut wanted: Vec<String> = Vec::new();
         for c in categories {
             if let Some(r) = rows.iter().find(|r| r.id == c.id()) {
@@ -124,9 +135,18 @@ impl PgRetriever {
         .map_err(upstream("rulings"))?;
         rows.into_iter()
             .map(|r| {
-                let idx = u32::try_from(r.idx)
-                    .map_err(|_| bad_row(format!("negative ruling idx {} for card {}", r.idx, r.oracle_id)))?;
-                Ok(Ruling { card: CardId::new(r.oracle_id), idx, published_at: r.published_at, text: r.text })
+                let idx = u32::try_from(r.idx).map_err(|_| {
+                    bad_row(format!(
+                        "negative ruling idx {} for card {}",
+                        r.idx, r.oracle_id
+                    ))
+                })?;
+                Ok(Ruling {
+                    card: CardId::new(r.oracle_id),
+                    idx,
+                    published_at: r.published_at,
+                    text: r.text,
+                })
             })
             .collect()
     }
@@ -161,18 +181,33 @@ impl PgRetriever {
         .fetch_all(&self.pool)
         .await
         .map_err(upstream("glossary"))?;
-        Ok(rows.into_iter().map(|r| GlossaryEntry { term: r.term, text: r.text }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| GlossaryEntry {
+                term: r.term,
+                text: r.text,
+            })
+            .collect())
     }
 
     async fn notes(&self, ids: &[Uuid]) -> Result<Vec<CardNote>, JudgeError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let rows = sqlx::query!("SELECT oracle_id, note FROM card_notes WHERE oracle_id = ANY($1)", ids)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(upstream("card notes"))?;
-        Ok(rows.into_iter().map(|r| CardNote { card: CardId::new(r.oracle_id), note: r.note }).collect())
+        let rows = sqlx::query!(
+            "SELECT oracle_id, note FROM card_notes WHERE oracle_id = ANY($1)",
+            ids
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(upstream("card notes"))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| CardNote {
+                card: CardId::new(r.oracle_id),
+                note: r.note,
+            })
+            .collect())
     }
 
     /// Prior calls in any of `categories` that were answered about at least one
@@ -243,7 +278,10 @@ impl PgRetriever {
             }
         }
         .map_err(upstream("prior calls"))?;
-        Ok(rows.into_iter().filter_map(PriorRow::into_prior_call).collect())
+        Ok(rows
+            .into_iter()
+            .filter_map(PriorRow::into_prior_call)
+            .collect())
     }
 }
 
@@ -295,12 +333,20 @@ impl PriorRow {
 
 #[async_trait]
 impl Retriever for PgRetriever {
-    async fn retrieve(&self, q: &Question, cards: &[Card], e: &Extraction) -> Result<Context, JudgeError> {
-        let categories: Vec<Category> = e.categories.iter().map(|g| g.category).collect();
+    async fn retrieve(
+        &self,
+        q: &Question,
+        cards: &[Card],
+        e: &Extraction,
+    ) -> Result<Context, JudgeError> {
+        let categories: Vec<Category> = e.categories().map(|g| g.category).collect();
         let concepts = e.concepts.join(" ");
         let embedding = self.embed_query(&q.text).await;
         let card_ids: Vec<Uuid> = cards.iter().map(|c| c.id.into_inner()).collect();
-        let texts: Vec<String> = cards.iter().flat_map(|c| c.faces.iter().map(|f| f.oracle_text.clone())).collect();
+        let texts: Vec<String> = cards
+            .iter()
+            .flat_map(|c| c.faces.iter().map(|f| f.oracle_text.clone()))
+            .collect();
 
         let (mapped, matched, nearest, rulings, glossary, notes, prior) = tokio::try_join!(
             self.category_map(&categories),
@@ -312,7 +358,14 @@ impl Retriever for PgRetriever {
             self.prior_calls(&categories, &card_ids, embedding.as_ref()),
         )?;
 
-        let mut ctx = Context { cards: cards.to_vec(), rulings, glossary, notes, prior, ..Context::default() };
+        let mut ctx = Context {
+            cards: cards.to_vec(),
+            rulings,
+            glossary,
+            notes,
+            prior,
+            ..Context::default()
+        };
         let (n_map, n_bm25, n_vec) = (mapped.len(), matched.len(), nearest.len());
         ctx.extend_rules(mapped);
         ctx.extend_rules(matched);

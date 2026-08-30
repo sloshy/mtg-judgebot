@@ -9,6 +9,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+wiremock = "0.6"
 judge-core = { path = "crates/core" }
 judge-anthropic = { path = "crates/anthropic" }
 judge-embed = { path = "crates/embed" }

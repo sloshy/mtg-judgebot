@@ -39,12 +39,18 @@ Discord message (+ last N Q&A in the same thread)
 [2] Card resolution (per span)
     alias table → [[bracket]] syntax → printed-name table → trigram fuzzy
     Output: Resolution = Resolved(card, matchedVia) | Ambiguous(candidates) | NotFound
-    Ambiguous ⇒ "did you mean…?" buttons and stop. Never guess.
+    A span that is Ambiguous from a non-fuzzy rung and shares a candidate with
+    a card Resolved from another span, or NotFound but whose words appear as
+    whole words in a resolved card's (face) name, is a duplicate reference
+    (nickname + full name) and is dropped. Fuzzy-ambiguous spans are never
+    dropped: trigram neighbours are not names the user could have meant.
+    Remaining Ambiguous ⇒ "did you mean…?" buttons and stop. Never guess.
   │
   ▼
 [3] Classification (same LLM call as [1])
-    Up to 3 categories with confidence, from a fixed taxonomy (~25 entries
-    mirroring CR structure). Also assigns Source: CR | Commander | Tournament(MTR/IPG) | OutOfScope.
+    One required primary category plus up to 2 secondary, each with
+    confidence, from a fixed taxonomy (~25 entries mirroring CR structure);
+    the schema requires the primary, so an unclassified answer is an API error. Also assigns Source: CR | Commander | Tournament(MTR/IPG) | OutOfScope.
     Tournament/OutOfScope ⇒ reply "I don't cover that" with a pointer.
     Flags "nightmare" cards (Humility, Opalescence, Blood Moon, Mycosynth
     Lattice, Panglacial Wurm, …) → inject hand-written notes.
@@ -65,10 +71,16 @@ Discord message (+ last N Q&A in the same thread)
 [5] Synthesis (LLM, high effort, structured output, one tool-use round)
     Tool: lookup_rules(ids) — the model may request additional CR sections
     once before answering, closing the classifier-miss gap.
-    Output: Verdict { answer, confidence: Low|Medium|High, citations[], category, crVersion }
+    Output: Verdict { answer, confidence: Low|Medium|High, citations[], category }
+    `source` and `crVersion` are not model-reported: validation stamps the
+    source from the extraction (as AnswerableSource — only Cr | Commander
+    reach this step, by type) and crVersion from the retrieved chunks.
     Each citation = typed reference + quoted span. Validation:
       (a) reference exists in Context, (b) span is a substring of that chunk.
-    Failure ⇒ JudgeError.BadCitation → retry once, then reply with error.
+    Also (c) every verdict must cite something and the answer must be
+    ≥ 40 chars, else JudgeError.EmptyVerdict.
+    Failure ⇒ BadCitation / EmptyVerdict → retry once (the notice says which),
+    then reply with error.
     Always quotes CURRENT Oracle text (errata note if the printed text differs).
   │
   ▼

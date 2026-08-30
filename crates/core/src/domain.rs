@@ -174,7 +174,41 @@ impl Source {
     /// Whether the bot answers questions from this source at all.
     #[must_use]
     pub const fn is_answerable(self) -> bool {
-        matches!(self, Source::Cr | Source::Commander)
+        self.answerable().is_some()
+    }
+
+    /// The answerable subset, or `None` for `Tournament` / `OutOfScope`. A
+    /// `Verdict` can only be validated against an [`AnswerableSource`], so the
+    /// "not answerable" branch has to be taken before synthesis is reached.
+    #[must_use]
+    pub const fn answerable(self) -> Option<AnswerableSource> {
+        match self {
+            Source::Cr => Some(AnswerableSource::Cr),
+            Source::Commander => Some(AnswerableSource::Commander),
+            Source::Tournament | Source::OutOfScope => None,
+        }
+    }
+}
+
+/// The rules bodies the bot answers from: [`Source`] minus the variants
+/// `judge()` refuses. Stamped onto a verdict from the *extraction* (the model
+/// never reports it at synthesis time), so a verdict's source cannot disagree
+/// with the classification and every verdict must cite something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerableSource {
+    /// Comprehensive Rules.
+    Cr,
+    /// Commander format rules (CR 903 + Commander Rules Committee).
+    Commander,
+}
+
+impl From<AnswerableSource> for Source {
+    fn from(s: AnswerableSource) -> Self {
+        match s {
+            AnswerableSource::Cr => Source::Cr,
+            AnswerableSource::Commander => Source::Commander,
+        }
     }
 }
 
@@ -202,6 +236,9 @@ pub enum MatchedVia {
     Exact,
     /// Old / errata'd printed name.
     PrintedName,
+    /// The part of a name before its first comma (`Ragavan` for
+    /// "Ragavan, Nimble Pilferer"): how legendary cards are usually referred to.
+    ShortName,
     /// `pg_trgm` similarity.
     Fuzzy,
 }
@@ -232,6 +269,10 @@ pub enum Resolution {
         query: String,
         /// Cards it could be.
         candidates: NonEmpty<Card>,
+        /// Which rung produced the candidates. `Fuzzy` candidates are trigram
+        /// neighbours, not names the user could have meant, so `judge()` never
+        /// treats a fuzzy-ambiguous span as a duplicate of a resolved card.
+        via: MatchedVia,
     },
     /// Nothing matched.
     NotFound {
@@ -399,6 +440,10 @@ pub struct CategoryGuess {
 }
 
 /// Output of the extraction + classification LLM call (pipeline steps 1 and 3).
+///
+/// The best category is a required scalar (`primary`), so the model-facing
+/// schema *requires* one: an answer with no category is rejected by the API
+/// itself rather than patched up after the fact.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Extraction {
@@ -406,17 +451,87 @@ pub struct Extraction {
     pub card_spans: Vec<String>,
     /// Rules concepts / keywords the fuzzy retrieval legs should see.
     pub concepts: Vec<String>,
-    /// Up to three categories, best first.
-    pub categories: Vec<CategoryGuess>,
+    /// The single best-fitting category. Required.
+    pub primary: CategoryGuess,
+    /// Up to two further categories, best first. Extras beyond two, and any
+    /// repeat of `primary`, are ignored by [`Extraction::categories`].
+    #[serde(default)]
+    pub secondary: Vec<CategoryGuess>,
     /// Which rules body the question falls under.
     pub source: Source,
 }
 
 impl Extraction {
-    /// The best category, or `Category::Other` if the classifier gave none.
+    /// Maximum number of secondary categories honoured.
+    pub const MAX_SECONDARY: usize = 2;
+
+    /// The best category.
     #[must_use]
     pub fn primary_category(&self) -> Category {
-        self.categories.first().map_or(Category::Other, |g| g.category)
+        self.primary.category
+    }
+
+    /// `primary` first, then the secondary guesses with duplicates (of the
+    /// primary or of an earlier secondary) removed and at most
+    /// [`Self::MAX_SECONDARY`] of them kept.
+    pub fn categories(&self) -> impl Iterator<Item = &CategoryGuess> {
+        let mut seen = vec![self.primary.category];
+        std::iter::once(&self.primary).chain(
+            self.secondary
+                .iter()
+                .filter(move |g| {
+                    if seen.contains(&g.category) {
+                        false
+                    } else {
+                        seen.push(g.category);
+                        true
+                    }
+                })
+                .take(Self::MAX_SECONDARY),
+        )
+    }
+}
+
+/// Why a verdict was rejected for being empty rather than for a bad citation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmptyVerdict {
+    /// The answer cites nothing (every verdict draws on the CR / Commander rules).
+    NoCitations,
+    /// The answer text is shorter than [`crate::verdict::MIN_ANSWER_CHARS`].
+    ShortAnswer {
+        /// Characters in the trimmed answer.
+        chars: usize,
+    },
+}
+
+impl fmt::Display for EmptyVerdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EmptyVerdict::NoCitations => write!(f, "the answer had no citations"),
+            EmptyVerdict::ShortAnswer { chars } => write!(f, "the answer was empty or too short ({chars} characters)"),
+        }
+    }
+}
+
+/// What a previous synthesis attempt was rejected for; the synthesizer shows
+/// this to the model on the retry. Exhaustive, so a new rejection reason must
+/// be rendered before it compiles.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Rejection {
+    /// A citation failed validation.
+    BadCitation(Citation),
+    /// The verdict was empty (no citations, or no real answer).
+    Empty(EmptyVerdict),
+}
+
+impl fmt::Display for Rejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Rejection::BadCitation(c) => write!(f, "bad citation {c}"),
+            Rejection::Empty(e) => write!(f, "{e}"),
+        }
     }
 }
 
@@ -437,6 +552,10 @@ pub struct Context {
     pub notes: Vec<CardNote>,
     /// Last N Q&A in the same thread.
     pub history: Vec<Qa>,
+    /// Ids of the chunks appended by the synthesizer's `lookup_rules` round;
+    /// the retry after a `BadCitation` renders these regardless of its budget.
+    #[serde(default)]
+    pub tool_round: Vec<RuleId>,
 }
 
 impl Context {
@@ -537,6 +656,49 @@ mod tests {
     fn citation_displays_for_humans() -> Result<(), Box<dyn std::error::Error>> {
         let c = Citation::Rule { id: RuleId::try_new("702.19b".to_owned())?, quote: "quote".into() };
         assert_eq!(c.to_string(), "rule 702.19b: \"quote\"");
+        Ok(())
+    }
+
+    fn guess(category: Category) -> CategoryGuess {
+        CategoryGuess { category, confidence: Confidence::Low }
+    }
+
+    #[test]
+    fn categories_dedupe_and_cap_secondary() {
+        let e = Extraction {
+            card_spans: vec![],
+            concepts: vec![],
+            primary: guess(Category::Layers),
+            secondary: vec![
+                guess(Category::Layers),
+                guess(Category::Combat),
+                guess(Category::Combat),
+                guess(Category::Zones),
+                guess(Category::Targeting),
+            ],
+            source: Source::Cr,
+        };
+        let cats: Vec<Category> = e.categories().map(|g| g.category).collect();
+        assert_eq!(cats, vec![Category::Layers, Category::Combat, Category::Zones]);
+        assert_eq!(e.primary_category(), Category::Layers);
+    }
+
+    #[test]
+    fn extraction_schema_requires_primary_and_secondary_is_optional() -> Result<(), serde_json::Error> {
+        let s = schemars::schema_for!(Extraction).to_value();
+        let required: Vec<&str> = s
+            .get("required")
+            .and_then(|r| r.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        assert!(required.contains(&"primary"), "{s}");
+        assert!(!required.contains(&"secondary"), "{s}");
+        let e: Result<Extraction, _> = serde_json::from_str(r#"{"card_spans":[],"concepts":[],"source":"cr"}"#);
+        assert!(e.is_err(), "no primary must not deserialize");
+        let e: Extraction = serde_json::from_str(
+            r#"{"card_spans":[],"concepts":[],"primary":{"category":"layers","confidence":"high"},"source":"cr"}"#,
+        )?;
+        assert_eq!(e.categories().count(), 1);
         Ok(())
     }
 

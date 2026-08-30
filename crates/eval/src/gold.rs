@@ -3,8 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use judge_core::RuleId;
+use judge_core::{Category, CategoryGuess, Confidence, Extraction, RuleId, Source};
 use serde::Deserialize;
+
+use crate::categories;
 
 /// The gold file.
 #[derive(Debug, Deserialize)]
@@ -34,13 +36,52 @@ pub struct GoldQuestion {
     /// Rule ids a correct answer must cite (rule or leaf granularity).
     #[serde(default)]
     pub expected_rule_ids: Vec<YamlScalar>,
+    /// The reference answer, for side-by-side human review.
+    #[serde(default)]
+    pub expected_answer: String,
 }
 
 impl GoldQuestion {
+    /// The gold `source` label as a `Source` (anything unknown is out of scope).
+    #[must_use]
+    pub fn source(&self) -> Source {
+        match self.source.to_ascii_lowercase().as_str() {
+            "cr" => Source::Cr,
+            "commander" => Source::Commander,
+            "tournament" => Source::Tournament,
+            _ => Source::OutOfScope,
+        }
+    }
+
     /// Whether the bot is supposed to answer (and so retrieval is scored).
     #[must_use]
     pub fn is_answerable(&self) -> bool {
-        matches!(self.source.to_ascii_lowercase().as_str(), "cr" | "commander")
+        self.source().is_answerable()
+    }
+
+    /// The `Extraction` a perfect extractor would produce from the gold
+    /// fields: full card names as spans, category labels as concepts and
+    /// (mapped best-effort) as medium-confidence guesses, the first as
+    /// `primary` (`other` at low confidence if none maps). Shared by the
+    /// `recall` evaluator and the `--gold-extraction` answer run.
+    #[must_use]
+    pub fn extraction(&self) -> Extraction {
+        let mut mapped = categories::map_labels(&self.id, &self.categories).into_iter();
+        let primary = mapped.next().map_or(
+            CategoryGuess { category: Category::Other, confidence: Confidence::Low },
+            |category| CategoryGuess { category, confidence: Confidence::Medium },
+        );
+        let secondary = mapped
+            .take(Extraction::MAX_SECONDARY)
+            .map(|category| CategoryGuess { category, confidence: Confidence::Medium })
+            .collect();
+        Extraction {
+            card_spans: self.cards.clone(),
+            concepts: self.categories.iter().map(|c| c.replace(['-', '_'], " ")).collect(),
+            primary,
+            secondary,
+            source: self.source(),
+        }
     }
 }
 

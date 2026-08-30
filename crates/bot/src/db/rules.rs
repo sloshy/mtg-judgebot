@@ -26,14 +26,23 @@ impl TryFrom<RuleRow> for RuleChunk {
 
     fn try_from(r: RuleRow) -> Result<Self, JudgeError> {
         let rule_id = |what: &str, s: String| {
-            RuleId::try_new(s.clone()).map_err(|e| bad_row_from(e, format!("rules.{what} {s:?} of {}", r.id)))
+            RuleId::try_new(s.clone())
+                .map_err(|e| bad_row_from(e, format!("rules.{what} {s:?} of {}", r.id)))
         };
         Ok(RuleChunk {
-            parent_id: r.parent_id.clone().map(|p| rule_id("parent_id", p)).transpose()?,
+            parent_id: r
+                .parent_id
+                .clone()
+                .map(|p| rule_id("parent_id", p))
+                .transpose()?,
             subsection: rule_id("subsection", r.subsection.clone())?,
             id: rule_id("id", r.id.clone())?,
-            cr_version: CrVersion::try_new(r.cr_version.clone())
-                .map_err(|e| bad_row_from(e, format!("rules.cr_version {:?} of {}", r.cr_version, r.id)))?,
+            cr_version: CrVersion::try_new(r.cr_version.clone()).map_err(|e| {
+                bad_row_from(
+                    e,
+                    format!("rules.cr_version {:?} of {}", r.cr_version, r.id),
+                )
+            })?,
             heading: r.heading,
             body: r.body,
             examples: r.examples,
@@ -51,14 +60,25 @@ fn chunks(rows: Vec<RuleRow>) -> Result<Vec<RuleChunk>, JudgeError> {
 pub(super) fn sort_key(id: &str) -> (u32, u32, usize, String) {
     let (section, rest) = id.split_once('.').unwrap_or((id, ""));
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    let letters: String = rest.chars().skip_while(char::is_ascii_digit).take_while(char::is_ascii_alphabetic).collect();
-    (section.parse().unwrap_or(0), digits.parse().unwrap_or(0), letters.len(), letters)
+    let letters: String = rest
+        .chars()
+        .skip_while(char::is_ascii_digit)
+        .take_while(char::is_ascii_alphabetic)
+        .collect();
+    (
+        section.parse().unwrap_or(0),
+        digits.parse().unwrap_or(0),
+        letters.len(),
+        letters,
+    )
 }
 
 /// Split requested ids into three-digit subsections (to be expanded to their
 /// rule-level rows) and exact ids. A leaf id (`704.5q`) also requests its
 /// enclosing rule (`704.5`), whose body folds the leaf text in.
-pub(super) fn partition_ids<S: AsRef<str>>(ids: impl IntoIterator<Item = S>) -> (Vec<String>, Vec<String>) {
+pub(super) fn partition_ids<S: AsRef<str>>(
+    ids: impl IntoIterator<Item = S>,
+) -> (Vec<String>, Vec<String>) {
     let mut subsections = Vec::new();
     let mut exact = Vec::new();
     for id in ids {
@@ -81,7 +101,11 @@ pub(super) fn partition_ids<S: AsRef<str>>(ids: impl IntoIterator<Item = S>) -> 
 
 /// Rule-level rows of `subsections` plus the rows with exactly these `ids`
 /// (rule or leaf), in natural id order.
-pub(super) async fn by_ids(pool: &PgPool, subsections: &[String], ids: &[String]) -> Result<Vec<RuleChunk>, JudgeError> {
+pub(super) async fn by_ids(
+    pool: &PgPool,
+    subsections: &[String],
+    ids: &[String],
+) -> Result<Vec<RuleChunk>, JudgeError> {
     if subsections.is_empty() && ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -109,7 +133,12 @@ pub(super) async fn by_ids(pool: &PgPool, subsections: &[String], ids: &[String]
 /// Lexemes are OR-ed so that a long question still matches; punctuation-only
 /// tokens, numeric-dotted tokens (rule ids) and the stray single letters they
 /// shed (`702.19b` → `702.19` + `b`) are dropped.
-pub(super) async fn bm25(pool: &PgPool, concepts: &str, question: &str, limit: i64) -> Result<Vec<RuleChunk>, JudgeError> {
+pub(super) async fn bm25(
+    pool: &PgPool,
+    concepts: &str,
+    question: &str,
+    limit: i64,
+) -> Result<Vec<RuleChunk>, JudgeError> {
     if concepts.trim().is_empty() && question.trim().is_empty() {
         return Ok(Vec::new());
     }
@@ -145,7 +174,11 @@ pub(super) async fn bm25(pool: &PgPool, concepts: &str, question: &str, limit: i
 /// Vector leg: the `limit` rule-level rows nearest to `embedding` by cosine distance.
 /// `parent_id IS NULL` matches the partial HNSW index (only rule-level rows are
 /// embedded), so the index scan is not post-filtered down below `limit`.
-pub(super) async fn nearest(pool: &PgPool, embedding: &Vector, limit: i64) -> Result<Vec<RuleChunk>, JudgeError> {
+pub(super) async fn nearest(
+    pool: &PgPool,
+    embedding: &Vector,
+    limit: i64,
+) -> Result<Vec<RuleChunk>, JudgeError> {
     let rows = sqlx::query_as!(
         RuleRow,
         r#"
@@ -170,9 +203,17 @@ mod unit {
 
     #[test]
     fn natural_order() {
-        let mut ids = vec!["613.10a", "613.2", "613", "613.10", "614.1", "613.1d", "704.5aa", "704.5z", "704.5b"];
+        let mut ids = vec![
+            "613.10a", "613.2", "613", "613.10", "614.1", "613.1d", "704.5aa", "704.5z", "704.5b",
+        ];
         ids.sort_by_key(|id| sort_key(id));
-        assert_eq!(ids, ["613", "613.1d", "613.2", "613.10", "613.10a", "614.1", "704.5b", "704.5z", "704.5aa"]);
+        assert_eq!(
+            ids,
+            [
+                "613", "613.1d", "613.2", "613.10", "613.10a", "614.1", "704.5b", "704.5z",
+                "704.5aa"
+            ]
+        );
     }
 
     #[test]
