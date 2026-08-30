@@ -1,0 +1,26 @@
+[package]
+name = "judge-anthropic"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Hand-written Anthropic Messages API client: wire types, schema transform, typestate tool round."
+
+[dependencies]
+judge-core.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# `time` only: retry backoff in `Client::messages`.
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

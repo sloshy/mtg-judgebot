@@ -1,0 +1,81 @@
+# Single source of truth for the question taxonomy.
+# `crates/core/build.rs` generates `judge_core::Category` from this file.
+# id: stable snake_case identifier (becomes the enum variant and the serde name)
+# label: human-readable name
+# subsections: CR sections/subsections that are always injected into Context
+categories:
+  - id: game_concepts
+    label: General game concepts (winning, losing, mana, numbers)
+    subsections: ["100", "101", "104", "106", "107"]
+  - id: card_types_and_characteristics
+    label: Card characteristics, names, types, supertypes, subtypes
+    subsections: ["201", "202", "204", "205", "208"]
+  - id: colors_and_color_identity
+    label: Colors, colorless, color indicator, color identity
+    subsections: ["105", "202", "903.4"]
+  - id: zones
+    label: Zones (library, hand, battlefield, graveyard, exile, command, stack)
+    subsections: ["400", "401", "403", "404", "405", "406", "408"]
+  - id: turn_structure
+    label: Turn structure, phases and steps
+    subsections: ["500", "501", "502", "503", "504", "505", "506", "507", "508", "509", "510", "511", "512", "513", "514"]
+  - id: combat
+    label: "Combat: attacking, blocking, damage assignment"
+    subsections: ["506", "507", "508", "509", "510", "511"]
+  - id: casting_spells
+    label: Casting spells, costs, additional and alternative costs
+    subsections: ["601", "118", "601.2"]
+  - id: activated_abilities
+    label: Activated abilities and their costs
+    subsections: ["602", "113.3"]
+  - id: triggered_abilities
+    label: Triggered abilities, trigger conditions, leaves-the-battlefield triggers
+    subsections: ["603", "113.3"]
+  - id: static_abilities
+    label: Static abilities and continuous effects
+    subsections: ["604", "611"]
+  - id: stack_and_priority
+    label: The stack, priority, resolving spells and abilities
+    subsections: ["117", "405", "608"]
+  - id: targeting
+    label: Targets, legality on resolution, fizzling
+    subsections: ["115", "608.2"]
+  - id: state_based_actions
+    label: State-based actions
+    subsections: ["704"]
+  - id: layers
+    label: Layers and interaction of continuous effects
+    subsections: ["613"]
+  - id: replacement_effects
+    label: Replacement and prevention effects
+    subsections: ["614", "615", "616"]
+  - id: copying
+    label: Copying objects, copiable values, tokens that are copies
+    subsections: ["707", "111"]
+  - id: counters
+    label: Counters, +1/+1 and -1/-1 interaction, keyword counters
+    subsections: ["122", "704.5q"]
+  - id: damage_and_life
+    label: Damage, life, lifelink and deathtouch
+    subsections: ["119", "120", "702.15", "702.2"]
+  - id: multi_faced_cards
+    label: Double-faced, modal DFC, split, flip, adventure and meld cards
+    subsections: ["709", "710", "711", "712", "715", "716"]
+  - id: keyword_abilities
+    label: Keyword abilities (flying, trample, hexproof, ward, ...)
+    subsections: ["702"]
+  - id: keyword_actions
+    label: Keyword actions (destroy, exile, sacrifice, mill, ...)
+    subsections: ["701"]
+  - id: mana_abilities
+    label: Mana abilities and mana production
+    subsections: ["605", "106"]
+  - id: commander
+    label: Commander format rules (command zone, commander damage, tax)
+    subsections: ["903"]
+  - id: multiplayer
+    label: Multiplayer rules and variants
+    subsections: ["800", "801", "802", "805", "806"]
+  - id: other
+    label: Other or unclear
+    subsections: []

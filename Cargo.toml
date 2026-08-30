@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/anthropic", "crates/ingest", "crates/bot"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+judge-core = { path = "crates/core" }
+judge-anthropic = { path = "crates/anthropic" }
+
+anyhow = "1"
+async-trait = "0.1"
+futures = "0.3"
+nonempty = { version = "0.12", features = ["serialize"] }
+nutype = { version = "0.7", features = ["serde", "regex"] }
+schemars = { version = "1.2", features = ["uuid1"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["serde", "v4"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+todo = "warn"
+dbg_macro = "warn"
+# JudgeError carries NonEmpty<Ambiguous>; boxing it buys nothing at this scale.
+result_large_err = "allow"

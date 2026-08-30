@@ -1,0 +1,19 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: judgebot-db
+    environment:
+      POSTGRES_USER: judgebot
+      POSTGRES_PASSWORD: judgebot
+      POSTGRES_DB: judgebot
+    ports:
+      - "5432:5432"
+    volumes:
+      - judgebot-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U judgebot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  judgebot-pgdata:
