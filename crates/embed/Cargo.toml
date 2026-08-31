@@ -8,6 +8,8 @@ publish.workspace = true
 description = "Embedder adapters (Voyage AI) shared by the bot and ingest binaries."
 
 [dependencies]
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
 judge-core.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true

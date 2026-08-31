@@ -6,6 +6,10 @@ use async_trait::async_trait;
 use judge_core::{Embedder, InputKind, JudgeError};
 use serde::{Deserialize, Serialize};
 
+/// Voyage's key-only free tier allows 3 requests/min; 429s are retried with a
+/// fixed pause instead of failing a long ingest run.
+const RATE_LIMIT_TRIES: u32 = 8;
+const RATE_LIMIT_PAUSE: std::time::Duration = std::time::Duration::from_secs(25);
 const URL: &str = "https://api.voyageai.com/v1/embeddings";
 const DEFAULT_MODEL: &str = "voyage-3.5";
 const DEFAULT_DIMENSIONS: usize = 1024;
@@ -80,20 +84,31 @@ impl Embedder for VoyageEmbedder {
             InputKind::Document => "document",
             InputKind::Query => "query",
         };
-        let resp = self
-            .http
-            .post(URL)
-            .bearer_auth(&self.api_key)
-            .json(&Req { input: texts, model: &self.model, input_type, output_dimension: self.dimensions })
-            .send()
-            .await
-            .map_err(anyhow::Error::from)?;
-        let status = resp.status();
-        let body = resp.bytes().await.map_err(anyhow::Error::from)?;
-        if !status.is_success() {
-            // Keep Voyage's JSON error body: the status alone says nothing useful.
-            return Err(anyhow::anyhow!("voyage {status}: {}", String::from_utf8_lossy(&body)).into());
-        }
+        let req = Req { input: texts, model: &self.model, input_type, output_dimension: self.dimensions };
+        let mut tries = 0;
+        let body = loop {
+            let resp = self
+                .http
+                .post(URL)
+                .bearer_auth(&self.api_key)
+                .json(&req)
+                .send()
+                .await
+                .map_err(anyhow::Error::from)?;
+            let status = resp.status();
+            let body = resp.bytes().await.map_err(anyhow::Error::from)?;
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS && tries < RATE_LIMIT_TRIES {
+                tries += 1;
+                tracing::warn!(tries, "voyage rate limited (429); pausing {}s", RATE_LIMIT_PAUSE.as_secs());
+                tokio::time::sleep(RATE_LIMIT_PAUSE).await;
+                continue;
+            }
+            if !status.is_success() {
+                // Keep Voyage's JSON error body: the status alone says nothing useful.
+                return Err(anyhow::anyhow!("voyage {status}: {}", String::from_utf8_lossy(&body)).into());
+            }
+            break body;
+        };
         let parsed: Resp = serde_json::from_slice(&body).map_err(anyhow::Error::from)?;
         if parsed.data.len() != texts.len() {
             return Err(anyhow::anyhow!("voyage returned {} embeddings for {} texts", parsed.data.len(), texts.len()).into());

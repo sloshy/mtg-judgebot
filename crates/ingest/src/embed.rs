@@ -15,6 +15,11 @@ use sqlx::{PgPool, Row as _};
 
 /// Voyage accepts at most 128 texts per request.
 const MAX_BATCH: usize = 128;
+/// Free-tier Voyage allows only 10K tokens/request-minute; `VOYAGE_MAX_BATCH`
+/// lets an ingest run shrink batches to fit (default: [`MAX_BATCH`]).
+fn max_batch() -> usize {
+    std::env::var("VOYAGE_MAX_BATCH").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(MAX_BATCH)
+}
 /// Soft cap on characters per request so a batch of long rule chunks stays under the
 /// provider's token budget (voyage-3.5: 320k tokens; ~4 chars/token, with margin).
 const MAX_BATCH_CHARS: usize = 400_000;
@@ -77,7 +82,7 @@ async fn embed_table(pool: &PgPool, embedder: &dyn Embedder, t: &Target) -> anyh
     let mut total = 0usize;
     loop {
         let rows = sqlx::query(t.select)
-            .bind(i64::try_from(MAX_BATCH)?)
+            .bind(i64::try_from(max_batch())?)
             .fetch_all(pool)
             .await
             .context("selecting unembedded rows")?;
