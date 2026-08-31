@@ -20,7 +20,10 @@ Live deployment: <https://mtgjudge.rpeters.dev>
 
 ## 1. Prerequisites
 
-- A host that stays on, with Docker and the compose plugin. The stack idles at
+- A host that stays on, with Docker and the compose plugin. Compose syntax here
+  is kept to what older bundled versions accept (Synology's Container Manager in
+  particular lags); `.env.deploy` must exist on any machine running the `tunnel`
+  profile, and only there. The stack idles at
   roughly 200 MB RSS (Postgres ~157 MB, api and bot a few MB each), so 2 GB of RAM is
   ample. Building the image locally wants ~4 GB and real CPU — on a small ARM box,
   build elsewhere and pull instead.

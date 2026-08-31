@@ -59,14 +59,13 @@ services:
     restart: unless-stopped
     profiles: ["tunnel"]
     command: tunnel --no-autoupdate run
-    # Deploy credentials live in their own file so they never enter the
-    # env of `bot`/`api`, which are internet-facing and read neither.
-    # `required: false` keeps `docker compose up -d` working on a machine
-    # that has no tunnel — compose validates every service, not just the
-    # ones in the active profile.
+    # Deploy credentials live in their own file so they never enter the env of
+    # `bot`/`api`, which are internet-facing and read neither. Short-form
+    # string on purpose: the `path:`/`required:` long form needs Compose 2.24+,
+    # and Synology's Container Manager ships older than that. Only machines
+    # running the tunnel profile need .env.deploy to exist.
     env_file:
-      - path: .env.deploy
-        required: false
+      - .env.deploy
     depends_on:
       - api
 
