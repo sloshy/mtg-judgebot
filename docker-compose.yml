@@ -2,6 +2,7 @@ services:
   db:
     image: pgvector/pgvector:pg16
     container_name: judgebot-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: judgebot
       POSTGRES_PASSWORD: judgebot
@@ -15,5 +16,18 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  bot:
+    build: .
+    container_name: judgebot-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
+      RUST_LOG: info,sqlx=warn,serenity=warn
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   judgebot-pgdata:
