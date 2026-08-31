@@ -121,3 +121,9 @@ docs/        architecture, language evaluation, proposals
 Not yet built: scheduled data refresh (Scryfall weekly / CR-release detection),
 multi-server tenancy, tournament-policy (MTR/IPG) coverage — the bot declines those
 questions rather than winging them.
+
+## License
+
+AGPL-3.0-or-later — see [LICENSE](LICENSE). Running a modified version of this bot
+(Discord or the HTTP API) as a network service requires making the modified source
+available to its users.
