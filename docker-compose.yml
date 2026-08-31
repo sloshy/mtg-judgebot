@@ -20,6 +20,9 @@ services:
 
   bot:
     build: .
+    # Naming the built image lets a low-powered host skip `--build` and run one
+    # loaded or pulled from elsewhere; `bot` and `api` are the same image.
+    image: mtg-judgebot:latest
     container_name: judgebot-bot
     restart: unless-stopped
     env_file: .env
@@ -32,6 +35,7 @@ services:
 
   api:
     build: .
+    image: mtg-judgebot:latest
     container_name: judgebot-api
     restart: unless-stopped
     entrypoint: ["judge-api"]

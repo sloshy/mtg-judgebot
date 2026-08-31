@@ -20,15 +20,18 @@ Live deployment: <https://mtgjudge.rpeters.dev>
 
 ## 1. Prerequisites
 
-- A host that stays on, with Docker and the compose plugin. Compose syntax here
-  is kept to what older bundled versions accept (Synology's Container Manager in
-  particular lags); `.env.deploy` must exist on any machine running the `tunnel`
-  profile, and only there. The stack idles at
-  roughly 200 MB RSS (Postgres ~157 MB, api and bot a few MB each), so 2 GB of RAM is
-  ample. Building the image locally wants ~4 GB and real CPU — on a small ARM box,
-  build elsewhere and pull instead.
-- A git checkout plus `sqlx-cli` (`cargo install sqlx-cli`) to run migrations. That
-  is the only step needing a Rust toolchain on the host; everything else is Docker.
+- A host that stays on, with Docker and the compose plugin. The stack *runs* in about
+  200 MB RSS (Postgres ~157 MB, api and bot a few MB each), so 2 GB of RAM is ample —
+  but **building** the image is a different workload: `cargo build --release` across
+  seven crates plus a Vite build wants ~4 GB and real CPU. On a NAS or other
+  low-power box, build elsewhere and ship the image (see §7).
+- Compose syntax here is held to what older bundled versions accept — Synology's
+  Container Manager ships v2.20, which predates the `env_file` long form. `.env.deploy`
+  must exist on any machine running the `tunnel` profile, and only there.
+- No Rust toolchain on the host. Restoring a dump (§2) brings the schema *and* the
+  `_sqlx_migrations` ledger with it, so `sqlx migrate run` is only needed for a fresh
+  empty database or after pulling new migrations — and it can be run from a
+  workstation over an SSH tunnel rather than installed on the server.
 - A domain whose DNS is hosted **on Cloudflare**. Tunnel hostnames resolve only for
   records in the same Cloudflare account, so third-party DNS cannot CNAME to
   `<uuid>.cfargotunnel.com`; the free plan requires moving the whole zone.
@@ -100,14 +103,24 @@ API_CLIENT_IP=cloudflare    # rate-limit on CF-Connecting-IP
 JUDGE_MAX_USD=...           # the backstop for anonymous traffic
 ```
 
-Then bring it up — migrations first, or `bot` and `api` crash-loop against an empty
-schema until they run:
+If `COMPOSE_PROFILES` in `.env` doesn't take effect on an older Compose, pass
+`--profile tunnel` explicitly instead.
+
+Then bring it up. A restored database (§2) already carries the schema and the
+migration ledger, so there is nothing to migrate:
 
 ```sh
-docker compose up -d db
-~/.cargo/bin/sqlx migrate run --source crates/bot/migrations
 docker compose up -d
 curl -s localhost:8787/api/health
+```
+
+Starting from an *empty* database instead, run migrations before `bot` and `api` or
+they crash-loop against a missing schema. From a workstation with `sqlx-cli`, over an
+SSH tunnel to the server's loopback-bound Postgres:
+
+```sh
+ssh -N -L 5433:127.0.0.1:5433 you@server &
+sqlx migrate run --source crates/bot/migrations   # DATABASE_URL=...@localhost:5433
 ```
 
 Use a full `docker compose up -d` at least once on an existing host: `db`'s published
@@ -161,9 +174,22 @@ crontab -e
 15 4 * * 0  /path/to/mtg-judgebot/scripts/backup-db.sh >> ~/judgebot-backup.log 2>&1
 ```
 
-Log to somewhere your own user can write — `crontab -e` edits *your* crontab, and a
-`>>` into root-owned `/var/log` fails before the script starts, leaving a backup that
-looks configured and never runs.
+Log to somewhere the running user can write — a `>>` into root-owned `/var/log` fails
+before the script starts, leaving a backup that looks configured and never runs.
+
+**On Synology DSM, do not use `crontab -e`** — DSM manages `/etc/crontab` in its own
+format and can overwrite hand-edited user crontabs. Use **Control Panel → Task
+Scheduler → Create → Scheduled Task → User-defined script**, set **User: root**
+(Container Manager's Docker socket is root-only), and give it absolute paths, since
+the scheduler runs with a minimal environment:
+
+```sh
+/volume1/homes/ryan/mtg-judgebot/scripts/backup-db.sh \
+  >> /volume1/homes/ryan/judgebot-backup.log 2>&1
+```
+
+If `docker` isn't found, prefix the task with `PATH=/usr/local/bin:$PATH`. Tick the
+task's email-on-error option so a failing backup is noisy rather than silent.
 
 `scripts/backup-db.sh` dumps, gzips, refuses to upload anything under
 `BACKUP_MIN_BYTES` (so a stub never becomes the newest restore point), uploads, and
@@ -191,10 +217,28 @@ The card count should match section 2. `*.dump.gz` is gitignored.
 
 ## 7. Redeploying
 
+On a host with CPU and RAM to spare, build in place:
+
 ```sh
 git pull
 docker compose up -d --build bot api    # one image, two entrypoints
 ```
+
+On a NAS or similar, don't — the Rust release build will crawl or exhaust memory.
+Build on a workstation and ship the image instead:
+
+```sh
+# workstation (check `uname -m` matches the server; add --platform if it doesn't)
+docker build -t mtg-judgebot:latest .
+docker save mtg-judgebot:latest | gzip | ssh you@server 'gunzip | docker load'
+
+# server
+docker compose up -d --no-build bot api
+```
+
+For that to use the loaded image, give `bot` and `api` an `image: mtg-judgebot:latest`
+alongside `build: .` so Compose has a name to resolve rather than rebuilding. A
+registry (GHCR is free for this) is the tidier long-term version of the same idea.
 
 `cloudflared` and `db` are untouched by a code deploy. The tunnel reconnects on its
 own if the connector restarts.
