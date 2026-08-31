@@ -4,7 +4,10 @@
 
 use std::fmt::Write as _;
 
-use judge_core::{Ambiguous, Citation, Confidence, JudgeError, Score, Validated, Verdict};
+use judge_core::{
+    Ambiguous, CardId, Citation, Confidence, Context, JudgeError, RuleId, Score, Validated,
+    Verdict,
+};
 use nonempty::NonEmpty;
 
 /// Discord's limit on message `content`, in characters.
@@ -19,6 +22,11 @@ pub const MAX_CHOICES: usize = 5;
 pub const TRUNCATION_MARKER: &str = " […]";
 /// Longest quote shown per citation line.
 pub const QUOTE_LIMIT: usize = 240;
+/// Longest question restated in the reply header.
+pub const QUESTION_LIMIT: usize = 300;
+/// HTML mirror of the Comprehensive Rules with one anchor per rule
+/// (verified 2026-08-30: ids look like `R70219b`, see [`rule_anchor`]).
+pub const CR_MIRROR_URL: &str = "https://yawgatog.com/resources/magic-rules/";
 
 /// Reply when every judge slot is taken.
 pub const BUSY: &str =
@@ -66,15 +74,56 @@ pub struct DidYouMean {
     pub choices: Vec<String>,
 }
 
-/// Render a validated verdict.
+/// Render a validated verdict. The content restates the question (see
+/// [`with_header`]); citation lines link into `ctx`'s cards where it has them.
 #[must_use]
-pub fn answer(v: &Verdict<Validated>) -> Answer {
-    let lines: Vec<String> = v.citations().iter().map(citation_line).collect();
+pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>, asker: u64, question: &str) -> Answer {
+    let lines: Vec<String> = v.citations().iter().map(|c| citation_line(c, ctx)).collect();
     Answer {
-        content: fit(v.answer(), CONTENT_LIMIT),
+        content: with_header(asker, question, v.answer()),
         citations: fit_lines(&lines, EMBED_DESCRIPTION_LIMIT),
         footer: footer(v),
     }
+}
+
+/// `<@asker> asked: <question>`, the question collapsed to one line and cut to
+/// [`QUESTION_LIMIT`] chars. The `<@…>` mention renders in Discord; whether it
+/// *pings* is decided by the message's allowed-mentions, not here.
+#[must_use]
+pub fn header(asker: u64, question: &str) -> String {
+    format!(
+        "<@{asker}> asked: {}",
+        fit(&collapse_whitespace(question), QUESTION_LIMIT)
+    )
+}
+
+/// [`header`], a blank line, then `body`, the whole fit to [`CONTENT_LIMIT`]
+/// (so an over-long body is cut, never the header).
+#[must_use]
+pub fn with_header(asker: u64, question: &str, body: &str) -> String {
+    fit(&format!("{}\n\n{body}", header(asker, question)), CONTENT_LIMIT)
+}
+
+/// Anchor of a rule on [`CR_MIRROR_URL`]: `R` plus the id with its dots
+/// removed. Observed on the live page 2026-08-30: `100.1` → `id=R1001`,
+/// `702.19b` → `id=R70219b`, `613.1a` → `id=R6131a`, `702` → `id=R702`,
+/// `704.5aa` → `id=R7045aa` (3318 such ids, one per rule).
+#[must_use]
+pub fn rule_anchor(id: &RuleId) -> String {
+    format!("R{}", id.as_ref().replace('.', ""))
+}
+
+/// Deep link to a rule: [`CR_MIRROR_URL`] plus `#` and [`rule_anchor`].
+#[must_use]
+pub fn rule_url(id: &RuleId) -> String {
+    format!("{CR_MIRROR_URL}#{}", rule_anchor(id))
+}
+
+/// Scryfall page for an oracle id. The `/card/<uuid>` form 404s; this search
+/// form 303-redirects to the card's search result (verified 2026-08-30).
+#[must_use]
+pub fn scryfall_url(card: CardId) -> String {
+    format!("https://scryfall.com/search?q=oracleid%3A{card}")
 }
 
 /// `Confidence: High · CR 2026-08-19`.
@@ -87,19 +136,36 @@ pub fn footer(v: &Verdict<Validated>) -> String {
     )
 }
 
-/// One compact citation line: `[702.19b] “quote”`.
+/// One compact citation line: `[702.19b](…rule url…) “quote”`. Rule and card
+/// references are markdown links (embed descriptions render those; plain
+/// message content does not, so these lines must stay in the embed). Card
+/// names come from `ctx` when it holds the card; the link works either way,
+/// since the URL only needs the oracle id the citation itself carries.
 #[must_use]
-pub fn citation_line(c: &Citation) -> String {
+pub fn citation_line(c: &Citation, ctx: Option<&Context>) -> String {
     let quote = fit(&collapse_whitespace(c.quote()), QUOTE_LIMIT);
+    let card_name = |id: CardId| ctx.and_then(|x| x.card(id)).map(|card| card.name.clone());
     match c {
-        Citation::Rule { id, .. } => format!("[{id}] “{quote}”"),
-        Citation::ScryfallRuling { idx, .. } => {
-            format!("[Scryfall ruling #{}] “{quote}”", idx.saturating_add(1))
+        Citation::Rule { id, .. } => format!("[{id}]({}) “{quote}”", rule_url(id)),
+        Citation::ScryfallRuling { card, idx, .. } => {
+            let n = idx.saturating_add(1);
+            let label = match card_name(*card) {
+                Some(name) => format!("Ruling #{n} — {name}"),
+                None => format!("Scryfall ruling #{n}"),
+            };
+            format!("[{label}]({}) “{quote}”", scryfall_url(*card))
         }
         Citation::PriorCall { .. } => format!("[prior call] “{quote}”"),
-        Citation::OracleText { face: 0, .. } => format!("[Oracle text] “{quote}”"),
-        Citation::OracleText { face, .. } => {
-            format!("[Oracle text, face {}] “{quote}”", face.saturating_add(1))
+        Citation::OracleText { card, face, .. } => {
+            let face_note = match face {
+                0 => String::new(),
+                n => format!(", face {}", n.saturating_add(1)),
+            };
+            let label = match card_name(*card) {
+                Some(name) => format!("Oracle text{face_note} — {name}"),
+                None => format!("Oracle text{face_note}"),
+            };
+            format!("[{label}]({}) “{quote}”", scryfall_url(*card))
         }
     }
 }
@@ -366,33 +432,89 @@ mod tests {
         assert_eq!(fit("abcdef", 0), "");
     }
 
+    const ASKER: u64 = 110_372_470_472_613_888;
+
+    #[test]
+    fn header_mentions_the_asker_and_truncates_the_question() {
+        let h = header(ASKER, "Does  trample\nwork here?");
+        assert_eq!(
+            h,
+            "<@110372470472613888> asked: Does trample work here?"
+        );
+        let long = "why ".repeat(200);
+        let h = header(ASKER, &long);
+        assert!(h.starts_with("<@110372470472613888> asked: why why"));
+        assert!(h.ends_with(TRUNCATION_MARKER), "{h}");
+        assert!(
+            h.chars().count() <= QUESTION_LIMIT + "<@110372470472613888> asked: ".len(),
+            "{h}"
+        );
+        assert_eq!(h.lines().count(), 1, "the header is a single line");
+    }
+
+    #[test]
+    fn with_header_prefixes_and_keeps_the_content_budget() {
+        let c = with_header(ASKER, "short?", "The answer.");
+        assert_eq!(c, "<@110372470472613888> asked: short?\n\nThe answer.");
+        // An over-long body is cut from the end; the header survives intact.
+        let c = with_header(ASKER, &"q ".repeat(400), &"body ".repeat(1000));
+        assert!(c.chars().count() <= CONTENT_LIMIT, "{}", c.len());
+        assert!(c.starts_with("<@110372470472613888> asked: q q"));
+        assert!(c.contains("\n\nbody"));
+        assert!(c.ends_with(TRUNCATION_MARKER));
+    }
+
     #[test]
     fn answer_respects_both_limits() -> Res {
         let v = validated(&"word ".repeat(1000), 60)?;
-        let a = answer(&v);
+        let a = answer(&v, None, ASKER, "does a long answer still fit?");
         assert!(
             a.content.chars().count() <= CONTENT_LIMIT,
             "{}",
             a.content.len()
         );
+        assert!(a.content.starts_with("<@110372470472613888> asked: does a long answer"));
         assert!(a.content.ends_with(TRUNCATION_MARKER));
         assert!(a.citations.chars().count() <= EMBED_DESCRIPTION_LIMIT);
         assert!(a.citations.contains("… and "), "{}", a.citations);
-        assert!(a.citations.starts_with("[702.19b] “The controller"));
+        assert!(a.citations.starts_with(
+            "[702.19b](https://yawgatog.com/resources/magic-rules/#R70219b) “The controller"
+        ));
         assert_eq!(a.footer, "Confidence: High · CR 2026-08-19");
         Ok(())
     }
 
     #[test]
-    fn short_answer_is_verbatim_with_one_citation_per_line() -> Res {
+    fn short_answer_follows_the_header_with_one_citation_per_line() -> Res {
         let v = validated(LONG_ENOUGH, 2)?;
-        let a = answer(&v);
-        assert_eq!(a.content, LONG_ENOUGH);
+        let a = answer(&v, None, ASKER, "trample?");
+        assert_eq!(
+            a.content,
+            format!("<@110372470472613888> asked: trample?\n\n{LONG_ENOUGH}")
+        );
         assert_eq!(a.citations.lines().count(), 2);
-        assert!(
-            a.citations
-                .lines()
-                .all(|l| l.starts_with("[702.19b] “") && l.ends_with('”'))
+        assert!(a.citations.lines().all(|l| {
+            l.starts_with("[702.19b](https://yawgatog.com/resources/magic-rules/#R70219b) “")
+                && l.ends_with('”')
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn rule_anchor_matches_the_mirror_ids() -> Res {
+        // Formats observed in the live page's HTML on 2026-08-30.
+        for (id, anchor) in [
+            ("100.1", "R1001"),
+            ("702.19b", "R70219b"),
+            ("613.1a", "R6131a"),
+            ("702", "R702"),
+            ("704.5aa", "R7045aa"),
+        ] {
+            assert_eq!(rule_anchor(&RuleId::try_new(id.to_owned())?), anchor);
+        }
+        assert_eq!(
+            rule_url(&RuleId::try_new("100.1".to_owned())?),
+            "https://yawgatog.com/resources/magic-rules/#R1001"
         );
         Ok(())
     }
@@ -400,20 +522,31 @@ mod tests {
     #[test]
     fn citation_lines_for_every_kind() {
         let id = CardId::new(Uuid::from_u128(1));
+        let url = "https://scryfall.com/search?q=oracleid%3A00000000-0000-0000-0000-000000000001";
+        assert_eq!(scryfall_url(id), url);
+        let ctx = Context {
+            cards: vec![card(1, "Dark Confidant")],
+            ..Context::default()
+        };
         let r = Citation::ScryfallRuling {
             card: id,
             idx: 0,
             quote: "a  ruling\nwith   space".into(),
         };
         assert_eq!(
-            citation_line(&r),
-            "[Scryfall ruling #1] “a ruling with space”"
+            citation_line(&r, Some(&ctx)),
+            format!("[Ruling #1 — Dark Confidant]({url}) “a ruling with space”")
+        );
+        // Without a context the link still works; only the name is missing.
+        assert_eq!(
+            citation_line(&r, None),
+            format!("[Scryfall ruling #1]({url}) “a ruling with space”")
         );
         let p = Citation::PriorCall {
             id: judge_core::CallId::new(Uuid::from_u128(2)),
             quote: "x".repeat(300),
         };
-        let line = citation_line(&p);
+        let line = citation_line(&p, Some(&ctx));
         assert!(line.starts_with("[prior call] “"));
         assert!(line.chars().count() <= QUOTE_LIMIT + 20);
         assert!(line.contains(TRUNCATION_MARKER));
@@ -422,13 +555,47 @@ mod tests {
             face: 0,
             quote: "Flying".into(),
         };
-        assert_eq!(citation_line(&o), "[Oracle text] “Flying”");
+        assert_eq!(
+            citation_line(&o, Some(&ctx)),
+            format!("[Oracle text — Dark Confidant]({url}) “Flying”")
+        );
+        assert_eq!(citation_line(&o, None), format!("[Oracle text]({url}) “Flying”"));
         let back = Citation::OracleText {
             card: id,
             face: 1,
             quote: "Insectile".into(),
         };
-        assert_eq!(citation_line(&back), "[Oracle text, face 2] “Insectile”");
+        assert_eq!(
+            citation_line(&back, Some(&ctx)),
+            format!("[Oracle text, face 2 — Dark Confidant]({url}) “Insectile”")
+        );
+    }
+
+    #[test]
+    fn linked_citations_still_fit_the_embed_budget() {
+        // Worst case: every line carries a long name, a full URL and a full
+        // quote; fit_lines must count the whole markdown, not just the label.
+        let id = CardId::new(Uuid::from_u128(7));
+        let ctx = Context {
+            cards: vec![card(7, &"Asmoranomardicadaistinaculdacar ".repeat(3))],
+            ..Context::default()
+        };
+        let lines: Vec<String> = (0..40)
+            .map(|i| {
+                citation_line(
+                    &Citation::ScryfallRuling {
+                        card: id,
+                        idx: i,
+                        quote: "q".repeat(300),
+                    },
+                    Some(&ctx),
+                )
+            })
+            .collect();
+        assert!(lines.iter().all(|l| l.chars().count() > 300));
+        let out = fit_lines(&lines, EMBED_DESCRIPTION_LIMIT);
+        assert!(out.chars().count() <= EMBED_DESCRIPTION_LIMIT, "{}", out.len());
+        assert!(out.contains("… and "), "some lines must have been dropped");
     }
 
     #[test]

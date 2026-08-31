@@ -40,10 +40,10 @@ use judge_core::{
 };
 use poise::serenity_prelude as serenity;
 use serenity::{
-    ButtonStyle, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed,
-    CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseFollowup,
-    CreateInteractionResponseMessage, EditInteractionResponse, FullEvent, GatewayIntents,
-    GuildId, Interaction, Member, UserId,
+    ButtonStyle, ComponentInteraction, CreateActionRow, CreateAllowedMentions, CreateButton,
+    CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
+    CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
+    EditInteractionResponse, FullEvent, GatewayIntents, GuildId, Interaction, Member, UserId,
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -225,9 +225,9 @@ impl Data {
         );
         match result {
             Ok(v) => {
-                let call = if let Some(ctx) = captured {
+                let call = if let Some(ctx) = captured.as_ref() {
                     self.store
-                        .persist(q, &v, &ctx)
+                        .persist(q, &v, ctx)
                         .await
                         .map_err(|e| {
                             tracing::error!(
@@ -240,7 +240,7 @@ impl Data {
                     tracing::warn!("no captured context for the question; call not persisted");
                     None
                 };
-                Outgoing::answer(&v, call)
+                Outgoing::answer(&v, captured.as_ref(), call, asker, &q.text)
             }
             Err(JudgeError::AmbiguousCards(spans)) => {
                 let dym = render::did_you_mean(&spans);
@@ -251,7 +251,7 @@ impl Data {
                     spans: spans.map(PendingSpan::from),
                 });
                 Outgoing {
-                    content: dym.content,
+                    content: render::with_header(asker.get(), &q.text, &dym.content),
                     embed: None,
                     components: vec![pick_row(token, &dym.choices)],
                 }
@@ -259,7 +259,7 @@ impl Data {
             Err(e) => {
                 tracing::warn!(error = format_args!("{e:#}"), "judge failed");
                 Outgoing {
-                    content: render::error(&e),
+                    content: render::with_header(asker.get(), &q.text, &render::error(&e)),
                     embed: None,
                     components: vec![],
                 }
@@ -376,9 +376,22 @@ struct Outgoing {
     components: Vec<CreateActionRow>,
 }
 
+/// Allowed-mentions with an empty parse list and no explicit users/roles:
+/// the `<@asker>` in the restated question renders as a mention but pings
+/// nobody.
+fn no_pings() -> CreateAllowedMentions {
+    CreateAllowedMentions::new()
+}
+
 impl Outgoing {
-    fn answer(v: &Verdict<Validated>, call: Option<CallId>) -> Self {
-        let a = render::answer(v);
+    fn answer(
+        v: &Verdict<Validated>,
+        ctx: Option<&judge_core::Context>,
+        call: Option<CallId>,
+        asker: UserId,
+        question: &str,
+    ) -> Self {
+        let a = render::answer(v, ctx, asker.get(), question);
         let mut embed = CreateEmbed::new().footer(CreateEmbedFooter::new(a.footer));
         if !a.citations.is_empty() {
             embed = embed.description(a.citations);
@@ -393,7 +406,8 @@ impl Outgoing {
     fn into_reply(self) -> poise::CreateReply {
         let mut r = poise::CreateReply::default()
             .content(self.content)
-            .components(self.components);
+            .components(self.components)
+            .allowed_mentions(no_pings());
         if let Some(e) = self.embed {
             r = r.embed(e);
         }
@@ -405,6 +419,7 @@ impl Outgoing {
             .content(self.content)
             .components(self.components)
             .embeds(self.embed.into_iter().collect())
+            .allowed_mentions(no_pings())
     }
 }
 
