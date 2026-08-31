@@ -102,10 +102,10 @@ fn system_prompt() -> String {
          name. \"mirage LED\" -> \"LED\"; \"Urza's Saga Waylay\" -> \"Waylay\"; \"my foil Bolt\" -> \"Bolt\"; \
          \"alpha Lotus\" -> \"Lotus\"; \"the promo one\", \"the borderless version\", \"the old frame\" add \
          nothing (this is the one case where a span is a trimmed substring rather than a full copy).\n\
-         - Do not emit a collective nickname (\"the tron lands\", \"the fetches\", \"my wraths\", \"the \
-         Titans\", \"the swords\") when the specific cards it stands for are named elsewhere in the \
-         message: emit only the specific names. Emit the collective only when nothing else in the \
-         message names its members, and then also add the members' full Oracle names as above.\n\
+         - Never emit a collective nickname (\"the tron lands\", \"the fetches\", \"my wraths\", \"the \
+         Titans\", \"the swords\") as a span. When the message uses one and you know which cards it \
+         stands for, emit the members' full Oracle names instead; when you do not know the members, \
+         leave it to the concepts list. A collective is never itself a card name.\n\
          - Do not emit generic basic land words (\"is it just a Mountain now\", \"tap a Forest\", \"my \
          Islands\") unless the question is about that basic land itself (\"does Plains have a mana \
          ability?\").\n\n\
@@ -319,7 +319,7 @@ mod tests {
         assert!(sys.contains("3. primary:") && sys.contains("4. secondary:") && sys.contains("5. source:"), "{sys}");
         // Nickname-artefact rules: printing qualifiers, collectives beside their members, generic basics.
         assert!(sys.contains("\"mirage LED\" -> \"LED\"") && sys.contains("\"Urza's Saga Waylay\" -> \"Waylay\""), "{sys}");
-        assert!(sys.contains("Do not emit a collective nickname") && sys.contains("\"the tron lands\""), "{sys}");
+        assert!(sys.contains("Never emit a collective nickname") && sys.contains("\"the tron lands\""), "{sys}");
         assert!(sys.contains("Do not emit generic basic land words"), "{sys}");
         let user = at(&v, "/messages/0/content/0/text")
             .as_str()
