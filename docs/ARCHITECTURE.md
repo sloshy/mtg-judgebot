@@ -87,6 +87,19 @@ Discord message (+ last N Q&A in the same thread)
 [6] Persist call (question, verdict, context ids, crVersion); rating buttons.
 ```
 
+Two front doors share this pipeline through the same composition root
+(`judge_bot::build_deps`):
+
+- **Discord adapter** (`crates/bot`): `/judge` slash command, rating buttons,
+  stateful "did you mean…?" buttons (pending store), thread history.
+- **HTTP adapter** (`crates/api` + `web/`): anonymous `POST /api/judge` behind
+  a per-IP fixed-window rate limit, serving a SolidJS single page. No rating
+  endpoints (anonymous callers are not accountable identities). Ambiguity is
+  returned as data and resolved statelessly: the client re-asks with
+  `pins: [{span, name}]`, which the server rewrites to `[[Full Name]]` with the
+  same `pin_card` used by the Discord buttons. Follow-up history comes from a
+  client-generated session UUID, stored as thread id `web:<uuid>`.
+
 ## 4. Data
 
 | Source | Refresh | Storage |
@@ -148,5 +161,6 @@ judge : Question -> IO[Either[JudgeError, Verdict]]
 
 ## 7. Non-goals for the prototype
 
-Tournament policy (MTR/IPG), multi-server tenancy, web UI, retraining of any
-kind, automatic nightmare-card detection.
+Tournament policy (MTR/IPG), multi-server tenancy, accounts/ratings on the web
+UI (the anonymous page never rates), retraining of any kind, automatic
+nightmare-card detection.

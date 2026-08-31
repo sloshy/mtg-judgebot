@@ -2,3 +2,5 @@ target
 .cache
 .git
 eval/runs
+web/node_modules
+web/dist

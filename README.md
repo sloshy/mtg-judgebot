@@ -1,11 +1,12 @@
 # mtg-judgebot
 
-A Discord bot that answers Magic: The Gathering rules questions like a judge: ask in
-plain language (nicknames welcome — "bob", "goyf", "snappy"), get a concise ruling in
-which **every claim is backed by a validated, clickable citation** — a Comprehensive
-Rules section, an official Scryfall ruling, the card's current Oracle text, or a prior
-rated call. Answers can be rated 1–3 (incorrect / partially correct / correct) with
-buttons; ratings feed back into how future answers are grounded.
+A Discord bot (and anonymous web page) that answers Magic: The Gathering rules
+questions like a judge: ask in plain language (nicknames welcome — "bob", "goyf",
+"snappy"), get a concise ruling in which **every claim is backed by a validated,
+clickable citation** — a Comprehensive Rules section, an official Scryfall ruling, the
+card's current Oracle text, or a prior rated call. On Discord, answers can be rated 1–3
+(incorrect / partially correct / correct) with buttons; ratings feed back into how
+future answers are grounded.
 
 ```
 /judge question: does bob's trigger count goyf's mana value as 0?
@@ -44,7 +45,7 @@ Voyage AI key for the semantic-search leg.
 
 ```sh
 cp .env.example .env          # fill in keys, DISCORD_TOKEN, GUILD_ID
-docker compose up -d          # pgvector Postgres (localhost:5433) + the bot
+docker compose up -d          # pgvector Postgres (localhost:5433) + bot + web API
 ~/.cargo/bin/sqlx migrate run --source crates/bot/migrations
 
 # one-time data load (~110 MB from Scryfall, cached in .cache/)
@@ -54,12 +55,27 @@ cargo run --release -p judge-ingest -- aliases data/aliases.yaml
 cargo run --release -p judge-ingest -- notes data/notes.yaml
 cargo run --release -p judge-ingest -- embed        # needs VOYAGE_API_KEY
 
-docker compose up -d --build bot                    # redeploy after code changes
+docker compose up -d --build bot api                # redeploy after code changes
 ```
 
 Invite the bot with the `bot` + `applications.commands` scopes; `/judge` registers
 instantly in the guild named by `GUILD_ID`. Every LLM call is metered and hard-capped
 (`JUDGE_MAX_USD`); a typical answer costs $0.08–0.25.
+
+### The web page
+
+`docker compose up -d` also serves an anonymous web front end on
+<http://localhost:8787> (SolidJS, built into the image): the same pipeline, citations
+and "did you mean…?" flow in the browser, no login. Because nobody is logged in there
+are **no rating buttons** on the web, and anonymous traffic is rate limited per IP
+(`API_RATE_LIMIT` questions per `API_RATE_WINDOW_SECS`, default 4 per 5 minutes) on
+top of the global spend cap. For local development:
+
+```sh
+cargo run --release -p judge-api     # API + static page on localhost:8787
+npm --prefix web install
+npm --prefix web run dev             # Vite dev server with /api proxied to :8787
+```
 
 ## Evaluation
 
@@ -95,6 +111,8 @@ crates/
   bot        Postgres adapters (resolver / retriever / call store), prompts, Discord (serenity/poise)
   ingest     Scryfall + Comprehensive Rules loaders, embedder  (bin)
   eval       gold-set harness: recall / answer / rescore / show (bin)
+  api        anonymous HTTP adapter (axum) serving the web page (bin)
+web/         SolidJS + TypeScript single page (Vite)
 data/        categories.yaml (generates the Category enum), aliases.yaml, notes.yaml
 eval/        gold.yaml + stored runs
 docs/        architecture, language evaluation, proposals

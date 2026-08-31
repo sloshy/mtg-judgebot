@@ -26,8 +26,8 @@ Everything needs env from `.env` (`set -a; source .env; set +a`). Postgres runs 
 Docker on **localhost:5433** (a native Postgres owns 5432 — never touch it).
 
 ```sh
-docker compose up -d                 # db (pgvector/pg16) + bot; both restart with Docker
-docker compose up -d --build bot     # redeploy the bot after code changes
+docker compose up -d                 # db (pgvector/pg16) + bot + api; all restart with Docker
+docker compose up -d --build bot api # redeploy bot/api after code changes (one image, two entrypoints)
 cargo build --workspace
 cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwrap/expect/indexing/panic
 cargo test --workspace               # includes #[sqlx::test] suites that spin temp DBs off DATABASE_URL
@@ -41,6 +41,10 @@ cargo run --release -p judge-ingest -- rules <url|path> # CR parse; current CR u
 cargo run --release -p judge-ingest -- aliases data/aliases.yaml
 cargo run --release -p judge-ingest -- notes data/notes.yaml
 cargo run --release -p judge-ingest -- embed            # only rows with NULL embedding; Voyage
+
+cargo run --release -p judge-api                        # HTTP API + web page on API_ADDR (default :8787)
+npm --prefix web run build           # build the SolidJS page into web/dist (served by judge-api)
+npm --prefix web run dev             # Vite dev server, proxies /api to a local judge-api
 
 cargo run -p judge-eval -- recall                       # retrieval gate, no API keys, exit≠0 below 90%
 cargo run -p judge-eval -- answer --label L --limit 21 --max-usd 6.00   # full live gold run (~$2.50)
@@ -65,8 +69,12 @@ Crate graph: `core` (domain ADTs, ports, `judge()`, citation validation — pure
 schema subset via a transform that must keep `additionalProperties:false` and rewrite
 `oneOf→anyOf`) ← `embed` (Voyage) ← `bot` (sqlx adapters, prompts in
 `crates/bot/src/prompts/`, serenity/poise Discord layer with pure `render.rs`) and
-`ingest` / `eval` (bins). `judge_bot::build_deps` is the single composition root shared
-by the bot and eval.
+`ingest` / `eval` / `api` (bins). `judge_bot::build_deps` is the single composition root
+shared by the bot, eval and the HTTP API. `api` (+ the SolidJS page in `web/`) is the
+anonymous front door: no ratings, stateless "did you mean?" via `pins` → `pin_card`
+rewriting, session history via a client UUID (`web:<uuid>` thread ids), per-IP
+fixed-window rate limiting (`API_RATE_LIMIT`/`API_RATE_WINDOW_SECS`) ahead of the
+concurrency semaphore and the spend cap.
 
 Key cross-file facts that aren't obvious from any one file:
 
@@ -103,7 +111,10 @@ Key cross-file facts that aren't obvious from any one file:
 `.env` (gitignored; template in `.env.example`): `DATABASE_URL` (port 5433),
 `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY` (blank = vector leg off, bot still works),
 `DISCORD_TOKEN`, `GUILD_ID` (instant command registration), `JUDGE_ROLE` (default
-"Judge"), `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`. The bot container overrides
-`DATABASE_URL` to `db:5432` inside the compose network.
+"Judge"), `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`; for the HTTP API also `API_ADDR`
+(default `0.0.0.0:8787`), `WEB_DIST`, `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`,
+`API_TRUST_FORWARDED` (only behind a proxy that overwrites `X-Forwarded-For`). The
+bot/api containers override `DATABASE_URL` to `db:5432` inside the compose network;
+the image builds the web page and sets `WEB_DIST=/srv/web`.
 
 There is no scheduled data refresh yet; Scryfall/CR ingest is manual (see Commands).

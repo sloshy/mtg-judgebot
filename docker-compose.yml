@@ -29,5 +29,21 @@ services:
       db:
         condition: service_healthy
 
+  api:
+    build: .
+    container_name: judgebot-api
+    restart: unless-stopped
+    entrypoint: ["judge-api"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
+      WEB_DIST: /srv/web
+      RUST_LOG: info,sqlx=warn
+    ports:
+      - "8787:8787"
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   judgebot-pgdata:
