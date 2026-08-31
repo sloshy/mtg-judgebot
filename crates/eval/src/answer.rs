@@ -283,7 +283,7 @@ fn score_row(
             (Outcome::Error { variant: variant.into(), message: format!("{e:#}") }, Vec::new(), CiteCounts::default(), source_ok, shape)
         }
     };
-    let recall = if q.is_answerable() { score::recall(&cited, &expected_rule_ids) } else { Recall { hit: vec![], missed: vec![] } };
+    let recall = if q.is_answerable() { score::recall_with(&cited, &expected_rule_ids, &q.equivalents()) } else { Recall { hit: vec![], missed: vec![] } };
     let any_expected_cited = recall.any_hit();
     Row {
         id: q.id.clone(),
@@ -369,6 +369,27 @@ pub fn table(run: &Run) -> String {
 ///
 /// # Errors
 /// If the file cannot be read or parsed.
+/// Re-score a stored run against the CURRENT gold file (equivalence lists and
+/// edited expectations apply retroactively; nothing is re-asked of the model).
+/// Recomputes each row's recall from its stored `cited_rule_ids` and rewrites
+/// the derived columns; the run file itself is not modified.
+pub fn rescore(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Result<String> {
+    let raw = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut run: Run = serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    let gold = crate::gold::load(gold_path)?;
+    for row in &mut run.rows {
+        let Some(q) = gold.questions.iter().find(|q| q.id == row.id) else {
+            tracing::warn!(id = %row.id, "row not in gold file; keeping stored recall");
+            continue;
+        };
+        if q.is_answerable() {
+            row.recall = score::recall_with(&row.cited_rule_ids, &q.expected_rule_ids.iter().map(crate::gold::YamlScalar::as_text).collect::<Vec<_>>(), &q.equivalents());
+            row.any_expected_cited = row.recall.any_hit();
+        }
+    }
+    Ok(table(&run))
+}
+
 pub fn show(path: &std::path::Path) -> anyhow::Result<String> {
     use std::fmt::Write as _;
     let raw = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -443,6 +464,7 @@ mod tests {
             source: "Tournament".into(),
             expected_rule_ids: vec![],
             expected_answer: String::new(),
+            equivalent_rule_ids: std::collections::BTreeMap::default(),
         };
         let r = score_row(&q, &Err(JudgeError::OutOfScope(judge_core::Source::Tournament)), 1, 1, 0.01);
         assert!(r.correct_shape && r.source_ok);
@@ -467,6 +489,7 @@ mod tests {
             source: "CR".into(),
             expected_rule_ids: vec![crate::gold::YamlScalar::Text("702.15".into()), crate::gold::YamlScalar::Text("1.1".into())],
             expected_answer: String::new(),
+            equivalent_rule_ids: std::collections::BTreeMap::default(),
         };
         let ctx = Context {
             rules: vec![RuleChunk {

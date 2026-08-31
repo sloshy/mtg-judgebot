@@ -6,7 +6,7 @@
 //! categories (no embedder) and reports which `expected_rule_ids` are in
 //! Context. Exits non-zero if aggregate recall is below the 90% gate.
 //!
-//! `eval answer --label L [--limit N] [--ids a,b] [--max-usd X] [--out p] [--gold p]`:
+//! `eval rescore <run.json> | answer --label L [--limit N] [--ids a,b] [--max-usd X] [--out p] [--gold p]`:
 //! runs the full `judge()` pipeline (live Anthropic calls, capped at
 //! `--max-usd`, default $2.00) over at most `--limit` (default 2) gold
 //! questions and writes `eval/runs/L.json`.
@@ -49,7 +49,7 @@ async fn main() -> ExitCode {
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage:\n  eval recall [gold.yaml]\n  eval answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction]\n  eval show <run.json>"
+        "usage:\n  eval recall [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction]\n  eval show <run.json>"
     )
 }
 
@@ -75,6 +75,11 @@ async fn run() -> anyhow::Result<bool> {
         "show" => {
             let path = args.next().ok_or_else(usage)?;
             print!("{}", answer::show(std::path::Path::new(&path))?);
+            Ok(true)
+        }
+        "rescore" => {
+            let path = args.next().ok_or_else(usage)?;
+            print!("{}", answer::rescore(std::path::Path::new(&path), &gold::default_path())?);
             Ok(true)
         }
         _ => Err(usage()),

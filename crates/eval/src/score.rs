@@ -83,12 +83,22 @@ impl Recall {
     }
 }
 
-/// Score `cited` (rule ids, any granularity) against `expected`.
+/// Alternate ids per expected id (see `GoldQuestion::equivalent_rule_ids`).
+pub type Equivalents = std::collections::BTreeMap<String, Vec<String>>;
+
+/// Like [`recall`], but an expected id is also hit when a citation covers one
+/// of its listed equivalent ids — the same fact stated elsewhere in the CR.
 #[must_use]
-pub fn recall(cited: &[String], expected: &[String]) -> Recall {
+pub fn recall_with(cited: &[String], expected: &[String], equivalents: &Equivalents) -> Recall {
+    let satisfies = |c: &String, e: &String| {
+        covers(c, e)
+            || equivalents
+                .get(e.as_str())
+                .is_some_and(|alts| alts.iter().any(|a| covers(c, a)))
+    };
     let (mut hit, mut missed) = (Vec::new(), Vec::new());
     for e in expected {
-        if cited.iter().any(|c| covers(c, e)) {
+        if cited.iter().any(|c| satisfies(c, e)) {
             hit.push(e.clone());
         } else {
             missed.push(e.clone());
@@ -118,6 +128,25 @@ pub fn source_matches(label: &str, actual: judge_core::Source) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Equivalence-free shorthand used by the pre-existing tests.
+    fn recall(cited: &[String], expected: &[String]) -> Recall {
+        recall_with(cited, expected, &Equivalents::new())
+    }
+
+    #[test]
+    fn equivalents_satisfy_an_expected_id() {
+        let eq = Equivalents::from([("707.2".to_owned(), vec!["613.1a".to_owned(), "613.2c".to_owned()])]);
+        // Direct equivalent, leaf-of-equivalent, and an untouched miss.
+        let r = recall_with(&v(&["613.1a"]), &v(&["707.2", "108.1"]), &eq);
+        assert_eq!(r.hit, v(&["707.2"]));
+        assert_eq!(r.missed, v(&["108.1"]));
+        let r = recall_with(&v(&["613.2c"]), &v(&["707.2"]), &eq);
+        assert!(r.missed.is_empty());
+        // Equivalents never leak onto other expected ids.
+        let r = recall_with(&v(&["613.1a"]), &v(&["616.1"]), &eq);
+        assert_eq!(r.missed, v(&["616.1"]));
+    }
+
     use super::*;
     use judge_core::{RuleId, Source};
 

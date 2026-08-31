@@ -39,9 +39,23 @@ pub struct GoldQuestion {
     /// The reference answer, for side-by-side human review.
     #[serde(default)]
     pub expected_answer: String,
+    /// Alternate rule ids that also satisfy an expected id: the same fact
+    /// stated elsewhere in the CR (e.g. `"707.2": ["613.1a"]`). Keys must be
+    /// quoted and must appear in `expected_rule_ids`.
+    #[serde(default)]
+    pub equivalent_rule_ids: std::collections::BTreeMap<String, Vec<YamlScalar>>,
 }
 
 impl GoldQuestion {
+    /// `equivalent_rule_ids` as plain text, for scoring.
+    #[must_use]
+    pub fn equivalents(&self) -> std::collections::BTreeMap<String, Vec<String>> {
+        self.equivalent_rule_ids
+            .iter()
+            .map(|(k, v)| (k.trim().to_owned(), v.iter().map(YamlScalar::as_text).collect()))
+            .collect()
+    }
+
     /// The gold `source` label as a `Source` (anything unknown is out of scope).
     #[must_use]
     pub fn source(&self) -> Source {
@@ -118,6 +132,22 @@ fn validate(gold: &Gold) -> anyhow::Result<()> {
                 anyhow::bail!("question {}: expected_rule_id {n} is unquoted; write it as '{n}' (a float drops trailing zeros)", q.id);
             }
             RuleId::try_new(id.as_text()).with_context(|| format!("question {}: bad expected_rule_id {:?}", q.id, id.as_text()))?;
+        }
+        let expected: Vec<String> = q.expected_rule_ids.iter().map(YamlScalar::as_text).collect();
+        for (k, alts) in &q.equivalent_rule_ids {
+            let key = k.trim();
+            RuleId::try_new(key.to_owned()).with_context(|| format!("question {}: bad equivalent_rule_ids key {key:?}", q.id))?;
+            anyhow::ensure!(
+                expected.iter().any(|e| e == key),
+                "question {}: equivalent_rule_ids key {key:?} is not in expected_rule_ids",
+                q.id
+            );
+            for a in alts {
+                if let YamlScalar::Number(n) = a {
+                    anyhow::bail!("question {}: equivalent id {n} is unquoted; write it as '{n}'", q.id);
+                }
+                RuleId::try_new(a.as_text()).with_context(|| format!("question {}: bad equivalent id {:?} under {key:?}", q.id, a.as_text()))?;
+            }
         }
     }
     Ok(())

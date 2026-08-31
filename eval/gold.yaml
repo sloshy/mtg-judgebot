@@ -99,6 +99,9 @@ questions:
   - 613.2a
   - 613.4a
   - 613.4c
+  equivalent_rule_ids:
+    '707.2':
+    - 613.2c
   expected_answer: |-
     Just a regular Tarmogoyf. A copy acquires only the copiable values of the original (707.2): name, mana cost, types, rules text, printed P/T, etc. Counters, Giant Growth's +3/+3, and other non-copy effects are not copiable values, so the Clone gets none of them. The Clone does copy Tarmogoyf's rules text, and therefore its characteristic-defining ability (707.2a), so the Clone's own P/T is */*+1 computed from card types in graveyards (applied in layer 7a, 613.4a). The copy effect itself is applied in layer 1a (613.2a); your goyf's counters and pump are layer 7c (613.4c) and stay on your goyf only.
   rationale: |-
@@ -196,10 +199,22 @@ questions:
   - 712.21e
   - 701.42a
   - 712.4a
+  - '700.4'
+  equivalent_rule_ids:
+    '712.4a':
+    - 701.42a
   expected_answer: |-
-    Brisela is a single melded permanent represented by two cards (701.42a, 712.4a). When it leaves the battlefield, one permanent leaves and two cards go to the new zone (712.21). So a 'whenever a creature leaves the battlefield / dies' trigger like Blood Artist triggers once, while a 'whenever a card is put into exile/graveyard' trigger would fire twice (712.21e: counts as one object but two cards). Path to Exile's 'its controller may search for a basic land' is based on the one creature that was exiled, so you get one Plains, not two.
+    Blood Artist does not trigger at all here: Path to Exile exiles Brisela, and Blood Artist
+    triggers on a creature dying, which means being put into a graveyard from the battlefield
+    (700.4). Exile is not dying. If Brisela instead died (say, to a Wrath of God), Blood Artist
+    would trigger exactly once: one permanent left the battlefield, even though the melded
+    permanent is a single object represented by two cards (712.21, 701.42a). A trigger reading
+    "whenever a card is put into a graveyard" would see two cards (712.21e). Either way, Path's
+    controller gets the search-for-a-Plains effect once, and Bruna and Gisela both go to exile.
   rationale: |-
     Tests the one-object/two-cards rule for melded permanents leaving the battlefield, and distinguishes object-counting triggers from card-counting triggers.
+  verifier_note: expected_answer corrected 2026-08-31 after adversarial review; the earlier
+    version wrongly said Blood Artist triggers once when Brisela is exiled by Path to Exile.
 - id: faces-004
   question: |-
     old school question. my Waylay (Urza's Saga printing) says 'at end of turn, remove them from the game'. so I cast it during my opponent's end step, the knights survive since the end step already started, and I get to swing with them on my turn right? classic waylay trick
@@ -237,6 +252,9 @@ questions:
   - '605.1'
   - 602.5e
   - 605.3a
+  equivalent_rule_ids:
+    '605.3a':
+    - 601.2g
   expected_answer: |-
     No. Ignore the printed 'interrupt' text and use the current Oracle wording (108.1): 'Discard your hand, Sacrifice this artifact: Add three mana of any one color. Activate only as an instant.' It is still a mana ability — the timing restriction doesn't change that (605.1) — but 'Activate only as an instant' means you may only activate it when you have priority (602.5e), so you can't activate it while paying for a spell the way 605.3a normally allows for mana abilities. The correct play is to cast Infernal Tutor with Tutor as the last card in hand, hold priority, then activate LED in response; when Tutor resolves you are hellbent and the mana is still floating.
   rationale: |-
@@ -358,6 +376,9 @@ questions:
   expected_rule_ids:
   - 903.10a
   - 704.6c
+  equivalent_rule_ids:
+    '704.6c':
+    - 903.10a
   expected_answer: |-
     No to both. A player loses when they've been dealt 21 or more COMBAT damage by the SAME commander over the course of the game (903.10a; checked as a state-based action, 704.6c). The Clone copying Rafiq is not a commander, so its 6 damage isn't commander damage - you're still at 15 from the real Rafiq. Fling damage is noncombat, so it never counts toward the 21 either; it just reduces your life total normally.
   rationale: |-
@@ -380,6 +401,9 @@ questions:
   - '106.4'
   - 601.2g
   - 601.2h
+  equivalent_rule_ids:
+    '601.2g':
+    - '118.2'
   expected_answer: |-
     1) No. Each player's mana pool empties at the end of each step and phase, so mana added during your upkeep is lost before your main phase (106.4). Tap the lands in your main phase instead. 2) Yes. Casting a spell includes a step where, if the total cost includes mana, you get a chance to activate mana abilities such as tapping lands (601.2g), and only then do you pay the total cost (601.2h). You do not need to float mana before announcing the spell.
   rationale: |-
