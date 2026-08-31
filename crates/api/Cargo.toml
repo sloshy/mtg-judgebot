@@ -1,0 +1,42 @@
+[package]
+name = "judge-api"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Anonymous HTTP adapter: axum routes over judge(), serving the SolidJS web client."
+
+[lib]
+name = "judge_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "api"
+path = "src/main.rs"
+
+[dependencies]
+judge-core.workspace = true
+judge-anthropic.workspace = true
+judge-embed.workspace = true
+judge-bot.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "net"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs"] }
+dotenvy = "0.15"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+nonempty.workspace = true
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[lints]
+workspace = true
