@@ -77,6 +77,14 @@ npm --prefix web install
 npm --prefix web run dev             # Vite dev server with /api proxied to :8787
 ```
 
+### Hosting
+
+The public instance runs on a machine at home behind a [Cloudflare
+Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/):
+no public IP, no forwarded port, no cloud compute bill. `docs/DEPLOYMENT.md` is the
+runbook — tunnel setup, edge rate limiting in front of the anonymous API, and the
+weekly R2 backup.
+
 ## Evaluation
 
 `eval/gold.yaml` holds 21 adversarially verified questions (layers nightmares,

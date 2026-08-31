@@ -7,8 +7,9 @@ services:
       POSTGRES_USER: judgebot
       POSTGRES_PASSWORD: judgebot
       POSTGRES_DB: judgebot
+    # Loopback-only: nothing on the LAN reaches Postgres directly.
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - judgebot-pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -39,11 +40,35 @@ services:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
       WEB_DIST: /srv/web
       RUST_LOG: info,sqlx=warn
+    # Loopback-only. Public traffic arrives through the cloudflared tunnel on
+    # the compose network, never through a published port. This is also what
+    # makes API_CLIENT_IP=cloudflare sound: CF-Connecting-IP is only
+    # trustworthy while Cloudflare is the sole route to the origin.
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
     depends_on:
       db:
         condition: service_healthy
+
+  # Public front door. Dials out to Cloudflare's edge, so the host needs no
+  # open inbound port, no public IPv4 and no dynamic DNS. Off by default;
+  # deployments opt in with COMPOSE_PROFILES=tunnel in .env.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.8.3
+    container_name: judgebot-tunnel
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    # Deploy credentials live in their own file so they never enter the
+    # env of `bot`/`api`, which are internet-facing and read neither.
+    # `required: false` keeps `docker compose up -d` working on a machine
+    # that has no tunnel — compose validates every service, not just the
+    # ones in the active profile.
+    env_file:
+      - path: .env.deploy
+        required: false
+    depends_on:
+      - api
 
 volumes:
   judgebot-pgdata:

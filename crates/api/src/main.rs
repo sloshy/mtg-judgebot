@@ -6,7 +6,7 @@
 //! other binaries; the process environment wins): `DATABASE_URL`,
 //! `ANTHROPIC_API_KEY`, optional `VOYAGE_API_KEY`, `API_ADDR`, `WEB_DIST`,
 //! `JUDGE_CONCURRENCY`, `JUDGE_MAX_USD`, `API_RATE_LIMIT`,
-//! `API_RATE_WINDOW_SECS`, `API_TRUST_FORWARDED`, `RUST_LOG`. No Discord
+//! `API_RATE_WINDOW_SECS`, `API_CLIENT_IP`, `RUST_LOG`. No Discord
 //! variables are read: the bot and the API are separate processes sharing
 //! only the database.
 

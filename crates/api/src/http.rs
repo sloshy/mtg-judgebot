@@ -22,7 +22,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
 use crate::{
-    config::ApiConfig,
+    config::{ApiConfig, ClientIpSource},
     limit::RateLimiter,
     shape::{self, ApiReply, JudgeRequest},
 };
@@ -40,7 +40,7 @@ pub struct App {
     permits: Semaphore,
     limiter: RateLimiter,
     history_len: usize,
-    trust_forwarded: bool,
+    client_ip: ClientIpSource,
 }
 
 impl std::fmt::Debug for App {
@@ -67,7 +67,7 @@ impl App {
             permits: Semaphore::new(cfg.max_concurrent),
             limiter: RateLimiter::new(cfg.rate_limit, cfg.rate_window),
             history_len: cfg.history_len,
-            trust_forwarded: cfg.trust_forwarded,
+            client_ip: cfg.client_ip,
         }
     }
 
@@ -186,7 +186,7 @@ async fn judge_route(
     if let Err(message) = shape::validate(&req) {
         return (StatusCode::BAD_REQUEST, Json(ApiReply::Error { message }));
     }
-    let ip = client_ip(&headers, peer, app.trust_forwarded);
+    let ip = client_ip(&headers, peer, app.client_ip);
     if !app.limiter.allow(ip) {
         tracing::info!(%ip, "rate limited");
         return (
@@ -203,17 +203,25 @@ async fn judge_route(
     (StatusCode::OK, Json(app.answer(&q, ip).await))
 }
 
-/// The address rate limiting buckets on: the first `X-Forwarded-For` hop when
-/// the operator says the proxy in front overwrites it, otherwise the peer
-/// address (loopback if the connect info is missing, as in tests).
-fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, trust_forwarded: bool) -> IpAddr {
-    let forwarded = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .and_then(|v| v.trim().parse::<IpAddr>().ok())
-        .filter(|_| trust_forwarded);
-    match (forwarded, peer) {
+/// The address rate limiting buckets on: `CF-Connecting-IP` behind Cloudflare,
+/// otherwise the peer address (loopback if the connect info is missing, as in
+/// tests).
+///
+/// `X-Forwarded-For` is deliberately never consulted. Cloudflare *appends* the
+/// connecting address to a client-supplied header instead of replacing it, so
+/// its first hop is chosen by the caller; bucketing on that would let anyone
+/// mint a fresh allowance per request against a paid endpoint. A missing
+/// `CF-Connecting-IP` falls back to the peer, which over-counts (everything
+/// behind the proxy shares one bucket) rather than under-counting.
+fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, source: ClientIpSource) -> IpAddr {
+    let trusted = match source {
+        ClientIpSource::PeerAddr => None,
+        ClientIpSource::CloudflareConnectingIp => headers
+            .get("cf-connecting-ip")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<IpAddr>().ok()),
+    };
+    match (trusted, peer) {
         (Some(ip), _) => ip,
         (None, Some(p)) => p.ip(),
         (None, None) => IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -372,7 +380,7 @@ mod tests {
             history_len: 5,
             rate_limit,
             rate_window: Duration::from_mins(5),
-            trust_forwarded: false,
+            client_ip: ClientIpSource::PeerAddr,
         };
         let client = judge_anthropic::Client::new("test-key")?;
         let app = Arc::new(App::new(deps, Arc::clone(&store) as Arc<dyn CallStore>, client, &cfg));
@@ -471,18 +479,36 @@ mod tests {
     }
 
     #[test]
-    fn client_ip_prefers_the_peer_unless_forwarding_is_trusted() -> Res {
+    fn client_ip_prefers_the_peer_unless_cloudflare_is_the_ingress() -> Res {
+        use ClientIpSource::{CloudflareConnectingIp as Cf, PeerAddr};
         let mut headers = HeaderMap::new();
         let peer: SocketAddr = "203.0.113.9:44210".parse()?;
-        assert_eq!(client_ip(&headers, Some(peer), false), peer.ip());
-        headers.insert("x-forwarded-for", "198.51.100.7, 10.0.0.1".parse()?);
+        assert_eq!(client_ip(&headers, Some(peer), PeerAddr), peer.ip());
+        headers.insert("cf-connecting-ip", "198.51.100.7".parse()?);
         // The header only counts when the operator opted in.
-        assert_eq!(client_ip(&headers, Some(peer), false), peer.ip());
-        assert_eq!(client_ip(&headers, Some(peer), true), "198.51.100.7".parse::<IpAddr>()?);
+        assert_eq!(client_ip(&headers, Some(peer), PeerAddr), peer.ip());
+        assert_eq!(client_ip(&headers, Some(peer), Cf), "198.51.100.7".parse::<IpAddr>()?);
         // A garbage header falls back to the peer; no peer falls back to loopback.
-        headers.insert("x-forwarded-for", "not-an-ip".parse()?);
-        assert_eq!(client_ip(&headers, Some(peer), true), peer.ip());
-        assert_eq!(client_ip(&HeaderMap::new(), None, true), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        headers.insert("cf-connecting-ip", "not-an-ip".parse()?);
+        assert_eq!(client_ip(&headers, Some(peer), Cf), peer.ip());
+        assert_eq!(client_ip(&HeaderMap::new(), None, Cf), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        Ok(())
+    }
+
+    #[test]
+    fn a_forged_x_forwarded_for_cannot_pick_the_rate_limit_bucket() -> Res {
+        // Cloudflare appends to a caller-supplied X-Forwarded-For instead of
+        // replacing it, so its first hop is whatever the caller wrote. Honouring
+        // it would hand every request a fresh bucket against a paid endpoint.
+        use ClientIpSource::{CloudflareConnectingIp as Cf, PeerAddr};
+        let peer: SocketAddr = "203.0.113.9:44210".parse()?;
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4, 203.0.113.9".parse()?);
+        assert_eq!(client_ip(&headers, Some(peer), PeerAddr), peer.ip());
+        assert_eq!(client_ip(&headers, Some(peer), Cf), peer.ip());
+        // Even alongside a genuine CF-Connecting-IP, the forged header loses.
+        headers.insert("cf-connecting-ip", "198.51.100.7".parse()?);
+        assert_eq!(client_ip(&headers, Some(peer), Cf), "198.51.100.7".parse::<IpAddr>()?);
         Ok(())
     }
 }

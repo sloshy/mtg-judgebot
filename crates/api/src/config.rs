@@ -20,10 +20,26 @@ pub struct ApiConfig {
     pub rate_limit: u32,
     /// The rate-limit window (`API_RATE_WINDOW_SECS`).
     pub rate_window: Duration,
-    /// Trust the first `X-Forwarded-For` hop for rate limiting
-    /// (`API_TRUST_FORWARDED`). Only set this behind a reverse proxy that
-    /// overwrites the header; otherwise clients pick their own limit bucket.
-    pub trust_forwarded: bool,
+    /// Where the rate-limit bucket key comes from (`API_CLIENT_IP`).
+    pub client_ip: ClientIpSource,
+}
+
+/// Which address the per-IP rate limiter buckets on.
+///
+/// This is an enum rather than a "trust the proxy" flag because the obvious
+/// flag encodes a state that is never safe: Cloudflare *appends* to a
+/// client-supplied `X-Forwarded-For` rather than overwriting it, so the first
+/// hop is attacker-chosen and any deployment trusting it hands every caller
+/// its own rate-limit bucket — and `/api/judge` spends real money per request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientIpSource {
+    /// The socket peer address. Correct for direct connections, and the only
+    /// safe default: an untrusted header can never influence it.
+    PeerAddr,
+    /// `CF-Connecting-IP`, which Cloudflare overwrites on every request and
+    /// clients cannot forge. Correct only when Cloudflare is the sole ingress
+    /// — as with a tunnel, where no other path to the origin exists.
+    CloudflareConnectingIp,
 }
 
 impl ApiConfig {
@@ -54,7 +70,8 @@ impl ApiConfig {
     ///
     /// # Errors
     /// A malformed `API_ADDR`, `JUDGE_CONCURRENCY`, `API_RATE_LIMIT`,
-    /// `API_RATE_WINDOW_SECS` or `API_TRUST_FORWARDED`.
+    /// `API_RATE_WINDOW_SECS` or `API_CLIENT_IP`, or the presence of the
+    /// removed `API_TRUST_FORWARDED`.
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let var = |k: &str| get(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
         let addr = var("API_ADDR")
@@ -68,10 +85,20 @@ impl ApiConfig {
             parse_min(var("API_RATE_LIMIT"), "API_RATE_LIMIT", 1u32)?.unwrap_or(Self::DEFAULT_RATE_LIMIT);
         let rate_window = parse_min(var("API_RATE_WINDOW_SECS"), "API_RATE_WINDOW_SECS", 1u64)?
             .map_or(Self::DEFAULT_RATE_WINDOW, Duration::from_secs);
-        let trust_forwarded = match var("API_TRUST_FORWARDED").as_deref() {
-            Some("true" | "1") => true,
-            None | Some("false" | "0") => false,
-            Some(v) => anyhow::bail!("API_TRUST_FORWARDED must be true/false, got {v:?}"),
+        // Refuse to start rather than silently ignore the removed variable: a
+        // deployment carrying API_TRUST_FORWARDED=true was trusting a header
+        // clients control, and quietly falling back would hide that.
+        anyhow::ensure!(
+            var("API_TRUST_FORWARDED").is_none(),
+            "API_TRUST_FORWARDED was removed because Cloudflare appends to \
+             X-Forwarded-For rather than overwriting it, so its first hop is \
+             client-controlled. Use API_CLIENT_IP=cloudflare (reads \
+             CF-Connecting-IP) behind a Cloudflare tunnel, or drop the variable."
+        );
+        let client_ip = match var("API_CLIENT_IP").as_deref() {
+            None | Some("peer") => ClientIpSource::PeerAddr,
+            Some("cloudflare") => ClientIpSource::CloudflareConnectingIp,
+            Some(v) => anyhow::bail!("API_CLIENT_IP must be peer or cloudflare, got {v:?}"),
         };
         Ok(Self {
             addr,
@@ -80,7 +107,7 @@ impl ApiConfig {
             history_len: Self::DEFAULT_HISTORY,
             rate_limit,
             rate_window,
-            trust_forwarded,
+            client_ip,
         })
     }
 }
@@ -120,7 +147,20 @@ mod tests {
         assert_eq!(cfg.map(|c| c.max_concurrent), Some(ApiConfig::DEFAULT_CONCURRENCY));
         assert_eq!(cfg.map(|c| c.rate_limit), Some(ApiConfig::DEFAULT_RATE_LIMIT));
         assert_eq!(cfg.map(|c| c.rate_window), Some(ApiConfig::DEFAULT_RATE_WINDOW));
-        assert_eq!(cfg.map(|c| c.trust_forwarded), Some(false));
+        assert_eq!(cfg.map(|c| c.client_ip), Some(ClientIpSource::PeerAddr));
+    }
+
+    #[test]
+    fn the_removed_trust_forwarded_variable_is_refused() {
+        // Silently ignoring it would leave an operator believing a header they
+        // no longer trust is still being honoured.
+        for value in ["true", "false"] {
+            let r = ApiConfig::from_vars(vars(&[("API_TRUST_FORWARDED", value)]));
+            assert!(
+                r.as_ref().is_err_and(|e| format!("{e:#}").contains("API_CLIENT_IP")),
+                "{value}: {r:?}"
+            );
+        }
     }
 
     #[test]
@@ -131,7 +171,7 @@ mod tests {
             ("JUDGE_CONCURRENCY", "4"),
             ("API_RATE_LIMIT", "10"),
             ("API_RATE_WINDOW_SECS", "60"),
-            ("API_TRUST_FORWARDED", "true"),
+            ("API_CLIENT_IP", "cloudflare"),
         ]))
         .ok();
         let cfg = cfg.as_ref();
@@ -140,7 +180,7 @@ mod tests {
         assert_eq!(cfg.map(|c| c.max_concurrent), Some(4));
         assert_eq!(cfg.map(|c| c.rate_limit), Some(10));
         assert_eq!(cfg.map(|c| c.rate_window), Some(Duration::from_mins(1)));
-        assert_eq!(cfg.map(|c| c.trust_forwarded), Some(true));
+        assert_eq!(cfg.map(|c| c.client_ip), Some(ClientIpSource::CloudflareConnectingIp));
 
         let cfg = ApiConfig::from_vars(vars(&[("API_RATE_LIMIT", "  ")])).ok();
         assert_eq!(cfg.map(|c| c.rate_limit), Some(ApiConfig::DEFAULT_RATE_LIMIT));
@@ -153,7 +193,7 @@ mod tests {
             ("JUDGE_CONCURRENCY", "0"),
             ("API_RATE_LIMIT", "-1"),
             ("API_RATE_WINDOW_SECS", "soon"),
-            ("API_TRUST_FORWARDED", "maybe"),
+            ("API_CLIENT_IP", "maybe"),
         ] {
             let r = ApiConfig::from_vars(vars(&[bad]));
             assert!(r.as_ref().is_err_and(|e| format!("{e:#}").contains(bad.0)), "{bad:?}: {r:?}");

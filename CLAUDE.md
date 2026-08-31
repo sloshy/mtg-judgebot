@@ -28,6 +28,8 @@ Docker on **localhost:5433** (a native Postgres owns 5432 — never touch it).
 ```sh
 docker compose up -d                 # db (pgvector/pg16) + bot + api; all restart with Docker
 docker compose up -d --build bot api # redeploy bot/api after code changes (one image, two entrypoints)
+                                     # COMPOSE_PROFILES=tunnel also starts cloudflared (docs/DEPLOYMENT.md)
+scripts/backup-db.sh                 # weekly pg_dump -> Cloudflare R2; cron'd on the server
 cargo build --workspace
 cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwrap/expect/indexing/panic
 cargo test --workspace               # includes #[sqlx::test] suites that spin temp DBs off DATABASE_URL
@@ -113,8 +115,25 @@ Key cross-file facts that aren't obvious from any one file:
 `DISCORD_TOKEN`, `GUILD_ID` (instant command registration), `JUDGE_ROLE` (default
 "Judge"), `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`; for the HTTP API also `API_ADDR`
 (default `0.0.0.0:8787`), `WEB_DIST`, `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`,
-`API_TRUST_FORWARDED` (only behind a proxy that overwrites `X-Forwarded-For`). The
+`API_CLIENT_IP` (`peer` or `cloudflare`; see below). The
 bot/api containers override `DATABASE_URL` to `db:5432` inside the compose network;
 the image builds the web page and sets `WEB_DIST=/srv/web`.
+
+Deployment is self-hosted behind a Cloudflare Tunnel — `docs/DEPLOYMENT.md` is the
+runbook. `db` and `api` publish on `127.0.0.1` only; public traffic reaches `api:8787`
+over the compose network from the `cloudflared` service, which the `tunnel` compose
+profile starts (`COMPOSE_PROFILES=tunnel` in `.env`). Deploy credentials live in
+`.env.deploy` (`TUNNEL_TOKEN`, `R2_*`), read only by `cloudflared` and
+`scripts/backup-db.sh`, never by the internet-facing `bot`/`api`. Weekly
+`scripts/backup-db.sh` dumps to R2 and has `list`/`fetch` subcommands for the restore
+drill; restoring is far cheaper than re-ingesting, which re-pays Voyage per embedding.
+
+**Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP` is
+`peer` (socket address) or `cloudflare` (`CF-Connecting-IP`); `client_ip` never reads
+`X-Forwarded-For`, because Cloudflare *appends* to a caller-supplied header instead of
+replacing it, making its first hop attacker-chosen — that would hand every request a
+fresh allowance against a paid endpoint. The old `API_TRUST_FORWARDED` did exactly
+that and is now rejected at startup rather than ignored. `cloudflare` is only sound
+when nothing can reach the origin except Cloudflare.
 
 There is no scheduled data refresh yet; Scryfall/CR ingest is manual (see Commands).

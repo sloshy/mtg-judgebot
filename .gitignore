@@ -1,4 +1,7 @@
 /target
 .env
+.env.deploy
 .cache/
 eval/runs/
+*.dump
+*.dump.gz
