@@ -102,7 +102,7 @@ export default function App() {
 
       <footer>
         <p>
-          Anonymous — nothing to log into, and answers here can't be rated. Answers are AI-generated;
+          Answers here can't be rated. Answers are AI-generated;
           verify anything important with a human judge.
         </p>
       </footer>
