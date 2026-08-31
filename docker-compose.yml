@@ -20,9 +20,11 @@ services:
 
   bot:
     build: .
-    # Naming the built image lets a low-powered host skip `--build` and run one
-    # loaded or pulled from elsewhere; `bot` and `api` are the same image.
-    image: mtg-judgebot:latest
+    # `bot` and `api` are one image, two entrypoints. Naming it after the GHCR
+    # package lets a low-powered host pull a CI-built image instead of building:
+    # `docker compose pull && docker compose up -d`. Pin JUDGE_IMAGE_TAG to a
+    # `sha-<short>` tag in .env to roll back; `build: .` still works locally.
+    image: ghcr.io/sloshy/mtg-judgebot:${JUDGE_IMAGE_TAG:-latest}
     container_name: judgebot-bot
     restart: unless-stopped
     env_file: .env
@@ -35,7 +37,7 @@ services:
 
   api:
     build: .
-    image: mtg-judgebot:latest
+    image: ghcr.io/sloshy/mtg-judgebot:${JUDGE_IMAGE_TAG:-latest}
     container_name: judgebot-api
     restart: unless-stopped
     entrypoint: ["judge-api"]

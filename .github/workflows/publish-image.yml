@@ -1,0 +1,80 @@
+name: Publish image
+
+# Builds the one image both `bot` and `api` run from and pushes it to GHCR, so
+# the deployment host only ever pulls. The Rust release build across seven
+# crates plus a Vite build is far more than a NAS can do comfortably.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'web/**'
+      # crates/core/build.rs generates the Category enum from data/categories.yaml,
+      # so taxonomy edits change the binary.
+      - 'data/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.sqlx/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/publish-image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: publish-image
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # `latest` for the rolling deploy, `sha-abc1234` as an immutable
+          # handle to roll back to (JUDGE_IMAGE_TAG in the host's .env).
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          # Add linux/arm64 only if the deployment host needs it — emulated
+          # Rust builds are slow enough to be worth avoiding otherwise.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo '### Image published'
+            echo
+            echo '```'
+            echo '${{ steps.meta.outputs.tags }}'
+            echo '```'
+            echo
+            echo 'Deploy:  `docker compose pull && docker compose up -d`'
+            echo 'Roll back: set `JUDGE_IMAGE_TAG=sha-<short>` in the host'\''s .env, then the same.'
+          } >> "$GITHUB_STEP_SUMMARY"

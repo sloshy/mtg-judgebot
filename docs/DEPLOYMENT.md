@@ -21,10 +21,10 @@ Live deployment: <https://mtgjudge.rpeters.dev>
 ## 1. Prerequisites
 
 - A host that stays on, with Docker and the compose plugin. The stack *runs* in about
-  200 MB RSS (Postgres ~157 MB, api and bot a few MB each), so 2 GB of RAM is ample —
-  but **building** the image is a different workload: `cargo build --release` across
-  seven crates plus a Vite build wants ~4 GB and real CPU. On a NAS or other
-  low-power box, build elsewhere and ship the image (see §7).
+  200 MB RSS (Postgres ~157 MB, api and bot a few MB each), so 2 GB of RAM is ample.
+  It never has to *build*: CI publishes the image and the host pulls it (§7). That
+  matters because `cargo build --release` across seven crates plus a Vite build wants
+  ~4 GB and real CPU, which a NAS does not have.
 - Compose syntax here is held to what older bundled versions accept — Synology's
   Container Manager ships v2.20, which predates the `env_file` long form. `.env.deploy`
   must exist on any machine running the `tunnel` profile, and only there.
@@ -217,28 +217,47 @@ The card count should match section 2. `*.dump.gz` is gitignored.
 
 ## 7. Redeploying
 
-On a host with CPU and RAM to spare, build in place:
+The host never builds. `.github/workflows/publish-image.yml` builds on every push to
+`main` that touches the image (including `data/`, since `crates/core/build.rs`
+generates the `Category` enum from `data/categories.yaml`) and pushes to
+`ghcr.io/sloshy/mtg-judgebot` as `latest` plus an immutable `sha-<short>` tag.
 
 ```sh
-git pull
-docker compose up -d --build bot api    # one image, two entrypoints
+git pull                                # runbook + compose changes
+docker compose pull
+docker compose up -d
 ```
 
-On a NAS or similar, don't — the Rust release build will crawl or exhaust memory.
-Build on a workstation and ship the image instead:
+`docker compose up -d --build` still works on a machine with the CPU and RAM for it;
+`build: .` is retained for local development.
+
+### One-time: let the host pull a private package
+
+The repo is private, so the GHCR package is too. On the host, log in with a classic
+PAT carrying only `read:packages` — as root on Synology, since that is the user
+Container Manager and the Task Scheduler run as:
 
 ```sh
-# workstation (check `uname -m` matches the server; add --platform if it doesn't)
-docker build -t mtg-judgebot:latest .
-docker save mtg-judgebot:latest | gzip | ssh you@server 'gunzip | docker load'
-
-# server
-docker compose up -d --no-build bot api
+echo "$GHCR_TOKEN" | docker login ghcr.io -u sloshy --password-stdin
 ```
 
-For that to use the loaded image, give `bot` and `api` an `image: mtg-judgebot:latest`
-alongside `build: .` so Compose has a name to resolve rather than rebuilding. A
-registry (GHCR is free for this) is the tidier long-term version of the same idea.
+Making the package public instead (GHCR package settings, independent of repo
+visibility) removes the login step but publishes the built binaries.
+
+### Rolling back
+
+Every build leaves an immutable tag, so a bad deploy is a one-line revert. Take the
+`sha-<short>` from the workflow run summary:
+
+```ini
+JUDGE_IMAGE_TAG=sha-abc1234    # in .env
+```
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+Clear `JUDGE_IMAGE_TAG` to return to `latest`.
 
 `cloudflared` and `db` are untouched by a code deploy. The tunnel reconnects on its
 own if the connector restarts.

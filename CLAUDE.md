@@ -29,6 +29,7 @@ Docker on **localhost:5433** (a native Postgres owns 5432 — never touch it).
 docker compose up -d                 # db (pgvector/pg16) + bot + api; all restart with Docker
 docker compose up -d --build bot api # redeploy bot/api after code changes (one image, two entrypoints)
                                      # COMPOSE_PROFILES=tunnel also starts cloudflared (docs/DEPLOYMENT.md)
+docker compose pull && docker compose up -d  # deploy host: pulls the CI-built GHCR image, never builds
 scripts/backup-db.sh                 # weekly pg_dump -> Cloudflare R2; cron'd on the server
 cargo build --workspace
 cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwrap/expect/indexing/panic
