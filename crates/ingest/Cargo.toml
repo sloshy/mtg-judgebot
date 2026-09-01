@@ -28,6 +28,12 @@ pgvector = { version = "0.4", features = ["sqlx"] }
 dotenvy = "0.15"
 flate2 = "1"
 serde_yaml_ng = "0.10"
+# `emoji`: Scryfall serves SVG, Discord takes raster only. No text in these
+# symbols, so resvg's font machinery is left out.
+resvg = { version = "0.48", default-features = false }
+base64 = "0.23"
+# Only the REST client: no gateway, no cache.
+serenity = { version = "0.12", default-features = false, features = ["model", "rustls_backend"] }
 
 [lints]
 workspace = true

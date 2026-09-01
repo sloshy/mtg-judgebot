@@ -18,79 +18,9 @@
 
 use std::{collections::HashMap, fmt};
 
+use judge_core::symbol::{self, MAX_BODY_CHARS};
+
 use super::render::TRUNCATION_MARKER;
-
-/// Prefix of every application-emoji name this bot owns for a card symbol.
-/// Emoji outside it are ignored, so an unrelated emoji on the same application
-/// can never be substituted into a message.
-pub const NAME_PREFIX: &str = "mana_";
-
-/// Discord's limit on an emoji name, in characters.
-pub const NAME_LIMIT: usize = 32;
-
-/// Longest symbol body treated as a candidate. The longest Scryfall writes is
-/// `{1000000}` at seven; the slack covers anything they add without letting a
-/// stray `{` scan off to a distant `}`.
-pub const MAX_BODY_CHARS: usize = 12;
-
-/// The emoji name for a symbol body (the text between the braces): lowercased,
-/// slashes dropped, `½`/`∞` spelled out, `mana_` in front. `W/U` → `mana_wu`.
-///
-/// `None` if the body could not be a Magic symbol — anything but ASCII
-/// alphanumerics, `/`, `½` and `∞`, or a name outside Discord's 2–32 range.
-/// Verified against the 84 symbols `api.scryfall.com/symbology` returned on
-/// 2026-08-31: the mapping is total over them and collision-free.
-#[must_use]
-pub fn emoji_name(body: &str) -> Option<String> {
-    if body.chars().count() > MAX_BODY_CHARS {
-        return None;
-    }
-    let mut out = String::from(NAME_PREFIX);
-    for ch in body.chars() {
-        match ch {
-            '/' => {}
-            '½' => out.push_str("half"),
-            '∞' => out.push_str("inf"),
-            c if c.is_ascii_alphanumeric() => out.push(c.to_ascii_lowercase()),
-            _ => return None,
-        }
-    }
-    // A body of only slashes would leave the bare prefix.
-    if out.len() <= NAME_PREFIX.len() || out.chars().count() > NAME_LIMIT {
-        return None;
-    }
-    Some(out)
-}
-
-/// Whether `name` is one [`emoji_name`] could have produced, so a hand-made
-/// emoji cannot smuggle unexpected characters into a tag. Exact: the prefix
-/// followed by one or more lowercase ASCII alphanumerics, nothing else.
-#[must_use]
-pub fn is_symbol_name(name: &str) -> bool {
-    let Some(body) = name.strip_prefix(NAME_PREFIX) else {
-        return false;
-    };
-    !body.is_empty()
-        && name.chars().count() <= NAME_LIMIT
-        && body
-            .bytes()
-            .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
-}
-
-/// `W/U` → `U/W`, but only when both halves are single colour letters: the
-/// model may write a hybrid in the order it likes, while `2/W` and `W/P` have
-/// a fixed order and must not be flipped.
-fn flipped(body: &str) -> Option<String> {
-    let (a, b) = body.split_once('/')?;
-    let colour = |s: &str| {
-        let mut cs = s.chars();
-        matches!(
-            (cs.next().map(|c| c.to_ascii_uppercase()), cs.next()),
-            (Some('W' | 'U' | 'B' | 'R' | 'G' | 'C'), None)
-        )
-    };
-    (colour(a) && colour(b)).then(|| format!("{b}/{a}"))
-}
 
 /// The card-symbol emoji this bot's application owns, ready to substitute.
 ///
@@ -110,12 +40,12 @@ impl SymbolTable {
     }
 
     /// Build from the application's emoji as `(name, id)` pairs. Names that
-    /// are not [`is_symbol_name`] are dropped.
+    /// are not [`symbol::is_emoji_name`] are dropped.
     #[must_use]
     pub fn new(emojis: impl IntoIterator<Item = (String, u64)>) -> Self {
         let tags = emojis
             .into_iter()
-            .filter(|(name, _)| is_symbol_name(name))
+            .filter(|(name, _)| symbol::is_emoji_name(name))
             .map(|(name, id)| {
                 let tag = format!("<:{name}:{id}>");
                 (name, tag)
@@ -139,11 +69,11 @@ impl SymbolTable {
     /// The tag for a symbol body, trying the flipped hybrid as a fallback.
     #[must_use]
     fn tag(&self, body: &str) -> Option<&str> {
-        let direct = emoji_name(body).and_then(|n| self.tags.get(&n));
+        let direct = symbol::emoji_name(body).and_then(|n| self.tags.get(&n));
         direct
             .or_else(|| {
-                flipped(body)
-                    .and_then(|f| emoji_name(&f))
+                symbol::flipped(body)
+                    .and_then(|f| symbol::emoji_name(&f))
                     .and_then(|n| self.tags.get(&n))
             })
             .map(String::as_str)
@@ -361,7 +291,7 @@ mod tests {
     fn table(symbols: &[&str]) -> SymbolTable {
         SymbolTable::new(symbols.iter().enumerate().filter_map(|(i, body)| {
             let id = 1_000_000_000_000_000_000u64.saturating_add(i as u64);
-            Some((emoji_name(body)?, id))
+            Some((symbol::emoji_name(body)?, id))
         }))
     }
 
@@ -370,36 +300,6 @@ mod tests {
             "W", "U", "B", "R", "G", "C", "T", "Q", "X", "1", "2", "10", "W/U", "2/W", "W/P",
             "C/W", "½", "∞", "1000000",
         ])
-    }
-
-    #[test]
-    fn emoji_names_are_lowercase_alphanumeric_and_distinct() {
-        assert_eq!(emoji_name("W").as_deref(), Some("mana_w"));
-        assert_eq!(emoji_name("W/U").as_deref(), Some("mana_wu"));
-        assert_eq!(emoji_name("W/U/P").as_deref(), Some("mana_wup"));
-        assert_eq!(emoji_name("2/W").as_deref(), Some("mana_2w"));
-        assert_eq!(emoji_name("CHAOS").as_deref(), Some("mana_chaos"));
-        assert_eq!(emoji_name("1000000").as_deref(), Some("mana_1000000"));
-        assert_eq!(emoji_name("½").as_deref(), Some("mana_half"));
-        assert_eq!(emoji_name("∞").as_deref(), Some("mana_inf"));
-        // Not symbols.
-        assert_eq!(emoji_name(""), None);
-        assert_eq!(emoji_name("/"), None);
-        assert_eq!(emoji_name("a b"), None);
-        assert_eq!(emoji_name("emoji😀"), None);
-        assert_eq!(emoji_name(&"W".repeat(MAX_BODY_CHARS + 1)), None);
-        // Everything it produces is a name it would accept back.
-        for body in ["W", "W/U", "2/W", "½", "1000000"] {
-            assert!(emoji_name(body).is_some_and(|n| is_symbol_name(&n)), "{body}");
-        }
-        assert!(!is_symbol_name("mana_W"));
-        assert!(!is_symbol_name("party_parrot"));
-        assert!(!is_symbol_name("mana_"));
-        // `emoji_name` never emits an underscore past the prefix, so neither
-        // does this accept one: the two are exact inverses on the alphabet.
-        assert!(!is_symbol_name("mana__"));
-        assert!(!is_symbol_name("mana_w_x"));
-        assert!(!is_symbol_name(&format!("mana_{}", "w".repeat(NAME_LIMIT))));
     }
 
     /// A brace that opens nothing must not make the scan walk the rest of the

@@ -612,7 +612,7 @@ async fn load_symbols(http: &serenity::Http) -> SymbolTable {
                 tracing::warn!(
                     "no `{}…` application emoji found; card symbols will render as text \
                      (run `judge-ingest emoji` to upload them)",
-                    mana::NAME_PREFIX
+                    judge_core::symbol::NAME_PREFIX
                 );
             } else {
                 tracing::info!(symbols = table.len(), "loaded card-symbol emoji");

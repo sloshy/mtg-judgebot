@@ -6,14 +6,17 @@
 //! ingest aliases <yaml>        # hand-curated nicknames -> card_aliases
 //! ingest notes <yaml>          # hand-written nightmare-card notes -> card_notes
 //! ingest embed                 # fill NULL embeddings on rules/glossary/calls via Voyage
+//! ingest emoji                 # Scryfall card symbols -> the bot's Discord application emoji
 //! ```
 //!
-//! `DATABASE_URL` is read from the environment (a `.env` file is honoured).
+//! `DATABASE_URL` is read from the environment (a `.env` file is honoured);
+//! `emoji` needs no database at all, only `DISCORD_TOKEN`.
 //! Downloads are cached under `INGEST_CACHE_DIR` (default `.cache/`).
 
 mod aliases;
 mod cr;
 mod embed;
+mod emoji;
 mod notes;
 mod scryfall;
 
@@ -33,9 +36,11 @@ enum Command {
     Aliases { path: PathBuf },
     Notes { path: PathBuf },
     Embed,
+    Emoji,
 }
 
-const USAGE: &str = "usage: ingest <cards | rules <path-or-url> | aliases <yaml> | notes <yaml> | embed>";
+const USAGE: &str =
+    "usage: ingest <cards | rules <path-or-url> | aliases <yaml> | notes <yaml> | embed | emoji>";
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     match args.next().as_deref() {
@@ -50,6 +55,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
             path: args.next().map(PathBuf::from).ok_or_else(|| anyhow::anyhow!("usage: ingest notes <notes.yaml>"))?,
         }),
         Some("embed") => Ok(Command::Embed),
+        Some("emoji") => Ok(Command::Emoji),
         other => anyhow::bail!("{USAGE} (got {other:?})"),
     }
 }
@@ -86,12 +92,16 @@ async fn main() -> Result<()> {
     let cmd = parse_args(std::env::args().skip(1))?;
     let cache_dir = std::env::var_os("INGEST_CACHE_DIR").map_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR), PathBuf::from);
     tracing::info!(?cmd, cache_dir = %cache_dir.display(), categories = judge_core::Category::ALL.len(), "ingest");
-    let pool = connect().await?;
+    // The pool is opened per arm rather than up front: `emoji` talks to
+    // Scryfall and Discord only, and must not fail on a missing DATABASE_URL.
     match cmd {
-        Command::Cards => scryfall::run(&pool, &cache_dir).await,
-        Command::Rules { source } => cr::run(&pool, &source, &cache_dir).await,
-        Command::Aliases { path } => aliases::run(&pool, &path).await,
-        Command::Notes { path } => notes::run(&pool, &path).await,
-        Command::Embed => embed::run(&pool, embedder_from_env().as_deref()).await,
+        Command::Cards => scryfall::run(&connect().await?, &cache_dir).await,
+        Command::Rules { source } => cr::run(&connect().await?, &source, &cache_dir).await,
+        Command::Aliases { path } => aliases::run(&connect().await?, &path).await,
+        Command::Notes { path } => notes::run(&connect().await?, &path).await,
+        Command::Embed => {
+            embed::run(&connect().await?, embedder_from_env().as_deref()).await
+        }
+        Command::Emoji => emoji::run(&cache_dir).await.map(drop),
     }
 }
