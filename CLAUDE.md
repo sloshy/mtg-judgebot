@@ -44,6 +44,8 @@ cargo run --release -p judge-ingest -- rules <url|path> # CR parse; current CR u
 cargo run --release -p judge-ingest -- aliases data/aliases.yaml
 cargo run --release -p judge-ingest -- notes data/notes.yaml
 cargo run --release -p judge-ingest -- embed            # only rows with NULL embedding; Voyage
+cargo run --release -p judge-ingest -- emoji            # Scryfall card symbols -> the bot's Discord
+                                                        # application emoji; idempotent, no DB needed
 
 cargo run --release -p judge-api                        # HTTP API + web page on API_ADDR (default :8787)
 npm --prefix web run build           # build the SolidJS page into web/dist (served by judge-api)
@@ -108,6 +110,14 @@ Key cross-file facts that aren't obvious from any one file:
   pinning). Replies open with a non-pinging `<@user> asked:` header; rule citations link
   to the Yawgatog CR mirror (anchor = `R` + id with dots stripped), rulings/Oracle text
   link to Scryfall search-by-oracleid (the `/card/<uuid>` route 404s).
+- **Card symbols are pictures on both front doors.** `discord/mana.rs` substitutes
+  Discord application emoji (`{W}` → `<:mana_w:…>`); `judge_core::symbol::emoji_name` is
+  the one definition of the name — it lives in core precisely because two programs (the
+  bot and the `ingest emoji` uploader) must agree on it exactly. Text is
+  carried as `mana::Rendered` segments rather than a `String` because a tag costs ~28 of
+  Discord's 2000/4096 characters and must never be cut in half — plain text is the only
+  cuttable segment. An application with no emoji uploaded renders the literal `{W}`. The
+  web page does the same job with Scryfall's SVGs (`web/src/Symbols.tsx`).
 
 ## Environment
 

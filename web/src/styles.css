@@ -101,6 +101,27 @@ a.cite-label:hover {
   color: var(--quote);
 }
 
+/* Card symbols (Scryfall's SVGs) sit inline in the text they interrupt,
+   sized in `em` so they track the surrounding font. */
+.mana {
+  display: inline-block;
+  width: 0.95em;
+  height: 0.95em;
+  vertical-align: -0.11em;
+  margin: 0 0.04em;
+}
+
+/* Most symbols carry their own coloured disc and read on either palette, but
+   seven ({E} {P} {PW} {CHAOS} {TK} {L} {D}) are flat black on transparent —
+   `{L}` on the dark card is a black glyph on #211f26, i.e. invisible. Those
+   are marked `flat` in symbols.ts and inverted to white in dark mode; the
+   inversion must not touch the coloured ones. */
+@media (prefers-color-scheme: dark) {
+  .mana-flat {
+    filter: invert(1);
+  }
+}
+
 .meta {
   margin: 0.75rem 0 0;
   color: var(--muted);

@@ -127,6 +127,21 @@ Use a full `docker compose up -d` at least once on an existing host: `db`'s publ
 port changed to loopback, and `up -d --build bot api` deliberately leaves `db` alone,
 so the old `0.0.0.0:5433` binding would otherwise persist indefinitely.
 
+### One-time: upload the card-symbol emoji
+
+The bot draws `{W}` as a picture using *application* emoji, which belong to the
+Discord application rather than to any server. They survive redeploys and restores
+(Discord stores them, not us), so this is once per application, not per deploy:
+
+```sh
+cargo run --release -p judge-ingest -- emoji   # needs DISCORD_TOKEN; no database
+```
+
+It is idempotent — it uploads only the symbols that are missing, so re-run it after
+Scryfall adds one. Skipping it entirely is safe: the bot logs a warning at startup
+and falls back to writing `{W}` as text. Nothing here needs doing for the web page,
+which loads the symbols from Scryfall's CDN.
+
 ### Why `API_CLIENT_IP=cloudflare`, and not a forwarded-header flag
 
 The per-IP limiter needs an address the caller cannot choose, because `/api/judge` is

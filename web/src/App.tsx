@@ -7,6 +7,7 @@ import {
   crDate,
   sessionId,
 } from "./api";
+import Symbols from "./Symbols";
 
 const MAX_QUESTION_CHARS = 1000;
 
@@ -69,7 +70,7 @@ export default function App() {
       <For each={entries}>
         {(entry, i) => (
           <section class="exchange">
-            <p class="question">{entry.question}</p>
+            <p class="question"><Symbols text={entry.question} /></p>
             <Show
               when={entry.reply}
               fallback={<p class="thinking">Consulting the rules… this usually takes 20–45 seconds.</p>}
@@ -116,7 +117,7 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
       <Match when={props.reply.kind === "answer" && props.reply}>
         {(r) => (
           <div class="answer">
-            <p class="answer-text">{r().answer}</p>
+            <p class="answer-text"><Symbols text={r().answer} /></p>
             <Show when={r().citations.length > 0}>
               <ul class="citations">
                 <For each={r().citations}>
@@ -129,7 +130,9 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
                           </a>
                         )}
                       </Show>{" "}
-                      <span class="cite-quote">“{c.quote}”</span>
+                      <span class="cite-quote">
+                        “<Symbols text={c.quote} />”
+                      </span>
                     </li>
                   )}
                 </For>

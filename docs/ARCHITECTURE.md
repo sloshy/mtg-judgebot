@@ -100,6 +100,33 @@ Two front doors share this pipeline through the same composition root
   same `pin_card` used by the Discord buttons. Follow-up history comes from a
   client-generated session UUID, stored as thread id `web:<uuid>`.
 
+Both front doors draw Magic's card symbols (`{W}`, `{2/U}`, `{T}`) as pictures,
+from one set of names:
+
+- **Discord** substitutes *application* emoji — `<:mana_w:…>`, owned by the bot
+  rather than by a server, so they work in every guild and cost no emoji slots.
+  `ingest emoji` uploads them (Scryfall's SVG → a 128 px PNG via resvg, scaled
+  to fit and centred: nine of the 84 symbols are not square). The name is
+  defined once, in `judge_core::symbol` — pure, no I/O, and in core rather than
+  in either binary because the uploader and the renderer are separate programs
+  that must agree on it exactly. A test there pins the mapping as total and
+  injective over everything Scryfall publishes, so no symbol can silently
+  overwrite another's emoji. A tag is ~28 characters
+  where `{W}` is three and Discord counts the tag, so `mana::Rendered` keeps
+  text as segments and only lets plain text be cut: a half-written tag is
+  unrepresentable rather than merely tested against. An application with no
+  emoji uploaded gets an empty table and the literal `{W}`, unchanged.
+- **Web** renders Scryfall's SVGs inline from their CDN (`web/src/symbols.ts`
+  is the generated table; `Symbols.tsx` the component). A symbol the table does
+  not know, or an image that fails to load, falls back to the literal text.
+  `split`/`lookup` mirror the Rust scanner, so both surfaces accept the same
+  spellings (`{W/U}`, `{w/u}`, `{U/W}`, `{WU}`) and leave the same text alone.
+  Seven symbols (`{E} {P} {PW} {CHAOS} {TK} {L} {D}`) are flat black with no
+  disc and are invisible on the dark palette, so they carry a `flat` flag and
+  are inverted in dark mode; the coloured ones must not be. If a
+  Content-Security-Policy is ever added to `judge-api`, `img-src` must allow
+  `https://svgs.scryfall.io`.
+
 ## 4. Data
 
 | Source | Refresh | Storage |
@@ -109,6 +136,7 @@ Two front doors share this pipeline through the same composition root
 | Scryfall bulk `rulings.json` | weekly (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, idx, published_at, text) |
 | Comprehensive Rules txt | on CR release | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
 | CR Glossary | same | `glossary` (term, text, embedding) |
+| Scryfall `/symbology` (84 card symbols) | when Scryfall adds one | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web page (`web/src/symbols.ts`) |
 | Nicknames | hand-curated YAML | `card_aliases` (alias, oracle_id) |
 | Nightmare notes | hand-written markdown | `card_notes` (oracle_id, note) |
 | Categories → subsections | YAML (single source of truth; enum generated or validated from it) | `categories` |
