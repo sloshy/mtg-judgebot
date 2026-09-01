@@ -170,6 +170,7 @@ pub fn error(e: &JudgeError) -> ApiReply {
         JudgeError::CardsNotFound(names) => ApiReply::NotFound { names: names.iter().cloned().collect() },
         JudgeError::OutOfScope(_)
         | JudgeError::BadCitation(_)
+        | JudgeError::MalformedCitation(_)
         | JudgeError::EmptyVerdict(_)
         | JudgeError::LlmRefused
         | JudgeError::Upstream(_) => ApiReply::Error { message: render::error(e) },

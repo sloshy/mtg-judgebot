@@ -42,6 +42,7 @@ pub async fn judge(deps: &Deps, q: &Question, history: &[Qa]) -> Result<Verdict<
     // the Discord layer.
     let rejected = match deps.synthesizer.answer(q, &mut ctx, None).await?.validate(&ctx, source) {
         Err(JudgeError::BadCitation(c)) => Rejection::BadCitation(c),
+        Err(JudgeError::MalformedCitation(m)) => Rejection::Malformed(m),
         Err(JudgeError::EmptyVerdict(e)) => Rejection::Empty(e),
         done => return done,
     };
@@ -352,8 +353,15 @@ mod tests {
 
     const ANSWER: &str = "Lifelink does not stack: two instances gain life once.";
 
+    /// Scripts a verdict carrying one citation the model wrote but that could
+    /// not be parsed — the shape of the 2026-09-01 production failure. It has
+    /// to come in as JSON: `Verdict::new` takes `Vec<Citation>`, so a malformed
+    /// citation is not constructible by hand, which is the point.
+    const MALFORMED: &str = "!malformed";
+
     /// Returns one scripted verdict per call and records what it was told.
-    /// A quote of `""` scripts a verdict with no citations at all.
+    /// A quote of `""` scripts a verdict with no citations at all;
+    /// [`MALFORMED`] scripts one whose only citation is unreadable.
     struct ScriptedSynth {
         quotes: Mutex<VecDeque<&'static str>>,
         seen: Mutex<Vec<(usize, Option<Rejection>)>>,
@@ -378,6 +386,13 @@ mod tests {
                 .pop_front()
                 .ok_or_else(|| anyhow::anyhow!("scripted synthesizer called more times than scripted"))?;
             self.seen.lock().unwrap_or_else(PoisonError::into_inner).push((ctx.history.len(), rejected.cloned()));
+            if quote == MALFORMED {
+                let json = format!(
+                    r#"{{"answer":"{ANSWER}","confidence":"high","category":"keyword_abilities",
+                       "citations":[{{"kind":"rule","id":"","quote":""}}]}}"#
+                );
+                return serde_json::from_str(&json).map_err(|e| anyhow::Error::from(e).into());
+            }
             let id = RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?;
             let citations = if quote.is_empty() { vec![] } else { vec![Citation::Rule { id, quote: quote.into() }] };
             Ok(Verdict::new(ANSWER.into(), Confidence::High, citations, Category::KeywordAbilities))
@@ -456,6 +471,34 @@ mod tests {
         let r = futures::executor::block_on(judge(&d, &q(), &[]));
         assert!(matches!(r, Err(JudgeError::EmptyVerdict(EmptyVerdict::NoCitations))));
         Ok(())
+    }
+
+    /// The regression: an unreadable citation must behave like a bad one — one
+    /// retry that tells the model what it wrote — rather than escaping as the
+    /// un-retryable `Upstream` a whole-payload parse failure used to produce.
+    #[test]
+    fn malformed_citation_retries_once_like_a_bad_citation() -> Result<(), JudgeError> {
+        let (d, synth) = deps(vec![MALFORMED, "gain that much life"]);
+        let v = futures::executor::block_on(judge(&d, &q(), &[]))?;
+        assert_eq!(v.citations().len(), 1);
+        let seen = synth.seen();
+        assert_eq!(seen.len(), 2, "exactly one retry");
+        // The retry is told the raw element and why it could not be read.
+        assert!(
+            matches!(&seen.get(1), Some((0, Some(Rejection::Malformed(m))))
+                if m.raw.contains(r#""kind":"rule""#) && m.error.contains("RuleId")),
+            "{seen:?}"
+        );
+        Ok(())
+    }
+
+    /// A second unreadable response terminates rather than looping.
+    #[test]
+    fn malformed_citation_twice_is_an_error() {
+        let (d, synth) = deps(vec![MALFORMED, MALFORMED]);
+        let r = futures::executor::block_on(judge(&d, &q(), &[]));
+        assert!(matches!(r, Err(JudgeError::MalformedCitation(_))), "{r:?}");
+        assert_eq!(synth.seen().len(), 2, "capped at one retry, no loop");
     }
 
     #[test]

@@ -289,6 +289,7 @@ pub fn error(e: &JudgeError) -> String {
         JudgeError::OutOfScope(_) => OUT_OF_SCOPE.to_owned(),
         JudgeError::Upstream(err) if is_spend_cap(err) => SPEND_CAP.to_owned(),
         JudgeError::BadCitation(_)
+        | JudgeError::MalformedCitation(_)
         | JudgeError::EmptyVerdict(_)
         | JudgeError::LlmRefused
         | JudgeError::Upstream(_) => FAILED.to_owned(),

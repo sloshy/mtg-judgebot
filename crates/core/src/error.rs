@@ -2,7 +2,7 @@
 
 use nonempty::NonEmpty;
 
-use crate::{Ambiguous, Citation, EmptyVerdict, Source};
+use crate::{Ambiguous, Citation, EmptyVerdict, MalformedCitation, Source};
 
 /// Every way `judge()` can fail. Discord rendering matches on this exhaustively.
 #[derive(Debug, thiserror::Error)]
@@ -20,6 +20,11 @@ pub enum JudgeError {
     /// `judge()` retries synthesis once before surfacing this.
     #[error("bad citation: {0}")]
     BadCitation(Citation),
+    /// A citation could not be parsed into a `Citation` at all (an empty rule
+    /// id, an unknown `kind`). Kept distinct from `Upstream` precisely so
+    /// `judge()` retries it: it is the model misspeaking, not a broken adapter.
+    #[error("{0}")]
+    MalformedCitation(MalformedCitation),
     /// The verdict had no citations (for a CR / Commander answer) or no real
     /// answer text. `judge()` retries synthesis once, exactly as for `BadCitation`.
     #[error("empty verdict: {0}")]

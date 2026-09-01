@@ -128,6 +128,7 @@ const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
         Err(JudgeError::CardsNotFound(_)) => "not_found",
         Err(JudgeError::OutOfScope(_)) => "out_of_scope",
         Err(JudgeError::BadCitation(_)) => "bad_citation",
+        Err(JudgeError::MalformedCitation(_)) => "malformed_citation",
         Err(JudgeError::EmptyVerdict(_)) => "empty_verdict",
         Err(JudgeError::LlmRefused) => "refused",
         Err(JudgeError::Upstream(_)) => "upstream",

@@ -339,6 +339,51 @@ impl Citation {
     }
 }
 
+/// Longest prefix of a malformed citation's raw JSON that is kept. It is
+/// rendered into the retry prompt and logged, so it is bounded; counted in
+/// `char`s, since the model's quotes routinely carry the CR's curly
+/// apostrophes and em dashes.
+pub const MALFORMED_RAW_CHARS: usize = 300;
+
+/// A citation the model emitted that could not be parsed into a [`Citation`]
+/// at all: an unknown `kind`, a missing field, or — the case this was built
+/// for — a field that failed its own newtype's validator, such as an empty
+/// [`RuleId`](crate::RuleId).
+///
+/// Such an element used to fail the whole payload at the serde boundary,
+/// which surfaced as [`JudgeError::Upstream`](crate::JudgeError::Upstream) —
+/// a variant `judge()` does not retry — so one stub citation discarded an
+/// otherwise sound answer. Keeping it as data instead makes it an ordinary
+/// rejection that the existing single retry can explain to the model.
+/// [`Verdict<Validated>`](crate::Verdict) can never hold one: `validate` is
+/// the only route to that state and it refuses while any are present.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MalformedCitation {
+    /// The element as the model wrote it, as compact JSON: at most
+    /// [`MALFORMED_RAW_CHARS`] characters, plus a trailing `…` if it was cut.
+    pub raw: String,
+    /// The deserialization error, e.g. `RuleId violated the regular expression`.
+    pub error: String,
+}
+
+impl MalformedCitation {
+    /// Record a failed element. `raw` is truncated on a `char` boundary.
+    #[must_use]
+    pub fn new(raw: &str, error: &str) -> Self {
+        let mut kept: String = raw.chars().take(MALFORMED_RAW_CHARS).collect();
+        if kept.len() < raw.len() {
+            kept.push('…');
+        }
+        Self { raw: kept, error: error.to_owned() }
+    }
+}
+
+impl fmt::Display for MalformedCitation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unreadable citation {}: {}", self.raw, self.error)
+    }
+}
+
 impl fmt::Display for Citation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -556,6 +601,8 @@ impl fmt::Display for EmptyVerdict {
 pub enum Rejection {
     /// A citation failed validation.
     BadCitation(Citation),
+    /// A citation could not be parsed at all.
+    Malformed(MalformedCitation),
     /// The verdict was empty (no citations, or no real answer).
     Empty(EmptyVerdict),
 }
@@ -564,6 +611,7 @@ impl fmt::Display for Rejection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Rejection::BadCitation(c) => write!(f, "bad citation {c}"),
+            Rejection::Malformed(m) => write!(f, "{m}"),
             Rejection::Empty(e) => write!(f, "{e}"),
         }
     }

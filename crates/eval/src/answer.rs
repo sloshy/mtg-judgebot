@@ -272,6 +272,7 @@ fn score_row(
                 JudgeError::CardsNotFound(_) => "CardsNotFound",
                 JudgeError::OutOfScope(_) => "OutOfScope",
                 JudgeError::BadCitation(_) => "BadCitation",
+                JudgeError::MalformedCitation(_) => "MalformedCitation",
                 JudgeError::EmptyVerdict(_) => "EmptyVerdict",
                 JudgeError::LlmRefused => "LlmRefused",
                 JudgeError::Upstream(_) => "Upstream",

@@ -16,12 +16,12 @@ nutype.workspace = true
 regex = "1"
 schemars.workspace = true
 serde.workspace = true
+# A data format, not I/O: `Citations` parses the model's citation array one
+# element at a time, which needs an owned intermediate value.
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
 
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }
