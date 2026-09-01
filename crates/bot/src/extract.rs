@@ -198,7 +198,13 @@ pub fn parse_extraction(resp: &MessagesResponse) -> Result<Extraction, JudgeErro
                 .ok_or_else(|| anyhow::anyhow!("extraction response had no text block"))?;
             tracing::debug!(raw = %truncate_for_log(text, LOG_TEXT_CHARS), "extraction raw model text");
             let e: Extraction = serde_json::from_str(text)
-                .with_context(|| format!("extraction JSON did not match schema: {text}"))?;
+                // Bounded for the same reason as the verdict parse: this text
+                // reaches the logs through `Upstream`, and it carries the
+                // asker's own words back into them.
+                .with_context(|| {
+                    let shown = judge_anthropic::truncate_for_log(text, judge_anthropic::LOG_TEXT_CHARS);
+                    format!("extraction JSON did not match schema: {shown}")
+                })?;
             if e.secondary.len() > Extraction::MAX_SECONDARY {
                 // The schema cannot express maxItems (stripped by AnthropicSubset);
                 // `Extraction::categories()` ignores the extras.

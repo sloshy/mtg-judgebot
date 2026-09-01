@@ -116,7 +116,17 @@ impl App {
                 }
                 shape::answer(&v, captured.as_ref())
             }
-            Err(e) => shape::error(&e),
+            Err(e) => {
+                // The line above classifies the outcome; a genuine failure also
+                // needs its cause, or the operator sees `outcome=upstream` and
+                // nothing else. `thread` correlates this with that line — the
+                // IP is deliberately not repeated here, because unlike the
+                // metadata above, `{e:#}` can carry fragments of the question.
+                if e.is_operator_failure() {
+                    tracing::warn!(thread = %q.thread_id, error = format_args!("{e:#}"), "judge failed");
+                }
+                shape::error(&e)
+            }
         }
     }
 }

@@ -350,7 +350,10 @@ fn parse_verdict(resp: &MessagesResponse) -> Result<Verdict<Unvalidated>, JudgeE
     let text = last.ok_or_else(|| anyhow::anyhow!("response contained no text block"))?;
     tracing::debug!(raw = %crate::truncate_for_log(text, crate::LOG_TEXT_CHARS), "synthesis raw model text");
     serde_json::from_str(text)
-        .with_context(|| format!("verdict JSON did not match schema: {text}"))
+        // Bounded: this string becomes the `Upstream` error chain, which the
+        // adapters log at warn. `max_tokens` is 16k, so an unbounded `{text}`
+        // could write ~64 KB to an unrotated container log per request.
+        .with_context(|| format!("verdict JSON did not match schema: {}", crate::truncate_for_log(text, crate::LOG_TEXT_CHARS)))
         .map_err(JudgeError::from)
 }
 
@@ -520,6 +523,26 @@ mod tests {
 
         let no_text = resp("end_turn", &json!([]))?;
         assert!(matches!(classify(no_text), Err(JudgeError::Upstream(_))));
+        Ok(())
+    }
+
+    /// The parse-failure context ends up in the `Upstream` chain, which the
+    /// adapters log at warn. `max_tokens` is 16k, so an unbounded copy of the
+    /// model text would write tens of KB to an unrotated container log per
+    /// failed request.
+    #[test]
+    fn a_parse_failure_does_not_log_the_whole_model_response() -> Result<(), Box<dyn std::error::Error>> {
+        let huge = format!(r#"{{"answer":"{}","citations":1}}"#, "はい".repeat(20_000));
+        let r = resp("end_turn", &json!([{"type": "text", "text": huge}]))?;
+        let Err(JudgeError::Upstream(e)) = classify(r) else {
+            return Err("expected an Upstream parse failure".into());
+        };
+        let logged = format!("{e:#}");
+        assert!(logged.contains("verdict JSON did not match schema"), "{logged}");
+        // Bounded by LOG_TEXT_CHARS, and cut on a char boundary (the text is
+        // multi-byte, so a byte-wise cut would have panicked before this).
+        assert!(logged.chars().count() < crate::LOG_TEXT_CHARS + 200, "{} chars", logged.chars().count());
+        assert!(logged.contains('…'), "{logged}");
         Ok(())
     }
 }

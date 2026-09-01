@@ -264,7 +264,14 @@ impl Data {
                 }
             }
             Err(e) => {
-                tracing::warn!(error = format_args!("{e:#}"), "judge failed");
+                // Same classification as the HTTP front door, from the same
+                // place: an unknown card or an out-of-scope question is the
+                // pipeline working, and says all it needs to in the reply.
+                if e.is_operator_failure() {
+                    tracing::warn!(error = format_args!("{e:#}"), "judge failed");
+                } else {
+                    tracing::debug!(error = format_args!("{e:#}"), "question answered with a non-verdict reply");
+                }
                 Outgoing {
                     content: render::with_header(asker.get(), &q.text, &render::error(&e), &self.symbols),
                     embed: None,

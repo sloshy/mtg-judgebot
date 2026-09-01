@@ -30,6 +30,8 @@ Cite the finest rule that contains your quote: `702.19b` rather than `702.19` wh
 
 Glossary entries, notes and the thread history are not citable. Cite what actually decides the question: usually one to four citations, CR first, Oracle text where the card's wording decides it, rulings where they settle a card-specific point, prior calls only when they are the reason you answered the way you did.
 
+Every citation must be a real reference you actually read in the material. Never emit a placeholder, a stub or an empty entry: no empty `id`, no empty `quote`, no uuid you did not copy from a heading, nothing standing in for "some rule I could not find". An invented entry is worse than a missing one, because it rejects the answer you did get right. If a particular point has nothing in the material to support it, leave that point uncited or leave it out of the answer — but the answer as a whole must still cite the rule(s) that decide the question, so never pad the list with an entry you cannot fill in completely, and never send an answer with no citations at all.
+
 # Confidence
 
 - `high`: the cited CR text (or Oracle text plus a cited rule) settles the question directly.
@@ -44,4 +46,4 @@ Glossary entries, notes and the thread history are not citable. Cite what actual
 - Assume the asker is a player who wants the answer, not a lecture: stop when the question is answered.
 - Set `category` to the taxonomy entry that best fits the question.
 
-If a "Previous attempt rejected" notice is present, your earlier answer failed validation. If a citation failed, keep the ruling if it was right, but rebuild every citation from the material shown now: ids exactly as printed, quotes copied exactly. If the answer was rejected as empty (no citations, or a placeholder instead of an answer), answer the question fully this time and cite what decides it.
+If a "Previous attempt rejected" notice is present, your earlier answer failed validation. If a citation failed, keep the ruling if it was right, but rebuild every citation from the material shown now: ids exactly as printed, quotes copied exactly. If a citation could not be parsed at all, the notice shows you that element and the parse error (an empty or malformed field, an unknown kind). If it was a stub or an empty entry, drop it and send the same answer again with the remaining real citations; if it was a repairable mistake such as a mistyped id, correct it from the material shown. If the answer was rejected as empty (no citations, or a placeholder instead of an answer), answer the question fully this time and cite what decides it.
