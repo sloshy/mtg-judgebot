@@ -1,6 +1,10 @@
 //! Pure rendering: a validated verdict or a [`JudgeError`] → the text of a
 //! Discord reply. No serenity types here, so every branch is unit-testable
 //! and Discord's size limits are enforced by construction (`fit`).
+//!
+//! Anything that can carry Magic's card symbols — the answer body and the
+//! citation quotes — goes through [`mana`], which turns `{W}` into the bot's
+//! custom emoji and returns a [`Rendered`] whose tags truncation cannot split.
 
 use std::fmt::Write as _;
 
@@ -9,6 +13,8 @@ use judge_core::{
     Verdict,
 };
 use nonempty::NonEmpty;
+
+use super::mana::{Rendered, SymbolTable};
 
 /// Discord's limit on message `content`, in characters.
 pub const CONTENT_LIMIT: usize = 2000;
@@ -20,10 +26,21 @@ pub const BUTTON_LABEL_LIMIT: usize = 80;
 pub const MAX_CHOICES: usize = 5;
 /// Appended to text that had to be cut to fit.
 pub const TRUNCATION_MARKER: &str = " […]";
-/// Longest quote shown per citation line.
+/// Longest quote shown per citation line, in source characters.
 pub const QUOTE_LIMIT: usize = 240;
-/// Longest question restated in the reply header.
+/// Most of [`EMBED_DESCRIPTION_LIMIT`] one citation line may take once its
+/// symbols are emoji. As with [`HEADER_LIMIT`], the source-character cap does
+/// not bound the sent width: 240 characters of `{T}` expand past half the
+/// embed, and one Oracle-text quote would then crowd out every other citation.
+/// A quarter of the budget leaves room for at least four lines.
+pub const CITATION_LINE_LIMIT: usize = EMBED_DESCRIPTION_LIMIT / 4;
+/// Longest question restated in the reply header, in source characters.
 pub const QUESTION_LIMIT: usize = 300;
+/// Most of [`CONTENT_LIMIT`] the restated question may take *after* its symbols
+/// have become emoji. [`QUESTION_LIMIT`] alone cannot bound this: a tag is
+/// about 29 characters where `{W}` is three, so 300 characters of symbols would
+/// expand past the whole message budget and leave no room for the ruling.
+pub const HEADER_LIMIT: usize = CONTENT_LIMIT / 4;
 /// HTML mirror of the Comprehensive Rules with one anchor per rule
 /// (verified 2026-08-30: ids look like `R70219b`, see [`rule_anchor`]).
 pub const CR_MIRROR_URL: &str = "https://yawgatog.com/resources/magic-rules/";
@@ -76,11 +93,23 @@ pub struct DidYouMean {
 
 /// Render a validated verdict. The content restates the question (see
 /// [`with_header`]); citation lines link into `ctx`'s cards where it has them.
+/// Card symbols in the answer, in the restated question and in the quotes
+/// become emoji from `symbols` — [`SymbolTable::empty`] leaves them as `{W}`.
 #[must_use]
-pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>, asker: u64, question: &str) -> Answer {
-    let lines: Vec<String> = v.citations().iter().map(|c| citation_line(c, ctx)).collect();
+pub fn answer(
+    v: &Verdict<Validated>,
+    ctx: Option<&Context>,
+    asker: u64,
+    question: &str,
+    symbols: &SymbolTable,
+) -> Answer {
+    let lines: Vec<Rendered> = v
+        .citations()
+        .iter()
+        .map(|c| citation_line(c, ctx, symbols))
+        .collect();
     Answer {
-        content: with_header(asker, question, v.answer()),
+        content: with_header(asker, question, v.answer(), symbols),
         citations: fit_lines(&lines, EMBED_DESCRIPTION_LIMIT),
         footer: footer(v),
     }
@@ -97,12 +126,27 @@ pub fn header(asker: u64, question: &str) -> String {
     )
 }
 
-/// [`header`], a blank line, then `body`, the whole fit to [`CONTENT_LIMIT`]
-/// (so an over-long body is cut, never the header).
+/// [`header`], a blank line, then `body`, with card symbols in both drawn as
+/// emoji from `symbols`. The header is bounded first (to [`HEADER_LIMIT`]) and
+/// the body gets whatever is left of [`CONTENT_LIMIT`], so an over-long body is
+/// cut, never the header — *and* a question made entirely of symbols cannot
+/// crowd the answer out of its own message. Every reply the bot sends composes
+/// through here, so that budget rule has one definition.
 #[must_use]
-pub fn with_header(asker: u64, question: &str, body: &str) -> String {
-    fit(&format!("{}\n\n{body}", header(asker, question)), CONTENT_LIMIT)
+pub fn with_header(asker: u64, question: &str, body: &str, symbols: &SymbolTable) -> String {
+    let head = Rendered::substitute(&header(asker, question), symbols).fit(HEADER_LIMIT);
+    let room = CONTENT_LIMIT
+        .saturating_sub(head.chars().count())
+        .saturating_sub(SEPARATOR.chars().count());
+    let body = Rendered::substitute(body, symbols).fit(room);
+    let mut out = format!("{head}{SEPARATOR}{body}");
+    let kept = out.trim_end().len();
+    out.truncate(kept);
+    out
 }
+
+/// Between the restated question and the answer.
+const SEPARATOR: &str = "\n\n";
 
 /// Anchor of a rule on [`CR_MIRROR_URL`]: `R` plus the id with its dots
 /// removed. Observed on the live page 2026-08-30: `100.1` → `id=R1001`,
@@ -141,21 +185,26 @@ pub fn footer(v: &Verdict<Validated>) -> String {
 /// message content does not, so these lines must stay in the embed). Card
 /// names come from `ctx` when it holds the card; the link works either way,
 /// since the URL only needs the oracle id the citation itself carries.
+///
+/// The quote is capped twice: [`QUOTE_LIMIT`] on the source text, which is
+/// what "240 characters of quote" means to a reader, and
+/// [`CITATION_LINE_LIMIT`] once its symbols are emoji, which is what Discord
+/// counts. [`fit_lines`] then fits the lines to the embed.
 #[must_use]
-pub fn citation_line(c: &Citation, ctx: Option<&Context>) -> String {
+pub fn citation_line(c: &Citation, ctx: Option<&Context>, symbols: &SymbolTable) -> Rendered {
     let quote = fit(&collapse_whitespace(c.quote()), QUOTE_LIMIT);
     let card_name = |id: CardId| ctx.and_then(|x| x.card(id)).map(|card| card.name.clone());
-    match c {
-        Citation::Rule { id, .. } => format!("[{id}]({}) “{quote}”", rule_url(id)),
+    let prefix = match c {
+        Citation::Rule { id, .. } => format!("[{id}]({}) “", rule_url(id)),
         Citation::ScryfallRuling { card, idx, .. } => {
             let n = idx.saturating_add(1);
             let label = match card_name(*card) {
                 Some(name) => format!("Ruling #{n} — {name}"),
                 None => format!("Scryfall ruling #{n}"),
             };
-            format!("[{label}]({}) “{quote}”", scryfall_url(*card))
+            format!("[{label}]({}) “", scryfall_url(*card))
         }
-        Citation::PriorCall { .. } => format!("[prior call] “{quote}”"),
+        Citation::PriorCall { .. } => "[prior call] “".to_owned(),
         Citation::OracleText { card, face, .. } => {
             let face_note = match face {
                 0 => String::new(),
@@ -165,10 +214,22 @@ pub fn citation_line(c: &Citation, ctx: Option<&Context>) -> String {
                 Some(name) => format!("Oracle text{face_note} — {name}"),
                 None => format!("Oracle text{face_note}"),
             };
-            format!("[{label}]({}) “{quote}”", scryfall_url(*card))
+            format!("[{label}]({}) “", scryfall_url(*card))
         }
-    }
+    };
+    // The label and the URL are counted too, so CITATION_LINE_LIMIT bounds the
+    // whole line rather than just the quote inside it.
+    let room = CITATION_LINE_LIMIT
+        .saturating_sub(prefix.chars().count())
+        .saturating_sub(CLOSING_QUOTE.chars().count());
+    let mut line = Rendered::plain(prefix);
+    line.append(Rendered::substitute(&quote, symbols).truncate(room));
+    line.push_str(CLOSING_QUOTE);
+    line
 }
+
+/// Closes every citation's quoted span.
+const CLOSING_QUOTE: &str = "”";
 
 /// Render the "did you mean…?" for the *first* ambiguous span; the buttons
 /// carry `choices` in order.
@@ -300,37 +361,46 @@ pub fn fit(text: &str, limit: usize) -> String {
     out
 }
 
+/// Characters held back for the "… and N more" note while lines remain.
+const NOTE_RESERVE: usize = 24;
+
 /// Join `lines` with newlines, dropping whole trailing lines (rather than
 /// cutting one in half) so the result fits `limit`; says how many were dropped.
+/// Lengths are counted as Discord counts them, so an emoji tag costs its full
+/// `<:mana_w:123…>` width here even though it shows as one symbol.
 #[must_use]
-pub fn fit_lines(lines: &[String], limit: usize) -> String {
-    let mut out = String::new();
+pub fn fit_lines(lines: &[Rendered], limit: usize) -> String {
+    let mut out = Rendered::default();
     let mut shown = 0usize;
     for line in lines {
-        let candidate_len =
-            out.chars().count() + usize::from(!out.is_empty()) + line.chars().count();
+        let candidate_len = out
+            .len()
+            .saturating_add(usize::from(!out.is_empty()))
+            .saturating_add(line.len());
         // Leave room for the "… and N more" note if this is not the last line.
-        let reserve = if shown + 1 < lines.len() { 24 } else { 0 };
-        if candidate_len + reserve > limit {
+        let reserve = if shown.saturating_add(1) < lines.len() {
+            NOTE_RESERVE
+        } else {
+            0
+        };
+        if candidate_len.saturating_add(reserve) > limit {
             break;
         }
         if !out.is_empty() {
-            out.push('\n');
+            out.push_str("\n");
         }
-        out.push_str(line);
-        shown += 1;
+        out.append(line.clone());
+        shown = shown.saturating_add(1);
     }
-    let dropped = lines.len() - shown;
+    let dropped = lines.len().saturating_sub(shown);
     if dropped > 0 {
-        let note = format!("… and {dropped} more");
         if out.is_empty() {
             // Even the first line did not fit: cut it rather than show nothing.
-            return fit(lines.first().map_or("", String::as_str), limit);
+            return lines.first().map(|l| l.fit(limit)).unwrap_or_default();
         }
-        out.push('\n');
-        out.push_str(&note);
+        out.push_str(&format!("\n… and {dropped} more"));
     }
-    fit(&out, limit)
+    out.fit(limit)
 }
 
 const fn confidence_label(c: Confidence) -> &'static str {
@@ -360,6 +430,11 @@ mod tests {
         AnswerableSource, Card, CardId, Category, Context, CrVersion, EmptyVerdict, Face, Layout,
         RuleChunk, RuleId, Source,
     };
+
+    /// Most tests predate the emoji and assert the literal `{W}` behaviour.
+    fn no_symbols() -> SymbolTable {
+        SymbolTable::empty()
+    }
     use uuid::Uuid;
 
     type Res = Result<(), Box<dyn std::error::Error>>;
@@ -433,6 +508,10 @@ mod tests {
     }
 
     const ASKER: u64 = 110_372_470_472_613_888;
+    /// Real emoji ids are 19-digit snowflakes; a short one would understate
+    /// how much of the budget a tag costs (`<:mana_t:1…>` is 29 characters).
+    const TAP_ID: u64 = 1_411_688_015_155_265_557;
+    const GREEN_ID: u64 = 1_411_688_015_155_265_558;
 
     #[test]
     fn header_mentions_the_asker_and_truncates_the_question() {
@@ -454,10 +533,10 @@ mod tests {
 
     #[test]
     fn with_header_prefixes_and_keeps_the_content_budget() {
-        let c = with_header(ASKER, "short?", "The answer.");
+        let c = with_header(ASKER, "short?", "The answer.", &no_symbols());
         assert_eq!(c, "<@110372470472613888> asked: short?\n\nThe answer.");
         // An over-long body is cut from the end; the header survives intact.
-        let c = with_header(ASKER, &"q ".repeat(400), &"body ".repeat(1000));
+        let c = with_header(ASKER, &"q ".repeat(400), &"body ".repeat(1000), &no_symbols());
         assert!(c.chars().count() <= CONTENT_LIMIT, "{}", c.len());
         assert!(c.starts_with("<@110372470472613888> asked: q q"));
         assert!(c.contains("\n\nbody"));
@@ -467,7 +546,7 @@ mod tests {
     #[test]
     fn answer_respects_both_limits() -> Res {
         let v = validated(&"word ".repeat(1000), 60)?;
-        let a = answer(&v, None, ASKER, "does a long answer still fit?");
+        let a = answer(&v, None, ASKER, "does a long answer still fit?", &no_symbols());
         assert!(
             a.content.chars().count() <= CONTENT_LIMIT,
             "{}",
@@ -487,7 +566,7 @@ mod tests {
     #[test]
     fn short_answer_follows_the_header_with_one_citation_per_line() -> Res {
         let v = validated(LONG_ENOUGH, 2)?;
-        let a = answer(&v, None, ASKER, "trample?");
+        let a = answer(&v, None, ASKER, "trample?", &no_symbols());
         assert_eq!(
             a.content,
             format!("<@110372470472613888> asked: trample?\n\n{LONG_ENOUGH}")
@@ -534,19 +613,19 @@ mod tests {
             quote: "a  ruling\nwith   space".into(),
         };
         assert_eq!(
-            citation_line(&r, Some(&ctx)),
+            citation_line(&r, Some(&ctx), &no_symbols()).to_string(),
             format!("[Ruling #1 — Dark Confidant]({url}) “a ruling with space”")
         );
         // Without a context the link still works; only the name is missing.
         assert_eq!(
-            citation_line(&r, None),
+            citation_line(&r, None, &no_symbols()).to_string(),
             format!("[Scryfall ruling #1]({url}) “a ruling with space”")
         );
         let p = Citation::PriorCall {
             id: judge_core::CallId::new(Uuid::from_u128(2)),
             quote: "x".repeat(300),
         };
-        let line = citation_line(&p, Some(&ctx));
+        let line = citation_line(&p, Some(&ctx), &no_symbols()).to_string();
         assert!(line.starts_with("[prior call] “"));
         assert!(line.chars().count() <= QUOTE_LIMIT + 20);
         assert!(line.contains(TRUNCATION_MARKER));
@@ -556,17 +635,17 @@ mod tests {
             quote: "Flying".into(),
         };
         assert_eq!(
-            citation_line(&o, Some(&ctx)),
+            citation_line(&o, Some(&ctx), &no_symbols()).to_string(),
             format!("[Oracle text — Dark Confidant]({url}) “Flying”")
         );
-        assert_eq!(citation_line(&o, None), format!("[Oracle text]({url}) “Flying”"));
+        assert_eq!(citation_line(&o, None, &no_symbols()).to_string(), format!("[Oracle text]({url}) “Flying”"));
         let back = Citation::OracleText {
             card: id,
             face: 1,
             quote: "Insectile".into(),
         };
         assert_eq!(
-            citation_line(&back, Some(&ctx)),
+            citation_line(&back, Some(&ctx), &no_symbols()).to_string(),
             format!("[Oracle text, face 2 — Dark Confidant]({url}) “Insectile”")
         );
     }
@@ -580,7 +659,7 @@ mod tests {
             cards: vec![card(7, &"Asmoranomardicadaistinaculdacar ".repeat(3))],
             ..Context::default()
         };
-        let lines: Vec<String> = (0..40)
+        let lines: Vec<Rendered> = (0..40)
             .map(|i| {
                 citation_line(
                     &Citation::ScryfallRuling {
@@ -589,10 +668,11 @@ mod tests {
                         quote: "q".repeat(300),
                     },
                     Some(&ctx),
+                    &no_symbols(),
                 )
             })
             .collect();
-        assert!(lines.iter().all(|l| l.chars().count() > 300));
+        assert!(lines.iter().all(|l| l.len() > 300));
         let out = fit_lines(&lines, EMBED_DESCRIPTION_LIMIT);
         assert!(out.chars().count() <= EMBED_DESCRIPTION_LIMIT, "{}", out.len());
         assert!(out.contains("… and "), "some lines must have been dropped");
@@ -600,22 +680,125 @@ mod tests {
 
     #[test]
     fn fit_lines_drops_whole_lines() {
-        let lines: Vec<String> = (0..10)
+        let texts: Vec<String> = (0..10)
             .map(|i| format!("line {i} {}", "x".repeat(30)))
             .collect();
+        let lines: Vec<Rendered> = texts.iter().map(Rendered::plain).collect();
         let out = fit_lines(&lines, 120);
         assert!(out.chars().count() <= 120, "{out}");
         assert!(
             out.lines()
                 .next()
-                .is_some_and(|l| l == lines.first().map_or("", String::as_str))
+                .is_some_and(|l| l == texts.first().map_or("", String::as_str))
         );
         assert!(out.ends_with(" more"), "{out}");
         assert_eq!(fit_lines(&[], 100), "");
         // One over-long line is cut rather than dropped.
-        let one = vec!["y".repeat(500)];
+        let one = vec![Rendered::plain("y".repeat(500))];
         let out = fit_lines(&one, 50);
         assert_eq!(out.chars().count(), 50);
+    }
+
+    #[test]
+    fn symbols_become_emoji_in_the_answer_and_the_quotes() -> Res {
+        let symbols = SymbolTable::new([("mana_t".to_owned(), TAP_ID), ("mana_g".to_owned(), GREEN_ID)]);
+        let id = CardId::new(Uuid::from_u128(1));
+        let ctx = Context {
+            cards: vec![card(1, "Llanowar Elves")],
+            ..Context::default()
+        };
+        let line = citation_line(
+            &Citation::OracleText {
+                card: id,
+                face: 0,
+                quote: "{T}: Add {G}.".into(),
+            },
+            Some(&ctx),
+            &symbols,
+        );
+        assert!(line.to_string().ends_with(&format!("“<:mana_t:{TAP_ID}>: Add <:mana_g:{GREEN_ID}>.”")), "{line}");
+        // A symbol with no emoji uploaded stays as Scryfall wrote it.
+        let v = validated("Tap it for {G}, not {W}: the elf makes green mana only.", 1)?;
+        let a = answer(&v, Some(&ctx), ASKER, "how much for {G}?", &symbols);
+        assert!(a.content.contains(&format!("Tap it for <:mana_g:{GREEN_ID}>, not {{W}}:")), "{}", a.content);
+        assert!(a.content.contains(&format!("asked: how much for <:mana_g:{GREEN_ID}>?")), "{}", a.content);
+        Ok(())
+    }
+
+    /// A question of nothing but symbols used to expand past `CONTENT_LIMIT` on
+    /// its own and truncate the ruling away entirely: `{W}` is three characters
+    /// in, twenty-nine out, and `QUESTION_LIMIT` counted the three.
+    #[test]
+    fn a_symbol_only_question_cannot_crowd_out_the_answer() -> Res {
+        let symbols = SymbolTable::new([("mana_t".to_owned(), TAP_ID)]);
+        let v = validated(LONG_ENOUGH, 1)?;
+        // Every length up to and past what QUESTION_LIMIT allows.
+        for repeats in [1usize, 40, 68, 100, 400] {
+            let question = "{T}".repeat(repeats);
+            let a = answer(&v, None, ASKER, &question, &symbols);
+            assert!(
+                a.content.chars().count() <= CONTENT_LIMIT,
+                "{repeats}: {} chars",
+                a.content.chars().count()
+            );
+            let (head, body) = a
+                .content
+                .split_once(SEPARATOR)
+                .ok_or("the header and body must stay separated")?;
+            assert!(
+                head.chars().count() <= HEADER_LIMIT,
+                "{repeats}: header is {} chars",
+                head.chars().count()
+            );
+            assert!(
+                body.starts_with("Trample assigns"),
+                "{repeats}: the answer was crowded out: {body:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// One symbol-dense quote used to take over half the embed and push every
+    /// other citation into "… and N more".
+    #[test]
+    fn a_symbol_heavy_quote_leaves_room_for_other_citations() {
+        let symbols = SymbolTable::new([("mana_t".to_owned(), TAP_ID)]);
+        let id = CardId::new(Uuid::from_u128(1));
+        let heavy = Citation::OracleText {
+            card: id,
+            face: 0,
+            quote: "{T}".repeat(300),
+        };
+        let line = citation_line(&heavy, None, &symbols);
+        assert!(
+            line.len() <= CITATION_LINE_LIMIT,
+            "one line took {} of {EMBED_DESCRIPTION_LIMIT}",
+            line.len()
+        );
+        let lines: Vec<Rendered> = (0..6).map(|_| citation_line(&heavy, None, &symbols)).collect();
+        let out = fit_lines(&lines, EMBED_DESCRIPTION_LIMIT);
+        assert!(out.chars().count() <= EMBED_DESCRIPTION_LIMIT);
+        assert!(
+            out.lines().count() >= 4,
+            "only {} lines survived: {out}",
+            out.lines().count()
+        );
+    }
+
+    #[test]
+    fn a_symbol_heavy_answer_still_fits_the_content_limit() -> Res {
+        // Each `{T}` becomes ~13 characters, so the raw answer is well under
+        // the limit while the sent message would not be.
+        let symbols = SymbolTable::new([("mana_t".to_owned(), TAP_ID)]);
+        let v = validated(&"{T}".repeat(600), 1)?;
+        let a = answer(&v, None, ASKER, "symbols?", &symbols);
+        assert!(a.content.chars().count() <= CONTENT_LIMIT, "{}", a.content.chars().count());
+        assert!(a.content.ends_with(TRUNCATION_MARKER));
+        // No tag was cut in half.
+        let tags = a.content.matches(&format!("<:mana_t:{TAP_ID}>")).count();
+        assert_eq!(tags, a.content.matches("<:").count(), "a tag was cut in half");
+        assert!(tags > 10, "only {tags} tags survived; the answer is nearly all symbols");
+        Ok(())
     }
 
     fn ambiguous(query: &str, names: &[&str]) -> Ambiguous {

@@ -2,10 +2,11 @@
 //! rating buttons and the "did you mean…?" flow, on poise 0.6 / serenity 0.12.
 //!
 //! Everything that does not need the gateway lives in a pure submodule:
-//! [`render`] (verdict / error → text), [`ids`] (typed `custom_id`s),
-//! [`pending`] (questions waiting on a card pick), [`question`] (span
-//! replacement) and [`capture`] (keeps the retrieval `Context` so a call can
-//! be persisted). This file is the glue: serenity types in, those modules out.
+//! [`render`] (verdict / error → text), [`mana`] (card symbols → the bot's
+//! custom emoji), [`ids`] (typed `custom_id`s), [`pending`] (questions waiting
+//! on a card pick), [`question`] (span replacement) and [`capture`] (keeps the
+//! retrieval `Context` so a call can be persisted). This file is the glue:
+//! serenity types in, those modules out.
 //!
 //! Flows:
 //! * `/judge question:<text>` → defer → `judge()` with the thread's last N
@@ -24,6 +25,7 @@
 
 pub mod capture;
 pub mod ids;
+pub mod mana;
 pub mod pending;
 pub mod question;
 pub mod render;
@@ -49,6 +51,7 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 
 use capture::CapturingRetriever;
 use ids::ButtonAction;
+use mana::SymbolTable;
 use pending::{Pending, PendingId, PendingSpan, PendingStore, TakeError};
 
 /// How long a `/judge` (or a card pick) waits for a free slot before replying
@@ -148,6 +151,9 @@ pub struct Data {
     permits: Semaphore,
     judge_role: String,
     history_len: usize,
+    /// Card-symbol emoji, filled in on `Ready` by [`run`]; empty until then
+    /// (and for good, if this application has none uploaded).
+    symbols: SymbolTable,
 }
 
 impl std::fmt::Debug for Data {
@@ -185,6 +191,7 @@ impl Data {
             permits: Semaphore::new(cfg.max_concurrent),
             judge_role: cfg.judge_role.clone(),
             history_len: cfg.history_len,
+            symbols: SymbolTable::empty(),
         }
     }
 
@@ -240,7 +247,7 @@ impl Data {
                     tracing::warn!("no captured context for the question; call not persisted");
                     None
                 };
-                Outgoing::answer(&v, captured.as_ref(), call, asker, &q.text)
+                Outgoing::answer(&v, captured.as_ref(), call, asker, &q.text, &self.symbols)
             }
             Err(JudgeError::AmbiguousCards(spans)) => {
                 let dym = render::did_you_mean(&spans);
@@ -251,7 +258,7 @@ impl Data {
                     spans: spans.map(PendingSpan::from),
                 });
                 Outgoing {
-                    content: render::with_header(asker.get(), &q.text, &dym.content),
+                    content: render::with_header(asker.get(), &q.text, &dym.content, &self.symbols),
                     embed: None,
                     components: vec![pick_row(token, &dym.choices)],
                 }
@@ -259,7 +266,7 @@ impl Data {
             Err(e) => {
                 tracing::warn!(error = format_args!("{e:#}"), "judge failed");
                 Outgoing {
-                    content: render::with_header(asker.get(), &q.text, &render::error(&e)),
+                    content: render::with_header(asker.get(), &q.text, &render::error(&e), &self.symbols),
                     embed: None,
                     components: vec![],
                 }
@@ -390,8 +397,9 @@ impl Outgoing {
         call: Option<CallId>,
         asker: UserId,
         question: &str,
+        symbols: &SymbolTable,
     ) -> Self {
-        let a = render::answer(v, ctx, asker.get(), question);
+        let a = render::answer(v, ctx, asker.get(), question, symbols);
         let mut embed = CreateEmbed::new().footer(CreateEmbedFooter::new(a.footer));
         if !a.citations.is_empty() {
             embed = embed.description(a.citations);
@@ -590,6 +598,37 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
     }
 }
 
+/// The application's card-symbol emoji, for [`render::answer`].
+///
+/// Never fails the startup: Discord being unreachable or the emoji never
+/// having been uploaded (see the `judge-ingest emoji` subcommand) both leave an
+/// empty table, and symbols then render as the literal `{W}` Scryfall writes.
+async fn load_symbols(http: &serenity::Http) -> SymbolTable {
+    match http.get_application_emojis().await {
+        Ok(emojis) => {
+            let table =
+                SymbolTable::new(emojis.into_iter().map(|e| (e.name, e.id.get())));
+            if table.is_empty() {
+                tracing::warn!(
+                    "no `{}…` application emoji found; card symbols will render as text \
+                     (run `judge-ingest emoji` to upload them)",
+                    mana::NAME_PREFIX
+                );
+            } else {
+                tracing::info!(symbols = table.len(), "loaded card-symbol emoji");
+            }
+            table
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "could not list application emoji; card symbols will render as text"
+            );
+            SymbolTable::empty()
+        }
+    }
+}
+
 /// Connect to the gateway and serve until the connection ends.
 ///
 /// # Errors
@@ -608,6 +647,7 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
         .options(options)
         .setup(move |ctx, _ready, framework| {
             Box::pin(async move {
+                let mut data = data;
                 let commands = &framework.options().commands;
                 if let Some(g) = guild {
                     poise::builtins::register_in_guild(ctx, commands, g).await?;
@@ -618,6 +658,9 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
                         "registered /judge globally (propagation can take up to an hour)"
                     );
                 }
+                // The application id arrives with `Ready`, which is what got us
+                // here, so `ctx.http` can answer this now.
+                data.symbols = load_symbols(&ctx.http).await;
                 Ok(data)
             })
         })
