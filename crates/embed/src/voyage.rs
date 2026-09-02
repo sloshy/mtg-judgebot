@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use judge_core::{Embedder, InputKind, JudgeError};
 use serde::{Deserialize, Serialize};
 
+use crate::{Provider, Space, WithSpace};
+
 /// Voyage's key-only free tier allows 3 requests/min; 429s are retried with a
 /// fixed pause instead of failing a long ingest run.
 const RATE_LIMIT_TRIES: u32 = 8;
@@ -20,16 +22,16 @@ const DEFAULT_DIMENSIONS: usize = 1024;
 pub struct VoyageEmbedder {
     http: reqwest::Client,
     api_key: String,
-    model: String,
-    dimensions: usize,
+    /// Model and width, sent on every request so the vectors are that wide
+    /// whatever the model's default.
+    space: Space,
 }
 
 // Manual impl: the API key must never reach a `{:?}` log line.
 impl fmt::Debug for VoyageEmbedder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VoyageEmbedder")
-            .field("model", &self.model)
-            .field("dimensions", &self.dimensions)
+            .field("space", &self.space)
             .field("api_key", &"<redacted>")
             .finish_non_exhaustive()
     }
@@ -59,7 +61,7 @@ impl VoyageEmbedder {
     /// request, so the vectors are that wide whatever the model's default.
     #[must_use]
     pub fn new(api_key: impl Into<String>, model: impl Into<String>, dimensions: usize) -> Self {
-        Self { http: reqwest::Client::new(), api_key: api_key.into(), model: model.into(), dimensions }
+        Self { http: reqwest::Client::new(), api_key: api_key.into(), space: Space { provider: Provider::Voyage, model: model.into(), dimensions } }
     }
 
     /// Reads `VOYAGE_API_KEY`, optional `VOYAGE_MODEL` (default `voyage-3.5`) and
@@ -92,7 +94,7 @@ impl Embedder for VoyageEmbedder {
             InputKind::Document => "document",
             InputKind::Query => "query",
         };
-        let req = Req { input: texts, model: &self.model, input_type, output_dimension: self.dimensions };
+        let req = Req { input: texts, model: &self.space.model, input_type, output_dimension: self.space.dimensions };
         let mut tries = 0;
         let body = loop {
             let resp = self
@@ -125,7 +127,13 @@ impl Embedder for VoyageEmbedder {
     }
 
     fn dimensions(&self) -> usize {
-        self.dimensions
+        self.space.dimensions
+    }
+}
+
+impl WithSpace for VoyageEmbedder {
+    fn space(&self) -> &Space {
+        &self.space
     }
 }
 
@@ -135,9 +143,10 @@ mod tests {
 
     #[test]
     fn debug_redacts_api_key() {
-        let e = VoyageEmbedder { http: reqwest::Client::new(), api_key: "pa-secret".into(), model: DEFAULT_MODEL.into(), dimensions: 1024 };
+        let e = VoyageEmbedder::new("pa-secret", DEFAULT_MODEL, 1024);
         let s = format!("{e:?}");
         assert!(!s.contains("pa-secret") && s.contains("<redacted>"), "{s}");
+        assert_eq!(e.space(), &Space { provider: Provider::Voyage, model: DEFAULT_MODEL.into(), dimensions: 1024 });
     }
 
     #[test]

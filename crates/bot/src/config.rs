@@ -30,7 +30,9 @@
 //!
 //! The loader is the one place a `judge.toml` is read; every binary calls
 //! it, logs [`Config::summary`] at startup, and takes its models and
-//! embedder from it.
+//! embedder from it. The embedder comes with its vector space
+//! ([`judge_embed::WithSpace`]) and, through [`Config::vectors`], behind the
+//! stored-space check, so no binary can write a vector of the wrong model.
 
 use std::{
     collections::BTreeMap,
@@ -39,14 +41,15 @@ use std::{
 };
 
 use judge_anthropic::{Anthropic, Endpoint, ProxyAuth};
-use judge_core::Embedder;
-use judge_embed::VoyageEmbedder;
+use judge_core::JudgeError;
+use judge_embed::{OpenAiEmbedder, Provider, Space, VoyageEmbedder, WithSpace};
 use judge_llm::{ApiKey, Backend, Capabilities, ChatRequest, ChatResponse, Effort, LlmError, Price, Pricing, SpendMeter, pricing_for};
 use judge_openai::{Auth, Dialect, MaxTokensParam, OpenAi, StructuredOutputMode};
 use nutype::nutype;
 use serde::Deserialize;
+use sqlx::PgPool;
 
-use crate::{DepsConfig, Models};
+use crate::{DepsConfig, Models, db::Vectors};
 
 /// The environment variable naming the config file.
 pub const CONFIG_ENV: &str = "JUDGE_CONFIG";
@@ -104,9 +107,26 @@ fn validate_http_url(s: &str) -> Result<(), BadBaseUrl> {
 #[nutype(validate(finite, greater_or_equal = 0.0), derive(Clone, Copy, Debug, Deserialize, PartialEq, AsRef))]
 pub struct Usd(f64);
 
-/// An embedding width: positive.
-#[nutype(validate(greater = 0), derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, AsRef))]
+/// An embedding width: `1..=`[`MAX_DIMENSIONS`]. Bounded at load so a
+/// `dimensions = 3072` fails naming the key, not after `reembed --yes` has
+/// retyped the columns and `CREATE INDEX ... USING hnsw` rolls it back.
+#[nutype(validate(with = validate_dimensions, error = BadDimensions), derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, AsRef))]
 pub struct Dimensions(usize);
+
+/// The widest `vector(N)` pgvector's HNSW index accepts. Every `embedding`
+/// column is HNSW-indexed, so a wider model must be asked for a narrower
+/// (matryoshka) width, or is unusable here.
+pub const MAX_DIMENSIONS: usize = 2000;
+
+/// A width outside `1..=`[`MAX_DIMENSIONS`].
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("dimensions must be 1..={MAX_DIMENSIONS} (pgvector's HNSW index limit); a wider model must be asked for a narrower width (dimensions = 1024 with send_dimensions = true)")]
+pub struct BadDimensions;
+
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "nutype's validator signature")]
+fn validate_dimensions(n: &usize) -> Result<(), BadDimensions> {
+    if (1..=MAX_DIMENSIONS).contains(n) { Ok(()) } else { Err(BadDimensions) }
+}
 
 /// An output ceiling: positive.
 #[nutype(validate(greater = 0), derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, AsRef))]
@@ -159,6 +179,11 @@ enum ProviderEntry {
         max_tokens_param: MaxTokensKnob,
         #[serde(default)]
         cache_hints: bool,
+        /// Embeddings: whether `dimensions` goes on the wire. Off for a
+        /// server that rejects the field (vLLM with a model that has no
+        /// matryoshka training); the width is then only checked on the reply.
+        #[serde(default = "yes")]
+        send_dimensions: bool,
         #[serde(default)]
         pricing: Option<FreePricing>,
     },
@@ -413,6 +438,17 @@ pub enum ConfigError {
         /// The provider.
         provider: String,
     },
+    /// `[models.embed]` on an `openai` provider names no `dimensions`: the
+    /// width is the columns' `vector(N)`, and an OpenAI-compatible model has
+    /// no default this loader could know.
+    #[error("models.embed.dimensions is required on providers.{provider} (kind = \"openai\"): the vector width the model produces (text-embedding-3-small: 1536, nomic-embed-text: 768)")]
+    EmbedDimensions {
+        /// The provider.
+        provider: String,
+    },
+    /// The embedder's HTTP client could not be built.
+    #[error("building the embedder: {0}")]
+    Embedder(JudgeError),
     /// A stage sets `effort` on an `openai` provider that would not send it.
     #[error("models.{stage}.effort: providers.{provider} has reasoning_effort = false, so the model would never see it; set reasoning_effort = true or drop effort")]
     EffortNotSent {
@@ -424,8 +460,9 @@ pub enum ConfigError {
     /// No chat model at all: no file and no `ANTHROPIC_API_KEY`.
     #[error("no model configured: set {ANTHROPIC_KEY_ENV}, or write a {DEFAULT_PATH} (or point {CONFIG_ENV} at one)")]
     NoChatModel,
-    /// `VOYAGE_DIMENSIONS` in the environment setup is not a positive integer.
-    #[error("VOYAGE_DIMENSIONS must be a positive integer, got {value:?}")]
+    /// `VOYAGE_DIMENSIONS` in the environment setup is not an integer in
+    /// `1..=`[`MAX_DIMENSIONS`].
+    #[error("VOYAGE_DIMENSIONS must be an integer in 1..={MAX_DIMENSIONS} (pgvector's HNSW index limit), got {value:?}")]
     BadDimensions {
         /// The value.
         value: String,
@@ -471,6 +508,9 @@ pub enum ChatProvider {
         auth: Auth,
         /// The server's departures from `OpenAI`.
         dialect: Dialect,
+        /// The embeddings knob, carried for the report (a provider table
+        /// serves chat and embeddings alike).
+        send_dimensions: bool,
     },
 }
 
@@ -496,7 +536,7 @@ impl ChatProvider {
                 };
                 serde_json::json!({"kind": "anthropic", "endpoint": "proxy", "base_url": base_url, "auth": auth})
             }
-            ChatProvider::OpenAi { base_url, auth, dialect } => serde_json::json!({
+            ChatProvider::OpenAi { base_url, auth, dialect, send_dimensions } => serde_json::json!({
                 "kind": "openai",
                 "base_url": base_url,
                 "auth": match auth { Auth::None => "none", Auth::Bearer(_) => "bearer", Auth::ApiKeyHeader(_) => "api-key" },
@@ -512,6 +552,7 @@ impl ChatProvider {
                     MaxTokensParam::MaxCompletionTokens => "max_completion_tokens",
                 },
                 "cache_hints": dialect.cache_hints,
+                "send_dimensions": send_dimensions,
             }),
         }
     }
@@ -545,7 +586,7 @@ impl Stage {
     fn backend(&self) -> Result<ChatBackend, LlmError> {
         Ok(match &self.backend {
             ChatProvider::Anthropic { endpoint } => ChatBackend::Anthropic(Anthropic::new(endpoint.clone())?.with_model(&self.model)),
-            ChatProvider::OpenAi { base_url, auth, dialect } => ChatBackend::OpenAi(OpenAi::new(base_url, auth.clone(), &self.model, *dialect)?),
+            ChatProvider::OpenAi { base_url, auth, dialect, .. } => ChatBackend::OpenAi(OpenAi::new(base_url, auth.clone(), &self.model, *dialect)?),
         })
     }
 
@@ -599,8 +640,7 @@ impl Backend for ChatBackend {
     }
 }
 
-/// The embedder, resolved. Voyage is the only kind built so far
-/// (OpenAI-compatible embeddings are phase 3).
+/// The embedder, resolved: Voyage or an OpenAI-compatible server.
 #[derive(Clone, Debug)]
 pub struct Embed {
     /// The `[providers]` key.
@@ -609,7 +649,61 @@ pub struct Embed {
     pub model: String,
     /// Vector width.
     pub dimensions: usize,
-    api_key: ApiKey,
+    backend: EmbedProvider,
+}
+
+/// An embeddings provider, resolved: the door and its credential.
+#[derive(Clone, Debug)]
+enum EmbedProvider {
+    Voyage { api_key: ApiKey },
+    OpenAi { base_url: String, auth: Auth, send_dimensions: bool },
+}
+
+impl Embed {
+    /// The space the embedder writes into: the provider *kind* (not the
+    /// operator's name for it), the model and the width.
+    #[must_use]
+    pub fn space(&self) -> Space {
+        let provider = match self.backend {
+            EmbedProvider::Voyage { .. } => Provider::Voyage,
+            EmbedProvider::OpenAi { .. } => Provider::OpenAi,
+        };
+        Space { provider, model: self.model.clone(), dimensions: self.dimensions }
+    }
+
+    /// `provider/model`, as the summary line writes it.
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
+    }
+
+    /// Build the embedder.
+    fn embedder(&self) -> Result<Arc<dyn WithSpace>, ConfigError> {
+        Ok(match &self.backend {
+            EmbedProvider::Voyage { api_key } => Arc::new(VoyageEmbedder::new(api_key.expose(), &self.model, self.dimensions)),
+            EmbedProvider::OpenAi { base_url, auth, send_dimensions } => {
+                let auth = match auth {
+                    Auth::None => judge_embed::Auth::None,
+                    Auth::Bearer(k) => judge_embed::Auth::Bearer(k.expose().to_owned()),
+                    Auth::ApiKeyHeader(k) => judge_embed::Auth::ApiKeyHeader(k.expose().to_owned()),
+                };
+                Arc::new(OpenAiEmbedder::new(base_url, auth, &self.model, self.dimensions, *send_dimensions).map_err(ConfigError::Embedder)?)
+            }
+        })
+    }
+
+    /// A description for the report: the door, never the key.
+    fn describe(&self) -> serde_json::Value {
+        match &self.backend {
+            EmbedProvider::Voyage { .. } => serde_json::json!({"kind": "voyage"}),
+            EmbedProvider::OpenAi { base_url, auth, send_dimensions } => serde_json::json!({
+                "kind": "openai",
+                "base_url": base_url,
+                "auth": match auth { Auth::None => "none", Auth::Bearer(_) => "bearer", Auth::ApiKeyHeader(_) => "api-key" },
+                "send_dimensions": send_dimensions,
+            }),
+        }
+    }
 }
 
 /// Both chat stages.
@@ -719,14 +813,14 @@ impl Config {
         let embed = set(VOYAGE_KEY_ENV)
             .map(|key| {
                 let dimensions = match set("VOYAGE_DIMENSIONS") {
-                    Some(s) => s.parse::<usize>().ok().filter(|d| *d > 0).ok_or(ConfigError::BadDimensions { value: s })?,
+                    Some(s) => s.parse::<usize>().ok().filter(|d| validate_dimensions(d).is_ok()).ok_or(ConfigError::BadDimensions { value: s })?,
                     None => VOYAGE_DEFAULT_DIMENSIONS,
                 };
                 Ok::<_, ConfigError>(Embed {
                     provider: VOYAGE_PROVIDER.to_owned(),
                     model: set("VOYAGE_MODEL").unwrap_or_else(|| VOYAGE_DEFAULT_MODEL.to_owned()),
                     dimensions,
-                    api_key: key.into(),
+                    backend: EmbedProvider::Voyage { api_key: key.into() },
                 })
             })
             .transpose()?;
@@ -805,14 +899,24 @@ impl Config {
         cfg
     }
 
-    /// The embedder, if one is configured.
+    /// The embedder, if one is configured, with its space. `ingest embed`
+    /// takes this; a binary that queries or writes vector columns takes
+    /// [`Self::vectors`].
     ///
     /// # Errors
-    /// None today; the signature is for the `OpenAI` embedder of phase 3.
-    pub fn embedder(&self) -> Result<Option<Arc<dyn Embedder>>, ConfigError> {
-        Ok(self.embed.as_ref().map(|e| {
-            Arc::new(VoyageEmbedder::new(e.api_key.expose(), &e.model, e.dimensions)) as Arc<dyn Embedder>
-        }))
+    /// [`ConfigError::Embedder`] when its HTTP client cannot be built.
+    pub fn embedder(&self) -> Result<Option<Arc<dyn WithSpace>>, ConfigError> {
+        self.embed.as_ref().map(Embed::embedder).transpose()
+    }
+
+    /// The embedder behind the stored-space check over `pool`, if one is
+    /// configured: what the retriever, the library and the call store take.
+    /// One `Arc` per process, so the check runs and logs once.
+    ///
+    /// # Errors
+    /// As [`Self::embedder`].
+    pub fn vectors(&self, pool: PgPool) -> Result<Option<Arc<Vectors>>, ConfigError> {
+        Ok(self.embedder()?.map(|e| Arc::new(Vectors::new(pool, e))))
     }
 
     /// The one-line summary every binary logs at startup:
@@ -820,7 +924,7 @@ impl Config {
     #[must_use]
     pub fn summary(&self) -> String {
         let stage = |s: Option<&Stage>| s.map_or_else(|| "none".to_owned(), Stage::label);
-        let embed = self.embed.as_ref().map_or_else(|| "none".to_owned(), |e| format!("{}/{}", e.provider, e.model));
+        let embed = self.embed.as_ref().map_or_else(|| "none".to_owned(), Embed::label);
         format!(
             "config={} extract={} synth={} embed={} cap=${:.2}",
             self.source,
@@ -839,7 +943,7 @@ impl Config {
             providers.entry(s.provider.clone()).or_insert_with(|| s.backend.describe());
         }
         if let Some(e) = &self.embed {
-            providers.entry(e.provider.clone()).or_insert_with(|| serde_json::json!({"kind": "voyage"}));
+            providers.entry(e.provider.clone()).or_insert_with(|| e.describe());
         }
         serde_json::json!({
             "source": self.source.to_string(),
@@ -868,6 +972,19 @@ impl<E: Fn(&str) -> Option<String>> Resolver<'_, E> {
             .filter(|v| !v.is_empty())
             .map(ApiKey::from)
             .ok_or_else(|| ConfigError::MissingEnv { provider: provider.to_owned(), var: var.to_owned() })
+    }
+
+    /// How an `openai` provider's key travels: `auth` without `api_key_env`
+    /// would be silently ignored, so it is an error.
+    fn openai_auth(&self, provider: &str, api_key_env: Option<&EnvVar>, auth: Option<OpenAiHeader>) -> Result<Auth, ConfigError> {
+        Ok(match (api_key_env, auth) {
+            (None, None) => Auth::None,
+            (None, Some(_)) => {
+                return Err(ConfigError::Misplaced { provider: provider.to_owned(), key: "auth", reason: "needs api_key_env (there is no key to send)" });
+            }
+            (Some(var), None | Some(OpenAiHeader::Bearer)) => Auth::Bearer(self.secret(provider, var.as_ref())?),
+            (Some(var), Some(OpenAiHeader::ApiKey)) => Auth::ApiKeyHeader(self.secret(provider, var.as_ref())?),
+        })
     }
 
     fn provider<'b>(&'b self, stage: &'static str, name: &ProviderName) -> Result<&'b ProviderEntry, ConfigError> {
@@ -911,15 +1028,8 @@ impl<E: Fn(&str) -> Option<String>> Resolver<'_, E> {
                 };
                 (ChatProvider::Anthropic { endpoint }, pricing.is_some())
             }
-            ProviderEntry::Openai { base_url, api_key_env, auth, structured_output, strict_tools, reasoning_effort, max_tokens_param, cache_hints, pricing } => {
-                let auth = match (api_key_env, auth) {
-                    (None, None) => Auth::None,
-                    (None, Some(_)) => {
-                        return Err(ConfigError::Misplaced { provider: name.to_string(), key: "auth", reason: "needs api_key_env (there is no key to send)" });
-                    }
-                    (Some(var), None | Some(OpenAiHeader::Bearer)) => Auth::Bearer(self.secret(name.as_ref(), var.as_ref())?),
-                    (Some(var), Some(OpenAiHeader::ApiKey)) => Auth::ApiKeyHeader(self.secret(name.as_ref(), var.as_ref())?),
-                };
+            ProviderEntry::Openai { base_url, api_key_env, auth, structured_output, strict_tools, reasoning_effort, max_tokens_param, cache_hints, send_dimensions, pricing } => {
+                let auth = self.openai_auth(name.as_ref(), api_key_env.as_ref(), *auth)?;
                 if entry.effort.is_some() && !reasoning_effort {
                     return Err(ConfigError::EffortNotSent { stage, provider: name.to_string() });
                 }
@@ -937,7 +1047,7 @@ impl<E: Fn(&str) -> Option<String>> Resolver<'_, E> {
                     },
                     cache_hints: *cache_hints,
                 };
-                (ChatProvider::OpenAi { base_url: base_url.to_string(), auth, dialect }, pricing.is_some())
+                (ChatProvider::OpenAi { base_url: base_url.to_string(), auth, dialect, send_dimensions: *send_dimensions }, pricing.is_some())
             }
             ProviderEntry::Voyage { .. } => {
                 return Err(ConfigError::WrongKind { stage, provider: name.to_string(), kind: "voyage", expected: "a chat provider: kind = anthropic or openai" });
@@ -988,10 +1098,23 @@ impl<E: Fn(&str) -> Option<String>> Resolver<'_, E> {
                 provider: name.to_owned(),
                 model: entry.model.to_string(),
                 dimensions: entry.dimensions.map_or(VOYAGE_DEFAULT_DIMENSIONS, Dimensions::into_inner),
-                api_key: self.secret(name, api_key_env.as_ref().map_or(VOYAGE_KEY_ENV, AsRef::as_ref))?,
+                backend: EmbedProvider::Voyage { api_key: self.secret(name, api_key_env.as_ref().map_or(VOYAGE_KEY_ENV, AsRef::as_ref))? },
             }),
-            ProviderEntry::Openai { .. } => {
-                Err(ConfigError::NotBuilt { provider: name.to_owned(), what: "embeddings on an openai provider (phase 3)".into() })
+            ProviderEntry::Openai { base_url, api_key_env, auth, send_dimensions, .. } => {
+                // The width is the columns' vector(N); nothing here can guess it for an arbitrary model.
+                let Some(dimensions) = entry.dimensions else {
+                    return Err(ConfigError::EmbedDimensions { provider: name.to_owned() });
+                };
+                Ok(Embed {
+                    provider: name.to_owned(),
+                    model: entry.model.to_string(),
+                    dimensions: dimensions.into_inner(),
+                    backend: EmbedProvider::OpenAi {
+                        base_url: base_url.to_string(),
+                        auth: self.openai_auth(name, api_key_env.as_ref(), *auth)?,
+                        send_dimensions: *send_dimensions,
+                    },
+                })
             }
             ProviderEntry::Anthropic { .. } => {
                 Err(ConfigError::WrongKind { stage: "embed", provider: name.to_owned(), kind: "anthropic", expected: "an embeddings provider: kind = voyage" })
@@ -1067,7 +1190,7 @@ dimensions = 1024
         let extract = c.extract().ok_or("extract")?;
         assert_eq!((extract.provider.as_str(), extract.model.as_str(), extract.max_tokens, extract.effort), ("ollama", "qwen3:8b", 2000, Effort::Low));
         assert_eq!(extract.price, Price::Free);
-        let ChatProvider::OpenAi { base_url, auth, dialect } = &extract.backend else { return Err("openai".into()) };
+        let ChatProvider::OpenAi { base_url, auth, dialect, .. } = &extract.backend else { return Err("openai".into()) };
         assert_eq!(base_url, "http://ollama:11434/v1");
         assert_eq!(auth, &Auth::None);
         assert_eq!(dialect, &Dialect { structured_output: StructuredOutputMode::JsonObject, ..Dialect::default() });
@@ -1090,7 +1213,7 @@ dimensions = 1024
         );
         let embed = c.embed().ok_or("embed")?;
         assert_eq!((embed.provider.as_str(), embed.model.as_str(), embed.dimensions), ("voyage", "voyage-3.5", 1024));
-        assert!(c.embedder()?.is_some_and(|e| e.dimensions() == 1024));
+        assert_eq!(c.embedder()?.map(|e| e.space().clone()), Some(Space { provider: Provider::Voyage, model: "voyage-3.5".into(), dimensions: 1024 }));
 
         let models = c.models()?;
         assert_eq!(models.extract().capabilities().structured_output, StructuredOutput::JsonMode);
@@ -1159,7 +1282,7 @@ model = "claude-opus-5"
         let c = Config::from_vars(|k| match k {
             "VOYAGE_API_KEY" => Some("pa".to_owned()),
             "VOYAGE_MODEL" => Some("voyage-3-large".to_owned()),
-            "VOYAGE_DIMENSIONS" => Some("2048".to_owned()),
+            "VOYAGE_DIMENSIONS" => Some("2000".to_owned()),
             "ANTHROPIC_API_KEY" => Some("   ".to_owned()),
             _ => None,
         })?;
@@ -1167,14 +1290,19 @@ model = "claude-opus-5"
         assert!(matches!(c.models(), Err(ConfigError::NoChatModel)));
         assert!(c.models_if_configured()?.is_none());
         let e = c.embed().ok_or("embed")?;
-        assert_eq!((e.model.as_str(), e.dimensions), ("voyage-3-large", 2048));
+        assert_eq!((e.model.as_str(), e.dimensions), ("voyage-3-large", 2000));
         assert!(c.summary().contains("extract=none synth=none embed=voyage/voyage-3-large"), "{}", c.summary());
-        let bad = Config::from_vars(|k| match k {
-            "VOYAGE_API_KEY" => Some("pa".to_owned()),
-            "VOYAGE_DIMENSIONS" => Some("0".to_owned()),
-            _ => None,
-        });
-        assert!(matches!(bad, Err(ConfigError::BadDimensions { .. })));
+        // Zero and anything HNSW cannot index (2048: voyage-3-large's default) fail at load.
+        for value in ["0", "2048", "x"] {
+            let bad = Config::from_vars(|k| match k {
+                "VOYAGE_API_KEY" => Some("pa".to_owned()),
+                "VOYAGE_DIMENSIONS" => Some(value.to_owned()),
+                _ => None,
+            });
+            assert!(matches!(bad, Err(ConfigError::BadDimensions { .. })), "{value}: {bad:?}");
+            let msg = bad.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(msg.contains("1..=2000") && msg.contains("HNSW"), "{msg}");
+        }
         let base = Config::from_vars(|k| match k {
             "ANTHROPIC_API_KEY" => Some("k".to_owned()),
             "ANTHROPIC_BASE_URL" => Some("http://proxy:8080".to_owned()),
@@ -1221,6 +1349,7 @@ model = "claude-opus-5"
             ("input = 1.25", "input = inf"),
             ("input = 1.25", "input = nan"),
             ("dimensions = 1024", "dimensions = 0"),
+            ("dimensions = 1024", "dimensions = 3072"),
             ("max_tokens = 12000", "max_tokens = 0"),
             ("base_url = \"http://ollama:11434/v1\"", "base_url = \"ollama:11434/v1\""),
             ("base_url = \"http://ollama:11434/v1\"", "base_url = \"ftp://ollama:11434/v1\""),
@@ -1235,6 +1364,9 @@ model = "claude-opus-5"
             assert!(err.starts_with("judge.toml:"), "{err}");
             if from.starts_with("base_url") {
                 assert!(err.contains("base_url must be an absolute http(s) URL"), "{err}");
+            }
+            if to == "dimensions = 3072" {
+                assert!(err.contains("dimensions") && err.contains("1..=2000") && err.contains("HNSW"), "{err}");
             }
         }
         // A URL with a query (Azure's api-version) and a bare origin are both fine.
@@ -1373,11 +1505,46 @@ model = "claude-opus-5"
         let err = load(&embed_on_chat, &env).err().map(|e| e.to_string()).unwrap_or_default();
         assert!(err.starts_with("models.embed: providers.anthropic is kind = \"anthropic\""), "{err}");
         let embed_on_openai = FULL.replace("provider = \"voyage\"\nmodel = \"voyage-3.5\"", "provider = \"ollama\"\nmodel = \"nomic-embed-text\"");
-        let err = load(&embed_on_openai, &env).err().map(|e| e.to_string()).unwrap_or_default();
-        assert_eq!(err, "providers.ollama: embeddings on an openai provider (phase 3) is not built in this binary");
+        let c = load(&embed_on_openai, &env).ok();
+        assert_eq!(c.as_ref().and_then(Config::embed).map(Embed::label), Some("ollama/nomic-embed-text".to_owned()));
         let unknown_embed = FULL.replace("provider = \"voyage\"", "provider = \"voyag\"");
         let err = load(&unknown_embed, &env).err().map(|e| e.to_string()).unwrap_or_default();
         assert_eq!(err, "models.embed.provider = \"voyag\" names no [providers.voyag] table");
+    }
+
+    #[test]
+    fn embeddings_on_an_openai_provider_need_a_width_and_carry_the_wire_knob() -> R {
+        let env = [("ANTHROPIC_API_KEY", "k"), ("LITELLM_KEY", "sk-lite-secret")];
+        let on_litellm = FULL.replace(
+            "provider = \"voyage\"\nmodel = \"voyage-3.5\"\ndimensions = 1024",
+            "provider = \"litellm\"\nmodel = \"text-embedding-3-small\"\ndimensions = 1536",
+        );
+        assert!(on_litellm != FULL);
+        let c = load(&on_litellm, &env)?;
+        let e = c.embed().ok_or("embed")?;
+        assert_eq!(e.space(), Space { provider: Provider::OpenAi, model: "text-embedding-3-small".into(), dimensions: 1536 });
+        let embedder = c.embedder()?.ok_or("embedder")?;
+        assert_eq!((embedder.space(), embedder.dimensions()), (&e.space(), 1536));
+        assert!(c.summary().contains("embed=litellm/text-embedding-3-small"), "{}", c.summary());
+        // The key never reaches Debug or the report; the report says how it travels and whether `dimensions` is sent.
+        let (dbg, report) = (format!("{c:?}"), c.report());
+        assert!(!dbg.contains("sk-lite-secret") && !report.to_string().contains("sk-lite-secret"), "{dbg}");
+        assert_eq!(report.pointer("/providers/litellm/send_dimensions"), Some(&serde_json::json!(true)));
+        assert_eq!(report.pointer("/models/embed/dimensions"), Some(&serde_json::json!(1536)));
+
+        // An openai provider used only for embeddings is described too, with `send_dimensions = false` honoured.
+        let only_embed = on_litellm.replace("kind = \"openai\"\nbase_url = \"http://litellm:4000/v1\"", "kind = \"openai\"\nsend_dimensions = false\nbase_url = \"http://litellm:4000/v1\"")
+            + "\n[providers.vllm]\nkind = \"openai\"\nbase_url = \"http://vllm:8000/v1\"\nsend_dimensions = false\npricing = \"free\"\n";
+        let only_embed = only_embed.replace("provider = \"litellm\"\nmodel = \"text-embedding-3-small\"", "provider = \"vllm\"\nmodel = \"bge-m3\"");
+        let c = load(&only_embed, &env)?;
+        assert_eq!(c.report().pointer("/providers/vllm"), Some(&serde_json::json!({"kind": "openai", "base_url": "http://vllm:8000/v1", "auth": "none", "send_dimensions": false})));
+        assert_eq!(c.embed().map(Embed::space), Some(Space { provider: Provider::OpenAi, model: "bge-m3".into(), dimensions: 1536 }));
+
+        // No width: an error naming the key (voyage has a default, an arbitrary model does not).
+        let no_width = on_litellm.replace("dimensions = 1536\n", "");
+        let err = load(&no_width, &env).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err.starts_with("models.embed.dimensions is required on providers.litellm (kind = \"openai\")"), "{err}");
+        Ok(())
     }
 
     #[test]

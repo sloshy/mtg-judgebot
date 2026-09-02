@@ -1370,8 +1370,10 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -1400,6 +1402,7 @@ name = "judge-ingest"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.23.1",
  "dotenvy",
  "flate2",

@@ -43,7 +43,14 @@ cargo run --release -p judge-ingest -- cards            # Scryfall bulk sync (ca
 cargo run --release -p judge-ingest -- rules <url|path> # CR parse from a given file or URL
 cargo run --release -p judge-ingest -- aliases data/aliases.yaml
 cargo run --release -p judge-ingest -- notes data/notes.yaml
-cargo run --release -p judge-ingest -- embed            # only rows with NULL embedding; Voyage
+cargo run --release -p judge-ingest -- embed            # only rows with NULL embedding; the configured
+                                                        # embedder ([models.embed] or VOYAGE_API_KEY); refuses
+                                                        # if embedding_space or the columns' width differ
+cargo run --release -p judge-ingest -- reembed [--yes]  # switch the DB to the configured embedder's space:
+                                                        # retype vector columns, rebuild HNSW, NULL every
+                                                        # vector, rewrite embedding_space, then embed all.
+                                                        # Without --yes: prints rows + rough cost, exit≠0,
+                                                        # changes nothing. Restart bot/api after.
 cargo run --release -p judge-ingest -- emoji            # Scryfall card symbols -> the bot's Discord
                                                         # application emoji; idempotent, no DB needed
 cargo run --release -p judge-ingest -- rules latest     # the CR linked from Wizards' rules page, only if
@@ -163,6 +170,33 @@ Key cross-file facts that aren't obvious from any one file:
   `Rejection` is adjacently tagged because it is stored. The surface is `crates/agent`
   (`ops.rs` is the one list of operations; `mcp.rs` and `bin/cli.rs` only transport),
   and `.claude/skills/judge/SKILL.md` tells Claude Code how to drive it.
+- **Vectors carry their space, and the database records the one it holds.** Every embedder
+  (`judge_embed::{VoyageEmbedder, OpenAiEmbedder}`) implements `WithSpace`: a `Space`
+  (provider *kind* `voyage|openai`, model, dimensions). The one-row table `embedding_space`
+  (migration `20260904000001`, seeded `voyage/voyage-3.5/1024` for a DB that already held
+  vectors) names what the stored vectors are; `Space::check` (pure, in `judge_embed::space`) is
+  the only definition of "same space". `ingest embed` writes the row on first use, refuses on a
+  mismatch or when the columns' actual `vector(N)` typmod differs (`db/space.rs`
+  `column_width`), and never relabels vectors it did not write. The adapters hold no bare
+  `Embedder`: `PgRetriever`/`PgLibrary`/`PgCallStore` take `Arc<db::Vectors>`
+  (`Config::vectors(pool)`, one per process), which embeds nothing until the stored space
+  equals its own — a mismatch is an error-level log naming both spaces and dark vector legs,
+  never a mixed column. The row is re-read on every use (and once at startup, so the verdict
+  sits beside the config summary): a running bot picks up the first `ingest embed`, and a
+  `reembed` under it darkens the legs instead of erroring or mixing. Writers hold the space:
+  `PgCallStore::persist` and every `ingest embed` batch take the shared side of
+  `CALLS_REWRITE_LOCK` in their transaction and read the row under it (`hold_space` /
+  `Vectors::hold`), `switch_space` takes the exclusive side (as the CR loader and the
+  retirement pass do), so a switch waits for in-flight writes and a write after it sees the
+  new row. `ingest reembed --yes` (`switch_space`) is the only thing that changes the row and
+  the column width, in one transaction, then runs the embed loop; it probes the embedder
+  first (one short text) so a wrong key/URL/model/width fails before anything is cleared;
+  the HNSW index definitions it recreates live beside it in `VECTOR_TABLES`, verbatim from
+  the migrations. `config::Dimensions` is `1..=2000` (HNSW's limit) at load. A
+  `[providers.X] kind = "openai"` table serves embeddings too (`[models.embed]` needs
+  `dimensions` there; `send_dimensions = false` for servers that reject the field).
+  `ingest embed`/`refresh` load the same `Config`, so a deployment with a `judge.toml` mounts
+  it into `refresh` as well.
 - **Category taxonomy is data.** `data/categories.yaml` is the single source of truth;
   `crates/core/build.rs` generates the `Category` enum from it, so taxonomy edits are
   recompiles and matches stay exhaustive. The extractor's schema makes the primary
@@ -203,7 +237,8 @@ Key cross-file facts that aren't obvious from any one file:
 ## Environment
 
 `.env` (gitignored; template in `.env.example`): `DATABASE_URL` (port 5433),
-`ANTHROPIC_API_KEY`, `VOYAGE_API_KEY` (blank = vector leg off, bot still works),
+`ANTHROPIC_API_KEY`, `VOYAGE_API_KEY` (blank = vector leg off, bot still works; a `judge.toml`
+`[models.embed]` overrides it, including OpenAI-compatible embeddings),
 `JUDGE_CONFIG` (optional path to a `judge.toml`; see above — in Docker it is a path *inside*
 the container, so mount the file: the compose file shows how; a `./judge.toml` in the repo
 root is read by `cargo run` but is invisible to the containers),

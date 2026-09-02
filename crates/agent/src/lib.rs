@@ -42,12 +42,12 @@ use anyhow::Context as _;
 use judge_bot::{
     DepsConfig, Models,
     config::Config,
-    db::{PgCallStore, PgLibrary, PgResolver, PgRetriever, PgSessionStore},
+    db::{PgCallStore, PgLibrary, PgResolver, PgRetriever, PgSessionStore, Vectors},
     discord::capture::CapturingRetriever,
     session::{PersistCall, Sessions},
     synth::Harness,
 };
-use judge_core::{CallStore, Deps, Embedder, Resolver, Retriever};
+use judge_core::{CallStore, Deps, Resolver, Retriever};
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
@@ -131,8 +131,8 @@ pub struct Options {
     pub models: Option<Models>,
     /// The request knobs the models were configured with.
     pub deps_config: DepsConfig,
-    /// Embedder; `None` turns the vector legs off.
-    pub embedder: Option<Arc<dyn Embedder>>,
+    /// The embedder behind its space check; `None` turns the vector legs off.
+    pub vectors: Option<Arc<Vectors>>,
     /// Pipeline slots, shared with any other front door in the same process.
     pub permits: Arc<Semaphore>,
     /// A cap on `judge` runs per window for this toolbox; `None` for a local
@@ -149,10 +149,10 @@ impl Toolbox {
         let mut retriever = PgRetriever::new(pool.clone());
         let mut library = PgLibrary::new(pool.clone());
         let mut calls = PgCallStore::new(pool.clone());
-        if let Some(e) = &opts.embedder {
-            retriever = retriever.with_embedder(Arc::clone(e));
-            library = library.with_embedder(Arc::clone(e));
-            calls = calls.with_embedder(Arc::clone(e));
+        if let Some(v) = &opts.vectors {
+            retriever = retriever.with_vectors(Arc::clone(v));
+            library = library.with_vectors(Arc::clone(v));
+            calls = calls.with_vectors(Arc::clone(v));
         }
         let resolver: Arc<dyn Resolver> = Arc::new(PgResolver::new(pool.clone()));
         let retriever: Arc<dyn Retriever> = Arc::new(retriever);
@@ -169,7 +169,7 @@ impl Toolbox {
         let calls: Arc<dyn CallStore> = calls;
         let pipeline = opts.models.map(|models| {
             let meter = models.meter().clone();
-            let mut deps = judge_bot::build_deps_with(pool, &models, opts.embedder, &opts.deps_config);
+            let mut deps = judge_bot::build_deps_with(pool, &models, opts.vectors, &opts.deps_config);
             let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
             deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
             Pipeline { deps, capture, meter }
@@ -223,8 +223,11 @@ impl Toolbox {
         if models.is_none() {
             tracing::info!("no model configured (ANTHROPIC_API_KEY or a judge.toml); the built-in `judge` pipeline is unavailable, sessions are not affected");
         }
-        let embedder = config.embedder()?;
-        if embedder.is_none() {
+        let vectors = config.vectors(pool.clone())?;
+        // Logged at startup so a mismatch is visible before the first lookup.
+        if let Some(v) = &vectors {
+            v.enabled().await;
+        } else {
             tracing::info!("no embedder configured; running without the vector legs");
         }
         let concurrency = match set("JUDGE_CONCURRENCY") {
@@ -237,7 +240,7 @@ impl Toolbox {
                 harness,
                 models,
                 deps_config: config.deps_config(),
-                embedder,
+                vectors,
                 permits: Arc::new(Semaphore::new(concurrency)),
                 judge_quota: None,
                 history_len: DEFAULT_HISTORY,

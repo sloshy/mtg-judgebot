@@ -6,7 +6,8 @@
 //! ingest rules latest          # the release linked from Wizards' rules page, if newer than the DB
 //! ingest aliases <yaml>        # hand-curated nicknames -> card_aliases
 //! ingest notes <yaml>          # hand-written nightmare-card notes -> card_notes
-//! ingest embed                 # fill NULL embeddings on rules/glossary/calls via Voyage
+//! ingest embed                 # fill NULL embeddings on rules/glossary/calls via the configured embedder
+//! ingest reembed [--yes]       # switch the database to the configured embedder's space and re-embed all
 //! ingest emoji                 # Scryfall card symbols -> the bot's Discord application emoji
 //! ingest retire                # retire/restore calls by whether their citations still hold
 //! ingest refresh               # cards, rules latest, retire, embed, emoji — the scheduled job
@@ -17,7 +18,9 @@
 //! one failed — a Scryfall outage must not delay a CR release — and the exit status
 //! is non-zero if any step failed, so the scheduler's failure hook fires.
 //!
-//! `DATABASE_URL` is read from the environment (a `.env` file is honoured);
+//! `DATABASE_URL` is read from the environment (a `.env` file is honoured); the
+//! embedder comes from `judge.toml` / `VOYAGE_API_KEY` through `judge_bot::config`,
+//! the same loader the bot uses, so `embed` writes the space the bot queries.
 //! `emoji` needs no database at all, only `DISCORD_TOKEN`.
 //! Downloads are cached under `INGEST_CACHE_DIR` (default `.cache/`).
 
@@ -26,13 +29,17 @@ mod cr;
 mod embed;
 mod emoji;
 mod notes;
+mod reembed;
 mod renumber;
 mod scryfall;
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Context as _, Result};
-use judge_core::Embedder;
+use judge_embed::WithSpace;
 use sqlx::PgPool;
 
 /// Default download cache, relative to the working directory (gitignored).
@@ -45,6 +52,7 @@ enum Command {
     Aliases { path: PathBuf },
     Notes { path: PathBuf },
     Embed,
+    Reembed { yes: bool },
     Emoji,
     Retire,
     Refresh,
@@ -54,7 +62,7 @@ enum Command {
 const LATEST: &str = "latest";
 
 const USAGE: &str =
-    "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | emoji | retire | refresh>";
+    "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | reembed [--yes] | emoji | retire | refresh>";
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     match args.next().as_deref() {
@@ -69,6 +77,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
             path: args.next().map(PathBuf::from).ok_or_else(|| anyhow::anyhow!("usage: ingest notes <notes.yaml>"))?,
         }),
         Some("embed") => Ok(Command::Embed),
+        Some("reembed") => match args.next().as_deref() {
+            None => Ok(Command::Reembed { yes: false }),
+            Some("--yes") => Ok(Command::Reembed { yes: true }),
+            Some(other) => anyhow::bail!("usage: ingest reembed [--yes] (got {other:?})"),
+        },
         Some("emoji") => Ok(Command::Emoji),
         Some("retire") => Ok(Command::Retire),
         Some("refresh") => Ok(Command::Refresh),
@@ -85,16 +98,18 @@ async fn connect() -> Result<PgPool> {
         .context("connecting to DATABASE_URL")
 }
 
-/// The Voyage embedder if `VOYAGE_API_KEY` is set; `None` (with a warning) otherwise,
-/// so an unconfigured environment degrades instead of failing.
-fn embedder_from_env() -> Option<Box<dyn Embedder>> {
-    match judge_embed::VoyageEmbedder::from_env() {
-        Ok(e) => Some(Box::new(e)),
-        Err(err) => {
-            tracing::warn!(%err, "no embedder configured; embedding steps will be skipped");
-            None
-        }
+/// The configured embedder (`judge.toml`, else `VOYAGE_API_KEY`), or `None`
+/// with a warning when neither names one, so an unconfigured environment
+/// degrades instead of failing. A configuration that does not load is an
+/// error: a typo must not silently skip the embedding step.
+fn embedder_from_config() -> Result<Option<Arc<dyn WithSpace>>> {
+    let config = judge_bot::config::Config::load().context("loading the model configuration")?;
+    tracing::info!("{}", config.summary());
+    let embedder = config.embedder()?;
+    if embedder.is_none() {
+        tracing::warn!("no embedder configured (VOYAGE_API_KEY or [models.embed]); embedding steps will be skipped");
     }
+    Ok(embedder)
 }
 
 #[tokio::main]
@@ -116,9 +131,8 @@ async fn main() -> Result<()> {
         Command::Rules { source } => cr::run(&connect().await?, &source, &cache_dir).await,
         Command::Aliases { path } => aliases::run(&connect().await?, &path).await,
         Command::Notes { path } => notes::run(&connect().await?, &path).await,
-        Command::Embed => {
-            embed::run(&connect().await?, embedder_from_env().as_deref()).await
-        }
+        Command::Embed => embed::run(&connect().await?, embedder_from_config()?.as_deref()).await,
+        Command::Reembed { yes } => reembed::run(&connect().await?, embedder_from_config()?.as_deref(), yes).await,
         Command::Emoji => emoji::run(&cache_dir).await.map(drop),
         Command::Retire => judge_bot::db::retire_unsupported(&connect().await?).await.map(drop).map_err(Into::into),
         Command::Refresh => refresh(&connect().await?, &cache_dir).await,
@@ -141,7 +155,10 @@ async fn refresh(pool: &PgPool, cache_dir: &Path) -> Result<()> {
     step("cards", scryfall::run(pool, cache_dir).await);
     step("rules", cr::run_latest(pool, cache_dir).await.map(drop));
     step("retire", judge_bot::db::retire_unsupported(pool).await.map(drop).map_err(Into::into));
-    step("embed", embed::run(pool, embedder_from_env().as_deref()).await);
+    step("embed", match embedder_from_config() {
+        Ok(embedder) => embed::run(pool, embedder.as_deref()).await,
+        Err(e) => Err(e),
+    });
     // The emoji belong to the bot's Discord application; a database-only
     // deployment (no bot) has no token and nothing to upload to.
     if std::env::var("DISCORD_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {

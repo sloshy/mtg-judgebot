@@ -36,7 +36,9 @@ services:
     # from here, and a JUDGE_CONFIG naming a host path fails at startup):
     #   volumes: ["./judge.toml:/etc/judgebot/judge.toml:ro"]
     #   JUDGE_CONFIG: /etc/judgebot/judge.toml
-    # Same for `api` below.
+    # Same for `api` and `refresh` below: `refresh` embeds with the same
+    # [models.embed], so it must see the same file (a JUDGE_CONFIG in .env
+    # without the mount fails its embed step every night).
     depends_on:
       db:
         condition: service_healthy
@@ -83,6 +85,9 @@ services:
       # Scryfall's bulk files change daily so this rarely saves a download, but
       # a run that dies mid-way leaves nothing behind in the container layer.
       - judgebot-ingest-cache:/var/cache/judgebot
+      # With a judge.toml, the same mount as bot/api (and JUDGE_CONFIG above):
+      # the `embed` step writes the vector space the bot queries.
+      # - ./judge.toml:/etc/judgebot/judge.toml:ro
     depends_on:
       db:
         condition: service_healthy

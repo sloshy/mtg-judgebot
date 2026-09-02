@@ -44,17 +44,22 @@ async fn main() -> Result<()> {
     let judge = JudgeConfig::load()?;
     tracing::info!("{}", judge.summary());
     let models = judge.models()?;
-    // The embedder is optional: without one the retriever skips its vector leg.
-    let embedder = judge.embedder()?;
-    if embedder.is_none() {
+    // The embedder is optional: without one the retriever skips its vector
+    // leg. One `Vectors` for every adapter in the process: the space check
+    // against `embedding_space` runs once and disables them all on a mismatch.
+    let vectors = judge.vectors(pool.clone())?;
+    // The verdict (on, absent row, mismatch) lands here beside the summary, not in the first request's log.
+    if let Some(v) = &vectors {
+        v.enabled().await;
+    } else {
         tracing::warn!("no embedder configured (VOYAGE_API_KEY or [models.embed]); running without the vector leg");
     }
     let mut store = PgCallStore::new(pool.clone());
-    if let Some(e) = &embedder {
-        store = store.with_embedder(Arc::clone(e));
+    if let Some(v) = &vectors {
+        store = store.with_vectors(Arc::clone(v));
     }
     let store: Arc<dyn CallStore> = Arc::new(store);
-    let deps = build_deps_with(pool.clone(), &models, embedder.clone(), &judge.deps_config());
+    let deps = build_deps_with(pool.clone(), &models, vectors.clone(), &judge.deps_config());
     let app = Arc::new(App::new(deps, store, models.meter().clone(), &cfg));
     let mut routes = router(Arc::clone(&app), &cfg.web_dist);
     // The MCP transport shares the judge slots (one JUDGE_CONCURRENCY for
@@ -66,7 +71,7 @@ async fn main() -> Result<()> {
                 harness: Harness::Mcp,
                 models: Some(models),
                 deps_config: judge.deps_config(),
-                embedder,
+                vectors,
                 permits: app.permits(),
                 judge_quota: Some(Quota { limit: cfg.mcp_judge_limit, window: cfg.mcp_judge_window }),
                 history_len: cfg.history_len,

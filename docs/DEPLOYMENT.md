@@ -57,11 +57,17 @@ Sanity-check the restore before moving on:
 docker compose exec -T db psql -U judgebot -d judgebot \
   -c "select (select count(*) from cards) cards,
              (select count(*) from rulings) rulings,
-             (select count(*) from rules where embedding is not null) embedded;"
+             (select count(*) from rules where embedding is not null) embedded,
+             (select provider||'/'||model||'/'||dimensions from embedding_space) space;"
 ```
 
-`embedded` being 0 means the vector leg is silently off — re-run
-`judge-ingest -- embed` rather than shipping a degraded retriever.
+`embedded` being 0 means the vector leg is off — re-run `judge-ingest -- embed`
+rather than shipping a degraded retriever. So is `space` being empty, or naming a
+model other than the one the bot is configured with: the bot's vector legs stay
+dark (an error-level log line at startup and on the change, never a mixed column)
+until the row and the configuration agree — `UPDATE embedding_space SET model = ...`
+if the row is mislabelled, `judge-ingest -- reembed --yes` (paid: every row again)
+to actually change models.
 
 ## 3. Create the tunnel
 
@@ -292,6 +298,10 @@ loader nulls the embedding of exactly those, so a new CR costs Voyage a few hund
 rules, not all of them) and `emoji` (uploads any card symbol Scryfall added; skipped
 when `DISCORD_TOKEN` is unset). Each step runs even if an earlier one failed, and the
 exit status is non-zero if any did.
+
+With a `judge.toml`, the `refresh` service needs the same mount and `JUDGE_CONFIG` as
+`bot`/`api` (the commented lines in `docker-compose.yml`): its `embed` step writes the
+vector space the bot queries, and refuses when the two disagree.
 
 `scripts/refresh-data.sh` is the cron entry point: it takes a lock so two runs never
 overlap, then `docker compose run --rm --pull missing refresh`, which reuses the image

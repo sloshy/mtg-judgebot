@@ -228,15 +228,18 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
     let models = config.models()?;
     models.meter().set_max_spend_usd(opts.max_usd)?;
     let meter = models.meter().clone();
-    let embedder = config.embedder()?;
-    if embedder.is_none() {
+    let vectors = config.vectors(pool.clone())?;
+    // A definite "vector leg on/off" fact in the run's log before any question is spent on.
+    if let Some(v) = &vectors {
+        v.enabled().await;
+    } else {
         tracing::warn!("no embedder; retrieval runs without vector search");
     }
     let run_models = RunModels {
         extract: if opts.gold_extraction { "gold".to_owned() } else { config.extract().map(judge_bot::config::Stage::label).unwrap_or_default() },
         synth: config.synth().map(judge_bot::config::Stage::label).unwrap_or_default(),
     };
-    let deps = crate::deps::build(pool, &models, embedder, &config.deps_config(), &gold, opts.gold_extraction);
+    let deps = crate::deps::build(pool, &models, vectors, &config.deps_config(), &gold, opts.gold_extraction);
     let selected = select(&gold, opts);
 
     let mut rows = Vec::with_capacity(selected.len());

@@ -192,7 +192,13 @@ Database: **Postgres 16 + pgvector + pg_trgm**. Scale: ~30k cards, ~2k rule
 chunks, <10k calls.
 
 Embeddings: **Voyage AI** (`voyage-3.5` or `voyage-4` family — `voyage-3` is superseded; decided over local models, which are not worth it on WSL2).
-`Embedder` is an interface so this can change.
+`Embedder` is an interface so this can change: `judge_embed` also has an OpenAI-compatible
+`/v1/embeddings` adapter, chosen by `[models.embed]` in `judge.toml`. Every embedder carries its
+`Space` (provider kind, model, width); the one-row `embedding_space` table records the space the
+stored vectors belong to, `ingest embed` refuses to write into another, the adapters' vector legs go
+dark (error log, never mixed) on a mismatch — re-checked on every use, and held under a shared
+advisory lock by anything that writes a vector — and `ingest reembed --yes` switches the database in
+one transaction after probing the new embedder (`docs/proposals/providers.md` §4.3).
 
 Rating aggregation: Bayesian-smoothed mean (prior 2.0, weight 3). A rating with
 `is_judge = true` (operator-assigned role) dominates crowd votes. Used for

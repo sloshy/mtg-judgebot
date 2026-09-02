@@ -63,7 +63,7 @@ fn toolbox(pool: PgPool, quota: Option<Quota>) -> Toolbox {
             harness: Harness::Mcp,
             models: None,
             deps_config: judge_bot::DepsConfig::default(),
-            embedder: None,
+            vectors: None,
             permits: Arc::new(Semaphore::new(1)),
             judge_quota: quota,
             history_len: 5,

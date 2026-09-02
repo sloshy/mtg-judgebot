@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT format_type(a.atttypid, a.atttypmod) AS \"type!\"\n        FROM pg_attribute a\n        WHERE a.attrelid = to_regclass($1) AND a.attname = 'embedding' AND NOT a.attisdropped\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "204705e4904a8c82a132ba65d8f7e37ac4a30f6f0444c0020578d671f7bd1a72"
+}

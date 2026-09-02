@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT (SELECT count(*) FROM rules WHERE embedding IS NOT NULL) AS \"rules!\",\n               (SELECT count(*) FROM glossary WHERE embedding IS NOT NULL) AS \"glossary!\",\n               (SELECT count(*) FROM calls WHERE embedding IS NOT NULL) AS \"calls!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rules!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "glossary!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "calls!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "924e714572ca66545e5960bfa79e7deb1cedb78a6eea6c2db8cc6049ef08e9da"
+}

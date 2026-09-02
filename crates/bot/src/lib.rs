@@ -13,11 +13,11 @@ pub mod synth;
 
 use std::sync::Arc;
 
-use judge_core::{Deps, Embedder, Retriever};
+use judge_core::{Deps, Retriever};
 use judge_llm::{Backend, ChatModel, LlmError, Metered, Price, SpendMeter, SynthConfig};
 use sqlx::PgPool;
 
-use db::{PgResolver, PgRetriever};
+use db::{PgResolver, PgRetriever, Vectors};
 
 /// The models the pipeline runs on: one per stage, both billed to one
 /// meter. The stages may share one model (the zero-config setup) or not;
@@ -125,19 +125,21 @@ pub struct DepsConfig {
 }
 
 /// Wire the Postgres adapters and the model adapters into [`Deps`] with
-/// [`DepsConfig::default`]. `embedder` is optional: without one the retriever
-/// skips its vector leg and orders prior calls by recency.
+/// [`DepsConfig::default`]. `vectors` is optional: without one the retriever
+/// skips its vector leg and orders prior calls by recency. A binary that also
+/// builds a `PgCallStore` hands it the same `Arc` ([`config::Config::vectors`]),
+/// so the space check runs once.
 #[must_use]
-pub fn build_deps(pool: PgPool, models: &Models, embedder: Option<Arc<dyn Embedder>>) -> Deps {
-    build_deps_with(pool, models, embedder, &DepsConfig::default())
+pub fn build_deps(pool: PgPool, models: &Models, vectors: Option<Arc<Vectors>>) -> Deps {
+    build_deps_with(pool, models, vectors, &DepsConfig::default())
 }
 
 /// [`build_deps`] with explicit configuration.
 #[must_use]
-pub fn build_deps_with(pool: PgPool, models: &Models, embedder: Option<Arc<dyn Embedder>>, cfg: &DepsConfig) -> Deps {
+pub fn build_deps_with(pool: PgPool, models: &Models, vectors: Option<Arc<Vectors>>, cfg: &DepsConfig) -> Deps {
     let mut retriever = PgRetriever::new(pool.clone());
-    if let Some(e) = embedder {
-        retriever = retriever.with_embedder(e);
+    if let Some(v) = vectors {
+        retriever = retriever.with_vectors(v);
     }
     let retriever: Arc<dyn Retriever> = Arc::new(retriever);
     let synthesizer =

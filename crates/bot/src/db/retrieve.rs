@@ -2,8 +2,8 @@
 //!
 //! `Context.rules` is the union of three legs, deduplicated by id in this
 //! order: category map (curated subsections, always), full-text (BM25-like
-//! `ts_rank_cd`), vector (pgvector cosine, only when an embedder is
-//! configured and succeeds). Then Scryfall rulings and nightmare notes for
+//! `ts_rank_cd`), vector (pgvector cosine, only when a [`Vectors`] is
+//! configured, its space is the stored one, and embedding succeeds). Then Scryfall rulings and nightmare notes for
 //! the cards, glossary entries whose term occurs in any face's Oracle text,
 //! and up to five prior rated calls (same category, about one of the cards,
 //! current CR version, not down-voted) as examples.
@@ -12,15 +12,14 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    CallId, Card, CardId, CardNote, Category, Context, CrVersion, Embedder, Extraction,
-    GlossaryEntry, InputKind, JudgeError, PriorCall, Question, Retriever, RuleChunk, RuleId,
-    Ruling, RulingKey,
+    CallId, Card, CardId, CardNote, Category, Context, CrVersion, Extraction, GlossaryEntry,
+    InputKind, JudgeError, PriorCall, Question, Retriever, RuleChunk, RuleId, Ruling, RulingKey,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{bad_row, rules, upstream};
+use super::{Vectors, bad_row, rules, upstream};
 
 /// Rule-level rows taken from the full-text leg.
 pub const BM25_LIMIT: i64 = 12;
@@ -33,54 +32,46 @@ pub const PRIOR_LIMIT: i64 = 5;
 #[derive(Clone)]
 pub struct PgRetriever {
     pool: PgPool,
-    embedder: Option<Arc<dyn Embedder>>,
+    vectors: Option<Arc<Vectors>>,
 }
 
 impl fmt::Debug for PgRetriever {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PgRetriever")
-            .field("embedder", &self.embedder.is_some())
+            .field("vectors", &self.vectors.as_ref().map(|v| v.space()))
             .finish_non_exhaustive()
     }
 }
 
 impl PgRetriever {
     /// A retriever without an embedder: the vector leg and similarity-ordered
-    /// prior calls are skipped (with a warning) until [`Self::with_embedder`].
+    /// prior calls are skipped (with a warning) until [`Self::with_vectors`].
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
-            embedder: None,
+            vectors: None,
         }
     }
 
-    /// Enable the vector leg and similarity ordering of prior calls.
+    /// Enable the vector leg and similarity ordering of prior calls, subject
+    /// to the space check in [`Vectors`].
     #[must_use]
-    pub fn with_embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
-        self.embedder = Some(embedder);
+    pub fn with_vectors(mut self, vectors: Arc<Vectors>) -> Self {
+        self.vectors = Some(vectors);
         self
     }
 
-    /// Embed the question, or `None` (logged) when no embedder is configured or it fails.
+    /// Embed the question, or `None` (logged) when no embedder is configured,
+    /// its space is not the stored one, or it fails.
     async fn embed_query(&self, text: &str) -> Option<Vector> {
-        let Some(embedder) = &self.embedder else {
+        let Some(vectors) = &self.vectors else {
             tracing::warn!(
                 "no embedder configured; skipping the vector leg and prior-call similarity"
             );
             return None;
         };
-        let first = match embedder.embed(&[text], InputKind::Query).await {
-            Ok(vectors) => vectors.into_iter().next(),
-            Err(e) => {
-                tracing::warn!(error = %e, "embedding the question failed; skipping the vector leg");
-                return None;
-            }
-        };
-        if first.is_none() {
-            tracing::warn!("embedder returned no vector; skipping the vector leg");
-        }
-        first.map(Vector::from)
+        vectors.embed(text, InputKind::Query).await
     }
 
     /// Leg (a): every rule-level chunk of the subsections curated for `categories`.

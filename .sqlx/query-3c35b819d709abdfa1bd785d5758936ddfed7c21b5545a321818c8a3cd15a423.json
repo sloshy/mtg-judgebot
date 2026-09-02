@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM embedding_space",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "3c35b819d709abdfa1bd785d5758936ddfed7c21b5545a321818c8a3cd15a423"
+}

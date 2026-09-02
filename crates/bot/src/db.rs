@@ -1,7 +1,8 @@
 //! sqlx adapters for the DB-backed ports: [`PgResolver`] (card resolution
 //! ladder), [`PgRetriever`] (category map + BM25 + vector, rulings, glossary,
 //! notes, prior calls), [`PgCallStore`] (calls + ratings) and
-//! [`PgSessionStore`] (agent-driven sessions).
+//! [`PgSessionStore`] (agent-driven sessions), plus [`Vectors`], the guard
+//! every embedder passes through (`space.rs`: the stored vector space).
 //!
 //! Every query is a compile-time-checked `sqlx::query!` / `query_as!` against
 //! `DATABASE_URL` (or the `.sqlx` offline cache); every sqlx error becomes
@@ -15,6 +16,7 @@ mod retire;
 mod retrieve;
 mod rules;
 mod sessions;
+pub mod space;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -24,6 +26,7 @@ pub use resolve::PgResolver;
 pub use retire::{CALLS_REWRITE_LOCK, RetireSummary, retire_unsupported};
 pub use retrieve::PgRetriever;
 pub use sessions::{MAX_TTL, PgSessionStore, Saved, Version};
+pub use space::Vectors;
 
 use judge_core::JudgeError;
 

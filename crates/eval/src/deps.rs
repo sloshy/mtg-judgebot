@@ -1,7 +1,7 @@
 //! Build the `judge()` dependencies for the `answer` subcommand.
 //!
 //! Uses the bot's real composition (`judge_bot::build_deps_with`: Postgres
-//! resolver/retriever, optional Voyage embedder, the model-driven extractor
+//! resolver/retriever, the optional embedder behind its space check, the model-driven extractor
 //! and synthesizer with the production prompt and budget). With `gold_extraction`
 //! the extractor is replaced by one driven by the gold file (cards, categories
 //! and source keyed by question id), which isolates retrieval + synthesis
@@ -10,8 +10,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use judge_bot::{DepsConfig, Models};
-use judge_core::{Deps, Embedder, Extraction, Extractor, JudgeError, Qa, Question};
+use judge_bot::{DepsConfig, Models, db::Vectors};
+use judge_core::{Deps, Extraction, Extractor, JudgeError, Qa, Question};
 use sqlx::PgPool;
 
 use crate::gold::Gold;
@@ -20,12 +20,12 @@ use crate::gold::Gold;
 pub fn build(
     pool: PgPool,
     models: &Models,
-    embedder: Option<Arc<dyn Embedder>>,
+    vectors: Option<Arc<Vectors>>,
     cfg: &DepsConfig,
     gold: &Gold,
     gold_extraction: bool,
 ) -> Deps {
-    let mut deps = judge_bot::build_deps_with(pool, models, embedder, cfg);
+    let mut deps = judge_bot::build_deps_with(pool, models, vectors, cfg);
     if gold_extraction {
         deps.extractor = Arc::new(GoldExtractor::new(gold));
     }

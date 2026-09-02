@@ -4,26 +4,26 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    CallId, CallStore, Context, Embedder, InputKind, JudgeError, Qa, Question, Score, Validated,
-    Verdict, oracle_fingerprint,
+    CallId, CallStore, Context, InputKind, JudgeError, Qa, Question, Score, Validated, Verdict,
+    oracle_fingerprint,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
 
-use super::{bad_row, bad_row_from, upstream};
+use super::{Vectors, bad_row, bad_row_from, upstream};
 use crate::session::{PersistCall, SessionId};
 
 /// Calls + ratings. Only `Verdict<Validated>` can be persisted (invariant I3).
 #[derive(Clone)]
 pub struct PgCallStore {
     pool: PgPool,
-    embedder: Option<Arc<dyn Embedder>>,
+    vectors: Option<Arc<Vectors>>,
 }
 
 impl fmt::Debug for PgCallStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PgCallStore")
-            .field("embedder", &self.embedder.is_some())
+            .field("vectors", &self.vectors.as_ref().map(|v| v.space()))
             .finish_non_exhaustive()
     }
 }
@@ -34,26 +34,22 @@ impl PgCallStore {
     pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
-            embedder: None,
+            vectors: None,
         }
     }
 
-    /// Embed each persisted question so later calls can be found by similarity.
+    /// Embed each persisted question so later calls can be found by
+    /// similarity, subject to the space check in [`Vectors`]: a call is
+    /// stored without a vector rather than with one of another space
+    /// (`ingest embed` fills it in later).
     #[must_use]
-    pub fn with_embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
-        self.embedder = Some(embedder);
+    pub fn with_vectors(mut self, vectors: Arc<Vectors>) -> Self {
+        self.vectors = Some(vectors);
         self
     }
 
     async fn embed(&self, text: &str) -> Option<Vector> {
-        let embedder = self.embedder.as_ref()?;
-        match embedder.embed(&[text], InputKind::Document).await {
-            Ok(vectors) => vectors.into_iter().next().map(Vector::from),
-            Err(e) => {
-                tracing::warn!(error = %e, "embedding the call failed; storing it without an embedding");
-                None
-            }
-        }
+        self.vectors.as_ref()?.embed(text, InputKind::Document).await
     }
 }
 
@@ -99,7 +95,20 @@ impl PgCallStore {
         let source = enum_id(&v.source())?;
         let confidence = enum_id(&v.confidence())?;
         let cr_version: &str = v.cr_version().as_ref();
-        let embedding = self.embed(&q.text).await;
+        // The HTTP call happens before the transaction; the space is then held
+        // (shared lock, `db::space`) from the check to the insert, so a `reembed`
+        // cannot commit in between and the vector, if kept, is of the row's space.
+        let mut embedding = self.embed(&q.text).await;
+        let mut tx = self.pool.begin().await.map_err(upstream("begin persist"))?;
+        if embedding.is_some() {
+            let held = match &self.vectors {
+                Some(v) => v.hold(&mut tx).await?,
+                None => false,
+            };
+            if !held {
+                embedding = None;
+            }
+        }
         // `ON CONFLICT ... DO UPDATE` (a no-op set) rather than `DO NOTHING`
         // so that `RETURNING id` yields the existing row on conflict.
         let id = sqlx::query_scalar!(
@@ -123,9 +132,10 @@ impl PgCallStore {
             embedding as _,
             session.map(|s| s.0)
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(upstream("insert call"))?;
+        tx.commit().await.map_err(upstream("commit persist"))?;
         tracing::info!(call = %id, thread = %q.thread_id, "call persisted");
         Ok(CallId::new(id))
     }

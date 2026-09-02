@@ -6,11 +6,11 @@
 
 use std::{fmt, sync::Arc};
 
-use judge_core::{Card, CardId, CardNote, Embedder, GlossaryEntry, InputKind, JudgeError, RuleChunk, Ruling};
+use judge_core::{Card, CardId, CardNote, GlossaryEntry, InputKind, JudgeError, RuleChunk, Ruling};
 use pgvector::Vector;
 use sqlx::PgPool;
 
-use super::{cards, retrieve, rules, upstream};
+use super::{Vectors, cards, retrieve, rules, upstream};
 
 /// Glossary entries returned for one term lookup at most.
 pub const GLOSSARY_LIMIT: i64 = 10;
@@ -21,12 +21,12 @@ pub const MAX_SEARCH: usize = 25;
 #[derive(Clone)]
 pub struct PgLibrary {
     pool: PgPool,
-    embedder: Option<Arc<dyn Embedder>>,
+    vectors: Option<Arc<Vectors>>,
 }
 
 impl fmt::Debug for PgLibrary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PgLibrary").field("embedder", &self.embedder.is_some()).finish_non_exhaustive()
+        f.debug_struct("PgLibrary").field("vectors", &self.vectors.as_ref().map(|v| v.space())).finish_non_exhaustive()
     }
 }
 
@@ -34,13 +34,13 @@ impl PgLibrary {
     /// Without an embedder: `search_rules` is full-text only.
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self { pool, embedder: None }
+        Self { pool, vectors: None }
     }
 
-    /// Add the vector leg to `search_rules`.
+    /// Add the vector leg to `search_rules`, subject to the space check in [`Vectors`].
     #[must_use]
-    pub fn with_embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
-        self.embedder = Some(embedder);
+    pub fn with_vectors(mut self, vectors: Arc<Vectors>) -> Self {
+        self.vectors = Some(vectors);
         self
     }
 
@@ -78,14 +78,7 @@ impl PgLibrary {
     }
 
     async fn embed(&self, text: &str) -> Option<Vector> {
-        let embedder = self.embedder.as_ref()?;
-        match embedder.embed(&[text], InputKind::Query).await {
-            Ok(vectors) => vectors.into_iter().next().map(Vector::from),
-            Err(e) => {
-                tracing::warn!(error = %e, "embedding the search failed; full-text only");
-                None
-            }
-        }
+        self.vectors.as_ref()?.embed(text, InputKind::Query).await
     }
 
     /// The card with this oracle id.
