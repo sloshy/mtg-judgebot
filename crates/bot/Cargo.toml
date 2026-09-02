@@ -24,6 +24,7 @@ async-trait.workspace = true
 nonempty.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+schemars.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -37,6 +38,7 @@ dotenvy = "0.15"
 
 [dev-dependencies]
 wiremock.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true

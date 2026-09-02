@@ -11,6 +11,7 @@ use pgvector::Vector;
 use sqlx::PgPool;
 
 use super::{bad_row, bad_row_from, upstream};
+use crate::session::{PersistCall, SessionId};
 
 /// Calls + ratings. Only `Verdict<Validated>` can be persisted (invariant I3).
 #[derive(Clone)]
@@ -66,13 +67,18 @@ fn enum_id<T: serde::Serialize>(v: &T) -> Result<String, JudgeError> {
     }
 }
 
-#[async_trait]
-impl CallStore for PgCallStore {
-    async fn persist(
+impl PgCallStore {
+    /// The `INSERT` behind both [`CallStore::persist`] and
+    /// [`PersistCall::persist_call`]. With a `session`, the row is keyed by it
+    /// and a second insert for the same session returns the existing row (the
+    /// partial unique index `calls_session_id_idx`), which is what makes an
+    /// agent session's persist step idempotent in the database.
+    async fn insert(
         &self,
         q: &Question,
         v: &Verdict<Validated>,
         ctx: &Context,
+        session: Option<SessionId>,
     ) -> Result<CallId, JudgeError> {
         let citations = serde_json::to_value(v.citations())
             .map_err(|e| bad_row_from(e, "serialize citations"))?;
@@ -94,11 +100,15 @@ impl CallStore for PgCallStore {
         let confidence = enum_id(&v.confidence())?;
         let cr_version: &str = v.cr_version().as_ref();
         let embedding = self.embed(&q.text).await;
+        // `ON CONFLICT ... DO UPDATE` (a no-op set) rather than `DO NOTHING`
+        // so that `RETURNING id` yields the existing row on conflict.
         let id = sqlx::query_scalar!(
             r#"
             INSERT INTO calls (thread_id, question, answer, category, source, confidence,
-                               citations, context_ids, cr_version, embedding)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                               citations, context_ids, cr_version, embedding, session_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (session_id) WHERE session_id IS NOT NULL
+            DO UPDATE SET session_id = EXCLUDED.session_id
             RETURNING id
             "#,
             q.thread_id,
@@ -110,13 +120,39 @@ impl CallStore for PgCallStore {
             citations,
             context_ids,
             cr_version,
-            embedding as _
+            embedding as _,
+            session.map(|s| s.0)
         )
         .fetch_one(&self.pool)
         .await
         .map_err(upstream("insert call"))?;
         tracing::info!(call = %id, thread = %q.thread_id, "call persisted");
         Ok(CallId::new(id))
+    }
+}
+
+#[async_trait]
+impl PersistCall for PgCallStore {
+    async fn persist_call(
+        &self,
+        session: SessionId,
+        q: &Question,
+        v: &Verdict<Validated>,
+        ctx: &Context,
+    ) -> Result<CallId, JudgeError> {
+        self.insert(q, v, ctx, Some(session)).await
+    }
+}
+
+#[async_trait]
+impl CallStore for PgCallStore {
+    async fn persist(
+        &self,
+        q: &Question,
+        v: &Verdict<Validated>,
+        ctx: &Context,
+    ) -> Result<CallId, JudgeError> {
+        self.insert(q, v, ctx, None).await
     }
 
     async fn rate(

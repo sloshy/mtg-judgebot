@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Anonymous HTTP adapter: axum routes over judge(), serving the SolidJS web client."
+description = "Anonymous HTTP adapter: axum routes over judge(), serving the SolidJS web client; the MCP transport at /mcp behind a token."
 
 [lib]
 name = "judge_api"
@@ -20,6 +20,7 @@ judge-core.workspace = true
 judge-anthropic.workspace = true
 judge-embed.workspace = true
 judge-bot.workspace = true
+judge-agent.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,6 +30,8 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 axum = "0.8"
 tower-http = { version = "0.6", features = ["fs"] }
+tower-service = "0.3"
+subtle = "2"
 dotenvy = "0.15"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres"] }
 

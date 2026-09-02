@@ -20,6 +20,7 @@
 use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use judge_anthropic::{
     Client, SendOutcome, Synth, SynthConfig, Truncated,
     wire::{CacheControl, ContentBlock, Effort},
@@ -29,9 +30,82 @@ use judge_core::{
     Synthesizer, Unvalidated, Verdict,
 };
 
-/// The system prompt. Stable across requests, so `Synth::new` puts the
-/// cache breakpoint on it.
-pub const SYSTEM_PROMPT: &str = include_str!("prompts/synth_system.md");
+/// The system prompt template (`prompts/synth_system.md`). Two tokens are
+/// filled per [`Harness`]: `{{LOOKUP_RULES}}` (ground rule 4, how the model
+/// asks for more CR text) and `{{OUTPUT_FORMAT}}` (how the answer is
+/// returned). The Anthropic rendering is stable across requests, so
+/// `Synth::new` puts the cache breakpoint on it.
+const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("prompts/synth_system.md");
+
+/// Who is running the synthesis model, which decides how the prompt tells it
+/// to fetch more rules and to return the verdict. The pipeline is the same
+/// either way; only these two paragraphs differ.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Harness {
+    /// The Anthropic Messages API: `lookup_rules` is a tool on the request and
+    /// the verdict is enforced by structured output.
+    Tool,
+    /// An MCP client (any agent) driving a [`crate::session::Sessions`]
+    /// session: `lookup_rules` is an MCP tool taking the session id, and the
+    /// verdict is submitted as JSON.
+    Mcp,
+    /// A shell agent driving the same session through `judge-cli`.
+    Cli,
+}
+
+impl Harness {
+    fn lookup_rules(self) -> &'static str {
+        match self {
+            Harness::Tool => {
+                "If the CR excerpts do not contain the rule you need, call the `lookup_rules` tool ONCE with \
+                 the specific ids you want: rule ids such as `702.19` or `613.7`, or a whole subsection such \
+                 as `613`. Ask for everything you need in that one call. After the tool result, answer; you \
+                 cannot call the tool again. If the material is still insufficient, answer with `low` \
+                 confidence and say exactly which rule or text you would need."
+            }
+            Harness::Mcp => {
+                "If the CR excerpts do not contain the rule you need, call the `lookup_rules` tool ONCE, with \
+                 this session's id and the specific ids you want: rule ids such as `702.19` or `613.7`, or a \
+                 whole subsection such as `613`. Ask for everything you need in that one call; the session \
+                 refuses a second one. Then answer from the excerpts plus what it returned. If the material \
+                 is still insufficient, answer with `low` confidence and say exactly which rule or text you \
+                 would need."
+            }
+            Harness::Cli => {
+                "If the CR excerpts do not contain the rule you need, run `judge-cli rules <session> <id>...` \
+                 ONCE with the specific ids you want: rule ids such as `702.19` or `613.7`, or a whole \
+                 subsection such as `613`. Ask for everything you need in that one call; the session refuses \
+                 a second one. Then answer from the excerpts plus what it printed. If the material is still \
+                 insufficient, answer with `low` confidence and say exactly which rule or text you would need."
+            }
+        }
+    }
+
+    fn output_format(self) -> &'static str {
+        match self {
+            Harness::Tool => "",
+            Harness::Mcp => {
+                "- Return the verdict as one JSON object and nothing else, matching the schema supplied with \
+                 this prompt (`answer`, `confidence`, `citations`, `category`), by calling the `submit_verdict` \
+                 tool with this session's id.\n"
+            }
+            Harness::Cli => {
+                "- Return the verdict as one JSON object and nothing else, matching the schema supplied with \
+                 this prompt (`answer`, `confidence`, `citations`, `category`), written to a file and submitted \
+                 with `judge-cli verdict <session> <file>`.\n"
+            }
+        }
+    }
+}
+
+/// The system prompt for `harness`. [`Harness::Tool`] is what the bot sends.
+#[must_use]
+pub fn system_prompt(harness: Harness) -> String {
+    SYSTEM_PROMPT_TEMPLATE
+        .replacen("{{LOOKUP_RULES}}", harness.lookup_rules(), 1)
+        .replacen("{{OUTPUT_FORMAT}}\n", harness.output_format(), 1)
+}
 
 /// Size caps for the rendered user turn. Chunks pinned by the tool round
 /// are exempt from the CR caps but count towards them, so the rest of the
@@ -72,14 +146,14 @@ pub struct AnthropicSynthesizer {
 }
 
 impl AnthropicSynthesizer {
-    /// With [`SYSTEM_PROMPT`] and the default [`Budget`].
+    /// With the [`Harness::Tool`] system prompt and the default [`Budget`].
     #[must_use]
     pub fn new(client: Client, cfg: SynthConfig, retriever: Arc<dyn Retriever>) -> Self {
         Self {
             client,
             cfg,
             retriever,
-            system_prompt: SYSTEM_PROMPT.to_owned(),
+            system_prompt: system_prompt(Harness::Tool),
             budget: Budget::default(),
         }
     }
@@ -89,30 +163,6 @@ impl AnthropicSynthesizer {
     pub fn with_budget(mut self, budget: Budget) -> Self {
         self.budget = budget;
         self
-    }
-
-    /// Fetch cited sub-rules (`702.19b`) whose rule-level parent (`702.19`) is
-    /// in Context, so `validate` can check the quote against the leaf's own
-    /// row. Leaves whose parent was never shown are left alone: the model
-    /// cannot have read them, and validation should reject the citation.
-    async fn hydrate_leaf_citations(&self, v: &Verdict<Unvalidated>, ctx: &mut Context) -> Result<(), JudgeError> {
-        let mut wanted: Vec<RuleId> = Vec::new();
-        for c in v.citations() {
-            if let Citation::Rule { id, .. } = c
-                && ctx.rule(id).is_none()
-                && !wanted.contains(id)
-                && parent_of(id).is_some_and(|p| ctx.rule(&p).is_some())
-            {
-                wanted.push(id.clone());
-            }
-        }
-        if wanted.is_empty() {
-            return Ok(());
-        }
-        tracing::debug!(ids = ?wanted, "hydrating cited sub-rules");
-        let chunks = self.retriever.lookup_rules(&wanted).await?;
-        ctx.extend_rules(chunks);
-        Ok(())
     }
 
     /// One synthesis conversation at `effort`. The first attempt may run the
@@ -169,9 +219,43 @@ impl Synthesizer for AnthropicSynthesizer {
             }
             None => first?,
         };
-        self.hydrate_leaf_citations(&verdict, ctx).await?;
+        hydrate_leaf_citations(&verdict, ctx, self.retriever.as_ref()).await?;
         Ok(verdict)
     }
+}
+
+/// Fetch cited sub-rules (`702.19b`) whose rule-level parent (`702.19`) is
+/// in Context, so `validate` can check the quote against the leaf's own
+/// row. Leaves whose parent was never shown are left alone: the model
+/// cannot have read them, and validation should reject the citation.
+///
+/// Shared by the Anthropic synthesizer and the agent-driven session, which
+/// validate the same way.
+///
+/// # Errors
+/// Whatever `lookup_rules` fails with.
+pub async fn hydrate_leaf_citations(
+    v: &Verdict<Unvalidated>,
+    ctx: &mut Context,
+    retriever: &dyn Retriever,
+) -> Result<(), JudgeError> {
+    let mut wanted: Vec<RuleId> = Vec::new();
+    for c in v.citations() {
+        if let Citation::Rule { id, .. } = c
+            && ctx.rule(id).is_none()
+            && !wanted.contains(id)
+            && parent_of(id).is_some_and(|p| ctx.rule(&p).is_some())
+        {
+            wanted.push(id.clone());
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    tracing::debug!(ids = ?wanted, "hydrating cited sub-rules");
+    let chunks = retriever.lookup_rules(&wanted).await?;
+    ctx.extend_rules(chunks);
+    Ok(())
 }
 
 /// `702.19b` → `702.19`; `None` for rule-level (`702.19`) and section (`702`) ids.
@@ -386,11 +470,20 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &Rejection) {
                  prose, with citations.\n",
             );
         }
+        Rejection::Oversized { chars } => {
+            let _ = writeln!(
+                s,
+                "Your earlier answer was {chars} characters long, so it was rejected. Keep the answer under \
+                 {} characters: ruling first, then the reasoning, and stop when the question is answered.",
+                judge_core::MAX_ANSWER_CHARS
+            );
+        }
     }
 }
 
 /// The material part of the user turn. `pinned` chunks bypass the CR budget.
-fn render_material(ctx: &Context, pinned: &[RuleId], budget: &Budget) -> String {
+#[must_use]
+pub fn render_material(ctx: &Context, pinned: &[RuleId], budget: &Budget) -> String {
     let mut s = String::from("# Material\n");
     render_cards(&mut s, &ctx.cards);
     render_rules(&mut s, ctx, pinned, budget);
@@ -401,7 +494,8 @@ fn render_material(ctx: &Context, pinned: &[RuleId], budget: &Budget) -> String 
 }
 
 /// The question part of the user turn, with the rejection notice if any.
-fn render_question(q: &Question, ctx: &Context, rejected: Option<&Rejection>) -> String {
+#[must_use]
+pub fn render_question(q: &Question, ctx: &Context, rejected: Option<&Rejection>) -> String {
     let mut s = String::new();
     if let Some(c) = rejected {
         render_rejection(&mut s, ctx, c);
@@ -764,7 +858,7 @@ mod tests {
         let reqs = bodies(&server).await?;
         assert_eq!(reqs.len(), 2);
         let first = reqs.first().ok_or("no first request")?;
-        assert_eq!(at(first, "/system/0/text").as_str(), Some(SYSTEM_PROMPT));
+        assert_eq!(at(first, "/system/0/text").as_str(), Some(system_prompt(Harness::Tool).as_str()));
         assert_eq!(at(first, "/system/0/cache_control/type").as_str(), Some("ephemeral"));
         assert_eq!(at(first, "/tools/0/name").as_str(), Some("lookup_rules"));
         assert_eq!(at(first, "/messages/0/content/0/cache_control/type").as_str(), Some("ephemeral"));
@@ -884,5 +978,46 @@ mod tests {
         let r = synth.answer(&q(), &mut ctx, None).await;
         assert!(matches!(r, Err(JudgeError::Upstream(e)) if e.downcast_ref::<Truncated>().is_some()));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod harness_tests {
+    use super::*;
+
+    #[test]
+    fn every_harness_fills_both_tokens() {
+        for h in [Harness::Tool, Harness::Mcp, Harness::Cli] {
+            let s = system_prompt(h);
+            assert!(!s.contains("{{"), "{h:?} left a token unfilled");
+            assert!(s.contains("ONCE"), "{h:?} keeps the one-round rule");
+        }
+    }
+
+    /// The bot's synthesis prompt is tuned text; a template edit that changes
+    /// its rendering must be deliberate. If this fails and the change is
+    /// intended, paste the new digest here.
+    #[test]
+    fn the_anthropic_prompt_rendering_is_pinned() {
+        use sha2::{Digest as _, Sha256};
+        let digest = format!("{:x}", Sha256::digest(system_prompt(Harness::Tool).as_bytes()));
+        assert_eq!(digest, "8811f7b631bc3d825114f48fa496c552b74273e4a96d2b554f68ac076016a13d", "the Anthropic synthesis prompt changed");
+    }
+
+    #[test]
+    fn the_anthropic_prompt_names_the_tool_and_says_nothing_about_json() {
+        let s = system_prompt(Harness::Tool);
+        assert!(s.contains("call the `lookup_rules` tool ONCE with the specific ids"));
+        assert!(!s.contains("schema supplied"));
+    }
+
+    #[test]
+    fn agent_prompts_say_how_to_look_up_and_how_to_answer() {
+        let mcp = system_prompt(Harness::Mcp);
+        assert!(mcp.contains("this session's id"));
+        assert!(mcp.contains("`submit_verdict`"));
+        let cli = system_prompt(Harness::Cli);
+        assert!(cli.contains("judge-cli rules <session>"));
+        assert!(cli.contains("judge-cli verdict <session>"));
     }
 }

@@ -259,10 +259,10 @@ pub struct Face {
     pub type_line: String,
 }
 
-/// A card as identified by its oracle id, with all faces.
-/// (No `JsonSchema`: cards are never part of a model-facing schema, and
-/// `nonempty` has no schemars 1.x support.)
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A card as identified by its oracle id, with all faces. (`JsonSchema` is
+/// for the agent tool surface; `NonEmpty` is mapped to `Vec` there because
+/// `nonempty` has no schemars support.)
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Card {
     /// Scryfall oracle id.
@@ -272,6 +272,7 @@ pub struct Card {
     /// Scryfall layout.
     pub layout: Layout,
     /// All faces; single-faced cards have exactly one.
+    #[schemars(with = "Vec<Face>")]
     pub faces: NonEmpty<Face>,
 }
 
@@ -367,16 +368,17 @@ pub enum MatchedVia {
 }
 
 /// An ambiguous span with its candidate cards ("did you mean…?").
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Ambiguous {
     /// The span as the user wrote it.
     pub query: String,
     /// Cards it could refer to.
+    #[schemars(with = "Vec<Card>")]
     pub candidates: NonEmpty<Card>,
 }
 
 /// Outcome of resolving one card-name span. Never guesses.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Resolution {
     /// Exactly one card matched.
@@ -391,6 +393,7 @@ pub enum Resolution {
         /// The span as written.
         query: String,
         /// Cards it could be.
+        #[schemars(with = "Vec<Card>")]
         candidates: NonEmpty<Card>,
         /// Which rung produced the candidates. `Fuzzy` candidates are trigram
         /// neighbours, not names the user could have meant, so `judge()` never
@@ -476,7 +479,7 @@ pub const MALFORMED_RAW_CHARS: usize = 300;
 /// rejection that the existing single retry can explain to the model.
 /// [`Verdict<Validated>`](crate::Verdict) can never hold one: `validate` is
 /// the only route to that state and it refuses while any are present.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MalformedCitation {
     /// The element as the model wrote it, as compact JSON: at most
     /// [`MALFORMED_RAW_CHARS`] characters, plus a trailing `…` if it was cut.
@@ -515,7 +518,7 @@ impl fmt::Display for Citation {
 }
 
 /// A CR chunk at rule granularity (e.g. `702.19` with its lettered sub-rules).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuleChunk {
     /// Rule id, e.g. `702.19`.
     pub id: RuleId,
@@ -558,7 +561,7 @@ impl RuleChunk {
 }
 
 /// A Scryfall ruling for a card.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Ruling {
     /// The card the ruling is about.
     pub card: CardId,
@@ -571,7 +574,7 @@ pub struct Ruling {
 }
 
 /// A CR glossary entry.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GlossaryEntry {
     /// Glossary headword.
     pub term: String,
@@ -580,7 +583,7 @@ pub struct GlossaryEntry {
 }
 
 /// A prior rated call, shown to the model as an *example* after CR material.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PriorCall {
     /// Call id.
     pub id: CallId,
@@ -601,7 +604,7 @@ pub struct PriorCall {
 }
 
 /// Hand-written note for a "nightmare" card.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CardNote {
     /// The card the note is about.
     pub card: CardId,
@@ -610,7 +613,7 @@ pub struct CardNote {
 }
 
 /// One previous question/answer pair in the same thread.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Qa {
     /// Earlier question.
     pub question: String,
@@ -691,7 +694,7 @@ impl Extraction {
 }
 
 /// Why a verdict was rejected for being empty rather than for a bad citation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EmptyVerdict {
     /// The answer cites nothing (every verdict draws on the CR / Commander rules).
@@ -715,8 +718,13 @@ impl fmt::Display for EmptyVerdict {
 /// What a previous synthesis attempt was rejected for; the synthesizer shows
 /// this to the model on the retry. Exhaustive, so a new rejection reason must
 /// be rendered before it compiles.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+///
+/// Adjacently tagged (`{"kind": "bad_citation", "detail": {...}}`): the
+/// `BadCitation` payload is a [`Citation`], itself internally tagged on
+/// `kind`, and an internal tag here would collide with it (serde writes both
+/// and cannot read the result back). Round-tripped by the agent session store.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum Rejection {
     /// A citation failed validation.
     BadCitation(Citation),
@@ -724,6 +732,15 @@ pub enum Rejection {
     Malformed(MalformedCitation),
     /// The verdict was empty (no citations, or no real answer).
     Empty(EmptyVerdict),
+    /// The answer text exceeded [`crate::verdict::MAX_ANSWER_CHARS`]. Only an
+    /// agent-driven session produces this: the Anthropic path is bounded by
+    /// `max_tokens` and the Discord renderer cuts to fit, but an outside
+    /// agent's answer is stored whole and rendered into later prompts as a
+    /// prior call, so its size is checked before validation.
+    Oversized {
+        /// Characters in the trimmed answer.
+        chars: usize,
+    },
 }
 
 impl fmt::Display for Rejection {
@@ -732,6 +749,7 @@ impl fmt::Display for Rejection {
             Rejection::BadCitation(c) => write!(f, "bad citation {c}"),
             Rejection::Malformed(m) => write!(f, "{m}"),
             Rejection::Empty(e) => write!(f, "{e}"),
+            Rejection::Oversized { chars } => write!(f, "answer is {chars} characters, over the limit"),
         }
     }
 }

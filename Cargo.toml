@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/anthropic", "crates/embed", "crates/ingest", "crates/bot", "crates/eval", "crates/api"]
+members = ["crates/core", "crates/anthropic", "crates/embed", "crates/ingest", "crates/bot", "crates/eval", "crates/api", "crates/agent"]
 
 [workspace.package]
 edition = "2024"
@@ -14,6 +14,7 @@ judge-core = { path = "crates/core" }
 judge-anthropic = { path = "crates/anthropic" }
 judge-embed = { path = "crates/embed" }
 judge-bot = { path = "crates/bot" }
+judge-agent = { path = "crates/agent" }
 
 anyhow = "1"
 async-trait = "0.1"
@@ -29,6 +30,7 @@ uuid = { version = "1", features = ["serde", "v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rmcp = { version = "3.2", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [workspace.lints.rust]

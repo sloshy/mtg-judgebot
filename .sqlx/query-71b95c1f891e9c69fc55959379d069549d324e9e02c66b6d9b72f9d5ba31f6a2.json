@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT term, text\n            FROM glossary\n            WHERE lower(term) = lower($1) OR term ILIKE $2\n            ORDER BY (lower(term) = lower($1)) DESC, length(term), term\n            LIMIT $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "term",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "glossary",
+            "name": "term"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "text",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "glossary",
+            "name": "text"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "71b95c1f891e9c69fc55959379d069549d324e9e02c66b6d9b72f9d5ba31f6a2"
+}

@@ -13,11 +13,15 @@
 //!   `sessionStorage`), namespaced as thread id `web:<uuid>`;
 //! * anonymous traffic is cost: a per-IP fixed-window limiter ([`limit`])
 //!   sits in front of the concurrency semaphore, and the spend-capped
-//!   Anthropic client remains the backstop.
+//!   Anthropic client remains the backstop;
+//! * with `MCP_TOKEN` set, the MCP transport of `judge-agent` is mounted at
+//!   `/mcp` behind that bearer token ([`mcp`]), sharing the judge slots and
+//!   the spend cap with the web route.
 
 pub mod config;
 pub mod http;
 pub mod limit;
+pub mod mcp;
 pub mod shape;
 
 pub use config::ApiConfig;

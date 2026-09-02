@@ -58,6 +58,15 @@ cargo run --release -p judge-api                        # HTTP API + web page on
 npm --prefix web run build           # build the SolidJS page into web/dist (served by judge-api)
 npm --prefix web run dev             # Vite dev server, proxies /api to a local judge-api
 
+cargo build --release -p judge-agent                    # target/release/judge-cli + judge-mcp (build before
+                                                        # .mcp.json can start judge-mcp)
+judge-cli judge "<q>" [--thread T] [--pin span=Name]    # built-in pipeline: real spend, own cap per process
+judge-cli begin "<q>" [--thread T] | prompt <s> | status <s> | extract <s> <file|-> | rules <s> <id>..
+judge-cli verdict <s> <file|-> [--persist] | persist <s>   # the agent-driven session, step by step
+judge-cli card <name> | card-info <uuid> | get-rules <id>.. | search "<q>" [--limit N] | glossary <term>
+judge-mcp                                               # the MCP server on stdio (.mcp.json starts it)
+                                                        # remote: judge-api serves /mcp when MCP_TOKEN is set
+
 cargo run -p judge-eval -- recall                       # retrieval gate, no API keys, exit≠0 below 90%
 cargo run -p judge-eval -- answer --label L --limit 21 --max-usd 6.00   # full live gold run (~$2.50)
 cargo run -p judge-eval -- rescore eval/runs/<run>.json # re-score a stored run, zero API cost
@@ -81,8 +90,9 @@ Crate graph: `core` (domain ADTs, ports, `judge()`, citation validation — pure
 schema subset via a transform that must keep `additionalProperties:false` and rewrite
 `oneOf→anyOf`) ← `embed` (Voyage) ← `bot` (sqlx adapters, prompts in
 `crates/bot/src/prompts/`, serenity/poise Discord layer with pure `render.rs`) and
-`ingest` / `eval` / `api` (bins). `judge_bot::build_deps` is the single composition root
-shared by the bot, eval and the HTTP API. `api` (+ the SolidJS page in `web/`) is the
+`ingest` / `eval` / `api` (bins) and `agent` (lib + `judge-cli` / `judge-mcp` bins; `api`
+mounts its MCP handler). `judge_bot::build_deps` is the single composition root
+shared by the bot, eval, the HTTP API and the agent's `judge` tool. `api` (+ the SolidJS page in `web/`) is the
 anonymous front door: no ratings, stateless "did you mean?" via `pins` → `pin_card`
 rewriting, session history via a client UUID (`web:<uuid>` thread ids), per-IP
 fixed-window rate limiting (`API_RATE_LIMIT`/`API_RATE_WINDOW_SECS`) ahead of the
@@ -121,6 +131,24 @@ Key cross-file facts that aren't obvious from any one file:
   inside `rule`/`prior_call` quotes and the answer text in one pass. Never guesses:
   ambiguous or reworded rules are left to the retirement pass. The CR loader and the
   retirement pass take the same advisory lock (`CALLS_REWRITE_LOCK`).
+- **Agent sessions are the pipeline in pull mode, with the same validation.**
+  `judge_bot::session` (`Session`/`Stage` machine, `Sessions` over `PgSessionStore`,
+  table `agent_sessions`) hands an outside agent the extraction prompt, then the
+  synthesis prompt rendered from the same `Context`, and admits its verdict only through
+  `Verdict::validate`; one `lookup_rules` round, one retry, same rejection notice.
+  `synth::system_prompt(Harness)` fills two tokens in `prompts/synth_system.md`
+  (`{{LOOKUP_RULES}}`, `{{OUTPUT_FORMAT}}`); `Harness::Tool` is the tuned prompt the bot
+  sends, and `harness_tests` pin its SHA-256 so a template edit that changes it fails a
+  test until the digest is updated on purpose. Thread
+  ids are `AgentThread` (`agent:<uuid>`, only mintable or parseable with the prefix) so a
+  session can never read or write a Discord thread's history; inputs are bounded
+  (`MAX_QUESTION_CHARS`, `MAX_EXTRACTION_ITEMS`, `MAX_LOOKUP_IDS`, `MAX_ANSWER_CHARS`);
+  persisting is idempotent in the database (`calls.session_id` unique, `PersistCall`), and
+  a session-persisted call is thread history only — the prior-call leg skips
+  `session_id IS NOT NULL` rows because nothing can rate them.
+  `Rejection` is adjacently tagged because it is stored. The surface is `crates/agent`
+  (`ops.rs` is the one list of operations; `mcp.rs` and `bin/cli.rs` only transport),
+  and `.claude/skills/judge/SKILL.md` tells Claude Code how to drive it.
 - **Category taxonomy is data.** `data/categories.yaml` is the single source of truth;
   `crates/core/build.rs` generates the `Category` enum from it, so taxonomy edits are
   recompiles and matches stay exhaustive. The extractor's schema makes the primary
@@ -151,7 +179,11 @@ Key cross-file facts that aren't obvious from any one file:
 `DISCORD_TOKEN`, `GUILD_ID` (instant command registration), `JUDGE_ROLE` (default
 "Judge"), `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`; for the HTTP API also `API_ADDR`
 (default `0.0.0.0:8787`), `WEB_DIST`, `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`,
-`API_CLIENT_IP` (`peer` or `cloudflare`; see below). The
+`API_CLIENT_IP` (`peer` or `cloudflare`; see below), `MCP_TOKEN` (unset = no `/mcp`; ≥24
+chars; bearer-checked before the protocol), `MCP_ALLOWED_HOSTS` (the `Host` values the
+MCP transport accepts — the public hostname behind the tunnel) and
+`MCP_JUDGE_LIMIT`/`MCP_JUDGE_WINDOW_SECS` (`judge` runs per window through `/mcp`; the
+blast radius of a leaked token). The
 bot/api containers override `DATABASE_URL` to `db:5432` inside the compose network;
 the image builds the web page and sets `WEB_DIST=/srv/web`.
 

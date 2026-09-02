@@ -90,7 +90,7 @@ Discord message (+ last N Q&A in the same thread)
 [6] Persist call (question, verdict, context ids, crVersion); rating buttons.
 ```
 
-Two front doors share this pipeline through the same composition root
+Three front doors share this pipeline through the same composition root
 (`judge_bot::build_deps`):
 
 - **Discord adapter** (`crates/bot`): `/judge` slash command, rating buttons,
@@ -102,8 +102,39 @@ Two front doors share this pipeline through the same composition root
   `pins: [{span, name}]`, which the server rewrites to `[[Full Name]]` with the
   same `pin_card` used by the Discord buttons. Follow-up history comes from a
   client-generated session UUID, stored as thread id `web:<uuid>`.
+- **Agent adapter** (`crates/agent`): the judge as a tool surface for *other*
+  agents, over MCP (`judge-mcp` on stdio for a local client; `judge-api` mounts
+  the same handler at `/mcp` behind `MCP_TOKEN` for a remote one) and as
+  `judge-cli` (one subcommand per operation, JSON out, for a shell agent — the
+  repo's `.claude/skills/judge` skill). It offers the pipeline two ways: the
+  `judge` tool runs it as above with the built-in Anthropic calls (spend-capped,
+  same concurrency semaphore as the web route, only when an API key is
+  configured); a **session** runs it in pull mode, where the calling agent *is*
+  the model. `judge_bot::session` is that state machine: `begin` returns the
+  extraction prompt (steps 1 + 3 as text plus the JSON Schema), the agent's
+  `Extraction` JSON drives steps 2 + 4 and yields the synthesis prompt (the same
+  system prompt, with `Harness`-specific wording for the one `lookup_rules`
+  round and the output format, plus the rendered material), the agent's
+  `Verdict` JSON goes through the same `Verdict::validate` against the session's
+  own `Context`, with the same single retry and the same rejection notice. The
+  invariants the typestates carry on the API path (one tool round, one retry,
+  only a validated verdict is persisted) are a `Stage` enum here, because the
+  state lives in Postgres (`agent_sessions`, one jsonb document, optimistic
+  version) between calls — the 2026-07-28 MCP revision removed protocol
+  sessions in favour of server-minted handles passed as tool arguments, which
+  is what the session id is (the HTTP transport is served statelessly for
+  every protocol version). Sessions are unauthenticated at the tool level, so
+  their thread ids are a type (`AgentThread`, always `agent:<uuid>`) that
+  cannot name a Discord or web thread, their inputs are bounded
+  (question, spans, concepts, lookup ids, answer length), and a persisted call
+  is keyed by session (`calls.session_id`, unique) so persisting twice cannot
+  file two calls, and is excluded from the prior-call leg (nothing can rate it;
+  it is history for its own thread only). Over HTTP, `judge` runs are also
+  capped per window (`MCP_JUDGE_LIMIT`) so a leaked token cannot take the
+  public page's slots and spend cap with it. Read-only lookups (resolve a card, rules by id or search,
+  rulings, notes, glossary) round the surface out (`PgLibrary`).
 
-Both front doors draw Magic's card symbols (`{W}`, `{2/U}`, `{T}`) as pictures,
+The Discord and web front doors draw Magic's card symbols (`{W}`, `{2/U}`, `{T}`) as pictures,
 from one set of names:
 
 - **Discord** substitutes *application* emoji — `<:mana_w:…>`, owned by the bot

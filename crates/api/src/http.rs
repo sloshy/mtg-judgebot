@@ -37,7 +37,7 @@ pub struct App {
     capture: Arc<CapturingRetriever>,
     store: Arc<dyn CallStore>,
     client: judge_anthropic::Client,
-    permits: Semaphore,
+    permits: Arc<Semaphore>,
     limiter: RateLimiter,
     history_len: usize,
     client_ip: ClientIpSource,
@@ -64,11 +64,18 @@ impl App {
             capture,
             store,
             client,
-            permits: Semaphore::new(cfg.max_concurrent),
+            permits: Arc::new(Semaphore::new(cfg.max_concurrent)),
             limiter: RateLimiter::new(cfg.rate_limit, cfg.rate_window),
             history_len: cfg.history_len,
             client_ip: cfg.client_ip,
         }
+    }
+
+    /// The judge slots, to share with another front door in this process
+    /// (the MCP transport), so that both together stay under `JUDGE_CONCURRENCY`.
+    #[must_use]
+    pub fn permits(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.permits)
     }
 
     /// A judge slot, waiting up to [`ACQUIRE_WAIT`] for one; `None` means "busy".
@@ -147,7 +154,9 @@ const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
 
 /// The routes: `POST /api/judge`, `GET /api/health`, and the built web client
 /// as the fallback (unknown paths get `index.html`, so a client-side route
-/// refresh still loads the app).
+/// refresh still loads the app). The MCP router ([`crate::mcp::router`]) is
+/// merged *into* this one, so this fallback wins and the token gate stays
+/// on `/mcp` alone.
 pub fn router(app: Arc<App>, web_dist: &Path) -> Router {
     let files = ServeDir::new(web_dist).not_found_service(ServeFile::new(web_dist.join("index.html")));
     Router::new()
@@ -161,8 +170,11 @@ pub fn router(app: Arc<App>, web_dist: &Path) -> Router {
 ///
 /// # Errors
 /// Binding the address, or a fatal accept-loop error.
-pub async fn serve(cfg: &ApiConfig, app: Arc<App>) -> anyhow::Result<()> {
-    let router = router(app, &cfg.web_dist);
+/// Bind `cfg.addr` and serve `router` until the listener fails.
+///
+/// # Errors
+/// Binding or accepting.
+pub async fn serve(cfg: &ApiConfig, router: Router) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(cfg.addr)
         .await
         .with_context(|| format!("bind {}", cfg.addr))?;
@@ -377,6 +389,10 @@ mod tests {
     type Res = Result<(), Box<dyn std::error::Error>>;
 
     fn test_app(rate_limit: u32) -> Result<(Router, Arc<StubStore>), Box<dyn std::error::Error>> {
+        test_app_with_dist(rate_limit, Path::new("does-not-exist"))
+    }
+
+    fn test_app_with_dist(rate_limit: u32, dist: &Path) -> Result<(Router, Arc<StubStore>), Box<dyn std::error::Error>> {
         let store = Arc::new(StubStore::default());
         let deps = Deps {
             extractor: Arc::new(StubExtractor),
@@ -386,12 +402,16 @@ mod tests {
         };
         let cfg = ApiConfig {
             addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-            web_dist: std::path::PathBuf::from("does-not-exist"),
+            web_dist: dist.to_path_buf(),
             max_concurrent: 2,
             history_len: 5,
             rate_limit,
             rate_window: Duration::from_mins(5),
             client_ip: ClientIpSource::PeerAddr,
+            mcp_token: None,
+            mcp_hosts: vec![],
+            mcp_judge_limit: ApiConfig::DEFAULT_MCP_JUDGE_LIMIT,
+            mcp_judge_window: ApiConfig::DEFAULT_MCP_JUDGE_WINDOW,
         };
         let client = judge_anthropic::Client::new("test-key")?;
         let app = Arc::new(App::new(deps, Arc::clone(&store) as Arc<dyn CallStore>, client, &cfg));
@@ -477,6 +497,44 @@ mod tests {
         // The invalid request did not consume the single slot in the window.
         let (status, _) = post_judge(router, r#"{"question":"does lifelink stack?"}"#).await?;
         assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    /// The token gate is scoped to `/mcp` by merge order: the web routes and
+    /// the SPA fallback stay open, every method on `/mcp` is gated, and
+    /// without the MCP router `/mcp` is just another SPA path.
+    #[tokio::test]
+    async fn the_mcp_gate_covers_only_mcp() -> Res {
+        use axum::http::Method;
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+        // A real dist dir, so the SPA fallback answers 200 and proves it survived the merge.
+        let dist = std::env::temp_dir().join(format!("judge-api-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dist)?;
+        std::fs::write(dist.join("index.html"), "<!doctype html><title>judge</title>")?;
+        let (web, _) = test_app_with_dist(10, &dist)?;
+        let (bare_web, _) = test_app_with_dist(10, &dist)?;
+        let router = web.merge(crate::mcp::router(crate::mcp::tests::Echo, TOKEN));
+        let send = |router: Router, method: Method, path: &str, auth: Option<&str>| {
+            let mut req = Request::builder().method(method).uri(path);
+            if let Some(a) = auth {
+                req = req.header("authorization", a);
+            }
+            let req = req.body(Body::empty());
+            async move { Ok::<_, Box<dyn std::error::Error>>(router.oneshot(req?).await?.status()) }
+        };
+        // `/` is answered by the fallback (`ServeDir`) alone: a router that lost
+        // it in the merge would 404 here.
+        assert_eq!(send(bare_web, Method::GET, "/", None).await?, StatusCode::OK, "unmerged web fallback");
+        assert_eq!(send(router.clone(), Method::GET, "/api/health", None).await?, StatusCode::OK);
+        assert_eq!(send(router.clone(), Method::GET, "/", None).await?, StatusCode::OK, "web fallback survived the merge");
+        for method in [Method::POST, Method::GET, Method::DELETE, Method::OPTIONS] {
+            assert_eq!(send(router.clone(), method.clone(), "/mcp", None).await?, StatusCode::UNAUTHORIZED, "{method}");
+        }
+        let bearer = format!("Bearer {TOKEN}");
+        assert_eq!(send(router.clone(), Method::POST, "/mcp", Some(&bearer)).await?, StatusCode::OK);
+        assert_eq!(send(router, Method::DELETE, "/mcp", Some(&bearer)).await?, StatusCode::OK);
+        let (bare, _) = test_app(10)?;
+        assert_ne!(send(bare, Method::POST, "/mcp", None).await?, StatusCode::UNAUTHORIZED, "no token configured: no gate");
         Ok(())
     }
 

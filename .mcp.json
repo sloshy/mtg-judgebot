@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "judge": {
+      "command": "target/release/judge-mcp",
+      "args": [],
+      "env": { "RUST_LOG": "warn" }
+    }
+  }
+}

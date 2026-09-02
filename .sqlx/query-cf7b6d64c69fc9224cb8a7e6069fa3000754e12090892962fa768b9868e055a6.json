@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE agent_sessions\n               SET state = $2, version = version + 1, updated_at = now(), expires_at = now() + $4\n             WHERE id = $1 AND version = $3 AND expires_at >= now()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb",
+        "Int4",
+        "Interval"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cf7b6d64c69fc9224cb8a7e6069fa3000754e12090892962fa768b9868e055a6"
+}

@@ -10,7 +10,7 @@ FROM rust:1.97-slim AS builder
 WORKDIR /app
 COPY . .
 ENV SQLX_OFFLINE=true
-RUN cargo build --release -p judge-bot -p judge-api -p judge-ingest
+RUN cargo build --release -p judge-bot -p judge-api -p judge-ingest -p judge-agent
 
 FROM debian:bookworm-slim
 # The ingest cache is owned by the runtime user so that a named volume mounted
@@ -21,6 +21,12 @@ COPY --from=builder /app/target/release/bot /usr/local/bin/judge-bot
 COPY --from=builder /app/target/release/api /usr/local/bin/judge-api
 # Third entrypoint: the scheduled data refresh (`judge-ingest refresh`).
 COPY --from=builder /app/target/release/ingest /usr/local/bin/judge-ingest
+# The agent surface: `judge-cli` (one subcommand per operation, JSON out) and
+# `judge-mcp` (the MCP server over stdio). The same tools are served over HTTP
+# by judge-api at /mcp when MCP_TOKEN is set; these two are for a shell on the
+# host (`docker compose run --rm --entrypoint judge-cli api ...`).
+COPY --from=builder /app/target/release/judge-cli /usr/local/bin/judge-cli
+COPY --from=builder /app/target/release/judge-mcp /usr/local/bin/judge-mcp
 ENV INGEST_CACHE_DIR=/var/cache/judgebot
 COPY --from=web /web/dist /srv/web
 ENV WEB_DIST=/srv/web

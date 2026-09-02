@@ -6,15 +6,18 @@
 //! other binaries; the process environment wins): `DATABASE_URL`,
 //! `ANTHROPIC_API_KEY`, optional `VOYAGE_API_KEY`, `API_ADDR`, `WEB_DIST`,
 //! `JUDGE_CONCURRENCY`, `JUDGE_MAX_USD`, `API_RATE_LIMIT`,
-//! `API_RATE_WINDOW_SECS`, `API_CLIENT_IP`, `RUST_LOG`. No Discord
-//! variables are read: the bot and the API are separate processes sharing
-//! only the database.
+//! `API_RATE_WINDOW_SECS`, `API_CLIENT_IP`, `RUST_LOG`; optional `MCP_TOKEN`
+//! (mounts the MCP transport at `/mcp` behind it), `MCP_ALLOWED_HOSTS`,
+//! `MCP_JUDGE_LIMIT` and `MCP_JUDGE_WINDOW_SECS`.
+//! No Discord variables are read: the bot and the API are separate processes
+//! sharing only the database.
 
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use judge_api::{ApiConfig, App, serve};
-use judge_bot::{build_deps, db::PgCallStore};
+use judge_agent::{Options, Quota, Toolbox};
+use judge_api::{ApiConfig, App, router, serve};
+use judge_bot::{build_deps, db::PgCallStore, synth::Harness};
 use judge_core::{CallStore, Embedder};
 use judge_embed::VoyageEmbedder;
 
@@ -52,13 +55,32 @@ async fn main() -> Result<()> {
         store = store.with_embedder(Arc::clone(e));
     }
     let store: Arc<dyn CallStore> = Arc::new(store);
-    let deps = build_deps(pool, anthropic.clone(), embedder);
-    let app = Arc::new(App::new(deps, store, anthropic, &cfg));
+    let deps = build_deps(pool.clone(), anthropic.clone(), embedder.clone());
+    let app = Arc::new(App::new(deps, store, anthropic.clone(), &cfg));
+    let mut routes = router(Arc::clone(&app), &cfg.web_dist);
+    // The MCP transport shares the judge slots (one JUDGE_CONCURRENCY for
+    // both front doors) and the spend-capped client (one cap).
+    if let Some(token) = &cfg.mcp_token {
+        let toolbox = Toolbox::new(
+            pool,
+            Options {
+                harness: Harness::Mcp,
+                anthropic: Some(anthropic),
+                embedder,
+                permits: app.permits(),
+                judge_quota: Some(Quota { limit: cfg.mcp_judge_limit, window: cfg.mcp_judge_window }),
+                history_len: cfg.history_len,
+            },
+        );
+        let service = judge_agent::mcp::http_service(Arc::new(toolbox), cfg.mcp_hosts.clone());
+        routes = routes.merge(judge_api::mcp::router(service, token));
+    }
     tracing::info!(
         rate_limit = cfg.rate_limit,
         rate_window_secs = cfg.rate_window.as_secs(),
         concurrency = cfg.max_concurrent,
+        mcp = cfg.mcp_token.is_some(),
         "starting HTTP adapter"
     );
-    serve(&cfg, app).await
+    serve(&cfg, routes).await
 }

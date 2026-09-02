@@ -34,6 +34,12 @@ use crate::{
 /// [`EmptyVerdict::ShortAnswer`].
 pub const MIN_ANSWER_CHARS: usize = 40;
 
+/// Longest answer an agent-driven session accepts, in characters. Discord's
+/// embed description holds 4096; the prompt asks for about 1500. The Anthropic
+/// path needs no such check (`max_tokens` bounds it), so this is enforced by
+/// the session, not by `validate`.
+pub const MAX_ANSWER_CHARS: usize = 4000;
+
 mod sealed {
     pub trait Sealed {}
 }

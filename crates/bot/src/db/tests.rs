@@ -30,7 +30,7 @@ type FaceSeed = (i16, &'static str, &'static str);
 
 /// One fixture for every sqlx test; its length is the data, not logic.
 #[expect(clippy::too_many_lines, reason = "test fixture: one row per seeded card")]
-async fn seed(pool: &PgPool) -> anyhow::Result<()> {
+pub(crate) async fn seed(pool: &PgPool) -> anyhow::Result<()> {
     let cards: [(Uuid, &str, &str, &[FaceSeed]); 13] = [
         (
             BOB,

@@ -82,7 +82,9 @@ impl Extractor for AnthropicExtractor {
 }
 
 /// The stable part of the prompt: task, taxonomy and source definitions.
-fn system_prompt() -> String {
+/// Harness-neutral: the extraction answer is JSON whoever produces it.
+#[must_use]
+pub fn system_prompt() -> String {
     let mut s = String::from(
         "You are the entity-extraction and classification stage of a Magic: The Gathering rules \
          assistant. You do NOT answer the question. You read the user's message (and any earlier \
@@ -138,7 +140,8 @@ fn system_prompt() -> String {
 }
 
 /// The user turn: a compact history block (most recent last) and the question.
-fn user_turn(q: &Question, history: &[Qa], history_turns: usize) -> String {
+#[must_use]
+pub fn user_turn(q: &Question, history: &[Qa], history_turns: usize) -> String {
     let mut s = String::new();
     let start = history.len().saturating_sub(history_turns);
     let recent = history.get(start..).unwrap_or_default();
@@ -151,6 +154,14 @@ fn user_turn(q: &Question, history: &[Qa], history_turns: usize) -> String {
     }
     let _ = writeln!(s, "## Question\n{}", q.text);
     s
+}
+
+/// The `Extraction` schema as an agent should see it: full JSON Schema, not
+/// the Anthropic structured-output subset (`anthropic_schema`), which strips
+/// keywords an agent can use. Deserialization enforces the same shape.
+#[must_use]
+pub fn schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(Extraction)).unwrap_or_default()
 }
 
 /// One `messages` request: cached system prompt, effort from `cfg`, the

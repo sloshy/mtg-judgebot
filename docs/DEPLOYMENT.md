@@ -127,6 +127,53 @@ Use a full `docker compose up -d` at least once on an existing host: `db`'s publ
 port changed to loopback, and `up -d --build bot api` deliberately leaves `db` alone,
 so the old `0.0.0.0:5433` binding would otherwise persist indefinitely.
 
+### Optional: MCP for your own agents
+
+`judge-api` can serve the judge's tool surface (`crates/agent`) to an MCP client over
+the same tunnel, at `/mcp`. It is off unless `MCP_TOKEN` is set, and there is no
+anonymous mode: every request must carry `Authorization: Bearer <MCP_TOKEN>` or gets a
+401 before the protocol sees it. Behind the token are `judge` (the full pipeline, real
+Anthropic spend, under the same `JUDGE_MAX_USD` and `JUDGE_CONCURRENCY` as the web
+page), the agent-driven sessions (no model calls, database work only) and the
+read-only lookups.
+
+```ini
+MCP_TOKEN=<openssl rand -base64 32>       # at least 24 characters, or the API refuses to start
+MCP_ALLOWED_HOSTS=mtgjudge.example.com,localhost   # Host values accepted: the tunnel's hostname, plus
+                                                   # localhost for curl on the host; the list replaces the default
+```
+
+`MCP_ALLOWED_HOSTS` matters: the MCP transport validates `Host` against a loopback-only
+default (a DNS-rebinding guard), and cloudflared forwards the public hostname, so an
+empty list means every `/mcp` request is refused with 403 while `/api/judge` keeps
+working. Then `docker compose up -d api` and, from a workstation:
+
+```sh
+claude mcp add --transport http judge https://mtgjudge.example.com/mcp   --header "Authorization: Bearer <MCP_TOKEN>"
+```
+
+The per-IP rate limit of `/api/judge` does not apply to `/mcp` (the token is the
+identity). Instead `judge` runs through `/mcp` are capped per window
+(`MCP_JUDGE_LIMIT` per `MCP_JUDGE_WINDOW_SECS`, default 20 an hour), on top of the
+shared `JUDGE_CONCURRENCY` slots and `JUDGE_MAX_USD` cap. That cap is the blast radius
+of a leaked token: about `MCP_JUDGE_LIMIT × $0.12` an hour, and never the whole spend
+cap or every judge slot at once, so the public page keeps working. Sessions and
+lookups make no Anthropic call; they do embed the question or the search text with
+Voyage when a key is configured (fractions of a cent, and uncapped — the only paid
+upstream without a cap). Rotate a leaked token by changing `.env` and restarting
+`api`. Extending the edge rate-limiting rule of §5 to `/mcp` costs nothing, and a
+Cloudflare Access policy in front of `/mcp` (service token) keeps unauthenticated
+traffic off the origin entirely; the bearer check stays as the second layer.
+
+A verdict an agent persists through a session is kept as history for that agent's own
+thread and is **never** shown to Discord or web askers as a prior-call example: nobody
+can rate it (there is no Discord message to vote on), and the answer text is the
+outside agent's. Only the citations were validated.
+
+A shell on the host can use the same tools without the network:
+`docker compose run --rm --entrypoint judge-cli api card "Blood Moon"` (the `api` service's
+entrypoint is `judge-api`, so `run` needs `--entrypoint`).
+
 ### One-time: upload the card-symbol emoji
 
 The bot draws `{W}` as a picture using *application* emoji, which belong to the
@@ -371,6 +418,9 @@ own if the connector restarts.
 | --- | --- |
 | 502 from the public hostname | `api` is down, or the tunnel's service is not `http://api:8787` |
 | Tunnel healthy, hostname NXDOMAIN | the `mtgjudge` record is grey-clouded; it must be proxied |
+| `/mcp` answers 401 | wrong or missing `Authorization: Bearer <MCP_TOKEN>` |
+| `/mcp` answers 403 while `/api/health` is fine | the public hostname is not in `MCP_ALLOWED_HOSTS` |
+| `/mcp` answers 405 (a browser GET shows the web page) | `MCP_TOKEN` is unset in the api container's `.env`, so `/mcp` is just another page path |
 | Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the tunnel — every request looks like the cloudflared container |
 | Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied |
 | `judge-api` exits citing `API_TRUST_FORWARDED` | that variable was removed as unsafe; use `API_CLIENT_IP` |

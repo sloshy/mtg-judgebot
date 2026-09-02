@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO agent_sessions (id, thread_id, question, state, expires_at)\n            VALUES ($1, $2, $3, $4, now() + $5)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Interval"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f3735ff2b8df28d5d114313477a3a89c9bb88d093e67b3534533e9f5f7f764d0"
+}

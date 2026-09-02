@@ -5,6 +5,7 @@
 pub mod db;
 pub mod discord;
 pub mod extract;
+pub mod session;
 pub mod synth;
 
 use std::sync::Arc;

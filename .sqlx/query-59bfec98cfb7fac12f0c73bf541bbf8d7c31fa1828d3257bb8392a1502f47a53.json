@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO calls (thread_id, question, answer, category, source, confidence,\n                               citations, context_ids, cr_version, embedding)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            RETURNING id\n            ",
+  "query": "\n            INSERT INTO calls (thread_id, question, answer, category, source, confidence,\n                               citations, context_ids, cr_version, embedding, session_id)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (session_id) WHERE session_id IS NOT NULL\n            DO UPDATE SET session_id = EXCLUDED.session_id\n            RETURNING id\n            ",
   "describe": {
     "columns": [
       {
@@ -31,12 +31,13 @@
             "name": "vector",
             "kind": "Simple"
           }
-        }
+        },
+        "Uuid"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "80fef40e57e51995ce6cba197b56ac8cb63b5ec7a775137a83ebc11f1931184a"
+  "hash": "59bfec98cfb7fac12f0c73bf541bbf8d7c31fa1828d3257bb8392a1502f47a53"
 }

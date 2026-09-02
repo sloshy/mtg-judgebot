@@ -22,6 +22,16 @@ pub struct ApiConfig {
     pub rate_window: Duration,
     /// Where the rate-limit bucket key comes from (`API_CLIENT_IP`).
     pub client_ip: ClientIpSource,
+    /// Bearer token that mounts the MCP transport at `/mcp` (`MCP_TOKEN`);
+    /// unset means no MCP endpoint at all.
+    pub mcp_token: Option<String>,
+    /// Hostnames the MCP transport accepts in `Host` (`MCP_ALLOWED_HOSTS`,
+    /// comma-separated); empty keeps rmcp's loopback-only default.
+    pub mcp_hosts: Vec<String>,
+    /// `judge` runs allowed through `/mcp` per window (`MCP_JUDGE_LIMIT`).
+    pub mcp_judge_limit: u32,
+    /// That window (`MCP_JUDGE_WINDOW_SECS`).
+    pub mcp_judge_window: Duration,
 }
 
 /// Which address the per-IP rate limiter buckets on.
@@ -56,6 +66,15 @@ impl ApiConfig {
     pub const DEFAULT_RATE_LIMIT: u32 = 4;
     /// `API_RATE_WINDOW_SECS` default.
     pub const DEFAULT_RATE_WINDOW: Duration = Duration::from_mins(5);
+    /// Shortest `MCP_TOKEN` accepted, in bytes: the endpoint reaches paid
+    /// tools, and a guessable token is worse than none.
+    pub const MIN_MCP_TOKEN_BYTES: usize = 24;
+    /// `MCP_JUDGE_LIMIT` default: `judge` runs per window through `/mcp`.
+    /// The token is one identity, so this is the blast radius of a leak in
+    /// pipeline runs (about $0.12 each), on top of `JUDGE_MAX_USD`.
+    pub const DEFAULT_MCP_JUDGE_LIMIT: u32 = 20;
+    /// `MCP_JUDGE_WINDOW_SECS` default.
+    pub const DEFAULT_MCP_JUDGE_WINDOW: Duration = Duration::from_hours(1);
 
     /// Read the process environment. See [`Self::from_vars`].
     ///
@@ -70,8 +89,8 @@ impl ApiConfig {
     ///
     /// # Errors
     /// A malformed `API_ADDR`, `JUDGE_CONCURRENCY`, `API_RATE_LIMIT`,
-    /// `API_RATE_WINDOW_SECS` or `API_CLIENT_IP`, or the presence of the
-    /// removed `API_TRUST_FORWARDED`.
+    /// `API_RATE_WINDOW_SECS` or `API_CLIENT_IP`, a short `MCP_TOKEN`, or
+    /// the presence of the removed `API_TRUST_FORWARDED`.
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let var = |k: &str| get(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
         let addr = var("API_ADDR")
@@ -100,6 +119,27 @@ impl ApiConfig {
             Some("cloudflare") => ClientIpSource::CloudflareConnectingIp,
             Some(v) => anyhow::bail!("API_CLIENT_IP must be peer or cloudflare, got {v:?}"),
         };
+        let mcp_token = var("MCP_TOKEN");
+        if let Some(t) = &mcp_token {
+            anyhow::ensure!(
+                t.len() >= Self::MIN_MCP_TOKEN_BYTES,
+                "MCP_TOKEN must be at least {} bytes (try `openssl rand -base64 32`)",
+                Self::MIN_MCP_TOKEN_BYTES
+            );
+            // It travels in an HTTP header: anything a client cannot send
+            // would mount an endpoint that is 401 forever.
+            anyhow::ensure!(
+                t.bytes().all(|b| b.is_ascii_graphic()),
+                "MCP_TOKEN must be printable ASCII without spaces (try `openssl rand -base64 32`)"
+            );
+        }
+        let mcp_judge_limit =
+            parse_min(var("MCP_JUDGE_LIMIT"), "MCP_JUDGE_LIMIT", 1u32)?.unwrap_or(Self::DEFAULT_MCP_JUDGE_LIMIT);
+        let mcp_judge_window = parse_min(var("MCP_JUDGE_WINDOW_SECS"), "MCP_JUDGE_WINDOW_SECS", 1u64)?
+            .map_or(Self::DEFAULT_MCP_JUDGE_WINDOW, Duration::from_secs);
+        let mcp_hosts = var("MCP_ALLOWED_HOSTS")
+            .map(|v| v.split(',').map(str::trim).filter(|h| !h.is_empty()).map(str::to_owned).collect())
+            .unwrap_or_default();
         Ok(Self {
             addr,
             web_dist,
@@ -108,6 +148,10 @@ impl ApiConfig {
             rate_limit,
             rate_window,
             client_ip,
+            mcp_token,
+            mcp_hosts,
+            mcp_judge_limit,
+            mcp_judge_window,
         })
     }
 }
@@ -148,6 +192,27 @@ mod tests {
         assert_eq!(cfg.map(|c| c.rate_limit), Some(ApiConfig::DEFAULT_RATE_LIMIT));
         assert_eq!(cfg.map(|c| c.rate_window), Some(ApiConfig::DEFAULT_RATE_WINDOW));
         assert_eq!(cfg.map(|c| c.client_ip), Some(ClientIpSource::PeerAddr));
+        assert_eq!(cfg.map(|c| c.mcp_token.clone()), Some(None));
+        assert_eq!(cfg.map(|c| c.mcp_hosts.clone()), Some(vec![]));
+    }
+
+    #[test]
+    fn the_mcp_token_must_be_long_and_header_safe_and_hosts_are_a_list() {
+        for bad in ["short", "0123456789abcdef0123456789 abcdef", "0123456789abcdef0123456789abcdé"] {
+            let r = ApiConfig::from_vars(vars(&[("MCP_TOKEN", bad)]));
+            assert!(r.as_ref().is_err_and(|e| format!("{e:#}").contains("MCP_TOKEN")), "{bad:?}: {r:?}");
+        }
+        let cfg = ApiConfig::from_vars(vars(&[
+            ("MCP_TOKEN", "0123456789abcdef0123456789abcdef"),
+            ("MCP_ALLOWED_HOSTS", "judge.example.com, localhost,"),
+        ]))
+        .ok();
+        assert_eq!(cfg.as_ref().map(|c| c.mcp_token.as_deref()), Some(Some("0123456789abcdef0123456789abcdef")));
+        assert_eq!(cfg.as_ref().map(|c| c.mcp_hosts.clone()), Some(vec!["judge.example.com".to_owned(), "localhost".to_owned()]));
+        assert_eq!(cfg.as_ref().map(|c| c.mcp_judge_limit), Some(ApiConfig::DEFAULT_MCP_JUDGE_LIMIT));
+        assert_eq!(cfg.map(|c| c.mcp_judge_window), Some(ApiConfig::DEFAULT_MCP_JUDGE_WINDOW));
+        let r = ApiConfig::from_vars(vars(&[("MCP_JUDGE_LIMIT", "0")]));
+        assert!(r.as_ref().is_err_and(|e| format!("{e:#}").contains("MCP_JUDGE_LIMIT")), "{r:?}");
     }
 
     #[test]

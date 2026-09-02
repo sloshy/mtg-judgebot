@@ -1,6 +1,7 @@
 //! sqlx adapters for the DB-backed ports: [`PgResolver`] (card resolution
 //! ladder), [`PgRetriever`] (category map + BM25 + vector, rulings, glossary,
-//! notes, prior calls) and [`PgCallStore`] (calls + ratings).
+//! notes, prior calls), [`PgCallStore`] (calls + ratings) and
+//! [`PgSessionStore`] (agent-driven sessions).
 //!
 //! Every query is a compile-time-checked `sqlx::query!` / `query_as!` against
 //! `DATABASE_URL` (or the `.sqlx` offline cache); every sqlx error becomes
@@ -8,17 +9,21 @@
 
 mod calls;
 mod cards;
+mod library;
 mod resolve;
 mod retire;
 mod retrieve;
 mod rules;
+mod sessions;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use calls::PgCallStore;
+pub use library::{GLOSSARY_LIMIT, MAX_SEARCH, PgLibrary};
 pub use resolve::PgResolver;
 pub use retire::{CALLS_REWRITE_LOCK, RetireSummary, retire_unsupported};
 pub use retrieve::PgRetriever;
+pub use sessions::{MAX_TTL, PgSessionStore, Saved, Version};
 
 use judge_core::JudgeError;
 
