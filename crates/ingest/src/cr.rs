@@ -29,11 +29,14 @@
 //! version, so a new CR is detected without downloading it — the page is compared
 //! against `max(rules.cr_version)` and only a differing version is fetched and stored.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Context as _;
 use judge_core::{Category, CrVersion, GlossaryEntry, RuleChunk, RuleId};
 use sqlx::{PgPool, Postgres, QueryBuilder};
+
+use crate::renumber::{StoredRule, renumber_map, rewrite_call};
 
 /// Rows per `INSERT` statement.
 const BATCH: usize = 200;
@@ -581,9 +584,22 @@ pub fn version_from_effective_line(line: &str) -> Option<String> {
 
 /// Upsert rules and glossary in one transaction; rows from other CR versions are removed
 /// afterwards (rules that no longer exist). Embeddings are reset when the text changed.
+///
+/// Before the upsert, the rules currently stored are compared with the new
+/// release ([`renumber_map`]) and every call is rewritten to the new ids in the
+/// same transaction, so a renumbered rule keeps the calls that cite it.
+/// Retired calls too: a call retired for an unrelated reason (a withdrawn
+/// ruling) must still follow the numbering, or it could never be restored.
 async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
     let version = parsed.cr_version.as_ref().to_owned();
     let mut tx = pool.begin().await?;
+    // Serializes with the retirement pass, which rewrites the same rows.
+    sqlx::query!("SELECT pg_advisory_xact_lock($1)", judge_bot::db::CALLS_REWRITE_LOCK)
+        .execute(&mut *tx)
+        .await
+        .context("locking calls for renumbering")?;
+
+    let renumbered = renumber_map_from_db(&mut tx, parsed).await?;
 
     for batch in parsed.rules.chunks(BATCH) {
         let mut qb: QueryBuilder<Postgres> =
@@ -629,6 +645,7 @@ async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
         .rows_affected();
 
     sync_categories(&mut tx).await?;
+    let relocated_calls = relocate_calls(&mut tx, &renumbered).await?;
 
     tx.commit().await?;
     tracing::info!(
@@ -636,9 +653,68 @@ async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
         glossary = parsed.glossary.len(),
         stale_rules,
         stale_glossary,
+        renumbered = renumbered.len(),
+        relocated_calls,
         "stored comprehensive rules"
     );
     Ok(())
+}
+
+/// Old id → new id for rules the new release renumbered, from the rows
+/// currently stored. Empty when the stored release *is* this release (a
+/// re-parse), when nothing is stored yet, or when nothing moved.
+async fn renumber_map_from_db(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    parsed: &ParsedCr,
+) -> anyhow::Result<BTreeMap<RuleId, RuleId>> {
+    let rows = sqlx::query!("SELECT id, parent_id, body, cr_version FROM rules")
+        .fetch_all(&mut **tx)
+        .await
+        .context("reading stored rules for renumbering")?;
+    if rows.iter().any(|r| r.cr_version == parsed.cr_version.as_ref()) {
+        return Ok(BTreeMap::new());
+    }
+    let old: Vec<StoredRule> = rows
+        .into_iter()
+        .map(|r| {
+            Ok(StoredRule {
+                id: rule_id(&r.id)?,
+                parent_id: r.parent_id.as_deref().map(rule_id).transpose()?,
+                body: r.body,
+            })
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let map = renumber_map(&old, &parsed.rules);
+    for (from, to) in &map {
+        tracing::info!(%from, %to, "rule renumbered");
+    }
+    Ok(map)
+}
+
+/// Rewrite every call to `map`; returns how many changed.
+async fn relocate_calls(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    map: &BTreeMap<RuleId, RuleId>,
+) -> anyhow::Result<u64> {
+    if map.is_empty() {
+        return Ok(0);
+    }
+    let calls = sqlx::query!("SELECT id, citations, answer FROM calls")
+        .fetch_all(&mut **tx)
+        .await
+        .context("reading calls for relocation")?;
+    let mut changed = 0u64;
+    for c in calls {
+        if let Some((citations, answer)) = rewrite_call(&c.citations, &c.answer, map) {
+            sqlx::query!("UPDATE calls SET citations = $2, answer = $3 WHERE id = $1", c.id, citations, answer)
+                .execute(&mut **tx)
+                .await
+                .context("relocating call")?;
+            tracing::info!(call = %c.id, "call relocated to renumbered rules");
+            changed += 1;
+        }
+    }
+    Ok(changed)
 }
 
 /// Mirror `judge_core::Category` (generated from `data/categories.yaml`) into the
@@ -853,4 +929,83 @@ mod tests {
         assert_eq!(cache_file_name(SOURCE), "MagicCompRules 20260819.txt");
         assert_eq!(cache_file_name("https://x/a%2Fb.txt?x=1"), "a_b.txt");
     }
+
+    /// End to end through Postgres: a release that inserts a rule and shifts the
+    /// next one along moves the live calls citing it — citation id, quote and
+    /// answer text together — and leaves retired calls alone. The retirement pass
+    /// run afterwards keeps the relocated call live.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn renumbering_relocates_live_calls(pool: sqlx::PgPool) -> anyhow::Result<()> {
+        use crate::renumber::rewrite_ids;
+        use std::collections::BTreeMap;
+
+        let old = parsed()?;
+        store(&pool, &old).await?;
+        let moved = old.rules.iter().find(|r| r.id.as_ref() == "613.11").ok_or_else(|| anyhow::anyhow!("fixture lacks 613.11"))?;
+        let quote = moved.body.lines().next().unwrap_or_default().to_owned();
+        anyhow::ensure!(quote.starts_with("613.11"), "rule bodies start with their id: {quote:?}");
+        let cite = |id: &str, q: &str| serde_json::json!([{"kind": "rule", "id": id, "quote": q}]);
+        let insert = |retired: bool| {
+            sqlx::query_scalar::<_, uuid::Uuid>(
+                "INSERT INTO calls (thread_id, question, answer, category, source, cr_version, citations, retired_at, retired_reason) \
+                 VALUES ('t', 'q', 'See 613.11 twice: 613.11. Unrelated 613.1 and 613.1a stay.', 'layers', 'cr', '20260819', $1, \
+                         CASE WHEN $2 THEN now() END, CASE WHEN $2 THEN 'test' END) RETURNING id",
+            )
+            .bind(cite("613.11", &quote))
+            .bind(retired)
+            .fetch_one(&pool)
+        };
+        let live = insert(false).await?;
+        let retired = insert(true).await?;
+
+        // The next release: a new 613.11, and the old 613.11 (with its leaves) becomes 613.12.
+        let mut map: BTreeMap<RuleId, RuleId> = BTreeMap::new();
+        for r in &old.rules {
+            if let Some(rest) = r.id.as_ref().strip_prefix("613.11") {
+                map.insert(r.id.clone(), rule_id(&format!("613.12{rest}"))?);
+            }
+        }
+        let version = CrVersion::try_new("20260919".to_owned()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut new = ParsedCr { cr_version: version.clone(), rules: Vec::new(), glossary: old.glossary.clone() };
+        for r in &old.rules {
+            let mut r = r.clone();
+            r.id = map.get(&r.id).cloned().unwrap_or(r.id);
+            r.parent_id = r.parent_id.map(|p| map.get(&p).cloned().unwrap_or(p));
+            r.body = rewrite_ids(&r.body, &map).unwrap_or(r.body);
+            r.cr_version = version.clone();
+            new.rules.push(r);
+        }
+        new.rules.push(RuleChunk {
+            id: rule_id("613.11")?,
+            parent_id: None,
+            subsection: rule_id("613")?,
+            heading: "Brand New".into(),
+            body: "613.11. A rule that did not exist before.".into(),
+            examples: vec![],
+            cr_version: version.clone(),
+        });
+        store(&pool, &new).await?;
+
+        let row = |id: uuid::Uuid| {
+            sqlx::query_as::<_, (serde_json::Value, String)>("SELECT citations, answer FROM calls WHERE id = $1").bind(id).fetch_one(&pool)
+        };
+        let (c, a) = row(live).await?;
+        let moved_quote = quote.replacen("613.11", "613.12", 1);
+        assert_eq!(c, cite("613.12", &moved_quote), "live call follows the renumbering");
+        assert_eq!(a, "See 613.12 twice: 613.12. Unrelated 613.1 and 613.1a stay.");
+        let (c, a) = row(retired).await?;
+        assert_eq!(c, cite("613.12", &moved_quote), "a retired call follows the numbering too");
+        assert_eq!(a, "See 613.12 twice: 613.12. Unrelated 613.1 and 613.1a stay.");
+
+        // Both citations validate against the new rows: the live call stays live
+        // and the retired one (retired for a reason that no longer holds) comes back.
+        let s = judge_bot::db::retire_unsupported(&pool).await?;
+        assert_eq!((s.checked, s.retired, s.restored, s.still_retired), (2, 0, 1, 0), "{s:?}");
+
+        // A re-parse of the same release computes no map and rewrites nothing.
+        store(&pool, &new).await?;
+        assert_eq!(row(live).await?.0, cite("613.12", &moved_quote));
+        Ok(())
+    }
+
 }

@@ -239,7 +239,8 @@ compose service `refresh`, off by default behind the `refresh` profile). It does
 order: `cards` (Scryfall oracle cards, printed names, rulings — upserts, so cards the
 bot already knows are refreshed in place), `rules latest` (reads Wizards' rules page,
 compares the linked `MagicCompRules <date>.txt` against `max(rules.cr_version)` and
-loads it only when the version differs), `embed` (only rows whose text changed — the CR
+loads it only when the version differs), `retire` (re-checks every stored call's
+citations against the data just loaded, see below), `embed` (only rows whose text changed — the CR
 loader nulls the embedding of exactly those, so a new CR costs Voyage a few hundred
 rules, not all of them) and `emoji` (uploads any card symbol Scryfall added; skipped
 when `DISCORD_TOKEN` is unset). Each step runs even if an earlier one failed, and the
@@ -265,15 +266,29 @@ Scryfall download and nothing else; the run takes a few minutes on a NAS, most o
 parsing the `default_cards` file, and does not disturb the running bot: every load is
 one transaction, so retrieval sees the old data or the new, never a mix.
 
-Two things change when a new CR lands. Prior calls made under the old version drop
-out of retrieval (they are filtered on `cr_version`), which is by design. And the
-retriever's vector leg is blind to the re-embedded rules for the minute between the
-`rules` and `embed` steps; if `embed` fails (Voyage down, rate-limited) those rules
-stay unembedded and the next night's run picks them up, since `embed` always fills
-every NULL.
+Prior calls follow the data they cite. The `retire` step asks of every stored call the
+question that admitted it: does each cited rule, ruling or Oracle text still exist and
+still contain the quote? A call that fails is retired (`calls.retired_at`, with the
+offending citation in `retired_reason`) and leaves retrieval; one whose citations hold
+again later is restored. So a CR release retires only the calls whose cited rules
+actually changed, and an Oracle erratum retires the calls about that card (each call
+remembers a fingerprint of its context cards' text), as a reworded ruling retires the
+calls that quoted it. A rule that merely moved — Wizards inserts a keyword and the rest
+of the section shifts by one — is followed: the `rules` step matches old and new rules
+by text with rule numbers masked out, and rewrites the citations and answers of the
+calls that cite it before the retirement check runs, so those calls stay live. Every
+`rule renumbered` and `call relocated` is logged. To see what a run did:
+
+```sql
+select retired_reason, count(*) from calls where retired_at is not null group by 1;
+```
+
+The retriever's vector leg is blind to re-embedded rules for the minute between the
+`rules` and `embed` steps; if `embed` fails (Voyage down, rate-limited) those rules stay
+unembedded and the next night's run picks them up, since `embed` always fills every NULL.
 
 Run it once by hand after installing, and expect the log to end with
-`refresh step ok` four times. A one-off manual load still works the old way from a
+`refresh step ok` five times. A one-off manual load still works the old way from a
 workstation (`cargo run --release -p judge-ingest -- rules <url>`), which is also how
 to force a re-parse of an already-loaded version: delete the cached txt first.
 

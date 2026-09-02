@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calls SET retired_reason = $2 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e35194cd10b5f43e7696797f7d3c18f3d892ba5d4e89d6fbd9c2c48bf07df4ec"
+}

@@ -8,7 +8,8 @@
 //! ingest notes <yaml>          # hand-written nightmare-card notes -> card_notes
 //! ingest embed                 # fill NULL embeddings on rules/glossary/calls via Voyage
 //! ingest emoji                 # Scryfall card symbols -> the bot's Discord application emoji
-//! ingest refresh               # cards, rules latest, embed, emoji — the scheduled job
+//! ingest retire                # retire/restore calls by whether their citations still hold
+//! ingest refresh               # cards, rules latest, retire, embed, emoji — the scheduled job
 //! ```
 //!
 //! `refresh` is what the deployment runs unattended (`scripts/refresh-data.sh`,
@@ -25,6 +26,7 @@ mod cr;
 mod embed;
 mod emoji;
 mod notes;
+mod renumber;
 mod scryfall;
 
 use std::path::{Path, PathBuf};
@@ -44,6 +46,7 @@ enum Command {
     Notes { path: PathBuf },
     Embed,
     Emoji,
+    Retire,
     Refresh,
 }
 
@@ -51,7 +54,7 @@ enum Command {
 const LATEST: &str = "latest";
 
 const USAGE: &str =
-    "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | emoji | refresh>";
+    "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | emoji | retire | refresh>";
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     match args.next().as_deref() {
@@ -67,6 +70,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
         }),
         Some("embed") => Ok(Command::Embed),
         Some("emoji") => Ok(Command::Emoji),
+        Some("retire") => Ok(Command::Retire),
         Some("refresh") => Ok(Command::Refresh),
         other => anyhow::bail!("{USAGE} (got {other:?})"),
     }
@@ -116,13 +120,15 @@ async fn main() -> Result<()> {
             embed::run(&connect().await?, embedder_from_env().as_deref()).await
         }
         Command::Emoji => emoji::run(&cache_dir).await.map(drop),
+        Command::Retire => judge_bot::db::retire_unsupported(&connect().await?).await.map(drop).map_err(Into::into),
         Command::Refresh => refresh(&connect().await?, &cache_dir).await,
     }
 }
 
-/// Every scheduled step, in dependency order: cards before rulings-dependent
-/// embeddings, rules before `embed` so a new CR's rows are embedded in the same run.
-/// A failed step is logged and the rest still run; the error names every failure.
+/// Every scheduled step, in dependency order: cards and rules first, then the
+/// retirement pass over the calls that cite them, then `embed` so a new CR's rows
+/// are embedded in the same run. A failed step is logged and the rest still run;
+/// the error names every failure.
 async fn refresh(pool: &PgPool, cache_dir: &Path) -> Result<()> {
     let mut failed: Vec<&'static str> = Vec::new();
     let mut step = |name: &'static str, result: Result<()>| match result {
@@ -134,6 +140,7 @@ async fn refresh(pool: &PgPool, cache_dir: &Path) -> Result<()> {
     };
     step("cards", scryfall::run(pool, cache_dir).await);
     step("rules", cr::run_latest(pool, cache_dir).await.map(drop));
+    step("retire", judge_bot::db::retire_unsupported(pool).await.map(drop).map_err(Into::into));
     step("embed", embed::run(pool, embedder_from_env().as_deref()).await);
     // The emoji belong to the bot's Discord application; a database-only
     // deployment (no bot) has no token and nothing to upload to.

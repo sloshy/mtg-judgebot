@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT oracle_id, key, published_at::text AS \"published_at!\", text\n            FROM rulings\n            WHERE oracle_id = ANY($1)\n            ORDER BY oracle_id, published_at DESC, key\n            ",
+  "query": "\n        SELECT oracle_id, key, to_char(published_at, 'YYYY-MM-DD') AS \"published_at!\", text\n        FROM rulings\n        WHERE oracle_id = ANY($1)\n        ORDER BY oracle_id, published_at DESC, key\n        ",
   "describe": {
     "columns": [
       {
@@ -55,5 +55,5 @@
       false
     ]
   },
-  "hash": "7f08faee1d69dd10decf76c78748e8bf83bc7f7c998176b5ad42d5a3ac6cfdf5"
+  "hash": "69461794f4f2051239b0bd43eee49cd926a2e2b23f7b75a356bdfc920d56e3ad"
 }

@@ -1,0 +1,57 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, citations, context_ids -> 'card_text' AS card_text, retired_reason FROM calls ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "citations",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "citations"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "card_text",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "retired_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "retired_reason"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      true
+    ]
+  },
+  "hash": "3121106cb0ec5e5e6152acd34cd1e8de36cf111024573b819e8c602a2c4ee375"
+}

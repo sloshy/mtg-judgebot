@@ -118,32 +118,7 @@ impl PgRetriever {
     }
 
     async fn rulings(&self, ids: &[Uuid]) -> Result<Vec<Ruling>, JudgeError> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let rows = sqlx::query!(
-            r#"
-            SELECT oracle_id, key, published_at::text AS "published_at!", text
-            FROM rulings
-            WHERE oracle_id = ANY($1)
-            ORDER BY oracle_id, published_at DESC, key
-            "#,
-            ids
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(upstream("rulings"))?;
-        rows.into_iter()
-            .map(|r| {
-                let key: RulingKey = r.key.parse().map_err(|e| bad_row(format!("card {}: {e}", r.oracle_id)))?;
-                Ok(Ruling {
-                    card: CardId::new(r.oracle_id),
-                    key,
-                    published_at: r.published_at,
-                    text: r.text,
-                })
-            })
-            .collect()
+        load_rulings(&self.pool, ids).await
     }
 
     /// Glossary entries whose term (or, for compound headwords such as
@@ -206,10 +181,10 @@ impl PgRetriever {
     }
 
     /// Prior calls in any of `categories` that were answered about at least one
-    /// of `cards` (any call when no card resolved), under the current CR version
-    /// (the newest `rules.cr_version`), excluding calls whose judge-aware
-    /// `effective_score` is below 1.5 with five or more ratings; nearest-first
-    /// when the question was embedded, else newest.
+    /// of `cards` (any call when no card resolved), not retired (every citation
+    /// still supported by the current data — see `retire.rs`), excluding calls
+    /// whose judge-aware `effective_score` is below 1.5 with five or more
+    /// ratings; nearest-first when the question was embedded, else newest.
     async fn prior_calls(
         &self,
         categories: &[Category],
@@ -231,7 +206,7 @@ impl PgRetriever {
                     FROM calls c
                     JOIN calls_rated r ON r.call_id = c.id
                     WHERE c.category = ANY($1)
-                      AND c.cr_version = (SELECT max(cr_version) FROM rules)
+                      AND c.retired_at IS NULL
                       AND NOT (r.effective_score < 1.5 AND r.n >= 5)
                       AND (cardinality($4::uuid[]) = 0 OR EXISTS (
                             SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)
@@ -256,7 +231,7 @@ impl PgRetriever {
                     FROM calls c
                     JOIN calls_rated r ON r.call_id = c.id
                     WHERE c.category = ANY($1)
-                      AND c.cr_version = (SELECT max(cr_version) FROM rules)
+                      AND c.retired_at IS NULL
                       AND NOT (r.effective_score < 1.5 AND r.n >= 5)
                       AND (cardinality($3::uuid[]) = 0 OR EXISTS (
                             SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)
@@ -324,6 +299,31 @@ impl PriorRow {
             rating_count: u32::try_from(self.n).unwrap_or(0),
         })
     }
+}
+
+/// All rulings of these cards, newest first within a card.
+pub(super) async fn load_rulings(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Ruling>, JudgeError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query!(
+        r#"
+        SELECT oracle_id, key, to_char(published_at, 'YYYY-MM-DD') AS "published_at!", text
+        FROM rulings
+        WHERE oracle_id = ANY($1)
+        ORDER BY oracle_id, published_at DESC, key
+        "#,
+        ids
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(upstream("rulings"))?;
+    rows.into_iter()
+        .map(|r| {
+            let key: RulingKey = r.key.parse().map_err(|e| bad_row(format!("card {}: {e}", r.oracle_id)))?;
+            Ok(Ruling { card: CardId::new(r.oracle_id), key, published_at: r.published_at, text: r.text })
+        })
+        .collect()
 }
 
 #[async_trait]

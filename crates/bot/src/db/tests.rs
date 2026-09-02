@@ -9,7 +9,7 @@ use judge_core::{
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{PgCallStore, PgResolver, PgRetriever};
+use super::{PgCallStore, PgResolver, PgRetriever, retire_unsupported};
 
 const BOB: Uuid = Uuid::from_u128(1);
 const URZA_MINE: Uuid = Uuid::from_u128(2);
@@ -730,5 +730,152 @@ async fn possessive_nickname_hits_the_alias_rung(pool: PgPool) -> anyhow::Result
         }
         other => anyhow::bail!("expected Resolved, got {other:?}"),
     }
+    Ok(())
+}
+
+/// `(retired?, retired_reason)` of one call.
+async fn retirement_state(pool: &PgPool, id: judge_core::CallId) -> anyhow::Result<(bool, Option<String>)> {
+    Ok(sqlx::query_as("SELECT retired_at IS NOT NULL, retired_reason FROM calls WHERE id = $1")
+        .bind(id.into_inner())
+        .fetch_one(pool)
+        .await?)
+}
+
+/// Retirement is a function of the data: a call is live exactly while every
+/// citation it was admitted with would be admitted today, and comes back when
+/// the cited text does.
+#[sqlx::test(migrations = "./migrations")]
+async fn retirement_follows_citation_validity_both_ways(pool: PgPool) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    let retriever = PgRetriever::new(pool.clone());
+    let store = PgCallStore::new(pool.clone());
+    let q = question("how do layers work?");
+    let ctx = retriever.retrieve(&q, &[], &extraction(&[Category::Layers], &[])).await?;
+    let cites = cite_first_rule(&ctx)?;
+    let rule_id = match cites.first() {
+        Some(judge_core::Citation::Rule { id, .. }) => id.as_ref().to_owned(),
+        other => anyhow::bail!("expected a rule citation, got {other:?}"),
+    };
+    let verdict = Verdict::new(
+        "Layer 4 is where type-changing effects apply, before colour and abilities.".into(),
+        Confidence::High,
+        cites,
+        Category::Layers,
+    )
+    .validate(&ctx, AnswerableSource::Cr)?;
+    let call = store.persist(&q, &verdict, &ctx).await?;
+    let prior_visible = || async {
+        let c = retriever.retrieve(&q, &[], &extraction(&[Category::Layers], &[])).await?;
+        anyhow::Ok(c.prior.iter().any(|p| p.id == call))
+    };
+
+    // Nothing changed: nothing retired.
+    let s = retire_unsupported(&pool).await?;
+    assert_eq!((s.checked, s.retired, s.restored, s.still_retired), (1, 0, 0, 0));
+    assert!(prior_visible().await?);
+
+    // The cited rule is reworded so the quote no longer appears: retired, with
+    // the offending citation named, and gone from retrieval.
+    let (original,): (String,) = sqlx::query_as("SELECT body FROM rules WHERE id = $1").bind(&rule_id).fetch_one(&pool).await?;
+    sqlx::query("UPDATE rules SET body = 'Rewritten in a later release.' WHERE id = $1").bind(&rule_id).execute(&pool).await?;
+    let s = retire_unsupported(&pool).await?;
+    assert_eq!((s.retired, s.restored, s.still_retired), (1, 0, 0));
+    let (retired, reason) = retirement_state(&pool, call).await?;
+    assert!(retired);
+    assert!(reason.as_deref().is_some_and(|r| r.starts_with(&format!("unsupported citation: rule {rule_id}:"))), "{reason:?}");
+    assert!(!prior_visible().await?);
+
+    // A second pass changes nothing but confirms the state.
+    let s = retire_unsupported(&pool).await?;
+    assert_eq!((s.retired, s.restored, s.still_retired), (0, 0, 1));
+
+    // The text is restored: the call comes back.
+    sqlx::query("UPDATE rules SET body = $2 WHERE id = $1").bind(&rule_id).bind(&original).execute(&pool).await?;
+    let s = retire_unsupported(&pool).await?;
+    assert_eq!((s.retired, s.restored, s.still_retired), (0, 1, 0));
+    assert_eq!(retirement_state(&pool, call).await?, (false, None));
+    assert!(prior_visible().await?);
+
+    // A citation that no longer decodes (a pre-migration ruling citation that
+    // could not be mapped) retires the call rather than counting as nothing cited.
+    sqlx::query(r#"UPDATE calls SET citations = '[{"kind":"scryfall_ruling","card":"00000000-0000-0000-0000-000000000001","idx":0,"quote":"x"}]' WHERE id = $1"#)
+        .bind(call.into_inner())
+        .execute(&pool)
+        .await?;
+    let s = retire_unsupported(&pool).await?;
+    assert_eq!(s.retired, 1);
+    let (retired, reason) = retirement_state(&pool, call).await?;
+    assert!(retired && reason.as_deref().is_some_and(|r| r.starts_with("stored citations do not decode")), "{reason:?}");
+
+    // The CR version no longer gates retrieval on its own: a live call from an
+    // older release is still an example.
+    sqlx::query("UPDATE calls SET citations = '[]', retired_at = NULL, retired_reason = NULL, cr_version = '20250101' WHERE id = $1")
+        .bind(call.into_inner())
+        .execute(&pool)
+        .await?;
+    assert!(prior_visible().await?, "retrieval filters on retired_at, not cr_version");
+    Ok(())
+}
+
+/// The two cases the citation check alone would miss or mishandle: a ruling
+/// that disappears and comes back keeps its identity (content key), and a
+/// card whose Oracle text changes retires a call that only cited the CR.
+#[sqlx::test(migrations = "./migrations")]
+async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    let retriever = PgRetriever::new(pool.clone());
+    let store = PgCallStore::new(pool.clone());
+    let bonecrusher = judge_core::CardId::new(BONECRUSHER);
+    let q = question("can Stomp target a player?");
+    let card = super::cards::load_cards(&pool, &[BONECRUSHER]).await?;
+    let ctx = retriever.retrieve(&q, &card, &extraction(&[Category::Layers], &[])).await?;
+    let ruling = ctx
+        .rulings
+        .iter()
+        .find(|r| r.card == bonecrusher && r.text.starts_with("Stomp can target"))
+        .ok_or_else(|| anyhow::anyhow!("seeded ruling not retrieved"))?
+        .clone();
+    let mut cites = cite_first_rule(&ctx)?;
+    cites.push(judge_core::Citation::ScryfallRuling { card: bonecrusher, ruling: ruling.key, quote: "target a player".into() });
+    let verdict = Verdict::new(
+        "Yes: Stomp can target a player, and the damage cannot be prevented this turn.".into(),
+        Confidence::High,
+        cites,
+        Category::Layers,
+    )
+    .validate(&ctx, AnswerableSource::Cr)?;
+    let call = store.persist(&q, &verdict, &ctx).await?;
+    assert_eq!(retire_unsupported(&pool).await?.retired, 0);
+
+    // The ruling is removed (as a refresh does before reinserting): retired, naming it.
+    sqlx::query("DELETE FROM rulings WHERE oracle_id = $1 AND key = $2").bind(BONECRUSHER).bind(ruling.key.to_string()).execute(&pool).await?;
+    assert_eq!(retire_unsupported(&pool).await?.retired, 1);
+    let (retired, reason) = retirement_state(&pool, call).await?;
+    assert!(retired && reason.as_deref().is_some_and(|r| r.starts_with("unsupported citation: ruling")), "{reason:?}");
+
+    // Reinserted with the same date and text — a different position would have
+    // broken a positional citation; the content key does not care.
+    sqlx::query("INSERT INTO rulings (oracle_id, key, published_at, text) VALUES ($1, $2, $3::date, $4)")
+        .bind(BONECRUSHER)
+        .bind(ruling.key.to_string())
+        .bind(&ruling.published_at)
+        .bind(&ruling.text)
+        .execute(&pool)
+        .await?;
+    assert_eq!(retire_unsupported(&pool).await?.restored, 1);
+
+    // An erratum to a context card retires the call even though no citation
+    // quotes the card: the answer was about that card as it then read.
+    sqlx::query("UPDATE card_faces SET oracle_text = oracle_text || ' Stomp can’t target players.' WHERE oracle_id = $1 AND face_idx = 1")
+        .bind(BONECRUSHER)
+        .execute(&pool)
+        .await?;
+    assert_eq!(retire_unsupported(&pool).await?.retired, 1);
+    let (retired, reason) = retirement_state(&pool, call).await?;
+    assert!(retired && reason.as_deref().is_some_and(|r| r.contains("Oracle text of Bonecrusher Giant")), "{reason:?}");
+
+    // A call persisted before fingerprints existed declares no card dependency.
+    sqlx::query("UPDATE calls SET context_ids = context_ids - 'card_text' WHERE id = $1").bind(call.into_inner()).execute(&pool).await?;
+    assert_eq!(retire_unsupported(&pool).await?.restored, 1);
     Ok(())
 }

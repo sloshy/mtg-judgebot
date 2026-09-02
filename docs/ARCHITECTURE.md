@@ -62,8 +62,11 @@ Discord message (+ last N Q&A in the same thread)
     - Scryfall rulings for each resolved card (all faces)
     - Glossary entries for terms in the oracle text
     - Prior calls: vector search filtered by (cards ∩ category), labeled with
-      rating and CR version; stale (pre-current-CR) calls excluded unless
-      re-verified; shown as examples AFTER the CR material
+      rating and CR version; retired calls excluded (a call is retired by the
+      nightly pass when any citation's source no longer contains its quote or a
+      context card's Oracle text changed, and restored when they hold again;
+      renumbered rules carry their calls with them); shown as examples AFTER
+      the CR material
     - Nightmare notes
     - Thread history (last N Q&A)
   │
@@ -140,7 +143,7 @@ from one set of names:
 | Nicknames | hand-curated YAML | `card_aliases` (alias, oracle_id) |
 | Nightmare notes | hand-written markdown | `card_notes` (oracle_id, note) |
 | Categories → subsections | YAML (single source of truth; enum generated or validated from it) | `categories` |
-| Calls | continuous | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, embedding) |
+| Calls | continuous; `retired_at`/`retired_reason` recomputed nightly from citation validity | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding) |
 | Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |
 
 Database: **Postgres 16 + pgvector + pg_trgm**. Scale: ~30k cards, ~2k rule

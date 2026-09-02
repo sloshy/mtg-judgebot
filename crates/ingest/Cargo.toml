@@ -14,6 +14,8 @@ path = "src/main.rs"
 [dependencies]
 judge-core.workspace = true
 judge-embed.workspace = true
+# `retire`: the retirement pass lives beside the other Postgres adapters.
+judge-bot.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 reqwest.workspace = true
@@ -26,6 +28,8 @@ uuid.workspace = true
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "json", "macros", "migrate", "chrono"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
 dotenvy = "0.15"
+# `renumber`: rule ids in running text.
+regex = "1"
 flate2 = "1"
 serde_yaml_ng = "0.10"
 # `emoji`: Scryfall serves SVG, Discord takes raster only. No text in these

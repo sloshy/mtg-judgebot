@@ -32,7 +32,7 @@ static CR_VERSION_RE: LazyLock<Regex> = LazyLock::new(|| {
 #[nutype(
     sanitize(trim),
     validate(regex = RULE_ID_RE),
-    derive(Clone, Debug, Display, Serialize, Deserialize, PartialEq, Eq, Hash, AsRef)
+    derive(Clone, Debug, Display, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, AsRef)
 )]
 pub struct RuleId(String);
 
@@ -170,6 +170,29 @@ pub fn ruling_key(published_at: &str, text: &str) -> RulingKey {
     let digest: [u8; 32] = hasher.finalize().into();
     let [k0, k1, k2, k3, k4, k5, k6, k7, ..] = digest;
     RulingKey([k0, k1, k2, k3, k4, k5, k6, k7])
+}
+
+/// A fingerprint of a card's current Oracle text across all its faces: the
+/// first 64 bits of SHA-256 over each face's text, each followed by a newline,
+/// as 16 lowercase hex digits (the same shape as a [`RulingKey`]).
+///
+/// Persisted with a call for every card in its context, so the retirement pass
+/// can tell that a card the answer was *about* has since been reworded even
+/// when the answer cited only the CR — the common shape, and the one case an
+/// erratum would otherwise leave undetected. Name, type line and mana cost are
+/// excluded: they are not what a ruling turns on, and an errata'd name is
+/// exactly the kind of change that must not retire a correct answer.
+#[must_use]
+pub fn oracle_fingerprint(card: &Card) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    for f in &card.faces {
+        hasher.update(f.oracle_text.as_bytes());
+        hasher.update(b"\n");
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    let [k0, k1, k2, k3, k4, k5, k6, k7, ..] = digest;
+    RulingKey([k0, k1, k2, k3, k4, k5, k6, k7]).to_string()
 }
 
 /// Comprehensive Rules version, as its effective date `YYYYMMDD`.

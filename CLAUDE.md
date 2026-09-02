@@ -48,8 +48,10 @@ cargo run --release -p judge-ingest -- emoji            # Scryfall card symbols 
                                                         # application emoji; idempotent, no DB needed
 cargo run --release -p judge-ingest -- rules latest     # the CR linked from Wizards' rules page, only if
                                                         # its version differs from max(rules.cr_version)
-cargo run --release -p judge-ingest -- refresh          # cards + rules latest + embed + emoji; every step
-                                                        # runs even if one fails, exit≠0 if any did
+cargo run --release -p judge-ingest -- retire           # retire/restore calls by whether their citations
+                                                        # (and their context cards' Oracle text) still hold
+cargo run --release -p judge-ingest -- refresh          # cards + rules latest + retire + embed + emoji; every
+                                                        # step runs even if one fails, exit≠0 if any did
 scripts/refresh-data.sh              # nightly cron on the deploy host: `docker compose run --rm refresh`
 
 cargo run --release -p judge-api                        # HTTP API + web page on API_ADDR (default :8787)
@@ -99,8 +101,24 @@ Key cross-file facts that aren't obvious from any one file:
   `lookup_rules` treat leaf↔parent as covering each other.
 - **Ratings shape retrieval, nothing else.** `calls_rated` view: Bayesian mean (prior
   2.0, weight 3) with a judge-role override (`effective_score`); prior calls below 1.5
-  with ≥5 votes are excluded, stale-CR calls are excluded, and prior calls are always
+  with ≥5 votes are excluded, retired calls are excluded, and prior calls are always
   rendered *after* CR material as examples.
+- **A call is retired when its citations stop holding, not when the CR changes.**
+  `retire_unsupported` (`db/retire.rs`, run by `ingest retire` and nightly inside
+  `ingest refresh`) re-runs `citation_supported` over every stored call against today's
+  rules, rulings and Oracle text and sets `calls.retired_at`/`retired_reason` both ways,
+  so restored text brings a call back. Each call also carries `context_ids.card_text`
+  (an `oracle_fingerprint` per context card) so an erratum retires calls *about* the card
+  even when they cited only the CR. `cr_version` on a call is a record, not a gate.
+  Rulings are keyed by content (`ruling_key`, 16 hex chars, in core because the ingest
+  writer and every reader must agree) so a reindexed ruling is the same ruling.
+- **A renumbered rule keeps its calls.** Inside the CR load transaction, `renumber_map`
+  (`ingest/src/renumber.rs`) matches old and new rules by body with every rule id masked
+  (renumbering changes the cross-references too) and only where the masked body is unique
+  on both sides; `rewrite_call` then rewrites every call's `rule` citation ids, the ids
+  inside `rule`/`prior_call` quotes and the answer text in one pass. Never guesses:
+  ambiguous or reworded rules are left to the retirement pass. The CR loader and the
+  retirement pass take the same advisory lock (`CALLS_REWRITE_LOCK`).
 - **Category taxonomy is data.** `data/categories.yaml` is the single source of truth;
   `crates/core/build.rs` generates the `Category` enum from it, so taxonomy edits are
   recompiles and matches stay exhaustive. The extractor's schema makes the primary

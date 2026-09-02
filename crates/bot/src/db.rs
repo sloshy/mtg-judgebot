@@ -9,6 +9,7 @@
 mod calls;
 mod cards;
 mod resolve;
+mod retire;
 mod retrieve;
 mod rules;
 #[cfg(test)]
@@ -16,6 +17,7 @@ mod tests;
 
 pub use calls::PgCallStore;
 pub use resolve::PgResolver;
+pub use retire::{CALLS_REWRITE_LOCK, RetireSummary, retire_unsupported};
 pub use retrieve::PgRetriever;
 
 use judge_core::JudgeError;

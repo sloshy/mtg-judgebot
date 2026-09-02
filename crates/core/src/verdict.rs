@@ -287,7 +287,7 @@ impl Verdict<Unvalidated> {
             return Err(JudgeError::EmptyVerdict(e));
         }
         for c in &citations {
-            if !citation_ok(c, ctx) {
+            if !citation_supported(c, ctx) {
                 return Err(JudgeError::BadCitation(c.clone()));
             }
         }
@@ -354,7 +354,14 @@ impl JsonSchema for Verdict<Unvalidated> {
     }
 }
 
-fn citation_ok(c: &Citation, ctx: &Context) -> bool {
+/// Whether `c` is supported by `ctx`: its referenced rule, ruling, prior call
+/// or card face is present there and its quote is a non-empty verbatim
+/// substring of that source. This is the (a)/(b) check of [`Verdict::validate`]
+/// on one citation, exported so the retirement pass can ask the same question
+/// of a stored call against *today's* data: a call is live exactly while every
+/// citation it was admitted with would still be admitted.
+#[must_use]
+pub fn citation_supported(c: &Citation, ctx: &Context) -> bool {
     let quote = c.quote().trim();
     if quote.is_empty() {
         return false;

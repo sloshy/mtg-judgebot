@@ -5,7 +5,7 @@ use std::{fmt, sync::Arc};
 use async_trait::async_trait;
 use judge_core::{
     CallId, CallStore, Context, Embedder, InputKind, JudgeError, Qa, Question, Score, Validated,
-    Verdict,
+    Verdict, oracle_fingerprint,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
@@ -84,6 +84,11 @@ impl CallStore for PgCallStore {
             // model was shown.
             "rulings": ctx.rulings.iter().map(|r| (r.card, r.key)).collect::<Vec<_>>(),
             "prior": ctx.prior.iter().map(|p| p.id).collect::<Vec<_>>(),
+            // `{ "<card uuid>": "<fingerprint>" }`: what each context card's Oracle
+            // text was when this was answered. The retirement pass retires the
+            // call when any of them has changed since (retire.rs); rows written
+            // before this member existed carry no card dependency.
+            "card_text": ctx.cards.iter().map(|c| (c.id.to_string(), oracle_fingerprint(c))).collect::<std::collections::BTreeMap<String, String>>(),
         });
         let source = enum_id(&v.source())?;
         let confidence = enum_id(&v.confidence())?;
