@@ -22,7 +22,7 @@ what was wrong (unknown or expired session, wrong step, over a limit, concurrent
 **1. Built-in pipeline** — `judge {question, thread?, pins?}` / `judge-cli judge
 "<question>" [--thread T] [--pin "span=Full Name"]...`. The server runs its own model calls
 and returns `answer` (validated and cited, plus `thread` and `call`). It spends the
-operator's Anthropic budget (about $0.12 a question), is `unavailable` when the server has
+operator's model budget (about $0.12 a question on the default Anthropic setup), is `unavailable` when the server has
 no API key, `rate_limited` over HTTP once the client's hourly quota is used, `busy` when
 every slot is taken. It can also reply `ambiguous` (`spans: [{query, choices, truncated}]`;
 ask again with `pins: [{span, name}]` / `--pin "span=Full Name"`), `not_found` (`names`),

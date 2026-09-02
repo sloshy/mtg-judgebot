@@ -50,7 +50,8 @@ cargo run --release -p judge-ingest -- reembed [--yes]  # switch the DB to the c
                                                         # retype vector columns, rebuild HNSW, NULL every
                                                         # vector, rewrite embedding_space, then embed all.
                                                         # Without --yes: prints rows + rough cost, exit≠0,
-                                                        # changes nothing. Restart bot/api after.
+                                                        # changes nothing. `docker compose restart bot api`
+                                                        # after (`up -d` sees no change: the file is a mount).
 cargo run --release -p judge-ingest -- emoji            # Scryfall card symbols -> the bot's Discord
                                                         # application emoji; idempotent, no DB needed
 cargo run --release -p judge-ingest -- rules latest     # the CR linked from Wizards' rules page, only if
@@ -98,20 +99,25 @@ Crate graph: `core` (domain ADTs, ports, `judge()`, citation validation — pure
 `llm` (the provider seam, `docs/proposals/providers.md`: neutral `ChatRequest`/`ChatResponse`,
 the open `Backend` trait providers implement and the sealed `ChatModel` port the pipeline
 calls — only `Metered<B>` implements it, so every send is behind the spend cap by type;
-`SpendMeter` + `Price::{Free, PerToken}`, the shared HTTP retry loop, the
-`Synth` typestate and `classify`) ← `anthropic` (a `Backend`: hand-written wire
-types we own, `Endpoint` enum, neutral↔wire conversion; schemars → Anthropic's schema
+`SpendMeter` + `Price::{Free, Table, PerToken}` (a table price is re-read for the model the
+response names; an operator's `PerToken` settles at exactly its rate), the shared HTTP
+retry loop, the `Synth` typestate and `classify`) ← `anthropic` (a `Backend`: hand-written
+wire types we own, `Endpoint` enum, neutral↔wire conversion; schemars → Anthropic's schema
 subset via a transform that must keep `additionalProperties:false` and rewrite
-`oneOf→anyOf`, applied at conversion time) ← `embed` (Voyage) ← `bot` (sqlx adapters,
-`extract.rs`/`synth.rs` over `judge-llm` only, prompts in `crates/bot/src/prompts/`,
-serenity/poise Discord layer with pure `render.rs`) and `ingest` / `eval` / `api` (bins) and
-`agent` (lib + `judge-cli` / `judge-mcp` bins; `api` mounts its MCP handler).
-`judge_bot::build_deps(pool, Models, embedder)` is the single composition root shared by
-the bot, eval, the HTTP API and the agent's `judge` tool; `Models::{single, pair}` take
-the meter and bare backends and meter them themselves (private fields: no uncapped model,
-no foreign meter), and `Models::from_env` is the zero-config setup (Anthropic direct, one
-model for both stages, one `SpendMeter`) and the only place that names the Anthropic
-backend. `crates/bot/tests/anthropic_golden.rs` pins the four Anthropic request shapes
+`oneOf→anyOf`, applied at conversion time) and `openai` (a `Backend` for chat completions:
+its own wire types, the strict-schema transform — every property `required`, optionals
+`anyOf [T, null]` — string tool arguments parsed by serde, `choices[0].message` replayed
+verbatim) ← `embed` (Voyage + OpenAI-compatible `/embeddings`, each a `WithSpace`) ←
+`bot` (sqlx adapters, `config.rs` = the `judge.toml` loader, `extract.rs`/`synth.rs` over
+`judge-llm` only, prompts in `crates/bot/src/prompts/`, serenity/poise Discord layer with
+pure `render.rs`) and `ingest` / `eval` / `api` (bins) and `agent` (lib + `judge-cli` /
+`judge-mcp` bins; `api` mounts its MCP handler). `judge_bot::build_deps(pool, Models,
+embedder)` is the single composition root shared by the bot, eval, the HTTP API and the
+agent's `judge` tool; `Models::{single, pair, priced}` take the meter and bare backends and
+meter them themselves (private fields: no uncapped model, no foreign meter). Every binary
+gets its `Models`/`Vectors` from `config::Config::load()`, whose no-file branch
+(`from_vars`) is the zero-config setup (Anthropic direct, one model for both stages, one
+`SpendMeter`). `crates/bot/tests/anthropic_golden.rs` pins the four Anthropic request shapes
 byte-for-byte against captured fixtures (`UPDATE_GOLDEN=1` re-captures them after an
 intended prompt/schema change; review the diff). `api` (+ the SolidJS page in `web/`) is the
 anonymous front door: no ratings, stateless "did you mean?" via `pins` → `pin_card`
@@ -219,36 +225,50 @@ Key cross-file facts that aren't obvious from any one file:
   Discord's 2000/4096 characters and must never be cut in half — plain text is the only
   cuttable segment. An application with no emoji uploaded renders the literal `{W}`. The
   web page does the same job with Scryfall's SVGs (`web/src/Symbols.tsx`).
-
 - **Providers are configuration, not code.** `judge_bot::config` loads `judge.toml`
   (`JUDGE_CONFIG`, else `./judge.toml` if present, else today's setup from `.env`:
-  Anthropic direct, `claude-opus-5` both stages, Voyage if keyed) into typed structs
-  (`deny_unknown_fields`, nutype validators, secrets by `api_key_env` read at load into a
-  redacted `ApiKey`). Chat backends are `judge-anthropic` (`Endpoint::{Direct, Proxy,
-  ClaudePlatformOnAws, Bedrock, Vertex}`; the cloud doors sit behind judge-anthropic's
-  `aws`/`gcp` Cargo features — default on, forwarded from judge-bot's own features, named
-  in the Dockerfile — so a lean build cannot even name them and the loader says "not
-  built"; their credentials come from the platform chains (SigV4 via aws-config, ADC via
-  gcp_auth), never `judge.toml`, resolved lazily and probed once at startup by
-  `Config::probe_auth` so an empty chain fails there, not per question; Bedrock masks
-  `output_config.format`, tool `strict`, `fallbacks` and every `anthropic-beta`, verified
-  against the live docs 2026-09-02) and `judge-openai` (chat completions
-  with `Dialect` knobs: `structured_output`, `strict_tools`, `reasoning_effort`,
-  `max_tokens_param`, `cache_hints`). A model on an `openai` provider must be priced
-  (`[models.X.pricing]`) or the provider `pricing = "free"`; the built-in table errs high
-  for unknown Anthropic models only. When a backend cannot enforce the output schema, the
-  adapters append it to the *user turn* (`judge_llm::schema_block`) so the pinned system
-  prompt digest and the Anthropic golden fixtures never change. Every binary logs
-  `Config::summary()` at startup; `judge-cli config` prints the redacted resolution.
+  Anthropic direct, `claude-opus-5` both stages, Voyage if keyed; `judge.example.toml`
+  documents every knob with its default and must keep loading — `config::tests::the_example_file_loads_as_shipped`
+  and `..._with_every_door_uncommented` pin that, so a renamed knob fails the gate)
+  into typed structs (`deny_unknown_fields`, nutype validators — `BaseUrl`, `Region`,
+  `Project`, `WorkspaceId`, `Dimensions` — secrets by `api_key_env` read at load into a
+  redacted `ApiKey`; a knob that would be ignored is an error naming both keys). Chat
+  backends are `judge-anthropic` (`Endpoint::{Direct, Proxy, ClaudePlatformOnAws, Bedrock,
+  Vertex}`; the cloud doors sit behind judge-anthropic's `aws`/`gcp` Cargo features —
+  default on, forwarded from judge-bot's own features, named in the Dockerfile — so a lean
+  build cannot even name them and the loader says "not built"; their credentials come from
+  the platform chains (SigV4 via aws-config — service `aws-external-anthropic` with the
+  `anthropic-workspace-id` header, or `bedrock-mantle` — and ADC via gcp_auth), never
+  `judge.toml`, resolved lazily and probed once at startup by `Config::probe_auth` so an
+  empty chain fails there, not per question; one `Endpoint` per provider table, shared by
+  the stages naming it; Proxy/Vertex mask the `fallbacks` beta, Bedrock also masks
+  `output_config.format`, tool `strict` and every `anthropic-beta`, verified against the
+  live docs 2026-09-02) and `judge-openai` (chat completions with `Dialect` knobs:
+  `structured_output`, `strict_tools`, `reasoning_effort`, `max_tokens_param`,
+  `cache_hints`; `send_dimensions` for embeddings). A model on an `openai` provider must be
+  priced (`[models.X.pricing]`, cache prices defaulting high from `input`) or the provider
+  `pricing = "free"`; the built-in table (`judge_llm::PRICES`) errs high for unknown
+  Anthropic models only. When a backend cannot enforce the output schema, the adapters
+  append it to the *user turn* (`judge_llm::schema_block`) so the pinned system prompt
+  digest and the Anthropic golden fixtures never change. Every binary logs
+  `Config::summary()` at startup; `judge-cli config` prints the redacted resolution;
+  `eval answer --config` records `provider/model` per stage in the run file.
 
 ## Environment
 
 `.env` (gitignored; template in `.env.example`): `DATABASE_URL` (port 5433),
 `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY` (blank = vector leg off, bot still works; a `judge.toml`
 `[models.embed]` overrides it, including OpenAI-compatible embeddings),
-`JUDGE_CONFIG` (optional path to a `judge.toml`; see above — in Docker it is a path *inside*
-the container, so mount the file: the compose file shows how; a `./judge.toml` in the repo
-root is read by `cargo run` but is invisible to the containers),
+`JUDGE_CONFIG` (optional path to a `judge.toml`; see above — a *host* path: `cargo run`
+reads it as is, and `docker-compose.yml` bind-mounts it into `bot`/`api`/`refresh` at
+`/etc/judgebot/judge.toml` and points their `JUDGE_CONFIG` there (`${JUDGE_CONFIG:+…}`;
+blank mounts the tracked example, which nothing reads — so a `./judge.toml` in the repo
+root is read by `cargo run` but invisible to the containers until `JUDGE_CONFIG` names
+it; and editing the mounted file's content is not a change `up -d` recreates for, so
+`docker compose restart bot api`); the `api_key_env` of every provider a stage names
+lives in `.env` too (a table no stage names is parsed, its key never read), as do the
+cloud doors' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS` — never `.env.deploy`, which
+`bot`/`api` do not read),
 `DISCORD_TOKEN`, `GUILD_ID` (instant command registration), `JUDGE_ROLE` (default
 "Judge"), `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`; for the HTTP API also `API_ADDR`
 (default `0.0.0.0:8787`), `WEB_DIST`, `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`,
@@ -267,7 +287,8 @@ profile starts (`COMPOSE_PROFILES=tunnel` in `.env`). Deploy credentials live in
 `.env.deploy` (`TUNNEL_TOKEN`, `R2_*`), read only by `cloudflared` and
 `scripts/backup-db.sh`, never by the internet-facing `bot`/`api`. Weekly
 `scripts/backup-db.sh` dumps to R2 and has `list`/`fetch` subcommands for the restore
-drill; restoring is far cheaper than re-ingesting, which re-pays Voyage per embedding.
+drill; restoring is far cheaper than re-ingesting, which re-pays the embedder per row —
+take one before `ingest reembed --yes` (runbook in `docs/DEPLOYMENT.md` §7).
 
 **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP` is
 `peer` (socket address) or `cloudflare` (`CF-Connecting-IP`); `client_ip` never reads
@@ -282,5 +303,5 @@ runs the `refresh` compose service (profile `refresh`, third entrypoint `judge-i
 same image; `docker compose run` enables the profile itself so `up -d` never starts it). CR
 release detection scrapes Wizards' rules page for the `MagicCompRules <date>.txt` link and
 compares the date to the stored `cr_version`; the CR loader nulls embeddings only for rules
-whose text changed, so a new CR costs Voyage a few hundred rules. `aliases` and `notes` are
-not part of refresh — they are repo data, loaded when they change.
+whose text changed, so a new CR costs the embedder a few hundred rules. `aliases` and
+`notes` are not part of refresh — they are repo data, loaded when they change.

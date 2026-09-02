@@ -23,7 +23,7 @@ Live deployment: <https://mtgjudge.rpeters.dev>
 - A host that stays on, with Docker and the compose plugin. The stack *runs* in about
   200 MB RSS (Postgres ~157 MB, api and bot a few MB each), so 2 GB of RAM is ample.
   It never has to *build*: CI publishes the image and the host pulls it (§8). That
-  matters because `cargo build --release` across seven crates plus a Vite build wants
+  matters because `cargo build --release` across ten crates plus a Vite build wants
   ~4 GB and real CPU, which a NAS does not have.
 - Compose syntax here is held to what older bundled versions accept — Synology's
   Container Manager ships v2.20, which predates the `env_file` long form. `.env.deploy`
@@ -39,7 +39,7 @@ Live deployment: <https://mtgjudge.rpeters.dev>
 ## 2. Move the data (do this before anything else)
 
 Restore a dump rather than re-ingesting. A cold rebuild re-parses the CR and the
-Scryfall bulk file and re-embeds every rule through Voyage, which costs money.
+Scryfall bulk file and re-embeds every rule through the embedding provider, which costs money.
 
 ```sh
 # old host
@@ -96,10 +96,12 @@ cp .env.example .env               # app config: API keys, DISCORD_TOKEN, GUILD_
 cp .env.deploy.example .env.deploy # deploy credentials: TUNNEL_TOKEN, R2_*
 ```
 
-`.env` is the `env_file` for `bot` and `api`. `.env.deploy` is read only by
+`.env` is the `env_file` for `bot`, `api` and `refresh`. `.env.deploy` is read only by
 `cloudflared` and `scripts/backup-db.sh`, so a token that can rewrite the tunnel or
 delete every backup never enters the environment of the internet-facing API. Both are
-gitignored.
+gitignored. Model credentials — `ANTHROPIC_API_KEY`, every `api_key_env` a `judge.toml`
+names, the cloud doors' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS` — belong in `.env`:
+they are exactly what `bot`, `api` and `refresh` read, and nothing else does.
 
 In `.env`, set:
 
@@ -133,13 +135,81 @@ Use a full `docker compose up -d` at least once on an existing host: `db`'s publ
 port changed to loopback, and `up -d --build bot api` deliberately leaves `db` alone,
 so the old `0.0.0.0:5433` binding would otherwise persist indefinitely.
 
+### Optional: another model (`judge.toml`)
+
+Without a `judge.toml` the containers run Anthropic direct with `ANTHROPIC_API_KEY` and
+Voyage with `VOYAGE_API_KEY`, as `.env` has them. To run on other providers — a cheap
+model for extraction, Claude through your own cloud account, a local Ollama, an
+OpenAI-compatible gateway — write one (`judge.example.toml` documents every knob; the
+README's "Choosing a model" is the short version) and name it in `.env`:
+
+```ini
+JUDGE_CONFIG=./judge.toml      # a host path: what `cargo run` reads, and what compose mounts
+```
+
+`docker-compose.yml` bind-mounts that file read-only into `bot`, `api` and `refresh` at
+`/etc/judgebot/judge.toml` and points the containers' `JUDGE_CONFIG` there, so the one
+variable serves the host and the containers. With it blank the tracked
+`judge.example.toml` is mounted instead, only so the mount has a source: the loader reads
+nothing it was not pointed at, and the setup stays the `.env` one. Three consequences:
+
+- **The `api_key_env` of every provider a stage names must be set in `.env`**, including
+  for `refresh`: each binary resolves all three stages (`[models.extract]`,
+  `[models.synth]`, `[models.embed]`) at load, so `refresh` fails its nightly `embed`
+  step on a chat key it never uses rather than run half a configuration. A provider
+  table no stage names is parsed but its key is never read. `.env` is the `env_file` for
+  all three containers, so one line there covers them.
+- **The cloud doors take credentials from the platform chain, not the file.** For
+  `claude-platform-on-aws` and `bedrock`, either put `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`) in `.env`, or mount a credentials
+  file and name it — the containers run as `nobody` with no home directory, so the
+  default `~/.aws` location does not exist:
+
+  ```yaml
+  # docker-compose.override.yml (gitignored like judge.toml; compose merges it in by itself)
+  services:
+    bot: &aws
+      volumes: ["/home/you/.aws:/etc/aws:ro"]
+      environment:
+        AWS_SHARED_CREDENTIALS_FILE: /etc/aws/credentials
+        AWS_CONFIG_FILE: /etc/aws/config
+        AWS_PROFILE: judgebot
+    api: *aws
+  ```
+
+  For `vertex`, the same with a service-account JSON and
+  `GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/sa.json`. An IAM role scoped to invoking the
+  model is enough; nothing here manages infrastructure. `refresh` needs none of this
+  (embeddings are Voyage or OpenAI-compatible, never a cloud door), and none of it goes
+  in `.env.deploy`, which `bot`/`api` do not read.
+- **The startup log tells you what resolved.** Every binary logs one
+  `config=... extract=... synth=... embed=... cap=$...` line, then — in `bot`, `api`,
+  `eval` and `judge-cli`, which make chat calls — `cloud credentials resolved` per cloud
+  provider (the chain is probed once at startup, so a host with no credentials exits
+  there naming the provider and the door; `refresh` never probes, it makes no chat call)
+  and `embedding space matches the database` or `embedding space mismatch` (below). `docker compose run --rm --entrypoint
+  judge-cli api config` prints the whole resolution as JSON, secrets redacted.
+
+A changed `judge.toml` is read at the next start, which means `docker compose restart bot
+api` — not `up -d`: compose recreates a container only when its configuration or image
+changed, and the content of a bind-mounted file is neither, so `up -d` prints `Running`
+and leaves the old configuration in place. (Changing `JUDGE_CONFIG` itself in `.env`
+does change the configuration, and `up -d` recreates.) The next `refresh` run picks the
+file up on its own. Changing `[models.embed]` is the one edit that needs the database
+moved too — see §7.
+
+If an older Compose rejects the `${JUDGE_CONFIG:+…}` interpolation in
+`docker-compose.yml` at parse time, set the containers' side by hand in the same
+override file: `environment: {JUDGE_CONFIG: /etc/judgebot/judge.toml}` on `bot`, `api`
+and `refresh`, with the mount left as it is.
+
 ### Optional: MCP for your own agents
 
 `judge-api` can serve the judge's tool surface (`crates/agent`) to an MCP client over
 the same tunnel, at `/mcp`. It is off unless `MCP_TOKEN` is set, and there is no
 anonymous mode: every request must carry `Authorization: Bearer <MCP_TOKEN>` or gets a
 401 before the protocol sees it. Behind the token are `judge` (the full pipeline, real
-Anthropic spend, under the same `JUDGE_MAX_USD` and `JUDGE_CONCURRENCY` as the web
+model spend, under the same `JUDGE_MAX_USD` and `JUDGE_CONCURRENCY` as the web
 page), the agent-driven sessions (no model calls, database work only) and the
 read-only lookups.
 
@@ -164,9 +234,9 @@ identity). Instead `judge` runs through `/mcp` are capped per window
 shared `JUDGE_CONCURRENCY` slots and `JUDGE_MAX_USD` cap. That cap is the blast radius
 of a leaked token: about `MCP_JUDGE_LIMIT × $0.12` an hour, and never the whole spend
 cap or every judge slot at once, so the public page keeps working. Sessions and
-lookups make no Anthropic call; they do embed the question or the search text with
-Voyage when a key is configured (fractions of a cent, and uncapped — the only paid
-upstream without a cap). Rotate a leaked token by changing `.env` and restarting
+lookups make no chat-model call; they do embed the question or the search text with
+the configured embedder when there is one (fractions of a cent, and uncapped — the only
+paid upstream without a cap). Rotate a leaked token by changing `.env` and restarting
 `api`. Extending the edge rate-limiting rule of §5 to `/mcp` costs nothing, and a
 Cloudflare Access policy in front of `/mcp` (service token) keeps unauthenticated
 traffic off the origin entirely; the bearer check stays as the second layer.
@@ -294,14 +364,14 @@ bot already knows are refreshed in place), `rules latest` (reads Wizards' rules 
 compares the linked `MagicCompRules <date>.txt` against `max(rules.cr_version)` and
 loads it only when the version differs), `retire` (re-checks every stored call's
 citations against the data just loaded, see below), `embed` (only rows whose text changed — the CR
-loader nulls the embedding of exactly those, so a new CR costs Voyage a few hundred
+loader nulls the embedding of exactly those, so a new CR costs the embedder a few hundred
 rules, not all of them) and `emoji` (uploads any card symbol Scryfall added; skipped
 when `DISCORD_TOKEN` is unset). Each step runs even if an earlier one failed, and the
 exit status is non-zero if any did.
 
-With a `judge.toml`, the `refresh` service needs the same mount and `JUDGE_CONFIG` as
-`bot`/`api` (the commented lines in `docker-compose.yml`): its `embed` step writes the
-vector space the bot queries, and refuses when the two disagree.
+With a `judge.toml`, `refresh` reads the same file `bot`/`api` do (compose mounts it
+from `JUDGE_CONFIG`, §4): its `embed` step writes the vector space the bot queries, and
+refuses when the two disagree.
 
 `scripts/refresh-data.sh` is the cron entry point: it takes a lock so two runs never
 overlap, then `docker compose run --rm --pull missing refresh`, which reuses the image
@@ -341,13 +411,60 @@ select retired_reason, count(*) from calls where retired_at is not null group by
 ```
 
 The retriever's vector leg is blind to re-embedded rules for the minute between the
-`rules` and `embed` steps; if `embed` fails (Voyage down, rate-limited) those rules stay
+`rules` and `embed` steps; if `embed` fails (the embedder down, rate-limited) those rules stay
 unembedded and the next night's run picks them up, since `embed` always fills every NULL.
 
 Run it once by hand after installing, and expect the log to end with
 `refresh step ok` five times. A one-off manual load still works the old way from a
 workstation (`cargo run --release -p judge-ingest -- rules <url>`), which is also how
 to force a re-parse of an already-loaded version: delete the cached txt first.
+
+### Changing the embedding model (`reembed`)
+
+Vectors from two models cannot share a column, so the database records which model's
+vectors it holds (`embedding_space`, one row: provider kind, model, width) and every
+reader and writer checks it first. A bot whose `[models.embed]` names a different model
+or width does not mix: it logs `embedding space mismatch; vector legs off` and answers
+from the curated map and full-text search alone until the two agree. Moving the database
+to a new model is `judge-ingest reembed`, which pays the provider for every rule,
+glossary entry and stored call again — the reason it is a dry run by default and the
+reason to take a backup first.
+
+```sh
+scripts/backup-db.sh                          # a restore point holding the old vectors (§6)
+$EDITOR judge.toml                            # [models.embed]: the new provider/model/dimensions
+scripts/refresh-data.sh reembed               # dry run: what is stored, what would be cleared,
+                                              # rows, a rough cost; probes the new model once;
+                                              # exits non-zero having changed nothing
+scripts/refresh-data.sh reembed --yes         # one transaction: retype vector(N), rebuild the
+                                              # HNSW indexes, clear every vector, rewrite the
+                                              # row — then the ordinary embed loop
+docker compose restart bot api                # bot/api read judge.toml once, at startup;
+                                              # `up -d` would see nothing to do (§4)
+```
+
+The running `bot`/`api` hold the `[models.embed]` they started with, so a restart is
+required at some point; the space row itself they re-read on every request, so their
+vector legs go dark the moment the row disagrees with their configuration and come back
+the moment it agrees — dark, not mixed, in either order. Restarting before `--yes`
+darkens them from the restart until the switch; restarting after darkens them from the
+switch until the restart. Either way there is one dark window and no mixing; the order
+above keeps it short. The refill is resumable: if the embed loop dies (rate limit, a
+provider outage) `scripts/refresh-data.sh embed` — or the next nightly run — fills
+whatever is still NULL, and retrieval degrades to the other legs for the rows not yet
+embedded. Not `reembed --yes` again: with the row already switched, that clears every
+vector the first run paid for and buys them all a second time (it says so in a `note:`
+line, but it does not refuse). The
+probe is what makes `--yes` safe to type: a wrong key, URL or model name, or a model
+whose real width is not the configured `dimensions`, fails before anything is cleared,
+because after the switch the only ways back are paying for the old space again or the
+restore drill.
+
+`reembed` needs the new `judge.toml` (`JUDGE_CONFIG` in `.env`) and the new provider's
+`api_key_env` in `.env`; `refresh-data.sh` passes its arguments through to
+`judge-ingest` inside the `refresh` container, which already has both. The dry run's
+cost line is an order of magnitude at a generic list price, not a quote: ~$0.15 per
+million tokens, chars-to-tokens at 4:1.
 
 ## 8. Redeploying
 
@@ -440,3 +557,9 @@ own if the connector restarts.
 | Refresh exits `another refresh is running` with nothing running | a previous run was killed before removing `.refresh.lock` in the repo root; `rmdir` it |
 | Refresh loads the CR every night | `rules.cr_version` disagrees with the file name on Wizards' page — check the `current comprehensive rules release` log line for `published` vs `stored` |
 | Refresh runs but the bot still cites the old CR | it does not: retrieval reads the database live; check the run actually finished (`refresh step ok` for `rules` and `embed`) |
+| `JUDGE_CONFIG=/etc/judgebot/judge.toml: file not found` at startup | `JUDGE_CONFIG` in `.env` names a host file that does not exist; Docker mounted an empty directory in its place (and created a root-owned one on the host — `sudo rmdir` it) |
+| `providers.X: NAME (api_key_env) is not set` at startup | the key was exported in the shell that ran `cargo run` but never written to `.env`, which is all the containers read; or, from `refresh` alone, only the embed provider's key was set because "refresh only embeds" — `refresh` resolves the chat stages too, so the extract/synth providers' keys must be in `.env` as well |
+| Edited `judge.toml`, `docker compose up -d`, nothing changed | `up -d` recreates only on a configuration or image change and a bind-mounted file's content is neither; `docker compose restart bot api` (§4) |
+| `providers.X (...): no credentials` at startup | a cloud door with an empty chain: no `AWS_*` in `.env`, no mounted credentials file, or a mounted file the `nobody` user cannot read |
+| `embedding space mismatch; vector legs off` | `[models.embed]` names a model or width other than the one the database holds; `reembed` (§7) to move the data, or change the file back |
+| `no price for X/Y` at startup | a model on an `openai` provider without `[models.<stage>.pricing]`; add one (USD per million tokens) or `pricing = "free"` on the provider |

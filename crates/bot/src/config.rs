@@ -2040,4 +2040,83 @@ model = "claude-opus-5"
         std::fs::remove_dir_all(&dir)?;
         Ok(())
     }
+
+    /// The tracked example: what the README and `docs/DEPLOYMENT.md` tell
+    /// every operator to copy. `deny_unknown_fields` means a renamed knob
+    /// would break it without touching any other test, so it is pinned here.
+    const EXAMPLE: &str = include_str!("../../../judge.example.toml");
+
+    #[test]
+    fn the_example_file_loads_as_shipped() -> R {
+        // Only the two keys the header says it needs: the litellm table is
+        // uncommented but no stage names it, so LITELLM_KEY is never read.
+        let env = vars(&[("ANTHROPIC_API_KEY", "a"), ("VOYAGE_API_KEY", "v")]);
+        let c = Config::from_toml(EXAMPLE, Path::new("judge.example.toml"), |k| env.get(k).cloned())?;
+        assert_eq!(
+            c.summary(),
+            "config=judge.example.toml extract=ollama/qwen3:8b synth=anthropic/claude-opus-5 embed=voyage/voyage-3.5 cap=$5.00"
+        );
+        assert_eq!(c.report().pointer("/providers/anthropic/endpoint"), Some(&serde_json::json!("direct")));
+        assert_eq!(c.report().pointer("/models/embed/dimensions"), Some(&serde_json::json!(1024)));
+        Ok(())
+    }
+
+    /// The example with every commented table uncommented. A block starts
+    /// at a `# [` line and runs to the next blank line; inside it the
+    /// leading `# ` is stripped (a bare `#` separator stays a comment, and
+    /// so does the prose above each header). The one placeholder that cannot
+    /// pass a validator, `wrkspc_...`, is swapped for a well-formed id.
+    fn example_with_every_table_uncommented() -> String {
+        let mut out = String::new();
+        let mut in_block = false;
+        for line in EXAMPLE.lines() {
+            if line.is_empty() {
+                in_block = false;
+            } else if line.starts_with("# [") {
+                in_block = true;
+            }
+            out.push_str(if in_block { line.strip_prefix("# ").unwrap_or(line) } else { line });
+            out.push('\n');
+        }
+        out.replace("wrkspc_...", "wrkspc_01AbC")
+    }
+
+    #[test]
+    fn the_example_file_loads_with_every_door_uncommented() -> R {
+        let text = example_with_every_table_uncommented();
+        assert!(text.contains("\n[providers.claude-proxy]\n") && text.contains("\n[providers.vertex]\n") && text.contains("\n[models.synth.pricing]\n"), "{text}");
+        assert!(!text.contains("\npricing = \"free\"\nkind = \"anthropic\""), "a knob commented inside a live table stays commented");
+        let env = [("ANTHROPIC_API_KEY", "a"), ("VOYAGE_API_KEY", "v"), ("LITELLM_KEY", "l")];
+        // Every table parses and resolves; the stages still point where the shipped file does.
+        let c = load(&text, &env)?;
+        assert!(c.summary().contains("extract=ollama/qwen3:8b synth=anthropic/claude-opus-5 embed=voyage/voyage-3.5"), "{}", c.summary());
+        assert_eq!(c.report().pointer("/providers/voyage/kind"), Some(&serde_json::json!("voyage")), "the explicit voyage table, not the implied one");
+        // And each commented door resolves when synth names it (the pricing
+        // table makes gpt-5 on litellm priceable; `effort` must go, since the
+        // example's litellm has reasoning_effort = false and the loader
+        // refuses a knob the model would never see).
+        assert!(load(&text.replace("provider = \"anthropic\"", "provider = \"litellm\""), &env).is_err_and(|e| e.to_string().contains("reasoning_effort = false")));
+        let doors: &[(&str, &str, &str)] = &[
+            ("claude-proxy", "claude-opus-5", "proxy"),
+            ("litellm", "gpt-5", "openai"),
+            #[cfg(feature = "aws")]
+            ("claude-aws", "claude-opus-5", "claude-platform-on-aws"),
+            #[cfg(feature = "aws")]
+            ("bedrock", "anthropic.claude-opus-5", "bedrock"),
+            #[cfg(feature = "gcp")]
+            ("vertex", "claude-opus-5", "vertex"),
+        ];
+        for (provider, model, door) in doors {
+            let synth = text
+                .replace("provider = \"anthropic\"", &format!("provider = \"{provider}\""))
+                .replace("model = \"claude-opus-5\"", &format!("model = \"{model}\""))
+                .replace("\neffort = \"high\"", "\n# effort = \"high\"");
+            let c = load(&synth, &env).map_err(|e| format!("{provider}: {e}"))?;
+            assert_eq!(c.synth().map(Stage::label).as_deref(), Some(format!("{provider}/{model}").as_str()));
+            let report = c.report();
+            let seen = report.pointer(&format!("/providers/{provider}/endpoint")).or_else(|| report.pointer(&format!("/providers/{provider}/kind")));
+            assert_eq!(seen, Some(&serde_json::json!(door)), "{provider}: {report}");
+        }
+        Ok(())
+    }
 }

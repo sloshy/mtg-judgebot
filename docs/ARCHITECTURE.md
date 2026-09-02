@@ -103,6 +103,25 @@ Discord message (+ last N Q&A in the same thread)
 [6] Persist call (question, verdict, context ids, crVersion); rating buttons.
 ```
 
+The two model calls ([1] and [5]) and the vector leg of [4] reach their providers through
+one seam (`docs/proposals/providers.md`). `crates/llm` holds the provider-neutral
+request and response (`ChatRequest` with system blocks, turns, tools, an output schema
+and an effort; `ChatResponse` with text, tool calls, a stop reason and usage), the spend
+cap and the one-tool-round typestate; `crates/anthropic` and `crates/openai` are backends
+of it, each owning its wire types and its schema-subset transform, and the model's own
+previous turn is replayed as an opaque blob only the backend that produced it reads (a
+thinking signature, a `reasoning_content`, a `tool_calls` array — never inspected in the
+neutral layer). The pipeline's port, `ChatModel`, is sealed and implemented only by
+`Metered`, so a model that bypasses the cap is unrepresentable; each backend declares
+`Capabilities`, and what a server cannot enforce (an output schema, strict tools) the
+adapter moves into the prompt, since decoding and citation validation are client-side
+either way. `judge_bot::config` reads a `judge.toml` into that: one provider per stage,
+secrets by environment-variable name, a price for every model the cap must reserve for,
+and — for embeddings — the vector `Space` (provider kind, model, width) the database
+records in `embedding_space` and every vector reader and writer checks before touching a
+column, so two models' vectors are never mixed and switching is one explicit,
+transactional `ingest reembed`. Nothing in `crates/core` knows any of this exists.
+
 Three front doors share this pipeline through the same composition root
 (`judge_bot::build_deps`):
 
@@ -193,7 +212,7 @@ from one set of names:
 Database: **Postgres 16 + pgvector + pg_trgm**. Scale: ~30k cards, ~2k rule
 chunks, <10k calls.
 
-Embeddings: **Voyage AI** (`voyage-3.5` or `voyage-4` family — `voyage-3` is superseded; decided over local models, which are not worth it on WSL2).
+Embeddings: **Voyage AI** by default (`voyage-3.5` or `voyage-4` family — `voyage-3` is superseded; chosen over local models for the zero-config setup, which are not worth it on WSL2; a local or OpenAI-compatible embedder is a `judge.toml` choice).
 `Embedder` is an interface so this can change: `judge_embed` also has an OpenAI-compatible
 `/v1/embeddings` adapter, chosen by `[models.embed]` in `judge.toml`. Every embedder carries its
 `Space` (provider kind, model, width); the one-row `embedding_space` table records the space the

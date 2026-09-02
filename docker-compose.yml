@@ -31,14 +31,24 @@ services:
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
       RUST_LOG: info,sqlx=warn,serenity=warn
-    # To run on other providers, mount a judge.toml and point JUDGE_CONFIG at
-    # the path inside the container (a ./judge.toml on the host is not seen
-    # from here, and a JUDGE_CONFIG naming a host path fails at startup):
-    #   volumes: ["./judge.toml:/etc/judgebot/judge.toml:ro"]
-    #   JUDGE_CONFIG: /etc/judgebot/judge.toml
-    # Same for `api` and `refresh` below: `refresh` embeds with the same
-    # [models.embed], so it must see the same file (a JUDGE_CONFIG in .env
-    # without the mount fails its embed step every night).
+      # JUDGE_CONFIG in .env is a *host* path (./judge.toml, as `cargo run`
+      # reads it). The file is bind-mounted below and the container is told the
+      # path it sees it at; blank/unset means no file, and the loader builds
+      # the Anthropic + Voyage setup from the keys in .env. The tracked example
+      # is mounted in that case only so the mount has a source: the loader
+      # reads nothing it was not pointed at.
+      JUDGE_CONFIG: ${JUDGE_CONFIG:+/etc/judgebot/judge.toml}
+    volumes:
+      - type: bind
+        source: ${JUDGE_CONFIG:-./judge.example.toml}
+        target: /etc/judgebot/judge.toml
+        read_only: true
+    # `api` and `refresh` carry the same two stanzas: every binary resolves
+    # all three stages of the file (the api_key_env of each provider a stage
+    # names must be set in .env, including for `refresh`, which only embeds),
+    # and `refresh`'s `embed` step writes the vector space the bot queries, so
+    # the three must agree. Editing the file's content changes nothing here,
+    # so `up -d` will not recreate: `docker compose restart bot api`.
     depends_on:
       db:
         condition: service_healthy
@@ -54,7 +64,12 @@ services:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
       WEB_DIST: /srv/web
       RUST_LOG: info,sqlx=warn
-    # volumes: ["./judge.toml:/etc/judgebot/judge.toml:ro"] + JUDGE_CONFIG, as for bot.
+      JUDGE_CONFIG: ${JUDGE_CONFIG:+/etc/judgebot/judge.toml}
+    volumes:
+      - type: bind
+        source: ${JUDGE_CONFIG:-./judge.example.toml}
+        target: /etc/judgebot/judge.toml
+        read_only: true
     # Loopback-only. Public traffic arrives through the cloudflared tunnel on
     # the compose network, never through a published port. This is also what
     # makes API_CLIENT_IP=cloudflare sound: CF-Connecting-IP is only
@@ -81,13 +96,15 @@ services:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
       INGEST_CACHE_DIR: /var/cache/judgebot
       RUST_LOG: info,sqlx=warn
+      JUDGE_CONFIG: ${JUDGE_CONFIG:+/etc/judgebot/judge.toml}
     volumes:
       # Scryfall's bulk files change daily so this rarely saves a download, but
       # a run that dies mid-way leaves nothing behind in the container layer.
       - judgebot-ingest-cache:/var/cache/judgebot
-      # With a judge.toml, the same mount as bot/api (and JUDGE_CONFIG above):
-      # the `embed` step writes the vector space the bot queries.
-      # - ./judge.toml:/etc/judgebot/judge.toml:ro
+      - type: bind
+        source: ${JUDGE_CONFIG:-./judge.example.toml}
+        target: /etc/judgebot/judge.toml
+        read_only: true
     depends_on:
       db:
         condition: service_healthy

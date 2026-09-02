@@ -40,8 +40,9 @@ You'll lose 2 life, not 0. Tarmogoyf's mana value is 0 anywhere its {X}… [702.
 
 ## Running it
 
-Requirements: Docker, Rust 1.97+, an Anthropic API key, a Discord bot token; optional
-Voyage AI key for the semantic-search leg.
+Requirements: Docker, Rust 1.97+, a Discord bot token, and a model: an Anthropic API
+key out of the box, or a `judge.toml` naming another provider (below); optional Voyage AI
+key for the semantic-search leg.
 
 ```sh
 cp .env.example .env          # fill in keys, DISCORD_TOKEN, GUILD_ID
@@ -53,7 +54,7 @@ cargo run --release -p judge-ingest -- cards
 cargo run --release -p judge-ingest -- rules latest  # the CR release Wizards' rules page links
 cargo run --release -p judge-ingest -- aliases data/aliases.yaml
 cargo run --release -p judge-ingest -- notes data/notes.yaml
-cargo run --release -p judge-ingest -- embed        # needs VOYAGE_API_KEY
+cargo run --release -p judge-ingest -- embed        # needs VOYAGE_API_KEY or a [models.embed]
 
 docker compose up -d --build bot api                # redeploy after code changes
 scripts/refresh-data.sh                             # nightly: cards, new CR, embeddings, emoji
@@ -62,6 +63,77 @@ scripts/refresh-data.sh                             # nightly: cards, new CR, em
 Invite the bot with the `bot` + `applications.commands` scopes; `/judge` registers
 instantly in the guild named by `GUILD_ID`. Every LLM call is metered and hard-capped
 (`JUDGE_MAX_USD`); a typical answer costs $0.08–0.25.
+
+### Choosing a model
+
+With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5`
+for both LLM stages, Voyage `voyage-3.5` for embeddings if `VOYAGE_API_KEY` is set. That
+is the setup the eval numbers and the pinned prompt digest were produced on, and upgrading
+never changes it.
+
+A `judge.toml` (named by `JUDGE_CONFIG`, else `./judge.toml` if present) picks something
+else — a different model per stage, on different providers. Under Docker the `./judge.toml`
+default does not apply: the containers see only the file compose mounts, never the repo
+root, so set `JUDGE_CONFIG=./judge.toml` in `.env` — otherwise they run the zero-config
+setup above, paid, while `judge-cli config` on the host shows your file. `judge.example.toml`
+shows every knob with its default; the file names secrets by environment variable and
+never holds one.
+
+```toml
+[providers.ollama]
+kind = "openai"                      # any OpenAI-compatible chat completions server
+base_url = "http://ollama:11434/v1"
+structured_output = "json_object"
+pricing = "free"                     # local: the spend cap never reserves for it
+
+[providers.anthropic]
+kind = "anthropic"
+endpoint = "direct"                  # direct | proxy | claude-platform-on-aws | bedrock | vertex
+api_key_env = "ANTHROPIC_API_KEY"
+
+[models.extract]                     # cheap stage: card-name spans + classification
+provider = "ollama"
+model = "qwen3:8b"
+
+[models.synth]                       # the answer itself
+provider = "anthropic"
+model = "claude-opus-5"
+effort = "high"
+```
+
+Two kinds of chat backend exist. `kind = "anthropic"` is the Messages API, reached through
+one of five doors: `direct` (the first-party API), `proxy` (a gateway speaking `/v1/messages`,
+such as LiteLLM — key in `x-api-key` or `Authorization: Bearer`), and three cloud doors that
+take no key at all: `claude-platform-on-aws` (SigV4, a `region` and a `workspace_id`),
+`bedrock` (SigV4, a `region`, `anthropic.`-prefixed model ids) and `vertex` (Google ADC, a
+`project` and a `region`). Credentials for the cloud doors come from the platform's own
+chain — `AWS_*` variables, a profile, an instance role, `GOOGLE_APPLICATION_CREDENTIALS` —
+and are probed once at startup, so a host with none fails there rather than on the first
+question. `kind = "openai"` is chat completions as OpenAI documents it, with a few dialect
+knobs (`structured_output`, `strict_tools`, `reasoning_effort`, `max_tokens_param`,
+`cache_hints`) whose defaults suit OpenAI and LiteLLM; Ollama, vLLM, llama.cpp, OpenRouter
+and Azure OpenAI fit by turning knobs, not by code. A backend that cannot enforce the output
+schema server-side (`json_object`, `prompt`, Bedrock) gets the schema in the prompt instead
+and costs more citation retries, not weaker guarantees — decoding and citation validation
+always happen client-side.
+
+**The spend cap must be able to price every model.** `JUDGE_MAX_USD` reserves each call's
+worst case before sending, so it needs a price per token. The built-in table knows
+Anthropic's first-party models and prices an unknown Anthropic model as Opus 5 (erring
+high). An `openai` provider has no safe guess, so a model there needs a
+`[models.<stage>.pricing]` table (USD per million tokens) or the provider must say
+`pricing = "free"`; anything else is a startup error naming the stage. A price you write
+beats the table and is what the cap settles at.
+
+Embeddings are chosen the same way: `[models.embed]` on a `voyage` provider or on any
+`openai` one (`POST /v1/embeddings`; `dimensions` is then required — it is the width of
+the `vector(N)` columns). The database records which model's vectors it holds
+(`embedding_space`), and nothing will mix two: a bot configured for another model logs
+an error and runs with the vector leg dark. To actually switch, `cargo run --release -p
+judge-ingest -- reembed` prints the row counts and a rough cost, probes the new model
+once, and with `--yes` retypes the columns, clears every vector and re-embeds them — paid
+per row, which is why it asks first. `judge-cli config` prints what resolved, secrets
+redacted, and every binary logs the same summary line at startup.
 
 ### The web page
 
@@ -118,8 +190,8 @@ crates/
   llm        provider-neutral chat types, Backend + sealed ChatModel port, spend cap, retry loop, Synth typestate
   anthropic  the Messages API as a judge-llm backend: wire types, schema transform, endpoints
   openai     OpenAI-compatible chat completions as a judge-llm backend: strict-schema transform, dialect knobs
-  embed      Voyage embeddings
-  bot        Postgres adapters (resolver / retriever / call store), prompts, Discord (serenity/poise)
+  embed      Voyage and OpenAI-compatible embeddings, each tagged with its vector Space
+  bot        Postgres adapters (resolver / retriever / call store), judge.toml loader, prompts, Discord (serenity/poise)
   ingest     Scryfall + Comprehensive Rules loaders, embedder  (bin)
   eval       gold-set harness: recall / answer / rescore / show (bin)
   api        anonymous HTTP adapter (axum) serving the web page (bin)

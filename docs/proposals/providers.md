@@ -1,6 +1,7 @@
 # Proposal D — Model providers
 
-Status: **design draft, 2026-09-02**, not yet implemented. Extends `docs/ARCHITECTURE.md`
+Status: **implemented 2026-09-02** (phases 1–5, commits `8f0cbd3`, `5405941`, `f72abce`,
+`0ec0605` and the docs phase; deviations in §10). Extends `docs/ARCHITECTURE.md`
 §3 step 1/3/5 (the two LLM calls) and the vector leg of step 4 (embeddings) so that an
 operator can run the judge on any model they can reach, not only Anthropic's first-party
 API and Voyage. The pipeline, the prompts, the validation and the typestates do not change;
@@ -367,3 +368,83 @@ OpenAI backend still round-trips a tool call and a verdict".
 3. **Re-embedding UX.** `ingest reembed --yes` as above, or simply refuse and tell the
    operator to restore/re-run `ingest embed` after a manual `ALTER`. The command is safer;
    the refusal is less code.
+
+All three were decided as recommended: the TOML file with the env-only zero-config default,
+native SigV4/ADC behind Cargo features, and `ingest reembed --yes`.
+
+## 10. As built — deviations from the sketch above
+
+Recorded from the phase commits and the code comments; the sketch is left as written so
+the reasoning stays readable.
+
+**Seam (phase 1).** `ChatRequest` carries `thinking` and `fallbacks` in addition to the
+fields in §3.1 — needed for the Anthropic bodies to stay byte-identical (the golden test in
+`crates/bot/tests/anthropic_golden.rs` replays fixtures captured at `ebac125`). The port is
+split: providers implement an open `Backend` trait, and the pipeline's `ChatModel` is
+*sealed* with `Metered<B>` as its only implementation, so the cap is a fact about the
+types rather than a composition discipline; `Models` has private fields for the same
+reason. `Price` is a closed sum `{Free, Table, PerToken}` (not a table lookup at call
+time): `Table` re-reads the built-in price for the model the response names (an Anthropic
+fallback may route elsewhere), `PerToken` is the operator's rate and settles at exactly
+that, `Free` never reserves. The worst-case reservation is sized from the serialized
+*neutral* request rather than the wire body (a few percent larger, pessimistic either
+way). The per-call log line is `llm call` with a `provider` field, not `anthropic call`.
+
+**Configuration and the OpenAI backend (phase 2).** Where §3.1 says a backend without
+server-side enforcement gets the schema "in the system prompt", the adapters append it to
+the *user turn* (`judge_llm::schema_block`), so the pinned system-prompt digest holds on
+every backend, not only Anthropic's. A knob that would be silently ignored is a load error
+naming both keys (`auth` without `api_key_env`, `effort` on an `openai` provider with
+`reasoning_effort = false`, a stage price on a `pricing = "free"` provider, a cloud-door
+key on a keyed door). `base_url` is validated as an absolute http(s) URL with a host at
+load. `cache_write` in `[models.<stage>.pricing]` defaults to 1.25× `input` (Anthropic's
+write premium), `cache_read` to `input`. `openai` providers gained `auth = "bearer" |
+"api-key"` (Azure's header) and, for embeddings, `send_dimensions`. `judge.toml` is
+gitignored (per host, not secret); `judge.example.toml` is the tracked reference. The
+loader is hermetic (`from_toml`/`from_vars` read `JUDGE_MAX_USD` through the injected
+environment) so its tests never touch the process environment.
+
+**Embeddings (phase 3).** The retriever's check is not only "at startup": `db::Vectors`
+re-reads `embedding_space` on every use (and once at startup, for the log), so a running
+bot picks up the first `ingest embed` and goes dark — never mixed — under a `reembed`
+without a restart. The adapters hold no bare `Embedder`; `PgRetriever`, `PgLibrary` and
+`PgCallStore` take `Vectors`, which embeds nothing until the stored space equals its own.
+Writers hold the space under the shared side of `CALLS_REWRITE_LOCK` and `switch_space`
+takes the exclusive side, so a switch waits for in-flight writes. `ingest embed` writes the
+row with the *first vector it writes*, never before, and never relabels vectors it did not
+write; the migration seeds `voyage/voyage-3.5/1024` for a database that already held
+vectors. `reembed` probes the configured embedder with one short text before clearing
+anything, so a wrong key, URL, model or width fails with the old vectors intact.
+`dimensions` is bounded to `1..=2000` (pgvector's HNSW limit) at load, and
+`VOYAGE_DIMENSIONS` gets the same bound. The space's provider is the *kind*
+(`voyage | openai`), not the operator's table name.
+
+**Cloud doors (phase 4).** The formats verified on 2026-09-02 differ from the table in
+§4.1: Bedrock's Messages-shaped endpoint is
+`https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages`, signed as service
+`bedrock-mantle` (not `bedrock`), and its documentation lists structured outputs, strict
+tools, fallbacks and betas as unsupported — so Bedrock masks all of those, not only
+`fallbacks` (the schema goes in the prompt, validation is client-side as always). Claude
+Platform on AWS requires the `anthropic-workspace-id` header, hence the `workspace_id`
+key. Vertex puts the model in the URL and `anthropic_version` in the body
+(`wire::ModelField`, an exhaustive enum rather than two `Option`s), with the origin
+depending on whether the region is `global`, a multi-region or a specific one. The
+credential chains are lazy (loading never touches the network) and `Config::probe_auth`
+resolves each door once at startup, so an empty chain fails there naming the provider and
+the door. Each provider table resolves to one `Endpoint`, shared by the stages that name
+it. `region`, `project` and `workspace_id` are validated as the shapes the platforms
+document; a Bedrock model id must carry a whole `anthropic` segment. API-key auth for the
+cloud doors is not supported. The features are forwarded through `judge-bot` (`aws`,
+`gcp`, both default) and named in the Dockerfile.
+
+**Docs (phase 5).** `JUDGE_CONFIG` is a *host* path in `.env`; `docker-compose.yml`
+bind-mounts it into `bot`, `api` and `refresh` and sets the containers' `JUDGE_CONFIG` to
+the mounted path (`${JUDGE_CONFIG:+…}`), so the one variable serves `cargo run` and
+compose alike — §5's "mounted into the containers" without a second variable. Two
+consequences the docs state: a `./judge.toml` with `JUDGE_CONFIG` blank is read by
+`cargo run` and by nothing under Docker, and a changed file needs `docker compose
+restart`, not `up -d` (a bind mount's content is not a configuration change). The
+shipped `judge.example.toml` is pinned by two tests in `config.rs` — as shipped, and
+with every commented table uncommented and each door named by a stage — so a renamed
+knob fails the gate instead of the operator. `docker-compose.override.yml` (the
+documented home for cloud-credential mounts) is gitignored.

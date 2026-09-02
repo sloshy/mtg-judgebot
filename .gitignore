@@ -4,6 +4,12 @@
 # Per-deployment provider/model choice (judge.toml names env vars, never secrets,
 # but it is per host); the tracked example is judge.example.toml.
 /judge.toml
+# Per-host compose additions (credential mounts for the cloud doors,
+# docs/DEPLOYMENT.md §4): host paths and profile names, never tracked.
+/docker-compose.override.yml
+/docker-compose.override.yaml
+/compose.override.yml
+/compose.override.yaml
 .cache/
 eval/runs/
 *.dump
