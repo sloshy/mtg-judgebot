@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use judge_core::{Card, CardId, Face, JudgeError, Layout};
 use nonempty::NonEmpty;
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::{bad_row, upstream};
@@ -23,7 +22,7 @@ struct FaceRow {
 /// order of `ids` (duplicates collapse to the first occurrence). Ids without
 /// a `cards` row are skipped; a card without any `card_faces` row is a data
 /// error.
-pub(super) async fn load_cards(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Card>, JudgeError> {
+pub(super) async fn load_cards(pool: impl sqlx::PgExecutor<'_>, ids: &[Uuid]) -> Result<Vec<Card>, JudgeError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }

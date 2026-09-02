@@ -114,8 +114,10 @@ Key cross-file facts that aren't obvious from any one file:
   writer and every reader must agree) so a reindexed ruling is the same ruling.
 - **A renumbered rule keeps its calls.** Inside the CR load transaction, `renumber_map`
   (`ingest/src/renumber.rs`) matches old and new rules by body with every rule id masked
-  (renumbering changes the cross-references too) and only where the masked body is unique
-  on both sides; `rewrite_call` then rewrites every call's `rule` citation ids, the ids
+  (renumbering changes the cross-references too), only where the masked body is unique on
+  both sides, then keeps only entries that reproduce the new rule exactly when the old one is
+  rewritten with the whole map (a fixpoint, so a redirected cross-reference is not mistaken
+  for a renumbering); `rewrite_call` then rewrites every call's `rule` citation ids, the ids
   inside `rule`/`prior_call` quotes and the answer text in one pass. Never guesses:
   ambiguous or reworded rules are left to the retirement pass. The CR loader and the
   retirement pass take the same advisory lock (`CALLS_REWRITE_LOCK`).

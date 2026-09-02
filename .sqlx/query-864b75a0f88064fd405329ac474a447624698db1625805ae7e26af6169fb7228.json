@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, parent_id, body, cr_version FROM rules",
+  "query": "SELECT id, parent_id, body, examples, cr_version FROM rules",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "examples",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "rules",
+            "name": "examples"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "cr_version",
         "type_info": "Text",
         "origin": {
@@ -55,8 +66,9 @@
       false,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "452371a64250e2a8cd02a0e479146d605aafcfcbf9e1eecee755390f680fb48b"
+  "hash": "864b75a0f88064fd405329ac474a447624698db1625805ae7e26af6169fb7228"
 }

@@ -102,7 +102,7 @@ pub(super) fn partition_ids<S: AsRef<str>>(
 /// Rule-level rows of `subsections` plus the rows with exactly these `ids`
 /// (rule or leaf), in natural id order.
 pub(super) async fn by_ids(
-    pool: &PgPool,
+    pool: impl sqlx::PgExecutor<'_>,
     subsections: &[String],
     ids: &[String],
 ) -> Result<Vec<RuleChunk>, JudgeError> {

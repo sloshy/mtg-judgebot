@@ -8,10 +8,16 @@
 //!
 //! [`renumber_map`] compares bodies with every rule id *masked* out: two rules
 //! are the same rule when their masked bodies are equal and that masked body
-//! is unique on both sides. Anything ambiguous is left alone — the retirement
-//! pass then decides on the citations' own merits — so a relocation is never a
-//! guess. Leaves are matched under their (possibly relocated) parent, which
-//! handles a lettered sub-rule inserted mid-list.
+//! is unique on both sides. Leaves are matched under their (possibly
+//! relocated) parent, which handles a lettered sub-rule inserted mid-list.
+//! The candidate map is then checked against itself: an entry survives only if
+//! rewriting the old rule's body and examples with the whole map reproduces
+//! the new rule exactly, and its parent maps consistently. That turns "the same
+//! text up to numbers" into "a self-consistent renumbering": a cross-reference
+//! that was *redirected* to a different rule (not renumbered) fails it, as
+//! does a leaf that happens to read like a leaf of another rule. Anything
+//! ambiguous or inconsistent is left alone — the retirement pass then decides
+//! on the citations' own merits — so a relocation is never a guess.
 //!
 //! [`rewrite_call`] applies a map to one stored call consistently: the ids of
 //! its `rule` citations, the rule ids *inside* the quotes of its `rule` and
@@ -41,6 +47,13 @@ pub struct StoredRule {
     pub id: RuleId,
     pub parent_id: Option<RuleId>,
     pub body: String,
+    pub examples: Vec<String>,
+}
+
+/// The first line of a body: the rule's own line, which survives a sub-rule
+/// being inserted below it.
+fn first_line(body: &str) -> &str {
+    body.lines().next().unwrap_or_default()
 }
 
 /// `body` with every rule reference replaced by `#`.
@@ -61,12 +74,52 @@ where
     counts.into_iter().filter(|(_, (n, _))| *n == 1).map(|(k, (_, id))| (k, id)).collect()
 }
 
-/// Old id → new id for every rule whose id changed but whose masked body is
-/// unchanged and unique on both sides. Rules that kept their id are absent, as
-/// are rules whose text changed (they cannot be told apart from new rules) and
-/// rules whose masked body is shared with another rule (ambiguous).
+/// Old id → new id for every rule whose id changed but whose text is unchanged
+/// up to a self-consistent renumbering (see the module doc). Rules that kept
+/// their id are absent, as are rules whose text changed (they cannot be told
+/// apart from new rules) and rules whose masked body is shared with another
+/// rule (ambiguous).
 #[must_use]
 pub fn renumber_map(old: &[StoredRule], new: &[RuleChunk]) -> BTreeMap<RuleId, RuleId> {
+    let mut map = candidates(old, new);
+    let old_by_id: HashMap<&RuleId, &StoredRule> = old.iter().map(|r| (&r.id, r)).collect();
+    let new_by_id: HashMap<&RuleId, &RuleChunk> = new.iter().map(|r| (&r.id, r)).collect();
+    // Fixpoint: dropping one entry can invalidate another that referenced it,
+    // so iterate until nothing more is dropped.
+    loop {
+        let drop: Vec<RuleId> = map
+            .iter()
+            .filter(|(from, to)| !consistent(&map, old_by_id.get(from).copied(), new_by_id.get(to).copied()))
+            .map(|(from, _)| from.clone())
+            .collect();
+        if drop.is_empty() {
+            return map;
+        }
+        for id in drop {
+            map.remove(&id);
+        }
+    }
+}
+
+/// Does rewriting `old` with `map` reproduce `new` exactly — body, examples and
+/// parent? `None` on either side (a dangling candidate) is inconsistent.
+fn consistent(map: &BTreeMap<RuleId, RuleId>, old: Option<&StoredRule>, new: Option<&RuleChunk>) -> bool {
+    let (Some(old), Some(new)) = (old, new) else { return false };
+    let rewrite = |s: &str| rewrite_ids(s, map).unwrap_or_else(|| s.to_owned());
+    let parent_ok = match (&old.parent_id, &new.parent_id) {
+        (None, None) => true,
+        (Some(op), Some(np)) => map.get(op).unwrap_or(op) == np,
+        _ => false,
+    };
+    parent_ok
+        && rewrite(&old.body) == new.body
+        && old.examples.len() == new.examples.len()
+        && old.examples.iter().zip(&new.examples).all(|(o, n)| rewrite(o) == *n)
+}
+
+/// The unchecked candidate map: unique masked-body matches at rule level, then
+/// leaves under their parent's new id.
+fn candidates(old: &[StoredRule], new: &[RuleChunk]) -> BTreeMap<RuleId, RuleId> {
     let mut map = BTreeMap::new();
 
     // Rule level: unique masked body on both sides.
@@ -94,8 +147,20 @@ pub fn renumber_map(old: &[StoredRule], new: &[RuleChunk]) -> BTreeMap<RuleId, R
             old_leaves_by_parent.entry(p).or_default().push((&r.id, r.body.as_str()));
         }
     }
+    // A parent that is not in the map either kept its id or changed its text
+    // (a sub-rule inserted) — or was renumbered *and* changed, in which case its
+    // old id now names some other rule. Only follow an unmapped parent when the
+    // rule now holding that id still opens with the same line.
+    let old_first_lines: HashMap<&RuleId, String> =
+        old.iter().filter(|r| r.parent_id.is_none()).map(|r| (&r.id, masked(first_line(&r.body)))).collect();
+    let new_first_lines: HashMap<&RuleId, String> =
+        new.iter().filter(|r| r.parent_id.is_none()).map(|r| (&r.id, masked(first_line(&r.body)))).collect();
     for (old_parent, old_leaves) in &old_leaves_by_parent {
-        let new_parent = map.get(*old_parent).unwrap_or(old_parent);
+        let new_parent = match map.get(*old_parent) {
+            Some(p) => p,
+            None if old_first_lines.get(old_parent) == new_first_lines.get(old_parent) => old_parent,
+            None => continue,
+        };
         let Some(new_leaves) = new_leaves_by_parent.get(new_parent) else { continue };
         let old_u = unique_by_masked(old_leaves.iter().copied());
         let new_u = unique_by_masked(new_leaves.iter().copied());
@@ -194,7 +259,7 @@ mod tests {
     }
 
     fn stored(id: &str, parent: Option<&str>, body: &str) -> StoredRule {
-        StoredRule { id: rid(id), parent_id: parent.map(rid), body: body.into() }
+        StoredRule { id: rid(id), parent_id: parent.map(rid), body: body.into(), examples: vec![] }
     }
 
     fn m(pairs: &[(&str, &str)]) -> BTreeMap<RuleId, RuleId> {
@@ -254,6 +319,54 @@ mod tests {
         // and the retirement pass decides about citations of 702.19 itself; the
         // untouched leaf still follows its letter.
         assert_eq!(renumber_map(&old, &new), m(&[("702.19b", "702.19c")]));
+    }
+
+    #[test]
+    fn a_redirected_cross_reference_is_not_a_renumbering() {
+        // 702.20 moves to 702.21 but its reference now points somewhere else: the
+        // masked bodies agree, the rewritten body does not, so it is not followed.
+        let old = [stored("702.20", None, "702.20. Vigilance. See rule 702.19."), stored("702.19", None, "702.19. Trample.")];
+        let new = [
+            chunk("702.19", None, "702.19. Trample."),
+            chunk("702.20", None, "702.20. New."),
+            chunk("702.21", None, "702.21. Vigilance. See rule 702.20."),
+        ];
+        assert!(renumber_map(&old, &new).is_empty());
+    }
+
+    #[test]
+    fn leaves_under_a_shifted_and_changed_parent_do_not_pair_with_a_stranger() {
+        // Old 724.1 (with leaf a) shifts to 724.2 AND gains a sub-rule, so it is not
+        // mapped; the rule now called 724.1 is a different rule with a look-alike
+        // leaf. The old leaf must not be relocated onto it.
+        let old = [
+            stored("724.1", None, "724.1. Ending the turn.
+724.1a Check state-based actions."),
+            stored("724.1a", Some("724.1"), "724.1a Check state-based actions."),
+        ];
+        let new = [
+            chunk("724.1", None, "724.1. Restarting the game.
+724.1b Check state-based actions."),
+            chunk("724.1b", Some("724.1"), "724.1b Check state-based actions."),
+            chunk("724.2", None, "724.2. Ending the turn.
+724.2a Check state-based actions.
+724.2b Also new."),
+            chunk("724.2a", Some("724.2"), "724.2a Check state-based actions."),
+            chunk("724.2b", Some("724.2"), "724.2b Also new."),
+        ];
+        assert!(renumber_map(&old, &new).is_empty());
+    }
+
+    #[test]
+    fn examples_take_part_in_the_check() {
+        let mut old = stored("702.20", None, "702.20. Vigilance.");
+        old.examples = vec!["Example: see 702.20.".into()];
+        let mut new = chunk("702.21", None, "702.21. Vigilance.");
+        new.examples = vec!["Example: see 702.21.".into()];
+        let filler = chunk("702.20", None, "702.20. New.");
+        assert_eq!(renumber_map(&[old.clone()], &[filler.clone(), new.clone()]), m(&[("702.20", "702.21")]));
+        new.examples = vec!["Example: reworded.".into()];
+        assert!(renumber_map(&[old], &[filler, new]).is_empty());
     }
 
     #[test]

@@ -667,7 +667,7 @@ async fn renumber_map_from_db(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     parsed: &ParsedCr,
 ) -> anyhow::Result<BTreeMap<RuleId, RuleId>> {
-    let rows = sqlx::query!("SELECT id, parent_id, body, cr_version FROM rules")
+    let rows = sqlx::query!("SELECT id, parent_id, body, examples, cr_version FROM rules")
         .fetch_all(&mut **tx)
         .await
         .context("reading stored rules for renumbering")?;
@@ -681,6 +681,7 @@ async fn renumber_map_from_db(
                 id: rule_id(&r.id)?,
                 parent_id: r.parent_id.as_deref().map(rule_id).transpose()?,
                 body: r.body,
+                examples: r.examples,
             })
         })
         .collect::<anyhow::Result<_>>()?;
@@ -931,9 +932,9 @@ mod tests {
     }
 
     /// End to end through Postgres: a release that inserts a rule and shifts the
-    /// next one along moves the live calls citing it — citation id, quote and
-    /// answer text together — and leaves retired calls alone. The retirement pass
-    /// run afterwards keeps the relocated call live.
+    /// next one (and its lettered sub-rules) along moves every call citing it —
+    /// citation id, quote and answer text together, retired calls included. The
+    /// retirement pass run afterwards keeps the relocated calls live.
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn renumbering_relocates_live_calls(pool: sqlx::PgPool) -> anyhow::Result<()> {
         use crate::renumber::rewrite_ids;
@@ -941,28 +942,28 @@ mod tests {
 
         let old = parsed()?;
         store(&pool, &old).await?;
-        let moved = old.rules.iter().find(|r| r.id.as_ref() == "613.11").ok_or_else(|| anyhow::anyhow!("fixture lacks 613.11"))?;
+        let moved = old.rules.iter().find(|r| r.id.as_ref() == "702.19b").ok_or_else(|| anyhow::anyhow!("fixture lacks 702.19b"))?;
         let quote = moved.body.lines().next().unwrap_or_default().to_owned();
-        anyhow::ensure!(quote.starts_with("613.11"), "rule bodies start with their id: {quote:?}");
+        anyhow::ensure!(quote.starts_with("702.19b"), "leaf bodies start with their id: {quote:?}");
         let cite = |id: &str, q: &str| serde_json::json!([{"kind": "rule", "id": id, "quote": q}]);
         let insert = |retired: bool| {
             sqlx::query_scalar::<_, uuid::Uuid>(
                 "INSERT INTO calls (thread_id, question, answer, category, source, cr_version, citations, retired_at, retired_reason) \
-                 VALUES ('t', 'q', 'See 613.11 twice: 613.11. Unrelated 613.1 and 613.1a stay.', 'layers', 'cr', '20260819', $1, \
+                 VALUES ('t', 'q', 'See 702.19 and 702.19b. Unrelated 613.1 and 613.1a stay.', 'layers', 'cr', '20260819', $1, \
                          CASE WHEN $2 THEN now() END, CASE WHEN $2 THEN 'test' END) RETURNING id",
             )
-            .bind(cite("613.11", &quote))
+            .bind(cite("702.19b", &quote))
             .bind(retired)
             .fetch_one(&pool)
         };
         let live = insert(false).await?;
         let retired = insert(true).await?;
 
-        // The next release: a new 613.11, and the old 613.11 (with its leaves) becomes 613.12.
+        // The next release: a new 702.19, and the old 702.19 (with its leaves) becomes 702.20.
         let mut map: BTreeMap<RuleId, RuleId> = BTreeMap::new();
         for r in &old.rules {
-            if let Some(rest) = r.id.as_ref().strip_prefix("613.11") {
-                map.insert(r.id.clone(), rule_id(&format!("613.12{rest}"))?);
+            if let Some(rest) = r.id.as_ref().strip_prefix("702.19") {
+                map.insert(r.id.clone(), rule_id(&format!("702.20{rest}"))?);
             }
         }
         let version = CrVersion::try_new("20260919".to_owned()).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -976,11 +977,11 @@ mod tests {
             new.rules.push(r);
         }
         new.rules.push(RuleChunk {
-            id: rule_id("613.11")?,
+            id: rule_id("702.19")?,
             parent_id: None,
-            subsection: rule_id("613")?,
+            subsection: rule_id("702")?,
             heading: "Brand New".into(),
-            body: "613.11. A rule that did not exist before.".into(),
+            body: "702.19. A keyword that did not exist before.".into(),
             examples: vec![],
             cr_version: version.clone(),
         });
@@ -990,12 +991,12 @@ mod tests {
             sqlx::query_as::<_, (serde_json::Value, String)>("SELECT citations, answer FROM calls WHERE id = $1").bind(id).fetch_one(&pool)
         };
         let (c, a) = row(live).await?;
-        let moved_quote = quote.replacen("613.11", "613.12", 1);
-        assert_eq!(c, cite("613.12", &moved_quote), "live call follows the renumbering");
-        assert_eq!(a, "See 613.12 twice: 613.12. Unrelated 613.1 and 613.1a stay.");
+        let moved_quote = quote.replacen("702.19b", "702.20b", 1);
+        assert_eq!(c, cite("702.20b", &moved_quote), "live call follows the renumbering");
+        assert_eq!(a, "See 702.20 and 702.20b. Unrelated 613.1 and 613.1a stay.");
         let (c, a) = row(retired).await?;
-        assert_eq!(c, cite("613.12", &moved_quote), "a retired call follows the numbering too");
-        assert_eq!(a, "See 613.12 twice: 613.12. Unrelated 613.1 and 613.1a stay.");
+        assert_eq!(c, cite("702.20b", &moved_quote), "a retired call follows the numbering too");
+        assert_eq!(a, "See 702.20 and 702.20b. Unrelated 613.1 and 613.1a stay.");
 
         // Both citations validate against the new rows: the live call stays live
         // and the retired one (retired for a reason that no longer holds) comes back.
@@ -1004,7 +1005,7 @@ mod tests {
 
         // A re-parse of the same release computes no map and rewrites nothing.
         store(&pool, &new).await?;
-        assert_eq!(row(live).await?.0, cite("613.12", &moved_quote));
+        assert_eq!(row(live).await?.0, cite("702.20b", &moved_quote));
         Ok(())
     }
 

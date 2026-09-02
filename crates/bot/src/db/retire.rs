@@ -83,37 +83,52 @@ struct StoredCall {
 /// not a query per call. Rows whose state and reason are unchanged are not
 /// written.
 ///
+/// Every read happens inside the transaction, after the advisory lock: a CR
+/// load committing between reading the calls and reading the rules would
+/// otherwise show old citations against new rules and retire every relocated
+/// call until the next run.
+///
 /// # Errors
 /// On a database failure. Bad data is never fatal to the pass: a call whose
 /// stored citations do not decode is retired with that as its reason, and a
 /// cited source that cannot be loaded is simply absent, which retires its
 /// citers.
 pub async fn retire_unsupported(pool: &PgPool) -> Result<RetireSummary, JudgeError> {
-    let rows = sqlx::query!(
-        r#"SELECT id, citations, context_ids -> 'card_text' AS card_text, retired_reason FROM calls ORDER BY created_at"#
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(upstream("calls for retirement"))?;
-
-    let calls: Vec<StoredCall> = rows
-        .into_iter()
-        .map(|r| StoredCall {
-            id: r.id,
-            citations: serde_json::from_value::<Vec<Citation>>(r.citations).map_err(|e| e.to_string()),
-            card_text: r.card_text.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
-            retired_reason: r.retired_reason,
-        })
-        .collect();
-
-    let ctx = context_for(pool, &calls).await?;
-
-    let mut summary = RetireSummary::default();
     let mut tx = pool.begin().await.map_err(upstream("begin retirement"))?;
     sqlx::query!("SELECT pg_advisory_xact_lock($1)", CALLS_REWRITE_LOCK)
         .execute(&mut *tx)
         .await
         .map_err(upstream("lock calls for retirement"))?;
+
+    let rows = sqlx::query!(
+        r#"SELECT id, citations, context_ids -> 'card_text' AS card_text, retired_reason FROM calls ORDER BY created_at"#
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(upstream("calls for retirement"))?;
+
+    let calls: Vec<StoredCall> = rows
+        .into_iter()
+        .map(|r| {
+            let card_text = match r.card_text {
+                None => BTreeMap::new(),
+                Some(v) => serde_json::from_value(v).unwrap_or_else(|e| {
+                    tracing::warn!(call = %r.id, error = %e, "context_ids.card_text is malformed; no card dependency recorded");
+                    BTreeMap::new()
+                }),
+            };
+            StoredCall {
+                id: r.id,
+                citations: serde_json::from_value::<Vec<Citation>>(r.citations).map_err(|e| e.to_string()),
+                card_text,
+                retired_reason: r.retired_reason,
+            }
+        })
+        .collect();
+
+    let ctx = context_for(&mut tx, &calls).await?;
+
+    let mut summary = RetireSummary::default();
     for call in &calls {
         summary.checked += 1;
         let was_retired = call.retired_reason.is_some();
@@ -194,7 +209,7 @@ fn truncate(s: &str, chars: usize) -> String {
 /// Everything the calls depend on, loaded once: exactly the rules, cards (with
 /// faces), rulings and prior-call answers their citations name, plus the cards
 /// their contexts were fingerprinted with, nothing else.
-async fn context_for(pool: &PgPool, calls: &[StoredCall]) -> Result<Context, JudgeError> {
+async fn context_for(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, calls: &[StoredCall]) -> Result<Context, JudgeError> {
     let mut rule_ids: BTreeSet<String> = BTreeSet::new();
     let mut card_ids: BTreeSet<Uuid> = BTreeSet::new();
     let mut call_ids: BTreeSet<Uuid> = BTreeSet::new();
@@ -216,10 +231,10 @@ async fn context_for(pool: &PgPool, calls: &[StoredCall]) -> Result<Context, Jud
     let card_ids: Vec<Uuid> = card_ids.into_iter().collect();
     let call_ids: Vec<Uuid> = call_ids.into_iter().collect();
 
-    let rules = rules::by_ids(pool, &[], &rule_ids).await?;
-    let cards = cards::load_cards(pool, &card_ids).await?;
-    let rulings = retrieve::load_rulings(pool, &card_ids).await?;
-    let prior = prior_answers(pool, &call_ids).await?;
+    let rules = rules::by_ids(&mut **tx, &[], &rule_ids).await?;
+    let cards = cards::load_cards(&mut **tx, &card_ids).await?;
+    let rulings = retrieve::load_rulings(&mut **tx, &card_ids).await?;
+    let prior = prior_answers(&mut **tx, &call_ids).await?;
     Ok(Context { cards, rules, rulings, prior, ..Context::default() })
 }
 
@@ -228,7 +243,7 @@ async fn context_for(pool: &PgPool, calls: &[StoredCall]) -> Result<Context, Jud
 /// is of the answer as written, which does not change with its status. A row
 /// with an unreadable `cr_version` is skipped with a warning, as retrieval
 /// skips it, so one corrupt row retires its citers rather than aborting the pass.
-async fn prior_answers(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<PriorCall>, JudgeError> {
+async fn prior_answers(pool: impl sqlx::PgExecutor<'_>, ids: &[Uuid]) -> Result<Vec<PriorCall>, JudgeError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }

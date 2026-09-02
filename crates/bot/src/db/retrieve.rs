@@ -302,7 +302,7 @@ impl PriorRow {
 }
 
 /// All rulings of these cards, newest first within a card.
-pub(super) async fn load_rulings(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Ruling>, JudgeError> {
+pub(super) async fn load_rulings(pool: impl sqlx::PgExecutor<'_>, ids: &[Uuid]) -> Result<Vec<Ruling>, JudgeError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
