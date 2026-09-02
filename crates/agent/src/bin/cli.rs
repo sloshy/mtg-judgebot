@@ -15,6 +15,7 @@
 //! judge-cli get-rules <id>...
 //! judge-cli search <query> [--limit N]
 //! judge-cli glossary <term>
+//! judge-cli config                             # the resolved model configuration, secrets redacted
 //! ```
 //!
 //! Flags may appear anywhere after the subcommand; `--` ends them so a
@@ -46,7 +47,7 @@ const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span
 | begin <question> [--thread T] | prompt <session> | status <session> \
 | extract <session> <file|-> | rules <session> <id>... | verdict <session> <file|-> [--persist] \
 | persist <session> | card <name> | card-info <uuid> | get-rules <id>... | search <query> [--limit N] \
-| glossary <term>>";
+| glossary <term> | config>";
 
 #[derive(Debug)]
 enum Command {
@@ -65,6 +66,8 @@ enum Command {
     GetRules(IdsInput),
     Search(SearchInput),
     Glossary(TermInput),
+    /// The resolved `judge.toml` (or environment) setup; needs no database.
+    Config,
 }
 
 /// Flags this CLI knows, with whether each takes a value. Anything else that
@@ -206,6 +209,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
                 limit: a.limit.as_deref().map(|l| l.parse::<usize>().context("--limit must be an integer")).transpose()?,
             })
         }
+        "config" => {
+            no_extra(0)?;
+            Command::Config
+        }
         "glossary" => {
             no_extra(1)?;
             Command::Glossary(TermInput { term: positional(0)?.clone() })
@@ -241,6 +248,14 @@ async fn run(cmd: Command) -> Result<()> {
         }
         other => other,
     };
+    if let Command::Config = cmd {
+        // No database needed: load .env as the toolbox would, then resolve.
+        match dotenvy::dotenv() {
+            Ok(_) | Err(dotenvy::Error::Io(_)) => {}
+            Err(e) => return Err(anyhow::Error::from(e).context("load .env")),
+        }
+        return print(&judge_bot::config::Config::load()?.report());
+    }
     let toolbox = Toolbox::from_env(Harness::Cli).await?;
     match cmd {
         Command::Judge(i) => print(&toolbox.judge(i).await?),
@@ -261,6 +276,7 @@ async fn run(cmd: Command) -> Result<()> {
         Command::GetRules(i) => print(&toolbox.get_rules(i).await?),
         Command::Search(i) => print(&toolbox.search_rules(i).await?),
         Command::Glossary(i) => print(&toolbox.glossary(i).await?),
+        Command::Config => anyhow::bail!("unreachable: handled above"),
     }
 }
 
@@ -322,6 +338,14 @@ mod tests {
         };
         assert!(persist);
         assert_eq!(input, "v.json");
+        Ok(())
+    }
+
+    #[test]
+    fn config_takes_nothing() -> Result<()> {
+        assert!(matches!(parse(&["config"])?, Command::Config));
+        assert!(parse(&["config", "extra"]).is_err());
+        assert!(parse(&["config", "--thread", "agent:x"]).is_err());
         Ok(())
     }
 

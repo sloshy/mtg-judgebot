@@ -1,8 +1,10 @@
 //! `judge-bot` as a library: the sqlx adapters for the DB-backed ports, the
 //! model adapters (extraction and synthesis over any `judge_llm::ChatModel`),
-//! and [`build_deps`], the one composition shared by the `bot`, `api`, `eval`
+//! the [`config`] loader that picks providers and models, and
+//! [`build_deps`], the one composition shared by the `bot`, `api`, `eval`
 //! and `agent` binaries.
 
+pub mod config;
 pub mod db;
 pub mod discord;
 pub mod extract;
@@ -12,7 +14,7 @@ pub mod synth;
 use std::sync::Arc;
 
 use judge_core::{Deps, Embedder, Retriever};
-use judge_llm::{Backend, ChatModel, LlmError, Metered, SpendMeter, SynthConfig};
+use judge_llm::{Backend, ChatModel, LlmError, Metered, Price, SpendMeter, SynthConfig};
 use sqlx::PgPool;
 
 use db::{PgResolver, PgRetriever};
@@ -62,6 +64,24 @@ impl Models {
         })
     }
 
+    /// One model per stage at explicit prices, both behind `meter`: what
+    /// [`config::Config::models`] builds, where the price came from the file
+    /// or the provider is free.
+    #[must_use]
+    pub fn priced<A: Backend + 'static, B: Backend + 'static>(
+        meter: SpendMeter,
+        extract: A,
+        extract_price: Price,
+        synth: B,
+        synth_price: Price,
+    ) -> Self {
+        Self {
+            extract: Arc::new(Metered::priced(extract, meter.clone(), extract_price)),
+            synth: Arc::new(Metered::priced(synth, meter.clone(), synth_price)),
+            meter,
+        }
+    }
+
     /// The extraction/classification model (cheap, low effort).
     #[must_use]
     pub fn extract(&self) -> Arc<dyn ChatModel> {
@@ -83,6 +103,8 @@ impl Models {
     /// The zero-configuration setup, from the environment: Anthropic's
     /// first-party API with `ANTHROPIC_API_KEY` (and `ANTHROPIC_BASE_URL`),
     /// `claude-opus-5` for both stages, one spend cap from `JUDGE_MAX_USD`.
+    /// The binaries go through [`config::Config::load`], which builds this
+    /// same setup when there is no `judge.toml`.
     ///
     /// # Errors
     /// `MissingApiKey`, `BadMaxSpend`, or if the HTTP client cannot be built.

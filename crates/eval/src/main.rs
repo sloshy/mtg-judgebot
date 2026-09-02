@@ -6,10 +6,11 @@
 //! categories (no embedder) and reports which `expected_rule_ids` are in
 //! Context. Exits non-zero if aggregate recall is below the 90% gate.
 //!
-//! `eval rescore <run.json> | answer --label L [--limit N] [--ids a,b] [--max-usd X] [--out p] [--gold p]`:
-//! runs the full `judge()` pipeline (live Anthropic calls, capped at
-//! `--max-usd`, default $2.00) over at most `--limit` (default 2) gold
-//! questions and writes `eval/runs/L.json`.
+//! `eval rescore <run.json> | answer --label L [--limit N] [--ids a,b] [--max-usd X] [--out p] [--gold p] [--config judge.toml]`:
+//! runs the full `judge()` pipeline (live model calls on the configured
+//! providers, capped at `--max-usd`, default $2.00) over at most `--limit`
+//! (default 2) gold questions and writes `eval/runs/L.json`, recording which
+//! model answered each stage.
 //!
 //! `eval show <run.json>`: expected vs. bot answers side by side.
 
@@ -49,7 +50,7 @@ async fn main() -> ExitCode {
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage:\n  eval recall [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction]\n  eval show <run.json>"
+        "usage:\n  eval recall [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--config judge.toml]\n  eval show <run.json>"
     )
 }
 

@@ -17,8 +17,15 @@ use sqlx::PgPool;
 use crate::gold::Gold;
 
 /// Wire the pipeline; see the module docs for `gold_extraction`.
-pub fn build(pool: PgPool, models: &Models, embedder: Option<Arc<dyn Embedder>>, gold: &Gold, gold_extraction: bool) -> Deps {
-    let mut deps = judge_bot::build_deps_with(pool, models, embedder, &DepsConfig::default());
+pub fn build(
+    pool: PgPool,
+    models: &Models,
+    embedder: Option<Arc<dyn Embedder>>,
+    cfg: &DepsConfig,
+    gold: &Gold,
+    gold_extraction: bool,
+) -> Deps {
+    let mut deps = judge_bot::build_deps_with(pool, models, embedder, cfg);
     if gold_extraction {
         deps.extractor = Arc::new(GoldExtractor::new(gold));
     }

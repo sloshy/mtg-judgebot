@@ -5,20 +5,21 @@
 //! Environment (a `.env` in the working directory is loaded first, like the
 //! `eval` and `ingest` binaries; the process environment wins): `DISCORD_TOKEN`
 //! (required), `DATABASE_URL`, `ANTHROPIC_API_KEY`, optional `VOYAGE_API_KEY`,
-//! `GUILD_ID`, `JUDGE_ROLE`, `JUDGE_CONCURRENCY`, `JUDGE_MAX_USD`, `RUST_LOG`.
-//! A missing token is reported before anything else is touched and exits
-//! non-zero.
+//! `GUILD_ID`, `JUDGE_ROLE`, `JUDGE_CONCURRENCY`, `JUDGE_MAX_USD`, `RUST_LOG`;
+//! optional `JUDGE_CONFIG` (or a `./judge.toml`) picks other providers and
+//! models ([`judge_bot::config`]). A missing token is reported before
+//! anything else is touched and exits non-zero.
 
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use judge_bot::{
-    Models, build_deps,
+    build_deps_with,
+    config::Config as JudgeConfig,
     db::PgCallStore,
     discord::{Config, Data, run},
 };
-use judge_core::{CallStore, Embedder};
-use judge_embed::VoyageEmbedder;
+use judge_core::CallStore;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,25 +40,23 @@ async fn main() -> Result<()> {
         .connect(&database_url)
         .await
         .context("connect to Postgres")?;
-    // The zero-config models (Anthropic direct, one spend cap); the meter
-    // handed to the Discord layer is the one they bill to.
-    let models = Models::from_env()?;
-    // The embedder is optional: without a Voyage key the retriever skips its vector leg.
-    // A blank value (`VOYAGE_API_KEY=` in .env) counts as unset, matching `VoyageEmbedder::from_env`.
-    let has_voyage_key = std::env::var("VOYAGE_API_KEY").is_ok_and(|k| !k.trim().is_empty());
-    let embedder: Option<Arc<dyn Embedder>> = if has_voyage_key {
-        Some(Arc::new(VoyageEmbedder::from_env()?))
-    } else {
-        tracing::warn!("VOYAGE_API_KEY is not set; running without the vector leg");
-        None
-    };
+    // The models (judge.toml, or the zero-config Anthropic setup; one spend
+    // cap); the meter handed to the Discord layer is the one they bill to.
+    let judge = JudgeConfig::load()?;
+    tracing::info!("{}", judge.summary());
+    let models = judge.models()?;
+    // The embedder is optional: without one the retriever skips its vector leg.
+    let embedder = judge.embedder()?;
+    if embedder.is_none() {
+        tracing::warn!("no embedder configured (VOYAGE_API_KEY or [models.embed]); running without the vector leg");
+    }
     let mut store = PgCallStore::new(pool.clone());
     if let Some(e) = &embedder {
         store = store.with_embedder(Arc::clone(e));
     }
     let store: Arc<dyn CallStore> = Arc::new(store);
     let meter = models.meter().clone();
-    let deps = build_deps(pool, &models, embedder);
+    let deps = build_deps_with(pool, &models, embedder, &judge.deps_config());
     let data = Data::new(deps, store, meter, &cfg);
     tracing::info!(
         guild = ?cfg.guild_id,

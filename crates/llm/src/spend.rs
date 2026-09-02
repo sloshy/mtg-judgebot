@@ -70,13 +70,23 @@ impl Pricing {
 }
 
 /// What a model is billed at. A closed sum so that "costs nothing" is a
-/// state the cap understands rather than a bypass beside it.
+/// state the cap understands rather than a bypass beside it, and so that
+/// where a rate came from decides how a response is settled: the built-in
+/// table is looked up again by the model the *response* names (an Anthropic
+/// fallback may have routed elsewhere), an operator's rate is the rate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Price {
     /// Never reserves and never settles; calls are still counted and usage
     /// still logged. For a local server or a flat-rate proxy.
     Free,
-    /// Reserve a worst case before sending, settle to the real usage after.
+    /// The built-in table's rate for the configured model. Reserves at this
+    /// rate; settles at the table's rate for the response's model, or this
+    /// one when the table does not know it.
+    Table(Pricing),
+    /// An operator-supplied rate (`[models.<stage>.pricing]`): reserves and
+    /// settles at exactly this, whatever model the response names. The table
+    /// is never consulted, so a proxy priced above or below it bills as the
+    /// operator said.
     PerToken(Pricing),
 }
 
@@ -175,10 +185,20 @@ impl SpendMeter {
     /// # Errors
     /// `BadMaxSpend` when the variable is set but not a finite non-negative number.
     pub fn from_env() -> Result<Self, LlmError> {
+        Self::from_var(std::env::var("JUDGE_MAX_USD").ok().as_deref())
+    }
+
+    /// [`Self::from_env`] over the variable's value as read by the caller
+    /// (a config loader that injects its environment), so nothing here
+    /// touches the process environment.
+    ///
+    /// # Errors
+    /// `BadMaxSpend` when `raw` is not a finite non-negative number.
+    pub fn from_var(raw: Option<&str>) -> Result<Self, LlmError> {
         let meter = Self::new();
-        match std::env::var("JUDGE_MAX_USD") {
-            Ok(raw) => meter.with_max_spend_usd(env_cap(&raw)?),
-            Err(_) => Ok(meter),
+        match raw {
+            Some(raw) => meter.with_max_spend_usd(env_cap(raw)?),
+            None => Ok(meter),
         }
     }
 
@@ -228,8 +248,8 @@ impl SpendMeter {
 pub struct Metered<B> {
     inner: B,
     meter: SpendMeter,
-    /// What the configured model is billed at; a response model the table
-    /// does not know is priced the same.
+    /// What the configured model is billed at (see [`Price`] for how the
+    /// response's model figures in settlement).
     price: Price,
 }
 
@@ -257,11 +277,12 @@ impl<B: Backend> Metered<B> {
     pub fn new(inner: B, meter: SpendMeter) -> Result<Self, LlmError> {
         let pricing = pricing_for(inner.provider(), inner.model())
             .ok_or_else(|| LlmError::Unpriced { provider: inner.provider().to_owned(), model: inner.model().to_owned() })?;
-        Ok(Self::priced(inner, meter, Price::PerToken(pricing)))
+        Ok(Self::priced(inner, meter, Price::Table(pricing)))
     }
 
-    /// Put `inner` behind `meter` at an explicit price: an operator-supplied
-    /// rate for a model the table does not know, or [`Price::Free`].
+    /// Put `inner` behind `meter` at a given price: an operator-supplied
+    /// rate ([`Price::PerToken`], authoritative), the table's
+    /// ([`Price::Table`]), or [`Price::Free`].
     #[must_use]
     pub fn priced(inner: B, meter: SpendMeter, price: Price) -> Self {
         Self { inner, meter, price }
@@ -287,20 +308,24 @@ impl<B: Backend> Metered<B> {
 
     /// Reserve the worst case of `req`, or nothing for a free model.
     fn reserve(&self, req: &ChatRequest) -> Result<Option<Reservation>, LlmError> {
-        match self.price {
-            Price::Free => Ok(None),
-            Price::PerToken(pricing) => {
-                let micro = estimate_micro(req, &pricing);
-                self.meter.0.reserve(micro)?;
-                Ok(Some(Reservation { pricing, micro }))
-            }
-        }
+        let (pricing, from_table) = match self.price {
+            Price::Free => return Ok(None),
+            Price::Table(pricing) => (pricing, true),
+            Price::PerToken(pricing) => (pricing, false),
+        };
+        let micro = estimate_micro(req, &pricing);
+        self.meter.0.reserve(micro)?;
+        Ok(Some(Reservation { pricing, from_table, micro }))
     }
 
     /// Replace `reserved` by the real cost of a billed response in the shared counters and log it.
     fn record(&self, reserved: Option<Reservation>, model: &str, usage: &Usage) {
         let usd = reserved.map_or(0.0, |r| {
-            let usd = pricing_for(self.inner.provider(), model).unwrap_or(r.pricing).usd(usage);
+            // Only a table price is re-read for the model the response names;
+            // an operator's rate is what the operator pays, whatever the server
+            // called the model.
+            let rate = if r.from_table { pricing_for(self.inner.provider(), model).unwrap_or(r.pricing) } else { r.pricing };
+            let usd = rate.usd(usage);
             self.meter.0.settle(r.micro, to_micro(usd));
             usd
         });
@@ -324,7 +349,10 @@ impl<B: Backend> Metered<B> {
 /// A worst case taken out of the shared total before a send, to be replaced by the real cost.
 #[derive(Clone, Copy)]
 struct Reservation {
+    /// The rate reserved at.
     pricing: Pricing,
+    /// Whether `pricing` came from the table (settle by the response's model) or the operator (settle at `pricing`).
+    from_table: bool,
     micro: u64,
 }
 
@@ -548,6 +576,30 @@ mod tests {
         let rate = Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 1.25 };
         assert_eq!(Metered::priced(unpriced(), SpendMeter::new(), Price::PerToken(rate)).price(), Price::PerToken(rate));
         assert_eq!(Metered::priced(unpriced(), SpendMeter::new(), Price::Free).price(), Price::Free);
+        assert_eq!(Metered::new(stub(vec![]), SpendMeter::new()).map(|m| m.price()).ok(), Some(Price::Table(OPUS_5)), "the table's price is marked as such");
+    }
+
+    #[tokio::test]
+    async fn an_operator_price_settles_at_that_price_even_on_a_tabled_provider() -> Result<(), LlmError> {
+        // An Anthropic-kind provider (a proxy, say) whose reply names claude-opus-5, which the
+        // table prices at $5/$25: the operator said $1/$5, so 1M input + 200k output is $2, not $10.
+        let rate = Pricing { input: 1.0, output: 5.0, cache_read: 0.1, cache_write: 1.25 };
+        let meter = SpendMeter::new();
+        let m = Metered::priced(stub(vec![Ok(reply(1_000_000, 200_000, 0, 0))]), meter.clone(), Price::PerToken(rate));
+        m.complete(&req(64)).await?;
+        assert!((meter.spent_usd() - 2.0).abs() < 1e-6, "{}", meter.spent_usd());
+        // The reverse direction matters more: a rate above the table's must not settle below it.
+        let dear = Pricing { input: 50.0, output: 250.0, cache_read: 5.0, cache_write: 62.5 };
+        let meter = SpendMeter::new().with_max_spend_usd(1_000.0)?;
+        let m = Metered::priced(stub(vec![Ok(reply(1_000_000, 200_000, 0, 0))]), meter.clone(), Price::PerToken(dear));
+        m.complete(&req(64)).await?;
+        assert!((meter.spent_usd() - 100.0).abs() < 1e-6, "{}", meter.spent_usd());
+        // A table price does follow the response's model (a fallback may have routed elsewhere).
+        let meter = SpendMeter::new();
+        let m = Metered::priced(stub(vec![Ok(reply(1_000_000, 200_000, 0, 0))]), meter.clone(), Price::Table(rate));
+        m.complete(&req(64)).await?;
+        assert!((meter.spent_usd() - 10.0).abs() < 1e-6, "{}", meter.spent_usd());
+        Ok(())
     }
 
     #[tokio::test]
@@ -581,6 +633,9 @@ mod tests {
     #[test]
     fn a_bad_env_cap_names_the_variable() -> Result<(), LlmError> {
         assert!((env_cap(" 2.5 ")? - 2.5).abs() < 1e-9);
+        assert!((SpendMeter::from_var(Some("2.5"))?.max_spend_usd() - 2.5).abs() < 1e-9);
+        assert!((SpendMeter::from_var(None)?.max_spend_usd() - DEFAULT_MAX_SPEND_USD).abs() < 1e-9);
+        assert!(matches!(SpendMeter::from_var(Some("$5")), Err(LlmError::BadMaxSpend { setting: "JUDGE_MAX_USD", .. })));
         for raw in ["$5", "", "-1", "inf", "NaN"] {
             let err = env_cap(raw).err().map(|e| e.to_string());
             assert_eq!(err, Some(format!("JUDGE_MAX_USD is not a finite non-negative number: {raw:?}")), "{raw}");

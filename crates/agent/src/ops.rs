@@ -366,7 +366,7 @@ impl Toolbox {
     pub async fn judge(&self, input: JudgeInput) -> Result<JudgeReply, OpError> {
         let Some(p) = &self.pipeline else {
             return Ok(JudgeReply::Unavailable {
-                message: "the built-in pipeline needs ANTHROPIC_API_KEY on the server; use begin_session and do the model work yourself".into(),
+                message: "the built-in pipeline needs a model on the server (ANTHROPIC_API_KEY, or a judge.toml); use begin_session and do the model work yourself".into(),
             });
         };
         check_question(&input.question)?;

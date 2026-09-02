@@ -17,7 +17,12 @@
 //! * a citation of a lettered sub-rule (`702.19b`) whose rule-level parent
 //!   (`702.19`, whose body folds the sub-rule text in) was shown is
 //!   hydrated from the store, because `Verdict::validate` looks the cited id
-//!   up in `Context` and the retriever legs only return rule-level rows.
+//!   up in `Context` and the retriever legs only return rule-level rows;
+//! * what the backend cannot do server-side is handled here, by its
+//!   `Capabilities`: the `Verdict` schema is appended to the *user turn*
+//!   when the backend cannot enforce it (the system prompt stays the same
+//!   bytes on every backend, which is what the pinned digest guards), and
+//!   refusal fallbacks are not asked for where they do not exist.
 
 use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 
@@ -27,7 +32,9 @@ use judge_core::{
     Card, CardId, Citation, Context, EmptyVerdict, JudgeError, Question, Rejection, Retriever, RuleChunk, RuleId,
     Synthesizer, Unvalidated, Verdict,
 };
-use judge_llm::{ChatModel, Effort, SendOutcome, Synth, SynthConfig, TextBlock, Truncated};
+use judge_llm::{
+    ChatModel, Effort, OutputSchema, SendOutcome, Synth, SynthConfig, TextBlock, Truncated, needs_schema_in_prompt, schema_block,
+};
 
 /// The system prompt template (`prompts/synth_system.md`). Two tokens are
 /// filled per [`Harness`]: `{{LOOKUP_RULES}}` (ground rule 4, how the model
@@ -148,6 +155,16 @@ impl LlmSynthesizer {
     /// With the [`Harness::Tool`] system prompt and the default [`Budget`].
     #[must_use]
     pub fn new(model: Arc<dyn ChatModel>, cfg: SynthConfig, retriever: Arc<dyn Retriever>) -> Self {
+        let caps = model.capabilities();
+        tracing::info!(
+            provider = model.provider(),
+            model = model.model(),
+            structured_output = ?caps.structured_output,
+            schema_in_prompt = needs_schema_in_prompt(caps),
+            strict_tools = caps.strict_tools,
+            refusal_fallbacks = caps.refusal_fallbacks && cfg.fallbacks.is_some(),
+            "synthesis model"
+        );
         Self {
             model,
             cfg,
@@ -174,8 +191,13 @@ impl LlmSynthesizer {
         rejected: Option<&Rejection>,
         effort: Effort,
     ) -> Result<Verdict<Unvalidated>, JudgeError> {
-        let cfg = SynthConfig { effort, ..self.cfg.clone() };
-        let user = user_turn(q, ctx, rejected, &self.budget);
+        let caps = self.model.capabilities();
+        let fallbacks = if caps.refusal_fallbacks { self.cfg.fallbacks.clone() } else { None };
+        let cfg = SynthConfig { effort, fallbacks, ..self.cfg.clone() };
+        let mut user = user_turn(q, ctx, rejected, &self.budget);
+        if needs_schema_in_prompt(caps) {
+            user.push(schema_block(&OutputSchema::of::<Verdict>()));
+        }
         if rejected.is_some() {
             return Synth::new_final(Arc::clone(&self.model), &cfg, self.system_prompt.clone(), user).finish().await;
         }
@@ -527,7 +549,8 @@ mod tests {
 };
     use std::sync::{Mutex, PoisonError};
     use judge_anthropic::{Anthropic, Endpoint};
-    use judge_llm::{Metered, SpendMeter};
+    use judge_llm::{Metered, Price, SpendMeter};
+    use judge_openai::{Auth, Dialect, OpenAi, StructuredOutputMode};
     use nonempty::NonEmpty;
     use serde_json::{Value, json};
     use uuid::Uuid;
@@ -797,6 +820,32 @@ mod tests {
         Ok((synth, retriever))
     }
 
+    /// The synthesizer over the `OpenAI` backend against the mock server under `dialect`, free (a local server).
+    fn synth_against_openai(
+        server: &MockServer,
+        table: Vec<RuleChunk>,
+        dialect: Dialect,
+    ) -> Result<(LlmSynthesizer, Arc<StubRetriever>), Box<dyn std::error::Error>> {
+        let retriever = Arc::new(StubRetriever { table, calls: Mutex::new(Vec::new()) });
+        let backend = OpenAi::new(&format!("{}/v1", server.uri()), Auth::None, "qwen3:32b", dialect)?;
+        let model: Arc<dyn ChatModel> = Arc::new(Metered::priced(backend, SpendMeter::new(), Price::Free));
+        let synth = LlmSynthesizer::new(model, SynthConfig::default(), retriever.clone());
+        Ok((synth, retriever))
+    }
+
+    /// A chat completions body with one choice.
+    fn completion(finish: &str, message: &Value) -> Value {
+        json!({
+            "id": "chatcmpl-1", "model": "qwen3:32b",
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        })
+    }
+
+    fn openai_verdict(id: &str, quote: &str) -> Value {
+        json!({"role": "assistant", "content": verdict_json(id, quote)})
+    }
+
     async fn bodies(server: &MockServer) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         let reqs = server.received_requests().await.unwrap_or_default();
         Ok(reqs.iter().map(|r| serde_json::from_slice::<Value>(&r.body)).collect::<Result<_, _>>()?)
@@ -888,6 +937,173 @@ mod tests {
         assert!(text.contains("### [613.7] Heading\n613.7. Within a layer"), "{text}");
         assert!(text.contains("## Previous attempt rejected") && text.contains("rule 613.7: \"not there\""), "{text}");
         assert!(text.contains("### [702.24] ") && !text.contains("### [702.25] "), "one slot went to the pinned chunk: {text}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn openai_tool_round_feeds_context_second_request_and_retry() -> R {
+        let server = MockServer::start().await;
+        // The model's tool-calling turn, as a chat completions message: arguments are a string, and
+        // there is reasoning content that must be replayed verbatim.
+        let tool_turn = json!({
+            "role": "assistant", "content": null, "reasoning_content": "I should check 613.7.",
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "lookup_rules", "arguments": "{\"ids\": [\"613.7\"]}"}}]
+        });
+        // Mounted first: a request carrying a tool message gets the verdict.
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_string_contains(r#""role":"tool""#))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion("stop", &openai_verdict("613.7", "usually done using a timestamp system"))))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion("tool_calls", &tool_turn)))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion("stop", &openai_verdict("613.7", "usually done using a timestamp system"))))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dialect = Dialect { reasoning_effort: true, ..Dialect::default() };
+        let (synth, retriever) = synth_against_openai(&server, vec![chunk("613.7", None, TIMESTAMP_RULE)?], dialect)?;
+        let rules: Vec<RuleChunk> = (1..=30).map(|i| chunk(&format!("702.{i}"), None, &"x".repeat(100))).collect::<Result<_, _>>()?;
+        let mut ctx = Context { rules, ..Context::default() };
+
+        let v = synth.answer(&q(), &mut ctx, None).await?;
+        assert_eq!(v.confidence(), Confidence::High);
+        assert!(ctx.rule(&rid("613.7")?).is_some(), "extend_rules received the tool-round chunk");
+        assert_eq!(retriever.calls.lock().unwrap_or_else(PoisonError::into_inner).clone(), vec![vec![rid("613.7")?]]);
+        assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
+
+        let reqs = bodies(&server).await?;
+        assert_eq!(reqs.len(), 2);
+        let first = reqs.first().ok_or("no first request")?;
+        // The exact request shape: system prompt untouched, the tool as a strict function, one call at a time, the verdict schema enforced.
+        assert_eq!(at(first, "/model"), "qwen3:32b");
+        assert_eq!(at(first, "/max_tokens"), 16_000);
+        assert_eq!(at(first, "/messages/0"), &json!({"role": "system", "content": system_prompt(Harness::Tool)}));
+        assert_eq!(at(first, "/messages/1/role"), "user");
+        assert!(at(first, "/messages/1/content").as_str().is_some_and(|u| u.starts_with("# Material\n") && u.contains("# Question\n") && !u.contains("# Output format")));
+        assert_eq!(at(first, "/tools/0/type"), "function");
+        assert_eq!(at(first, "/tools/0/function/name"), "lookup_rules");
+        assert_eq!(at(first, "/tools/0/function/strict"), &Value::Bool(true));
+        assert_eq!(at(first, "/tools/0/function/parameters/required"), &json!(["ids"]));
+        assert_eq!(at(first, "/tools/0/function/parameters/additionalProperties"), &Value::Bool(false));
+        assert_eq!(at(first, "/tool_choice"), "auto");
+        assert_eq!(at(first, "/parallel_tool_calls"), &Value::Bool(false));
+        assert_eq!(at(first, "/response_format/type"), "json_schema");
+        assert_eq!(at(first, "/response_format/json_schema/name"), "Verdict");
+        assert_eq!(at(first, "/response_format/json_schema/strict"), &Value::Bool(true));
+        assert_eq!(at(first, "/reasoning_effort"), "high");
+        assert!(first.get("thinking").is_none() && first.get("fallbacks").is_none() && first.get("output_config").is_none());
+        let second = reqs.get(1).ok_or("no second request")?;
+        assert_eq!(at(second, "/messages/2"), &tool_turn, "the assistant turn is replayed verbatim, reasoning_content and all");
+        assert_eq!(at(second, "/messages/3/role"), "tool");
+        assert_eq!(at(second, "/messages/3/tool_call_id"), "call_1");
+        assert!(at(second, "/messages/3/content").as_str().is_some_and(|c| c.contains(TIMESTAMP_RULE)));
+        assert_eq!(at(second, "/tool_choice"), "auto", "cache-preserving, as on Anthropic");
+        assert_eq!(at(second, "/messages/1"), at(first, "/messages/1"), "the user turn is unchanged");
+
+        // The retry pins the tool-round chunk and forbids the tool.
+        let bad = Rejection::BadCitation(Citation::Rule { id: rid("613.7")?, quote: "not there".into() });
+        let v2 = synth.answer(&q(), &mut ctx, Some(&bad)).await?;
+        assert!(v2.validate(&ctx, AnswerableSource::Cr).is_ok());
+        let reqs = bodies(&server).await?;
+        let third = reqs.get(2).ok_or("no third request")?;
+        assert_eq!(at(third, "/tool_choice"), "none");
+        assert!(third.get("parallel_tool_calls").is_none());
+        assert_eq!(at(third, "/tools/0/function/name"), "lookup_rules", "the tool stays listed");
+        let text = at(third, "/messages/1/content").as_str().unwrap_or_default();
+        assert!(text.contains("### [613.7] Heading\n613.7. Within a layer"), "{text}");
+        assert!(text.contains("## Previous attempt rejected") && text.contains("rule 613.7: \"not there\""), "{text}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn openai_json_mode_puts_the_schema_in_the_user_turn_and_accepts_fenced_json() -> R {
+        let server = MockServer::start().await;
+        let fenced = json!({"role": "assistant", "content": format!("```json\n{}\n```", verdict_json("613.7", "timestamp system"))});
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion("stop", &fenced)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dialect = Dialect { structured_output: StructuredOutputMode::JsonObject, strict_tools: false, ..Dialect::default() };
+        let (synth, _) = synth_against_openai(&server, vec![], dialect)?;
+        let mut ctx = Context { rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?], ..Context::default() };
+        let v = synth.answer(&q(), &mut ctx, None).await?;
+        assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
+        let reqs = bodies(&server).await?;
+        let first = reqs.first().ok_or("first")?;
+        assert_eq!(at(first, "/messages/0/content").as_str(), Some(system_prompt(Harness::Tool).as_str()), "system prompt untouched");
+        let user = at(first, "/messages/1/content").as_str().unwrap_or_default();
+        assert!(user.contains("# Question\ndoes trample work with deathtouch?\n\n# Output format\n"), "{user}");
+        assert!(user.contains("\"citations\""), "{user}");
+        assert_eq!(at(first, "/response_format"), &json!({"type": "json_object"}));
+        assert!(at(first, "/tools/0/function").get("strict").is_none(), "strict tools off");
+        assert!(first.get("reasoning_effort").is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn openai_length_is_retried_at_medium_and_the_rest_are_errors() -> R {
+        // `length` → truncation → one retry at medium effort.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_string_contains(r#""reasoning_effort":"medium""#))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion("stop", &openai_verdict("613.7", "timestamp system"))))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion("length", &json!({"role": "assistant", "content": "{"}))))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dialect = Dialect { reasoning_effort: true, ..Dialect::default() };
+        let (synth, _) = synth_against_openai(&server, vec![], dialect)?;
+        let mut ctx = Context { rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?], ..Context::default() };
+        let v = synth.answer(&q(), &mut ctx, None).await?;
+        assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
+        let reqs = bodies(&server).await?;
+        assert_eq!(at(reqs.first().ok_or("first")?, "/reasoning_effort"), "high");
+        assert_eq!(at(reqs.get(1).ok_or("second")?, "/reasoning_effort"), "medium");
+
+        // One synthesis against a server that always answers `message` with `finish`.
+        let one = |finish: &'static str, message: Value| async move {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/chat/completions"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(completion(finish, &message)))
+                .mount(&server)
+                .await;
+            let (synth, _) = synth_against_openai(&server, vec![], Dialect::default())?;
+            let mut ctx = Context { rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?], ..Context::default() };
+            Ok::<_, Box<dyn std::error::Error>>(synth.answer(&q(), &mut ctx, None).await)
+        };
+        let r = one("content_filter", json!({"role": "assistant", "content": null})).await?;
+        assert!(matches!(r, Err(JudgeError::LlmRefused)), "{r:?}");
+        let r = one("stop", json!({"role": "assistant", "content": null, "refusal": "no"})).await?;
+        assert!(matches!(r, Err(JudgeError::LlmRefused)), "{r:?}");
+        let bad_args = json!({"role": "assistant", "content": null, "tool_calls": [{"id": "c", "type": "function", "function": {"name": "lookup_rules", "arguments": "{\"ids\": ["}}]});
+        let r = one("tool_calls", bad_args).await?;
+        assert!(matches!(&r, Err(JudgeError::Upstream(e)) if e.downcast_ref::<judge_llm::LlmError>().is_some_and(|e| matches!(e, judge_llm::LlmError::Decode { .. }))), "{r:?}");
+        let unknown = json!({"role": "assistant", "content": null, "tool_calls": [{"id": "c", "type": "function", "function": {"name": "search_web", "arguments": "{}"}}]});
+        let r = one("tool_calls", unknown).await?;
+        assert!(matches!(&r, Err(JudgeError::Upstream(e)) if format!("{e:#}").contains("unknown tool: search_web")), "{r:?}");
+        let not_json = json!({"role": "assistant", "content": "not a verdict"});
+        let r = one("stop", not_json).await?;
+        assert!(matches!(&r, Err(JudgeError::Upstream(e)) if format!("{e:#}").contains("verdict JSON did not match schema")), "{r:?}");
         Ok(())
     }
 

@@ -4,11 +4,18 @@
 //! `ChatModel` — and no retry loop of its own: the request goes through
 //! [`judge_llm::http::post_with_retries`].
 
-use std::{fmt, time::Duration};
+use std::{
+    borrow::Cow,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use judge_llm::{
-    Backend, Capabilities, ChatRequest, ChatResponse, LlmError, StructuredOutput,
+    ApiKey, Backend, Capabilities, ChatRequest, ChatResponse, LlmError, StructuredOutput,
     http::{Reply, post_with_retries},
 };
 
@@ -20,39 +27,20 @@ use crate::{
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
-/// An API key. Its `Debug` is redacted so it can never reach a `{:?}` log line.
-#[derive(Clone, PartialEq, Eq)]
-pub struct ApiKey(String);
-
-impl ApiKey {
-    /// The key as sent on the wire.
-    #[must_use]
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for ApiKey {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<&str> for ApiKey {
-    fn from(s: &str) -> Self {
-        Self(s.to_owned())
-    }
-}
-
-impl fmt::Debug for ApiKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
-    }
+/// Which header a proxy wants the key in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyAuth {
+    /// `x-api-key: <key>`, as the first-party API.
+    XApiKey,
+    /// `Authorization: Bearer <key>` (`LiteLLM`'s virtual keys, most gateways).
+    Bearer,
 }
 
 /// Which door the Messages API is reached through. The body is the same
-/// everywhere; the URL and the auth differ. An enum so that a new door is an
-/// exhaustive-match compile error, not a config typo.
+/// everywhere; the URL, the auth and what the door supports differ. An enum
+/// so that a new door is an exhaustive-match compile error, not a config
+/// typo. The cloud doors (Claude Platform on AWS, Bedrock, Vertex) are not
+/// built yet: the configuration loader names them and refuses them.
 #[derive(Clone, Debug)]
 pub enum Endpoint {
     /// Anthropic's first-party API: `x-api-key` against `{base_url}/v1/messages`.
@@ -61,6 +49,19 @@ pub enum Endpoint {
         base_url: String,
         /// `x-api-key`.
         api_key: ApiKey,
+    },
+    /// A gateway speaking the Messages API (`LiteLLM`'s `/v1/messages`, a
+    /// corporate proxy): same body against `{base_url}/v1/messages`, the
+    /// key in whichever header the proxy wants, and no server-side refusal
+    /// fallbacks — a proxy will not know the beta, so the request's
+    /// `fallbacks` is masked off with a warning rather than sent.
+    Proxy {
+        /// Proxy origin, without the `/v1/messages` path.
+        base_url: String,
+        /// The proxy's key.
+        api_key: ApiKey,
+        /// Which header carries it.
+        header: ProxyAuth,
     },
 }
 
@@ -88,27 +89,42 @@ impl Endpoint {
     /// The messages URL.
     fn url(&self) -> String {
         match self {
-            Endpoint::Direct { base_url, .. } => format!("{}/v1/messages", base_url.trim_end_matches('/')),
+            Endpoint::Direct { base_url, .. } | Endpoint::Proxy { base_url, .. } => {
+                format!("{}/v1/messages", base_url.trim_end_matches('/'))
+            }
         }
     }
 
     /// Add this door's auth to a request.
     fn authorize(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match self {
-            Endpoint::Direct { api_key, .. } => builder.header("x-api-key", api_key.expose()),
+            Endpoint::Direct { api_key, .. } | Endpoint::Proxy { api_key, header: ProxyAuth::XApiKey, .. } => {
+                builder.header("x-api-key", api_key.expose())
+            }
+            Endpoint::Proxy { api_key, header: ProxyAuth::Bearer, .. } => builder.bearer_auth(api_key.expose()),
         }
     }
 
     /// What this door supports server-side.
     fn capabilities(&self) -> Capabilities {
+        let first_party = Capabilities {
+            structured_output: StructuredOutput::Enforced,
+            strict_tools: true,
+            effort: true,
+            cache_hints: true,
+            refusal_fallbacks: true,
+        };
         match self {
-            Endpoint::Direct { .. } => Capabilities {
-                structured_output: StructuredOutput::Enforced,
-                strict_tools: true,
-                effort: true,
-                cache_hints: true,
-                refusal_fallbacks: true,
-            },
+            Endpoint::Direct { .. } => first_party,
+            Endpoint::Proxy { .. } => Capabilities { refusal_fallbacks: false, ..first_party },
+        }
+    }
+
+    /// A name for logs: the door and where it points, never the key.
+    fn describe(&self) -> String {
+        match self {
+            Endpoint::Direct { base_url, .. } => format!("direct {base_url}"),
+            Endpoint::Proxy { base_url, header, .. } => format!("proxy {base_url} ({header:?})"),
         }
     }
 }
@@ -120,6 +136,9 @@ pub struct Anthropic {
     endpoint: Endpoint,
     model: String,
     betas: Vec<String>,
+    /// Whether the "fallbacks masked off" warning has been logged; shared by
+    /// clones so a door that cannot do fallbacks says so once per process.
+    warned_mask: Arc<AtomicBool>,
 }
 
 impl Anthropic {
@@ -129,7 +148,7 @@ impl Anthropic {
     /// If the underlying HTTP client cannot be built.
     pub fn new(endpoint: Endpoint) -> Result<Self, LlmError> {
         let http = reqwest::Client::builder().timeout(Duration::from_mins(10)).build()?;
-        Ok(Self { http, endpoint, model: DEFAULT_MODEL.to_owned(), betas: Vec::new() })
+        Ok(Self { http, endpoint, model: DEFAULT_MODEL.to_owned(), betas: Vec::new(), warned_mask: Arc::new(AtomicBool::new(false)) })
     }
 
     /// [`Endpoint::from_env`] at [`DEFAULT_MODEL`].
@@ -170,6 +189,23 @@ impl Anthropic {
         &self.endpoint
     }
 
+    /// `req` with what this door cannot honour removed. Only `fallbacks`
+    /// today: the beta is first-party (and Claude Platform on AWS) only, so
+    /// on any other door it is dropped, with the beta header it would have
+    /// needed, and a warning the first time.
+    fn mask<'a>(&self, req: &'a ChatRequest) -> Cow<'a, ChatRequest> {
+        if req.fallbacks.is_none() || self.endpoint.capabilities().refusal_fallbacks {
+            return Cow::Borrowed(req);
+        }
+        if !self.warned_mask.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                endpoint = %self.endpoint.describe(),
+                "this door has no server-side refusal fallbacks; the request's fallbacks are masked off"
+            );
+        }
+        Cow::Owned(ChatRequest { fallbacks: None, ..req.clone() })
+    }
+
     /// Decode one reply: the API's error body on a non-2xx status, the
     /// response otherwise; a 2xx that does not decode (or does not read as
     /// a neutral response) is reported with whatever usage it carried so the
@@ -199,9 +235,10 @@ impl Anthropic {
 impl Backend for Anthropic {
     #[tracing::instrument(skip_all, fields(model = %self.model))]
     async fn complete(&self, req: &ChatRequest) -> Result<ChatResponse, LlmError> {
-        let body = serde_json::to_vec(&to_wire(&self.model, req)?)
+        let req = self.mask(req);
+        let body = serde_json::to_vec(&to_wire(&self.model, &req)?)
             .map_err(|e| LlmError::Request(format!("serialize Messages API body: {e}")))?;
-        let betas: Vec<&str> = self.betas.iter().map(String::as_str).chain(betas_for(req)).collect();
+        let betas: Vec<&str> = self.betas.iter().map(String::as_str).chain(betas_for(&req)).collect();
         let url = self.endpoint.url();
         let build = || {
             let mut builder = self
@@ -391,6 +428,47 @@ mod tests {
             return;
         }
         assert!(matches!(Anthropic::from_env(), Err(LlmError::MissingApiKey { var: "ANTHROPIC_API_KEY" })));
+    }
+
+    #[tokio::test]
+    async fn a_proxy_uses_its_header_and_masks_the_fallbacks_beta() -> Result<(), LlmError> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("authorization", "Bearer sk-proxy"))
+            .and(header("anthropic-version", API_VERSION))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(1, 1, 0, 0)))
+            .mount(&server)
+            .await;
+        let proxy = Endpoint::Proxy { base_url: format!("{}/", server.uri()), api_key: "sk-proxy".into(), header: ProxyAuth::Bearer };
+        assert!(!proxy.capabilities().refusal_fallbacks);
+        assert_eq!(proxy.capabilities().structured_output, StructuredOutput::Enforced);
+        let client = Anthropic::new(proxy)?;
+        client.complete(&ChatRequest { fallbacks: Some(RefusalFallback::Default), ..req() }).await?;
+        client.clone().complete(&ChatRequest { fallbacks: Some(RefusalFallback::Default), ..req() }).await?;
+        let reqs = server.received_requests().await.unwrap_or_default();
+        assert_eq!(reqs.len(), 2);
+        for r in &reqs {
+            assert!(r.headers.get("anthropic-beta").is_none(), "no beta on a proxy");
+            assert!(r.headers.get("x-api-key").is_none(), "bearer, not x-api-key");
+            let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap_or_default();
+            assert!(body.get("fallbacks").is_none(), "fallbacks masked off: {body}");
+        }
+        assert!(client.warned_mask.load(Ordering::Relaxed), "warned (once; the clone shares the flag)");
+
+        // The x-api-key flavour, and no mask without fallbacks in the request.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "k2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(1, 1, 0, 0)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = Anthropic::new(Endpoint::Proxy { base_url: server.uri(), api_key: "k2".into(), header: ProxyAuth::XApiKey })?;
+        client.complete(&req()).await?;
+        assert!(!client.warned_mask.load(Ordering::Relaxed), "nothing to mask, nothing to warn about");
+        Ok(())
     }
 
     #[test]

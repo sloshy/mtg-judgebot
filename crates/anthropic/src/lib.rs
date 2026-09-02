@@ -17,7 +17,8 @@ pub mod convert;
 pub mod schema;
 pub mod wire;
 
-pub use client::{Anthropic, ApiKey, Endpoint};
+pub use client::{Anthropic, Endpoint, ProxyAuth};
+pub use judge_llm::ApiKey;
 pub use convert::BACKEND;
 pub use schema::{AnthropicSubset, anthropic_schema, to_anthropic};
 

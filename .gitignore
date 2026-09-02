@@ -1,6 +1,9 @@
 /target
 .env
 .env.deploy
+# Per-deployment provider/model choice (judge.toml names env vars, never secrets,
+# but it is per host); the tracked example is judge.example.toml.
+/judge.toml
 .cache/
 eval/runs/
 *.dump

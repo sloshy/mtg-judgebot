@@ -31,6 +31,12 @@ services:
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
       RUST_LOG: info,sqlx=warn,serenity=warn
+    # To run on other providers, mount a judge.toml and point JUDGE_CONFIG at
+    # the path inside the container (a ./judge.toml on the host is not seen
+    # from here, and a JUDGE_CONFIG naming a host path fails at startup):
+    #   volumes: ["./judge.toml:/etc/judgebot/judge.toml:ro"]
+    #   JUDGE_CONFIG: /etc/judgebot/judge.toml
+    # Same for `api` below.
     depends_on:
       db:
         condition: service_healthy
@@ -46,6 +52,7 @@ services:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
       WEB_DIST: /srv/web
       RUST_LOG: info,sqlx=warn
+    # volumes: ["./judge.toml:/etc/judgebot/judge.toml:ro"] + JUDGE_CONFIG, as for bot.
     # Loopback-only. Public traffic arrives through the cloudflared tunnel on
     # the compose network, never through a published port. This is also what
     # makes API_CLIENT_IP=cloudflare sound: CF-Connecting-IP is only

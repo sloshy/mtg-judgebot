@@ -117,6 +117,7 @@ crates/
   core       domain types, ports, judge() pipeline, citation validation — no I/O
   llm        provider-neutral chat types, Backend + sealed ChatModel port, spend cap, retry loop, Synth typestate
   anthropic  the Messages API as a judge-llm backend: wire types, schema transform, endpoints
+  openai     OpenAI-compatible chat completions as a judge-llm backend: strict-schema transform, dialect knobs
   embed      Voyage embeddings
   bot        Postgres adapters (resolver / retriever / call store), prompts, Discord (serenity/poise)
   ingest     Scryfall + Comprehensive Rules loaders, embedder  (bin)

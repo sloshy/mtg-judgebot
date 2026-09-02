@@ -2,8 +2,9 @@
 //! (`claude mcp add judge -- judge-mcp`, or the repo's `.mcp.json`).
 //!
 //! Reads the same environment as the other binaries (`DATABASE_URL`
-//! required; `ANTHROPIC_API_KEY` optional, enabling the built-in `judge`
-//! tool; `VOYAGE_API_KEY` optional). Logs go to stderr because stdout is the
+//! required; a model — `ANTHROPIC_API_KEY`, or a `judge.toml` via
+//! `JUDGE_CONFIG` — optional, enabling the built-in `judge` tool;
+//! `VOYAGE_API_KEY` optional). Logs go to stderr because stdout is the
 //! protocol stream. For the HTTP transport, see `judge-api` (`MCP_TOKEN`).
 
 use std::sync::Arc;

@@ -13,10 +13,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **`crates/core` has no I/O dependencies.** That dependency-graph fence stands in for
   effect tracking (the one thing Rust doesn't give us). Never add reqwest/sqlx/tokio-net
   to core.
-- **The user is cost-sensitive on API spend.** Every Anthropic call goes through the
-  spend-capped client (`JUDGE_MAX_USD`, default $5; the cap *reserves* worst-case cost
-  before sending, so caps under ~$0.45 refuse synthesis outright). Develop against
-  wiremock, not the live API; a full 21-question gold run costs ~$2.50.
+- **The user is cost-sensitive on API spend.** Every model call goes through the
+  spend-capped `judge_llm::Metered` (`JUDGE_MAX_USD`, default $5; the cap *reserves*
+  worst-case cost before sending, so caps under ~$0.45 refuse synthesis outright). Develop
+  against wiremock, not the live API; a full 21-question gold run costs ~$2.50.
 - Commits in this repo are managed by Claude: commit completed, verified steps without
   asking. Never commit `.env`, `.cache/`, or `eval/runs/`.
 
@@ -64,11 +64,13 @@ judge-cli judge "<q>" [--thread T] [--pin span=Name]    # built-in pipeline: rea
 judge-cli begin "<q>" [--thread T] | prompt <s> | status <s> | extract <s> <file|-> | rules <s> <id>..
 judge-cli verdict <s> <file|-> [--persist] | persist <s>   # the agent-driven session, step by step
 judge-cli card <name> | card-info <uuid> | get-rules <id>.. | search "<q>" [--limit N] | glossary <term>
+judge-cli config                                        # the resolved provider/model setup, secrets redacted
 judge-mcp                                               # the MCP server on stdio (.mcp.json starts it)
                                                         # remote: judge-api serves /mcp when MCP_TOKEN is set
 
 cargo run -p judge-eval -- recall                       # retrieval gate, no API keys, exit≠0 below 90%
 cargo run -p judge-eval -- answer --label L --limit 21 --max-usd 6.00   # full live gold run (~$2.50)
+                                                        # --config judge.toml runs it on other providers
 cargo run -p judge-eval -- rescore eval/runs/<run>.json # re-score a stored run, zero API cost
 cargo run -p judge-eval -- show eval/runs/<run>.json    # bot vs gold answers side by side
 ```
@@ -184,10 +186,27 @@ Key cross-file facts that aren't obvious from any one file:
   cuttable segment. An application with no emoji uploaded renders the literal `{W}`. The
   web page does the same job with Scryfall's SVGs (`web/src/Symbols.tsx`).
 
+- **Providers are configuration, not code.** `judge_bot::config` loads `judge.toml`
+  (`JUDGE_CONFIG`, else `./judge.toml` if present, else today's setup from `.env`:
+  Anthropic direct, `claude-opus-5` both stages, Voyage if keyed) into typed structs
+  (`deny_unknown_fields`, nutype validators, secrets by `api_key_env` read at load into a
+  redacted `ApiKey`). Chat backends are `judge-anthropic` (`Endpoint::{Direct, Proxy}`; the
+  cloud doors are named but refused as "not built") and `judge-openai` (chat completions
+  with `Dialect` knobs: `structured_output`, `strict_tools`, `reasoning_effort`,
+  `max_tokens_param`, `cache_hints`). A model on an `openai` provider must be priced
+  (`[models.X.pricing]`) or the provider `pricing = "free"`; the built-in table errs high
+  for unknown Anthropic models only. When a backend cannot enforce the output schema, the
+  adapters append it to the *user turn* (`judge_llm::schema_block`) so the pinned system
+  prompt digest and the Anthropic golden fixtures never change. Every binary logs
+  `Config::summary()` at startup; `judge-cli config` prints the redacted resolution.
+
 ## Environment
 
 `.env` (gitignored; template in `.env.example`): `DATABASE_URL` (port 5433),
 `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY` (blank = vector leg off, bot still works),
+`JUDGE_CONFIG` (optional path to a `judge.toml`; see above — in Docker it is a path *inside*
+the container, so mount the file: the compose file shows how; a `./judge.toml` in the repo
+root is read by `cargo run` but is invisible to the containers),
 `DISCORD_TOKEN`, `GUILD_ID` (instant command registration), `JUDGE_ROLE` (default
 "Judge"), `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`; for the HTTP API also `API_ADDR`
 (default `0.0.0.0:8787`), `WEB_DIST`, `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`,

@@ -14,7 +14,8 @@ const URL: &str = "https://api.voyageai.com/v1/embeddings";
 const DEFAULT_MODEL: &str = "voyage-3.5";
 const DEFAULT_DIMENSIONS: usize = 1024;
 
-/// Voyage AI embedder. Construct with [`VoyageEmbedder::from_env`].
+/// Voyage AI embedder. Construct with [`VoyageEmbedder::new`] (the
+/// configuration loader) or [`VoyageEmbedder::from_env`].
 #[derive(Clone)]
 pub struct VoyageEmbedder {
     http: reqwest::Client,
@@ -54,6 +55,13 @@ struct Datum {
 }
 
 impl VoyageEmbedder {
+    /// With an explicit key, model and width. `dimensions` is sent on every
+    /// request, so the vectors are that wide whatever the model's default.
+    #[must_use]
+    pub fn new(api_key: impl Into<String>, model: impl Into<String>, dimensions: usize) -> Self {
+        Self { http: reqwest::Client::new(), api_key: api_key.into(), model: model.into(), dimensions }
+    }
+
     /// Reads `VOYAGE_API_KEY`, optional `VOYAGE_MODEL` (default `voyage-3.5`) and
     /// optional `VOYAGE_DIMENSIONS` (default 1024).
     ///
@@ -70,7 +78,7 @@ impl VoyageEmbedder {
             Ok(s) => s.parse::<usize>().ok().filter(|d| *d > 0).ok_or_else(|| anyhow::anyhow!("VOYAGE_DIMENSIONS must be a positive integer, got {s:?}"))?,
             Err(_) => DEFAULT_DIMENSIONS,
         };
-        Ok(Self { http: reqwest::Client::new(), api_key, model, dimensions })
+        Ok(Self::new(api_key, model, dimensions))
     }
 }
 

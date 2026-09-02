@@ -2,11 +2,11 @@
 //! citations and source, account for model spend, and write a run file
 //! that `eval show` renders for human review.
 
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{path::PathBuf, time::Instant};
 
 use anyhow::Context as _;
-use judge_bot::Models;
-use judge_core::{Citation, Embedder, JudgeError, Question, Verdict, judge};
+use judge_bot::config::Config;
+use judge_core::{Citation, JudgeError, Question, Verdict, judge};
 use judge_llm::LlmError;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -33,6 +33,8 @@ pub struct Options {
     pub label: String,
     /// Replace the LLM extractor with the gold file's cards/categories/source.
     pub gold_extraction: bool,
+    /// A `judge.toml` to run with (`--config`), ahead of `JUDGE_CONFIG`.
+    pub config: Option<PathBuf>,
 }
 
 impl Options {
@@ -44,10 +46,12 @@ impl Options {
         let (mut gold, mut limit, mut ids, mut max_usd, mut out, mut label) =
             (None, None::<usize>, Vec::<String>::new(), 2.00f64, None::<PathBuf>, None::<String>);
         let mut gold_extraction = false;
+        let mut config = None;
         while let Some(a) = args.next() {
             let mut val = || args.next().ok_or_else(|| anyhow::anyhow!("{a} needs a value"));
             match a.as_str() {
                 "--gold" => gold = Some(PathBuf::from(val()?)),
+                "--config" => config = Some(PathBuf::from(val()?)),
                 "--limit" => limit = Some(val()?.parse().context("--limit must be an integer")?),
                 "--ids" => ids = val()?.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect(),
                 "--max-usd" => max_usd = val()?.parse().context("--max-usd must be a number")?,
@@ -71,7 +75,7 @@ impl Options {
         if !(max_usd.is_finite() && max_usd >= 0.0) {
             anyhow::bail!("--max-usd must be a finite non-negative number");
         }
-        Ok(Self { gold: gold.unwrap_or_else(crate::gold::default_path), limit, ids, max_usd, out, label, gold_extraction })
+        Ok(Self { gold: gold.unwrap_or_else(crate::gold::default_path), limit, ids, max_usd, out, label, gold_extraction, config })
     }
 }
 
@@ -140,6 +144,16 @@ pub struct Row {
     pub usd: f64,
 }
 
+/// Which model answered each stage of a run, as `provider/model`, so
+/// `show`/`rescore` can compare two providers on the same gold set.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunModels {
+    /// The extraction model (`gold` when `--gold-extraction` replaced it).
+    pub extract: String,
+    /// The synthesis model.
+    pub synth: String,
+}
+
 /// The run file.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Run {
@@ -149,6 +163,9 @@ pub struct Run {
     pub gold: String,
     /// Cap the client was given.
     pub max_usd: f64,
+    /// Which models ran; absent in run files from before providers were configurable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<RunModels>,
     /// Rows in gold order.
     pub rows: Vec<Row>,
     /// Sum of `usd`.
@@ -158,6 +175,14 @@ pub struct Run {
 }
 
 impl Run {
+    /// `extract=<provider/model> synth=<provider/model>` for the table and
+    /// `show` headers, so two providers' runs compare without opening the
+    /// JSON; `models=unknown` for a run file from before that was recorded.
+    #[must_use]
+    pub fn models_line(&self) -> String {
+        self.models.as_ref().map_or_else(|| "models=unknown".to_owned(), |m| format!("extract={} synth={}", m.extract, m.synth))
+    }
+
     /// `(questions with ≥1 expected id cited, questions expecting any id)`.
     #[must_use]
     pub fn any_expected_cited(&self) -> (usize, usize) {
@@ -198,17 +223,20 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
     if let Some(known) = opts.ids.iter().find(|id| !gold.questions.iter().any(|q| &q.id == *id)) {
         anyhow::bail!("--ids: no gold question with id {known:?}");
     }
-    let models = Models::from_env()?;
+    let config = Config::load_from(opts.config.as_deref())?;
+    tracing::info!("{}", config.summary());
+    let models = config.models()?;
     models.meter().set_max_spend_usd(opts.max_usd)?;
     let meter = models.meter().clone();
-    let embedder: Option<Arc<dyn Embedder>> = match judge_embed::VoyageEmbedder::from_env() {
-        Ok(e) => Some(Arc::new(e)),
-        Err(e) => {
-            tracing::warn!(error = %e, "no embedder; retrieval runs without vector search");
-            None
-        }
+    let embedder = config.embedder()?;
+    if embedder.is_none() {
+        tracing::warn!("no embedder; retrieval runs without vector search");
+    }
+    let run_models = RunModels {
+        extract: if opts.gold_extraction { "gold".to_owned() } else { config.extract().map(judge_bot::config::Stage::label).unwrap_or_default() },
+        synth: config.synth().map(judge_bot::config::Stage::label).unwrap_or_default(),
     };
-    let deps = crate::deps::build(pool, &models, embedder, &gold, opts.gold_extraction);
+    let deps = crate::deps::build(pool, &models, embedder, &config.deps_config(), &gold, opts.gold_extraction);
     let selected = select(&gold, opts);
 
     let mut rows = Vec::with_capacity(selected.len());
@@ -232,6 +260,7 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
         label: opts.label.clone(),
         gold: opts.gold.display().to_string(),
         max_usd: opts.max_usd,
+        models: Some(run_models),
         total_usd: rows.iter().map(|r| r.usd).sum(),
         total_calls: rows.iter().map(|r| r.calls).sum(),
         rows,
@@ -357,12 +386,13 @@ pub fn table(run: &Run) -> String {
     let n_oracle: usize = run.rows.iter().map(|r| r.cites.n_oracle_cites).sum();
     let _ = writeln!(
         s,
-        "\n{} questions: {ok} correct shape, {src} source match, citation recall {}, {} calls, TOTAL ${:.4} (cap ${:.2})",
+        "\n{} questions: {ok} correct shape, {src} source match, citation recall {}, {} calls, TOTAL ${:.4} (cap ${:.2}); {}",
         run.rows.len(),
         run.recall().map_or_else(|| "n/a".to_owned(), |f| format!("{:.1}%", f * 100.0)),
         run.total_calls,
         run.total_usd,
-        run.max_usd
+        run.max_usd,
+        run.models_line()
     );
     let _ = writeln!(s, "questions with ≥1 expected id cited: {any}/{expecting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations");
     s
@@ -398,7 +428,7 @@ pub fn show(path: &std::path::Path) -> anyhow::Result<String> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let run: Run = serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
     let mut s = String::new();
-    let _ = writeln!(s, "run {} ({} questions, ${:.4})\n", run.label, run.rows.len(), run.total_usd);
+    let _ = writeln!(s, "run {} ({} questions, ${:.4}; {})\n", run.label, run.rows.len(), run.total_usd, run.models_line());
     for r in &run.rows {
         let _ = writeln!(s, "{}\n=== {} [{}] ===", "=".repeat(78), r.id, r.expected_source);
         let _ = writeln!(s, "Q: {}\n", r.question.trim());
@@ -475,9 +505,12 @@ mod tests {
         assert!(r.correct_shape && !r.source_ok);
         let r = score_row(&q, &Err(JudgeError::LlmRefused), 1, 1, 0.01);
         assert!(!r.correct_shape);
-        let run = Run { label: "l".into(), gold: "g".into(), max_usd: 1.0, rows: vec![r], total_usd: 0.01, total_calls: 1 };
+        let run = Run { label: "l".into(), gold: "g".into(), max_usd: 1.0, models: None, rows: vec![r], total_usd: 0.01, total_calls: 1 };
         assert!(table(&run).contains("TOTAL $0.0100"));
+        assert!(table(&run).contains("(cap $1.00); models=unknown"), "{}", table(&run));
         assert!(table(&run).contains("questions with ≥1 expected id cited: 0/0"), "{}", table(&run));
+        let with_models = Run { models: Some(RunModels { extract: "ollama/qwen3:8b".into(), synth: "anthropic/claude-opus-5".into() }), ..run };
+        assert!(table(&with_models).contains("(cap $1.00); extract=ollama/qwen3:8b synth=anthropic/claude-opus-5"), "{}", table(&with_models));
     }
 
     #[test]
@@ -517,7 +550,7 @@ mod tests {
         assert!(r.any_expected_cited);
         assert_eq!((r.cites.n_rule_cites, r.cites.n_ruling_cites), (1, 0));
         assert_eq!(r.recall.missed, vec!["1.1".to_owned()]);
-        let run = Run { label: "l".into(), gold: "g".into(), max_usd: 1.0, rows: vec![r], total_usd: 0.01, total_calls: 1 };
+        let run = Run { label: "l".into(), gold: "g".into(), max_usd: 1.0, models: None, rows: vec![r], total_usd: 0.01, total_calls: 1 };
         assert_eq!(run.any_expected_cited(), (1, 1));
         let t = table(&run);
         assert!(t.contains("questions with ≥1 expected id cited: 1/1; 1 rule citations, 0 ruling citations, 0 oracle citations"), "{t}");

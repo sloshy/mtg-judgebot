@@ -12,7 +12,8 @@
 //!
 //! * `judge`: the whole pipeline with the built-in model calls — the same
 //!   `judge()` the Discord bot and the web page run, spending the operator's
-//!   API budget. Only offered when a model is configured (`ANTHROPIC_API_KEY`).
+//!   API budget. Only offered when a model is configured (`ANTHROPIC_API_KEY`,
+//!   or a `judge.toml`).
 //! * A **session** (`judge_bot::session`): the pipeline in pull mode. The
 //!   caller receives the extraction prompt, answers it, receives the
 //!   synthesis prompt, may look rules up once, answers it, and the verdict is
@@ -39,14 +40,14 @@ use std::{
 
 use anyhow::Context as _;
 use judge_bot::{
-    Models,
+    DepsConfig, Models,
+    config::Config,
     db::{PgCallStore, PgLibrary, PgResolver, PgRetriever, PgSessionStore},
     discord::capture::CapturingRetriever,
     session::{PersistCall, Sessions},
     synth::Harness,
 };
 use judge_core::{CallStore, Deps, Embedder, Resolver, Retriever};
-use judge_embed::VoyageEmbedder;
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
@@ -128,7 +129,9 @@ pub struct Options {
     pub harness: Harness,
     /// The metered models for the built-in pipeline; `None` disables `judge`.
     pub models: Option<Models>,
-    /// Voyage embedder; `None` turns the vector legs off.
+    /// The request knobs the models were configured with.
+    pub deps_config: DepsConfig,
+    /// Embedder; `None` turns the vector legs off.
     pub embedder: Option<Arc<dyn Embedder>>,
     /// Pipeline slots, shared with any other front door in the same process.
     pub permits: Arc<Semaphore>,
@@ -166,7 +169,7 @@ impl Toolbox {
         let calls: Arc<dyn CallStore> = calls;
         let pipeline = opts.models.map(|models| {
             let meter = models.meter().clone();
-            let mut deps = judge_bot::build_deps(pool, &models, opts.embedder);
+            let mut deps = judge_bot::build_deps_with(pool, &models, opts.embedder, &opts.deps_config);
             let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
             deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
             Pipeline { deps, capture, meter }
@@ -192,10 +195,12 @@ impl Toolbox {
             .is_none_or(|m| m.lock().unwrap_or_else(std::sync::PoisonError::into_inner).allow(Instant::now()))
     }
 
-    /// Build from the environment: `DATABASE_URL` (required); `ANTHROPIC_API_KEY`
-    /// (optional: without it `judge` is unavailable and sessions still work);
-    /// `VOYAGE_API_KEY` (optional); `JUDGE_CONCURRENCY`, `JUDGE_MAX_USD` as for
-    /// the other binaries. A `.env` in the working directory is loaded first.
+    /// Build from the environment: `DATABASE_URL` (required); the models
+    /// from `JUDGE_CONFIG` / `./judge.toml`, else `ANTHROPIC_API_KEY`
+    /// (optional: without either `judge` is unavailable and sessions still
+    /// work) and `VOYAGE_API_KEY` (optional); `JUDGE_CONCURRENCY`,
+    /// `JUDGE_MAX_USD` as for the other binaries. A `.env` in the working
+    /// directory is loaded first.
     ///
     /// # Errors
     /// A missing `DATABASE_URL`, a malformed `.env`, a bad model
@@ -212,18 +217,16 @@ impl Toolbox {
             .connect(&database_url)
             .await
             .context("connect to Postgres")?;
-        let models = if set("ANTHROPIC_API_KEY").is_some() {
-            Some(Models::from_env().context("models")?)
-        } else {
-            tracing::info!("ANTHROPIC_API_KEY is not set; the built-in `judge` pipeline is unavailable, sessions are not affected");
-            None
-        };
-        let embedder: Option<Arc<dyn Embedder>> = if set("VOYAGE_API_KEY").is_some() {
-            Some(Arc::new(VoyageEmbedder::from_env()?))
-        } else {
-            tracing::info!("VOYAGE_API_KEY is not set; running without the vector legs");
-            None
-        };
+        let config = Config::load()?;
+        tracing::info!("{}", config.summary());
+        let models = config.models_if_configured().context("models")?;
+        if models.is_none() {
+            tracing::info!("no model configured (ANTHROPIC_API_KEY or a judge.toml); the built-in `judge` pipeline is unavailable, sessions are not affected");
+        }
+        let embedder = config.embedder()?;
+        if embedder.is_none() {
+            tracing::info!("no embedder configured; running without the vector legs");
+        }
         let concurrency = match set("JUDGE_CONCURRENCY") {
             Some(v) => v.trim().parse::<usize>().context("JUDGE_CONCURRENCY must be an integer")?.max(1),
             None => DEFAULT_CONCURRENCY,
@@ -233,6 +236,7 @@ impl Toolbox {
             Options {
                 harness,
                 models,
+                deps_config: config.deps_config(),
                 embedder,
                 permits: Arc::new(Semaphore::new(concurrency)),
                 judge_quota: None,

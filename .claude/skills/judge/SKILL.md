@@ -122,8 +122,9 @@ the JSON only. Do it promptly: the session clock is running.
 ## Running the CLI
 
 Build once: `cargo build --release -p judge-agent`; then run `target/release/judge-cli`
-from the repo root (it reads `.env` there: `DATABASE_URL` is required; `ANTHROPIC_API_KEY`
-only for `judge`; `VOYAGE_API_KEY` optional). Logs go to stderr, JSON to stdout. Flags can
+from the repo root (it reads `.env` there: `DATABASE_URL` is required; a model — `ANTHROPIC_API_KEY`,
+or a `judge.toml` named by `JUDGE_CONFIG` — only for `judge`; `VOYAGE_API_KEY` optional;
+`judge-cli config` prints what resolved, secrets redacted). Logs go to stderr, JSON to stdout. Flags can
 go anywhere after the subcommand; `--` ends them if a question starts with `--`. Write
 extraction and verdict JSON to a file and pass its path, or pipe it with `-`. Each
 invocation is its own process, so `judge` there has its own `JUDGE_MAX_USD` counter.

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "sqlx repos, model adapters over judge-llm, build_deps composition (the Anthropic backend by default), serenity/poise Discord adapter, main (bin)."
+description = "sqlx repos, model adapters over judge-llm, the judge.toml loader and build_deps composition, serenity/poise Discord adapter, main (bin)."
 
 [lib]
 name = "judge_bot"
@@ -19,6 +19,7 @@ path = "src/main.rs"
 judge-core.workspace = true
 judge-llm.workspace = true
 judge-anthropic.workspace = true
+judge-openai.workspace = true
 judge-embed.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
@@ -31,6 +32,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+nutype.workspace = true
+toml.workspace = true
+url.workspace = true
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "json", "macros", "migrate"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
 poise = "0.6"

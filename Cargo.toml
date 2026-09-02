@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/llm", "crates/anthropic", "crates/embed", "crates/ingest", "crates/bot", "crates/eval", "crates/api", "crates/agent"]
+members = ["crates/core", "crates/llm", "crates/anthropic", "crates/openai", "crates/embed", "crates/ingest", "crates/bot", "crates/eval", "crates/api", "crates/agent"]
 
 [workspace.package]
 edition = "2024"
@@ -13,6 +13,7 @@ wiremock = "0.6"
 judge-core = { path = "crates/core" }
 judge-llm = { path = "crates/llm" }
 judge-anthropic = { path = "crates/anthropic" }
+judge-openai = { path = "crates/openai" }
 judge-embed = { path = "crates/embed" }
 judge-bot = { path = "crates/bot" }
 judge-agent = { path = "crates/agent" }
@@ -27,12 +28,14 @@ schemars = { version = "1.2", features = ["uuid1"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+toml = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rmcp = { version = "3.2", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -34,6 +34,14 @@ Discord message (+ last N Q&A in the same thread)
 [1] Entity extraction (LLM, low effort, structured output)
     Splits the message into card-name spans vs. rules concepts. Runs FIRST so
     fuzzy matching only sees candidate spans, not rules vocabulary.
+    Which model, and where: `judge_bot::config` (a `judge.toml`, else
+    Anthropic direct from the environment) picks a provider per stage —
+    Anthropic's Messages API (direct or through a proxy) or any
+    OpenAI-compatible chat completions server — and every model sits behind
+    the one spend-capped `Metered` per process. The backend reports its
+    `Capabilities`; when it cannot enforce the output schema server-side the
+    adapter appends the schema to the *user turn* (the system prompt is
+    pinned by digest and stays byte-identical on every backend).
   │
   ▼
 [2] Card resolution (per span)
@@ -72,6 +80,9 @@ Discord message (+ last N Q&A in the same thread)
   │
   ▼
 [5] Synthesis (LLM, high effort, structured output, one tool-use round)
+    Same per-stage provider choice as [1]; the tool round and the schema
+    travel in each backend's wire format (strict function calling on
+    OpenAI-compatible servers when the provider says it has it).
     Tool: lookup_rules(ids) — the model may request additional CR sections
     once before answering, closing the classifier-miss gap.
     Output: Verdict { answer, confidence: Low|Medium|High, citations[], category }
@@ -107,10 +118,10 @@ Three front doors share this pipeline through the same composition root
   the same handler at `/mcp` behind `MCP_TOKEN` for a remote one) and as
   `judge-cli` (one subcommand per operation, JSON out, for a shell agent — the
   repo's `.claude/skills/judge` skill). It offers the pipeline two ways: the
-  `judge` tool runs it as above with the built-in Anthropic calls (spend-capped,
-  same concurrency semaphore as the web route, only when an API key is
-  configured); a **session** runs it in pull mode, where the calling agent *is*
-  the model. `judge_bot::session` is that state machine: `begin` returns the
+  `judge` tool runs it as above with the built-in model calls (spend-capped,
+  same concurrency semaphore as the web route, only when a model is
+  configured — `ANTHROPIC_API_KEY` or a `judge.toml`); a **session** runs it in
+  pull mode, where the calling agent *is* the model. `judge_bot::session` is that state machine: `begin` returns the
   extraction prompt (steps 1 + 3 as text plus the JSON Schema), the agent's
   `Extraction` JSON drives steps 2 + 4 and yields the synthesis prompt (the same
   system prompt, with `Harness`-specific wording for the one `lookup_rules`

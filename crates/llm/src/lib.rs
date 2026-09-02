@@ -12,7 +12,10 @@
 //! * [`Metered`] — the spend cap around any backend: reserve a worst case
 //!   before sending, settle to the real usage after; [`SpendMeter`] is the
 //!   read handle the front doors log from, [`Price`] what a model is billed at.
-//! * [`http`] — the retry loop every HTTP backend shares.
+//! * [`http`] — the retry loop every HTTP backend shares; [`ApiKey`] the
+//!   credential type whose `Debug` is redacted.
+//! * [`prompt`] — what an adapter adds to the *user turn* when the backend
+//!   cannot enforce the output schema server-side.
 //! * [`synth`] — `Synth<Fresh | ToolRequested | Final>`, the typestate that
 //!   bounds the tool round to one, and `classify`, the pure response reader.
 //!
@@ -24,11 +27,15 @@
 
 pub mod error;
 pub mod http;
+pub mod prompt;
+pub mod secret;
 pub mod spend;
 pub mod synth;
 mod types;
 
 pub use error::LlmError;
+pub use prompt::{needs_schema_in_prompt, schema_block, strip_json_fence};
+pub use secret::ApiKey;
 pub use spend::{DEFAULT_MAX_SPEND_USD, Metered, PRICES, Price, Pricing, SpendMeter, pricing_for};
 pub use synth::{
     Final, Fresh, LOOKUP_RULES, LookupRulesInput, SendOutcome, Step, Synth, SynthConfig, ToolRequested, Truncated,

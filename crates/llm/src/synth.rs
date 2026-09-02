@@ -340,6 +340,8 @@ fn parse_verdict(resp: &ChatResponse) -> Result<Verdict<Unvalidated>, JudgeError
     }
     let text = resp.last_text().ok_or_else(|| anyhow::anyhow!("response contained no text block"))?;
     tracing::debug!(raw = %crate::truncate_for_log(text, crate::LOG_TEXT_CHARS), "synthesis raw model text");
+    // A backend that only asked for JSON in the prompt may get it fenced.
+    let text = crate::strip_json_fence(text);
     serde_json::from_str(text)
         // Bounded: this string becomes the `Upstream` error chain, which the
         // adapters log at warn. `max_tokens` is 16k, so an unbounded `{text}`
@@ -483,6 +485,10 @@ mod tests {
     fn classify_uses_last_text_block() -> Result<(), Box<dyn std::error::Error>> {
         let r = resp(Stop::EndTurn, &["Sure, here it is:", VERDICT], vec![]);
         assert!(matches!(classify(r)?, Step::Verdict(_)));
+        // A prompt-only backend may return the JSON fenced.
+        let fenced = format!("```json\n{VERDICT}\n```");
+        let r = resp(Stop::EndTurn, &[&fenced], vec![]);
+        assert!(matches!(classify(r)?, Step::Verdict(v) if v.answer() == "a"));
         Ok(())
     }
 
