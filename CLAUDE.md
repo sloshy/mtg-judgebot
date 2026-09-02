@@ -40,12 +40,17 @@ cargo sqlx prepare --workspace -- --all-targets
 
 ~/.cargo/bin/sqlx migrate run --source crates/bot/migrations
 cargo run --release -p judge-ingest -- cards            # Scryfall bulk sync (cached in .cache/)
-cargo run --release -p judge-ingest -- rules <url|path> # CR parse; current CR url is in docs/ARCHITECTURE.md
+cargo run --release -p judge-ingest -- rules <url|path> # CR parse from a given file or URL
 cargo run --release -p judge-ingest -- aliases data/aliases.yaml
 cargo run --release -p judge-ingest -- notes data/notes.yaml
 cargo run --release -p judge-ingest -- embed            # only rows with NULL embedding; Voyage
 cargo run --release -p judge-ingest -- emoji            # Scryfall card symbols -> the bot's Discord
                                                         # application emoji; idempotent, no DB needed
+cargo run --release -p judge-ingest -- rules latest     # the CR linked from Wizards' rules page, only if
+                                                        # its version differs from max(rules.cr_version)
+cargo run --release -p judge-ingest -- refresh          # cards + rules latest + embed + emoji; every step
+                                                        # runs even if one fails, exit≠0 if any did
+scripts/refresh-data.sh              # nightly cron on the deploy host: `docker compose run --rm refresh`
 
 cargo run --release -p judge-api                        # HTTP API + web page on API_ADDR (default :8787)
 npm --prefix web run build           # build the SolidJS page into web/dist (served by judge-api)
@@ -147,4 +152,10 @@ fresh allowance against a paid endpoint. The old `API_TRUST_FORWARDED` did exact
 that and is now rejected at startup rather than ignored. `cloudflare` is only sound
 when nothing can reach the origin except Cloudflare.
 
-There is no scheduled data refresh yet; Scryfall/CR ingest is manual (see Commands).
+**Data refresh is a nightly cron on the deploy host**, not a service: `scripts/refresh-data.sh`
+runs the `refresh` compose service (profile `refresh`, third entrypoint `judge-ingest` in the
+same image; `docker compose run` enables the profile itself so `up -d` never starts it). CR
+release detection scrapes Wizards' rules page for the `MagicCompRules <date>.txt` link and
+compares the date to the stored `cr_version`; the CR loader nulls embeddings only for rules
+whose text changed, so a new CR costs Voyage a few hundred rules. `aliases` and `notes` are
+not part of refresh — they are repo data, loaded when they change.

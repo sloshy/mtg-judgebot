@@ -23,6 +23,11 @@
 //!
 //! The CR version is taken from the file name (`MagicCompRules 20260819.txt` -> `20260819`),
 //! falling back to the "These rules are effective as of …" line.
+//!
+//! `ingest rules latest` ([`run_latest`]) finds the current release itself: Wizards'
+//! rules page links the `.txt` of the release in force, and its file name carries the
+//! version, so a new CR is detected without downloading it — the page is compared
+//! against `max(rules.cr_version)` and only a differing version is fetched and stored.
 
 use std::path::Path;
 
@@ -36,6 +41,9 @@ const BATCH: usize = 200;
 /// the section title is used as the heading instead so `tsv` and the rendered
 /// prompt do not repeat the rule's opening sentence.
 const MAX_HEADING_CHARS: usize = 60;
+/// Where Wizards publishes the current Comprehensive Rules, one download link per
+/// format. Only the `.txt` is parsed here.
+pub const RULES_PAGE_URL: &str = "https://magic.wizards.com/en/rules";
 /// Scryfall-style polite identification; Wizards' CDN does not require it but it costs nothing.
 const USER_AGENT: &str = "mtg-judgebot-ingest/0.1 (+https://github.com/sloshy/mtg-judgebot)";
 
@@ -57,6 +65,84 @@ pub async fn run(pool: &PgPool, source: &str, cache_dir: &Path) -> anyhow::Resul
         anyhow::bail!("no rules parsed from {source}");
     }
     store(pool, &parsed).await
+}
+
+/// What [`run_latest`] found on the rules page and did about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// The published release is the one already in `rules`; nothing was downloaded.
+    Unchanged { version: String },
+    /// A different release is published; it was fetched, parsed and stored.
+    Updated { version: String, url: String },
+}
+
+/// Load the CR release currently linked from [`RULES_PAGE_URL`], unless `rules`
+/// already holds that version.
+///
+/// A link whose file name carries no version is loaded unconditionally: [`store`] is
+/// idempotent, so the only cost of being unable to tell is a download.
+///
+/// # Errors
+/// If the rules page is unreachable or links no `MagicCompRules*.txt`, or on any
+/// failure of [`run`].
+pub async fn run_latest(pool: &PgPool, cache_dir: &Path) -> anyhow::Result<Outcome> {
+    let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+    let html = client
+        .get(RULES_PAGE_URL)
+        .send()
+        .await
+        .with_context(|| format!("GET {RULES_PAGE_URL}"))?
+        .error_for_status()
+        .with_context(|| format!("GET {RULES_PAGE_URL}"))?
+        .text()
+        .await?;
+    let url = find_cr_txt_url(&html)
+        .ok_or_else(|| anyhow::anyhow!("no MagicCompRules .txt link found on {RULES_PAGE_URL}"))?;
+    let published = version_from_source(&url);
+    let current: Option<String> = sqlx::query_scalar!("SELECT max(cr_version) FROM rules")
+        .fetch_one(pool)
+        .await
+        .context("reading the stored CR version")?;
+    tracing::info!(url, published = ?published, stored = ?current, "current comprehensive rules release");
+    match (published, current) {
+        (Some(version), Some(stored)) if version == stored => {
+            tracing::info!(%version, "comprehensive rules unchanged; nothing to do");
+            Ok(Outcome::Unchanged { version })
+        }
+        (published, _) => {
+            run(pool, &url, cache_dir).await?;
+            let version = published.unwrap_or_else(|| "unknown".to_owned());
+            Ok(Outcome::Updated { version, url })
+        }
+    }
+}
+
+/// The download link for the current CR text on the rules page: the `href` whose
+/// file name mentions `MagicCompRules` and ends in `.txt`. When several qualify the
+/// highest version wins (ties: first seen). Spaces are percent-encoded so the result
+/// is a valid URL; Wizards links `MagicCompRules 20260819.txt` with a literal space.
+#[must_use]
+pub fn find_cr_txt_url(html: &str) -> Option<String> {
+    let mut best: Option<(Option<String>, String)> = None;
+    for quote in ['"', '\''] {
+        let opener = format!("href={quote}");
+        for (i, _) in html.match_indices(opener.as_str()) {
+            let Some(rest) = html.get(i + opener.len()..) else { continue };
+            let Some(href) = rest.find(quote).and_then(|end| rest.get(..end)) else { continue };
+            let href = href.trim();
+            let file = href.rsplit('/').next().unwrap_or(href);
+            let file = file.split(['?', '#']).next().unwrap_or(file);
+            if !(file.contains("MagicCompRules") && file.to_ascii_lowercase().ends_with(".txt")) {
+                continue;
+            }
+            let version = version_from_source(href);
+            let better = best.as_ref().is_none_or(|(v, _)| version > *v);
+            if better {
+                best = Some((version, href.replace(' ', "%20")));
+            }
+        }
+    }
+    best.map(|(_, url)| url)
 }
 
 /// Read `source`: a local path, or an `http(s)` URL downloaded once into `cache_dir`
@@ -591,6 +677,27 @@ mod tests {
 
     fn find<'a>(p: &'a ParsedCr, id: &str) -> anyhow::Result<&'a RuleChunk> {
         p.rules.iter().find(|r| r.id.as_ref() == id).ok_or_else(|| anyhow::anyhow!("rule {id} not found"))
+    }
+
+    #[test]
+    fn find_cr_txt_url_picks_the_txt_with_the_highest_version() {
+        let html = r#"<a href="https://media.wizards.com/2026/downloads/MagicCompRules 20260807.pdf">PDF</a>
+            <a href="https://media.wizards.com/2026/downloads/MagicCompRules 20260807.docx">Word</a>
+            <a href="https://media.wizards.com/2025/downloads/MagicCompRules 20250801.txt">old</a>
+            <a class="x" href='https://media.wizards.com/2026/downloads/MagicCompRules 20260819.txt'>TXT</a>
+            <a href="https://media.wizards.com/other.txt">unrelated</a>"#;
+        assert_eq!(
+            find_cr_txt_url(html).as_deref(),
+            Some("https://media.wizards.com/2026/downloads/MagicCompRules%2020260819.txt")
+        );
+    }
+
+    #[test]
+    fn find_cr_txt_url_needs_a_txt_link() {
+        assert_eq!(find_cr_txt_url("<a href=\"https://x/MagicCompRules 20260819.pdf\">"), None);
+        assert_eq!(find_cr_txt_url(""), None);
+        // A versionless link still counts; run_latest then loads it unconditionally.
+        assert_eq!(find_cr_txt_url("<a href=\"/MagicCompRules.txt\">"), Some("/MagicCompRules.txt".to_owned()));
     }
 
     #[test]

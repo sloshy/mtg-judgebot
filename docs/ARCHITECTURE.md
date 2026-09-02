@@ -131,12 +131,12 @@ from one set of names:
 
 | Source | Refresh | Storage |
 |---|---|---|
-| Scryfall bulk `oracle-cards.json` | weekly | `cards` (oracle_id, name, layout, type_line, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
-| Scryfall bulk `default-cards.json` (names only) | weekly | `printed_names` (printed_name, oracle_id) — old names, errata'd names |
-| Scryfall bulk `rulings.json` | weekly (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, idx, published_at, text) |
-| Comprehensive Rules txt | on CR release | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
+| Scryfall bulk `oracle-cards.json` | nightly (`ingest refresh`, cron on the deploy host — DEPLOYMENT.md §7) | `cards` (oracle_id, name, layout, type_line, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
+| Scryfall bulk `default-cards.json` (names only) | nightly | `printed_names` (printed_name, oracle_id) — old names, errata'd names |
+| Scryfall bulk `rulings.json` | nightly (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, idx, published_at, text) |
+| Comprehensive Rules txt | on CR release — detected nightly from the `.txt` link on Wizards' rules page vs `max(cr_version)` | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
 | CR Glossary | same | `glossary` (term, text, embedding) |
-| Scryfall `/symbology` (84 card symbols) | when Scryfall adds one | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web page (`web/src/symbols.ts`) |
+| Scryfall `/symbology` (84 card symbols) | nightly (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web page (`web/src/symbols.ts`) |
 | Nicknames | hand-curated YAML | `card_aliases` (alias, oracle_id) |
 | Nightmare notes | hand-written markdown | `card_notes` (oracle_id, note) |
 | Categories → subsections | YAML (single source of truth; enum generated or validated from it) | `categories` |

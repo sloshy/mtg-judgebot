@@ -50,12 +50,13 @@ docker compose up -d          # pgvector Postgres (localhost:5433) + bot + web A
 
 # one-time data load (~110 MB from Scryfall, cached in .cache/)
 cargo run --release -p judge-ingest -- cards
-cargo run --release -p judge-ingest -- rules 'https://media.wizards.com/2026/downloads/MagicCompRules%2020260819.txt'
+cargo run --release -p judge-ingest -- rules latest  # the CR release Wizards' rules page links
 cargo run --release -p judge-ingest -- aliases data/aliases.yaml
 cargo run --release -p judge-ingest -- notes data/notes.yaml
 cargo run --release -p judge-ingest -- embed        # needs VOYAGE_API_KEY
 
 docker compose up -d --build bot api                # redeploy after code changes
+scripts/refresh-data.sh                             # nightly: cards, new CR, embeddings, emoji
 ```
 
 Invite the bot with the `bot` + `applications.commands` scopes; `/judge` registers
@@ -126,8 +127,7 @@ eval/        gold.yaml + stored runs
 docs/        architecture, language evaluation, proposals
 ```
 
-Not yet built: scheduled data refresh (Scryfall weekly / CR-release detection),
-multi-server tenancy, tournament-policy (MTR/IPG) coverage — the bot declines those
+Not yet built: multi-server tenancy, tournament-policy (MTR/IPG) coverage — the bot declines those
 questions rather than winging them.
 
 ## License

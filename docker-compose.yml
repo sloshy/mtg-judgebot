@@ -56,6 +56,30 @@ services:
       db:
         condition: service_healthy
 
+  # Scheduled data refresh: Scryfall cards/rulings, the current CR release, new
+  # embeddings, new card-symbol emoji. Not a long-running service — the host's
+  # scheduler runs `scripts/refresh-data.sh`, which is `docker compose run --rm
+  # refresh`; `run` enables the profile by itself, so `up -d` never starts it.
+  # Same image as bot/api, third entrypoint.
+  refresh:
+    build: .
+    image: ghcr.io/sloshy/mtg-judgebot:${JUDGE_IMAGE_TAG:-latest}
+    profiles: ["refresh"]
+    entrypoint: ["judge-ingest"]
+    command: ["refresh"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
+      INGEST_CACHE_DIR: /var/cache/judgebot
+      RUST_LOG: info,sqlx=warn
+    volumes:
+      # Scryfall's bulk files change daily so this rarely saves a download, but
+      # a run that dies mid-way leaves nothing behind in the container layer.
+      - judgebot-ingest-cache:/var/cache/judgebot
+    depends_on:
+      db:
+        condition: service_healthy
+
   # Public front door. Dials out to Cloudflare's edge, so the host needs no
   # open inbound port, no public IPv4 and no dynamic DNS. Off by default;
   # deployments opt in with COMPOSE_PROFILES=tunnel in .env.
@@ -77,3 +101,4 @@ services:
 
 volumes:
   judgebot-pgdata:
+  judgebot-ingest-cache:

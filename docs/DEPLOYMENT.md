@@ -22,7 +22,7 @@ Live deployment: <https://mtgjudge.rpeters.dev>
 
 - A host that stays on, with Docker and the compose plugin. The stack *runs* in about
   200 MB RSS (Postgres ~157 MB, api and bot a few MB each), so 2 GB of RAM is ample.
-  It never has to *build*: CI publishes the image and the host pulls it (§7). That
+  It never has to *build*: CI publishes the image and the host pulls it (§8). That
   matters because `cargo build --release` across seven crates plus a Vite build wants
   ~4 GB and real CPU, which a NAS does not have.
 - Compose syntax here is held to what older bundled versions accept — Synology's
@@ -230,7 +230,54 @@ rm judgebot-<stamp>.dump.gz
 
 The card count should match section 2. `*.dump.gz` is gitignored.
 
-## 7. Redeploying
+## 7. Scheduled data refresh
+
+Scryfall publishes new bulk data daily and Wizards ships a Comprehensive Rules
+release with most sets. `judge-ingest refresh` brings the database up to date in one
+unattended run, inside the same image `bot` and `api` run from (third entrypoint,
+compose service `refresh`, off by default behind the `refresh` profile). It does, in
+order: `cards` (Scryfall oracle cards, printed names, rulings — upserts, so cards the
+bot already knows are refreshed in place), `rules latest` (reads Wizards' rules page,
+compares the linked `MagicCompRules <date>.txt` against `max(rules.cr_version)` and
+loads it only when the version differs), `embed` (only rows whose text changed — the CR
+loader nulls the embedding of exactly those, so a new CR costs Voyage a few hundred
+rules, not all of them) and `emoji` (uploads any card symbol Scryfall added; skipped
+when `DISCORD_TOKEN` is unset). Each step runs even if an earlier one failed, and the
+exit status is non-zero if any did.
+
+`scripts/refresh-data.sh` is the cron entry point: it takes a lock so two runs never
+overlap, then `docker compose run --rm --pull missing refresh`, which reuses the image
+`docker compose pull` already fetched and never builds on the host. Any argument is
+passed through as the `judge-ingest` subcommand, so `scripts/refresh-data.sh rules
+latest` is a CR-only check.
+
+Install it beside the backup, on the same scheduler (§6 has the Synology notes: run
+as root, absolute paths, tick email-on-error):
+
+```sh
+crontab -e
+30 5 * * *  /path/to/mtg-judgebot/scripts/refresh-data.sh >> ~/judgebot-refresh.log 2>&1
+```
+
+Daily is right for cards — Scryfall corrects Oracle text and adds rulings between
+sets — and it bounds how long a new CR goes unnoticed to a day. Most days it costs one
+Scryfall download and nothing else; the run takes a few minutes on a NAS, most of it
+parsing the `default_cards` file, and does not disturb the running bot: every load is
+one transaction, so retrieval sees the old data or the new, never a mix.
+
+Two things change when a new CR lands. Prior calls made under the old version drop
+out of retrieval (they are filtered on `cr_version`), which is by design. And the
+retriever's vector leg is blind to the re-embedded rules for the minute between the
+`rules` and `embed` steps; if `embed` fails (Voyage down, rate-limited) those rules
+stay unembedded and the next night's run picks them up, since `embed` always fills
+every NULL.
+
+Run it once by hand after installing, and expect the log to end with
+`refresh step ok` four times. A one-off manual load still works the old way from a
+workstation (`cargo run --release -p judge-ingest -- rules <url>`), which is also how
+to force a re-parse of an already-loaded version: delete the cached txt first.
+
+## 8. Redeploying
 
 The host never builds. `.github/workflows/publish-image.yml` builds on every push to
 `main` that touches the image (including `data/`, since `crates/core/build.rs`
@@ -277,7 +324,7 @@ Clear `JUDGE_IMAGE_TAG` to return to `latest`.
 `cloudflared` and `db` are untouched by a code deploy. The tunnel reconnects on its
 own if the connector restarts.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
@@ -289,3 +336,6 @@ own if the connector restarts.
 | Bot online, web page dead | expected if only `api` failed — the gateway is a separate outbound connection |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |
+| Refresh exits `another refresh is running` with nothing running | a previous run was killed before removing `.refresh.lock` in the repo root; `rmdir` it |
+| Refresh loads the CR every night | `rules.cr_version` disagrees with the file name on Wizards' page — check the `current comprehensive rules release` log line for `published` vs `stored` |
+| Refresh runs but the bot still cites the old CR | it does not: retrieval reads the database live; check the run actually finished (`refresh step ok` for `rules` and `embed`) |
