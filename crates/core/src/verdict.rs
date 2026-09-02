@@ -361,8 +361,8 @@ fn citation_ok(c: &Citation, ctx: &Context) -> bool {
     }
     match c {
         Citation::Rule { id, .. } => ctx.rule(id).is_some_and(|r| r.contains_quote(quote)),
-        Citation::ScryfallRuling { card, idx, .. } => {
-            ctx.ruling(*card, *idx).is_some_and(|r| r.text.contains(quote))
+        Citation::ScryfallRuling { card, ruling, .. } => {
+            ctx.ruling(*card, ruling).is_some_and(|r| r.text.contains(quote))
         }
         Citation::PriorCall { id, .. } => ctx.prior_call(*id).is_some_and(|p| p.answer.contains(quote)),
         Citation::OracleText { card, face, .. } => {
@@ -374,7 +374,7 @@ fn citation_ok(c: &Citation, ctx: &Context) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallId, Card, CardId, Face, Layout, RuleChunk, RuleId, Ruling};
+    use crate::{CallId, Card, CardId, Face, Layout, RuleChunk, RuleId, Ruling, ruling_key};
     use nonempty::NonEmpty;
     use uuid::Uuid;
 
@@ -417,7 +417,7 @@ mod tests {
         Ok(Context {
             cards: vec![waylay()],
             rules: vec![rule("702.15b", "Damage dealt by a source with lifelink causes that source's controller to gain that much life.")?],
-            rulings: vec![Ruling { card, idx: 0, published_at: "2020-01-01".into(), text: "Lifelink is not a triggered ability.".into() }],
+            rulings: vec![Ruling { card, key: ruling_key("2020-01-01", "Lifelink is not a triggered ability."), published_at: "2020-01-01".into(), text: "Lifelink is not a triggered ability.".into() }],
             ..Context::default()
         })
     }
@@ -440,7 +440,7 @@ mod tests {
         let v = verdict(vec![
             Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "gain that much life".into() },
             Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "Example: something.".into() },
-            Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), idx: 0, quote: "not a triggered ability".into() },
+            Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), ruling: ruling_key("2020-01-01", "Lifelink is not a triggered ability."), quote: "not a triggered ability".into() },
         ]);
         let ok = v.validate(&c, CR).map_err(|e| e.to_string())?;
         assert_eq!(ok.citations().len(), 3);
@@ -457,7 +457,7 @@ mod tests {
         let err = verdict(vec![bad.clone()]).validate(&c, CR).err();
         assert!(matches!(err, Some(JudgeError::BadCitation(ref x)) if *x == bad), "{err:?}");
 
-        let bad_ruling = Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), idx: 9, quote: "Lifelink".into() };
+        let bad_ruling = Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), ruling: ruling_key("2020-01-01", "some other ruling"), quote: "Lifelink".into() };
         assert!(matches!(verdict(vec![bad_ruling]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
 
         let bad_prior = Citation::PriorCall { id: CallId::new(Uuid::from_u128(1)), quote: "x".into() };
@@ -566,7 +566,7 @@ mod tests {
     fn one_unreadable_citation_does_not_cost_the_verdict() -> Result<(), Box<dyn std::error::Error>> {
         let json = r#"{"answer":"No — it's one or the other, not both, per the cost-reduction rules.",
             "confidence":"high","category":"casting_spells","citations":[
-            {"card":"0000000e-0000-0000-0000-000000000000","idx":0,"kind":"scryfall_ruling","quote":""},
+            {"card":"0000000e-0000-0000-0000-000000000000","ruling":"0123456789abcdef","kind":"scryfall_ruling","quote":""},
             {"id":"","kind":"rule","quote":""},
             {"id":"702.15b","kind":"rule","quote":"gain that much life"}]}"#;
         let v: Verdict<Unvalidated> = serde_json::from_str(json)?;

@@ -16,6 +16,9 @@ nutype.workspace = true
 regex = "1"
 schemars.workspace = true
 serde.workspace = true
+# Pure hashing: `ruling_key` is the one definition of a ruling's identity, shared
+# by the ingest writer and every reader.
+sha2.workspace = true
 # A data format, not I/O: `Citations` parses the model's citation array one
 # element at a time, which needs an owned intermediate value.
 serde_json.workspace = true

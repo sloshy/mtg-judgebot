@@ -79,7 +79,10 @@ impl CallStore for PgCallStore {
         let context_ids = serde_json::json!({
             "cards": ctx.cards.iter().map(|c| c.id).collect::<Vec<_>>(),
             "rules": ctx.rules.iter().map(|r| &r.id).collect::<Vec<_>>(),
-            "rulings": ctx.rulings.iter().map(|r| (r.card, r.idx)).collect::<Vec<_>>(),
+            // `[[card, "<key>"]]`; rows written before migration 20260902000001 hold
+            // `[[card, idx]]`. Nothing reads this member, it is a record of what the
+            // model was shown.
+            "rulings": ctx.rulings.iter().map(|r| (r.card, r.key)).collect::<Vec<_>>(),
             "prior": ctx.prior.iter().map(|p| p.id).collect::<Vec<_>>(),
         });
         let source = enum_id(&v.source())?;

@@ -33,6 +33,7 @@ use std::io::{BufRead as _, Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
+use judge_core::{RulingKey, ruling_key};
 use serde::Deserialize;
 use sqlx::{PgPool, Postgres, QueryBuilder};
 use uuid::Uuid;
@@ -177,7 +178,8 @@ struct FaceRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RulingRow {
     oracle_id: Uuid,
-    idx: i32,
+    /// `judge_core::ruling_key` of (`published_at`, `text`).
+    key: RulingKey,
     /// `YYYY-MM-DD`, cast to `date` in SQL.
     published_at: String,
     text: String,
@@ -285,15 +287,18 @@ impl ScryfallCard {
     }
 }
 
-/// Group raw rulings by oracle id and assign `idx` by (`published_at`, text) order.
-fn number_rulings(raw: HashMap<Uuid, Vec<(String, String)>>) -> Vec<RulingRow> {
+/// Group raw rulings by oracle id, one row per distinct (`published_at`, text), keyed by content.
+fn key_rulings(raw: HashMap<Uuid, Vec<(String, String)>>) -> Vec<RulingRow> {
     let mut rows = Vec::new();
     for (oracle_id, mut list) in raw {
         list.sort();
+        // Two rulings with the same date and text under one card are one row;
+        // the key is a function of exactly those two fields, so this dedup is
+        // what makes (oracle_id, key) a primary key.
         list.dedup();
-        rows.extend(list.into_iter().enumerate().map(|(i, (published_at, text))| RulingRow {
+        rows.extend(list.into_iter().map(|(published_at, text)| RulingRow {
             oracle_id,
-            idx: i32::try_from(i).unwrap_or(i32::MAX),
+            key: ruling_key(&published_at, &text),
             published_at,
             text,
         }));
@@ -506,11 +511,13 @@ async fn insert_rulings(pool: &PgPool, rows: &[RulingRow]) -> Result<()> {
         .await
         .context("clearing rulings")?;
     for chunk in rows.chunks(BATCH) {
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("INSERT INTO rulings (oracle_id, idx, published_at, text) ");
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("INSERT INTO rulings (oracle_id, key, published_at, text) ");
         qb.push_values(chunk, |mut b, r| {
-            b.push_bind(r.oracle_id).push_bind(r.idx).push_bind(&r.published_at).push_unseparated("::date").push_bind(&r.text);
+            b.push_bind(r.oracle_id).push_bind(r.key.to_string()).push_bind(&r.published_at).push_unseparated("::date").push_bind(&r.text);
         });
-        qb.push(" ON CONFLICT (oracle_id, idx) DO UPDATE SET published_at = EXCLUDED.published_at, text = EXCLUDED.text");
+        // The list was just cleared, so a conflict is only possible within this
+        // batch and key_rulings has deduplicated it; DO NOTHING is a safety net.
+        qb.push(" ON CONFLICT (oracle_id, key) DO NOTHING");
         qb.build().execute(&mut *tx).await.context("inserting rulings")?;
     }
     tx.commit().await?;
@@ -615,8 +622,8 @@ pub async fn run(pool: &PgPool, cache_dir: &Path) -> Result<()> {
         }
         raw.entry(r.oracle_id).or_default().push((r.published_at, r.comment));
     }
-    let mut rows = number_rulings(raw);
-    rows.sort_by_key(|r| (r.oracle_id, r.idx));
+    let mut rows = key_rulings(raw);
+    rows.sort_by(|a, b| (a.oracle_id, &a.published_at, &a.key).cmp(&(b.oracle_id, &b.published_at, &b.key)));
     // Group whole cards per batch so the DELETE+INSERT stays consistent per card.
     let mut start = 0;
     while start < rows.len() {
@@ -905,8 +912,12 @@ mod tests {
                 ("2020-01-01".to_owned(), "a".to_owned()),
             ],
         );
-        let rows = number_rulings(raw);
-        assert_eq!(rows.iter().map(|r| (r.idx, r.text.as_str())).collect::<Vec<_>>(), vec![(0, "z"), (1, "a"), (2, "b")]);
+        let rows = key_rulings(raw);
+        assert_eq!(rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), vec!["z", "a", "b"]);
+        // The key is the ruling's identity: a function of date and text only, so
+        // the same ruling gets the same key wherever it sits in the list.
+        assert!(rows.iter().all(|r| r.key == ruling_key(&r.published_at, &r.text)));
+        assert_eq!(rows.iter().map(|r| &r.key).collect::<std::collections::HashSet<_>>().len(), 3);
     }
 
     #[test]

@@ -270,7 +270,7 @@ fn render_rulings(s: &mut String, ctx: &Context, budget: &Budget) {
     if ctx.rulings.is_empty() {
         return;
     }
-    s.push_str("\n## Scryfall rulings (cite as scryfall_ruling with the card uuid from the heading and the idx)\n");
+    s.push_str("\n## Scryfall rulings (cite as scryfall_ruling with the card uuid from the heading and the ruling key from its label)\n");
     for c in &ctx.cards {
         let mut shown = 0usize;
         let mut total = 0usize;
@@ -280,7 +280,7 @@ fn render_rulings(s: &mut String, ctx: &Context, budget: &Budget) {
                 if shown == 0 {
                     let _ = writeln!(s, "### {} — card {}", c.name, c.id);
                 }
-                let _ = writeln!(s, "[ruling #{}] ({}) {}", r.idx, r.published_at, r.text);
+                let _ = writeln!(s, "[ruling {}] ({}) {}", r.key, r.published_at, r.text);
                 shown += 1;
             }
         }
@@ -295,7 +295,7 @@ fn render_rulings(s: &mut String, ctx: &Context, budget: &Budget) {
             let _ = writeln!(s, "### card {}", r.card);
             orphan = Some(r.card);
         }
-        let _ = writeln!(s, "[ruling #{}] ({}) {}", r.idx, r.published_at, r.text);
+        let _ = writeln!(s, "[ruling {}] ({}) {}", r.key, r.published_at, r.text);
     }
 }
 
@@ -344,8 +344,8 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &Rejection) {
                 Citation::Rule { id, .. } if ctx.rule(id).is_none() => {
                     format!("rule {id} is not among the excerpts; cite an id exactly as shown in the excerpts")
                 }
-                Citation::ScryfallRuling { card, idx, .. } if ctx.ruling(*card, *idx).is_none() => {
-                    format!("there is no ruling [ruling #{idx}] under a card heading with uuid {card} in the material")
+                Citation::ScryfallRuling { card, ruling, .. } if ctx.ruling(*card, ruling).is_none() => {
+                    format!("there is no ruling [ruling {ruling}] under a card heading with uuid {card} in the material")
                 }
                 Citation::PriorCall { id, .. } if ctx.prior_call(*id).is_none() => {
                     format!("there is no prior call labelled [call {id}] in the material")
@@ -433,7 +433,8 @@ mod tests {
     use super::*;
     use judge_core::{
         AnswerableSource, Category, Confidence, CrVersion, Extraction, Face, Layout, MalformedCitation, Qa, Ruling, Source,
-    };
+        ruling_key,
+};
     use std::sync::{Mutex, PoisonError};
     use nonempty::NonEmpty;
     use serde_json::{Value, json};
@@ -492,7 +493,7 @@ mod tests {
         let ctx = Context {
             cards: vec![bob],
             rules: vec![chunk("702.15", None, "702.15. Lifelink\n702.15b Damage dealt by a source with lifelink causes that source's controller to gain that much life.")?],
-            rulings: vec![Ruling { card: CardId::new(Uuid::from_u128(7)), idx: 2, published_at: "2020-01-01".into(), text: "Bob is sad.".into() }],
+            rulings: vec![Ruling { card: CardId::new(Uuid::from_u128(7)), key: ruling_key("2020-01-01", "Bob is sad."), published_at: "2020-01-01".into(), text: "Bob is sad.".into() }],
             history: vec![Qa { question: "earlier?".into(), answer: "yes".into() }],
             ..Context::default()
         };
@@ -501,7 +502,8 @@ mod tests {
         assert!(s.starts_with("# Material\n## Cards (current Oracle text; cite as oracle_text with the card uuid and face index from the face label)\n### Dark Confidant — card 00000000-0000-0000-0000-000000000007"), "{s}");
         assert!(s.contains("[oracle 00000000-0000-0000-0000-000000000007#0] **Dark Confidant** {1}{B} — Creature — Human Wizard\nAt the beginning"), "{s}");
         assert!(s.contains("## Comprehensive Rules (effective 20250801)\n### [702.15] Heading\n702.15. Lifelink\n702.15b"), "{s}");
-        assert!(s.contains("### Dark Confidant — card 00000000-0000-0000-0000-000000000007\n[ruling #2] (2020-01-01) Bob is sad."), "{s}");
+        let key = ruling_key("2020-01-01", "Bob is sad.");
+        assert!(s.contains(&format!("### Dark Confidant — card 00000000-0000-0000-0000-000000000007\n[ruling {key}] (2020-01-01) Bob is sad.")), "{s}");
         assert!(s.contains("## Earlier in this thread (context only; not citable)\nQ: earlier?\nA: yes"), "{s}");
         assert!(s.contains("## Previous attempt rejected\nYour earlier answer cited rule 702.15: \"nope\", which failed validation: the quote is not a verbatim substring"), "{s}");
         assert!(s.ends_with("\n# Question\ndoes trample work with deathtouch?\n"), "{s}");
@@ -616,7 +618,7 @@ mod tests {
     fn rulings_capped_per_card_and_history_truncated() {
         let bob = CardId::new(Uuid::from_u128(7));
         let rulings = (0..25)
-            .map(|i| Ruling { card: bob, idx: i, published_at: "2020-01-01".into(), text: format!("ruling {i}") })
+            .map(|i| Ruling { card: bob, key: ruling_key("2020-01-01", &format!("ruling {i}")), published_at: "2020-01-01".into(), text: format!("ruling {i}") })
             .collect();
         let long = "é".repeat(700);
         let ctx = Context {
@@ -626,7 +628,7 @@ mod tests {
             ..Context::default()
         };
         let s = render_user_turn(&q(), &ctx, None, &[], &Budget::default());
-        assert!(s.contains("#19] (2020-01-01) ruling 19\n(5 more rulings omitted)"), "{s}");
+        assert!(s.contains(&format!("[ruling {}] (2020-01-01) ruling 19\n(5 more rulings omitted)", ruling_key("2020-01-01", "ruling 19"))), "{s}");
         assert!(!s.contains("ruling 20"), "{s}");
         // Only the last four Q&A, and the long answer cut on a char boundary.
         assert!(!s.contains("Q: q1\n") && s.contains("Q: q2\n"), "{s}");

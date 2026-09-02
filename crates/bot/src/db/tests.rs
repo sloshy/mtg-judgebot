@@ -185,8 +185,14 @@ async fn seed(pool: &PgPool) -> anyhow::Result<()> {
     .bind(BONECRUSHER)
     .execute(pool)
     .await?;
-    sqlx::query("INSERT INTO rulings (oracle_id, idx, published_at, text) VALUES ($1, 0, '2019-10-04', 'Stomp can target a player.'), ($1, 1, '2019-10-04', 'The creature ability triggers on any spell.')")
-        .bind(BONECRUSHER).execute(pool).await?;
+    for text in ["Stomp can target a player.", "The creature ability triggers on any spell."] {
+        sqlx::query("INSERT INTO rulings (oracle_id, key, published_at, text) VALUES ($1, $2, '2019-10-04', $3)")
+            .bind(BONECRUSHER)
+            .bind(judge_core::ruling_key("2019-10-04", text).to_string())
+            .bind(text)
+            .execute(pool)
+            .await?;
+    }
 
     let rules: [(&str, Option<&str>, &str, &str, &str); 8] = [
         (
@@ -262,6 +268,29 @@ fn resolved_name(r: &Resolution) -> Option<(&str, MatchedVia)> {
         Resolution::Resolved { card, via } => Some((card.name.as_str(), *via)),
         _ => None,
     }
+}
+
+/// The migration that introduced `rulings.key` backfilled it with a SQL
+/// expression; every later row is written by the ingest loader from
+/// `judge_core::ruling_key`. The two must agree or a citation stored before the
+/// migration points at nothing. Non-ASCII text exercises the UTF-8 encoding step.
+#[sqlx::test(migrations = "./migrations")]
+async fn ruling_key_sql_backfill_matches_rust(pool: PgPool) -> anyhow::Result<()> {
+    for (date, text) in [
+        ("2019-10-04", "Stomp can target a player."),
+        ("2004-10-04", "If Humility’s effect is applied — “all creatures lose all abilities” — layer 6 governs."),
+        ("2020-01-01", ""),
+    ] {
+        let sql: String = sqlx::query_scalar(
+            "SELECT left(encode(sha256(convert_to(to_char($1::date, 'YYYY-MM-DD') || E'\\n' || $2, 'UTF8')), 'hex'), 16)",
+        )
+        .bind(date)
+        .bind(text)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(sql, judge_core::ruling_key(date, text).to_string(), "{date} {text:?}");
+    }
+    Ok(())
 }
 
 #[sqlx::test(migrations = "./migrations")]

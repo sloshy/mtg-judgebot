@@ -190,8 +190,8 @@ mod tests {
     fn cite_counts_by_kind() -> anyhow::Result<()> {
         let c = vec![
             Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "x".into() },
-            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), idx: 0, quote: "y".into() },
-            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), idx: 1, quote: "y".into() },
+            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), ruling: judge_core::ruling_key("2020-01-01", "a"), quote: "y".into() },
+            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), ruling: judge_core::ruling_key("2020-01-01", "b"), quote: "y".into() },
             Citation::PriorCall { id: judge_core::CallId::new(uuid_nil()), quote: "z".into() },
             Citation::OracleText { card: judge_core::CardId::new(uuid_nil()), face: 0, quote: "w".into() },
         ];

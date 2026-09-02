@@ -114,7 +114,7 @@ mod tests {
         let schema = anthropic_schema::<Verdict>();
         assert_subset(&schema);
         let s = schema.to_string();
-        // The tagged Citation enum must have become anyOf, and Citation::ScryfallRuling's u32 idx
+        // The tagged Citation enum must have become anyOf, and Citation::OracleText's u32 face
         // must have lost its "uint32" format and "minimum": 0.
         assert!(s.contains("anyOf"), "{schema:#}");
         assert!(s.contains("\"kind\""), "{schema:#}");

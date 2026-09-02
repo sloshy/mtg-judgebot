@@ -25,7 +25,7 @@ pub(crate) fn upstream(what: &'static str) -> impl FnOnce(sqlx::Error) -> JudgeE
     move |e| JudgeError::Upstream(anyhow::Error::new(e).context(what))
 }
 
-/// A message-only data error (missing faces, negative idx) as `JudgeError::Upstream`.
+/// A message-only data error (missing faces, an unparsable ruling key) as `JudgeError::Upstream`.
 pub(crate) fn bad_row(what: impl std::fmt::Display) -> JudgeError {
     JudgeError::Upstream(anyhow::anyhow!("{what}"))
 }

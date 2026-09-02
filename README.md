@@ -13,7 +13,7 @@ future answers are grounded.
 
 @you asked: does bob's trigger count goyf's mana value as 0?
 You'll lose 2 life, not 0. Tarmogoyf's mana value is 0 anywhere its {X}… [702.19b] …
-  Citations: [202.3](…CR link…) · [Ruling #2 — Tarmogoyf](…scryfall…) · [Oracle text — Dark Confidant](…)
+  Citations: [202.3](…CR link…) · [Ruling (2021-02-05) — Tarmogoyf](…scryfall…) · [Oracle text — Dark Confidant](…)
   Confidence: High · CR 2026-08-19        [Incorrect] [Partially correct] [Correct]
 ```
 

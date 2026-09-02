@@ -293,6 +293,28 @@ docker compose up -d
 `docker compose up -d --build` still works on a machine with the CPU and RAM for it;
 `build: .` is retained for local development.
 
+### A release that carries a migration
+
+Neither `bot` nor `api` runs migrations at startup, so a release whose commit adds a
+file under `crates/bot/migrations/` needs the schema moved by hand, with the old
+binaries stopped first: the new image's queries fail against the old schema (every
+question that resolves a card errors) and the old image's fail against the new one.
+Nothing crash-loops, so the failure is quiet until someone asks a question.
+
+```sh
+git pull
+docker compose stop bot api
+ssh -N -L 5433:127.0.0.1:5433 you@server &     # from a workstation with sqlx-cli
+sqlx migrate run --source crates/bot/migrations  # DATABASE_URL=...@localhost:5433
+docker compose pull && docker compose up -d
+```
+
+Stopping `bot`/`api` matters for more than the error window: a migration that
+rewrites `calls` rows (20260902000001 did, moving ruling citations to content keys)
+must not race a call being persisted by the old binary, and `ALTER TABLE` waits on
+any in-flight query. The release notes in the commit say when this applies; the
+refresh cron is harmless meanwhile, since a failing step rolls back.
+
 ### One-time: let the host pull a private package
 
 The repo is private, so the GHCR package is too. On the host, log in with a classic
@@ -320,6 +342,10 @@ docker compose pull && docker compose up -d
 ```
 
 Clear `JUDGE_IMAGE_TAG` to return to `latest`.
+
+A tag from before a migration cannot run against the migrated schema. Rolling back
+across one means restoring the pre-release dump too (`scripts/backup-db.sh fetch`, §6),
+which is why the weekly backup is worth taking by hand right before such a deploy.
 
 `cloudflared` and `db` are untouched by a code deploy. The tunnel reconnects on its
 own if the connector restarts.

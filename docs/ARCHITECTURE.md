@@ -133,7 +133,7 @@ from one set of names:
 |---|---|---|
 | Scryfall bulk `oracle-cards.json` | nightly (`ingest refresh`, cron on the deploy host — DEPLOYMENT.md §7) | `cards` (oracle_id, name, layout, type_line, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
 | Scryfall bulk `default-cards.json` (names only) | nightly | `printed_names` (printed_name, oracle_id) — old names, errata'd names |
-| Scryfall bulk `rulings.json` | nightly (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, idx, published_at, text) |
+| Scryfall bulk `rulings.json` | nightly (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, key, published_at, text) — `key` = content hash (`judge_core::ruling_key`), so a reindexed ruling keeps its identity |
 | Comprehensive Rules txt | on CR release — detected nightly from the `.txt` link on Wizards' rules page vs `max(cr_version)` | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
 | CR Glossary | same | `glossary` (term, text, embedding) |
 | Scryfall `/symbology` (84 card symbols) | nightly (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web page (`web/src/symbols.ts`) |
@@ -165,7 +165,7 @@ Category      closed set, ~25 values, sourced from categories.yaml
 Source        CR | Commander | Tournament | OutOfScope
 Confidence    Low | Medium | High
 Resolution    Resolved(card, matchedVia) | Ambiguous(query, candidates) | NotFound(query)
-Citation      Rule(id, quote) | ScryfallRuling(card, idx, quote) | PriorCall(id, quote)
+Citation      Rule(id, quote) | ScryfallRuling(card, rulingKey, quote) | PriorCall(id, quote)
 Context       { cards, rules, rulings, glossary, prior, notes, history }
 Verdict       { answer, confidence, citations, category, source, crVersion }
 JudgeError    Ambiguous(...) | OutOfScope(source) | BadCitation(citation) | LlmRefused | Upstream(err)

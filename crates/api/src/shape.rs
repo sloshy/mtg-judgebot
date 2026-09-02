@@ -92,7 +92,7 @@ pub enum ApiReply {
 /// One citation, pre-linked the way the Discord embed links them.
 #[derive(Clone, Debug, Serialize)]
 pub struct CitationView {
-    /// Display label, e.g. `702.19b` or `Ruling #2 — Blood Moon`.
+    /// Display label, e.g. `702.19b` or `Ruling (2018-07-13) — Blood Moon`.
     pub label: String,
     /// Where the source can be read, when it is public (rules and Scryfall
     /// material; prior calls have no public page).
@@ -194,11 +194,11 @@ fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
             url: Some(render::rule_url(id)),
             quote,
         },
-        Citation::ScryfallRuling { card, idx, .. } => {
-            let n = idx.saturating_add(1);
+        Citation::ScryfallRuling { card, ruling, .. } => {
+            let date = ctx.and_then(|x| x.ruling(*card, ruling)).map(|r| format!(" ({})", r.published_at)).unwrap_or_default();
             let label = match card_name(*card) {
-                Some(name) => format!("Ruling #{n} — {name}"),
-                None => format!("Scryfall ruling #{n}"),
+                Some(name) => format!("Ruling{date} — {name}"),
+                None => format!("Scryfall ruling{date}"),
             };
             CitationView { label, url: Some(render::scryfall_url(*card)), quote }
         }
@@ -227,7 +227,8 @@ mod tests {
     use judge_core::{
         AnswerableSource, CallId, Card, CardId, Category, CrVersion, Face, Layout, RuleChunk, RuleId,
         Ruling, Unvalidated,
-    };
+        ruling_key,
+};
     use nonempty::NonEmpty;
 
     fn req(question: &str) -> JudgeRequest {
@@ -294,7 +295,7 @@ mod tests {
             }],
             rulings: vec![Ruling {
                 card: card_id,
-                idx: 0,
+                key: ruling_key("2020-01-01", "Lifelink is  not\na triggered ability."),
                 published_at: "2020-01-01".into(),
                 text: "Lifelink is  not\na triggered ability.".into(),
             }],
@@ -305,7 +306,7 @@ mod tests {
             Confidence::High,
             vec![
                 Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "gain that much life".into() },
-                Citation::ScryfallRuling { card: card_id, idx: 0, quote: "a triggered ability".into() },
+                Citation::ScryfallRuling { card: card_id, ruling: ruling_key("2020-01-01", "Lifelink is  not\na triggered ability."), quote: "a triggered ability".into() },
             ],
             Category::KeywordAbilities,
         );
@@ -330,7 +331,7 @@ mod tests {
         );
         assert_eq!(
             cites.get(1).and_then(|c| c.get("label")).and_then(|l| l.as_str()),
-            Some("Ruling #1 — Dark Confidant")
+            Some("Ruling (2020-01-01) — Dark Confidant")
         );
         // Whitespace in quotes is collapsed for display.
         let without_ctx = answer(&v, None);
@@ -341,7 +342,7 @@ mod tests {
                 .and_then(|c| c.get(1))
                 .and_then(|c| c.get("label"))
                 .and_then(|l| l.as_str()),
-            Some("Scryfall ruling #1")
+            Some("Scryfall ruling")
         );
         Ok(())
     }

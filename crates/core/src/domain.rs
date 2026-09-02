@@ -76,6 +76,102 @@ impl JsonSchema for CallId {
     }
 }
 
+/// Identity of a Scryfall ruling: a content hash, see [`ruling_key`].
+///
+/// Scryfall gives rulings no id, only a position in the card's list, and that
+/// position shifts whenever a ruling is added or removed ahead of it. A citation
+/// keyed by position would then silently point at a different ruling. Keyed by
+/// content, a reindexed ruling is the same ruling and a reworded one is a new
+/// one — which is what a citation's verbatim quote already assumes.
+///
+/// Eight bytes, shown and stored as 16 lowercase hex digits. Backing it with
+/// bytes rather than a validated string means [`ruling_key`] has no failure
+/// path at all: the only way to construct one from text is [`FromStr`], which
+/// is where the model's copy of a label is checked.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RulingKey([u8; 8]);
+
+/// The text was not 16 hex digits.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("ruling key must be 16 hex digits, got {0:?}")]
+pub struct InvalidRulingKey(String);
+
+impl fmt::Display for RulingKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for b in self.0 {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for RulingKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RulingKey({self})")
+    }
+}
+
+impl std::str::FromStr for RulingKey {
+    type Err = InvalidRulingKey;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let bad = || InvalidRulingKey(s.to_owned());
+        if s.len() != 16 || !s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            return Err(bad());
+        }
+        let mut out = [0u8; 8];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = s.get(2 * i..2 * i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()).ok_or_else(bad)?;
+        }
+        Ok(Self(out))
+    }
+}
+
+impl Serialize for RulingKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for RulingKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = <Cow<'de, str>>::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for RulingKey {
+    fn schema_name() -> Cow<'static, str> {
+        "RulingKey".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            // No "pattern": Anthropic's structured-output subset rejects it.
+            "description": "Ruling key: the 16 hex characters from the ruling's label [ruling <key>]"
+        })
+    }
+}
+
+/// The one definition of a ruling's identity: the first 64 bits of SHA-256 over
+/// `published_at` (`YYYY-MM-DD`), a newline and `text`.
+///
+/// Both fields, because Scryfall publishes the same sentence under one card on
+/// different dates (~95 cards as of 2026-09) and the two are distinct rulings.
+/// The ingest loader computes this on write, the migration that introduced the
+/// column computed it in SQL, and a test in the bot crate pins the two together.
+#[must_use]
+pub fn ruling_key(published_at: &str, text: &str) -> RulingKey {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(published_at.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(text.as_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let [k0, k1, k2, k3, k4, k5, k6, k7, ..] = digest;
+    RulingKey([k0, k1, k2, k3, k4, k5, k6, k7])
+}
+
 /// Comprehensive Rules version, as its effective date `YYYYMMDD`.
 #[nutype(
     sanitize(trim),
@@ -296,12 +392,12 @@ pub enum Citation {
         /// Verbatim span of the rule.
         quote: String,
     },
-    /// Ruling `idx` of `card` on Scryfall.
+    /// A Scryfall ruling of `card`, identified by content ([`ruling_key`]).
     ScryfallRuling {
         /// The card.
         card: CardId,
-        /// Ruling index for that card.
-        idx: u32,
+        /// The ruling's key, copied from its `[ruling <key>]` label.
+        ruling: RulingKey,
         /// Verbatim span of the ruling.
         quote: String,
     },
@@ -388,7 +484,7 @@ impl fmt::Display for Citation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Citation::Rule { id, quote } => write!(f, "rule {id}: {quote:?}"),
-            Citation::ScryfallRuling { card, idx, quote } => write!(f, "ruling {card}#{idx}: {quote:?}"),
+            Citation::ScryfallRuling { card, ruling, quote } => write!(f, "ruling {card}/{ruling}: {quote:?}"),
             Citation::PriorCall { id, quote } => write!(f, "prior call {id}: {quote:?}"),
             Citation::OracleText { card, face, quote } => write!(f, "oracle {card}#{face}: {quote:?}"),
         }
@@ -443,8 +539,8 @@ impl RuleChunk {
 pub struct Ruling {
     /// The card the ruling is about.
     pub card: CardId,
-    /// Position in Scryfall's ruling list for the card.
-    pub idx: u32,
+    /// Content key, [`ruling_key`] of `published_at` and `text`.
+    pub key: RulingKey,
     /// ISO-8601 date as published by Scryfall.
     pub published_at: String,
     /// Ruling text.
@@ -669,10 +765,10 @@ impl Context {
         self.cards.iter().find(|c| c.id == id)
     }
 
-    /// The Scryfall ruling `idx` of `card`, if present.
+    /// The Scryfall ruling of `card` with this key, if present.
     #[must_use]
-    pub fn ruling(&self, card: CardId, idx: u32) -> Option<&Ruling> {
-        self.rulings.iter().find(|r| r.card == card && r.idx == idx)
+    pub fn ruling(&self, card: CardId, key: &RulingKey) -> Option<&Ruling> {
+        self.rulings.iter().find(|r| r.card == card && &r.key == key)
     }
 
     /// The prior call with this id, if present.
@@ -709,6 +805,23 @@ impl Score {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruling_key_round_trips_and_rejects_bad_text() {
+        let k = ruling_key("2019-10-04", "Stomp can target a player.");
+        let shown = k.to_string();
+        assert_eq!(shown.len(), 16);
+        assert!(shown.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert_eq!(shown.parse::<RulingKey>(), Ok(k));
+        assert_eq!(serde_json::from_str::<RulingKey>(&format!("\" {shown} \"")).ok(), Some(k), "whitespace is trimmed like the model's other ids");
+        assert_eq!(serde_json::to_string(&k).ok(), Some(format!("\"{shown}\"")));
+        for bad in ["", "0123456789abcde", "0123456789abcdef0", "0123456789ABCDEF", "0123456789abcdeg"] {
+            assert!(bad.parse::<RulingKey>().is_err(), "{bad:?}");
+        }
+        // Same text on another date is another ruling; same inputs are the same key.
+        assert_ne!(ruling_key("2019-10-05", "Stomp can target a player."), k);
+        assert_eq!(ruling_key("2019-10-04", "Stomp can target a player."), k);
+    }
 
     #[test]
     fn rule_id_accepts_ascii_forms() {

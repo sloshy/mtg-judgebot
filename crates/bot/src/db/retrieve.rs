@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use judge_core::{
     CallId, Card, CardId, CardNote, Category, Context, CrVersion, Embedder, Extraction,
     GlossaryEntry, InputKind, JudgeError, PriorCall, Question, Retriever, RuleChunk, RuleId,
-    Ruling,
+    Ruling, RulingKey,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
@@ -123,10 +123,10 @@ impl PgRetriever {
         }
         let rows = sqlx::query!(
             r#"
-            SELECT oracle_id, idx, published_at::text AS "published_at!", text
+            SELECT oracle_id, key, published_at::text AS "published_at!", text
             FROM rulings
             WHERE oracle_id = ANY($1)
-            ORDER BY oracle_id, idx
+            ORDER BY oracle_id, published_at DESC, key
             "#,
             ids
         )
@@ -135,15 +135,10 @@ impl PgRetriever {
         .map_err(upstream("rulings"))?;
         rows.into_iter()
             .map(|r| {
-                let idx = u32::try_from(r.idx).map_err(|_| {
-                    bad_row(format!(
-                        "negative ruling idx {} for card {}",
-                        r.idx, r.oracle_id
-                    ))
-                })?;
+                let key: RulingKey = r.key.parse().map_err(|e| bad_row(format!("card {}: {e}", r.oracle_id)))?;
                 Ok(Ruling {
                     card: CardId::new(r.oracle_id),
-                    idx,
+                    key,
                     published_at: r.published_at,
                     text: r.text,
                 })

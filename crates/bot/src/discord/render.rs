@@ -196,11 +196,13 @@ pub fn citation_line(c: &Citation, ctx: Option<&Context>, symbols: &SymbolTable)
     let card_name = |id: CardId| ctx.and_then(|x| x.card(id)).map(|card| card.name.clone());
     let prefix = match c {
         Citation::Rule { id, .. } => format!("[{id}]({}) “", rule_url(id)),
-        Citation::ScryfallRuling { card, idx, .. } => {
-            let n = idx.saturating_add(1);
+        Citation::ScryfallRuling { card, ruling, .. } => {
+            // The date tells two rulings of one card apart; both link to the
+            // same Scryfall page.
+            let date = ctx.and_then(|x| x.ruling(*card, ruling)).map(|r| format!(" ({})", r.published_at)).unwrap_or_default();
             let label = match card_name(*card) {
-                Some(name) => format!("Ruling #{n} — {name}"),
-                None => format!("Scryfall ruling #{n}"),
+                Some(name) => format!("Ruling{date} — {name}"),
+                None => format!("Scryfall ruling{date}"),
             };
             format!("[{label}]({}) “", scryfall_url(*card))
         }
@@ -430,7 +432,8 @@ mod tests {
     use judge_core::{
         AnswerableSource, Card, CardId, Category, Context, CrVersion, EmptyVerdict, Face, Layout,
         RuleChunk, RuleId, Source,
-    };
+        ruling_key,
+};
 
     /// Most tests predate the emoji and assert the literal `{W}` behaviour.
     fn no_symbols() -> SymbolTable {
@@ -610,17 +613,17 @@ mod tests {
         };
         let r = Citation::ScryfallRuling {
             card: id,
-            idx: 0,
+            ruling: ruling_key("2020-01-01", "a ruling"),
             quote: "a  ruling\nwith   space".into(),
         };
         assert_eq!(
             citation_line(&r, Some(&ctx), &no_symbols()).to_string(),
-            format!("[Ruling #1 — Dark Confidant]({url}) “a ruling with space”")
+            format!("[Ruling — Dark Confidant]({url}) “a ruling with space”")
         );
         // Without a context the link still works; only the name is missing.
         assert_eq!(
             citation_line(&r, None, &no_symbols()).to_string(),
-            format!("[Scryfall ruling #1]({url}) “a ruling with space”")
+            format!("[Scryfall ruling]({url}) “a ruling with space”")
         );
         let p = Citation::PriorCall {
             id: judge_core::CallId::new(Uuid::from_u128(2)),
@@ -665,7 +668,7 @@ mod tests {
                 citation_line(
                     &Citation::ScryfallRuling {
                         card: id,
-                        idx: i,
+                        ruling: ruling_key("2020-01-01", &i.to_string()),
                         quote: "q".repeat(300),
                     },
                     Some(&ctx),
