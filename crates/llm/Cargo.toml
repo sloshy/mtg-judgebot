@@ -1,21 +1,24 @@
 [package]
-name = "judge-anthropic"
+name = "judge-llm"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "The Anthropic Messages API as a judge-llm backend: wire types, schema transform, request/response conversion, endpoints."
+description = "The provider-neutral chat seam: request/response types, the ChatModel port, the spend cap, the shared HTTP retry loop and the Synth typestate."
 
 [dependencies]
 judge-core.workspace = true
-judge-llm.workspace = true
+anyhow.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
+# `time` only: retry backoff in `http::post_with_retries`.
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 wiremock.workspace = true

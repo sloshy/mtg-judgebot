@@ -1,12 +1,13 @@
 //! `eval answer`: run the full `judge()` pipeline over the gold set, score
-//! citations and source, account for Anthropic spend, and write a run file
+//! citations and source, account for model spend, and write a run file
 //! that `eval show` renders for human review.
 
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use anyhow::Context as _;
-use judge_anthropic::Client;
+use judge_bot::Models;
 use judge_core::{Citation, Embedder, JudgeError, Question, Verdict, judge};
+use judge_llm::LlmError;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -24,7 +25,7 @@ pub struct Options {
     pub limit: usize,
     /// Only these gold ids, in gold order.
     pub ids: Vec<String>,
-    /// Client spend cap for this run.
+    /// Spend cap for this run.
     pub max_usd: f64,
     /// Where the JSON goes.
     pub out: PathBuf,
@@ -197,7 +198,9 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
     if let Some(known) = opts.ids.iter().find(|id| !gold.questions.iter().any(|q| &q.id == *id)) {
         anyhow::bail!("--ids: no gold question with id {known:?}");
     }
-    let client = Client::from_env()?.with_max_spend_usd(opts.max_usd)?;
+    let models = Models::from_env()?;
+    models.meter().set_max_spend_usd(opts.max_usd)?;
+    let meter = models.meter().clone();
     let embedder: Option<Arc<dyn Embedder>> = match judge_embed::VoyageEmbedder::from_env() {
         Ok(e) => Some(Arc::new(e)),
         Err(e) => {
@@ -205,22 +208,21 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
             None
         }
     };
-    let deps = crate::deps::build(pool, &client, embedder, &gold, opts.gold_extraction);
+    let deps = crate::deps::build(pool, &models, embedder, &gold, opts.gold_extraction);
     let selected = select(&gold, opts);
 
     let mut rows = Vec::with_capacity(selected.len());
     for q in selected {
-        let (usd0, calls0) = (client.spent_usd(), client.calls());
+        let (usd0, calls0) = (meter.spent_usd(), meter.calls());
         let question = Question { thread_id: q.id.clone(), text: q.question.clone() };
         let started = Instant::now();
         let result = judge(&deps, &question, &[]).await;
         let elapsed_ms = started.elapsed().as_millis();
-        let row = score_row(q, &result, elapsed_ms, client.calls() - calls0, client.spent_usd() - usd0);
+        let row = score_row(q, &result, elapsed_ms, meter.calls() - calls0, meter.spent_usd() - usd0);
         tracing::info!(id = %row.id, ok = row.correct_shape, usd = format_args!("{:.4}", row.usd), "scored");
         rows.push(row);
         if let Err(JudgeError::Upstream(e)) = &result
-            && e.downcast_ref::<judge_anthropic::ClientError>()
-                .is_some_and(|c| matches!(c, judge_anthropic::ClientError::SpendCapExceeded { .. }))
+            && e.downcast_ref::<LlmError>().is_some_and(|c| matches!(c, LlmError::SpendCapExceeded { .. }))
         {
             tracing::warn!("spend cap reached; stopping the run");
             break;

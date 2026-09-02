@@ -299,8 +299,8 @@ pub fn error(e: &JudgeError) -> String {
 }
 
 fn is_spend_cap(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<judge_anthropic::ClientError>()
-        .is_some_and(|c| matches!(c, judge_anthropic::ClientError::SpendCapExceeded { .. }))
+    err.downcast_ref::<judge_llm::LlmError>()
+        .is_some_and(|c| matches!(c, judge_llm::LlmError::SpendCapExceeded { .. }))
 }
 
 /// Label of a rating button.
@@ -887,7 +887,7 @@ mod tests {
             error(&JudgeError::Upstream(anyhow::anyhow!("db down"))),
             FAILED
         );
-        let cap = judge_anthropic::ClientError::SpendCapExceeded {
+        let cap = judge_llm::LlmError::SpendCapExceeded {
             spent: 5.0,
             cap: 5.0,
         };

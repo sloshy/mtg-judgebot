@@ -389,14 +389,14 @@ impl Toolbox {
         let text = input.pins.iter().fold(input.question, |t, pin| pin_card(&t, &pin.span, &pin.name));
         let q = Question { thread_id: thread.as_str().to_owned(), text };
         let history = self.history(&q.thread_id).await;
-        let (t0, usd0, calls0) = (Instant::now(), p.client.spent_usd(), p.client.calls());
+        let (t0, usd0, calls0) = (Instant::now(), p.meter.spent_usd(), p.meter.calls());
         let result = judge(&p.deps, &q, &history).await;
         let captured = p.capture.take(&q);
         tracing::info!(
             thread = %q.thread_id,
             elapsed_ms = t0.elapsed().as_millis(),
-            usd = format_args!("{:.4}", p.client.spent_usd() - usd0),
-            llm_calls = p.client.calls() - calls0,
+            usd = format_args!("{:.4}", p.meter.spent_usd() - usd0),
+            llm_calls = p.meter.calls() - calls0,
             ok = result.is_ok(),
             "judge"
         );

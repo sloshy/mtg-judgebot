@@ -1,0 +1,6 @@
+accept: */*
+anthropic-beta: server-side-fallback-2026-07-01
+anthropic-version: 2023-06-01
+content-length: 19685
+content-type: application/json
+x-api-key: test-key

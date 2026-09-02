@@ -21,7 +21,7 @@ path = "src/bin/mcp.rs"
 
 [dependencies]
 judge-core.workspace = true
-judge-anthropic.workspace = true
+judge-llm.workspace = true
 judge-embed.workspace = true
 judge-bot.workspace = true
 anyhow.workspace = true

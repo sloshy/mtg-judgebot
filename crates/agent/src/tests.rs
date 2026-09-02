@@ -61,7 +61,7 @@ fn toolbox(pool: PgPool, quota: Option<Quota>) -> Toolbox {
         pool,
         Options {
             harness: Harness::Mcp,
-            anthropic: None,
+            models: None,
             embedder: None,
             permits: Arc::new(Semaphore::new(1)),
             judge_quota: quota,

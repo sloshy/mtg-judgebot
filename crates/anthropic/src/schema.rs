@@ -74,6 +74,16 @@ pub fn anthropic_schema<T: JsonSchema>() -> Value {
     SchemaGenerator::new(settings).into_root_schema_for::<T>().to_value()
 }
 
+/// Apply the subset to an already generated (untransformed) schema, as a
+/// [`judge_llm::OutputSchema`] or [`judge_llm::ToolSpec`] carries it. Gives
+/// the same result as [`anthropic_schema`] for the same type.
+#[must_use]
+pub fn to_anthropic(schema: &Schema) -> Value {
+    let mut s = schema.clone();
+    AnthropicSubset.transform(&mut s);
+    s.to_value()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +117,12 @@ mod tests {
             }
         });
         assert!(objects >= 1, "{schema:#}");
+    }
+
+    #[test]
+    fn transforming_after_generation_equals_generating_with_the_transform() {
+        assert_eq!(to_anthropic(&judge_llm::schema_of::<Verdict>()), anthropic_schema::<Verdict>());
+        assert_eq!(to_anthropic(&judge_llm::schema_of::<Outer>()), anthropic_schema::<Outer>());
     }
 
     #[test]

@@ -1,32 +1,25 @@
-//! Hand-written Anthropic Messages API client (no official Rust SDK exists).
+//! The Anthropic Messages API as a `judge-llm` backend (no official Rust SDK
+//! exists, so the wire types are ours).
 //!
-//! * [`wire`]   — serde types for `POST /v1/messages` and its response.
-//! * [`schema`] — schemars → Anthropic structured-output schema subset.
-//! * [`client`] — thin `reqwest` client.
-//! * [`synth`]  — `Synth<Fresh | ToolRequested | Final>`: the single `lookup_rules` round.
+//! * [`wire`]    — serde types for `POST /v1/messages` and its response.
+//! * [`schema`]  — schemars → Anthropic structured-output schema subset.
+//! * [`convert`] — neutral [`judge_llm::ChatRequest`] ↔ Messages API.
+//! * [`client`]  — [`Endpoint`] (which door, which auth) and [`Anthropic`],
+//!   the [`judge_llm::Backend`] implementation (metered by `judge-llm`
+//!   before the pipeline sees it).
+//!
+//! The spend cap ([`judge_llm::Metered`]), the retry loop
+//! ([`judge_llm::http`]) and the one-tool-round typestate
+//! ([`judge_llm::Synth`]) are provider-neutral and live in `judge-llm`.
 
 pub mod client;
+pub mod convert;
 pub mod schema;
-pub mod synth;
 pub mod wire;
 
-pub use client::{Client, ClientError, DEFAULT_MAX_SPEND_USD, PRICES, Pricing, pricing_for};
-pub use schema::{anthropic_schema, AnthropicSubset};
-pub use synth::{Final, Fresh, LOOKUP_RULES, SendOutcome, Step, Synth, SynthConfig, ToolRequested, Truncated, classify};
-
-/// Longest raw model text logged at debug level before parsing.
-pub const LOG_TEXT_CHARS: usize = 2000;
-
-/// The first `max` characters of `s` (char-safe), with `…` appended if cut.
-/// For log lines: model output is logged before parsing so a schema failure
-/// can be diagnosed.
-#[must_use]
-pub fn truncate_for_log(s: &str, max: usize) -> std::borrow::Cow<'_, str> {
-    match s.char_indices().nth(max) {
-        None => std::borrow::Cow::Borrowed(s),
-        Some((end, _)) => std::borrow::Cow::Owned(format!("{}…", s.get(..end).unwrap_or_default())),
-    }
-}
+pub use client::{Anthropic, ApiKey, Endpoint};
+pub use convert::BACKEND;
+pub use schema::{AnthropicSubset, anthropic_schema, to_anthropic};
 
 /// Default model. Opus 5 with adaptive thinking is the project baseline.
 pub const DEFAULT_MODEL: &str = "claude-opus-5";

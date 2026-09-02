@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "sqlx repos, Anthropic adapters, build_deps composition, serenity/poise Discord adapter, main (bin)."
+description = "sqlx repos, model adapters over judge-llm, build_deps composition (the Anthropic backend by default), serenity/poise Discord adapter, main (bin)."
 
 [lib]
 name = "judge_bot"
@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 judge-core.workspace = true
+judge-llm.workspace = true
 judge-anthropic.workspace = true
 judge-embed.workspace = true
 anyhow.workspace = true

@@ -1,6 +1,7 @@
 //! `judge-bot` as a library: the sqlx adapters for the DB-backed ports, the
-//! Anthropic adapters, and [`build_deps`], the one composition shared by the
-//! `bot` and `eval` binaries.
+//! model adapters (extraction and synthesis over any `judge_llm::ChatModel`),
+//! and [`build_deps`], the one composition shared by the `bot`, `api`, `eval`
+//! and `agent` binaries.
 
 pub mod db;
 pub mod discord;
@@ -10,43 +11,117 @@ pub mod synth;
 
 use std::sync::Arc;
 
-use judge_anthropic::{Client, SynthConfig};
 use judge_core::{Deps, Embedder, Retriever};
+use judge_llm::{Backend, ChatModel, LlmError, Metered, SpendMeter, SynthConfig};
 use sqlx::PgPool;
 
 use db::{PgResolver, PgRetriever};
 
+/// The models the pipeline runs on: one per stage, both billed to one
+/// meter. The stages may share one model (the zero-config setup) or not;
+/// the meter is one per process either way, so a front door reads the whole
+/// spend. The fields are private and the constructors wrap the backends
+/// themselves, so a `Models` cannot hold an uncapped model or report a meter
+/// its models do not bill to.
+#[derive(Clone)]
+pub struct Models {
+    extract: Arc<dyn ChatModel>,
+    synth: Arc<dyn ChatModel>,
+    meter: SpendMeter,
+}
+
+impl std::fmt::Debug for Models {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Models")
+            .field("extract", &format_args!("{}/{}", self.extract.provider(), self.extract.model()))
+            .field("synth", &format_args!("{}/{}", self.synth.provider(), self.synth.model()))
+            .field("meter", &self.meter)
+            .finish()
+    }
+}
+
+impl Models {
+    /// One model for both stages, behind `meter` at the built-in table's price.
+    ///
+    /// # Errors
+    /// `Unpriced` when the table cannot price the model.
+    pub fn single<B: Backend + 'static>(meter: SpendMeter, model: B) -> Result<Self, LlmError> {
+        let model: Arc<dyn ChatModel> = Arc::new(Metered::new(model, meter.clone())?);
+        Ok(Self { extract: Arc::clone(&model), synth: model, meter })
+    }
+
+    /// One model per stage, both behind `meter` at the built-in table's price.
+    ///
+    /// # Errors
+    /// `Unpriced` when the table cannot price either model.
+    pub fn pair<A: Backend + 'static, B: Backend + 'static>(meter: SpendMeter, extract: A, synth: B) -> Result<Self, LlmError> {
+        Ok(Self {
+            extract: Arc::new(Metered::new(extract, meter.clone())?),
+            synth: Arc::new(Metered::new(synth, meter.clone())?),
+            meter,
+        })
+    }
+
+    /// The extraction/classification model (cheap, low effort).
+    #[must_use]
+    pub fn extract(&self) -> Arc<dyn ChatModel> {
+        Arc::clone(&self.extract)
+    }
+
+    /// The synthesis model (the one that answers).
+    #[must_use]
+    pub fn synth(&self) -> Arc<dyn ChatModel> {
+        Arc::clone(&self.synth)
+    }
+
+    /// The spend counters both models bill to.
+    #[must_use]
+    pub fn meter(&self) -> &SpendMeter {
+        &self.meter
+    }
+
+    /// The zero-configuration setup, from the environment: Anthropic's
+    /// first-party API with `ANTHROPIC_API_KEY` (and `ANTHROPIC_BASE_URL`),
+    /// `claude-opus-5` for both stages, one spend cap from `JUDGE_MAX_USD`.
+    ///
+    /// # Errors
+    /// `MissingApiKey`, `BadMaxSpend`, or if the HTTP client cannot be built.
+    pub fn from_env() -> Result<Self, LlmError> {
+        Self::single(SpendMeter::from_env()?, judge_anthropic::Anthropic::from_env()?)
+    }
+}
+
 /// Knobs for [`build_deps_with`]; [`Default`] is what [`build_deps`] uses.
 #[derive(Clone, Debug, Default)]
 pub struct DepsConfig {
-    /// Extraction request knobs: model, effort, output ceiling, history turns.
+    /// Extraction request knobs: effort, output ceiling, history turns.
     pub extract: extract::ExtractConfig,
-    /// Synthesis request knobs: model, effort, output ceiling, refusal fallback.
+    /// Synthesis request knobs: effort, output ceiling, refusal fallback.
     pub synth: SynthConfig,
     /// Size caps for the synthesizer's user turn.
     pub budget: synth::Budget,
 }
 
-/// Wire the Postgres adapters and the Anthropic adapters into [`Deps`] with
+/// Wire the Postgres adapters and the model adapters into [`Deps`] with
 /// [`DepsConfig::default`]. `embedder` is optional: without one the retriever
 /// skips its vector leg and orders prior calls by recency.
 #[must_use]
-pub fn build_deps(pool: PgPool, client: Client, embedder: Option<Arc<dyn Embedder>>) -> Deps {
-    build_deps_with(pool, client, embedder, &DepsConfig::default())
+pub fn build_deps(pool: PgPool, models: &Models, embedder: Option<Arc<dyn Embedder>>) -> Deps {
+    build_deps_with(pool, models, embedder, &DepsConfig::default())
 }
 
 /// [`build_deps`] with explicit configuration.
 #[must_use]
-pub fn build_deps_with(pool: PgPool, client: Client, embedder: Option<Arc<dyn Embedder>>, cfg: &DepsConfig) -> Deps {
+pub fn build_deps_with(pool: PgPool, models: &Models, embedder: Option<Arc<dyn Embedder>>, cfg: &DepsConfig) -> Deps {
     let mut retriever = PgRetriever::new(pool.clone());
     if let Some(e) = embedder {
         retriever = retriever.with_embedder(e);
     }
     let retriever: Arc<dyn Retriever> = Arc::new(retriever);
-    let synthesizer = synth::AnthropicSynthesizer::new(client.clone(), cfg.synth.clone(), Arc::clone(&retriever))
-        .with_budget(cfg.budget);
+    let synthesizer =
+        synth::LlmSynthesizer::new(models.synth(), cfg.synth.clone(), Arc::clone(&retriever)).with_budget(cfg.budget);
     Deps {
-        extractor: Arc::new(extract::AnthropicExtractor::new(client, cfg.extract.clone())),
+        extractor: Arc::new(extract::LlmExtractor::new(models.extract(), cfg.extract.clone())),
         resolver: Arc::new(PgResolver::new(pool)),
         retriever,
         synthesizer: Arc::new(synthesizer),

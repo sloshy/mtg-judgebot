@@ -86,13 +86,25 @@ synthesis (high-effort, one `lookup_rules` tool round max — enforced by typest
 citation validation and one retry) → persist + Discord rating buttons.
 
 Crate graph: `core` (domain ADTs, ports, `judge()`, citation validation — pure) ←
-`anthropic` (hand-written wire client: we own the API types; schemars → Anthropic's
-schema subset via a transform that must keep `additionalProperties:false` and rewrite
-`oneOf→anyOf`) ← `embed` (Voyage) ← `bot` (sqlx adapters, prompts in
-`crates/bot/src/prompts/`, serenity/poise Discord layer with pure `render.rs`) and
-`ingest` / `eval` / `api` (bins) and `agent` (lib + `judge-cli` / `judge-mcp` bins; `api`
-mounts its MCP handler). `judge_bot::build_deps` is the single composition root
-shared by the bot, eval, the HTTP API and the agent's `judge` tool. `api` (+ the SolidJS page in `web/`) is the
+`llm` (the provider seam, `docs/proposals/providers.md`: neutral `ChatRequest`/`ChatResponse`,
+the open `Backend` trait providers implement and the sealed `ChatModel` port the pipeline
+calls — only `Metered<B>` implements it, so every send is behind the spend cap by type;
+`SpendMeter` + `Price::{Free, PerToken}`, the shared HTTP retry loop, the
+`Synth` typestate and `classify`) ← `anthropic` (a `Backend`: hand-written wire
+types we own, `Endpoint` enum, neutral↔wire conversion; schemars → Anthropic's schema
+subset via a transform that must keep `additionalProperties:false` and rewrite
+`oneOf→anyOf`, applied at conversion time) ← `embed` (Voyage) ← `bot` (sqlx adapters,
+`extract.rs`/`synth.rs` over `judge-llm` only, prompts in `crates/bot/src/prompts/`,
+serenity/poise Discord layer with pure `render.rs`) and `ingest` / `eval` / `api` (bins) and
+`agent` (lib + `judge-cli` / `judge-mcp` bins; `api` mounts its MCP handler).
+`judge_bot::build_deps(pool, Models, embedder)` is the single composition root shared by
+the bot, eval, the HTTP API and the agent's `judge` tool; `Models::{single, pair}` take
+the meter and bare backends and meter them themselves (private fields: no uncapped model,
+no foreign meter), and `Models::from_env` is the zero-config setup (Anthropic direct, one
+model for both stages, one `SpendMeter`) and the only place that names the Anthropic
+backend. `crates/bot/tests/anthropic_golden.rs` pins the four Anthropic request shapes
+byte-for-byte against captured fixtures (`UPDATE_GOLDEN=1` re-captures them after an
+intended prompt/schema change; review the diff). `api` (+ the SolidJS page in `web/`) is the
 anonymous front door: no ratings, stateless "did you mean?" via `pins` → `pin_card`
 rewriting, session history via a client UUID (`web:<uuid>` thread ids), per-IP
 fixed-window rate limiting (`API_RATE_LIMIT`/`API_RATE_WINDOW_SECS`) ahead of the

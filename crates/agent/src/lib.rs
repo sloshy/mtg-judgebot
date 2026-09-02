@@ -10,9 +10,9 @@
 //!
 //! And two ways to get an answer:
 //!
-//! * `judge`: the whole pipeline with the built-in Anthropic calls — the same
+//! * `judge`: the whole pipeline with the built-in model calls — the same
 //!   `judge()` the Discord bot and the web page run, spending the operator's
-//!   API budget. Only offered when `ANTHROPIC_API_KEY` is set.
+//!   API budget. Only offered when a model is configured (`ANTHROPIC_API_KEY`).
 //! * A **session** (`judge_bot::session`): the pipeline in pull mode. The
 //!   caller receives the extraction prompt, answers it, receives the
 //!   synthesis prompt, may look rules up once, answers it, and the verdict is
@@ -38,8 +38,8 @@ use std::{
 };
 
 use anyhow::Context as _;
-use judge_anthropic::Client;
 use judge_bot::{
+    Models,
     db::{PgCallStore, PgLibrary, PgResolver, PgRetriever, PgSessionStore},
     discord::capture::CapturingRetriever,
     session::{PersistCall, Sessions},
@@ -47,6 +47,7 @@ use judge_bot::{
 };
 use judge_core::{CallStore, Deps, Embedder, Resolver, Retriever};
 use judge_embed::VoyageEmbedder;
+use judge_llm::SpendMeter;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
@@ -57,11 +58,12 @@ pub const DEFAULT_HISTORY: usize = 5;
 /// `JUDGE_CONCURRENCY` default, as for the other front doors.
 pub const DEFAULT_CONCURRENCY: usize = 2;
 
-/// The built-in pipeline, present when an Anthropic client is configured.
+/// The built-in pipeline, present when models are configured.
 pub struct Pipeline {
     deps: Deps,
     capture: Arc<CapturingRetriever>,
-    client: Client,
+    /// The meter the pipeline's models bill to.
+    meter: SpendMeter,
 }
 
 /// How many `judge` runs one toolbox allows per window: the blast radius of
@@ -124,8 +126,8 @@ impl std::fmt::Debug for Toolbox {
 pub struct Options {
     /// Which harness the session prompts are worded for.
     pub harness: Harness,
-    /// The spend-capped client for the built-in pipeline; `None` disables `judge`.
-    pub anthropic: Option<Client>,
+    /// The metered models for the built-in pipeline; `None` disables `judge`.
+    pub models: Option<Models>,
     /// Voyage embedder; `None` turns the vector legs off.
     pub embedder: Option<Arc<dyn Embedder>>,
     /// Pipeline slots, shared with any other front door in the same process.
@@ -162,11 +164,12 @@ impl Toolbox {
         )
         .with_history_len(opts.history_len);
         let calls: Arc<dyn CallStore> = calls;
-        let pipeline = opts.anthropic.map(|client| {
-            let mut deps = judge_bot::build_deps(pool, client.clone(), opts.embedder);
+        let pipeline = opts.models.map(|models| {
+            let meter = models.meter().clone();
+            let mut deps = judge_bot::build_deps(pool, &models, opts.embedder);
             let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
             deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
-            Pipeline { deps, capture, client }
+            Pipeline { deps, capture, meter }
         });
         Self {
             sessions,
@@ -195,7 +198,7 @@ impl Toolbox {
     /// the other binaries. A `.env` in the working directory is loaded first.
     ///
     /// # Errors
-    /// A missing `DATABASE_URL`, a malformed `.env`, a bad client
+    /// A missing `DATABASE_URL`, a malformed `.env`, a bad model
     /// configuration, or a failed connection.
     pub async fn from_env(harness: Harness) -> anyhow::Result<Self> {
         match dotenvy::dotenv() {
@@ -209,8 +212,8 @@ impl Toolbox {
             .connect(&database_url)
             .await
             .context("connect to Postgres")?;
-        let anthropic = if set("ANTHROPIC_API_KEY").is_some() {
-            Some(Client::from_env().context("Anthropic client")?)
+        let models = if set("ANTHROPIC_API_KEY").is_some() {
+            Some(Models::from_env().context("models")?)
         } else {
             tracing::info!("ANTHROPIC_API_KEY is not set; the built-in `judge` pipeline is unavailable, sessions are not affected");
             None
@@ -229,7 +232,7 @@ impl Toolbox {
             pool,
             Options {
                 harness,
-                anthropic,
+                models,
                 embedder,
                 permits: Arc::new(Semaphore::new(concurrency)),
                 judge_quota: None,

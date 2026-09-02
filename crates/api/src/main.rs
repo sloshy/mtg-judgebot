@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use judge_agent::{Options, Quota, Toolbox};
 use judge_api::{ApiConfig, App, router, serve};
-use judge_bot::{build_deps, db::PgCallStore, synth::Harness};
+use judge_bot::{Models, build_deps, db::PgCallStore, synth::Harness};
 use judge_core::{CallStore, Embedder};
 use judge_embed::VoyageEmbedder;
 
@@ -39,9 +39,9 @@ async fn main() -> Result<()> {
         .connect(&database_url)
         .await
         .context("connect to Postgres")?;
-    // One HTTP client (connection pool) shared by every Anthropic adapter; the
-    // clone handed to the HTTP layer shares its spend counters.
-    let anthropic = judge_anthropic::Client::from_env()?;
+    // The zero-config models (Anthropic direct, one spend cap); the meter
+    // handed to the HTTP layer is the one they bill to.
+    let models = Models::from_env()?;
     // The embedder is optional: without a Voyage key the retriever skips its vector leg.
     let has_voyage_key = std::env::var("VOYAGE_API_KEY").is_ok_and(|k| !k.trim().is_empty());
     let embedder: Option<Arc<dyn Embedder>> = if has_voyage_key {
@@ -55,17 +55,17 @@ async fn main() -> Result<()> {
         store = store.with_embedder(Arc::clone(e));
     }
     let store: Arc<dyn CallStore> = Arc::new(store);
-    let deps = build_deps(pool.clone(), anthropic.clone(), embedder.clone());
-    let app = Arc::new(App::new(deps, store, anthropic.clone(), &cfg));
+    let deps = build_deps(pool.clone(), &models, embedder.clone());
+    let app = Arc::new(App::new(deps, store, models.meter().clone(), &cfg));
     let mut routes = router(Arc::clone(&app), &cfg.web_dist);
     // The MCP transport shares the judge slots (one JUDGE_CONCURRENCY for
-    // both front doors) and the spend-capped client (one cap).
+    // both front doors) and the metered models (one cap).
     if let Some(token) = &cfg.mcp_token {
         let toolbox = Toolbox::new(
             pool,
             Options {
                 harness: Harness::Mcp,
-                anthropic: Some(anthropic),
+                models: Some(models),
                 embedder,
                 permits: app.permits(),
                 judge_quota: Some(Quota { limit: cfg.mcp_judge_limit, window: cfg.mcp_judge_window }),

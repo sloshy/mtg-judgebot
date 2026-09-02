@@ -40,6 +40,7 @@ use anyhow::Context as _;
 use judge_core::{
     CallId, CallStore, Deps, JudgeError, Question, Retriever, Score, Validated, Verdict, judge,
 };
+use judge_llm::SpendMeter;
 use poise::serenity_prelude as serenity;
 use serenity::{
     ButtonStyle, ComponentInteraction, CreateActionRow, CreateAllowedMentions, CreateButton,
@@ -146,7 +147,7 @@ pub struct Data {
     deps: Deps,
     capture: Arc<CapturingRetriever>,
     store: Arc<dyn CallStore>,
-    client: judge_anthropic::Client,
+    meter: SpendMeter,
     pending: PendingStore,
     permits: Semaphore,
     judge_role: String,
@@ -171,13 +172,13 @@ type Error = anyhow::Error;
 type Ctx<'a> = poise::Context<'a, Data, Error>;
 
 impl Data {
-    /// Wire the shared state. `client` must be (a clone of) the client inside
-    /// `deps`, so its spend counters reflect the judge runs.
+    /// Wire the shared state. `meter` must be the one the models inside
+    /// `deps` bill to, so its counters reflect the judge runs.
     #[must_use]
     pub fn new(
         mut deps: Deps,
         store: Arc<dyn CallStore>,
-        client: judge_anthropic::Client,
+        meter: SpendMeter,
         cfg: &Config,
     ) -> Self {
         let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
@@ -186,7 +187,7 @@ impl Data {
             deps,
             capture,
             store,
-            client,
+            meter,
             pending: PendingStore::new(cfg.pending_ttl),
             permits: Semaphore::new(cfg.max_concurrent),
             judge_role: cfg.judge_role.clone(),
@@ -218,15 +219,15 @@ impl Data {
                 vec![]
             }
         };
-        let (t0, usd0, calls0) = (Instant::now(), self.client.spent_usd(), self.client.calls());
+        let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
         let result = judge(&self.deps, q, &history).await;
         let captured = self.capture.take(q);
         tracing::info!(
             user = %asker,
             thread = %q.thread_id,
             elapsed_ms = t0.elapsed().as_millis(),
-            usd = format_args!("{:.4}", self.client.spent_usd() - usd0),
-            llm_calls = self.client.calls() - calls0,
+            usd = format_args!("{:.4}", self.meter.spent_usd() - usd0),
+            llm_calls = self.meter.calls() - calls0,
             outcome = outcome(&result),
             "/judge"
         );

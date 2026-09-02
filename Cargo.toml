@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/anthropic", "crates/embed", "crates/ingest", "crates/bot", "crates/eval", "crates/api", "crates/agent"]
+members = ["crates/core", "crates/llm", "crates/anthropic", "crates/embed", "crates/ingest", "crates/bot", "crates/eval", "crates/api", "crates/agent"]
 
 [workspace.package]
 edition = "2024"
@@ -11,6 +11,7 @@ publish = false
 [workspace.dependencies]
 wiremock = "0.6"
 judge-core = { path = "crates/core" }
+judge-llm = { path = "crates/llm" }
 judge-anthropic = { path = "crates/anthropic" }
 judge-embed = { path = "crates/embed" }
 judge-bot = { path = "crates/bot" }

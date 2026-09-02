@@ -1,7 +1,9 @@
-//! `Synthesizer` adapter over `judge_anthropic::Synth` (pipeline step 5).
+//! `Synthesizer` adapter over `judge_llm::Synth` (pipeline step 5), over any
+//! `judge_llm::ChatModel`.
 //!
-//! The typestate client owns the wire protocol; this module owns the prompt
-//! and the bookkeeping around the single `lookup_rules` round:
+//! The typestate owns the one tool round and the backend owns the wire
+//! protocol; this module owns the prompt and the bookkeeping around the
+//! single `lookup_rules` round:
 //!
 //! * the system prompt (`prompts/synth_system.md`, stable, so it carries a
 //!   prompt-cache breakpoint) and the user turn rendered from `Context` under
@@ -21,20 +23,17 @@ use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use judge_anthropic::{
-    Client, SendOutcome, Synth, SynthConfig, Truncated,
-    wire::{CacheControl, ContentBlock, Effort},
-};
 use judge_core::{
     Card, CardId, Citation, Context, EmptyVerdict, JudgeError, Question, Rejection, Retriever, RuleChunk, RuleId,
     Synthesizer, Unvalidated, Verdict,
 };
+use judge_llm::{ChatModel, Effort, SendOutcome, Synth, SynthConfig, TextBlock, Truncated};
 
 /// The system prompt template (`prompts/synth_system.md`). Two tokens are
 /// filled per [`Harness`]: `{{LOOKUP_RULES}}` (ground rule 4, how the model
 /// asks for more CR text) and `{{OUTPUT_FORMAT}}` (how the answer is
-/// returned). The Anthropic rendering is stable across requests, so
-/// `Synth::new` puts the cache breakpoint on it.
+/// returned). The [`Harness::Tool`] rendering is stable across requests, so
+/// `Synth::new` puts the cache hint on it.
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("prompts/synth_system.md");
 
 /// Who is running the synthesis model, which decides how the prompt tells it
@@ -136,21 +135,21 @@ impl Default for Budget {
     }
 }
 
-/// `Synthesizer` over the Anthropic Messages API.
-pub struct AnthropicSynthesizer {
-    client: Client,
+/// `Synthesizer` over a `ChatModel`.
+pub struct LlmSynthesizer {
+    model: Arc<dyn ChatModel>,
     cfg: SynthConfig,
     retriever: Arc<dyn Retriever>,
     system_prompt: String,
     budget: Budget,
 }
 
-impl AnthropicSynthesizer {
+impl LlmSynthesizer {
     /// With the [`Harness::Tool`] system prompt and the default [`Budget`].
     #[must_use]
-    pub fn new(client: Client, cfg: SynthConfig, retriever: Arc<dyn Retriever>) -> Self {
+    pub fn new(model: Arc<dyn ChatModel>, cfg: SynthConfig, retriever: Arc<dyn Retriever>) -> Self {
         Self {
-            client,
+            model,
             cfg,
             retriever,
             system_prompt: system_prompt(Harness::Tool),
@@ -178,9 +177,9 @@ impl AnthropicSynthesizer {
         let cfg = SynthConfig { effort, ..self.cfg.clone() };
         let user = user_turn(q, ctx, rejected, &self.budget);
         if rejected.is_some() {
-            return Synth::new_final(self.client.clone(), &cfg, self.system_prompt.clone(), user).finish().await;
+            return Synth::new_final(Arc::clone(&self.model), &cfg, self.system_prompt.clone(), user).finish().await;
         }
-        match Synth::new(self.client.clone(), &cfg, self.system_prompt.clone(), user).send().await? {
+        match Synth::new(Arc::clone(&self.model), &cfg, self.system_prompt.clone(), user).send().await? {
             SendOutcome::Done(v) => Ok(v),
             SendOutcome::ToolRequested(t) => {
                 tracing::info!(requested = ?t.requested(), "lookup_rules tool round");
@@ -200,7 +199,7 @@ impl AnthropicSynthesizer {
 }
 
 #[async_trait]
-impl Synthesizer for AnthropicSynthesizer {
+impl Synthesizer for LlmSynthesizer {
     async fn answer(
         &self,
         q: &Question,
@@ -229,7 +228,7 @@ impl Synthesizer for AnthropicSynthesizer {
 /// row. Leaves whose parent was never shown are left alone: the model
 /// cannot have read them, and validation should reject the citation.
 ///
-/// Shared by the Anthropic synthesizer and the agent-driven session, which
+/// Shared by the model-driven synthesizer and the agent-driven session, which
 /// validate the same way.
 ///
 /// # Errors
@@ -504,16 +503,13 @@ pub fn render_question(q: &Question, ctx: &Context, rejected: Option<&Rejection>
     s
 }
 
-/// The user turn as two text blocks: the material (with a cache breakpoint,
-/// so a tool-round continuation rereads it at the cache price) and the
-/// question. On the retry after a rejected citation the tool-round chunks
-/// in `ctx.tool_round` are pinned past the budget.
-fn user_turn(q: &Question, ctx: &Context, rejected: Option<&Rejection>, budget: &Budget) -> Vec<ContentBlock> {
+/// The user turn as two text blocks: the material (with a cache hint, so a
+/// tool-round continuation rereads it at the cache price) and the question.
+/// On the retry after a rejected citation the tool-round chunks in
+/// `ctx.tool_round` are pinned past the budget.
+fn user_turn(q: &Question, ctx: &Context, rejected: Option<&Rejection>, budget: &Budget) -> Vec<TextBlock> {
     let pinned: &[RuleId] = if rejected.is_some() { &ctx.tool_round } else { &[] };
-    vec![
-        ContentBlock::Text { text: render_material(ctx, pinned, budget), cache_control: Some(CacheControl::ephemeral()) },
-        ContentBlock::text(render_question(q, ctx, rejected)),
-    ]
+    vec![TextBlock::cached(render_material(ctx, pinned, budget)), TextBlock::plain(render_question(q, ctx, rejected))]
 }
 
 /// The whole user turn as one string (rendering tests).
@@ -530,6 +526,8 @@ mod tests {
         ruling_key,
 };
     use std::sync::{Mutex, PoisonError};
+    use judge_anthropic::{Anthropic, Endpoint};
+    use judge_llm::{Metered, SpendMeter};
     use nonempty::NonEmpty;
     use serde_json::{Value, json};
     use uuid::Uuid;
@@ -745,9 +743,9 @@ mod tests {
         let ctx = Context { rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?], ..Context::default() };
         let blocks = user_turn(&q(), &ctx, None, &Budget::default());
         let v = serde_json::to_value(&blocks)?;
-        assert_eq!(at(&v, "/0/cache_control/type"), "ephemeral");
+        assert_eq!(at(&v, "/0/cache"), "Short");
         assert!(at(&v, "/0/text").as_str().is_some_and(|t| t.starts_with("# Material\n") && !t.contains("# Question")));
-        assert!(at(&v, "/1/cache_control").is_null());
+        assert!(at(&v, "/1/cache").is_null());
         assert_eq!(at(&v, "/1/text"), "\n# Question\ndoes trample work with deathtouch?\n");
         Ok(())
     }
@@ -790,10 +788,12 @@ mod tests {
         .to_string()
     }
 
-    fn synth_against(server: &MockServer, table: Vec<RuleChunk>) -> Result<(AnthropicSynthesizer, Arc<StubRetriever>), Box<dyn std::error::Error>> {
+    /// The synthesizer over the Anthropic backend against the mock server, metered as in production.
+    fn synth_against(server: &MockServer, table: Vec<RuleChunk>) -> Result<(LlmSynthesizer, Arc<StubRetriever>), Box<dyn std::error::Error>> {
         let retriever = Arc::new(StubRetriever { table, calls: Mutex::new(Vec::new()) });
-        let client = Client::new("test-key")?.with_base_url(server.uri());
-        let synth = AnthropicSynthesizer::new(client, SynthConfig::default(), retriever.clone());
+        let backend = Anthropic::new(Endpoint::Direct { base_url: server.uri(), api_key: "test-key".into() })?;
+        let model: Arc<dyn ChatModel> = Arc::new(Metered::new(backend, SpendMeter::new())?);
+        let synth = LlmSynthesizer::new(model, SynthConfig::default(), retriever.clone());
         Ok((synth, retriever))
     }
 

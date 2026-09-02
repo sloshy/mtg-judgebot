@@ -17,6 +17,7 @@ use axum::{
 };
 use judge_bot::discord::{capture::CapturingRetriever, render};
 use judge_core::{CallStore, Deps, JudgeError, Question, Retriever, Validated, Verdict, judge};
+use judge_llm::SpendMeter;
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
@@ -36,7 +37,7 @@ pub struct App {
     deps: Deps,
     capture: Arc<CapturingRetriever>,
     store: Arc<dyn CallStore>,
-    client: judge_anthropic::Client,
+    meter: SpendMeter,
     permits: Arc<Semaphore>,
     limiter: RateLimiter,
     history_len: usize,
@@ -53,17 +54,17 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
-    /// Wire the shared state. `client` must be (a clone of) the client inside
-    /// `deps`, so its spend counters reflect the judge runs.
+    /// Wire the shared state. `meter` must be the one the models inside
+    /// `deps` bill to, so its counters reflect the judge runs.
     #[must_use]
-    pub fn new(mut deps: Deps, store: Arc<dyn CallStore>, client: judge_anthropic::Client, cfg: &ApiConfig) -> Self {
+    pub fn new(mut deps: Deps, store: Arc<dyn CallStore>, meter: SpendMeter, cfg: &ApiConfig) -> Self {
         let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
         deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
         Self {
             deps,
             capture,
             store,
-            client,
+            meter,
             permits: Arc::new(Semaphore::new(cfg.max_concurrent)),
             limiter: RateLimiter::new(cfg.rate_limit, cfg.rate_window),
             history_len: cfg.history_len,
@@ -97,15 +98,15 @@ impl App {
                 vec![]
             }
         };
-        let (t0, usd0, calls0) = (Instant::now(), self.client.spent_usd(), self.client.calls());
+        let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
         let result = judge(&self.deps, q, &history).await;
         let captured = self.capture.take(q);
         tracing::info!(
             %ip,
             thread = %q.thread_id,
             elapsed_ms = t0.elapsed().as_millis(),
-            usd = format_args!("{:.4}", self.client.spent_usd() - usd0),
-            llm_calls = self.client.calls() - calls0,
+            usd = format_args!("{:.4}", self.meter.spent_usd() - usd0),
+            llm_calls = self.meter.calls() - calls0,
             outcome = outcome(&result),
             "POST /api/judge"
         );
@@ -388,11 +389,11 @@ mod tests {
 
     type Res = Result<(), Box<dyn std::error::Error>>;
 
-    fn test_app(rate_limit: u32) -> Result<(Router, Arc<StubStore>), Box<dyn std::error::Error>> {
+    fn test_app(rate_limit: u32) -> (Router, Arc<StubStore>) {
         test_app_with_dist(rate_limit, Path::new("does-not-exist"))
     }
 
-    fn test_app_with_dist(rate_limit: u32, dist: &Path) -> Result<(Router, Arc<StubStore>), Box<dyn std::error::Error>> {
+    fn test_app_with_dist(rate_limit: u32, dist: &Path) -> (Router, Arc<StubStore>) {
         let store = Arc::new(StubStore::default());
         let deps = Deps {
             extractor: Arc::new(StubExtractor),
@@ -413,9 +414,8 @@ mod tests {
             mcp_judge_limit: ApiConfig::DEFAULT_MCP_JUDGE_LIMIT,
             mcp_judge_window: ApiConfig::DEFAULT_MCP_JUDGE_WINDOW,
         };
-        let client = judge_anthropic::Client::new("test-key")?;
-        let app = Arc::new(App::new(deps, Arc::clone(&store) as Arc<dyn CallStore>, client, &cfg));
-        Ok((router(app, &cfg.web_dist), store))
+        let app = Arc::new(App::new(deps, Arc::clone(&store) as Arc<dyn CallStore>, SpendMeter::new(), &cfg));
+        (router(app, &cfg.web_dist), store)
     }
 
     async fn post_judge(
@@ -438,7 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_plain_question_is_answered_and_persisted() -> Res {
-        let (router, store) = test_app(10)?;
+        let (router, store) = test_app(10);
         let (status, j) = post_judge(router, r#"{"question":"does lifelink stack?"}"#).await?;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("answer"));
@@ -455,7 +455,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_ambiguous_span_offers_choices_and_a_pin_resolves_it() -> Res {
-        let (router, store) = test_app(10)?;
+        let (router, store) = test_app(10);
         let (status, j) = post_judge(router.clone(), r#"{"question":"can urza block?"}"#).await?;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("ambiguous"));
@@ -479,7 +479,7 @@ mod tests {
 
     #[tokio::test]
     async fn requests_beyond_the_rate_limit_get_429() -> Res {
-        let (router, _) = test_app(1)?;
+        let (router, _) = test_app(1);
         let (status, _) = post_judge(router.clone(), r#"{"question":"does lifelink stack?"}"#).await?;
         assert_eq!(status, StatusCode::OK);
         let (status, j) = post_judge(router, r#"{"question":"does lifelink stack?"}"#).await?;
@@ -490,7 +490,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_requests_get_400_without_using_the_rate_window() -> Res {
-        let (router, _) = test_app(1)?;
+        let (router, _) = test_app(1);
         let (status, j) = post_judge(router.clone(), r#"{"question":"  "}"#).await?;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("error"));
@@ -511,8 +511,8 @@ mod tests {
         let dist = std::env::temp_dir().join(format!("judge-api-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dist)?;
         std::fs::write(dist.join("index.html"), "<!doctype html><title>judge</title>")?;
-        let (web, _) = test_app_with_dist(10, &dist)?;
-        let (bare_web, _) = test_app_with_dist(10, &dist)?;
+        let (web, _) = test_app_with_dist(10, &dist);
+        let (bare_web, _) = test_app_with_dist(10, &dist);
         let router = web.merge(crate::mcp::router(crate::mcp::tests::Echo, TOKEN));
         let send = |router: Router, method: Method, path: &str, auth: Option<&str>| {
             let mut req = Request::builder().method(method).uri(path);
@@ -533,14 +533,14 @@ mod tests {
         let bearer = format!("Bearer {TOKEN}");
         assert_eq!(send(router.clone(), Method::POST, "/mcp", Some(&bearer)).await?, StatusCode::OK);
         assert_eq!(send(router, Method::DELETE, "/mcp", Some(&bearer)).await?, StatusCode::OK);
-        let (bare, _) = test_app(10)?;
+        let (bare, _) = test_app(10);
         assert_ne!(send(bare, Method::POST, "/mcp", None).await?, StatusCode::UNAUTHORIZED, "no token configured: no gate");
         Ok(())
     }
 
     #[tokio::test]
     async fn health_answers_ok() -> Res {
-        let (router, _) = test_app(10)?;
+        let (router, _) = test_app(10);
         let req = Request::get("/api/health").body(Body::empty())?;
         let res = router.oneshot(req).await?;
         assert_eq!(res.status(), StatusCode::OK);

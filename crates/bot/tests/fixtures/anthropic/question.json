@@ -1,0 +1,20 @@
+{
+  "history": [
+    {
+      "answer": "earlier answer 0",
+      "question": "earlier question 0"
+    },
+    {
+      "answer": "earlier answer 1",
+      "question": "earlier question 1"
+    },
+    {
+      "answer": "earlier answer 2",
+      "question": "earlier question 2"
+    }
+  ],
+  "question": {
+    "text": "Does [[Humility]] turn off Bob's lifelink, and which timestamp wins?",
+    "thread_id": "golden-thread"
+  }
+}

@@ -1,30 +1,26 @@
-//! `Extractor` adapter: one low-effort Anthropic call with the `Extraction`
-//! schema as structured output (pipeline steps 1 + 3).
+//! `Extractor` adapter: one low-effort model call with the `Extraction`
+//! schema as structured output (pipeline steps 1 + 3), over any
+//! `judge_llm::ChatModel`.
 //!
 //! The system prompt is stable (taxonomy + source definitions) and carries a
-//! `cache_control` breakpoint; thread history and the question go in the user
-//! turn. The pure pieces (`build_request`, `parse_extraction`) are unit-tested
-//! without a network; `extract` itself is tested against a `wiremock` server.
+//! cache hint; thread history and the question go in the user turn. The pure
+//! pieces (`build_request`, `parse_extraction`) are unit-tested without a
+//! network; `extract` itself is tested against a `wiremock` Anthropic server.
 
-use std::fmt::Write as _;
+use std::{fmt::Write as _, sync::Arc};
 
 use anyhow::Context as _;
 use async_trait::async_trait;
-use judge_anthropic::{
-    Client, DEFAULT_MODEL, LOG_TEXT_CHARS, anthropic_schema, truncate_for_log,
-    wire::{
-        Effort, Message, MessagesRequest, MessagesResponse, OutputConfig, OutputFormat, StopReason,
-        SystemBlock,
-    },
-};
 use judge_core::{Category, Extraction, Extractor, JudgeError, Qa, Question};
+use judge_llm::{
+    ChatModel, ChatRequest, ChatResponse, Effort, LOG_TEXT_CHARS, OutputSchema, Stop, TextBlock, ToolChoice, Turn,
+    truncate_for_log,
+};
 
-/// Knobs for the extraction request.
+/// Knobs for the extraction request. The model itself is the backend's.
 #[derive(Clone, Debug)]
 pub struct ExtractConfig {
-    /// Model id.
-    pub model: String,
-    /// `output_config.effort`; extraction is cheap and needs little thinking.
+    /// Effort; extraction is cheap and needs little thinking.
     pub effort: Effort,
     /// Output ceiling; the JSON is a few hundred tokens at most.
     pub max_tokens: u32,
@@ -35,7 +31,6 @@ pub struct ExtractConfig {
 impl Default for ExtractConfig {
     fn default() -> Self {
         Self {
-            model: DEFAULT_MODEL.to_owned(),
             effort: Effort::Low,
             max_tokens: 2000,
             history_turns: 5,
@@ -43,29 +38,25 @@ impl Default for ExtractConfig {
     }
 }
 
-/// Anthropic-backed `Extractor`.
-pub struct AnthropicExtractor {
-    client: Client,
+/// `Extractor` over a `ChatModel`.
+pub struct LlmExtractor {
+    model: Arc<dyn ChatModel>,
     cfg: ExtractConfig,
 }
 
-impl AnthropicExtractor {
-    /// Over a shared client with explicit request knobs.
+impl LlmExtractor {
+    /// Over `model` with explicit request knobs.
     #[must_use]
-    pub fn new(client: Client, cfg: ExtractConfig) -> Self {
-        Self { client, cfg }
+    pub fn new(model: Arc<dyn ChatModel>, cfg: ExtractConfig) -> Self {
+        Self { model, cfg }
     }
 }
 
 #[async_trait]
-impl Extractor for AnthropicExtractor {
+impl Extractor for LlmExtractor {
     async fn extract(&self, q: &Question, history: &[Qa]) -> Result<Extraction, JudgeError> {
         let req = build_request(&self.cfg, q, history);
-        let resp = self
-            .client
-            .messages(&req)
-            .await
-            .map_err(anyhow::Error::from)?;
+        let resp = self.model.complete(&req).await.map_err(anyhow::Error::from)?;
         let e = parse_extraction(&resp)?;
         if e.categories().all(|g| g.category == Category::Other) {
             tracing::warn!(question = %q.text, "extractor returned no category other than `other`; the category-map leg will be empty");
@@ -157,86 +148,73 @@ pub fn user_turn(q: &Question, history: &[Qa], history_turns: usize) -> String {
 }
 
 /// The `Extraction` schema as an agent should see it: full JSON Schema, not
-/// the Anthropic structured-output subset (`anthropic_schema`), which strips
-/// keywords an agent can use. Deserialization enforces the same shape.
+/// a backend's structured-output subset, which strips keywords an agent can
+/// use. Deserialization enforces the same shape.
 #[must_use]
 pub fn schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(Extraction)).unwrap_or_default()
 }
 
-/// One `messages` request: cached system prompt, effort from `cfg`, the
-/// `Extraction` schema as structured output, no thinking override, no temperature.
+/// One request: cached system prompt, effort from `cfg`, the `Extraction`
+/// schema as structured output, no tools, no extended reasoning, no temperature.
 #[must_use]
-pub fn build_request(cfg: &ExtractConfig, q: &Question, history: &[Qa]) -> MessagesRequest {
-    MessagesRequest {
-        model: cfg.model.clone(),
+pub fn build_request(cfg: &ExtractConfig, q: &Question, history: &[Qa]) -> ChatRequest {
+    ChatRequest {
         max_tokens: cfg.max_tokens,
-        system: vec![SystemBlock::cached(system_prompt())],
-        messages: vec![Message::user_text(user_turn(q, history, cfg.history_turns))],
+        system: vec![TextBlock::cached(system_prompt())],
+        turns: vec![Turn::User(vec![TextBlock::plain(user_turn(q, history, cfg.history_turns))])],
         tools: vec![],
-        tool_choice: None,
-        thinking: None,
-        output_config: Some(OutputConfig {
-            effort: Some(cfg.effort),
-            format: Some(OutputFormat::JsonSchema {
-                schema: anthropic_schema::<Extraction>(),
-            }),
-        }),
+        tool_choice: ToolChoice::None,
+        output: Some(OutputSchema::of::<Extraction>()),
+        effort: Some(cfg.effort),
+        thinking: false,
         fallbacks: None,
     }
 }
 
-/// Map `stop_reason` × content to an `Extraction`. The structured-output JSON
-/// is the *last* text block; the model may not emit anything else.
+/// Map the stop reason × content to an `Extraction`. The structured-output
+/// JSON is the *last* text block; the model may not emit anything else.
 ///
 /// # Errors
-/// `LlmRefused` for `refusal`; `Upstream` for truncation, unexpected stop
+/// `LlmRefused` for a refusal; `Upstream` for truncation, unexpected stop
 /// reasons, a missing text block, or JSON that does not match the schema (the
 /// raw text is included in the message).
-pub fn parse_extraction(resp: &MessagesResponse) -> Result<Extraction, JudgeError> {
-    match resp.stop_reason {
-        Some(StopReason::Refusal) => {
-            tracing::warn!(details = ?resp.stop_details, "extraction refused");
+pub fn parse_extraction(resp: &ChatResponse) -> Result<Extraction, JudgeError> {
+    match &resp.stop {
+        Stop::Refusal(details) => {
+            tracing::warn!(?details, "extraction refused");
             Err(JudgeError::LlmRefused)
         }
-        Some(StopReason::MaxTokens) => {
-            Err(anyhow::anyhow!("extraction truncated at max_tokens").into())
-        }
-        Some(StopReason::EndTurn | StopReason::StopSequence) => {
-            let text = resp
-                .text_blocks()
-                .last()
-                .ok_or_else(|| anyhow::anyhow!("extraction response had no text block"))?;
+        Stop::MaxTokens => Err(anyhow::anyhow!("extraction truncated at max_tokens").into()),
+        Stop::EndTurn => {
+            let text = resp.last_text().ok_or_else(|| anyhow::anyhow!("extraction response had no text block"))?;
             tracing::debug!(raw = %truncate_for_log(text, LOG_TEXT_CHARS), "extraction raw model text");
             let e: Extraction = serde_json::from_str(text)
                 // Bounded for the same reason as the verdict parse: this text
                 // reaches the logs through `Upstream`, and it carries the
                 // asker's own words back into them.
                 .with_context(|| {
-                    let shown = judge_anthropic::truncate_for_log(text, judge_anthropic::LOG_TEXT_CHARS);
+                    let shown = truncate_for_log(text, LOG_TEXT_CHARS);
                     format!("extraction JSON did not match schema: {shown}")
                 })?;
             if e.secondary.len() > Extraction::MAX_SECONDARY {
-                // The schema cannot express maxItems (stripped by AnthropicSubset);
-                // `Extraction::categories()` ignores the extras.
+                // The schema subsets cannot express maxItems (stripped for
+                // Anthropic); `Extraction::categories()` ignores the extras.
                 tracing::debug!(n = e.secondary.len(), "model returned more than two secondary categories");
             }
             Ok(e)
         }
-        Some(StopReason::ToolUse | StopReason::PauseTurn | StopReason::Unknown) | None => {
-            Err(anyhow::anyhow!(
-                "unexpected stop_reason {:?} from extraction",
-                resp.stop_reason
-            )
-            .into())
-        }
+        Stop::ToolUse => Err(anyhow::anyhow!("unexpected tool call from extraction").into()),
+        Stop::Other(reason) => Err(anyhow::anyhow!("unexpected stop reason {reason:?} from extraction").into()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use judge_anthropic::{Anthropic, Endpoint};
     use judge_core::{Confidence, Source};
+    use judge_llm::{AssistantTurn, Metered, Refusal, SpendMeter, Usage};
     use serde_json::{Value, json};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -293,36 +271,41 @@ mod tests {
         server
     }
 
-    fn extractor(server: &MockServer) -> Result<AnthropicExtractor, judge_anthropic::ClientError> {
-        Ok(AnthropicExtractor::new(
-            Client::new("test-key")?.with_base_url(server.uri()),
-            ExtractConfig::default(),
-        ))
+    /// The Anthropic backend against the mock server, metered as in production.
+    fn model(server: &MockServer) -> Result<Arc<dyn ChatModel>, judge_llm::LlmError> {
+        let backend = Anthropic::new(Endpoint::Direct { base_url: server.uri(), api_key: "test-key".into() })?;
+        Ok(Arc::new(Metered::new(backend, SpendMeter::new())?))
+    }
+
+    fn extractor(server: &MockServer) -> Result<LlmExtractor, judge_llm::LlmError> {
+        Ok(LlmExtractor::new(model(server)?, ExtractConfig::default()))
+    }
+
+    /// A neutral response as the backend would hand it over.
+    fn resp(stop: Stop, text: &[&str]) -> ChatResponse {
+        ChatResponse {
+            text: text.iter().map(|t| (*t).to_owned()).collect(),
+            tool_calls: vec![],
+            stop,
+            usage: Usage::default(),
+            model: "claude-opus-5".into(),
+            assistant: AssistantTurn { backend: "test", raw: Value::Null },
+        }
     }
 
     #[test]
     fn request_shape_and_prompt_contents() -> Result<(), serde_json::Error> {
         let cfg = ExtractConfig::default();
         let req = build_request(&cfg, &question(), &history());
-        let v = serde_json::to_value(&req)?;
-        assert_eq!(at(&v, "/model"), "claude-opus-5");
-        assert_eq!(at(&v, "/max_tokens"), 2000);
-        assert_eq!(at(&v, "/output_config/effort"), "low");
-        assert_eq!(at(&v, "/output_config/format/type"), "json_schema");
-        assert_eq!(
-            at(&v, "/output_config/format/schema/additionalProperties"),
-            &Value::Bool(false)
-        );
-        // The wire schema requires a primary category: an empty classification is an API-level error.
-        let required = at(&v, "/output_config/format/schema/required");
+        assert_eq!(req.max_tokens, 2000);
+        assert_eq!(req.effort, Some(Effort::Low));
+        assert!(!req.thinking && req.tools.is_empty() && req.fallbacks.is_none());
+        let schema = req.output.as_ref().map(|o| o.schema.clone().to_value()).unwrap_or_default();
+        // The schema requires a primary category: an empty classification is an API-level error.
+        let required = at(&schema, "/required");
         assert!(required.as_array().is_some_and(|r| r.iter().any(|x| x == "primary")), "{required}");
-        assert!(v.get("temperature").is_none());
-        assert!(v.get("thinking").is_none());
-        assert!(v.get("tools").is_none());
-        assert_eq!(
-            at(&v, "/system/0/cache_control"),
-            &json!({"type": "ephemeral"})
-        );
+        let v = serde_json::to_value(&req)?;
+        assert_eq!(at(&v, "/system/0/cache"), "Short");
         let sys = at(&v, "/system/0/text").as_str().unwrap_or_default();
         for c in Category::ALL {
             assert!(
@@ -338,9 +321,8 @@ mod tests {
         assert!(sys.contains("\"mirage LED\" -> \"LED\"") && sys.contains("\"Urza's Saga Waylay\" -> \"Waylay\""), "{sys}");
         assert!(sys.contains("Never emit a collective nickname") && sys.contains("\"the tron lands\""), "{sys}");
         assert!(sys.contains("Do not emit generic basic land words"), "{sys}");
-        let user = at(&v, "/messages/0/content/0/text")
-            .as_str()
-            .unwrap_or_default();
+        let user = at(&v, "/turns/0/User/0/text").as_str().unwrap_or_default();
+        assert!(at(&v, "/turns/0/User/0/cache").is_null());
         // Only the last `history_turns` Q&As, oldest first, then the question.
         assert!(!user.contains("Q: q1\n"), "{user}");
         assert!(
@@ -418,50 +400,39 @@ mod tests {
 
     #[test]
     fn parse_edge_cases() -> Result<(), Box<dyn std::error::Error>> {
-        let resp = |b: Value| serde_json::from_value::<MessagesResponse>(b);
-        let truncated = resp(body("max_tokens", json!([{"type": "text", "text": "{"}])))?;
-        assert!(matches!(
-            parse_extraction(&truncated),
-            Err(JudgeError::Upstream(_))
-        ));
-        let no_text = resp(body("end_turn", json!([])))?;
-        assert!(matches!(
-            parse_extraction(&no_text),
-            Err(JudgeError::Upstream(_))
-        ));
-        let odd = resp(body("pause_turn", json!([{"type": "text", "text": GOOD}])))?;
-        assert!(matches!(
-            parse_extraction(&odd),
-            Err(JudgeError::Upstream(_))
-        ));
+        let truncated = resp(Stop::MaxTokens, &["{"]);
+        assert!(matches!(parse_extraction(&truncated), Err(JudgeError::Upstream(_))));
+        let no_text = resp(Stop::EndTurn, &[]);
+        assert!(matches!(parse_extraction(&no_text), Err(JudgeError::Upstream(_))));
+        let odd = resp(Stop::Other("pause_turn".into()), &[GOOD]);
+        assert!(matches!(parse_extraction(&odd), Err(JudgeError::Upstream(_))));
+        let tool = resp(Stop::ToolUse, &[GOOD]);
+        assert!(matches!(parse_extraction(&tool), Err(JudgeError::Upstream(_))));
+        let refused = resp(Stop::Refusal(Refusal::default()), &[]);
+        assert!(matches!(parse_extraction(&refused), Err(JudgeError::LlmRefused)));
         // Prose before the JSON is ignored; only the last text block is parsed.
-        let prose = resp(body(
-            "end_turn",
-            json!([{"type": "text", "text": "Here:"}, {"type": "text", "text": GOOD}]),
-        ))?;
+        let prose = resp(Stop::EndTurn, &["Here:", GOOD]);
         assert_eq!(parse_extraction(&prose)?.source, Source::Cr);
         // More than two secondary categories are accepted but only two are used.
         let many = GOOD.replace(
             "\"secondary\":[",
             "\"secondary\":[{\"category\":\"other\",\"confidence\":\"low\"},{\"category\":\"combat\",\"confidence\":\"low\"},",
         );
-        let four = resp(body("end_turn", json!([{"type": "text", "text": many}])))?;
+        let four = resp(Stop::EndTurn, &[&many]);
         assert_eq!(parse_extraction(&four)?.categories().count(), 3);
         // A missing secondary array is fine; a missing primary is a schema violation.
-        let no_secondary = resp(body("end_turn", json!([{"type": "text", "text": GOOD.replace(
-            r#","secondary":[{"category":"keyword_abilities","confidence":"medium"}]"#, "")}])))?;
-        assert_eq!(parse_extraction(&no_secondary)?.categories().count(), 1);
-        let no_primary = resp(body("end_turn", json!([{"type": "text", "text": GOOD.replace(
-            r#""primary":{"category":"layers","confidence":"high"},"#, "")}])))?;
-        assert!(matches!(parse_extraction(&no_primary), Err(JudgeError::Upstream(_))));
+        let no_secondary = GOOD.replace(r#","secondary":[{"category":"keyword_abilities","confidence":"medium"}]"#, "");
+        assert_eq!(parse_extraction(&resp(Stop::EndTurn, &[&no_secondary]))?.categories().count(), 1);
+        let no_primary = GOOD.replace(r#""primary":{"category":"layers","confidence":"high"},"#, "");
+        assert!(matches!(parse_extraction(&resp(Stop::EndTurn, &[&no_primary])), Err(JudgeError::Upstream(_))));
         Ok(())
     }
 
     #[tokio::test]
     async fn config_is_used_for_the_request() -> Result<(), Box<dyn std::error::Error>> {
         let server = server_with(body("end_turn", json!([{"type": "text", "text": GOOD}]))).await;
-        let cfg = ExtractConfig { effort: Effort::Medium, max_tokens: 777, history_turns: 1, ..ExtractConfig::default() };
-        let x = AnthropicExtractor::new(Client::new("test-key")?.with_base_url(server.uri()), cfg);
+        let cfg = ExtractConfig { effort: Effort::Medium, max_tokens: 777, history_turns: 1 };
+        let x = LlmExtractor::new(model(&server)?, cfg);
         x.extract(&question(), &history()).await?;
         let reqs = server.received_requests().await.unwrap_or_default();
         let sent: Value = serde_json::from_slice(&reqs.first().map(|r| r.body.clone()).unwrap_or_default())?;

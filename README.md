@@ -115,7 +115,8 @@ output schema derived from the same structs the responses parse into.
 ```
 crates/
   core       domain types, ports, judge() pipeline, citation validation — no I/O
-  anthropic  hand-written Messages API client, spend cap, schema transform, Synth typestate
+  llm        provider-neutral chat types, Backend + sealed ChatModel port, spend cap, retry loop, Synth typestate
+  anthropic  the Messages API as a judge-llm backend: wire types, schema transform, endpoints
   embed      Voyage embeddings
   bot        Postgres adapters (resolver / retriever / call store), prompts, Discord (serenity/poise)
   ingest     Scryfall + Comprehensive Rules loaders, embedder  (bin)

@@ -1,0 +1,131 @@
+{
+  "cards": [
+    {
+      "id": "00000000-0000-0000-0000-000000000007",
+      "name": "Dark Confidant",
+      "layout": "normal",
+      "faces": [
+        {
+          "name": "Dark Confidant",
+          "oracle_text": "At the beginning of your upkeep, reveal the top card of your library and put that card into your hand. You lose life equal to its mana value.",
+          "mana_cost": "{1}{B}",
+          "type_line": "Creature — Human Wizard"
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000009",
+      "name": "Delver of Secrets // Insectile Aberration",
+      "layout": "transform",
+      "faces": [
+        {
+          "name": "Delver of Secrets",
+          "oracle_text": "At the beginning of your upkeep, look at the top card of your library. You may reveal that card. If an instant or sorcery card is revealed this way, transform Delver of Secrets.",
+          "mana_cost": "{U}",
+          "type_line": "Creature — Human Wizard"
+        },
+        {
+          "name": "Insectile Aberration",
+          "oracle_text": "Flying",
+          "mana_cost": "",
+          "type_line": "Creature — Human Insect"
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "613.7",
+      "parent_id": null,
+      "subsection": "613",
+      "heading": "Interaction of Continuous Effects",
+      "body": "613.7. Within a layer or sublayer, determining which order effects are applied in is usually done using a timestamp system. An object with a timestamp is 'older' than an object with a later timestamp.",
+      "examples": [
+        "Example: A creature has a timestamp of 3."
+      ],
+      "cr_version": "20250801"
+    },
+    {
+      "id": "702.15",
+      "parent_id": null,
+      "subsection": "702",
+      "heading": "Lifelink",
+      "body": "702.15. Lifelink\n702.15a Lifelink is a static ability.\n702.15b Damage dealt by a source with lifelink causes that source's controller, or its owner if it has no controller, to gain that much life (in addition to any other results that damage causes).",
+      "examples": [],
+      "cr_version": "20250801"
+    },
+    {
+      "id": "702.15b",
+      "parent_id": "702.15",
+      "subsection": "702",
+      "heading": "Lifelink",
+      "body": "702.15b Damage dealt by a source with lifelink causes that source's controller, or its owner if it has no controller, to gain that much life (in addition to any other results that damage causes).",
+      "examples": [],
+      "cr_version": "20250801"
+    },
+    {
+      "id": "704.5",
+      "parent_id": null,
+      "subsection": "704",
+      "heading": "State-Based Actions",
+      "body": "704.5. The state-based actions are as follows:\n704.5a If a player has 0 or less life, that player loses the game.",
+      "examples": [],
+      "cr_version": "20250801"
+    }
+  ],
+  "rulings": [
+    {
+      "card": "00000000-0000-0000-0000-000000000007",
+      "key": "76085379fefa77ce",
+      "published_at": "2019-01-25",
+      "text": "The card is revealed to all players."
+    },
+    {
+      "card": "00000000-0000-0000-0000-000000000009",
+      "key": "efb2c16f10d8c820",
+      "published_at": "2011-09-22",
+      "text": "Delver of Secrets' triggered ability checks the top card."
+    }
+  ],
+  "glossary": [
+    {
+      "term": "Lifelink",
+      "text": "A keyword ability that causes a player to gain life. See rule 702.15, \"Lifelink.\""
+    }
+  ],
+  "prior": [
+    {
+      "id": "00000000-0000-0000-0000-00000000002a",
+      "question": "Does lifelink work on combat damage only?",
+      "answer": "No, any damage dealt by a source with lifelink.",
+      "category": "keyword_abilities",
+      "citations": [
+        {
+          "kind": "rule",
+          "id": "702.15b",
+          "quote": "Damage dealt by a source with lifelink"
+        }
+      ],
+      "cr_version": "20250801",
+      "rating": 2.5,
+      "rating_count": 4
+    }
+  ],
+  "notes": [
+    {
+      "card": "00000000-0000-0000-0000-000000000007",
+      "note": "Bob's trigger reveals; the life loss is not damage."
+    }
+  ],
+  "history": [
+    {
+      "question": "What is a timestamp?",
+      "answer": "The moment an object entered its zone."
+    },
+    {
+      "question": "Does lifelink stack?",
+      "answer": "No, multiple instances are redundant."
+    }
+  ],
+  "tool_round": []
+}

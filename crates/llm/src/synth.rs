@@ -1,15 +1,19 @@
 //! `Synth<Fresh | ToolRequested | Final>` — invariant I4: the `lookup_rules`
 //! tool round happens at most once. `Synth<Final>` has no method to request
-//! tools again, and `finish` rejects a second `tool_use`. After a tool round
+//! tools again, and `finish` rejects a second tool call. After a tool round
 //! `tool_choice` deliberately stays `auto`: changing it would invalidate the
 //! prompt cache of the (large) user turn, and the system prompt already tells
 //! the model it may call the tool once. `Synth::new_final` (used for the
 //! citation retry) starts with `tool_choice: none`.
 //!
 //! Stage-dependent data lives *in the stage type* (`ToolRequested` owns the
-//! `tool_use` ids and requested rule ids), so a `Synth<ToolRequested>` cannot
+//! tool-call ids and requested rule ids), so a `Synth<ToolRequested>` cannot
 //! exist without them. The pure response-classification logic is `classify`,
-//! unit-tested against `MessagesResponse` fixtures without a live API.
+//! unit-tested against [`ChatResponse`] fixtures without a live API. The
+//! typestate is about one tool round, not about any provider: it runs over
+//! whatever [`ChatModel`] it is given.
+
+use std::sync::Arc;
 
 use anyhow::Context as _;
 use judge_core::{JudgeError, RuleChunk, RuleId, Unvalidated, Verdict};
@@ -17,11 +21,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Client, DEFAULT_MODEL, anthropic_schema,
-    wire::{
-        ContentBlock, Effort, Fallbacks, Message, MessagesRequest, MessagesResponse, OutputConfig, OutputFormat,
-        Role, StopReason, SystemBlock, Thinking, Tool, ToolChoice,
-    },
+    AssistantTurn, ChatModel, ChatRequest, ChatResponse, Effort, OutputSchema, RefusalFallback, Stop, TextBlock,
+    ToolChoice, ToolResult, ToolSpec, Turn, schema_of,
 };
 
 /// Name of the one tool the synthesizer may call.
@@ -47,9 +48,9 @@ pub struct Fresh;
 /// The model asked for rules; exactly one `answer_tool` is allowed.
 #[derive(Debug)]
 pub struct ToolRequested {
-    /// `tool_use` block ids to answer (one each; several only if the model
-    /// ignored `disable_parallel_tool_use`).
-    tool_use_ids: Vec<String>,
+    /// Tool-call ids to answer (one each; several only if the model ignored
+    /// the single-call request).
+    call_ids: Vec<String>,
     /// Union of the ids the model asked for.
     requested: Vec<RuleId>,
 }
@@ -63,18 +64,15 @@ impl Stage for Fresh {}
 impl Stage for ToolRequested {}
 impl Stage for Final {}
 
-/// Knobs for the synthesis request.
+/// Knobs for the synthesis request. The model itself is the backend's.
 #[derive(Clone, Debug)]
 pub struct SynthConfig {
-    /// Model id.
-    pub model: String,
-    /// Output ceiling; keep ≤ 16k while the client is non-streaming.
+    /// Output ceiling; keep ≤ 16k while the backends are non-streaming.
     pub max_tokens: u32,
-    /// `output_config.effort`.
+    /// How hard the model thinks.
     pub effort: Effort,
-    /// Server-side refusal fallback. `Some` requires the client to send
-    /// `Fallbacks::BETA` (see `Client::with_beta`); `Synth::new` adds it.
-    pub fallbacks: Option<Fallbacks>,
+    /// Server-side refusal fallback, where the backend supports it.
+    pub fallbacks: Option<RefusalFallback>,
     /// Bytes of rule text inlined into a `lookup_rules` tool result; a whole
     /// subsection such as `702` would otherwise inject tens of thousands of
     /// tokens. Chunks past the cap are replaced by an "omitted" line.
@@ -83,23 +81,17 @@ pub struct SynthConfig {
 
 impl Default for SynthConfig {
     fn default() -> Self {
-        Self {
-            model: DEFAULT_MODEL.to_owned(),
-            max_tokens: 16_000,
-            effort: Effort::High,
-            fallbacks: Some(Fallbacks::default_mode()),
-            max_tool_result_chars: 30_000,
-        }
+        Self { max_tokens: 16_000, effort: Effort::High, fallbacks: Some(RefusalFallback::Default), max_tool_result_chars: 30_000 }
     }
 }
 
-/// The response hit `max_tokens` (thinking tokens count against it). Carried
-/// inside `JudgeError::Upstream` so a caller can downcast and retry at a
-/// lower effort.
+/// The response hit `max_tokens` (reasoning tokens count against it).
+/// Carried inside `JudgeError::Upstream` so a caller can downcast and retry
+/// at a lower effort.
 #[derive(Debug, thiserror::Error)]
 #[error("response truncated at max_tokens ({output_tokens} output tokens)")]
 pub struct Truncated {
-    /// `usage.output_tokens` of the truncated response.
+    /// `usage.output` of the truncated response.
     pub output_tokens: u64,
 }
 
@@ -115,25 +107,34 @@ pub enum SendOutcome {
 }
 
 /// One synthesis conversation. `S` is the stage.
-#[derive(Debug)]
 pub struct Synth<S: Stage> {
-    client: Client,
+    model: Arc<dyn ChatModel>,
     cfg: SynthConfig,
-    req: MessagesRequest,
+    req: ChatRequest,
     stage: S,
 }
 
+impl<S: Stage> std::fmt::Debug for Synth<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Synth")
+            .field("model", &self.model.model())
+            .field("cfg", &self.cfg)
+            .field("req", &self.req)
+            .field("stage", &self.stage)
+            .finish()
+    }
+}
+
 /// The first request: cached system prompt, the caller's user-turn blocks
-/// (the caller puts a cache breakpoint on the material block), the
-/// `lookup_rules` tool (single call per turn), adaptive thinking, and the
-/// `Verdict` schema as structured output.
-fn first_request(cfg: &SynthConfig, system: String, user: Vec<ContentBlock>, tool_choice: ToolChoice) -> MessagesRequest {
-    MessagesRequest {
-        model: cfg.model.clone(),
+/// (the caller puts a cache hint on the material block), the `lookup_rules`
+/// tool (single call per turn), extended reasoning, and the `Verdict` schema
+/// as structured output.
+fn first_request(cfg: &SynthConfig, system: String, user: Vec<TextBlock>, tool_choice: ToolChoice) -> ChatRequest {
+    ChatRequest {
         max_tokens: cfg.max_tokens,
-        system: vec![SystemBlock::cached(system)],
-        messages: vec![Message { role: Role::User, content: user }],
-        tools: vec![Tool {
+        system: vec![TextBlock::cached(system)],
+        turns: vec![Turn::User(user)],
+        tools: vec![ToolSpec {
             name: LOOKUP_RULES.to_owned(),
             description: "Fetch additional Comprehensive Rules text by id: rule ids such as \"613.7\" or \"702.19b\", \
                           or a whole subsection such as \"613\". You may call this at most once, before answering, if \
@@ -141,31 +142,29 @@ fn first_request(cfg: &SynthConfig, system: String, user: Vec<ContentBlock>, too
                           a fixed amount of text, so a large subsection (e.g. \"702\", \"701\", \"800\") comes back \
                           incomplete."
                 .to_owned(),
-            input_schema: anthropic_schema::<LookupRulesInput>(),
-            strict: Some(true),
-            cache_control: None,
+            input_schema: schema_of::<LookupRulesInput>(),
+            strict: true,
         }],
-        tool_choice: Some(tool_choice),
-        thinking: Some(Thinking::adaptive()),
-        output_config: Some(OutputConfig {
-            effort: Some(cfg.effort),
-            format: Some(OutputFormat::JsonSchema { schema: anthropic_schema::<Verdict>() }),
-        }),
+        tool_choice,
+        output: Some(OutputSchema::of::<Verdict>()),
+        effort: Some(cfg.effort),
+        thinking: true,
         fallbacks: cfg.fallbacks.clone(),
     }
 }
 
 impl<S: Stage> Synth<S> {
+    /// The request as it stands (tests and diagnostics).
+    #[must_use]
+    pub fn request(&self) -> &ChatRequest {
+        &self.req
+    }
+
     /// One round trip, logging output tokens against `max_tokens` so the
     /// truncation margin is observable.
-    async fn round_trip(&self) -> Result<MessagesResponse, JudgeError> {
-        let resp = self.client.messages(&self.req).await.map_err(anyhow::Error::from)?;
-        tracing::info!(
-            output_tokens = resp.usage.output_tokens,
-            max_tokens = self.req.max_tokens,
-            stop = ?resp.stop_reason,
-            "synthesis response"
-        );
+    async fn round_trip(&self) -> Result<ChatResponse, JudgeError> {
+        let resp = self.model.complete(&self.req).await.map_err(anyhow::Error::from)?;
+        tracing::info!(output_tokens = resp.usage.output, max_tokens = self.req.max_tokens, stop = ?resp.stop, "synthesis response");
         Ok(resp)
     }
 }
@@ -173,10 +172,9 @@ impl<S: Stage> Synth<S> {
 impl Synth<Fresh> {
     /// Build the first request (see [`first_request`]) with the tool allowed.
     #[must_use]
-    pub fn new(client: Client, cfg: &SynthConfig, system: impl Into<String>, user: Vec<ContentBlock>) -> Self {
-        let client = if cfg.fallbacks.is_some() { client.with_beta(Fallbacks::BETA) } else { client };
-        let req = first_request(cfg, system.into(), user, ToolChoice::auto_single());
-        Self { client, cfg: cfg.clone(), req, stage: Fresh }
+    pub fn new(model: Arc<dyn ChatModel>, cfg: &SynthConfig, system: impl Into<String>, user: Vec<TextBlock>) -> Self {
+        let req = first_request(cfg, system.into(), user, ToolChoice::Auto { parallel: false });
+        Self { model, cfg: cfg.clone(), req, stage: Fresh }
     }
 
     /// # Errors
@@ -186,13 +184,13 @@ impl Synth<Fresh> {
         let resp = self.round_trip().await?;
         match classify(resp)? {
             Step::Verdict(v) => Ok(SendOutcome::Done(v)),
-            Step::Tool { tool_use_ids, requested, content } => {
-                self.req.messages.push(Message { role: Role::Assistant, content });
+            Step::Tool { call_ids, requested, assistant } => {
+                self.req.turns.push(Turn::Assistant(assistant));
                 Ok(SendOutcome::ToolRequested(Synth {
-                    client: self.client,
+                    model: self.model,
                     cfg: self.cfg,
                     req: self.req,
-                    stage: ToolRequested { tool_use_ids, requested },
+                    stage: ToolRequested { call_ids, requested },
                 }))
             }
         }
@@ -212,21 +210,22 @@ impl Synth<ToolRequested> {
     #[must_use]
     pub fn answer_tool(mut self, chunks: &[RuleChunk]) -> Synth<Final> {
         let content = render_tool_result(chunks, self.cfg.max_tool_result_chars);
-        // Every tool_use id must be answered in the same user message.
+        // Every call id must be answered in the same turn.
         let results = self
             .stage
-            .tool_use_ids
+            .call_ids
             .into_iter()
-            .map(|tool_use_id| ContentBlock::ToolResult { tool_use_id, content: content.clone(), is_error: false })
+            .map(|call_id| ToolResult { call_id, content: content.clone(), is_error: false })
             .collect();
-        self.req.messages.push(Message { role: Role::User, content: results });
-        Synth { client: self.client, cfg: self.cfg, req: self.req, stage: Final }
+        self.req.turns.push(Turn::ToolResults(results));
+        Synth { model: self.model, cfg: self.cfg, req: self.req, stage: Final }
     }
 }
 
 /// The tool result text: chunks in order until `max_chars` of rule text has
 /// been inlined, then one line naming how many were left out.
-fn render_tool_result(chunks: &[RuleChunk], max_chars: usize) -> String {
+#[must_use]
+pub fn render_tool_result(chunks: &[RuleChunk], max_chars: usize) -> String {
     if chunks.is_empty() {
         return "No rules found for the requested ids.".to_owned();
     }
@@ -254,10 +253,9 @@ impl Synth<Final> {
     /// A conversation that may not call the tool at all (`tool_choice: none`):
     /// the citation retry, whose Context already holds the earlier tool round.
     #[must_use]
-    pub fn new_final(client: Client, cfg: &SynthConfig, system: impl Into<String>, user: Vec<ContentBlock>) -> Self {
-        let client = if cfg.fallbacks.is_some() { client.with_beta(Fallbacks::BETA) } else { client };
+    pub fn new_final(model: Arc<dyn ChatModel>, cfg: &SynthConfig, system: impl Into<String>, user: Vec<TextBlock>) -> Self {
         let req = first_request(cfg, system.into(), user, ToolChoice::None);
-        Self { client, cfg: cfg.clone(), req, stage: Final }
+        Self { model, cfg: cfg.clone(), req, stage: Final }
     }
 
     /// # Errors
@@ -274,80 +272,73 @@ impl Synth<Final> {
 /// What a response asks the caller to do next.
 #[derive(Debug)]
 pub enum Step {
-    /// Answer these `tool_use` ids with rules for `requested`; `content` is the
-    /// assistant turn to echo back.
+    /// Answer these tool calls with rules for `requested`; `assistant` is
+    /// the model's turn to replay.
     Tool {
-        /// `tool_use` block ids.
-        tool_use_ids: Vec<String>,
+        /// Tool-call ids.
+        call_ids: Vec<String>,
         /// Union of requested rule ids, deduplicated.
         requested: Vec<RuleId>,
-        /// The full assistant content (thinking blocks included).
-        content: Vec<ContentBlock>,
+        /// The full assistant turn (reasoning included), for the continuation.
+        assistant: AssistantTurn,
     },
     /// The model's final structured answer.
     Verdict(Verdict<Unvalidated>),
 }
 
-/// Pure decision logic over `stop_reason` × content. Exhaustive so that a new
-/// `StopReason` variant is a compile error here rather than a silent fall-through.
+/// Pure decision logic over stop reason × content. Exhaustive so that a new
+/// [`Stop`] variant is a compile error here rather than a silent fall-through.
 ///
 /// # Errors
-/// `LlmRefused` for `refusal`; `Upstream` for truncation, unknown tools,
+/// `LlmRefused` for a refusal; `Upstream` for truncation, unknown tools,
 /// unexpected stop reasons and JSON that does not match the schema.
-pub fn classify(resp: MessagesResponse) -> Result<Step, JudgeError> {
-    match resp.stop_reason {
-        Some(StopReason::Refusal) => {
-            tracing::warn!(details = ?resp.stop_details, "model refused");
+pub fn classify(resp: ChatResponse) -> Result<Step, JudgeError> {
+    match resp.stop {
+        Stop::Refusal(details) => {
+            tracing::warn!(?details, "model refused");
             Err(JudgeError::LlmRefused)
         }
-        Some(StopReason::MaxTokens) => {
-            Err(anyhow::Error::from(Truncated { output_tokens: resp.usage.output_tokens }).into())
-        }
-        Some(StopReason::ToolUse) => {
-            let mut tool_use_ids = Vec::new();
+        Stop::MaxTokens => Err(anyhow::Error::from(Truncated { output_tokens: resp.usage.output }).into()),
+        Stop::ToolUse => {
+            let mut call_ids = Vec::new();
             let mut requested: Vec<RuleId> = Vec::new();
-            for (id, name, input) in resp.tool_uses() {
-                if name != LOOKUP_RULES {
-                    return Err(anyhow::anyhow!("model requested an unknown tool: {name}").into());
+            for call in &resp.tool_calls {
+                if call.name != LOOKUP_RULES {
+                    return Err(anyhow::anyhow!("model requested an unknown tool: {}", call.name).into());
                 }
                 let parsed: LookupRulesInput =
-                    serde_json::from_value(input.clone()).context("lookup_rules input did not match schema")?;
-                tool_use_ids.push(id.to_owned());
+                    serde_json::from_value(call.input.clone()).context("lookup_rules input did not match schema")?;
+                call_ids.push(call.id.clone());
                 for r in parsed.ids {
                     if !requested.contains(&r) {
                         requested.push(r);
                     }
                 }
             }
-            if tool_use_ids.is_empty() {
-                return Err(anyhow::anyhow!("stop_reason tool_use without a tool_use block").into());
+            if call_ids.is_empty() {
+                return Err(anyhow::anyhow!("tool-use stop without a tool call").into());
             }
-            Ok(Step::Tool { tool_use_ids, requested, content: resp.content })
+            Ok(Step::Tool { call_ids, requested, assistant: resp.assistant })
         }
-        Some(StopReason::EndTurn | StopReason::StopSequence) => {
-            if resp.tool_uses().next().is_some() {
-                return Err(anyhow::anyhow!("tool_use block with stop_reason {:?}", resp.stop_reason).into());
+        Stop::EndTurn => {
+            if !resp.tool_calls.is_empty() {
+                return Err(anyhow::anyhow!("tool call with an end-of-turn stop").into());
             }
             parse_verdict(&resp).map(Step::Verdict)
         }
-        Some(StopReason::PauseTurn | StopReason::Unknown) | None => {
-            Err(anyhow::anyhow!("unexpected stop_reason {:?}", resp.stop_reason).into())
-        }
+        Stop::Other(reason) => Err(anyhow::anyhow!("unexpected stop reason {reason:?}").into()),
     }
 }
 
 /// With structured outputs the JSON is the *last* text block; any earlier
 /// text blocks are prose and are logged, not parsed.
-fn parse_verdict(resp: &MessagesResponse) -> Result<Verdict<Unvalidated>, JudgeError> {
-    let mut blocks = resp.text_blocks().peekable();
-    let mut last = None;
-    while let Some(t) = blocks.next() {
-        if blocks.peek().is_some() {
+fn parse_verdict(resp: &ChatResponse) -> Result<Verdict<Unvalidated>, JudgeError> {
+    if let Some((_, prose)) = resp.text.split_last() {
+        for t in prose {
             tracing::debug!(text = t, "ignoring prose text block before the structured output");
         }
-        last = Some(t);
     }
-    let text = last.ok_or_else(|| anyhow::anyhow!("response contained no text block"))?;
+    let text = resp.last_text().ok_or_else(|| anyhow::anyhow!("response contained no text block"))?;
     tracing::debug!(raw = %crate::truncate_for_log(text, crate::LOG_TEXT_CHARS), "synthesis raw model text");
     serde_json::from_str(text)
         // Bounded: this string becomes the `Upstream` error chain, which the
@@ -360,52 +351,78 @@ fn parse_verdict(resp: &MessagesResponse) -> Result<Verdict<Unvalidated>, JudgeE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Backend, Capabilities, LlmError, Metered, Price, Refusal, SpendMeter, StructuredOutput, ToolCall, Usage};
+    use async_trait::async_trait;
     use serde_json::{Value, json};
 
-    fn at<'a>(v: &'a Value, p: &str) -> &'a Value {
-        v.pointer(p).unwrap_or(&Value::Null)
+    /// Never sends: these tests are about the requests the typestate builds.
+    struct Unreachable;
+
+    #[async_trait]
+    impl Backend for Unreachable {
+        async fn complete(&self, _req: &ChatRequest) -> Result<ChatResponse, LlmError> {
+            Err(LlmError::Request("not sent".into()))
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { structured_output: StructuredOutput::Enforced, strict_tools: true, effort: true, cache_hints: true, refusal_fallbacks: true }
+        }
+        fn provider(&self) -> &'static str {
+            "test"
+        }
+        fn model(&self) -> &'static str {
+            "m"
+        }
     }
 
-    fn resp(stop: &str, content: &Value) -> Result<MessagesResponse, serde_json::Error> {
-        serde_json::from_value(json!({
-            "id": "m", "model": "claude-opus-5", "role": "assistant",
-            "content": content, "stop_reason": stop,
-            "usage": {"input_tokens": 1, "output_tokens": 1}
-        }))
+    fn model() -> Arc<dyn ChatModel> {
+        Arc::new(Metered::priced(Unreachable, SpendMeter::new(), Price::Free))
+    }
+
+    fn resp(stop: Stop, text: &[&str], tool_calls: Vec<ToolCall>) -> ChatResponse {
+        ChatResponse {
+            text: text.iter().map(|t| (*t).to_owned()).collect(),
+            tool_calls,
+            stop,
+            usage: Usage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
+            model: "m".into(),
+            assistant: AssistantTurn { backend: "test", raw: json!(["replayed"]) },
+        }
+    }
+
+    fn call(id: &str, name: &str, input: Value) -> ToolCall {
+        ToolCall { id: id.into(), name: name.into(), input }
     }
 
     const VERDICT: &str = r#"{"answer":"a","confidence":"low","citations":[{"kind":"rule","id":"702.15b","quote":"q"}],"category":"layers"}"#;
 
     #[test]
-    fn lookup_rules_schema_is_strict() {
-        let s = anthropic_schema::<LookupRulesInput>();
-        assert_eq!(at(&s, "/additionalProperties"), &Value::Bool(false));
-        assert_eq!(at(&s, "/required"), &json!(["ids"]));
-        assert!(!s.to_string().contains("pattern"), "{s:#}");
+    fn lookup_rules_schema_requires_ids() {
+        let s = schema_of::<LookupRulesInput>().to_value();
+        assert_eq!(s.pointer("/required"), Some(&json!(["ids"])));
+        assert_eq!(s.pointer("/additionalProperties"), Some(&Value::Bool(false)), "deny_unknown_fields closes it");
     }
 
     #[test]
-    fn fresh_request_has_tool_thinking_format_and_fallbacks() -> Result<(), Box<dyn std::error::Error>> {
-        let s = Synth::new(Client::new("k")?, &SynthConfig::default(), "sys", vec![ContentBlock::text("q")]);
-        let v = serde_json::to_value(&s.req)?;
-        assert_eq!(at(&v, "/model"), "claude-opus-5");
-        assert_eq!(at(&v, "/tools/0/name"), LOOKUP_RULES);
-        assert_eq!(at(&v, "/tool_choice/disable_parallel_tool_use"), &Value::Bool(true));
-        assert_eq!(at(&v, "/thinking/type"), "adaptive");
-        assert_eq!(at(&v, "/output_config/format/type"), "json_schema");
-        assert_eq!(at(&v, "/output_config/effort"), "high");
-        assert_eq!(at(&v, "/fallbacks"), "default");
-        assert_eq!(s.client.betas(), [Fallbacks::BETA]);
+    fn fresh_request_has_tool_thinking_format_and_fallbacks() {
+        let s = Synth::new(model(), &SynthConfig::default(), "sys", vec![TextBlock::plain("q")]);
+        let r = s.request();
+        assert_eq!(r.max_tokens, 16_000);
+        assert_eq!(r.system, [TextBlock::cached("sys")]);
+        assert_eq!(r.tools.first().map(|t| t.name.as_str()), Some(LOOKUP_RULES));
+        assert!(r.tools.first().is_some_and(|t| t.strict));
+        assert_eq!(r.tool_choice, ToolChoice::Auto { parallel: false });
+        assert!(r.thinking);
+        assert!(r.output.is_some());
+        assert_eq!(r.effort, Some(Effort::High));
+        assert_eq!(r.fallbacks, Some(RefusalFallback::Default));
 
         let cfg = SynthConfig { fallbacks: None, ..SynthConfig::default() };
-        let s = Synth::new(Client::new("k")?, &cfg, "sys", vec![ContentBlock::text("q")]);
-        assert!(serde_json::to_value(&s.req)?.get("fallbacks").is_none());
-        assert!(s.client.betas().is_empty());
+        let s = Synth::new(model(), &cfg, "sys", vec![TextBlock::plain("q")]);
+        assert!(s.request().fallbacks.is_none());
 
-        let f = Synth::new_final(Client::new("k")?, &cfg, "sys", vec![ContentBlock::text("q")]);
-        assert_eq!(f.req.tool_choice, Some(ToolChoice::None));
-        assert_eq!(at(&serde_json::to_value(&f.req)?, "/tools/0/name"), LOOKUP_RULES);
-        Ok(())
+        let f = Synth::new_final(model(), &cfg, "sys", vec![TextBlock::plain("q")]);
+        assert_eq!(f.request().tool_choice, ToolChoice::None);
+        assert_eq!(f.request().tools.first().map(|t| t.name.as_str()), Some(LOOKUP_RULES), "the tool stays listed");
     }
 
     fn chunk(id: &str, body: &str) -> Result<RuleChunk, Box<dyn std::error::Error>> {
@@ -422,24 +439,22 @@ mod tests {
 
     #[test]
     fn answer_tool_answers_every_id_and_keeps_tool_choice() -> Result<(), Box<dyn std::error::Error>> {
-        let s = Synth::new(Client::new("k")?, &SynthConfig::default(), "sys", vec![ContentBlock::text("q")]);
+        let s = Synth::new(model(), &SynthConfig::default(), "sys", vec![TextBlock::plain("q")]);
         let t: Synth<ToolRequested> = Synth {
-            client: s.client,
+            model: s.model,
             cfg: s.cfg,
             req: s.req,
-            stage: ToolRequested {
-                tool_use_ids: vec!["tu_1".into(), "tu_2".into()],
-                requested: vec![RuleId::try_new("613".to_owned())?],
-            },
+            stage: ToolRequested { call_ids: vec!["tu_1".into(), "tu_2".into()], requested: vec![RuleId::try_new("613".to_owned())?] },
         };
         assert_eq!(t.requested().len(), 1);
         let f = t.answer_tool(&[]);
-        assert_eq!(f.req.tool_choice, Some(ToolChoice::auto_single()), "cache-preserving");
-        let last = f.req.messages.last().map(serde_json::to_value).transpose()?.unwrap_or_default();
-        assert_eq!(at(&last, "/role"), "user");
-        assert_eq!(at(&last, "/content/0/tool_use_id"), "tu_1");
-        assert_eq!(at(&last, "/content/1/tool_use_id"), "tu_2");
-        assert_eq!(at(&last, "/content/1/content"), "No rules found for the requested ids.");
+        assert_eq!(f.request().tool_choice, ToolChoice::Auto { parallel: false }, "cache-preserving");
+        let Some(Turn::ToolResults(results)) = f.request().turns.last() else {
+            return Err("expected a tool-results turn".into());
+        };
+        let ids: Vec<&str> = results.iter().map(|r| r.call_id.as_str()).collect();
+        assert_eq!(ids, ["tu_1", "tu_2"]);
+        assert!(results.iter().all(|r| r.content == "No rules found for the requested ids." && !r.is_error));
         Ok(())
     }
 
@@ -459,71 +474,68 @@ mod tests {
 
     #[test]
     fn classify_plain_verdict() -> Result<(), Box<dyn std::error::Error>> {
-        let r = resp("end_turn", &json!([{"type": "text", "text": VERDICT}]))?;
+        let r = resp(Stop::EndTurn, &[VERDICT], vec![]);
         assert!(matches!(classify(r)?, Step::Verdict(v) if v.answer() == "a"));
         Ok(())
     }
 
     #[test]
     fn classify_uses_last_text_block() -> Result<(), Box<dyn std::error::Error>> {
-        let r = resp(
-            "end_turn",
-            &json!([{"type": "thinking", "thinking": "", "signature": "s"}, {"type": "text", "text": "Sure, here it is:"}, {"type": "text", "text": VERDICT}]),
-        )?;
+        let r = resp(Stop::EndTurn, &["Sure, here it is:", VERDICT], vec![]);
         assert!(matches!(classify(r)?, Step::Verdict(_)));
         Ok(())
     }
 
     #[test]
-    fn classify_tool_round_unions_ids() -> Result<(), Box<dyn std::error::Error>> {
+    fn classify_tool_round_unions_ids_and_keeps_the_turn() -> Result<(), Box<dyn std::error::Error>> {
         let r = resp(
-            "tool_use",
-            &json!([
-                {"type": "tool_use", "id": "tu_1", "name": "lookup_rules", "input": {"ids": ["613", "614"]}},
-                {"type": "tool_use", "id": "tu_2", "name": "lookup_rules", "input": {"ids": ["614", "702.19b"]}}
-            ]),
-        )?;
-        let Step::Tool { tool_use_ids, requested, content } = classify(r)? else {
+            Stop::ToolUse,
+            &[],
+            vec![
+                call("tu_1", "lookup_rules", json!({"ids": ["613", "614"]})),
+                call("tu_2", "lookup_rules", json!({"ids": ["614", "702.19b"]})),
+            ],
+        );
+        let Step::Tool { call_ids, requested, assistant } = classify(r)? else {
             return Err("expected tool step".into());
         };
-        assert_eq!(tool_use_ids, ["tu_1", "tu_2"]);
+        assert_eq!(call_ids, ["tu_1", "tu_2"]);
         let ids: Vec<&str> = requested.iter().map(AsRef::as_ref).collect();
         assert_eq!(ids, ["613", "614", "702.19b"]);
-        assert_eq!(content.len(), 2);
+        assert_eq!(assistant.raw, json!(["replayed"]));
         Ok(())
     }
 
     #[test]
-    fn classify_errors() -> Result<(), Box<dyn std::error::Error>> {
-        let refusal = resp("refusal", &json!([]))?;
+    fn classify_errors() {
+        let refusal = resp(Stop::Refusal(Refusal { category: Some("cyber".into()), explanation: None }), &[], vec![]);
         assert!(matches!(classify(refusal), Err(JudgeError::LlmRefused)));
 
-        let truncated = resp("max_tokens", &json!([{"type": "text", "text": "{\"answer\": \"a"}]))?;
+        let truncated = resp(Stop::MaxTokens, &["{\"answer\": \"a"], vec![]);
         assert!(matches!(classify(truncated), Err(JudgeError::Upstream(e)) if e.downcast_ref::<Truncated>().is_some_and(|t| t.output_tokens == 1)));
 
-        let unknown_tool = resp("tool_use", &json!([{"type": "tool_use", "id": "t", "name": "other", "input": {}}]))?;
+        let unknown_tool = resp(Stop::ToolUse, &[], vec![call("t", "other", json!({}))]);
         assert!(matches!(classify(unknown_tool), Err(JudgeError::Upstream(_))));
 
-        let bad_input = resp("tool_use", &json!([{"type": "tool_use", "id": "t", "name": "lookup_rules", "input": {"ids": ["abc"]}}]))?;
+        let bad_input = resp(Stop::ToolUse, &[], vec![call("t", "lookup_rules", json!({"ids": ["abc"]}))]);
         assert!(matches!(classify(bad_input), Err(JudgeError::Upstream(_))));
 
-        let no_block = resp("tool_use", &json!([{"type": "text", "text": "x"}]))?;
-        assert!(matches!(classify(no_block), Err(JudgeError::Upstream(_))));
+        let no_call = resp(Stop::ToolUse, &["x"], vec![]);
+        assert!(matches!(classify(no_call), Err(JudgeError::Upstream(_))));
 
-        let stray_tool = resp("end_turn", &json!([{"type": "tool_use", "id": "t", "name": "lookup_rules", "input": {"ids": []}}, {"type": "text", "text": VERDICT}]))?;
+        let stray_tool = resp(Stop::EndTurn, &[VERDICT], vec![call("t", "lookup_rules", json!({"ids": []}))]);
         assert!(matches!(classify(stray_tool), Err(JudgeError::Upstream(_))));
 
         for stop in ["pause_turn", "something_new"] {
-            let r = resp(stop, &json!([{"type": "text", "text": VERDICT}]))?;
+            let r = resp(Stop::Other(stop.into()), &[VERDICT], vec![]);
             assert!(matches!(classify(r), Err(JudgeError::Upstream(_))), "{stop}");
         }
 
-        let bad_json = resp("end_turn", &json!([{"type": "text", "text": "{\"answer\":1}"}]))?;
+        let bad_json = resp(Stop::EndTurn, &["{\"answer\":1}"], vec![]);
         assert!(matches!(classify(bad_json), Err(JudgeError::Upstream(_))));
 
-        let no_text = resp("end_turn", &json!([]))?;
+        let no_text = resp(Stop::EndTurn, &[], vec![]);
         assert!(matches!(classify(no_text), Err(JudgeError::Upstream(_))));
-        Ok(())
     }
 
     /// The parse-failure context ends up in the `Upstream` chain, which the
@@ -533,7 +545,7 @@ mod tests {
     #[test]
     fn a_parse_failure_does_not_log_the_whole_model_response() -> Result<(), Box<dyn std::error::Error>> {
         let huge = format!(r#"{{"answer":"{}","citations":1}}"#, "はい".repeat(20_000));
-        let r = resp("end_turn", &json!([{"type": "text", "text": huge}]))?;
+        let r = resp(Stop::EndTurn, &[&huge], vec![]);
         let Err(JudgeError::Upstream(e)) = classify(r) else {
             return Err("expected an Upstream parse failure".into());
         };

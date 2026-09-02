@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 judge-core.workspace = true
 judge-bot.workspace = true
-judge-anthropic.workspace = true
+judge-llm.workspace = true
 judge-embed.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use judge_bot::{
-    build_deps,
+    Models, build_deps,
     db::PgCallStore,
     discord::{Config, Data, run},
 };
@@ -39,9 +39,9 @@ async fn main() -> Result<()> {
         .connect(&database_url)
         .await
         .context("connect to Postgres")?;
-    // One HTTP client (connection pool) shared by every Anthropic adapter; the
-    // clone handed to the Discord layer shares its spend counters.
-    let anthropic = judge_anthropic::Client::from_env()?;
+    // The zero-config models (Anthropic direct, one spend cap); the meter
+    // handed to the Discord layer is the one they bill to.
+    let models = Models::from_env()?;
     // The embedder is optional: without a Voyage key the retriever skips its vector leg.
     // A blank value (`VOYAGE_API_KEY=` in .env) counts as unset, matching `VoyageEmbedder::from_env`.
     let has_voyage_key = std::env::var("VOYAGE_API_KEY").is_ok_and(|k| !k.trim().is_empty());
@@ -56,8 +56,9 @@ async fn main() -> Result<()> {
         store = store.with_embedder(Arc::clone(e));
     }
     let store: Arc<dyn CallStore> = Arc::new(store);
-    let deps = build_deps(pool, anthropic.clone(), embedder);
-    let data = Data::new(deps, store, anthropic, &cfg);
+    let meter = models.meter().clone();
+    let deps = build_deps(pool, &models, embedder);
+    let data = Data::new(deps, store, meter, &cfg);
     tracing::info!(
         guild = ?cfg.guild_id,
         judge_role = %cfg.judge_role,
