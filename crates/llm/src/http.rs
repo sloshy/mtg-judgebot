@@ -29,15 +29,17 @@ pub struct Reply {
 
 /// Send `build()` and decode the reply with `decode`, retrying a retryable
 /// [`LlmError`] (see [`LlmError::is_retryable`]) up to [`MAX_ATTEMPTS`]
-/// times. `build` is called once per attempt; `decode` maps the status and
-/// body to a response or to the error the backend wants reported (a decode
-/// failure is not retried, a non-2xx status may be).
+/// times. `build` is called once per attempt, so a request whose auth is
+/// computed per attempt (a `SigV4` signature carries its own timestamp) is
+/// fresh each time; its error is returned as is, never retried. `decode`
+/// maps the status and body to a response or to the error the backend
+/// wants reported (a decode failure is not retried, a non-2xx status may be).
 ///
 /// # Errors
 /// The last attempt's error.
 pub async fn post_with_retries<B, D>(build: B, decode: D) -> Result<ChatResponse, LlmError>
 where
-    B: Fn() -> reqwest::RequestBuilder,
+    B: Fn() -> Result<reqwest::RequestBuilder, LlmError>,
     D: Fn(&Reply) -> Result<ChatResponse, LlmError>,
 {
     let mut attempt = 1;
@@ -64,10 +66,11 @@ struct Failure {
 
 async fn once<B, D>(build: &B, decode: &D) -> Result<ChatResponse, Failure>
 where
-    B: Fn() -> reqwest::RequestBuilder,
+    B: Fn() -> Result<reqwest::RequestBuilder, LlmError>,
     D: Fn(&Reply) -> Result<ChatResponse, LlmError>,
 {
-    let resp = build().send().await.map_err(|e| Failure { err: LlmError::Transport(e), retry_after: None })?;
+    let builder = build().map_err(|err| Failure { err, retry_after: None })?;
+    let resp = builder.send().await.map_err(|e| Failure { err: LlmError::Transport(e), retry_after: None })?;
     let status = resp.status();
     let retry_after = resp
         .headers()
@@ -114,14 +117,14 @@ mod tests {
         Mock::given(method("POST")).and(path("/x")).respond_with(ResponseTemplate::new(200).set_body_string("ok")).mount(&server).await;
         let http = reqwest::Client::new();
         let url = format!("{}/x", server.uri());
-        let resp = post_with_retries(|| http.post(&url), decode).await?;
+        let resp = post_with_retries(|| Ok(http.post(&url)), decode).await?;
         assert_eq!(resp.text, ["ok"]);
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 2);
 
         let server = MockServer::start().await;
         Mock::given(method("POST")).and(path("/x")).respond_with(ResponseTemplate::new(400).set_body_string("nope")).mount(&server).await;
         let url = format!("{}/x", server.uri());
-        let err = post_with_retries(|| http.post(&url), decode).await;
+        let err = post_with_retries(|| Ok(http.post(&url)), decode).await;
         assert!(matches!(err, Err(LlmError::Api { status, .. }) if status == StatusCode::BAD_REQUEST), "{err:?}");
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 1);
         Ok(())
@@ -137,8 +140,16 @@ mod tests {
             .await;
         let http = reqwest::Client::new();
         let url = format!("{}/x", server.uri());
-        let err = post_with_retries(|| http.post(&url), decode).await;
+        let err = post_with_retries(|| Ok(http.post(&url)), decode).await;
         assert!(matches!(err, Err(LlmError::Api { status, .. }) if status == StatusCode::SERVICE_UNAVAILABLE), "{err:?}");
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), MAX_ATTEMPTS as usize);
+    }
+
+    #[tokio::test]
+    async fn a_request_that_cannot_be_built_is_not_sent_or_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/x")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+        let err = post_with_retries(|| Err(LlmError::Auth { door: "bedrock", message: "no credentials".into() }), decode).await;
+        assert!(matches!(err, Err(LlmError::Auth { door: "bedrock", .. })), "{err:?}");
     }
 }

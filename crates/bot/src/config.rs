@@ -28,6 +28,15 @@
 //! `effort` on a provider that will not send it) — a knob that would be
 //! silently ignored is an error naming both keys instead.
 //!
+//! The cloud doors (`claude-platform-on-aws`, `bedrock`, `vertex`) hold no
+//! key: their credentials come from the platform's chain, resolved lazily so
+//! loading a config never touches the network. A binary about to serve
+//! questions calls [`Config::probe_auth`] once after loading, so a host with
+//! no credentials fails at startup naming the provider and the door, the
+//! way a missing `api_key_env` does — not on the first question. Each
+//! provider entry resolves to one [`Endpoint`], shared by the stages that
+//! name it, so two stages on one cloud provider share one credential chain.
+//!
 //! The loader is the one place a `judge.toml` is read; every binary calls
 //! it, logs [`Config::summary`] at startup, and takes its models and
 //! embedder from it. The embedder comes with its vector space
@@ -84,6 +93,62 @@ pub struct EnvVar(String);
 /// A provider name (the key under `[providers]`): non-empty after trimming.
 #[nutype(sanitize(trim), validate(not_empty), derive(Clone, Debug, Display, Deserialize, PartialEq, Eq, PartialOrd, Ord, AsRef))]
 pub struct ProviderName(String);
+
+/// A cloud region (`us-west-2`, `europe-west1`, `us-east5`, Vertex's
+/// `global`/`us`/`eu`): lowercase letters, digits and hyphens. It is
+/// interpolated into a hostname, so anything else fails at load naming the
+/// key rather than as a transport error on the first question.
+#[nutype(sanitize(trim), validate(with = validate_region, error = BadRegion), derive(Clone, Debug, Display, Deserialize, PartialEq, Eq, AsRef))]
+pub struct Region(String);
+
+/// A `region` that is not lowercase letters, digits and hyphens.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("region must be the cloud region's id in lowercase letters, digits and hyphens (us-west-2, europe-west1, global)")]
+pub struct BadRegion;
+
+/// A GCP project id (or number): lowercase letters, digits and hyphens. It
+/// is interpolated into the Vertex URL path, so the same rule as
+/// [`Region`]; a legacy domain-scoped id (`example.com:proj`) is refused.
+#[nutype(sanitize(trim), validate(with = validate_project, error = BadProject), derive(Clone, Debug, Display, Deserialize, PartialEq, Eq, AsRef))]
+pub struct Project(String);
+
+/// A `project` that is not lowercase letters, digits and hyphens.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("project must be the GCP project id (or number) in lowercase letters, digits and hyphens, like \"my-proj-123456\"")]
+pub struct BadProject;
+
+/// Non-empty, lowercase ASCII letters, digits and hyphens, and neither
+/// starts nor ends with a hyphen: the DNS-label shape both platforms use.
+fn is_label(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !s.starts_with('-') && !s.ends_with('-')
+}
+
+fn validate_region(s: &str) -> Result<(), BadRegion> {
+    is_label(s).then_some(()).ok_or(BadRegion)
+}
+
+fn validate_project(s: &str) -> Result<(), BadProject> {
+    is_label(s).then_some(()).ok_or(BadProject)
+}
+
+/// A Claude Platform on AWS workspace id: `wrkspc_` and an alphanumeric
+/// identifier, the form the platform documents. Checked at load so an ARN
+/// or a name pasted in its place fails naming the key, not as a 403 on the
+/// first question.
+#[nutype(sanitize(trim), validate(with = validate_workspace_id, error = BadWorkspaceId), derive(Clone, Debug, Display, Deserialize, PartialEq, Eq, AsRef))]
+pub struct WorkspaceId(String);
+
+/// A `workspace_id` that is not `wrkspc_` plus an alphanumeric identifier.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("workspace_id must be the workspace's id, \"wrkspc_\" followed by letters and digits (AWS Console > Claude Platform on AWS > Workspaces)")]
+pub struct BadWorkspaceId;
+
+fn validate_workspace_id(s: &str) -> Result<(), BadWorkspaceId> {
+    match s.strip_prefix("wrkspc_") {
+        Some(rest) if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric()) => Ok(()),
+        _ => Err(BadWorkspaceId),
+    }
+}
 
 /// A base URL: an absolute `http`/`https` URL with a host (the backends
 /// strip a trailing slash). Checked at load so `ollama:11434/v1` fails
@@ -149,13 +214,26 @@ enum ProviderEntry {
     Anthropic {
         #[serde(default)]
         endpoint: Door,
-        /// Origin override (`direct`) or the proxy's origin (`proxy`).
+        /// Origin override: optional on every door (the cloud doors derive
+        /// theirs from `region`), required for `proxy`.
         #[serde(default)]
         base_url: Option<BaseUrl>,
-        api_key_env: EnvVar,
+        /// The key's variable: `direct` and `proxy` only. The cloud doors
+        /// take credentials from their platform's chain, never from here.
+        #[serde(default)]
+        api_key_env: Option<EnvVar>,
         /// Which header a proxy wants the key in; `proxy` only.
         #[serde(default)]
         auth: Option<ProxyHeader>,
+        /// The cloud doors' region (`claude-platform-on-aws`, `bedrock`, `vertex`).
+        #[serde(default)]
+        region: Option<Region>,
+        /// `claude-platform-on-aws` only.
+        #[serde(default)]
+        workspace_id: Option<WorkspaceId>,
+        /// `vertex` only.
+        #[serde(default)]
+        project: Option<Project>,
         #[serde(default)]
         pricing: Option<FreePricing>,
     },
@@ -200,9 +278,9 @@ fn yes() -> bool {
 }
 
 /// `endpoint` on an `anthropic` provider. The full vocabulary is accepted so
-/// the file reads the same across releases; the doors this binary does not
-/// have are refused at load with [`ConfigError::NotBuilt`], not mistaken for
-/// a typo.
+/// the file reads the same across releases; a door this binary was built
+/// without (Cargo features `aws`, `gcp`) is refused at load with
+/// [`ConfigError::NotBuilt`] naming the feature, not mistaken for a typo.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum Door {
@@ -212,6 +290,86 @@ enum Door {
     ClaudePlatformOnAws,
     Bedrock,
     Vertex,
+}
+
+impl Door {
+    /// The value as the file spells it.
+    const fn name(self) -> &'static str {
+        match self {
+            Door::Direct => "direct",
+            Door::Proxy => "proxy",
+            Door::ClaudePlatformOnAws => "claude-platform-on-aws",
+            Door::Bedrock => "bedrock",
+            Door::Vertex => "vertex",
+        }
+    }
+
+    /// Whether the door takes a key (`api_key_env`) rather than a platform
+    /// credential chain.
+    const fn takes_key(self) -> bool {
+        matches!(self, Door::Direct | Door::Proxy)
+    }
+}
+
+/// `value`, or [`ConfigError::Required`] naming the key and the door.
+fn required<T>(provider: &str, key: &'static str, door: Door, value: Option<T>) -> Result<T, ConfigError> {
+    value.ok_or_else(|| ConfigError::Required { provider: provider.to_owned(), key, door: door.name() })
+}
+
+/// Whether `model` is one of Bedrock's documented forms, `anthropic.<model>`
+/// or `<profile>.anthropic.<model>` (an inference profile such as
+/// `global.anthropic.claude-opus-5`) — a whole `anthropic` segment, not a
+/// substring, so `claude-opus-5-anthropic.x` is as wrong as a bare id.
+fn bedrock_model_id(model: &str) -> bool {
+    model.starts_with("anthropic.") || model.contains(".anthropic.")
+}
+
+/// A cloud door's origin: the configured override, or the constructor's.
+#[cfg(any(feature = "aws", feature = "gcp"))]
+fn at_origin(endpoint: Endpoint, base_url: Option<&BaseUrl>) -> Endpoint {
+    match base_url {
+        Some(b) => endpoint.with_base_url(b.to_string()),
+        None => endpoint,
+    }
+}
+
+// The cloud doors. Each exists only when its feature is compiled in; the
+// stub otherwise names the feature. The unused-parameter shape of the stubs
+// is deliberate: both signatures must agree so the caller does not care.
+
+#[cfg(feature = "aws")]
+fn claude_platform_on_aws(provider: &str, region: Option<&Region>, workspace_id: Option<&WorkspaceId>, base_url: Option<&BaseUrl>) -> Result<Endpoint, ConfigError> {
+    let region = required(provider, "region", Door::ClaudePlatformOnAws, region)?;
+    let workspace_id = required(provider, "workspace_id", Door::ClaudePlatformOnAws, workspace_id)?;
+    Ok(at_origin(Endpoint::claude_platform_on_aws(region.to_string(), workspace_id.to_string()), base_url))
+}
+
+#[cfg(not(feature = "aws"))]
+fn claude_platform_on_aws(provider: &str, _: Option<&Region>, _: Option<&WorkspaceId>, _: Option<&BaseUrl>) -> Result<Endpoint, ConfigError> {
+    Err(ConfigError::NotBuilt { provider: provider.to_owned(), what: format!("endpoint = {:?}", Door::ClaudePlatformOnAws.name()), feature: "aws" })
+}
+
+#[cfg(feature = "aws")]
+fn bedrock(provider: &str, region: Option<&Region>, base_url: Option<&BaseUrl>) -> Result<Endpoint, ConfigError> {
+    let region = required(provider, "region", Door::Bedrock, region)?;
+    Ok(at_origin(Endpoint::bedrock(region.to_string()), base_url))
+}
+
+#[cfg(not(feature = "aws"))]
+fn bedrock(provider: &str, _: Option<&Region>, _: Option<&BaseUrl>) -> Result<Endpoint, ConfigError> {
+    Err(ConfigError::NotBuilt { provider: provider.to_owned(), what: format!("endpoint = {:?}", Door::Bedrock.name()), feature: "aws" })
+}
+
+#[cfg(feature = "gcp")]
+fn vertex(provider: &str, project: Option<&Project>, region: Option<&Region>, base_url: Option<&BaseUrl>) -> Result<Endpoint, ConfigError> {
+    let project = required(provider, "project", Door::Vertex, project)?;
+    let region = required(provider, "region", Door::Vertex, region)?;
+    Ok(at_origin(Endpoint::vertex(project.to_string(), region.to_string()), base_url))
+}
+
+#[cfg(not(feature = "gcp"))]
+fn vertex(provider: &str, _: Option<&Project>, _: Option<&Region>, _: Option<&BaseUrl>) -> Result<Endpoint, ConfigError> {
+    Err(ConfigError::NotBuilt { provider: provider.to_owned(), what: format!("endpoint = {:?}", Door::Vertex.name()), feature: "gcp" })
 }
 
 /// `auth` on an `anthropic` proxy.
@@ -412,13 +570,45 @@ pub enum ConfigError {
         /// The model.
         model: String,
     },
-    /// The file asks for something this binary does not have.
-    #[error("providers.{provider}: {what} is not built in this binary")]
+    /// The file asks for something this binary was built without.
+    #[error("providers.{provider}: {what} is not built in this binary; it needs the {feature:?} feature of judge-anthropic (on by default)")]
     NotBuilt {
         /// The provider.
         provider: String,
         /// What was asked for.
         what: String,
+        /// The Cargo feature that would have built it.
+        feature: &'static str,
+    },
+    /// A key the door needs is missing.
+    #[error("providers.{provider}: {key} is required for endpoint = {door:?}")]
+    Required {
+        /// The provider.
+        provider: String,
+        /// The key.
+        key: &'static str,
+        /// The door.
+        door: &'static str,
+    },
+    /// A stage on Bedrock names a model without Bedrock's `anthropic.`
+    /// prefix; the door would answer every question with a 400.
+    #[error("models.{stage}.model = {model:?}: Claude in Amazon Bedrock names models with an `anthropic.` prefix (anthropic.claude-opus-5, or an inference profile such as global.anthropic.claude-opus-4-6-v1)")]
+    BedrockModelId {
+        /// The stage.
+        stage: &'static str,
+        /// The model.
+        model: String,
+    },
+    /// A cloud door's credential chain handed out nothing when
+    /// [`Config::probe_auth`] asked at startup.
+    #[error("providers.{provider} ({endpoint}): no credentials: {cause}")]
+    Credentials {
+        /// The provider.
+        provider: String,
+        /// The door, as [`Endpoint::describe`] names it.
+        endpoint: String,
+        /// The chain's answer.
+        cause: LlmError,
     },
     /// A key that does not apply to the provider as configured.
     #[error("providers.{provider}: {key} {reason}")]
@@ -535,6 +725,18 @@ impl ChatProvider {
                     ProxyAuth::Bearer => "bearer",
                 };
                 serde_json::json!({"kind": "anthropic", "endpoint": "proxy", "base_url": base_url, "auth": auth})
+            }
+            #[cfg(feature = "aws")]
+            ChatProvider::Anthropic { endpoint: Endpoint::ClaudePlatformOnAws { base_url, region, workspace_id, .. } } => {
+                serde_json::json!({"kind": "anthropic", "endpoint": "claude-platform-on-aws", "region": region, "workspace_id": workspace_id, "base_url": base_url})
+            }
+            #[cfg(feature = "aws")]
+            ChatProvider::Anthropic { endpoint: Endpoint::Bedrock { base_url, region, .. } } => {
+                serde_json::json!({"kind": "anthropic", "endpoint": "bedrock", "region": region, "base_url": base_url})
+            }
+            #[cfg(feature = "gcp")]
+            ChatProvider::Anthropic { endpoint: Endpoint::Vertex { base_url, project, region, .. } } => {
+                serde_json::json!({"kind": "anthropic", "endpoint": "vertex", "project": project, "region": region, "base_url": base_url})
             }
             ChatProvider::OpenAi { base_url, auth, dialect, send_dimensions } => serde_json::json!({
                 "kind": "openai",
@@ -758,7 +960,7 @@ impl Config {
     /// See [`ConfigError`].
     pub fn from_toml(text: &str, path: &Path, env: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let file: File = toml::from_str(text).map_err(|cause| ConfigError::Parse { path: path.to_path_buf(), cause })?;
-        let resolver = Resolver { file: &file, env: &env };
+        let mut resolver = Resolver { file: &file, env: &env, chat: BTreeMap::new() };
         let extract = resolver.stage("extract", &file.models.extract)?;
         let synth = resolver.stage("synth", &file.models.synth)?;
         let embed = file.models.embed.as_ref().map(|e| resolver.embed(e)).transpose()?;
@@ -885,6 +1087,33 @@ impl Config {
         )))
     }
 
+    /// Resolve every cloud door's credentials once, without sending
+    /// anything: the chains are lazy, so this is where a host with no AWS
+    /// credentials or no ADC fails — at startup, naming the provider and the
+    /// door, like a missing `api_key_env` fails at load. Logs each door
+    /// resolved, so the startup log says which host a stage signs for (the
+    /// summary line names the provider, not the door). Key doors and
+    /// `openai` providers need nothing and log nothing; a provider shared by
+    /// both stages is probed once.
+    ///
+    /// # Errors
+    /// [`ConfigError::Credentials`] for the first door whose chain has none.
+    pub async fn probe_auth(&self) -> Result<(), ConfigError> {
+        let mut probed = std::collections::BTreeSet::new();
+        for stage in [self.extract(), self.synth()].into_iter().flatten() {
+            let ChatProvider::Anthropic { endpoint } = &stage.backend else { continue };
+            if !endpoint.lazy_credentials() || !probed.insert(stage.provider.as_str()) {
+                continue;
+            }
+            endpoint
+                .probe()
+                .await
+                .map_err(|cause| ConfigError::Credentials { provider: stage.provider.clone(), endpoint: endpoint.describe(), cause })?;
+            tracing::info!(provider = %stage.provider, endpoint = %endpoint.describe(), "cloud credentials resolved");
+        }
+        Ok(())
+    }
+
     /// The request knobs each stage was configured with, for
     /// [`crate::build_deps_with`]. Defaults when no chat model is configured.
     #[must_use]
@@ -959,13 +1188,16 @@ impl Config {
 }
 
 /// Resolves the typed file into [`Stage`]s and [`Embed`]: looks providers
-/// up, reads secrets, checks kinds and prices.
+/// up, reads secrets, checks kinds and prices. A chat provider is resolved
+/// once and remembered, so the stages that name it share one
+/// [`ChatProvider`] — one [`Endpoint`], one credential chain.
 struct Resolver<'a, E: Fn(&str) -> Option<String>> {
     file: &'a File,
     env: &'a E,
+    chat: BTreeMap<ProviderName, (ChatProvider, bool)>,
 }
 
-impl<E: Fn(&str) -> Option<String>> Resolver<'_, E> {
+impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
     fn secret(&self, provider: &str, var: &str) -> Result<ApiKey, ConfigError> {
         (self.env)(var)
             .map(|v| v.trim().to_owned())
@@ -987,72 +1219,26 @@ impl<E: Fn(&str) -> Option<String>> Resolver<'_, E> {
         })
     }
 
-    fn provider<'b>(&'b self, stage: &'static str, name: &ProviderName) -> Result<&'b ProviderEntry, ConfigError> {
+    fn provider(&self, stage: &'static str, name: &ProviderName) -> Result<&'a ProviderEntry, ConfigError> {
         self.file.providers.get(name).ok_or_else(|| ConfigError::UnknownProvider { stage, provider: name.to_string() })
     }
 
-    fn stage(&self, stage: &'static str, entry: &StageEntry) -> Result<Stage, ConfigError> {
+    fn stage(&mut self, stage: &'static str, entry: &StageEntry) -> Result<Stage, ConfigError> {
         let name = &entry.provider;
         let provider = self.provider(stage, name)?;
-        let (backend, free) = match provider {
-            ProviderEntry::Anthropic { endpoint, base_url, api_key_env, auth, pricing } => {
-                let api_key = self.secret(name.as_ref(), api_key_env.as_ref())?;
-                let endpoint = match endpoint {
-                    Door::Direct => {
-                        if auth.is_some() {
-                            return Err(ConfigError::Misplaced { provider: name.to_string(), key: "auth", reason: "applies only to endpoint = \"proxy\"" });
-                        }
-                        Endpoint::Direct {
-                            base_url: base_url.as_ref().map_or_else(|| ANTHROPIC_DEFAULT_BASE_URL.to_owned(), ToString::to_string),
-                            api_key,
-                        }
-                    }
-                    Door::Proxy => {
-                        let Some(base_url) = base_url else {
-                            return Err(ConfigError::Misplaced { provider: name.to_string(), key: "base_url", reason: "is required for endpoint = \"proxy\"" });
-                        };
-                        let header = match auth.unwrap_or(ProxyHeader::XApiKey) {
-                            ProxyHeader::XApiKey => ProxyAuth::XApiKey,
-                            ProxyHeader::Bearer => ProxyAuth::Bearer,
-                        };
-                        Endpoint::Proxy { base_url: base_url.to_string(), api_key, header }
-                    }
-                    Door::ClaudePlatformOnAws | Door::Bedrock | Door::Vertex => {
-                        let door = match endpoint {
-                            Door::ClaudePlatformOnAws => "claude-platform-on-aws",
-                            Door::Bedrock => "bedrock",
-                            _ => "vertex",
-                        };
-                        return Err(ConfigError::NotBuilt { provider: name.to_string(), what: format!("endpoint = {door:?}") });
-                    }
-                };
-                (ChatProvider::Anthropic { endpoint }, pricing.is_some())
+        let (backend, free) = self.chat_provider(stage, name, provider)?;
+        // The checks that pair a stage's knobs with its provider's.
+        match provider {
+            // A bare id on Bedrock would 400 on every question; the documented
+            // forms are `anthropic.<model>` and `<profile>.anthropic.<model>`.
+            ProviderEntry::Anthropic { endpoint: Door::Bedrock, .. } if !bedrock_model_id(entry.model.as_ref()) => {
+                return Err(ConfigError::BedrockModelId { stage, model: entry.model.to_string() });
             }
-            ProviderEntry::Openai { base_url, api_key_env, auth, structured_output, strict_tools, reasoning_effort, max_tokens_param, cache_hints, send_dimensions, pricing } => {
-                let auth = self.openai_auth(name.as_ref(), api_key_env.as_ref(), *auth)?;
-                if entry.effort.is_some() && !reasoning_effort {
-                    return Err(ConfigError::EffortNotSent { stage, provider: name.to_string() });
-                }
-                let dialect = Dialect {
-                    structured_output: match structured_output {
-                        StructuredOutputKnob::JsonSchema => StructuredOutputMode::JsonSchema,
-                        StructuredOutputKnob::JsonObject => StructuredOutputMode::JsonObject,
-                        StructuredOutputKnob::Prompt => StructuredOutputMode::Prompt,
-                    },
-                    strict_tools: *strict_tools,
-                    reasoning_effort: *reasoning_effort,
-                    max_tokens_param: match max_tokens_param {
-                        MaxTokensKnob::MaxTokens => MaxTokensParam::MaxTokens,
-                        MaxTokensKnob::MaxCompletionTokens => MaxTokensParam::MaxCompletionTokens,
-                    },
-                    cache_hints: *cache_hints,
-                };
-                (ChatProvider::OpenAi { base_url: base_url.to_string(), auth, dialect, send_dimensions: *send_dimensions }, pricing.is_some())
+            ProviderEntry::Openai { reasoning_effort: false, .. } if entry.effort.is_some() => {
+                return Err(ConfigError::EffortNotSent { stage, provider: name.to_string() });
             }
-            ProviderEntry::Voyage { .. } => {
-                return Err(ConfigError::WrongKind { stage, provider: name.to_string(), kind: "voyage", expected: "a chat provider: kind = anthropic or openai" });
-            }
-        };
+            ProviderEntry::Anthropic { .. } | ProviderEntry::Openai { .. } | ProviderEntry::Voyage { .. } => {}
+        }
         let model = entry.model.to_string();
         // A free provider and a stage price contradict each other; an
         // explicit price beats the table (and is settled at, not merely
@@ -1082,6 +1268,80 @@ impl<E: Fn(&str) -> Option<String>> Resolver<'_, E> {
             effort: entry.effort.map_or(default_effort, Effort::from),
             price,
         })
+    }
+
+    /// `provider` (the `[providers.<name>]` table) as a chat provider and
+    /// whether it is free — resolved once per name: the second stage on the
+    /// same provider gets a clone that shares the first's [`Endpoint`].
+    fn chat_provider(&mut self, stage: &'static str, name: &ProviderName, provider: &ProviderEntry) -> Result<(ChatProvider, bool), ConfigError> {
+        if let Some(resolved) = self.chat.get(name) {
+            return Ok(resolved.clone());
+        }
+        let resolved = match provider {
+            ProviderEntry::Anthropic { endpoint, base_url, api_key_env, auth, region, workspace_id, project, pricing } => {
+                let door = *endpoint;
+                let misplaced = |key: &'static str, reason: &'static str| ConfigError::Misplaced { provider: name.to_string(), key, reason };
+                // Each key belongs to some doors only; on another it would be
+                // silently ignored, so it is an error there.
+                if auth.is_some() && door != Door::Proxy {
+                    return Err(misplaced("auth", "applies only to endpoint = \"proxy\""));
+                }
+                if api_key_env.is_some() && !door.takes_key() {
+                    return Err(misplaced("api_key_env", "does not apply to a cloud door: this build signs with the platform's credential chain (SigV4, ADC); API-key auth for the cloud doors is not supported"));
+                }
+                if region.is_some() && door.takes_key() {
+                    return Err(misplaced("region", "applies only to the cloud doors (claude-platform-on-aws, bedrock, vertex)"));
+                }
+                if workspace_id.is_some() && door != Door::ClaudePlatformOnAws {
+                    return Err(misplaced("workspace_id", "applies only to endpoint = \"claude-platform-on-aws\""));
+                }
+                if project.is_some() && door != Door::Vertex {
+                    return Err(misplaced("project", "applies only to endpoint = \"vertex\""));
+                }
+                let key = |var: Option<&EnvVar>| self.secret(name.as_ref(), required(name.as_ref(), "api_key_env", door, var)?.as_ref());
+                let endpoint = match door {
+                    Door::Direct => Endpoint::Direct {
+                        base_url: base_url.as_ref().map_or_else(|| ANTHROPIC_DEFAULT_BASE_URL.to_owned(), ToString::to_string),
+                        api_key: key(api_key_env.as_ref())?,
+                    },
+                    Door::Proxy => {
+                        let base_url = required(name.as_ref(), "base_url", door, base_url.as_ref())?;
+                        let header = match auth.unwrap_or(ProxyHeader::XApiKey) {
+                            ProxyHeader::XApiKey => ProxyAuth::XApiKey,
+                            ProxyHeader::Bearer => ProxyAuth::Bearer,
+                        };
+                        Endpoint::Proxy { base_url: base_url.to_string(), api_key: key(api_key_env.as_ref())?, header }
+                    }
+                    Door::ClaudePlatformOnAws => claude_platform_on_aws(name.as_ref(), region.as_ref(), workspace_id.as_ref(), base_url.as_ref())?,
+                    Door::Bedrock => bedrock(name.as_ref(), region.as_ref(), base_url.as_ref())?,
+                    Door::Vertex => vertex(name.as_ref(), project.as_ref(), region.as_ref(), base_url.as_ref())?,
+                };
+                (ChatProvider::Anthropic { endpoint }, pricing.is_some())
+            }
+            ProviderEntry::Openai { base_url, api_key_env, auth, structured_output, strict_tools, reasoning_effort, max_tokens_param, cache_hints, send_dimensions, pricing } => {
+                let auth = self.openai_auth(name.as_ref(), api_key_env.as_ref(), *auth)?;
+                let dialect = Dialect {
+                    structured_output: match structured_output {
+                        StructuredOutputKnob::JsonSchema => StructuredOutputMode::JsonSchema,
+                        StructuredOutputKnob::JsonObject => StructuredOutputMode::JsonObject,
+                        StructuredOutputKnob::Prompt => StructuredOutputMode::Prompt,
+                    },
+                    strict_tools: *strict_tools,
+                    reasoning_effort: *reasoning_effort,
+                    max_tokens_param: match max_tokens_param {
+                        MaxTokensKnob::MaxTokens => MaxTokensParam::MaxTokens,
+                        MaxTokensKnob::MaxCompletionTokens => MaxTokensParam::MaxCompletionTokens,
+                    },
+                    cache_hints: *cache_hints,
+                };
+                (ChatProvider::OpenAi { base_url: base_url.to_string(), auth, dialect, send_dimensions: *send_dimensions }, pricing.is_some())
+            }
+            ProviderEntry::Voyage { .. } => {
+                return Err(ConfigError::WrongKind { stage, provider: name.to_string(), kind: "voyage", expected: "a chat provider: kind = anthropic or openai" });
+            }
+        };
+        self.chat.insert(name.clone(), resolved.clone());
+        Ok(resolved)
     }
 
     fn embed(&self, entry: &EmbedEntry) -> Result<Embed, ConfigError> {
@@ -1567,15 +1827,138 @@ model = "claude-opus-5"
         let auth_on_direct = MINIMAL.replace("kind = \"anthropic\"\n", "kind = \"anthropic\"\nauth = \"bearer\"\n");
         let err = load(&auth_on_direct, &[("ANTHROPIC_API_KEY", "k")]).err().map(|e| e.to_string()).unwrap_or_default();
         assert_eq!(err, "providers.anthropic: auth applies only to endpoint = \"proxy\"");
-        for door in ["claude-platform-on-aws", "bedrock", "vertex"] {
-            let cloud = MINIMAL.replace("kind = \"anthropic\"\n", &format!("kind = \"anthropic\"\nendpoint = \"{door}\"\n"));
-            let err = load(&cloud, &[("ANTHROPIC_API_KEY", "k")]).err().map(|e| e.to_string()).unwrap_or_default();
-            assert_eq!(err, format!("providers.anthropic: endpoint = \"{door}\" is not built in this binary"));
-        }
+        let no_key = MINIMAL.replace("api_key_env = \"ANTHROPIC_API_KEY\"\n", "");
+        let err = load(&no_key, &[]).err().map(|e| e.to_string()).unwrap_or_default();
+        assert_eq!(err, "providers.anthropic: api_key_env is required for endpoint = \"direct\"");
         let unknown = MINIMAL.replace("kind = \"anthropic\"\n", "kind = \"anthropic\"\nendpoint = \"sideways\"\n");
         let err = load(&unknown, &[("ANTHROPIC_API_KEY", "k")]).err().map(|e| e.to_string()).unwrap_or_default();
         assert!(err.contains("sideways") && err.contains("bedrock"), "{err}");
         Ok(())
+    }
+
+    /// `MINIMAL` with the anthropic provider's keys replaced by `extra`
+    /// (no `api_key_env` unless `extra` has one).
+    fn anthropic_with(extra: &str) -> String {
+        MINIMAL.replace("kind = \"anthropic\"\napi_key_env = \"ANTHROPIC_API_KEY\"\n", &format!("kind = \"anthropic\"\n{extra}\n"))
+    }
+
+    #[cfg(feature = "aws")]
+    #[test]
+    fn aws_doors_resolve_from_their_keys() -> R {
+        use judge_llm::StructuredOutput;
+        let c = load(&anthropic_with("endpoint = \"claude-platform-on-aws\"\nregion = \"us-west-2\"\nworkspace_id = \" wrkspc_01AbC \""), &[])?;
+        let ChatProvider::Anthropic { endpoint: Endpoint::ClaudePlatformOnAws { base_url, region, workspace_id, .. } } = &c.synth().ok_or("s")?.backend else {
+            return Err("claude-platform-on-aws".into());
+        };
+        assert_eq!((base_url.as_str(), region.as_str(), workspace_id.as_str()), ("https://aws-external-anthropic.us-west-2.api.aws", "us-west-2", "wrkspc_01AbC"));
+        assert!(c.models()?.synth().capabilities().refusal_fallbacks, "first-party parity");
+        assert_eq!(c.report().pointer("/providers/anthropic/endpoint"), Some(&serde_json::json!("claude-platform-on-aws")));
+        assert_eq!(c.report().pointer("/providers/anthropic/workspace_id"), Some(&serde_json::json!("wrkspc_01AbC")));
+
+        let bedrock = anthropic_with("endpoint = \"bedrock\"\nregion = \"us-east-1\"\nbase_url = \"http://bedrock-proxy.internal/\"")
+            .replace("model = \"claude-opus-5\"", "model = \"anthropic.claude-opus-5\"");
+        let c = load(&bedrock, &[])?;
+        let ChatProvider::Anthropic { endpoint: Endpoint::Bedrock { base_url, region, credentials, .. } } = &c.synth().ok_or("s")?.backend else { return Err("bedrock".into()) };
+        assert_eq!((base_url.as_str(), region.as_str()), ("http://bedrock-proxy.internal/", "us-east-1"), "base_url overrides the derived origin");
+        // Both stages name the one provider: one endpoint, one credential chain between them.
+        let ChatProvider::Anthropic { endpoint: Endpoint::Bedrock { credentials: extract_credentials, .. } } = &c.extract().ok_or("x")?.backend else { return Err("bedrock".into()) };
+        assert!(Arc::ptr_eq(credentials, extract_credentials), "the stages share the provider's chain");
+        let caps = c.models()?.synth().capabilities();
+        assert_eq!(caps.structured_output, StructuredOutput::PromptOnly);
+        assert!(!caps.strict_tools && !caps.refusal_fallbacks);
+        assert_eq!(c.synth().ok_or("s")?.model, "anthropic.claude-opus-5");
+        assert!(matches!(c.synth().ok_or("s")?.price, Price::Table(_)), "an unknown Anthropic id prices as Opus 5");
+        assert_eq!(c.report().pointer("/providers/anthropic/endpoint"), Some(&serde_json::json!("bedrock")));
+        // An inference profile is the other documented form.
+        let profile = bedrock.replace("anthropic.claude-opus-5", "global.anthropic.claude-opus-5");
+        assert_eq!(load(&profile, &[])?.synth().map(|s| s.model.clone()), Some("global.anthropic.claude-opus-5".to_owned()));
+        // A bare id, or `anthropic.` anywhere but as a whole segment, is refused at load naming the stage.
+        for model in ["claude-opus-5", "claude-opus-5-anthropic.x"] {
+            let bare = bedrock.replace("anthropic.claude-opus-5", model);
+            let err = load(&bare, &[]).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(err.starts_with(&format!("models.extract.model = {model:?}")) && err.contains("anthropic."), "{model}: {err}");
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "gcp")]
+    #[test]
+    fn vertex_resolves_from_its_keys() -> R {
+        use judge_llm::StructuredOutput;
+        let c = load(&anthropic_with("endpoint = \"vertex\"\nproject = \"my-proj\"\nregion = \"global\""), &[])?;
+        let ChatProvider::Anthropic { endpoint: Endpoint::Vertex { base_url, project, region, token, .. } } = &c.synth().ok_or("s")?.backend else { return Err("vertex".into()) };
+        assert_eq!((base_url.as_str(), project.as_str(), region.as_str()), ("https://aiplatform.googleapis.com", "my-proj", "global"));
+        let ChatProvider::Anthropic { endpoint: Endpoint::Vertex { token: extract_token, .. } } = &c.extract().ok_or("x")?.backend else { return Err("vertex".into()) };
+        assert!(Arc::ptr_eq(token, extract_token), "the stages share the provider's ADC");
+        let caps = c.models()?.synth().capabilities();
+        assert!(!caps.refusal_fallbacks && caps.strict_tools);
+        assert_eq!(caps.structured_output, StructuredOutput::Enforced);
+        assert_eq!(c.report().pointer("/providers/anthropic/project"), Some(&serde_json::json!("my-proj")));
+        Ok(())
+    }
+
+    /// `region` and `project` go into a hostname or a URL path: a value
+    /// that would not survive that fails at load naming the key, on every
+    /// build (the check is in the type, before any door is resolved).
+    #[test]
+    fn region_and_project_are_checked_as_labels() {
+        let err = |extra: &str| load(&anthropic_with(extra), &[]).err().map(|e| e.to_string()).unwrap_or_default();
+        for (extra, key) in [
+            ("endpoint = \"bedrock\"\nregion = \"us-east-1/\"", "region"),
+            ("endpoint = \"bedrock\"\nregion = \"US-EAST-1\"", "region"),
+            ("endpoint = \"bedrock\"\nregion = \"-us\"", "region"),
+            ("endpoint = \"vertex\"\nregion = \"global\"\nproject = \"My Proj\"", "project"),
+            ("endpoint = \"vertex\"\nregion = \"global\"\nproject = \"example.com:proj\"", "project"),
+        ] {
+            let e = err(extra);
+            assert!(e.contains(key) && e.contains("lowercase letters, digits and hyphens"), "{extra:?}: {e}");
+        }
+        assert!(validate_region("us-east5").is_ok() && validate_region("global").is_ok() && validate_project("proj-123456").is_ok());
+    }
+
+    /// The key doors hold their key: probing them is `Ok` without I/O, so
+    /// the zero-config setup and a proxy start as they always did.
+    #[tokio::test]
+    async fn probe_auth_needs_nothing_from_a_key_door() -> R {
+        let c = Config::from_vars(|k| (k == "ANTHROPIC_API_KEY").then(|| "k".to_owned()))?;
+        c.probe_auth().await?;
+        let c = load(FULL, &[("ANTHROPIC_API_KEY", "k"), ("LITELLM_KEY", "k"), ("VOYAGE_API_KEY", "k")])?;
+        c.probe_auth().await?;
+        Ok(())
+    }
+
+    #[test]
+    fn cloud_door_keys_are_checked_per_door() {
+        let err = |extra: &str| load(&anthropic_with(extra), &[("ANTHROPIC_API_KEY", "k")]).err().map(|e| e.to_string()).unwrap_or_default();
+        // Misplaced keys are errors on every build; missing ones on a built door.
+        for (extra, expect) in [
+            ("endpoint = \"vertex\"\nregion = \"global\"\nproject = \"p\"\napi_key_env = \"ANTHROPIC_API_KEY\"", "providers.anthropic: api_key_env does not apply to a cloud door"),
+            ("api_key_env = \"ANTHROPIC_API_KEY\"\nregion = \"us-west-2\"", "providers.anthropic: region applies only to the cloud doors"),
+            ("api_key_env = \"ANTHROPIC_API_KEY\"\nworkspace_id = \"wrkspc_01X\"", "providers.anthropic: workspace_id applies only to endpoint = \"claude-platform-on-aws\""),
+            ("endpoint = \"bedrock\"\nregion = \"us-east-1\"\nproject = \"p\"", "providers.anthropic: project applies only to endpoint = \"vertex\""),
+            ("endpoint = \"bedrock\"\nregion = \"us-east-1\"\nauth = \"bearer\"", "providers.anthropic: auth applies only to endpoint = \"proxy\""),
+        ] {
+            let e = err(extra);
+            assert!(e.starts_with(expect), "{extra:?}: {e}");
+        }
+        let e = err("endpoint = \"claude-platform-on-aws\"\nregion = \"us-west-2\"\nworkspace_id = \"arn:aws:aws-external-anthropic:us-west-2:1:workspace/wrkspc_01X\"");
+        assert!(e.contains("workspace_id") && e.contains("wrkspc_"), "{e}");
+        // A missing key is an error on a built door; a door this build lacks
+        // names its feature first, whatever else is missing. Each door is
+        // checked against its own feature, so the `aws`-only and `gcp`-only
+        // builds are exercised too, not just both-on and both-off.
+        for (extra, door, feature, built, missing) in [
+            ("endpoint = \"bedrock\"", "bedrock", "aws", cfg!(feature = "aws"), "region"),
+            ("endpoint = \"claude-platform-on-aws\"\nregion = \"us-west-2\"", "claude-platform-on-aws", "aws", cfg!(feature = "aws"), "workspace_id"),
+            ("endpoint = \"vertex\"\nregion = \"global\"", "vertex", "gcp", cfg!(feature = "gcp"), "project"),
+        ] {
+            let expect = if built {
+                format!("providers.anthropic: {missing} is required for endpoint = \"{door}\"")
+            } else {
+                format!("providers.anthropic: endpoint = \"{door}\" is not built in this binary; it needs the \"{feature}\" feature of judge-anthropic (on by default)")
+            };
+            assert_eq!(err(extra), expect, "{extra:?}");
+        }
     }
 
     #[test]

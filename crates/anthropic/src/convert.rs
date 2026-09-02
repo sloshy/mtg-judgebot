@@ -12,26 +12,27 @@ use crate::{
     schema::to_anthropic,
     wire::{
         self, CacheControl, CacheTtl, ContentBlock, FallbackModel, Fallbacks, Message, MessagesRequest,
-        MessagesResponse, OutputConfig, OutputFormat, Role, StopReason, SystemBlock, Thinking, Tool,
+        MessagesResponse, ModelField, OutputConfig, OutputFormat, Role, StopReason, SystemBlock, Thinking, Tool,
     },
 };
 
 /// The [`AssistantTurn::backend`] tag of turns this backend produces.
 pub const BACKEND: &str = "anthropic";
 
-/// The Messages API body for `req` against `model`.
+/// The Messages API body for `req` against `model` (a bare `&str` is the
+/// first-party `"model"` field; [`ModelField::in_url`] is Vertex's shape).
 ///
 /// # Errors
 /// `ForeignTurn` when a replayed assistant turn came from another backend;
 /// `Request` when its payload is not Messages API content.
-pub fn to_wire(model: &str, req: &ChatRequest) -> Result<MessagesRequest, LlmError> {
+pub fn to_wire(model: impl Into<ModelField>, req: &ChatRequest) -> Result<MessagesRequest, LlmError> {
     let messages = req.turns.iter().map(message).collect::<Result<Vec<_>, _>>()?;
     let output_config = (req.effort.is_some() || req.output.is_some()).then(|| OutputConfig {
         effort: req.effort.map(effort),
         format: req.output.as_ref().map(|o| OutputFormat::JsonSchema { schema: to_anthropic(&o.schema) }),
     });
     Ok(MessagesRequest {
-        model: model.to_owned(),
+        model: model.into(),
         max_tokens: req.max_tokens,
         system: req.system.iter().map(system_block).collect(),
         messages,

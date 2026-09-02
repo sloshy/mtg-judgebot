@@ -12,7 +12,8 @@ publish = false
 wiremock = "0.6"
 judge-core = { path = "crates/core" }
 judge-llm = { path = "crates/llm" }
-judge-anthropic = { path = "crates/anthropic" }
+# Its cloud doors are features; judge-bot turns them on (both by default).
+judge-anthropic = { path = "crates/anthropic", default-features = false }
 judge-openai = { path = "crates/openai" }
 judge-embed = { path = "crates/embed" }
 judge-bot = { path = "crates/bot" }
@@ -36,6 +37,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rmcp = { version = "3.2", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
+# Cloud doors for the Anthropic backend (optional features of judge-anthropic).
+aws-config = "1"
+aws-sigv4 = "1"
+aws-credential-types = "1"
+gcp_auth = "0.12"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

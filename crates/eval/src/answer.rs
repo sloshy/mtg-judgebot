@@ -226,6 +226,8 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
     let config = Config::load_from(opts.config.as_deref())?;
     tracing::info!("{}", config.summary());
     let models = config.models()?;
+    // A cloud door with no credentials fails here, before any question is spent on.
+    config.probe_auth().await?;
     models.meter().set_max_spend_usd(opts.max_usd)?;
     let meter = models.meter().clone();
     let vectors = config.vectors(pool.clone())?;

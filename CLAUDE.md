@@ -224,8 +224,15 @@ Key cross-file facts that aren't obvious from any one file:
   (`JUDGE_CONFIG`, else `./judge.toml` if present, else today's setup from `.env`:
   Anthropic direct, `claude-opus-5` both stages, Voyage if keyed) into typed structs
   (`deny_unknown_fields`, nutype validators, secrets by `api_key_env` read at load into a
-  redacted `ApiKey`). Chat backends are `judge-anthropic` (`Endpoint::{Direct, Proxy}`; the
-  cloud doors are named but refused as "not built") and `judge-openai` (chat completions
+  redacted `ApiKey`). Chat backends are `judge-anthropic` (`Endpoint::{Direct, Proxy,
+  ClaudePlatformOnAws, Bedrock, Vertex}`; the cloud doors sit behind judge-anthropic's
+  `aws`/`gcp` Cargo features — default on, forwarded from judge-bot's own features, named
+  in the Dockerfile — so a lean build cannot even name them and the loader says "not
+  built"; their credentials come from the platform chains (SigV4 via aws-config, ADC via
+  gcp_auth), never `judge.toml`, resolved lazily and probed once at startup by
+  `Config::probe_auth` so an empty chain fails there, not per question; Bedrock masks
+  `output_config.format`, tool `strict`, `fallbacks` and every `anthropic-beta`, verified
+  against the live docs 2026-09-02) and `judge-openai` (chat completions
   with `Dialect` knobs: `structured_output`, `strict_tools`, `reasoning_effort`,
   `max_tokens_param`, `cache_hints`). A model on an `openai` provider must be priced
   (`[models.X.pricing]`) or the provider `pricing = "free"`; the built-in table errs high

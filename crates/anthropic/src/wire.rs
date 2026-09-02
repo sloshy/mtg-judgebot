@@ -10,8 +10,10 @@ use serde_json::Value;
 /// Request body of `POST /v1/messages`.
 #[derive(Clone, Debug, Serialize)]
 pub struct MessagesRequest {
-    /// Model id, e.g. `claude-opus-5`.
-    pub model: String,
+    /// Which model, spelled the way the door wants it (first, as the
+    /// first-party body has it).
+    #[serde(flatten)]
+    pub model: ModelField,
     /// Hard output ceiling.
     pub max_tokens: u32,
     /// System prompt blocks.
@@ -34,6 +36,49 @@ pub struct MessagesRequest {
     /// Server-side refusal fallback (beta `server-side-fallback-2026-07-01`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallbacks: Option<Fallbacks>,
+}
+
+/// How the body names the model. Every door takes `"model": "<id>"`
+/// except Vertex, which puts the model in the URL path and takes
+/// `anthropic_version` in the body instead (on the other doors that is the
+/// `anthropic-version` header). An enum so a body can carry neither or
+/// both only by construction, never by a stray `Option`.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ModelField {
+    /// `"model": "<id>"`.
+    InBody {
+        /// Model id, e.g. `claude-opus-5` (`anthropic.claude-opus-5` on Bedrock).
+        model: String,
+    },
+    /// `"anthropic_version": "vertex-2023-10-16"`; the model is in the URL.
+    InUrl {
+        /// The Vertex API version string ([`VERTEX_API_VERSION`]).
+        anthropic_version: String,
+    },
+}
+
+/// The `anthropic_version` Vertex takes in the body.
+pub const VERTEX_API_VERSION: &str = "vertex-2023-10-16";
+
+impl ModelField {
+    /// The Vertex form.
+    #[must_use]
+    pub fn in_url() -> Self {
+        Self::InUrl { anthropic_version: VERTEX_API_VERSION.to_owned() }
+    }
+}
+
+impl From<&str> for ModelField {
+    fn from(model: &str) -> Self {
+        Self::InBody { model: model.to_owned() }
+    }
+}
+
+impl From<String> for ModelField {
+    fn from(model: String) -> Self {
+        Self::InBody { model }
+    }
 }
 
 /// Server-side fallback when the safety classifier refuses.
@@ -488,6 +533,16 @@ mod tests {
         assert_eq!(at(&v, "/tool_choice"), &serde_json::json!({"type": "auto", "disable_parallel_tool_use": true}));
         assert_eq!(at(&v, "/fallbacks"), "default");
         assert!(v.get("tools").is_none());
+        assert_eq!(at(&v, "/model"), "claude-opus-5");
+        assert!(v.get("anthropic_version").is_none());
+        // The model field comes first, as the first-party body has it.
+        assert!(serde_json::to_string(&req)?.starts_with(r#"{"model":"claude-opus-5","max_tokens":16000,"#));
+
+        let vertex = MessagesRequest { model: ModelField::in_url(), ..req };
+        let v = serde_json::to_value(&vertex)?;
+        assert!(v.get("model").is_none(), "Vertex names the model in the URL: {v}");
+        assert_eq!(at(&v, "/anthropic_version"), VERTEX_API_VERSION);
+        assert!(serde_json::to_string(&vertex)?.starts_with(r#"{"anthropic_version":"vertex-2023-10-16","max_tokens":16000,"#));
         Ok(())
     }
 

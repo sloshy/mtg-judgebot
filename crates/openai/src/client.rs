@@ -132,7 +132,7 @@ impl Backend for OpenAi {
         }
         let body = serde_json::to_vec(&to_wire(&self.model, self.dialect, req)?)
             .map_err(|e| LlmError::Request(format!("serialize chat completions body: {e}")))?;
-        let build = || self.authorize(self.http.post(&self.url)).header("content-type", "application/json").body(body.clone());
+        let build = || Ok(self.authorize(self.http.post(&self.url)).header("content-type", "application/json").body(body.clone()));
         post_with_retries(build, |reply| self.decode(reply)).await
     }
 

@@ -222,6 +222,9 @@ impl Toolbox {
         let models = config.models_if_configured().context("models")?;
         if models.is_none() {
             tracing::info!("no model configured (ANTHROPIC_API_KEY or a judge.toml); the built-in `judge` pipeline is unavailable, sessions are not affected");
+        } else {
+            // A cloud door with no credentials fails here, not on the first `judge` call.
+            config.probe_auth().await?;
         }
         let vectors = config.vectors(pool.clone())?;
         // Logged at startup so a mismatch is visible before the first lookup.

@@ -15,6 +15,14 @@ path = "src/lib.rs"
 name = "bot"
 path = "src/main.rs"
 
+[features]
+# The Anthropic cloud doors (`endpoint = "claude-platform-on-aws" | "bedrock"`
+# and `"vertex"` in judge.toml). Forwarded to judge-anthropic; a binary built
+# without one refuses that endpoint at load, naming the feature.
+default = ["aws", "gcp"]
+aws = ["judge-anthropic/aws"]
+gcp = ["judge-anthropic/gcp"]
+
 [dependencies]
 judge-core.workspace = true
 judge-llm.workspace = true

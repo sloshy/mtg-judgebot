@@ -36,7 +36,9 @@ Discord message (+ last N Q&A in the same thread)
     fuzzy matching only sees candidate spans, not rules vocabulary.
     Which model, and where: `judge_bot::config` (a `judge.toml`, else
     Anthropic direct from the environment) picks a provider per stage —
-    Anthropic's Messages API (direct or through a proxy) or any
+    Anthropic's Messages API (direct, through a proxy, or on a cloud
+    account: Claude Platform on AWS and Bedrock with SigV4, Vertex AI with
+    ADC — credentials from the platform chain, probed at startup) or any
     OpenAI-compatible chat completions server — and every model sits behind
     the one spend-capped `Metered` per process. The backend reports its
     `Capabilities`; when it cannot enforce the output schema server-side the

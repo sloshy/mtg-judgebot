@@ -10,7 +10,10 @@ FROM rust:1.97-slim AS builder
 WORKDIR /app
 COPY . .
 ENV SQLX_OFFLINE=true
-RUN cargo build --release -p judge-bot -p judge-api -p judge-ingest -p judge-agent
+# The Anthropic cloud doors (Claude Platform on AWS, Bedrock, Vertex) are
+# judge-bot's default features; named here so the image keeps them if the
+# default ever changes.
+RUN cargo build --release -p judge-bot -p judge-api -p judge-ingest -p judge-agent --features judge-bot/aws,judge-bot/gcp
 
 FROM debian:bookworm-slim
 # The ingest cache is owned by the runtime user so that a named volume mounted

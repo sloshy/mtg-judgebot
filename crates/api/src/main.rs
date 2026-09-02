@@ -44,6 +44,8 @@ async fn main() -> Result<()> {
     let judge = JudgeConfig::load()?;
     tracing::info!("{}", judge.summary());
     let models = judge.models()?;
+    // A cloud door with no credentials fails here, not on the first question.
+    judge.probe_auth().await?;
     // The embedder is optional: without one the retriever skips its vector
     // leg. One `Vectors` for every adapter in the process: the space check
     // against `embedding_space` runs once and disables them all on a mismatch.

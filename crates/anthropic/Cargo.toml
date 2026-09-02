@@ -16,6 +16,16 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+aws-config = { workspace = true, optional = true }
+aws-sigv4 = { workspace = true, optional = true }
+aws-credential-types = { workspace = true, optional = true }
+gcp_auth = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync"], optional = true }
+
+[features]
+default = ["aws", "gcp"]
+aws = ["dep:aws-config", "dep:aws-sigv4", "dep:aws-credential-types", "dep:tokio"]
+gcp = ["dep:gcp_auth", "dep:tokio"]
 
 [dev-dependencies]
 wiremock.workspace = true

@@ -49,6 +49,16 @@ pub enum LlmError {
         /// The variable.
         var: &'static str,
     },
+    /// A cloud door could not obtain its credentials (the platform's
+    /// credential chain found none, or refused) or could not sign the
+    /// request with them. `door` names the door for the log line.
+    #[error("{door} auth: {message}")]
+    Auth {
+        /// The door, e.g. `bedrock`.
+        door: &'static str,
+        /// The platform library's message.
+        message: String,
+    },
     /// Cumulative estimated spend reached the cap; the request was not sent.
     #[error("spend cap exceeded: spent ${spent:.4} of ${cap:.2} cap; request not sent")]
     SpendCapExceeded {
@@ -90,6 +100,7 @@ impl LlmError {
             | LlmError::Request(_)
             | LlmError::ForeignTurn { .. }
             | LlmError::MissingApiKey { .. }
+            | LlmError::Auth { .. }
             | LlmError::SpendCapExceeded { .. }
             | LlmError::BadMaxSpend { .. }
             | LlmError::Unpriced { .. } => false,
@@ -115,6 +126,7 @@ mod tests {
             assert!(!api(code).is_retryable(), "{code}");
         }
         assert!(!LlmError::MissingApiKey { var: "X" }.is_retryable());
+        assert!(!LlmError::Auth { door: "bedrock", message: String::new() }.is_retryable());
         assert!(!LlmError::SpendCapExceeded { spent: 1.0, cap: 1.0 }.is_retryable());
         assert!(!LlmError::ForeignTurn { expected: "a", found: "b" }.is_retryable());
     }
