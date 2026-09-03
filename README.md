@@ -133,8 +133,10 @@ the `vector(N)` columns). The database records which model's vectors it holds
 an error and runs with the vector leg dark. To actually switch, `cargo run --release -p
 judge-ingest -- reembed` prints the row counts and a rough cost, probes the new model
 once, and with `--yes` retypes the columns, clears every vector and re-embeds them — paid
-per row, which is why it asks first. `judge-cli config` prints what resolved, secrets
-redacted, and every binary logs the same summary line at startup.
+per row, which is why it asks first. Run again with the switch already made, it only
+fills rows still empty (`--clear` clears and re-pays on purpose). `judge-cli config`
+prints what resolved, secrets redacted, and every binary logs the same summary line at
+startup.
 
 ### The web page
 

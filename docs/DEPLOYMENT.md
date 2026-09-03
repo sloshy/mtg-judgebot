@@ -62,13 +62,14 @@ docker compose exec -T db psql -U judgebot -d judgebot \
              (select provider||'/'||model||'/'||dimensions from embedding_space) space;"
 ```
 
-`embedded` being 0 means the vector leg is off — re-run `judge-ingest -- embed`
+`embedded` being 0 means the vector leg is off — re-run `scripts/refresh-data.sh embed`
 rather than shipping a degraded retriever. So is `space` being empty, or naming a
 model other than the one the bot is configured with: the bot's vector legs stay
 dark (an error-level log line at startup and on the change, never a mixed column)
 until the row and the configuration agree — `UPDATE embedding_space SET model = ...`
-if the row is mislabelled, `judge-ingest -- reembed --yes` (paid: every row again)
-to actually change models.
+if the row is mislabelled, `scripts/refresh-data.sh reembed --yes` (paid: every row
+again) to actually change models — and, with the row already right, the same command
+only fills whatever is still empty.
 
 ## 3. Create the tunnel
 
@@ -459,9 +460,16 @@ switch until the restart. Either way there is one dark window and no mixing; the
 above keeps it short. The refill is resumable: if the embed loop dies (rate limit, a
 provider outage) `scripts/refresh-data.sh embed` — or the next nightly run — fills
 whatever is still NULL, and retrieval degrades to the other legs for the rows not yet
-embedded. Not `reembed --yes` again: with the row already switched, that clears every
-vector the first run paid for and buys them all a second time (it says so in a `note:`
-line, but it does not refuse). The
+embedded — and so does `reembed --yes` itself: with the row already switched it has
+nothing to switch, so it fills the empty rows and pays for nothing twice. Clearing and
+re-buying every vector in the same space takes `--clear`, deliberately; since the row
+does not change, the running bot logs no mismatch and its vector leg simply answers
+from nothing until the refill finishes. Resume outside
+the nightly `refresh` window (the cron above): two refills at once each buy the same batch and one of them
+then fails on rows the other already filled. If only the model *name* differs from
+the row (same provider, same width) the dry run says so: when the stored vectors were
+in fact produced by the configured model, `UPDATE embedding_space SET model = ...`
+relabels them for nothing, and `--yes` would buy them all again. The
 probe is what makes `--yes` safe to type: a wrong key, URL or model name, or a model
 whose real width is not the configured `dimensions`, fails before anything is cleared,
 because after the switch the only ways back are paying for the old space again or the

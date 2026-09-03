@@ -413,7 +413,10 @@ Writers hold the space under the shared side of `CALLS_REWRITE_LOCK` and `switch
 takes the exclusive side, so a switch waits for in-flight writes. `ingest embed` writes the
 row with the *first vector it writes*, never before, and never relabels vectors it did not
 write; the migration seeds `voyage/voyage-3.5/1024` for a database that already held
-vectors. `reembed` probes the configured embedder with one short text before clearing
+vectors. `reembed --yes` switches only when the row or a column width differs from the
+configured space; when they already agree it fills the NULL rows and is idempotent (the
+resume after an interrupted refill), and `--clear` is the explicit clear-and-redo in the
+same space. `reembed` probes the configured embedder with one short text before clearing
 anything, so a wrong key, URL, model or width fails with the old vectors intact.
 `dimensions` is bounded to `1..=2000` (pgvector's HNSW limit) at load, and
 `VOYAGE_DIMENSIONS` gets the same bound. The space's provider is the *kind*

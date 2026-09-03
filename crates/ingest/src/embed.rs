@@ -71,18 +71,20 @@ const TARGETS: [Target; 3] = [
 ///
 /// # Errors
 /// When the embedder's space is not the database's (see [`check_space`]), or on
-/// embedding or database failure.
-pub async fn run(pool: &PgPool, embedder: Option<&dyn WithSpace>) -> anyhow::Result<()> {
+/// embedding or database failure. Returns the rows embedded per table.
+pub async fn run(pool: &PgPool, embedder: Option<&dyn WithSpace>) -> anyhow::Result<Vec<(&'static str, usize)>> {
     let Some(embedder) = embedder else {
         tracing::warn!("ingest embed: skipped, no embedder configured (set VOYAGE_API_KEY or [models.embed])");
-        return Ok(());
+        return Ok(Vec::new());
     };
     check_space(pool, embedder.space()).await?;
+    let mut counts = Vec::with_capacity(TARGETS.len());
     for t in &TARGETS {
         let n = embed_table(pool, embedder, t).await.with_context(|| format!("embedding {}", t.name))?;
         tracing::info!(table = t.name, embedded = n, "ingest embed");
+        counts.push((t.name, n));
     }
-    Ok(())
+    Ok(counts)
 }
 
 /// Refuse unless `space` can be the one the database holds: every `embedding`

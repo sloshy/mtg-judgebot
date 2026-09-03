@@ -48,12 +48,16 @@ cargo run --release -p judge-ingest -- notes data/notes.yaml
 cargo run --release -p judge-ingest -- embed            # only rows with NULL embedding; the configured
                                                         # embedder ([models.embed] or VOYAGE_API_KEY); refuses
                                                         # if embedding_space or the columns' width differ
-cargo run --release -p judge-ingest -- reembed [--yes]  # switch the DB to the configured embedder's space:
+cargo run --release -p judge-ingest -- reembed [--yes] [--clear]  # make the DB hold the configured embedder's
+                                                        # space: when it holds another (row or column width),
                                                         # retype vector columns, rebuild HNSW, NULL every
-                                                        # vector, rewrite embedding_space, then embed all.
-                                                        # Without --yes: prints rows + rough cost, exit≠0,
-                                                        # changes nothing. `docker compose restart bot api`
-                                                        # after (`up -d` sees no change: the file is a mount).
+                                                        # vector, rewrite embedding_space, then embed all; when
+                                                        # it already holds it, only fill empty rows (idempotent;
+                                                        # resume an interrupted refill with it). --clear clears
+                                                        # and re-pays every row in the same space. Without --yes:
+                                                        # prints rows + rough cost, exit≠0, changes nothing.
+                                                        # `docker compose restart bot api` after a switch
+                                                        # (`up -d` sees no change: the file is a mount).
 cargo run --release -p judge-ingest -- emoji            # Scryfall card symbols -> the bot's Discord
                                                         # application emoji; idempotent, no DB needed
 cargo run --release -p judge-ingest -- rules latest     # the CR linked from Wizards' rules page, only if

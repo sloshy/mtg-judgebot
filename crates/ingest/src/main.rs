@@ -7,7 +7,8 @@
 //! ingest aliases <yaml>        # hand-curated nicknames -> card_aliases
 //! ingest notes <yaml>          # hand-written nightmare-card notes -> card_notes
 //! ingest embed                 # fill NULL embeddings on rules/glossary/calls via the configured embedder
-//! ingest reembed [--yes]       # switch the database to the configured embedder's space and re-embed all
+//! ingest reembed [--yes] [--clear]  # make the database hold the configured embedder's space: switch and
+//!                              #   re-embed all when it holds another, else fill what is empty (--clear: redo all)
 //! ingest emoji                 # Scryfall card symbols -> the bot's Discord application emoji
 //! ingest retire                # retire/restore calls by whether their citations still hold
 //! ingest migrate               # apply the embedded schema migrations (bot/api do this at startup;
@@ -55,7 +56,7 @@ enum Command {
     Aliases { path: PathBuf },
     Notes { path: PathBuf },
     Embed,
-    Reembed { yes: bool },
+    Reembed { yes: bool, clear: bool },
     Emoji,
     Retire,
     Migrate,
@@ -66,7 +67,7 @@ enum Command {
 const LATEST: &str = "latest";
 
 const USAGE: &str =
-    "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | reembed [--yes] | emoji | retire | migrate | refresh>";
+    "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh>";
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     match args.next().as_deref() {
@@ -81,11 +82,20 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
             path: args.next().map(PathBuf::from).ok_or_else(|| anyhow::anyhow!("usage: ingest notes <notes.yaml>"))?,
         }),
         Some("embed") => Ok(Command::Embed),
-        Some("reembed") => match args.next().as_deref() {
-            None => Ok(Command::Reembed { yes: false }),
-            Some("--yes") => Ok(Command::Reembed { yes: true }),
-            Some(other) => anyhow::bail!("usage: ingest reembed [--yes] (got {other:?})"),
-        },
+        Some("reembed") => {
+            let (mut yes, mut clear) = (false, false);
+            for flag in args {
+                match flag.as_str() {
+                    "--yes" => yes = true,
+                    "--clear" => clear = true,
+                    other => anyhow::bail!(
+                        "usage: ingest reembed [--yes] [--clear] (got {other:?}); --yes: do it, not a dry run; \
+                         --clear: clear and re-pay every vector even when the database already holds the configured space"
+                    ),
+                }
+            }
+            Ok(Command::Reembed { yes, clear })
+        }
         Some("emoji") => Ok(Command::Emoji),
         Some("retire") => Ok(Command::Retire),
         Some("migrate") => Ok(Command::Migrate),
@@ -136,8 +146,8 @@ async fn main() -> Result<()> {
         Command::Rules { source } => cr::run(&connect().await?, &source, &cache_dir).await,
         Command::Aliases { path } => aliases::run(&connect().await?, &path).await,
         Command::Notes { path } => notes::run(&connect().await?, &path).await,
-        Command::Embed => embed::run(&connect().await?, embedder_from_config()?.as_deref()).await,
-        Command::Reembed { yes } => reembed::run(&connect().await?, embedder_from_config()?.as_deref(), yes).await,
+        Command::Embed => embed::run(&connect().await?, embedder_from_config()?.as_deref()).await.map(drop),
+        Command::Reembed { yes, clear } => reembed::run(&connect().await?, embedder_from_config()?.as_deref(), yes, clear).await,
         Command::Emoji => emoji::run(&cache_dir).await.map(drop),
         Command::Retire => judge_bot::db::retire_unsupported(&connect().await?).await.map(drop).map_err(Into::into),
         Command::Migrate => migrate::command(&connect().await?).await.map(drop),
@@ -162,7 +172,7 @@ async fn refresh(pool: &PgPool, cache_dir: &Path) -> Result<()> {
     step("rules", cr::run_latest(pool, cache_dir).await.map(drop));
     step("retire", judge_bot::db::retire_unsupported(pool).await.map(drop).map_err(Into::into));
     step("embed", match embedder_from_config() {
-        Ok(embedder) => embed::run(pool, embedder.as_deref()).await,
+        Ok(embedder) => embed::run(pool, embedder.as_deref()).await.map(drop),
         Err(e) => Err(e),
     });
     // The emoji belong to the bot's Discord application; a database-only
