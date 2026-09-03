@@ -19,6 +19,18 @@ use sqlx::PgPool;
 
 use db::{PgResolver, PgRetriever, Vectors};
 
+/// The schema migrations (`crates/bot/migrations`), embedded at compile time
+/// so the published image can move a database forward by itself
+/// (`judge-ingest migrate`, run as `docker compose run --rm refresh migrate`):
+/// the deploy host has no Rust toolchain and no `sqlx-cli`. The `#[sqlx::test]`
+/// suites apply the same directory, so a migration the tests pass against is
+/// the one the binary carries. `bot` and `api` apply it at startup
+/// (`db::migrate::at_startup`, opt-out `JUDGE_AUTO_MIGRATE=false`), so a
+/// pull-and-restart is a complete deploy (`docs/DEPLOYMENT.md` §8).
+/// `build.rs` makes a new file under `migrations/` recompile this crate;
+/// without it the embedded set goes stale.
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
 /// The models the pipeline runs on: one per stage, both billed to one
 /// meter. The stages may share one model (the zero-config setup) or not;
 /// the meter is one per process either way, so a front door reads the whole

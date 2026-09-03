@@ -10,6 +10,8 @@
 //! ingest reembed [--yes]       # switch the database to the configured embedder's space and re-embed all
 //! ingest emoji                 # Scryfall card symbols -> the bot's Discord application emoji
 //! ingest retire                # retire/restore calls by whether their citations still hold
+//! ingest migrate               # apply the embedded schema migrations (bot/api do this at startup;
+//!                              #   this is for an empty database, or JUDGE_AUTO_MIGRATE=false)
 //! ingest refresh               # cards, rules latest, retire, embed, emoji — the scheduled job
 //! ```
 //!
@@ -28,6 +30,7 @@ mod aliases;
 mod cr;
 mod embed;
 mod emoji;
+mod migrate;
 mod notes;
 mod reembed;
 mod renumber;
@@ -55,6 +58,7 @@ enum Command {
     Reembed { yes: bool },
     Emoji,
     Retire,
+    Migrate,
     Refresh,
 }
 
@@ -62,7 +66,7 @@ enum Command {
 const LATEST: &str = "latest";
 
 const USAGE: &str =
-    "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | reembed [--yes] | emoji | retire | refresh>";
+    "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | reembed [--yes] | emoji | retire | migrate | refresh>";
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     match args.next().as_deref() {
@@ -84,6 +88,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
         },
         Some("emoji") => Ok(Command::Emoji),
         Some("retire") => Ok(Command::Retire),
+        Some("migrate") => Ok(Command::Migrate),
         Some("refresh") => Ok(Command::Refresh),
         other => anyhow::bail!("{USAGE} (got {other:?})"),
     }
@@ -135,6 +140,7 @@ async fn main() -> Result<()> {
         Command::Reembed { yes } => reembed::run(&connect().await?, embedder_from_config()?.as_deref(), yes).await,
         Command::Emoji => emoji::run(&cache_dir).await.map(drop),
         Command::Retire => judge_bot::db::retire_unsupported(&connect().await?).await.map(drop).map_err(Into::into),
+        Command::Migrate => migrate::command(&connect().await?).await.map(drop),
         Command::Refresh => refresh(&connect().await?, &cache_dir).await,
     }
 }

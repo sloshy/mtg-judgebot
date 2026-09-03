@@ -28,10 +28,11 @@ Live deployment: <https://mtgjudge.rpeters.dev>
 - Compose syntax here is held to what older bundled versions accept — Synology's
   Container Manager ships v2.20, which predates the `env_file` long form. `.env.deploy`
   must exist on any machine running the `tunnel` profile, and only there.
-- No Rust toolchain on the host. Restoring a dump (§2) brings the schema *and* the
-  `_sqlx_migrations` ledger with it, so `sqlx migrate run` is only needed for a fresh
-  empty database or after pulling new migrations — and it can be run from a
-  workstation over an SSH tunnel rather than installed on the server.
+- No Rust toolchain on the host. The image carries its own migrations: `bot` and
+  `api` apply pending ones at startup (`JUDGE_AUTO_MIGRATE`, on by default), and
+  `docker compose run --rm refresh migrate` is the explicit form for an empty
+  database or an operator who opted out. Restoring a dump (§2) brings the schema
+  *and* the `_sqlx_migrations` ledger with it.
 - A domain whose DNS is hosted **on Cloudflare**. Tunnel hostnames resolve only for
   records in the same Cloudflare account, so third-party DNS cannot CNAME to
   `<uuid>.cfargotunnel.com`; the free plan requires moving the whole zone.
@@ -122,14 +123,20 @@ docker compose up -d
 curl -s localhost:8787/api/health
 ```
 
-Starting from an *empty* database instead, run migrations before `bot` and `api` or
-they crash-loop against a missing schema. From a workstation with `sqlx-cli`, over an
-SSH tunnel to the server's loopback-bound Postgres:
+Starting from an *empty* database instead, `docker compose up -d` is enough: `bot`
+and `api` create the schema at startup. The explicit form, for a look at what is
+about to happen or with `JUDGE_AUTO_MIGRATE=false`, runs from the same image with
+nothing but Docker (`run` starts `db` if it is not up):
 
 ```sh
-ssh -N -L 5433:127.0.0.1:5433 you@server &
-sqlx migrate run --source crates/bot/migrations   # DATABASE_URL=...@localhost:5433
+docker compose pull
+docker compose run --rm --pull missing refresh migrate   # never falls back to building on the host
 ```
+
+(`sqlx migrate run --source crates/bot/migrations` from a workstation over an SSH
+tunnel to the loopback-bound Postgres writes the same ledger with the same checksums,
+but takes neither the refresh-job lock nor the ahead check; prefer the container form
+on a live host.)
 
 Use a full `docker compose up -d` at least once on an existing host: `db`'s published
 port changed to loopback, and `up -d --build bot api` deliberately leaves `db` alone,
@@ -484,25 +491,45 @@ docker compose up -d
 
 ### A release that carries a migration
 
-Neither `bot` nor `api` runs migrations at startup, so a release whose commit adds a
-file under `crates/bot/migrations/` needs the schema moved by hand, with the old
-binaries stopped first: the new image's queries fail against the old schema (every
-question that resolves a card errors) and the old image's fail against the new one.
-Nothing crash-loops, so the failure is quiet until someone asks a question.
+`bot` and `api` apply pending migrations at startup, before anything else touches
+the database, so the ordinary deploy above is complete for a release whose commit
+adds a file under `crates/bot/migrations/`: the first of the two to start migrates
+(the calls-rewrite advisory lock serialises them; sqlx's own migrator lock is a
+second layer for a concurrent `sqlx migrate run`), the other finds nothing pending,
+and the log says `schema migrated` with the versions. A migration that fails exits the process,
+which under `restart: unless-stopped` is a crash-loop with the reason in
+`docker compose logs bot` — loud on purpose, where a bot running against the wrong
+schema would answer questions and quietly fail to persist them.
+
+The migration holds the same advisory lock the refresh job's CR load, retirement
+pass and embedding writes take, so those wait for it and it waits for them (the
+Scryfall card/rulings upsert takes no lock and needs none: one transaction, no
+`calls` rows). A deploy that lands during the nightly refresh therefore sits at
+startup until the CR load finishes — minutes on a NAS — with one warning line,
+`another job holds the calls rewrite lock ... waiting`, in `docker compose logs bot`;
+that is a wait, not a hang. It does not stop the *other* service: compose recreates `bot` and `api`
+independently, so for a migration that is not additive — one that rewrites `calls`
+rows (20260902000001 did, moving ruling citations to content keys) must not race a
+call being persisted by the old binary, and `ALTER TABLE` waits on any in-flight
+query — stop both first. The release notes in the commit say when this applies:
 
 ```sh
 git pull
-docker compose stop bot api
-ssh -N -L 5433:127.0.0.1:5433 you@server &     # from a workstation with sqlx-cli
-sqlx migrate run --source crates/bot/migrations  # DATABASE_URL=...@localhost:5433
-docker compose pull && docker compose up -d
+docker compose pull
+docker compose stop bot api      # only when the release notes say the migration rewrites rows
+docker compose up -d
 ```
 
-Stopping `bot`/`api` matters for more than the error window: a migration that
-rewrites `calls` rows (20260902000001 did, moving ruling citations to content keys)
-must not race a call being persisted by the old binary, and `ALTER TABLE` waits on
-any in-flight query. The release notes in the commit say when this applies; the
-refresh cron is harmless meanwhile, since a failing step rolls back.
+To move the schema by hand instead, set `JUDGE_AUTO_MIGRATE=false` in `.env` (it
+reaches `bot`/`api` at their next recreate, which `up -d` does because the env file
+changed) and run the explicit form from the *new* image:
+
+```sh
+docker compose pull
+docker compose stop bot api                              # only when the migration rewrites rows
+docker compose run --rm --pull missing refresh migrate   # prints what it applies; refuses a changed file
+docker compose up -d
+```
 
 ### One-time: let the host pull a private package
 
@@ -532,9 +559,13 @@ docker compose pull && docker compose up -d
 
 Clear `JUDGE_IMAGE_TAG` to return to `latest`.
 
-A tag from before a migration cannot run against the migrated schema. Rolling back
-across one means restoring the pre-release dump too (`scripts/backup-db.sh fetch`, §6),
-which is why the weekly backup is worth taking by hand right before such a deploy.
+An older tag starting against a newer schema logs `database is ahead of this binary`
+and does not migrate; whether it then works depends on the migration. An additive one
+(a new table, a nullable column) is harmless to the old binary. One that changed a
+column the old queries use is not, and rolling back across it means restoring the
+pre-release dump too (`scripts/backup-db.sh fetch`, §6), which is why the weekly
+backup is worth taking by hand right before such a deploy. `judge-ingest migrate`
+refuses an ahead database outright, rather than guessing.
 
 `cloudflared` and `db` are untouched by a code deploy. The tunnel reconnects on its
 own if the connector restarts.

@@ -2,7 +2,8 @@
 //! ladder), [`PgRetriever`] (category map + BM25 + vector, rulings, glossary,
 //! notes, prior calls), [`PgCallStore`] (calls + ratings) and
 //! [`PgSessionStore`] (agent-driven sessions), plus [`Vectors`], the guard
-//! every embedder passes through (`space.rs`: the stored vector space).
+//! every embedder passes through (`space.rs`: the stored vector space), and
+//! [`migrate`], the embedded schema migrations the binaries apply themselves.
 //!
 //! Every query is a compile-time-checked `sqlx::query!` / `query_as!` against
 //! `DATABASE_URL` (or the `.sqlx` offline cache); every sqlx error becomes
@@ -11,6 +12,7 @@
 mod calls;
 mod cards;
 mod library;
+pub mod migrate;
 mod resolve;
 mod retire;
 mod retrieve;

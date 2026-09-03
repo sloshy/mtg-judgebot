@@ -40,6 +40,10 @@ async fn main() -> Result<()> {
         .connect(&database_url)
         .await
         .context("connect to Postgres")?;
+    // The schema first: pending migrations are applied here (opt out with
+    // JUDGE_AUTO_MIGRATE=false), and a failure exits so the restart policy
+    // makes it loud rather than answering without persisting.
+    judge_bot::db::migrate::at_startup(&pool).await.context("migrating the schema")?;
     // The models (judge.toml, or the zero-config Anthropic setup; one spend
     // cap); the meter handed to the Discord layer is the one they bill to.
     let judge = JudgeConfig::load()?;

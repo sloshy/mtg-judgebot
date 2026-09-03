@@ -38,7 +38,9 @@ cargo test -p judge-bot possessive   # run a single test by substring
 SQLX_OFFLINE=true cargo build --workspace   # must pass; regenerate .sqlx after SQL changes:
 cargo sqlx prepare --workspace -- --all-targets
 
-~/.cargo/bin/sqlx migrate run --source crates/bot/migrations
+cargo run --release -p judge-ingest -- migrate          # apply pending migrations explicitly (judge_bot::MIGRATOR);
+                                                        # bot/api do this at startup unless JUDGE_AUTO_MIGRATE=false
+~/.cargo/bin/sqlx migrate run --source crates/bot/migrations   # the same thing with sqlx-cli
 cargo run --release -p judge-ingest -- cards            # Scryfall bulk sync (cached in .cache/)
 cargo run --release -p judge-ingest -- rules <url|path> # CR parse from a given file or URL
 cargo run --release -p judge-ingest -- aliases data/aliases.yaml
@@ -270,7 +272,8 @@ lives in `.env` too (a table no stage names is parsed, its key never read), as d
 cloud doors' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS` — never `.env.deploy`, which
 `bot`/`api` do not read),
 `DISCORD_TOKEN`, `GUILD_ID` (instant command registration), `JUDGE_ROLE` (default
-"Judge"), `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`; for the HTTP API also `API_ADDR`
+"Judge"), `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`, `JUDGE_AUTO_MIGRATE` (default true: bot and
+api apply pending migrations at startup; `judge-ingest migrate` is the explicit form); for the HTTP API also `API_ADDR`
 (default `0.0.0.0:8787`), `WEB_DIST`, `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`,
 `API_CLIENT_IP` (`peer` or `cloudflare`; see below), `MCP_TOKEN` (unset = no `/mcp`; ≥24
 chars; bearer-checked before the protocol), `MCP_ALLOWED_HOSTS` (the `Host` values the

@@ -47,7 +47,8 @@ key for the semantic-search leg.
 ```sh
 cp .env.example .env          # fill in keys, DISCORD_TOKEN, GUILD_ID
 docker compose up -d          # pgvector Postgres (localhost:5433) + bot + web API
-~/.cargo/bin/sqlx migrate run --source crates/bot/migrations
+cargo run --release -p judge-ingest -- migrate   # optional: bot/api already migrated at startup; this is
+                                                 # the explicit form (JUDGE_AUTO_MIGRATE=false, or sqlx-cli)
 
 # one-time data load (~110 MB from Scryfall, cached in .cache/)
 cargo run --release -p judge-ingest -- cards
