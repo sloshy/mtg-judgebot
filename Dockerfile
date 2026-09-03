@@ -6,7 +6,10 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM rust:1.97-slim AS builder
+# Pinned to bookworm to match the debian:bookworm-slim runtime below: the bare
+# `rust:1.97-slim` tag moved to trixie (glibc 2.41), and a binary linked there
+# fails on bookworm (glibc 2.36) with `version `GLIBC_2.38' not found`.
+FROM rust:1.97-slim-bookworm AS builder
 WORKDIR /app
 COPY . .
 ENV SQLX_OFFLINE=true
