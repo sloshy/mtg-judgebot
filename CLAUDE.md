@@ -32,7 +32,9 @@ pipeline*, not about how much to investigate.
    rendered material, the citation validation and the rejection notices are the same code
    the bot runs. Almost every report — a rejected citation, a wrong card resolution, a
    thin or missing context, an unhelpful retry notice — is reproducible here, so start
-   here and stay here. It needs only Postgres: `docker compose up -d db`, not `bot`/`api`.
+   here and stay here. It needs Postgres and nothing else, so check `docker compose ps`
+   first and bring the database up if it is down — `docker compose up -d db`, which is
+   enough on its own: neither `bot` nor `api` has to be running.
 2. **MCP** — `judge-mcp` over `.mcp.json` locally when the tools are connected, or
    `judge-api`'s `/mcp` (with `MCP_TOKEN`) when the user is away from this machine and the
    local database is not reachable. Same operations as the CLI; prefer whichever transport
@@ -48,8 +50,8 @@ pipeline*, not about how much to investigate.
 thing under test and Claude-as-the-model reproduces nothing. Run the real pipeline against
 that provider's `judge.toml` (`JUDGE_CONFIG=… judge-cli judge`, `judge-eval answer
 --config <file>`, or the containers with that file mounted), which also assumes the user
-has that provider set up; ask for the config rather than inventing one. The same applies to anything provider-shaped: wire
-format, schema dialect, pricing, auth.
+has that provider set up; ask for the config rather than inventing one. The same applies
+to anything provider-shaped: wire format, schema dialect, pricing, auth.
 
 ## Commands
 
