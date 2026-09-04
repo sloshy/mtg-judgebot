@@ -20,6 +20,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Commits in this repo are managed by Claude: commit completed, verified steps without
   asking. Never commit `.env`, `.cache/`, or `eval/runs/`.
 
+## Reproducing a reported failure
+
+When the user brings a bad or failed answer to troubleshoot, reach for the cheapest
+harness that can reproduce it, in this order. The rule is about *how to drive the
+pipeline*, not about how much to investigate.
+
+1. **The `judge` skill, session mode** (`.claude/skills/judge/SKILL.md`, driven through
+   `target/release/judge-cli begin|extract|rules|verdict`). Claude is the model, so there
+   is no API spend and no model configuration to get right, and the extraction, the
+   rendered material, the citation validation and the rejection notices are the same code
+   the bot runs. Almost every report — a rejected citation, a wrong card resolution, a
+   thin or missing context, an unhelpful retry notice — is reproducible here, so start
+   here and stay here. It needs only Postgres: `docker compose up -d db`, not `bot`/`api`.
+2. **MCP** — `judge-mcp` over `.mcp.json` locally when the tools are connected, or
+   `judge-api`'s `/mcp` (with `MCP_TOKEN`) when the user is away from this machine and the
+   local database is not reachable. Same operations as the CLI; prefer whichever transport
+   is actually available.
+3. **A live instance** (`docker compose up -d bot api`, `judge-cli judge`, `judge-eval
+   answer`) only when the deployed surface itself is what's in question — Discord
+   rendering, buttons, rate limiting, startup/config, the spend cap — or when step 1 has
+   ruled the pipeline out. This spends real money on real model calls, so say what it will
+   cost before starting it.
+
+**The exception is a question about another model or provider.** When the report is
+"Gemini/GPT/this endpoint answers badly through the bot", the model's own behaviour is the
+thing under test and Claude-as-the-model reproduces nothing. Run the real pipeline against
+that provider's `judge.toml` (`JUDGE_CONFIG=… judge-cli judge`, `judge-eval answer
+--config <file>`, or the containers with that file mounted), which also assumes the user
+has that provider set up; ask for the config rather than inventing one. The same applies to anything provider-shaped: wire
+format, schema dialect, pricing, auth.
+
 ## Commands
 
 Everything needs env from `.env` (`set -a; source .env; set +a`). Postgres runs in
