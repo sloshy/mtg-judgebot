@@ -19,6 +19,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   against wiremock, not the live API; a full 21-question gold run costs ~$2.50.
 - Commits in this repo are managed by Claude: commit completed, verified steps without
   asking. Never commit `.env`, `.cache/`, or `eval/runs/`.
+- **Every stage boundary gets an adversarial subagent review.** At the end of each phase
+  of a multi-step build, and before each commit, hand the change to a subagent briefed to
+  *try to break it*: name the invariant the change claims to establish, point it at the
+  diff and the code paths that consume the changed data, and ask for concrete failure
+  scenarios (input → wrong behaviour) separated into confirmed and plausible, with an
+  explicit "nothing severe" rather than manufactured findings. Fix what it confirms, then
+  commit. The reviewer inherits this session's model unless the user names another one.
 
 ## Reproducing a reported failure
 
