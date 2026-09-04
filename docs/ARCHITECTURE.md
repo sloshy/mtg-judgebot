@@ -92,7 +92,9 @@ Discord message (+ last N Q&A in the same thread)
     source from the extraction (as AnswerableSource — only Cr | Commander
     reach this step, by type) and crVersion from the retrieved chunks.
     Each citation = typed reference + quoted span. Validation:
-      (a) reference exists in Context, (b) span is a substring of that chunk.
+      (a) reference exists in Context, (b) span is a substring of that chunk,
+      comparing curly/ASCII punctuation as equal (judge_core::quote) and
+      storing the chunk's own text for the span, so a stored quote is exact.
     Also (c) every verdict must cite something and the answer must be
     ≥ 40 chars, else JudgeError.EmptyVerdict.
     Failure ⇒ BadCitation / EmptyVerdict → retry once (the notice says which),

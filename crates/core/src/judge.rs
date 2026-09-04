@@ -46,7 +46,9 @@ pub async fn judge(deps: &Deps, q: &Question, history: &[Qa]) -> Result<Verdict<
         Err(JudgeError::EmptyVerdict(e)) => Rejection::Empty(e),
         done => return done,
     };
-    tracing::debug!(%rejected, "verdict rejected; retrying synthesis once");
+    // At INFO, not DEBUG: when the retry also fails, the *first* rejection is
+    // usually what explains the second, and production runs at INFO.
+    tracing::info!(%rejected, "verdict rejected; retrying synthesis once");
     deps.synthesizer.answer(q, &mut ctx, Some(&rejected)).await?.validate(&ctx, source)
 }
 

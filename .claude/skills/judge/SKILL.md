@@ -90,9 +90,10 @@ the JSON only. Do it promptly: the session clock is running.
 
 ## Citations: how to not get rejected
 
-- Copy quotes **verbatim from the material as shown**, including curly apostrophes and
-  quotes (`’` not `'`), dashes and capitalisation. The CR uses `’`; typing `'` is the most
-  common rejection.
+- Copy quotes **verbatim from the material as shown**. Punctuation is forgiven —
+  ASCII `'`, `"` and `-` match the CR's `’`, `“”` and `—`, and the accepted citation comes
+  back carrying the source's own typography — but nothing else is: a changed word, a
+  dropped word or a different capitalisation is still a rejection.
 - Keep a quote inside one line of the source and short (the prompt asks for at most 200
   characters); use two citations rather than one spanning lines.
 - Cite the finest rule containing the quote: `702.19b` for a line that starts with

@@ -135,9 +135,15 @@ Key cross-file facts that aren't obvious from any one file:
 
 - **Citations are typed and validated.** `Citation::{Rule, ScryfallRuling, OracleText,
   PriorCall}` each carry a verbatim `quote` checked as a substring of the source in
-  `Context`; a failed check (or an empty/citation-less verdict on an answerable source)
-  becomes a retry with the rejection rendered into the prompt. Only
-  `Verdict<Validated>` can reach `CallStore::persist` or Discord rendering.
+  `Context`. The check folds typographic punctuation (`judge_core::quote`: curly quotes,
+  the dash block, non-breaking spaces — one `char` to one `char`, never case or words),
+  because models retype the CR's `’` as `'` and that was the most common rejection; what
+  is stored is the *source's* span, not the model's string, so a persisted quote stays
+  byte-exact and the retirement pass's `citation_supported` stays a strict check. A failed
+  check (or an empty/citation-less verdict on an answerable source) becomes a retry with
+  the rejection rendered into the prompt (logged at INFO, so a second failure can be read
+  against the first). Only `Verdict<Validated>` can reach `CallStore::persist` or Discord
+  rendering.
 - **CR chunking is two-granularity.** `rules` rows exist at rule level (`702.19`, body
   includes all lettered sub-rules + examples; these get embeddings and feed retrieval)
   AND as leaf rows (`702.19b`, `parent_id` set; citation targets). Scoring and

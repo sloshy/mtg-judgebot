@@ -9,7 +9,7 @@ use regex::Regex;
 use std::{borrow::Cow, fmt, sync::LazyLock};
 use uuid::Uuid;
 
-use crate::Category;
+use crate::{Category, quote};
 
 /// Regex for `RuleId`: `702` | `702.19` | `702.19b` | `704.5aa` (the CR runs
 /// past `z` into two-letter sub-rules). ASCII digits only: the `regex` crate's
@@ -459,6 +459,19 @@ impl Citation {
             | Citation::OracleText { quote, .. } => quote,
         }
     }
+
+    /// The same reference with `span` as its quote. Validation uses this to
+    /// store the source's own text (see [`quote::locate`](crate::quote::locate));
+    /// the reference itself is untouched.
+    #[must_use]
+    pub fn with_quote(self, span: String) -> Self {
+        match self {
+            Citation::Rule { id, .. } => Citation::Rule { id, quote: span },
+            Citation::ScryfallRuling { card, ruling, .. } => Citation::ScryfallRuling { card, ruling, quote: span },
+            Citation::PriorCall { id, .. } => Citation::PriorCall { id, quote: span },
+            Citation::OracleText { card, face, .. } => Citation::OracleText { card, face, quote: span },
+        }
+    }
 }
 
 /// Longest prefix of a malformed citation's raw JSON that is kept. It is
@@ -540,7 +553,13 @@ impl Face {
     /// True if `quote` appears verbatim in the Oracle text (not the name).
     #[must_use]
     pub fn contains_quote(&self, quote: &str) -> bool {
-        self.oracle_text.contains(quote)
+        self.locate_quote(quote).is_some()
+    }
+
+    /// The Oracle text's own span for `quote` (see [`quote::locate`]).
+    #[must_use]
+    pub fn locate_quote(&self, quote: &str) -> Option<&str> {
+        quote::locate(&self.oracle_text, quote)
     }
 }
 
@@ -556,7 +575,13 @@ impl RuleChunk {
     /// True if `quote` appears verbatim in the body or any example.
     #[must_use]
     pub fn contains_quote(&self, quote: &str) -> bool {
-        self.body.contains(quote) || self.examples.iter().any(|e| e.contains(quote))
+        self.locate_quote(quote).is_some()
+    }
+
+    /// The body's (or an example's) own span for `quote` (see [`quote::locate`]).
+    #[must_use]
+    pub fn locate_quote(&self, quote: &str) -> Option<&str> {
+        quote::locate(&self.body, quote).or_else(|| self.examples.iter().find_map(|e| quote::locate(e, quote)))
     }
 }
 

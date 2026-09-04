@@ -26,7 +26,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     AnswerableSource, Category, Citation, Confidence, Context, CrVersion, EmptyVerdict, JudgeError, MalformedCitation,
-    Source,
+    Source, quote,
 };
 
 /// An answer shorter than this (in characters, trimmed) is not an answer:
@@ -292,11 +292,7 @@ impl Verdict<Unvalidated> {
         if let Some(e) = emptiness(&self.data.answer, &citations) {
             return Err(JudgeError::EmptyVerdict(e));
         }
-        for c in &citations {
-            if !citation_supported(c, ctx) {
-                return Err(JudgeError::BadCitation(c.clone()));
-            }
-        }
+        let citations = requote(citations, ctx).map_err(JudgeError::BadCitation)?;
         let cr_version = ctx
             .cr_version()
             .cloned()
@@ -368,20 +364,46 @@ impl JsonSchema for Verdict<Unvalidated> {
 /// citation it was admitted with would still be admitted.
 #[must_use]
 pub fn citation_supported(c: &Citation, ctx: &Context) -> bool {
-    let quote = c.quote().trim();
-    if quote.is_empty() {
-        return false;
+    source_quote(c, ctx).is_some()
+}
+
+/// The *source's* text for the span `c` quotes, if `ctx` supports `c`.
+///
+/// Matching folds typographic punctuation ([`quote::locate`]), so this is not
+/// always the string the model wrote; [`Verdict::validate`] stores what comes
+/// back rather than what came in, which is why a stored quote is always a
+/// byte-exact substring of its source and [`citation_supported`] stays a
+/// strict check when the retirement pass re-runs it.
+#[must_use]
+fn source_quote(c: &Citation, ctx: &Context) -> Option<String> {
+    let q = c.quote().trim();
+    if q.is_empty() {
+        return None;
     }
-    match c {
-        Citation::Rule { id, .. } => ctx.rule(id).is_some_and(|r| r.contains_quote(quote)),
+    let found = match c {
+        Citation::Rule { id, .. } => ctx.rule(id).and_then(|r| r.locate_quote(q)),
         Citation::ScryfallRuling { card, ruling, .. } => {
-            ctx.ruling(*card, ruling).is_some_and(|r| r.text.contains(quote))
+            ctx.ruling(*card, ruling).and_then(|r| quote::locate(&r.text, q))
         }
-        Citation::PriorCall { id, .. } => ctx.prior_call(*id).is_some_and(|p| p.answer.contains(quote)),
+        Citation::PriorCall { id, .. } => ctx.prior_call(*id).and_then(|p| quote::locate(&p.answer, q)),
         Citation::OracleText { card, face, .. } => {
-            ctx.card(*card).and_then(|c| c.face(*face)).is_some_and(|f| f.contains_quote(quote))
+            ctx.card(*card).and_then(|c| c.face(*face)).and_then(|f| f.locate_quote(q))
         }
-    }
+    };
+    found.map(ToOwned::to_owned)
+}
+
+/// Replace each citation's quote with the source's own text for it, or report
+/// the first citation no source supports. Check (a)/(b) of
+/// [`Verdict::validate`], and the only place a quote is rewritten.
+fn requote(citations: Vec<Citation>, ctx: &Context) -> Result<Vec<Citation>, Citation> {
+    citations
+        .into_iter()
+        .map(|c| match source_quote(&c, ctx) {
+            Some(exact) => Ok(c.with_quote(exact)),
+            None => Err(c),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -460,6 +482,31 @@ mod tests {
         assert_eq!(ok.confidence(), Confidence::High);
         assert_eq!(ok.cr_version().as_ref(), "20250801");
         assert_eq!(ok.source(), Source::Cr);
+        Ok(())
+    }
+
+    /// The CR and Scryfall are typeset with curly apostrophes and em dashes,
+    /// and models retype them as ASCII. Such a citation is admitted — and
+    /// stored carrying the *source's* typography, so what is persisted and
+    /// re-checked by the retirement pass is still byte-exact.
+    #[test]
+    fn ascii_punctuation_is_admitted_and_snapped_back_to_the_source() -> Result<(), Box<dyn std::error::Error>> {
+        let card = CardId::new(Uuid::from_u128(7));
+        let text = "Lifelink isn\u{2019}t a triggered ability \u{2014} it\u{2019}s a static ability.";
+        let c = Context {
+            rules: vec![rule("702.15b", "A source\u{2019}s controller gains that much life.")?],
+            rulings: vec![Ruling { card, key: ruling_key("2020-01-01", text), published_at: "2020-01-01".into(), text: text.into() }],
+            ..Context::default()
+        };
+        let v = verdict(vec![
+            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "A source's controller".into() },
+            Citation::ScryfallRuling { card, ruling: ruling_key("2020-01-01", text), quote: "isn't a triggered ability - it's a static".into() },
+        ]);
+        let ok = v.validate(&c, CR).map_err(|e| e.to_string())?;
+        let quotes: Vec<&str> = ok.citations().iter().map(Citation::quote).collect();
+        assert_eq!(quotes, vec!["A source\u{2019}s controller", "isn\u{2019}t a triggered ability \u{2014} it\u{2019}s a static"]);
+        // And the stored form is what `citation_supported` will check later.
+        assert!(ok.citations().iter().all(|x| citation_supported(x, &c)));
         Ok(())
     }
 

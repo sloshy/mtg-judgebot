@@ -10,6 +10,7 @@ pub mod domain;
 pub mod error;
 pub mod judge;
 pub mod ports;
+pub mod quote;
 pub mod symbol;
 pub mod verdict;
 
