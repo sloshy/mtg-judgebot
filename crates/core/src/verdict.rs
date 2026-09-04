@@ -268,8 +268,10 @@ impl Verdict<Unvalidated> {
     ///     something at all;
     /// (a) each referenced rule / ruling / prior call / card face exists in
     ///     Context, and
-    /// (b) each quote is a non-empty verbatim substring of that source (for
-    ///     Oracle text: the face's current text or its name);
+    /// (b) each quote is a non-empty substring of that source (for Oracle
+    ///     text: the face's current text, never its name), compared with
+    ///     typographic punctuation folded and then *replaced* by the source's
+    ///     own span, so what is stored is exact ([`crate::quote`]);
     /// then stamp the CR version of the retrieved chunks and `source`, which
     /// is the extraction's classification (only answerable sources reach
     /// synthesis, and the type says so).

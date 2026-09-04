@@ -519,13 +519,33 @@ impl fmt::Display for MalformedCitation {
     }
 }
 
+/// Longest quote a [`Citation`]'s `Display` prints, in `char`s, before it is
+/// cut with a `…`. Nothing bounds a quote itself: the 200-character limit
+/// lives in the synthesis prompt, and the session API takes a verdict from an
+/// outside agent, so a rejected citation is model- (or caller-) controlled
+/// text that reaches a log line at INFO and the retry notice in the next
+/// prompt. Both want a legible identification, not the whole span.
+pub const DISPLAY_QUOTE_CHARS: usize = 200;
+
+/// The quote as `Display` shows it: debug-quoted, cut on a `char` boundary,
+/// with the `…` inside the quotes so the cut reads as part of the text.
+fn shown(quote: &str) -> String {
+    let mut kept: String = quote.chars().take(DISPLAY_QUOTE_CHARS).collect();
+    if kept.len() < quote.len() {
+        kept.push('…');
+    }
+    format!("{kept:?}")
+}
+
 impl fmt::Display for Citation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Citation::Rule { id, quote } => write!(f, "rule {id}: {quote:?}"),
-            Citation::ScryfallRuling { card, ruling, quote } => write!(f, "ruling {card}/{ruling}: {quote:?}"),
-            Citation::PriorCall { id, quote } => write!(f, "prior call {id}: {quote:?}"),
-            Citation::OracleText { card, face, quote } => write!(f, "oracle {card}#{face}: {quote:?}"),
+            Citation::Rule { id, quote } => write!(f, "rule {id}: {}", shown(quote)),
+            Citation::ScryfallRuling { card, ruling, quote } => {
+                write!(f, "ruling {card}/{ruling}: {}", shown(quote))
+            }
+            Citation::PriorCall { id, quote } => write!(f, "prior call {id}: {}", shown(quote)),
+            Citation::OracleText { card, face, quote } => write!(f, "oracle {card}#{face}: {}", shown(quote)),
         }
     }
 }
@@ -550,7 +570,8 @@ pub struct RuleChunk {
 }
 
 impl Face {
-    /// True if `quote` appears verbatim in the Oracle text (not the name).
+    /// True if `quote` names a span of the Oracle text (not the name), up to
+    /// typographic punctuation ([`quote::locate`]).
     #[must_use]
     pub fn contains_quote(&self, quote: &str) -> bool {
         self.locate_quote(quote).is_some()
@@ -572,7 +593,8 @@ impl Card {
 }
 
 impl RuleChunk {
-    /// True if `quote` appears verbatim in the body or any example.
+    /// True if `quote` names a span of the body or of an example, up to
+    /// typographic punctuation ([`quote::locate`]).
     #[must_use]
     pub fn contains_quote(&self, quote: &str) -> bool {
         self.locate_quote(quote).is_some()
