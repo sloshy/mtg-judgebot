@@ -469,7 +469,7 @@ mod tests {
         let citations = vec![
             Citation::Rule {
                 id,
-                quote: body.into()
+                quote: judge_core::Quote::try_new(body)?
             };
             n_citations
         ];
@@ -603,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn citation_lines_for_every_kind() {
+    fn citation_lines_for_every_kind() -> Result<(), Box<dyn std::error::Error>> {
         let id = CardId::new(Uuid::from_u128(1));
         let url = "https://scryfall.com/search?q=oracleid%3A00000000-0000-0000-0000-000000000001";
         assert_eq!(scryfall_url(id), url);
@@ -614,7 +614,7 @@ mod tests {
         let r = Citation::ScryfallRuling {
             card: id,
             ruling: ruling_key("2020-01-01", "a ruling"),
-            quote: "a  ruling\nwith   space".into(),
+            quote: judge_core::Quote::try_new("a  ruling\nwith   space")?,
         };
         assert_eq!(
             citation_line(&r, Some(&ctx), &no_symbols()).to_string(),
@@ -627,7 +627,7 @@ mod tests {
         );
         let p = Citation::PriorCall {
             id: judge_core::CallId::new(Uuid::from_u128(2)),
-            quote: "x".repeat(300),
+            quote: judge_core::Quote::try_new("x".repeat(300))?,
         };
         let line = citation_line(&p, Some(&ctx), &no_symbols()).to_string();
         assert!(line.starts_with("[prior call] “"));
@@ -636,7 +636,7 @@ mod tests {
         let o = Citation::OracleText {
             card: id,
             face: 0,
-            quote: "Flying".into(),
+            quote: judge_core::Quote::try_new("Flying")?,
         };
         assert_eq!(
             citation_line(&o, Some(&ctx), &no_symbols()).to_string(),
@@ -646,16 +646,18 @@ mod tests {
         let back = Citation::OracleText {
             card: id,
             face: 1,
-            quote: "Insectile".into(),
+            quote: judge_core::Quote::try_new("Insectile")?,
         };
         assert_eq!(
             citation_line(&back, Some(&ctx), &no_symbols()).to_string(),
             format!("[Oracle text, face 2 — Dark Confidant]({url}) “Insectile”")
         );
+        Ok(())
     }
 
     #[test]
-    fn linked_citations_still_fit_the_embed_budget() {
+    fn linked_citations_still_fit_the_embed_budget() -> Result<(), Box<dyn std::error::Error>> {
+        let quote = judge_core::Quote::try_new("q".repeat(300))?;
         // Worst case: every line carries a long name, a full URL and a full
         // quote; fit_lines must count the whole markdown, not just the label.
         let id = CardId::new(Uuid::from_u128(7));
@@ -669,7 +671,7 @@ mod tests {
                     &Citation::ScryfallRuling {
                         card: id,
                         ruling: ruling_key("2020-01-01", &i.to_string()),
-                        quote: "q".repeat(300),
+                        quote: quote.clone(),
                     },
                     Some(&ctx),
                     &no_symbols(),
@@ -680,6 +682,7 @@ mod tests {
         let out = fit_lines(&lines, EMBED_DESCRIPTION_LIMIT);
         assert!(out.chars().count() <= EMBED_DESCRIPTION_LIMIT, "{}", out.len());
         assert!(out.contains("… and "), "some lines must have been dropped");
+        Ok(())
     }
 
     #[test]
@@ -715,7 +718,7 @@ mod tests {
             &Citation::OracleText {
                 card: id,
                 face: 0,
-                quote: "{T}: Add {G}.".into(),
+                quote: judge_core::Quote::try_new("{T}: Add {G}.")?,
             },
             Some(&ctx),
             &symbols,
@@ -765,13 +768,13 @@ mod tests {
     /// One symbol-dense quote used to take over half the embed and push every
     /// other citation into "… and N more".
     #[test]
-    fn a_symbol_heavy_quote_leaves_room_for_other_citations() {
+    fn a_symbol_heavy_quote_leaves_room_for_other_citations() -> Result<(), Box<dyn std::error::Error>> {
         let symbols = SymbolTable::new([("mana_t".to_owned(), TAP_ID)]);
         let id = CardId::new(Uuid::from_u128(1));
         let heavy = Citation::OracleText {
             card: id,
             face: 0,
-            quote: "{T}".repeat(300),
+            quote: judge_core::Quote::try_new("{T}".repeat(300))?,
         };
         let line = citation_line(&heavy, None, &symbols);
         assert!(
@@ -787,6 +790,7 @@ mod tests {
             "only {} lines survived: {out}",
             out.lines().count()
         );
+        Ok(())
     }
 
     #[test]
@@ -869,7 +873,7 @@ mod tests {
         }
         let bad = Citation::Rule {
             id: RuleId::try_new("702.19b".to_owned())?,
-            quote: "nope".into(),
+            quote: judge_core::Quote::try_new("nope")?,
         };
         assert_eq!(error(&JudgeError::BadCitation(bad)), FAILED);
         assert_eq!(

@@ -96,7 +96,7 @@ mod tests {
             assert!(!e.is_operator_failure(), "{e}");
         }
         let loud = [
-            JudgeError::BadCitation(Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "x".into() }),
+            JudgeError::BadCitation(Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: crate::Quote::try_new("x")? }),
             JudgeError::MalformedCitation(MalformedCitation::new(r#"{"id":""}"#, "bad RuleId")),
             JudgeError::EmptyVerdict(EmptyVerdict::NoCitations),
             JudgeError::LlmRefused,

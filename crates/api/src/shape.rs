@@ -305,8 +305,8 @@ mod tests {
             "You gain the life at the same time the damage is dealt.".into(),
             Confidence::High,
             vec![
-                Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "gain that much life".into() },
-                Citation::ScryfallRuling { card: card_id, ruling: ruling_key("2020-01-01", "Lifelink is  not\na triggered ability."), quote: "a triggered ability".into() },
+                Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("gain that much life")? },
+                Citation::ScryfallRuling { card: card_id, ruling: ruling_key("2020-01-01", "Lifelink is  not\na triggered ability."), quote: judge_core::Quote::try_new("a triggered ability")? },
             ],
             Category::KeywordAbilities,
         );
@@ -348,21 +348,22 @@ mod tests {
     }
 
     #[test]
-    fn prior_call_and_oracle_text_citations_shape() {
+    fn prior_call_and_oracle_text_citations_shape() -> Result<(), Box<dyn std::error::Error>> {
         let quote = "some  prior\nanswer";
         let view = citation_view(
-            &Citation::PriorCall { id: CallId::new(Uuid::from_u128(3)), quote: quote.into() },
+            &Citation::PriorCall { id: CallId::new(Uuid::from_u128(3)), quote: judge_core::Quote::try_new(quote)? },
             None,
         );
         assert_eq!(view.label, "Prior call");
         assert_eq!(view.url, None);
         assert_eq!(view.quote, "some prior answer");
         let view = citation_view(
-            &Citation::OracleText { card: CardId::new(Uuid::from_u128(4)), face: 1, quote: "Flying".into() },
+            &Citation::OracleText { card: CardId::new(Uuid::from_u128(4)), face: 1, quote: judge_core::Quote::try_new("Flying")? },
             None,
         );
         assert_eq!(view.label, "Oracle text, face 2");
         assert!(view.url.is_some_and(|u| u.contains("oracleid")));
+        Ok(())
     }
 
     #[test]

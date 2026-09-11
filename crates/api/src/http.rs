@@ -360,7 +360,7 @@ mod tests {
             Ok(Verdict::new(
                 "Two instances of lifelink are redundant: you gain the life once.".into(),
                 Confidence::High,
-                vec![judge_core::Citation::Rule { id, quote: "gain that much life".into() }],
+                vec![judge_core::Citation::Rule { id, quote: judge_core::Quote::try_new("gain that much life").map_err(anyhow::Error::from)? }],
                 Category::KeywordAbilities,
             ))
         }

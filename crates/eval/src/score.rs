@@ -177,9 +177,9 @@ mod tests {
     #[test]
     fn cited_ids_come_from_rule_citations_only() -> anyhow::Result<()> {
         let c = vec![
-            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "x".into() },
-            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "y".into() },
-            Citation::PriorCall { id: judge_core::CallId::new(uuid_nil()), quote: "z".into() },
+            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("x")? },
+            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("y")? },
+            Citation::PriorCall { id: judge_core::CallId::new(uuid_nil()), quote: judge_core::Quote::try_new("z")? },
         ];
         assert_eq!(cited_rule_ids(&c), v(&["702.15b"]));
         assert_eq!(recall(&cited_rule_ids(&c), &v(&["702.15"])).hit, v(&["702.15"]));
@@ -189,11 +189,11 @@ mod tests {
     #[test]
     fn cite_counts_by_kind() -> anyhow::Result<()> {
         let c = vec![
-            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "x".into() },
-            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), ruling: judge_core::ruling_key("2020-01-01", "a"), quote: "y".into() },
-            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), ruling: judge_core::ruling_key("2020-01-01", "b"), quote: "y".into() },
-            Citation::PriorCall { id: judge_core::CallId::new(uuid_nil()), quote: "z".into() },
-            Citation::OracleText { card: judge_core::CardId::new(uuid_nil()), face: 0, quote: "w".into() },
+            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("x")? },
+            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), ruling: judge_core::ruling_key("2020-01-01", "a"), quote: judge_core::Quote::try_new("y")? },
+            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), ruling: judge_core::ruling_key("2020-01-01", "b"), quote: judge_core::Quote::try_new("y")? },
+            Citation::PriorCall { id: judge_core::CallId::new(uuid_nil()), quote: judge_core::Quote::try_new("z")? },
+            Citation::OracleText { card: judge_core::CardId::new(uuid_nil()), face: 0, quote: judge_core::Quote::try_new("w")? },
         ];
         assert_eq!(cite_counts(&c), CiteCounts { n_rule_cites: 1, n_ruling_cites: 2, n_oracle_cites: 1 });
         assert_eq!(cite_counts(&[]), CiteCounts::default());

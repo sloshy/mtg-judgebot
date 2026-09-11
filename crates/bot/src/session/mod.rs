@@ -293,7 +293,7 @@ mod tests {
         let v = Verdict::new(
             "Yes: three damage to a creature with toughness three is lethal, and it is destroyed as a state-based action.".into(),
             Confidence::High,
-            vec![Citation::Rule { id: rule.id.clone(), quote }],
+            vec![Citation::Rule { id: rule.id.clone(), quote: judge_core::Quote::try_new(quote)? }],
             Category::DamageAndLife,
         );
         sessions.submit_verdict(begun.session, v).await?;

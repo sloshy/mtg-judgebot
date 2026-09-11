@@ -396,7 +396,7 @@ mod tests {
                 return serde_json::from_str(&json).map_err(|e| anyhow::Error::from(e).into());
             }
             let id = RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?;
-            let citations = if quote.is_empty() { vec![] } else { vec![Citation::Rule { id, quote: quote.into() }] };
+            let citations = if quote.is_empty() { vec![] } else { vec![Citation::Rule { id, quote: crate::Quote::try_new(quote).map_err(anyhow::Error::from)? }] };
             Ok(Verdict::new(ANSWER.into(), Confidence::High, citations, Category::KeywordAbilities))
         }
     }
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(v.citations().len(), 1);
         let seen = synth.seen();
         assert_eq!(seen.len(), 2);
-        assert!(matches!(&seen.get(1), Some((0, Some(Rejection::BadCitation(Citation::Rule { quote, .. })))) if quote == "not in the rule"));
+        assert!(matches!(&seen.get(1), Some((0, Some(Rejection::BadCitation(Citation::Rule { quote, .. })))) if quote.as_ref() == "not in the rule"));
         Ok(())
     }
 
@@ -507,7 +507,7 @@ mod tests {
     fn bad_citation_twice_is_an_error() {
         let (d, synth) = deps(vec!["bad one", "bad two"]);
         let r = futures::executor::block_on(judge(&d, &q(), &[]));
-        assert!(matches!(r, Err(JudgeError::BadCitation(Citation::Rule { quote, .. })) if quote == "bad two"));
+        assert!(matches!(r, Err(JudgeError::BadCitation(Citation::Rule { quote, .. })) if quote.as_ref() == "bad two"));
         assert_eq!(synth.seen().len(), 2);
     }
 }

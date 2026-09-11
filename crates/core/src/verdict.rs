@@ -26,7 +26,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     AnswerableSource, Category, Citation, Confidence, Context, CrVersion, EmptyVerdict, JudgeError, MalformedCitation,
-    Source, quote,
+    Quote, Source, quote,
 };
 
 /// An answer shorter than this (in characters, trimmed) is not an answer:
@@ -377,7 +377,7 @@ pub fn citation_supported(c: &Citation, ctx: &Context) -> bool {
 /// byte-exact substring of its source and [`citation_supported`] stays a
 /// strict check when the retirement pass re-runs it.
 #[must_use]
-fn source_quote(c: &Citation, ctx: &Context) -> Option<String> {
+fn source_quote(c: &Citation, ctx: &Context) -> Option<Quote> {
     let q = c.quote().trim();
     if q.is_empty() {
         return None;
@@ -392,7 +392,9 @@ fn source_quote(c: &Citation, ctx: &Context) -> Option<String> {
             ctx.card(*card).and_then(|c| c.face(*face)).and_then(|f| f.locate_quote(q))
         }
     };
-    found.map(ToOwned::to_owned)
+    // The span has the trimmed quote's length and starts and ends on a
+    // non-space character, so it is never blank; `ok()` is not a leniency.
+    found.and_then(|span| Quote::try_new(span).ok())
 }
 
 /// Replace each citation's quote with the source's own text for it, or report
@@ -468,16 +470,16 @@ mod tests {
     const CR: AnswerableSource = AnswerableSource::Cr;
 
     fn good_citation() -> Result<Citation, Box<dyn std::error::Error>> {
-        Ok(Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "gain that much life".into() })
+        Ok(Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: Quote::try_new("gain that much life")? })
     }
 
     #[test]
     fn accepts_valid_citations_and_stamps_cr_version() -> Result<(), Box<dyn std::error::Error>> {
         let c = ctx()?;
         let v = verdict(vec![
-            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "gain that much life".into() },
-            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "Example: something.".into() },
-            Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), ruling: ruling_key("2020-01-01", "Lifelink is not a triggered ability."), quote: "not a triggered ability".into() },
+            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: Quote::try_new("gain that much life")? },
+            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: Quote::try_new("Example: something.")? },
+            Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), ruling: ruling_key("2020-01-01", "Lifelink is not a triggered ability."), quote: Quote::try_new("not a triggered ability")? },
         ]);
         let ok = v.validate(&c, CR).map_err(|e| e.to_string())?;
         assert_eq!(ok.citations().len(), 3);
@@ -501,8 +503,8 @@ mod tests {
             ..Context::default()
         };
         let v = verdict(vec![
-            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "A source's controller".into() },
-            Citation::ScryfallRuling { card, ruling: ruling_key("2020-01-01", text), quote: "isn't a triggered ability - it's a static".into() },
+            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: Quote::try_new("A source's controller")? },
+            Citation::ScryfallRuling { card, ruling: ruling_key("2020-01-01", text), quote: Quote::try_new("isn't a triggered ability - it's a static")? },
         ]);
         let ok = v.validate(&c, CR).map_err(|e| e.to_string())?;
         let quotes: Vec<&str> = ok.citations().iter().map(Citation::quote).collect();
@@ -515,14 +517,14 @@ mod tests {
     #[test]
     fn rejects_reference_not_in_context() -> Result<(), Box<dyn std::error::Error>> {
         let c = ctx()?;
-        let bad = Citation::Rule { id: RuleId::try_new("702.19".to_owned())?, quote: "gain that much life".into() };
+        let bad = Citation::Rule { id: RuleId::try_new("702.19".to_owned())?, quote: Quote::try_new("gain that much life")? };
         let err = verdict(vec![bad.clone()]).validate(&c, CR).err();
         assert!(matches!(err, Some(JudgeError::BadCitation(ref x)) if *x == bad), "{err:?}");
 
-        let bad_ruling = Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), ruling: ruling_key("2020-01-01", "some other ruling"), quote: "Lifelink".into() };
+        let bad_ruling = Citation::ScryfallRuling { card: CardId::new(Uuid::from_u128(7)), ruling: ruling_key("2020-01-01", "some other ruling"), quote: Quote::try_new("Lifelink")? };
         assert!(matches!(verdict(vec![bad_ruling]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
 
-        let bad_prior = Citation::PriorCall { id: CallId::new(Uuid::from_u128(1)), quote: "x".into() };
+        let bad_prior = Citation::PriorCall { id: CallId::new(Uuid::from_u128(1)), quote: Quote::try_new("x")? };
         assert!(matches!(verdict(vec![bad_prior]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
         Ok(())
     }
@@ -530,10 +532,11 @@ mod tests {
     #[test]
     fn rejects_quote_not_substring() -> Result<(), Box<dyn std::error::Error>> {
         let c = ctx()?;
-        let bad = Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "gain twice that much life".into() };
+        let bad = Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: Quote::try_new("gain twice that much life")? };
         assert!(matches!(verdict(vec![bad]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
-        let empty = Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "   ".into() };
-        assert!(matches!(verdict(vec![empty]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
+        // A blank quote cannot be built at all; see `a_blank_quote_is_unreadable`.
+        assert!(Quote::try_new("").is_err() && Quote::try_new(" \t\n\u{00A0}").is_err());
+        assert_eq!(Quote::try_new(" x ")?.as_ref(), " x ");
         Ok(())
     }
 
@@ -574,23 +577,23 @@ mod tests {
         let waylay = waylay_id();
         // Valid: a substring of face 0's Oracle text; of face 1's.
         let ok = verdict(vec![
-            Citation::OracleText { card: waylay, face: 0, quote: "Exile them at the beginning of the next cleanup step.".into() },
-            Citation::OracleText { card: waylay, face: 1, quote: "Nothing here".into() },
+            Citation::OracleText { card: waylay, face: 0, quote: Quote::try_new("Exile them at the beginning of the next cleanup step.")? },
+            Citation::OracleText { card: waylay, face: 1, quote: Quote::try_new("Nothing here")? },
         ]);
         assert_eq!(ok.validate(&c, CR).map_err(|e| e.to_string())?.citations().len(), 2);
         // The face name alone is not Oracle text: a name-only quote proves nothing.
-        let name_only = Citation::OracleText { card: waylay, face: 0, quote: "Waylay".into() };
+        let name_only = Citation::OracleText { card: waylay, face: 0, quote: Quote::try_new("Waylay")? };
         assert!(matches!(verdict(vec![name_only.clone()]).validate(&c, CR), Err(JudgeError::BadCitation(ref x)) if *x == name_only));
         // Wrong face: the quote is from face 0 but face 1 is cited; and face 2 does not exist.
-        let wrong_face = Citation::OracleText { card: waylay, face: 1, quote: "cleanup step".into() };
+        let wrong_face = Citation::OracleText { card: waylay, face: 1, quote: Quote::try_new("cleanup step")? };
         assert!(matches!(verdict(vec![wrong_face.clone()]).validate(&c, CR), Err(JudgeError::BadCitation(ref x)) if *x == wrong_face));
-        let no_face = Citation::OracleText { card: waylay, face: 2, quote: "Nothing".into() };
+        let no_face = Citation::OracleText { card: waylay, face: 2, quote: Quote::try_new("Nothing")? };
         assert!(matches!(verdict(vec![no_face]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
         // Not a substring (the old, pre-errata wording).
-        let paraphrase = Citation::OracleText { card: waylay, face: 0, quote: "At end of turn, remove them from the game".into() };
+        let paraphrase = Citation::OracleText { card: waylay, face: 0, quote: Quote::try_new("At end of turn, remove them from the game")? };
         assert!(matches!(verdict(vec![paraphrase]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
         // Unknown card.
-        let unknown = Citation::OracleText { card: CardId::new(Uuid::from_u128(77)), face: 0, quote: "Exile them".into() };
+        let unknown = Citation::OracleText { card: CardId::new(Uuid::from_u128(77)), face: 0, quote: Quote::try_new("Exile them")? };
         assert!(matches!(verdict(vec![unknown]).validate(&c, CR), Err(JudgeError::BadCitation(_))));
         // Deserializes from the model's tagged form.
         let json = r#"{"answer":"a","confidence":"low","citations":[{"kind":"oracle_text","card":"00000000-0000-0000-0000-000000000009","face":0,"quote":"q"}],"category":"layers"}"#;
@@ -632,17 +635,49 @@ mod tests {
             {"id":"","kind":"rule","quote":""},
             {"id":"702.15b","kind":"rule","quote":"gain that much life"}]}"#;
         let v: Verdict<Unvalidated> = serde_json::from_str(json)?;
-        // The readable citations are kept, in order, and the answer survives.
-        assert_eq!(v.citations().len(), 2, "{:?}", v.citations());
-        assert!(matches!(v.citations().get(1), Some(Citation::Rule { id, .. }) if id.as_ref() == "702.15b"));
-        // The unreadable one is reported as itself, not as a parse failure of
-        // the whole verdict, and not as the `NoCitations` it would look like.
+        // The readable citation is kept and the answer survives. Both stubs
+        // are unreadable: the ruling's blank quote as much as the rule's empty id.
+        assert_eq!(v.citations().len(), 1, "{:?}", v.citations());
+        assert!(matches!(v.citations().first(), Some(Citation::Rule { id, .. }) if id.as_ref() == "702.15b"));
+        // The first unreadable one is reported as itself, not as a parse
+        // failure of the whole verdict, and not as the `NoCitations` it would look like.
         let err = v.validate(&ctx()?, CR).err();
         assert!(
             matches!(err, Some(JudgeError::MalformedCitation(ref m))
-                if m.error.contains("RuleId") && m.raw.contains(r#""kind":"rule""#)),
+                if m.error.contains("quote is empty") && m.raw.contains(r#""kind":"scryfall_ruling""#)),
             "{err:?}"
         );
+        Ok(())
+    }
+
+    /// The reply behind the 2026-09-10 Room failure cited
+    /// `oracle 00000000-0000-0000-0000-000000000000#0: ""` — no card in the
+    /// material, nothing quoted. That parsed, reached validation as a bad
+    /// citation, and the retry notice could only say the card face was not in
+    /// the material. A blank quote is now unreadable, so the notice is the one
+    /// that names placeholder citations.
+    #[test]
+    fn a_blank_quote_is_unreadable() -> Result<(), Box<dyn std::error::Error>> {
+        let body = |quote: &str| {
+            format!(
+                r#"{{"answer":"{}","confidence":"medium","category":"multi_faced_cards","citations":[
+                {{"kind":"rule","id":"702.15b","quote":"gain that much life"}},
+                {{"kind":"oracle_text","card":"00000000-0000-0000-0000-000000000000","face":0,"quote":{quote}}}]}}"#,
+                "x".repeat(50)
+            )
+        };
+        for blank in [r#""""#, r#""   ""#, r#""\n\t""#] {
+            let v: Verdict<Unvalidated> = serde_json::from_str(&body(blank))?;
+            assert_eq!(v.citations().len(), 1, "{blank}");
+            let err = v.validate(&ctx()?, CR).err();
+            assert!(
+                matches!(err, Some(JudgeError::MalformedCitation(ref m)) if m.error.contains("quote is empty")),
+                "{blank}: {err:?}"
+            );
+        }
+        // The schema the model sees is unchanged: a quote is a plain string.
+        let schema = serde_json::to_value(schemars::schema_for!(Verdict<Unvalidated>))?;
+        assert!(!schema.to_string().contains("Quote"), "{schema}");
         Ok(())
     }
 

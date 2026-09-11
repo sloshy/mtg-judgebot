@@ -705,7 +705,7 @@ mod tests {
             citations: vec![CitationView {
                 label: "702.15b".into(),
                 url: Some("https://example".into()),
-                citation: Citation::Rule { id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?, quote: "q".into() },
+                citation: Citation::Rule { id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?, quote: judge_core::Quote::try_new("q")? },
             }],
         })
     }
@@ -775,7 +775,7 @@ mod tests {
     #[test]
     fn citation_labels_work_with_and_without_a_context() -> anyhow::Result<()> {
         let card = CardId::new(uuid::Uuid::from_u128(7));
-        let c = Citation::OracleText { card, face: 0, quote: "x".into() };
+        let c = Citation::OracleText { card, face: 0, quote: judge_core::Quote::try_new("x")? };
         assert!(citation_view(&c, None).label.contains("card 00000000-0000-0000-0000-000000000007"));
         let ctx = Context {
             cards: vec![Card {
@@ -792,7 +792,7 @@ mod tests {
             ..Context::default()
         };
         assert_eq!(citation_view(&c, Some(&ctx)).label, "Oracle text — Blood Moon (face 0)");
-        let r = Citation::Rule { id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?, quote: "x".into() };
+        let r = Citation::Rule { id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?, quote: judge_core::Quote::try_new("x")? };
         assert_eq!(citation_view(&r, None).label, "702.15b");
         Ok(())
     }

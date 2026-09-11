@@ -179,7 +179,8 @@ Key cross-file facts that aren't obvious from any one file:
 
 - **Citations are typed and validated.** `Citation::{Rule, ScryfallRuling, OracleText,
   PriorCall}` each carry a verbatim `quote` checked as a substring of the source in
-  `Context`. The check folds typographic punctuation (`judge_core::quote`: curly quotes,
+  `Context`. `Quote` cannot be blank (it fails to parse, so a placeholder citation is a
+  `MalformedCitation` with the stub notice, not a bad citation); its schema is plain `String`. The check folds typographic punctuation (`judge_core::quote`: curly quotes,
   the dash block, non-breaking spaces — one `char` to one `char`, never case or words),
   because models retype the CR's `’` as `'` and that was the most common rejection; what
   is stored is the *source's* span, not the model's string, so a persisted quote stays

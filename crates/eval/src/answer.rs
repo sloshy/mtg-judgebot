@@ -547,7 +547,7 @@ mod tests {
         let v = Verdict::new(
             "Lifelink causes its controller to gain that much life at the same time.".into(),
             Confidence::High,
-            vec![Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: "gain that much life".into() }],
+            vec![Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("gain that much life")? }],
             Category::KeywordAbilities,
         )
         .validate(&ctx, AnswerableSource::Cr)?;

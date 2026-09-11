@@ -103,7 +103,7 @@ async fn a_session_through_the_ops_layer(pool: PgPool) -> anyhow::Result<()> {
     let bad = Verdict::new(
         "No: Lightning Bolt has no lifelink, so its damage does not cause you to gain life.".into(),
         Confidence::High,
-        vec![Citation::Rule { id: rid("702.15")?, quote: "not in there".into() }],
+        vec![Citation::Rule { id: rid("702.15")?, quote: judge_core::Quote::try_new("not in there")? }],
         Category::Combat,
     );
     let VerdictReply::Rejected { retry, .. } = t.submit_verdict(VerdictInput { session: begun.session, verdict: bad, persist: true }).await? else {
@@ -117,7 +117,7 @@ async fn a_session_through_the_ops_layer(pool: PgPool) -> anyhow::Result<()> {
     let good = Verdict::new(
         "No: Lightning Bolt has no lifelink, so its damage does not cause you to gain life.".into(),
         Confidence::High,
-        vec![Citation::Rule { id: rid("702.15")?, quote: BODY.into() }],
+        vec![Citation::Rule { id: rid("702.15")?, quote: judge_core::Quote::try_new(BODY)? }],
         Category::Combat,
     );
     let VerdictReply::Accepted { answer, call, persist_error } =

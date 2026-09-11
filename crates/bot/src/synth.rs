@@ -616,7 +616,7 @@ mod tests {
             history: vec![Qa { question: "earlier?".into(), answer: "yes".into() }],
             ..Context::default()
         };
-        let bad = Rejection::BadCitation(Citation::Rule { id: rid("702.15")?, quote: "nope".into() });
+        let bad = Rejection::BadCitation(Citation::Rule { id: rid("702.15")?, quote: judge_core::Quote::try_new("nope")? });
         let s = render_user_turn(&q(), &ctx, Some(&bad), &[], &Budget::default());
         assert!(s.starts_with("# Material\n## Cards (current Oracle text; cite as oracle_text with the card uuid and face index from the face label)\n### Dark Confidant — card 00000000-0000-0000-0000-000000000007"), "{s}");
         assert!(s.contains("[oracle 00000000-0000-0000-0000-000000000007#0] **Dark Confidant** {1}{B} — Creature — Human Wizard\nAt the beginning"), "{s}");
@@ -630,13 +630,13 @@ mod tests {
         let plain = render_user_turn(&q(), &ctx, None, &[], &Budget::default());
         assert!(!plain.contains("rejected"), "{plain}");
 
-        let missing = Rejection::BadCitation(Citation::Rule { id: rid("999.1")?, quote: "x".into() });
+        let missing = Rejection::BadCitation(Citation::Rule { id: rid("999.1")?, quote: judge_core::Quote::try_new("x")? });
         let s = render_user_turn(&q(), &ctx, Some(&missing), &[], &Budget::default());
         assert!(s.contains("rule 999.1 is not among the excerpts"), "{s}");
-        let no_face = Rejection::BadCitation(Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 3, quote: "x".into() });
+        let no_face = Rejection::BadCitation(Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 3, quote: judge_core::Quote::try_new("x")? });
         let s = render_user_turn(&q(), &ctx, Some(&no_face), &[], &Budget::default());
         assert!(s.contains("there is no card face labelled [oracle 00000000-0000-0000-0000-000000000007#3]"), "{s}");
-        let bad_quote = Rejection::BadCitation(Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 0, quote: "x".into() });
+        let bad_quote = Rejection::BadCitation(Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 0, quote: judge_core::Quote::try_new("x")? });
         let s = render_user_turn(&q(), &ctx, Some(&bad_quote), &[], &Budget::default());
         assert!(s.contains("oracle 00000000-0000-0000-0000-000000000007#0: \"x\", which failed validation: the quote is not a verbatim substring"), "{s}");
 
@@ -930,7 +930,7 @@ mod tests {
         assert_eq!(ctx.tool_round, vec![rid("613.7")?]);
 
         // The retry (as judge() would make it) pins the tool-round chunk past the budget and forbids the tool.
-        let bad = Rejection::BadCitation(Citation::Rule { id: rid("613.7")?, quote: "not there".into() });
+        let bad = Rejection::BadCitation(Citation::Rule { id: rid("613.7")?, quote: judge_core::Quote::try_new("not there")? });
         let v2 = synth.answer(&q(), &mut ctx, Some(&bad)).await?;
         assert!(v2.validate(&ctx, AnswerableSource::Cr).is_ok());
         let reqs = bodies(&server).await?;
@@ -1016,7 +1016,7 @@ mod tests {
         assert_eq!(at(second, "/messages/1"), at(first, "/messages/1"), "the user turn is unchanged");
 
         // The retry pins the tool-round chunk and forbids the tool.
-        let bad = Rejection::BadCitation(Citation::Rule { id: rid("613.7")?, quote: "not there".into() });
+        let bad = Rejection::BadCitation(Citation::Rule { id: rid("613.7")?, quote: judge_core::Quote::try_new("not there")? });
         let v2 = synth.answer(&q(), &mut ctx, Some(&bad)).await?;
         assert!(v2.validate(&ctx, AnswerableSource::Cr).is_ok());
         let reqs = bodies(&server).await?;

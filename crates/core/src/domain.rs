@@ -407,6 +407,50 @@ pub enum Resolution {
     },
 }
 
+/// A citation's quoted span: never empty and never only whitespace.
+///
+/// A blank quote names no span of anything, so it is refused where the model's
+/// JSON is parsed rather than later in validation. The difference is which
+/// retry notice the model gets: an unparseable element is a
+/// [`MalformedCitation`], whose notice names the placeholder habit ("do not
+/// emit empty citations"), where a parsed citation with a blank quote was a
+/// bad citation whose notice could only say the reference was not found. Every
+/// quote validation ever stored is the source's own non-blank span, so stored
+/// calls still read back.
+///
+/// The model-facing schema is exactly `String`'s, as for [`crate::verdict::Citations`]:
+/// the pinned Anthropic request fixtures do not move, and the check lives
+/// entirely on the reading side.
+#[nutype(
+    validate(with = not_blank, error = BlankQuote),
+    derive(Clone, Debug, Display, Serialize, Deserialize, PartialEq, Eq, Hash, AsRef)
+)]
+pub struct Quote(String);
+
+/// The quote was empty or only whitespace.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("quote is empty or only whitespace.")]
+pub struct BlankQuote;
+
+fn not_blank(s: &str) -> Result<(), BlankQuote> {
+    if s.trim().is_empty() { Err(BlankQuote) } else { Ok(()) }
+}
+
+impl JsonSchema for Quote {
+    fn schema_name() -> Cow<'static, str> {
+        String::schema_name()
+    }
+    fn schema_id() -> Cow<'static, str> {
+        String::schema_id()
+    }
+    fn json_schema(g: &mut SchemaGenerator) -> Schema {
+        String::json_schema(g)
+    }
+    fn inline_schema() -> bool {
+        String::inline_schema()
+    }
+}
+
 /// A typed reference plus the exact span quoted from it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -416,7 +460,7 @@ pub enum Citation {
         /// Rule id.
         id: RuleId,
         /// Verbatim span of the rule.
-        quote: String,
+        quote: Quote,
     },
     /// A Scryfall ruling of `card`, identified by content ([`ruling_key`]).
     ScryfallRuling {
@@ -425,14 +469,14 @@ pub enum Citation {
         /// The ruling's key, copied from its `[ruling <key>]` label.
         ruling: RulingKey,
         /// Verbatim span of the ruling.
-        quote: String,
+        quote: Quote,
     },
     /// A prior rated call (example, never an authority).
     PriorCall {
         /// Call id.
         id: CallId,
         /// Verbatim span of the call's answer.
-        quote: String,
+        quote: Quote,
     },
     /// The current Oracle text of face `face` of `card`, for answers that
     /// hinge on the card's current wording (errata, "what does it do now").
@@ -444,7 +488,7 @@ pub enum Citation {
         /// Face index (0 for single-faced cards).
         face: u32,
         /// Verbatim span of that face's Oracle text.
-        quote: String,
+        quote: Quote,
     },
 }
 
@@ -456,7 +500,7 @@ impl Citation {
             Citation::Rule { quote, .. }
             | Citation::ScryfallRuling { quote, .. }
             | Citation::PriorCall { quote, .. }
-            | Citation::OracleText { quote, .. } => quote,
+            | Citation::OracleText { quote, .. } => quote.as_ref(),
         }
     }
 
@@ -464,7 +508,7 @@ impl Citation {
     /// store the source's own text (see [`quote::locate`](crate::quote::locate));
     /// the reference itself is untouched.
     #[must_use]
-    pub fn with_quote(self, span: String) -> Self {
+    pub fn with_quote(self, span: Quote) -> Self {
         match self {
             Citation::Rule { id, .. } => Citation::Rule { id, quote: span },
             Citation::ScryfallRuling { card, ruling, .. } => Citation::ScryfallRuling { card, ruling, quote: span },
@@ -540,12 +584,12 @@ fn shown(quote: &str) -> String {
 impl fmt::Display for Citation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Citation::Rule { id, quote } => write!(f, "rule {id}: {}", shown(quote)),
+            Citation::Rule { id, quote } => write!(f, "rule {id}: {}", shown(quote.as_ref())),
             Citation::ScryfallRuling { card, ruling, quote } => {
-                write!(f, "ruling {card}/{ruling}: {}", shown(quote))
+                write!(f, "ruling {card}/{ruling}: {}", shown(quote.as_ref()))
             }
-            Citation::PriorCall { id, quote } => write!(f, "prior call {id}: {}", shown(quote)),
-            Citation::OracleText { card, face, quote } => write!(f, "oracle {card}#{face}: {}", shown(quote)),
+            Citation::PriorCall { id, quote } => write!(f, "prior call {id}: {}", shown(quote.as_ref())),
+            Citation::OracleText { card, face, quote } => write!(f, "oracle {card}#{face}: {}", shown(quote.as_ref())),
         }
     }
 }
@@ -943,9 +987,9 @@ mod tests {
 
     #[test]
     fn citation_displays_for_humans() -> Result<(), Box<dyn std::error::Error>> {
-        let c = Citation::Rule { id: RuleId::try_new("702.19b".to_owned())?, quote: "quote".into() };
+        let c = Citation::Rule { id: RuleId::try_new("702.19b".to_owned())?, quote: Quote::try_new("quote")? };
         assert_eq!(c.to_string(), "rule 702.19b: \"quote\"");
-        let o = Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 1, quote: "q".into() };
+        let o = Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 1, quote: Quote::try_new("q")? };
         assert_eq!(o.to_string(), "oracle 00000000-0000-0000-0000-000000000007#1: \"q\"");
         assert_eq!(o.quote(), "q");
         // Serde tag is consistent with the other variants.

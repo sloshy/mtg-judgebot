@@ -202,7 +202,7 @@ async fn synthesis_first_turn_continuation_and_retry_are_byte_identical() -> R {
         vec![vec![RuleId::try_new("613.7".to_owned())?, RuleId::try_new("613.1".to_owned())?]],
         "the tool round unions the ids of both calls"
     );
-    let bad = Rejection::BadCitation(Citation::Rule { id: RuleId::try_new("613.7".to_owned())?, quote: "not there".into() });
+    let bad = Rejection::BadCitation(Citation::Rule { id: RuleId::try_new("613.7".to_owned())?, quote: judge_core::Quote::try_new("not there")? });
     synth.answer(&asked.question, &mut ctx, Some(&bad)).await?;
 
     let reqs = server.received_requests().await.unwrap_or_default();

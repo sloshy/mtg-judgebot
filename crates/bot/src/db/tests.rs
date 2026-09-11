@@ -488,7 +488,7 @@ fn cite_first_rule(ctx: &judge_core::Context) -> anyhow::Result<Vec<judge_core::
     let rule = ctx.rules.first().ok_or_else(|| anyhow::anyhow!("context has no rules to cite"))?;
     let quote = rule.body.lines().next().unwrap_or_default().trim().to_owned();
     anyhow::ensure!(!quote.is_empty(), "first rule has an empty first line");
-    Ok(vec![judge_core::Citation::Rule { id: rule.id.clone(), quote }])
+    Ok(vec![judge_core::Citation::Rule { id: rule.id.clone(), quote: judge_core::Quote::try_new(quote)? }])
 }
 
 fn question(text: &str) -> Question {
@@ -872,7 +872,7 @@ async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::
         .ok_or_else(|| anyhow::anyhow!("seeded ruling not retrieved"))?
         .clone();
     let mut cites = cite_first_rule(&ctx)?;
-    cites.push(judge_core::Citation::ScryfallRuling { card: bonecrusher, ruling: ruling.key, quote: "target a player".into() });
+    cites.push(judge_core::Citation::ScryfallRuling { card: bonecrusher, ruling: ruling.key, quote: judge_core::Quote::try_new("target a player")? });
     let verdict = Verdict::new(
         "Yes: Stomp can target a player, and the damage cannot be prevented this turn.".into(),
         Confidence::High,

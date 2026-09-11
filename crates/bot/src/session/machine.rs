@@ -663,7 +663,7 @@ mod tests {
                 question: "does lifelink stack?".into(),
                 answer: "No, multiple instances are redundant.".into(),
                 category: Category::Combat,
-                citations: vec![Citation::Rule { id: rid("702.15")?, quote: BODY.into() }],
+                citations: vec![Citation::Rule { id: rid("702.15")?, quote: judge_core::Quote::try_new(BODY).map_err(anyhow::Error::from)? }],
                 cr_version: CrVersion::try_new("20260819".to_owned()).map_err(anyhow::Error::from)?,
                 rating: 2.5,
                 rating_count: 3,
@@ -734,7 +734,7 @@ mod tests {
         Ok(Verdict::new(
             "No. Multiple instances of lifelink are redundant; the life gain happens once.".into(),
             Confidence::High,
-            vec![Citation::Rule { id: rid("702.15")?, quote: quote.into() }],
+            vec![Citation::Rule { id: rid("702.15")?, quote: judge_core::Quote::try_new(quote)? }],
             Category::Combat,
         ))
     }
@@ -838,7 +838,7 @@ mod tests {
         let big = Verdict::new(
             "x".repeat(MAX_ANSWER_CHARS + 1),
             Confidence::High,
-            vec![Citation::Rule { id: rid("702.15")?, quote: BODY.into() }],
+            vec![Citation::Rule { id: rid("702.15")?, quote: judge_core::Quote::try_new(BODY)? }],
             Category::Combat,
         );
         let Err(SessionError::Rejected { rejection: Rejection::Oversized { chars }, retry }) =
@@ -876,7 +876,7 @@ mod tests {
         let v = Verdict::new(
             "Lifelink and the fetched rule together decide this question in favour of no.".into(),
             Confidence::Medium,
-            vec![Citation::Rule { id, quote: BODY.into() }],
+            vec![Citation::Rule { id, quote: judge_core::Quote::try_new(BODY)? }],
             Category::Combat,
         );
         s.submit_verdict(v, &p, Harness::Mcp, &Budget::default()).await?;
@@ -954,7 +954,7 @@ mod tests {
         let leaf = Verdict::new(
             "No. Multiple instances of lifelink are redundant; the life gain happens once.".into(),
             Confidence::High,
-            vec![Citation::Rule { id: rid("702.15b")?, quote: "gain that much life".into() }],
+            vec![Citation::Rule { id: rid("702.15b")?, quote: judge_core::Quote::try_new("gain that much life")? }],
             Category::Combat,
         );
         assert!(matches!(
@@ -985,7 +985,7 @@ mod tests {
         let leaf = Verdict::new(
             "No. Multiple instances of lifelink are redundant; the life gain happens once.".into(),
             Confidence::High,
-            vec![Citation::Rule { id: rid("702.15b")?, quote: "that source's controller to gain".into() }],
+            vec![Citation::Rule { id: rid("702.15b")?, quote: judge_core::Quote::try_new("that source's controller to gain")? }],
             Category::Combat,
         );
         s.submit_verdict(leaf, &p, Harness::Mcp, &Budget::default()).await?;
