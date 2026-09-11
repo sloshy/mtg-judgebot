@@ -6,7 +6,7 @@ use futures::future::try_join_all;
 use nonempty::NonEmpty;
 
 use crate::{
-    Ambiguous, Card, Extractor, JudgeError, MatchedVia, Qa, Question, Rejection, Resolution, Resolver,
+    Ambiguous, Card, Extractor, JudgeError, MatchedVia, Qa, Question, RejectedAttempt, Rejection, Resolution, Resolver,
     Retriever, Synthesizer, Validated, Verdict,
 };
 
@@ -40,12 +40,17 @@ pub async fn judge(deps: &Deps, q: &Question, history: &[Qa]) -> Result<Verdict<
     // ARCHITECTURE §3 step 5: BadCitation (or an empty verdict) ⇒ retry once,
     // telling the model what was wrong, then error. Retries live here, not in
     // the Discord layer.
-    let rejected = match deps.synthesizer.answer(q, &mut ctx, None).await?.validate(&ctx, source) {
+    let first = deps.synthesizer.answer(q, &mut ctx, None).await?;
+    // Kept before `validate` consumes the verdict: the retry is a fresh
+    // conversation, and it is shown what it is asked to correct.
+    let answer = first.answer().to_owned();
+    let rejection = match first.validate(&ctx, source) {
         Err(JudgeError::BadCitation(c)) => Rejection::BadCitation(c),
         Err(JudgeError::MalformedCitation(m)) => Rejection::Malformed(m),
         Err(JudgeError::EmptyVerdict(e)) => Rejection::Empty(e),
         done => return done,
     };
+    let rejected = RejectedAttempt::new(rejection, &answer);
     // At INFO, not DEBUG: when the retry also fails, the *first* rejection is
     // usually what explains the second, and production runs at INFO.
     tracing::info!(%rejected, "verdict rejected; retrying synthesis once");
@@ -366,11 +371,18 @@ mod tests {
     /// [`MALFORMED`] scripts one whose only citation is unreadable.
     struct ScriptedSynth {
         quotes: Mutex<VecDeque<&'static str>>,
-        seen: Mutex<Vec<(usize, Option<Rejection>)>>,
+        seen: Mutex<Vec<(usize, Option<RejectedAttempt>)>>,
     }
     impl ScriptedSynth {
+        /// Per call: the history length and the rejection it was shown.
         fn seen(&self) -> Vec<(usize, Option<Rejection>)> {
-            self.seen.lock().unwrap_or_else(PoisonError::into_inner).clone()
+            let seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+            seen.iter().map(|(h, r)| (*h, r.as_ref().map(|r| r.rejection().clone()))).collect()
+        }
+        /// The rejected answers the retries were shown.
+        fn retry_answers(&self) -> Vec<String> {
+            let seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+            seen.iter().filter_map(|(_, r)| r.as_ref().and_then(RejectedAttempt::answer).map(ToOwned::to_owned)).collect()
         }
     }
     #[async_trait]
@@ -379,7 +391,7 @@ mod tests {
             &self,
             _q: &Question,
             ctx: &mut Context,
-            rejected: Option<&Rejection>,
+            rejected: Option<&RejectedAttempt>,
         ) -> Result<Verdict<Unvalidated>, JudgeError> {
             let quote = self
                 .quotes
@@ -457,6 +469,8 @@ mod tests {
         let seen = synth.seen();
         assert_eq!(seen.len(), 2);
         assert!(matches!(&seen.get(1), Some((0, Some(Rejection::BadCitation(Citation::Rule { quote, .. })))) if quote.as_ref() == "not in the rule"));
+        // The retry is a fresh conversation: it is handed the answer it is asked to correct.
+        assert_eq!(synth.retry_answers(), vec![ANSWER.to_owned()]);
         Ok(())
     }
 

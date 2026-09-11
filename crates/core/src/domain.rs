@@ -834,6 +834,68 @@ pub enum Rejection {
     },
 }
 
+/// A synthesis attempt that failed validation, as the retry is shown it: why
+/// it was rejected, and the answer the model had written when that answer is
+/// worth showing back.
+///
+/// The retry is a fresh conversation, so without the answer the model is told
+/// to keep a ruling it can no longer see; the Room failure of 2026-09-10
+/// replied to exactly that with a seven-character answer.
+///
+/// Only [`RejectedAttempt::new`] builds one, and it keeps the answer only when
+/// the model could sensibly be asked to keep it: not for an answer rejected
+/// as a placeholder or as over-long, and not for one shorter than
+/// [`crate::MIN_ANSWER_CHARS`] whatever it was rejected for (an unreadable
+/// citation is reported before a short answer is, so `"pending"` beside a stub
+/// citation arrives as `Malformed`). An over-long answer is therefore never
+/// stored in a session row either.
+///
+/// Stored by the agent session store. `rejection` is flattened and `answer`
+/// defaults to empty, so a session stored before `answer` existed (a bare
+/// adjacently tagged [`Rejection`]) still reads back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RejectedAttempt {
+    #[serde(flatten)]
+    rejection: Rejection,
+    #[serde(default)]
+    answer: String,
+}
+
+impl RejectedAttempt {
+    /// Record a rejected attempt; `answer` is kept only when it is worth
+    /// showing back (see the type docs).
+    #[must_use]
+    pub fn new(rejection: Rejection, answer: &str) -> Self {
+        let worth_showing = match rejection {
+            Rejection::BadCitation(_) | Rejection::Malformed(_) | Rejection::Empty(EmptyVerdict::NoCitations) => {
+                answer.trim().chars().count() >= crate::MIN_ANSWER_CHARS
+            }
+            Rejection::Empty(EmptyVerdict::ShortAnswer { .. }) | Rejection::Oversized { .. } => false,
+        };
+        let answer = if worth_showing { answer.to_owned() } else { String::new() };
+        Self { rejection, answer }
+    }
+
+    /// Why the attempt was rejected.
+    #[must_use]
+    pub fn rejection(&self) -> &Rejection {
+        &self.rejection
+    }
+
+    /// The rejected answer to show back, if there is one worth showing.
+    #[must_use]
+    pub fn answer(&self) -> Option<&str> {
+        let a = self.answer.trim();
+        (!a.is_empty()).then_some(a)
+    }
+}
+
+impl fmt::Display for RejectedAttempt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.rejection.fmt(f)
+    }
+}
+
 impl fmt::Display for Rejection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1001,6 +1063,43 @@ mod tests {
 
     fn guess(category: Category) -> CategoryGuess {
         CategoryGuess { category, confidence: Confidence::Low }
+    }
+
+    /// Agent sessions stored before `RejectedAttempt` hold a bare `Rejection`;
+    /// they must still load, with no answer to quote back.
+    #[test]
+    fn a_rejected_attempt_reads_a_bare_stored_rejection() -> Result<(), Box<dyn std::error::Error>> {
+        let bare = serde_json::json!({"kind": "empty", "detail": "no_citations"});
+        let old: RejectedAttempt = serde_json::from_value(bare)?;
+        assert_eq!(old, RejectedAttempt::new(Rejection::Empty(EmptyVerdict::NoCitations), ""));
+        assert_eq!(old.answer(), None);
+        let answer = "Yes: the trample creature assigns lethal damage first.";
+        let new = RejectedAttempt::new(
+            Rejection::BadCitation(Citation::Rule { id: RuleId::try_new("702.19b".to_owned())?, quote: Quote::try_new("q")? }),
+            answer,
+        );
+        assert_eq!(new.answer(), Some(answer));
+        let json = serde_json::to_value(&new)?;
+        assert_eq!(json.get("kind").and_then(|k| k.as_str()), Some("bad_citation"));
+        assert_eq!(serde_json::from_value::<RejectedAttempt>(json)?, new);
+        Ok(())
+    }
+
+    /// Only an answer the model could be asked to keep is kept.
+    #[test]
+    fn a_rejected_attempt_keeps_only_an_answer_worth_showing() -> Result<(), Box<dyn std::error::Error>> {
+        let real = "Yes: the trample creature assigns lethal damage first.";
+        let stub = || MalformedCitation::new(r#"{"id":""}"#, "bad RuleId");
+        assert_eq!(RejectedAttempt::new(Rejection::Malformed(stub()), real).answer(), Some(real));
+        assert_eq!(RejectedAttempt::new(Rejection::Empty(EmptyVerdict::NoCitations), real).answer(), Some(real));
+        // A placeholder beside a stub citation arrives as Malformed, and is still not shown.
+        assert_eq!(RejectedAttempt::new(Rejection::Malformed(stub()), "pending").answer(), None);
+        assert_eq!(RejectedAttempt::new(Rejection::Empty(EmptyVerdict::ShortAnswer { chars: 7 }), real).answer(), None);
+        let huge = "x".repeat(9000);
+        let oversized = RejectedAttempt::new(Rejection::Oversized { chars: 9000 }, &huge);
+        assert_eq!(oversized.answer(), None);
+        assert!(serde_json::to_string(&oversized)?.len() < 100, "an over-long answer is not stored");
+        Ok(())
     }
 
     #[test]

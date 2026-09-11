@@ -261,7 +261,7 @@ mod tests {
     use http_body_util::BodyExt as _;
     use judge_core::{
         CallId, Card, CardId, Category, CategoryGuess, Confidence, Context, CrVersion, Extraction, Extractor,
-        Face, Layout, MatchedVia, Qa, Rejection, Resolution, Resolver, RuleChunk, RuleId, Score, Source,
+        Face, Layout, MatchedVia, Qa, Resolution, Resolver, RuleChunk, RuleId, Score, Source,
         Synthesizer, Unvalidated,
     };
     use nonempty::NonEmpty;
@@ -354,7 +354,7 @@ mod tests {
             &self,
             _q: &Question,
             _ctx: &mut Context,
-            _rejected: Option<&Rejection>,
+            _rejected: Option<&judge_core::RejectedAttempt>,
         ) -> Result<Verdict<Unvalidated>, JudgeError> {
             let id = RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?;
             Ok(Verdict::new(

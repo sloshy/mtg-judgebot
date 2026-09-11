@@ -187,7 +187,8 @@ Key cross-file facts that aren't obvious from any one file:
   byte-exact and the retirement pass's `citation_supported` stays a strict check. A failed
   check (or an empty/citation-less verdict on an answerable source) becomes a retry with
   the rejection rendered into the prompt (logged at INFO, so a second failure can be read
-  against the first). Only `Verdict<Validated>` can reach `CallStore::persist` or Discord
+  against the first) and, the retry being a fresh conversation, the rejected answer quoted
+  back as a blockquote (`RejectedAttempt`; not for a placeholder or over-long answer). Only `Verdict<Validated>` can reach `CallStore::persist` or Discord
   rendering.
 - **CR chunking is two-granularity.** `rules` rows exist at rule level (`702.19`, body
   includes all lettered sub-rules + examples; these get embeddings and feed retrieval)

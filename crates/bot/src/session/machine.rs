@@ -25,7 +25,8 @@ use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use judge_core::{
-    AnswerableSource, CallId, Context, Extraction, JudgeError, MAX_ANSWER_CHARS, Qa, Question, Rejection, Resolver,
+    AnswerableSource, CallId, Context, Extraction, JudgeError, MAX_ANSWER_CHARS, Qa, Question, RejectedAttempt, Rejection,
+    Resolver,
     Retriever, RuleChunk, RuleId, Source, Unvalidated, Validated, Verdict, judge::collect_resolved,
 };
 use schemars::JsonSchema;
@@ -170,8 +171,8 @@ pub enum Stage {
         ctx: Context,
         /// Whether the one `lookup_rules` round has been spent.
         lookup_used: bool,
-        /// Why the previous attempt was rejected, rendered into the retry prompt.
-        rejected: Option<Rejection>,
+        /// The previous attempt and why it was rejected, rendered into the retry prompt.
+        rejected: Option<RejectedAttempt>,
         /// Verdicts submitted so far.
         attempts: u8,
     },
@@ -456,6 +457,7 @@ impl Session {
         // into later prompts whole if accepted, so it is a rejection, and it
         // does not cost a lookup round trip.
         let chars = v.answer().trim().chars().count();
+        let answer = v.answer().to_owned();
         let rejection = if chars > MAX_ANSWER_CHARS {
             Rejection::Oversized { chars }
         } else {
@@ -481,8 +483,9 @@ impl Session {
         // As in `judge()`: the retry sees the rejection and the tool-round
         // chunks pinned past the budget, and may not call the tool again.
         *lookup_used = true;
-        *rejected = Some(rejection.clone());
-        let retry = synthesis_prompt(&self.question, ctx, Some(&rejection), false, harness, budget);
+        let attempt = RejectedAttempt::new(rejection.clone(), &answer);
+        let retry = synthesis_prompt(&self.question, ctx, Some(&attempt), false, harness, budget);
+        *rejected = Some(attempt);
         Err(SessionError::Rejected { rejection, retry })
     }
 
@@ -563,7 +566,7 @@ fn check_extraction(e: &Extraction) -> Result<(), SessionError> {
 fn synthesis_prompt(
     q: &Question,
     ctx: &Context,
-    rejected: Option<&Rejection>,
+    rejected: Option<&RejectedAttempt>,
     lookup_available: bool,
     harness: Harness,
     budget: &Budget,
@@ -809,6 +812,9 @@ mod tests {
             return Err(anyhow::anyhow!("expected a rejection"));
         };
         assert!(retry.question.contains("Previous attempt rejected"));
+        // The same notice the bot's retry renders, rejected answer included, and it survives a re-read.
+        assert!(retry.question.contains("> No. Multiple instances of lifelink are redundant"), "{}", retry.question);
+        assert_eq!(s.synthesis_prompt(Harness::Cli, &Budget::default())?.question, retry.question);
         assert!(!retry.lookup_available);
         assert!(retry.question.contains("lookup has been used"));
         let id = rid("702.19")?;
