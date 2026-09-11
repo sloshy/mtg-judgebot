@@ -518,9 +518,9 @@ async fn retrieve_unions_category_map_and_full_text(pool: PgPool) -> anyhow::Res
         .iter()
         .map(|r| -> &str { r.id.as_ref() })
         .collect();
-    // Category map first, rule-level rows only (no "613" section row, no "613.1d" leaf).
-    assert_eq!(ids.first().copied(), Some("613.1"), "{ids:?}");
-    assert!(ids.contains(&"613.2"), "{ids:?}");
+    // The layers rules share no word with a trample question, so they follow the full-text hits;
+    // rule-level rows only (no "613" section row, no "613.1d" leaf), in id order.
+    assert_eq!(ids, ["702.19", "702.2", "613.1", "613.2"]);
     assert!(!ids.contains(&"613") && !ids.contains(&"613.1d"), "{ids:?}");
     // Full-text leg finds trample by phrase and ranks it above deathtouch.
     let trample = ids.iter().position(|id| *id == "702.19");
@@ -541,6 +541,31 @@ async fn retrieve_unions_category_map_and_full_text(pool: PgPool) -> anyhow::Res
     assert_eq!(terms, ["Damage", "Target"]);
     assert_eq!(ctx.notes.len(), 1);
     assert!(ctx.prior.is_empty());
+    Ok(())
+}
+
+/// The synthesis prompt shows a prefix of `Context.rules`, so the order is
+/// what the model reads: the primary category ranked by relevance to the
+/// question (not by id), then the full-text hits, then the secondary
+/// categories.
+#[sqlx::test(migrations = "./migrations")]
+async fn retrieve_orders_primary_by_relevance_then_full_text_then_secondary(pool: PgPool) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    let ctx = PgRetriever::new(pool)
+        .retrieve(
+            &question("with trample, which abilities apply first within layers?"),
+            &[],
+            &extraction(&[Category::Layers, Category::ReplacementEffects], &["apply first"]),
+        )
+        .await?;
+    let ids: Vec<&str> = ctx.rules.iter().map(|r| -> &str { r.id.as_ref() }).collect();
+    let at = |id: &str| ids.iter().position(|x| *x == id).ok_or_else(|| anyhow::anyhow!("{id} missing from {ids:?}"));
+    // 613.2 matches more of the question ("layers", "apply", "abilities", "first") than 613.1
+    // does, so it ranks first despite the higher id.
+    assert!(at("613.2")? < at("613.1")?, "{ids:?}");
+    // A full-text hit outside every category ranks above the secondary category.
+    assert!(at("613.1")? < at("702.19")?, "{ids:?}");
+    assert!(at("702.19")? < at("614.1")?, "{ids:?}");
     Ok(())
 }
 

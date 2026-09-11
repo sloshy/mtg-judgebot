@@ -128,6 +128,81 @@ pub(super) async fn by_ids(
     Ok(out)
 }
 
+/// One category's rules split by whether they share a word with the question.
+#[derive(Debug, Default)]
+pub(super) struct CategoryRules {
+    /// Rows matching a lexeme of the concepts or the question, most relevant
+    /// first (the [`bm25`] score), ties in natural id order.
+    pub matching: Vec<RuleChunk>,
+    /// Rows matching nothing, in natural id order.
+    pub rest: Vec<RuleChunk>,
+}
+
+/// Category-map leg, ranked: the rule-level rows of `subsections` plus the
+/// rows named exactly by `ids`, scored against `concepts`/`question` with the
+/// same `ts_rank_cd` expression as [`bm25`].
+///
+/// A curated category is a *set*, not a ranking: `multi_faced_cards` alone is
+/// ~50 chunks, about twice what the synthesis prompt shows. In id order that
+/// set shows whichever subsection has the lowest number (split cards before
+/// adventurers) whatever was asked.
+pub(super) async fn in_subsections_ranked(
+    pool: &PgPool,
+    subsections: &[String],
+    ids: &[String],
+    concepts: &str,
+    question: &str,
+) -> Result<CategoryRules, JudgeError> {
+    if subsections.is_empty() && ids.is_empty() {
+        return Ok(CategoryRules::default());
+    }
+    let rows = sqlx::query!(
+        r#"
+        WITH q AS (
+            SELECT (SELECT string_agg(DISTINCT lexeme, ' | ')
+                      FROM unnest(to_tsvector('english', $3)) AS t
+                     WHERE lexeme ~ '^[[:alpha:]][[:alnum:]]+$')::tsquery AS cq,
+                   (SELECT string_agg(DISTINCT lexeme, ' | ')
+                      FROM unnest(to_tsvector('english', $4)) AS t
+                     WHERE lexeme ~ '^[[:alpha:]][[:alnum:]]+$')::tsquery AS qq
+        )
+        SELECT r.id, r.parent_id, r.subsection, r.heading, r.body, r.examples, r.cr_version,
+               (coalesce(ts_rank_cd(r.tsv, q.cq, 1), 0) * 2 + coalesce(ts_rank_cd(r.tsv, q.qq, 1), 0))::float8 AS "score!"
+        FROM rules r, q
+        WHERE (r.subsection = ANY($1) AND r.id ~ '^[0-9]{3}\.[0-9]+$')
+           OR r.id = ANY($2)
+        "#,
+        subsections,
+        ids,
+        concepts,
+        question
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(upstream("rules by category"))?;
+    let mut scored = rows
+        .into_iter()
+        .map(|r| {
+            let row = RuleRow {
+                id: r.id,
+                parent_id: r.parent_id,
+                subsection: r.subsection,
+                heading: r.heading,
+                body: r.body,
+                examples: r.examples,
+                cr_version: r.cr_version,
+            };
+            RuleChunk::try_from(row).map(|c| (r.score, c))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    scored.sort_by(|(a, x), (b, y)| b.total_cmp(a).then_with(|| sort_key(x.id.as_ref()).cmp(&sort_key(y.id.as_ref()))));
+    let (matching, rest): (Vec<_>, Vec<_>) = scored.into_iter().partition(|(score, _)| *score > 0.0);
+    Ok(CategoryRules {
+        matching: matching.into_iter().map(|(_, c)| c).collect(),
+        rest: rest.into_iter().map(|(_, c)| c).collect(),
+    })
+}
+
 /// Full-text leg: rule-level rows matching any lexeme of `concepts` or
 /// `question`, ranked by `ts_rank_cd` (concept matches weigh double).
 /// Lexemes are OR-ed so that a long question still matches; punctuation-only

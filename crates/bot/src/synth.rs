@@ -291,13 +291,17 @@ fn chunk_size(r: &RuleChunk) -> usize {
     r.body.len() + r.examples.iter().map(String::len).sum::<usize>()
 }
 
-/// The chunks the CR section shows, in `ctx.rules` order (category map,
-/// full-text, vector, tool round). A sub-rule whose parent is present is
+/// The chunks the CR section shows, in `ctx.rules` order (the retriever's
+/// priority order, then the tool round). A sub-rule whose parent is present is
 /// folded into the parent and not shown. Pinned chunks (and the parents of
 /// pinned sub-rules) are always shown and charged to the budget first; the
 /// rest fill what remains, except that an over-sized first chunk is kept so
 /// the section is never empty.
-fn select_rules<'a>(ctx: &'a Context, pinned: &[RuleId], budget: &Budget) -> Vec<&'a RuleChunk> {
+///
+/// Public so that `eval recall` can score what the model is *shown*, not only
+/// what was retrieved: the two differ whenever retrieval outruns the budget.
+#[must_use]
+pub fn shown_rules<'a>(ctx: &'a Context, pinned: &[RuleId], budget: &Budget) -> Vec<&'a RuleChunk> {
     let folded = |r: &RuleChunk| r.parent_id.as_ref().is_some_and(|p| ctx.rule(p).is_some());
     let is_pinned = |r: &RuleChunk| {
         pinned.contains(&r.id)
@@ -362,7 +366,7 @@ fn render_rules(s: &mut String, ctx: &Context, pinned: &[RuleId], budget: &Budge
         }
         None => s.push_str("\n## Comprehensive Rules\n(no excerpts retrieved)\n"),
     }
-    for r in select_rules(ctx, pinned, budget) {
+    for r in shown_rules(ctx, pinned, budget) {
         let _ = writeln!(s, "### [{}] {}\n{}", r.id, r.heading, r.body);
         for e in &r.examples {
             s.push_str(e);
@@ -665,7 +669,7 @@ mod tests {
     fn budget_caps_chunk_count_and_bytes_in_retrieval_order() -> R {
         let rules: Vec<RuleChunk> = (1..=30).map(|i| chunk(&format!("702.{i}"), None, &"x".repeat(100))).collect::<Result<_, _>>()?;
         let ctx = Context { rules, ..Context::default() };
-        let shown = select_rules(&ctx, &[], &Budget::default());
+        let shown = shown_rules(&ctx, &[], &Budget::default());
         let ids: Vec<&str> = shown.iter().map(|r| r.id.as_ref()).collect();
         assert_eq!(ids.len(), 25);
         assert_eq!(ids.first().copied(), Some("702.1"));
@@ -676,12 +680,12 @@ mod tests {
         // Byte cap: 5 000-byte chunks, 30 000-byte budget ⇒ 6 chunks.
         let big: Vec<RuleChunk> = (1..=10).map(|i| chunk(&format!("613.{i}"), None, &"y".repeat(5_000))).collect::<Result<_, _>>()?;
         let ctx = Context { rules: big, ..Context::default() };
-        assert_eq!(select_rules(&ctx, &[], &Budget::default()).len(), 6);
+        assert_eq!(shown_rules(&ctx, &[], &Budget::default()).len(), 6);
 
         // An over-sized first chunk is still shown; nothing else fits after it.
         let huge = vec![chunk("613.1", None, &"z".repeat(40_000))?, chunk("613.2", None, "small")?];
         let ctx = Context { rules: huge, ..Context::default() };
-        let shown = select_rules(&ctx, &[], &Budget::default());
+        let shown = shown_rules(&ctx, &[], &Budget::default());
         assert_eq!(shown.len(), 1);
         assert_eq!(shown.first().map(|r| r.id.as_ref()), Some("613.1"));
         Ok(())
@@ -697,7 +701,7 @@ mod tests {
             ],
             ..Context::default()
         };
-        let ids: Vec<&str> = select_rules(&ctx, &[], &Budget::default()).iter().map(|r| r.id.as_ref()).collect();
+        let ids: Vec<&str> = shown_rules(&ctx, &[], &Budget::default()).iter().map(|r| r.id.as_ref()).collect();
         assert_eq!(ids, ["702.19", "704.5q"]);
         Ok(())
     }
@@ -713,7 +717,7 @@ mod tests {
             chunk("704.5q", Some("704.5"), "704.5q orphan")?,
         ]);
         let pinned = [rid("613.7")?, rid("704.5q")?];
-        let shown = select_rules(&ctx, &pinned, &Budget::default());
+        let shown = shown_rules(&ctx, &pinned, &Budget::default());
         let ids: Vec<&str> = shown.iter().map(|r| r.id.as_ref()).collect();
         // Two pinned chunks (the leaf's parent is pinned in its place) reserve two of the 25 slots.
         assert_eq!(ids.len(), 25, "{ids:?}");

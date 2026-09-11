@@ -1,10 +1,13 @@
 //! `eval` — offline scoring against `eval/gold.yaml`. Needs `DATABASE_URL`
 //! (read from the environment or `.env`) and an ingested database; no API key.
 //!
-//! `eval recall [path/to/gold.yaml]`: for every CR/Commander question,
-//! resolves its card names and nicknames, runs the retriever with the gold
-//! categories (no embedder) and reports which `expected_rule_ids` are in
-//! Context. Exits non-zero if aggregate recall is below the 90% gate.
+//! `eval recall [--vectors] [path/to/gold.yaml]`: for every CR/Commander
+//! question, resolves its card names and nicknames, runs the retriever with the
+//! gold categories and reports which `expected_rule_ids` the synthesis prompt
+//! shows under the production budget (and which were retrieved but cut). No
+//! embedder unless `--vectors`, which embeds each question with the configured
+//! one (a fraction of a cent for the gold set). Exits non-zero if aggregate
+//! retrieved recall is below 90% or shown recall below 75%.
 //!
 //! `eval rescore <run.json> | answer --label L [--limit N] [--ids a,b] [--max-usd X] [--out p] [--gold p] [--config judge.toml]`:
 //! runs the full `judge()` pipeline (live model calls on the configured
@@ -25,8 +28,14 @@ use std::process::ExitCode;
 
 use anyhow::Context as _;
 
-/// The retrieval gate from ARCHITECTURE.md §6 step 4.
+/// The retrieval gate from ARCHITECTURE.md §6 step 4: expected rules retrieved at all.
 const RECALL_GATE: f64 = 0.90;
+/// Expected rules the synthesis prompt shows under the production budget.
+/// 54/67 (81%) on the gold set when this gate was added, from 29/67 (43%)
+/// before the legs were ranked. Set a few ids below that on purpose, so a CR
+/// update that shifts one rank does not turn it red, while a regression of the
+/// kind it was added for (every slot taken by one low-value category) does.
+const SHOWN_GATE: f64 = 0.75;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -50,7 +59,7 @@ async fn main() -> ExitCode {
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage:\n  eval recall [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--config judge.toml]\n  eval show <run.json>"
+        "usage:\n  eval recall [--vectors] [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--config judge.toml]\n  eval show <run.json>"
     )
 }
 
@@ -60,12 +69,21 @@ async fn run() -> anyhow::Result<bool> {
     let cmd = args.next().ok_or_else(usage)?;
     match cmd.as_str() {
         "recall" => {
-            let path = args.next().map_or_else(gold::default_path, std::path::PathBuf::from);
+            let mut rest: Vec<String> = args.collect();
+            let with_vectors = rest.iter().any(|a| a == "--vectors");
+            rest.retain(|a| a != "--vectors");
+            let path = rest.first().map_or_else(gold::default_path, std::path::PathBuf::from);
             let gold = gold::load(&path)?;
             let pool = connect().await?;
-            let report = recall::run(&pool, &gold).await?;
+            let vectors = if with_vectors {
+                let config = judge_bot::config::Config::load()?;
+                Some(config.vectors(pool.clone())?.ok_or_else(|| anyhow::anyhow!("--vectors: no embedder configured"))?)
+            } else {
+                None
+            };
+            let report = recall::run(&pool, &gold, vectors).await?;
             print!("{report}");
-            Ok(report.recall() >= RECALL_GATE)
+            Ok(report.retrieved() >= RECALL_GATE && report.recall() >= SHOWN_GATE)
         }
         "answer" => {
             let opts = answer::Options::parse(args)?;

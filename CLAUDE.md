@@ -122,7 +122,9 @@ judge-cli config                                        # the resolved provider/
 judge-mcp                                               # the MCP server on stdio (.mcp.json starts it)
                                                         # remote: judge-api serves /mcp when MCP_TOKEN is set
 
-cargo run -p judge-eval -- recall                       # retrieval gate, no API keys, exit≠0 below 90%
+cargo run -p judge-eval -- recall [--vectors]           # retrieval gate, no API keys (--vectors: the configured
+                                                        # embedder, ~$0.001), exit≠0 below 90% retrieved or 75%
+                                                        # shown under the synthesis budget
 cargo run -p judge-eval -- answer --label L --limit 21 --max-usd 6.00   # full live gold run (~$2.50)
                                                         # --config judge.toml runs it on other providers
 cargo run -p judge-eval -- rescore eval/runs/<run>.json # re-score a stored run, zero API cost
@@ -136,8 +138,10 @@ Pipeline (see `docs/ARCHITECTURE.md` §3, which is kept current): extraction+cla
 possessive-stripped alias → `[[bracket]]` → exact → printed name → short-name-before-comma →
 alias-suffix → trigram fuzzy; **never guesses** — genuine ambiguity becomes
 `Resolution::Ambiguous` and a Discord "did you mean?" button row) → retrieval (three legs
-unioned in priority order: curated category→CR-subsection map, tsvector BM25, pgvector
-cosine; plus rulings for all faces, glossary, nightmare-card notes, rated prior calls) →
+unioned in priority order: the primary category's CR subsections ranked by text relevance
+(those sharing no word with the question after the next two legs), tsvector BM25, pgvector
+cosine, the secondary categories — the synthesis budget renders a
+prefix, so this order is what the model reads; plus rulings for all faces, glossary, nightmare-card notes, rated prior calls) →
 synthesis (high-effort, one `lookup_rules` tool round max — enforced by typestate — with
 citation validation and one retry) → persist + Discord rating buttons.
 

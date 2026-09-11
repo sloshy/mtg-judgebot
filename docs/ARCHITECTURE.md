@@ -68,7 +68,13 @@ Discord message (+ last N Q&A in the same thread)
   ▼
 [4] Retrieval → Context
     - CR: category → curated subsection IDs (always) + tsvector BM25 + pgvector
-          cosine; union, dedupe, expand to full rule chunk
+          cosine; union, dedupe, expand to full rule chunk. Ordered by
+          priority, because the synthesis budget (25 chunks / 30 kB) renders a
+          prefix and the legs return several times that: the primary
+          category's rules sharing a word with the question (ranked by text
+          relevance, not by id), BM25, vector, the primary's remaining rules,
+          secondary categories (ranked). `eval recall` gates on what that
+          prefix shows (≥ 75%) as well as on what was retrieved (≥ 90%).
     - Scryfall rulings for each resolved card (all faces)
     - Glossary entries for terms in the oracle text
     - Prior calls: vector search filtered by (cards ∩ category), labeled with
