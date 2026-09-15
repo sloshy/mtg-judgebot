@@ -1,0 +1,24 @@
+mtg-judgebot
+
+Copyright (C) 2026 the mtg-judgebot contributors.
+Licensed under the GNU Affero General Public License, version 3 or later (LICENSE).
+
+This is unofficial Fan Content permitted under Wizards of the Coast's Fan Content
+Policy (https://company.wizards.com/en/legal/fancontentpolicy). It is not approved or
+endorsed by Wizards of the Coast. Magic: The Gathering, the Comprehensive Rules, card
+names, Oracle text and card rulings are (C) Wizards of the Coast LLC, a subsidiary of
+Hasbro, Inc. The software downloads the Comprehensive Rules from Wizards' site at run
+time and stores them in the operator's database; the repository itself carries only a
+short excerpt as a parser test fixture (crates/ingest/tests/fixtures/cr_sample.txt),
+which remains Wizards' copyright.
+
+Card data, rulings and card symbol images come from Scryfall (https://scryfall.com),
+under Scryfall's data guidelines (https://scryfall.com/docs/api). Scryfall is not
+affiliated with this project. The ingest tooling identifies itself with a User-Agent,
+uses the bulk-data endpoint rather than per-card requests, and paces its calls as
+Scryfall asks.
+
+Rule citations in answers link to the Yawgatog Comprehensive Rules mirror
+(https://yawgatog.com/resources/magic-rules/), an independent site.
+
+The Contributor Covenant (CODE_OF_CONDUCT.md) is (C) its authors, licensed CC BY 4.0.

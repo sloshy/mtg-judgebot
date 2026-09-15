@@ -1,0 +1,16 @@
+name: Feature request
+description: Something the bot, the web page, the API or the tooling should do.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do and what gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: A possible shape
+      description: Optional. How you imagine it working, including anything it must not do (the bot never guesses card names, never answers without a validated citation, and never spends outside the cap).

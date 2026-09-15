@@ -155,7 +155,7 @@ npm --prefix web run dev             # Vite dev server with /api proxied to :878
 
 ### Hosting
 
-The public instance runs on a machine at home behind a [Cloudflare
+The public instance, <https://mtgjudge.rpeters.dev>, runs on a machine at home behind a [Cloudflare
 Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/):
 no public IP, no forwarded port, no cloud compute bill. `docs/DEPLOYMENT.md` is the
 runbook — tunnel setup, edge rate limiting in front of the anonymous API, and the
@@ -207,8 +207,18 @@ docs/        architecture, language evaluation, proposals
 Not yet built: multi-server tenancy, tournament-policy (MTR/IPG) coverage — the bot declines those
 questions rather than winging them.
 
-## License
+## License and attribution
 
 AGPL-3.0-or-later — see [LICENSE](LICENSE). Running a modified version of this bot
 (Discord or the HTTP API) as a network service requires making the modified source
 available to its users.
+
+This is unofficial Fan Content permitted under Wizards of the Coast's [Fan Content
+Policy](https://company.wizards.com/en/legal/fancontentpolicy), not approved or
+endorsed by Wizards. Magic: The Gathering, the Comprehensive Rules, card text and
+rulings are © Wizards of the Coast. Card data and rulings come from
+[Scryfall](https://scryfall.com) under its [data guidelines](https://scryfall.com/docs/api);
+the bot fetches both at run time, and the repository carries only a short CR excerpt as
+a parser test fixture. Rule links go to the independent
+[Yawgatog](https://yawgatog.com/resources/magic-rules/) CR mirror. `NOTICE` has the
+full statement.

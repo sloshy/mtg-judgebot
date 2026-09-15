@@ -1,0 +1,41 @@
+name: Wrong or unhelpful ruling
+description: The bot answered a rules question badly, refused one it should answer, or cited the wrong thing.
+labels: ["ruling"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks. The exact question matters most: card resolution and retrieval both key off its wording.
+  - type: textarea
+    id: question
+    attributes:
+      label: The question, exactly as asked
+      placeholder: does bob's trigger count goyf's mana value as 0?
+    validations:
+      required: true
+  - type: textarea
+    id: answer
+    attributes:
+      label: What the bot answered
+      description: Paste the answer including its citations and confidence line. A screenshot is fine.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What the correct ruling is
+      description: The rule numbers or ruling you believe apply, if you know them.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options: [Discord, Web page, judge-cli or MCP]
+    validations:
+      required: true
+  - type: input
+    id: cr
+    attributes:
+      label: CR version shown in the answer
+      placeholder: CR 2026-08-19

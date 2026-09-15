@@ -6,6 +6,7 @@ members = ["crates/core", "crates/llm", "crates/anthropic", "crates/openai", "cr
 edition = "2024"
 rust-version = "1.97"
 license = "AGPL-3.0-or-later"
+repository = "https://github.com/sloshy/mtg-judgebot"
 publish = false
 
 [workspace.dependencies]

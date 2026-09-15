@@ -1,0 +1,37 @@
+name: Bug
+description: Something other than the ruling itself misbehaved (a crash, an error message, a button, the web page, ingest).
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from `docker compose logs bot api` or the command's output. Redact tokens and keys.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The image tag (`JUDGE_IMAGE_TAG`) or commit you are running.
+  - type: textarea
+    id: config
+    attributes:
+      label: Model configuration
+      description: Output of `judge-cli config` (it redacts secrets), if the problem involves a provider or model.
+      render: toml

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 publish.workspace = true
 description = "sqlx repos, model adapters over judge-llm, the judge.toml loader and build_deps composition, serenity/poise Discord adapter, main (bin)."
 

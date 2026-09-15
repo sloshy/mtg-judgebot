@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 publish.workspace = true
 description = "Anonymous HTTP adapter: axum routes over judge(), serving the SolidJS web client; the MCP transport at /mcp behind a token."
 

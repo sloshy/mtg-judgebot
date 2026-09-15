@@ -15,3 +15,4 @@ eval/runs/
 *.dump
 *.dump.gz
 .refresh.lock/
+.claude/settings.local.json

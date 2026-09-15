@@ -106,6 +106,13 @@ export default function App() {
           Answers here can't be rated. Answers are AI-generated;
           verify anything important with a human judge.
         </p>
+        <p>
+          Unofficial Fan Content under the{" "}
+          <a href="https://company.wizards.com/en/legal/fancontentpolicy">Fan Content Policy</a>;
+          not endorsed by Wizards of the Coast. Card data and rulings from{" "}
+          <a href="https://scryfall.com">Scryfall</a>.{" "}
+          <a href="https://github.com/sloshy/mtg-judgebot">Source</a> (AGPL-3.0).
+        </p>
       </footer>
     </main>
   );

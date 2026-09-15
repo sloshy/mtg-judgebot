@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 publish.workspace = true
 description = "OpenAI-compatible chat completions as a judge-llm backend: wire types, the strict-mode schema transform, request/response conversion, dialect knobs."
 
