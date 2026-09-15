@@ -32,6 +32,39 @@ use crate::{
 /// Web clients have no 3 s deadline, so this is more patient than Discord.
 pub const ACQUIRE_WAIT: Duration = Duration::from_secs(10);
 
+/// A readiness check `GET /api/health` runs: the database, in production.
+///
+/// A trait rather than a `PgPool` so the routes stay testable without one and
+/// so the probe is whatever the binary wires (a container healthcheck wants
+/// "can this process serve a question", which for the API means "can it
+/// reach Postgres").
+#[async_trait::async_trait]
+pub trait Probe: Send + Sync {
+    /// `Ok` when the dependency answers; the error text is returned to the
+    /// caller, so it should name the dependency and not leak credentials.
+    async fn probe(&self) -> Result<(), String>;
+}
+
+/// How long the database probe waits, pool acquisition included. Shorter than
+/// a container healthcheck's timeout, so a saturated pool reads as "slow", not
+/// as a killed check.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[async_trait::async_trait]
+impl Probe for sqlx::PgPool {
+    async fn probe(&self) -> Result<(), String> {
+        let query = sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(self);
+        match tokio::time::timeout(PROBE_TIMEOUT, query).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(format!("database: {e}")),
+            Err(_) => Err(format!(
+                "database: no answer within {}s",
+                PROBE_TIMEOUT.as_secs()
+            )),
+        }
+    }
+}
+
 /// Shared state behind every route.
 pub struct App {
     deps: Deps,
@@ -42,6 +75,7 @@ pub struct App {
     limiter: RateLimiter,
     history_len: usize,
     client_ip: ClientIpSource,
+    probe: Option<Arc<dyn Probe>>,
 }
 
 impl std::fmt::Debug for App {
@@ -74,7 +108,16 @@ impl App {
             limiter: RateLimiter::new(cfg.rate_limit, cfg.rate_window),
             history_len: cfg.history_len,
             client_ip: cfg.client_ip,
+            probe: None,
         }
+    }
+
+    /// Make `GET /api/health` check `probe` (the database) instead of only
+    /// answering that the process is up.
+    #[must_use]
+    pub fn with_probe(mut self, probe: Arc<dyn Probe>) -> Self {
+        self.probe = Some(probe);
+        self
     }
 
     /// The judge slots, to share with another front door in this process
@@ -200,8 +243,21 @@ pub async fn serve(cfg: &ApiConfig, router: Router) -> anyhow::Result<()> {
     .context("serve HTTP")
 }
 
-async fn health() -> &'static str {
-    "ok"
+/// `200 ok` when the process can serve, `503` naming the failed dependency
+/// when it cannot; a container healthcheck or a load balancer reads the
+/// status, a human reads the body. Without a probe it only says the process
+/// is up.
+async fn health(State(app): State<Arc<App>>) -> (StatusCode, String) {
+    match &app.probe {
+        None => (StatusCode::OK, "ok".to_owned()),
+        Some(p) => match p.probe().await {
+            Ok(()) => (StatusCode::OK, "ok".to_owned()),
+            Err(why) => {
+                tracing::warn!(%why, "health probe failed");
+                (StatusCode::SERVICE_UNAVAILABLE, why)
+            }
+        },
+    }
 }
 
 /// The peer address, when the server was started with connect info (tests
@@ -443,6 +499,9 @@ mod tests {
         async fn history(&self, _thread: &str, _n: usize) -> Result<Vec<Qa>, JudgeError> {
             Ok(vec![])
         }
+        async fn forget_user(&self, _user: &str) -> Result<u64, JudgeError> {
+            Ok(0)
+        }
     }
 
     type Res = Result<(), Box<dyn std::error::Error>>;
@@ -451,15 +510,29 @@ mod tests {
         test_app_with_dist(rate_limit, Path::new("does-not-exist"))
     }
 
-    fn test_app_with_dist(rate_limit: u32, dist: &Path) -> (Router, Arc<StubStore>) {
-        let store = Arc::new(StubStore::default());
-        let deps = Deps {
+    fn stub_deps() -> Deps {
+        Deps {
             extractor: Arc::new(StubExtractor),
             resolver: Arc::new(StubResolver),
             retriever: Arc::new(StubRetriever),
             synthesizer: Arc::new(StubSynth),
-        };
-        let cfg = ApiConfig {
+        }
+    }
+
+    fn test_app_with_dist(rate_limit: u32, dist: &Path) -> (Router, Arc<StubStore>) {
+        let store = Arc::new(StubStore::default());
+        let cfg = test_cfg(rate_limit, dist);
+        let app = Arc::new(App::new(
+            stub_deps(),
+            Arc::clone(&store) as Arc<dyn CallStore>,
+            SpendMeter::new(),
+            &cfg,
+        ));
+        (router(app, &cfg.web_dist), store)
+    }
+
+    fn test_cfg(rate_limit: u32, dist: &Path) -> ApiConfig {
+        ApiConfig {
             addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             web_dist: dist.to_path_buf(),
             max_concurrent: 2,
@@ -471,14 +544,7 @@ mod tests {
             mcp_hosts: vec![],
             mcp_judge_limit: ApiConfig::DEFAULT_MCP_JUDGE_LIMIT,
             mcp_judge_window: ApiConfig::DEFAULT_MCP_JUDGE_WINDOW,
-        };
-        let app = Arc::new(App::new(
-            deps,
-            Arc::clone(&store) as Arc<dyn CallStore>,
-            SpendMeter::new(),
-            &cfg,
-        ));
-        (router(app, &cfg.web_dist), store)
+        }
     }
 
     async fn post_judge(
@@ -650,6 +716,45 @@ mod tests {
         let req = Request::get("/api/health").body(Body::empty())?;
         let res = router.oneshot(req).await?;
         assert_eq!(res.status(), StatusCode::OK);
+        Ok(())
+    }
+
+    /// A probe decides the status: a failing dependency is 503 with its name
+    /// in the body, so a healthcheck flips and an operator can read why.
+    #[tokio::test]
+    async fn health_reports_the_probe() -> Res {
+        struct Fixed(Result<(), String>);
+        #[async_trait]
+        impl Probe for Fixed {
+            async fn probe(&self) -> Result<(), String> {
+                self.0.clone()
+            }
+        }
+        for (probe, status, body) in [
+            (Ok(()), StatusCode::OK, "ok"),
+            (
+                Err("database: connection refused".to_owned()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "database: connection refused",
+            ),
+        ] {
+            let app = Arc::new(
+                App::new(
+                    stub_deps(),
+                    Arc::new(StubStore::default()),
+                    SpendMeter::new(),
+                    &test_cfg(10, Path::new("does-not-exist")),
+                )
+                .with_probe(Arc::new(Fixed(probe))),
+            );
+            let router = router(app, Path::new("does-not-exist"));
+            let res = router
+                .oneshot(Request::get("/api/health").body(Body::empty())?)
+                .await?;
+            assert_eq!(res.status(), status);
+            let bytes = axum::body::to_bytes(res.into_body(), 1024).await?;
+            assert_eq!(std::str::from_utf8(&bytes)?, body);
+        }
         Ok(())
     }
 

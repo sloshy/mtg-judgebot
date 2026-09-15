@@ -41,5 +41,7 @@ Operators should know these properties; the reasoning behind each is in
 - **The image runs as `nobody`** and is rebuilt by CI from the committed lockfiles.
 - **User data stored:** the question and answer text of every call, the Discord
   thread or web session id it was asked in, and the Discord user id of anyone who
-  presses a rating button. No message content beyond the slash-command input is ever
-  received; the bot requests no gateway intents.
+  presses a rating button (`/forget` deletes those). No message content beyond the
+  slash-command input is ever received; the bot requests no gateway intents. Process
+  logs at `info` record each rating with the user id; the compose file rotates them at
+  30 MB per container, and they are the operator's to ship or drop.

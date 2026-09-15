@@ -93,4 +93,9 @@ pub trait CallStore: Send + Sync {
     /// first: the shape [`crate::judge`] takes as thread history. `n == 0`
     /// yields nothing.
     async fn history(&self, thread_id: &str, n: usize) -> Result<Vec<Qa>, JudgeError>;
+    /// Delete every rating `user_id` has recorded and return how many there
+    /// were. Ratings are the only per-user data the store keeps (a call
+    /// records the thread it was asked in, not who asked), so this is the
+    /// whole of "forget me".
+    async fn forget_user(&self, user_id: &str) -> Result<u64, JudgeError>;
 }

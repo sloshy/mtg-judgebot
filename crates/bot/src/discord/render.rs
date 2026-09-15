@@ -65,6 +65,36 @@ pub const NOT_YOURS: &str = "Only the person who asked can pick a card for that 
 pub const UNKNOWN_BUTTON: &str = "I don't recognise that button any more.";
 /// The rating could not be stored.
 pub const RATE_FAILED: &str = "Sorry, I couldn't record that rating. Please try again.";
+
+/// `/help`: what the bot does, how to ask, what it stores. Ephemeral, so it
+/// never clutters a channel; under [`CONTENT_LIMIT`] by a wide margin.
+pub const HELP: &str = "**MTG Judgebot** answers Magic: The Gathering rules questions like a judge: every \
+claim carries a citation to the Comprehensive Rules, an official ruling, or a card's Oracle text, and a \
+citation is only shown after it has been checked against the source.\n\n\
+**Asking.** `/judge question: <your question>`. Nicknames work (\"bob\", \"goyf\"); write `[[Full Card Name]]` \
+to pin a card exactly. If a name is ambiguous you get a \"did you mean…?\" row instead of a guess. \
+Tournament policy and card prices are out of scope.\n\n\
+**Rating.** The buttons under an answer record how right it was; rating again replaces yours. Ratings decide \
+which past answers are shown as examples later — the rules themselves always outrank them. Members with the \
+server's judge role rate with an override.\n\n\
+**What is stored.** The question and answer text, the channel it was asked in, and your user id when you \
+rate. Nothing else is read: the bot sees only its slash commands. `/forget` deletes your ratings.\n\n\
+Answers are AI-generated; verify anything important with a human judge. Unofficial Fan Content under the \
+Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall. Source and issues: \
+<https://github.com/sloshy/mtg-judgebot>";
+
+/// `/forget`'s confirmation, naming how much there was to forget.
+#[must_use]
+pub fn forgotten(ratings: u64) -> String {
+    match ratings {
+        0 => "You had no ratings on record; there is nothing else stored about you.".to_owned(),
+        1 => "Deleted your 1 rating. Nothing else is stored about you.".to_owned(),
+        n => format!("Deleted your {n} ratings. Nothing else is stored about you."),
+    }
+}
+
+/// `/forget` when the deletion failed.
+pub const FORGET_FAILED: &str = "Sorry, I couldn't delete your ratings just now. Please try again.";
 /// A card pick was processed but the message could not be updated with the result.
 pub const EDIT_FAILED: &str =
     "I worked out an answer but couldn't update the message. Please ask the question again.";
@@ -975,5 +1005,35 @@ mod tests {
     fn cr_date_formats_eight_digits_only() {
         assert_eq!(cr_date("20260819"), "2026-08-19");
         assert_eq!(cr_date("2026"), "2026");
+    }
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::*;
+
+    #[test]
+    fn help_fits_one_message_and_names_the_other_commands() {
+        assert!(
+            HELP.chars().count() <= CONTENT_LIMIT,
+            "{}",
+            HELP.chars().count()
+        );
+        for needle in [
+            "/judge",
+            "/forget",
+            "[[Full Card Name]]",
+            "Fan Content",
+            "Scryfall",
+        ] {
+            assert!(HELP.contains(needle), "{needle}");
+        }
+    }
+
+    #[test]
+    fn forgotten_counts_in_plain_english() {
+        assert!(forgotten(0).starts_with("You had no ratings"));
+        assert!(forgotten(1).starts_with("Deleted your 1 rating."));
+        assert!(forgotten(7).starts_with("Deleted your 7 ratings."));
     }
 }

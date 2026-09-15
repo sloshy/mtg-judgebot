@@ -17,6 +17,7 @@ name = "api"
 path = "src/main.rs"
 
 [dependencies]
+async-trait.workspace = true
 judge-core.workspace = true
 judge-llm.workspace = true
 judge-embed.workspace = true
@@ -37,7 +38,6 @@ dotenvy = "0.15"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres"] }
 
 [dev-dependencies]
-async-trait.workspace = true
 nonempty.workspace = true
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

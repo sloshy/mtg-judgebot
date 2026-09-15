@@ -8,6 +8,16 @@ unless `JUDGE_AUTO_MIGRATE=false`).
 ## [Unreleased]
 
 ### Added
+- Discord `/help` (what the bot does, how to ask, what it stores) and `/forget`, which
+  deletes the caller's ratings, the only per-user data kept.
+- `GET /api/health` now checks the database and answers 503 when it is unreachable; the
+  compose file gives `api` a healthcheck, starts the tunnel only once it passes, and
+  caps each long-running service's log at 30 MB (`refresh` is a one-shot whose log dies
+  with it).
+- The web page carries a favicon, a description and Open Graph tags, and its footer
+  names the Fan Content Policy, Scryfall and the source repository.
+- `docs/proposals/tenancy.md`: a proposal for per-server admission, quotas and judge
+  roles, not implemented.
 - `NOTICE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue and pull
   request templates, and this changelog, for the public release.
 - A CI workflow (`ci.yml`) running rustfmt, clippy, the offline sqlx build, a `.sqlx`

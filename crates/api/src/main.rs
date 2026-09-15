@@ -71,7 +71,11 @@ async fn main() -> Result<()> {
     }
     let store: Arc<dyn CallStore> = Arc::new(store);
     let deps = build_deps_with(pool.clone(), &models, vectors.clone(), &judge.deps_config());
-    let app = Arc::new(App::new(deps, store, models.meter().clone(), &cfg));
+    // /api/health answers 503 when Postgres does not: the compose healthcheck
+    // and the tunnel's readiness key off it.
+    let app = Arc::new(
+        App::new(deps, store, models.meter().clone(), &cfg).with_probe(Arc::new(pool.clone())),
+    );
     let mut routes = router(Arc::clone(&app), &cfg.web_dist);
     // The MCP transport shares the judge slots (one JUDGE_CONCURRENCY for
     // both front doors) and the metered models (one cap).

@@ -536,7 +536,7 @@ async fn has_role(
 }
 
 /// Ask a Magic rules question; the answer cites the Comprehensive Rules.
-#[poise::command(slash_command, rename = "judge")]
+#[poise::command(slash_command, rename = "judge", guild_only)]
 async fn judge_command(
     ctx: Ctx<'_>,
     #[description = "Your rules question (write a card as [[Full Name]] to pin it)"]
@@ -560,6 +560,33 @@ async fn judge_command(
     };
     let out = data.answer(&q, ctx.author().id).await;
     ctx.send(out.into_reply()).await?;
+    Ok(())
+}
+
+/// What the bot does, how to ask, and what it stores.
+#[poise::command(slash_command, rename = "help", ephemeral)]
+async fn help_command(ctx: Ctx<'_>) -> Result<(), Error> {
+    ctx.say(render::HELP).await?;
+    Ok(())
+}
+
+/// Delete every rating you have recorded; nothing else is stored about you.
+#[poise::command(slash_command, rename = "forget", ephemeral)]
+async fn forget_command(ctx: Ctx<'_>) -> Result<(), Error> {
+    let user_id = ctx.author().id.to_string();
+    // The id stays out of the log: the point of the command is to stop
+    // keeping it.
+    let text = match ctx.data().store.forget_user(&user_id).await {
+        Ok(n) => {
+            tracing::info!(ratings = n, "forgot a user's ratings");
+            render::forgotten(n)
+        }
+        Err(e) => {
+            tracing::error!(error = format_args!("{e:#}"), "forget failed");
+            render::FORGET_FAILED.to_owned()
+        }
+    };
+    ctx.say(text).await?;
     Ok(())
 }
 
@@ -648,7 +675,7 @@ async fn load_symbols(http: &serenity::Http) -> SymbolTable {
 pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
     let guild = cfg.guild_id;
     let options = poise::FrameworkOptions {
-        commands: vec![judge_command()],
+        commands: vec![judge_command(), help_command(), forget_command()],
         event_handler: |ctx, event, framework, data| {
             Box::pin(event_handler(ctx, event, framework, data))
         },
@@ -663,11 +690,11 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
                 let commands = &framework.options().commands;
                 if let Some(g) = guild {
                     poise::builtins::register_in_guild(ctx, commands, g).await?;
-                    tracing::info!(guild = %g, "registered /judge in one guild");
+                    tracing::info!(guild = %g, "registered /judge, /help and /forget in one guild");
                 } else {
                     poise::builtins::register_globally(ctx, commands).await?;
                     tracing::info!(
-                        "registered /judge globally (propagation can take up to an hour)"
+                        "registered /judge, /help and /forget globally (propagation can take up to an hour)"
                     );
                 }
                 // The application id arrives with `Ready`, which is what got us

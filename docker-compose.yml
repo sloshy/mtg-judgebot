@@ -1,8 +1,18 @@
+# Long-lived containers on a small host: cap each service's json-file log at
+# 30 MB so a chatty week cannot fill the disk. `docker compose logs` is
+# unaffected; ship logs elsewhere if you need history.
+x-bounded-logs: &bounded-logs
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: pgvector/pgvector:pg16
     container_name: judgebot-db
     restart: unless-stopped
+    logging: *bounded-logs
     environment:
       POSTGRES_USER: judgebot
       POSTGRES_PASSWORD: judgebot
@@ -29,6 +39,7 @@ services:
     image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
     container_name: judgebot-bot
     restart: unless-stopped
+    logging: *bounded-logs
     env_file: .env
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
@@ -78,6 +89,26 @@ services:
     # trustworthy while Cloudflare is the sole route to the origin.
     ports:
       - "127.0.0.1:8787:8787"
+    # /api/health answers 503 until Postgres does. The slim image has no curl,
+    # so this is bash's /dev/tcp — invoked as bash explicitly, because CMD-SHELL
+    # would run /bin/sh, which is dash there and has no /dev/tcp. `bot` has no
+    # healthcheck: the gateway connection is not observable from outside the
+    # process, and a fatal disconnect exits it, which `restart: unless-stopped`
+    # already covers.
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8787 &&
+          printf 'GET /api/health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
+          head -n1 <&3 | grep -q ' 200 '
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *bounded-logs
     depends_on:
       db:
         condition: service_healthy
@@ -127,8 +158,10 @@ services:
     # running the tunnel profile need .env.deploy to exist.
     env_file:
       - .env.deploy
+    logging: *bounded-logs
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   judgebot-pgdata:

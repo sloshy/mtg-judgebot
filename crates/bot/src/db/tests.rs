@@ -1355,3 +1355,38 @@ async fn switch_space_retypes_columns_clears_vectors_and_rebuilds_indexes_atomic
     assert_eq!(stored_space(&pool).await?, Some(nomic));
     Ok(())
 }
+
+/// `/forget` deletes exactly the caller's ratings: another user's stay, the
+/// call itself stays, and a second call reports nothing left to delete.
+#[sqlx::test(migrator = "crate::MIGRATOR")]
+async fn forget_user_deletes_only_that_users_ratings(pool: PgPool) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    let retriever = PgRetriever::new(pool.clone());
+    let store = PgCallStore::new(pool.clone());
+    let q = question("how do layers work?");
+    let ctx = retriever
+        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .await?;
+    let verdict = Verdict::new(
+        "Layer 4 is where type-changing effects apply.".into(),
+        Confidence::High,
+        cite_first_rule(&ctx)?,
+        Category::Layers,
+    )
+    .validate(&ctx, AnswerableSource::Cr)?;
+    let call = store.persist(&q, &verdict, &ctx).await?;
+    store.rate(call, "user-a", Score::Correct, false).await?;
+    store.rate(call, "user-b", Score::Incorrect, true).await?;
+
+    assert_eq!(store.forget_user("user-a").await?, 1);
+    assert_eq!(store.forget_user("user-a").await?, 0, "idempotent");
+    let left: Vec<String> = sqlx::query_scalar("SELECT user_id FROM ratings ORDER BY user_id")
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(left, vec!["user-b".to_owned()]);
+    let calls: i64 = sqlx::query_scalar("SELECT count(*) FROM calls")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(calls, 1, "the call is not the user's data");
+    Ok(())
+}

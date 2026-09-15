@@ -194,6 +194,14 @@ impl CallStore for PgCallStore {
         Ok(())
     }
 
+    async fn forget_user(&self, user_id: &str) -> Result<u64, JudgeError> {
+        let done = sqlx::query!("DELETE FROM ratings WHERE user_id = $1", user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(upstream("delete ratings"))?;
+        Ok(done.rows_affected())
+    }
+
     async fn history(&self, thread_id: &str, n: usize) -> Result<Vec<Qa>, JudgeError> {
         if n == 0 {
             return Ok(vec![]);
