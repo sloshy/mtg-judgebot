@@ -1,0 +1,113 @@
+name: CI
+
+# The gates CLAUDE.md and CONTRIBUTING.md name, enforced: formatting, a
+# warning-free clippy over every target, the offline sqlx build, the committed
+# .sqlx data in sync with the SQL, the whole test suite against a pgvector
+# Postgres, and the web page's type-check and build. Runs on every pull
+# request; publish-image.yml calls it before it builds, so an image is never
+# published from a tree that fails here.
+
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, sqlx, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      # The migrations create the `vector` and `pg_trgm` extensions, so this
+      # must be the pgvector image, not stock postgres. #[sqlx::test] creates a
+      # throwaway database per test off DATABASE_URL.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: judgebot
+          POSTGRES_PASSWORD: judgebot
+          POSTGRES_DB: judgebot
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U judgebot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://judgebot:judgebot@localhost:5433/judgebot
+    steps:
+      - uses: actions/checkout@v7
+
+      # rust-toolchain.toml pins the version; the action installs exactly that.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy (offline sqlx, every target)
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo clippy --workspace --all-targets
+
+      # sqlx-cli has no prebuilt release, so it is compiled once and cached by
+      # version. Its own warnings are not ours to fail on.
+      - uses: taiki-e/cache-cargo-install-action@v2
+        env:
+          RUSTFLAGS: ""
+        with:
+          tool: sqlx-cli@0.9
+          locked: true
+          no-default-features: true
+          features: postgres,rustls
+
+      - name: apply migrations
+        run: sqlx migrate run --source crates/bot/migrations
+
+      # `cargo sqlx prepare --check` fails when a query's committed metadata
+      # under .sqlx differs from what the live schema produces, i.e. when
+      # someone changed SQL without running
+      # `cargo sqlx prepare --workspace -- --all-targets`.
+      - name: .sqlx is in sync
+        run: cargo sqlx prepare --check --workspace -- --all-targets
+
+      - name: tests
+        run: cargo test --workspace
+
+  web:
+    name: Web page (tsc, vite build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+
+  compose:
+    name: Compose file parses
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      # docker-compose.yml reads .env through env_file; the example stands in.
+      - run: cp .env.example .env && docker compose config --quiet
