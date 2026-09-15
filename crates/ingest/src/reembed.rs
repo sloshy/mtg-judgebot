@@ -1,5 +1,5 @@
 //! `ingest reembed [--yes] [--clear]`: make the database hold the configured
-//! embedder's space (`docs/proposals/providers.md` §4.3). When it holds
+//! embedder's space (`docs/PROVIDERS.md` §4.3). When it holds
 //! another, inside one transaction (`judge_bot::db::space::switch_space`)
 //! every `embedding` column is retyped to the new width, its HNSW index
 //! recreated as the migrations define it and every vector cleared, and

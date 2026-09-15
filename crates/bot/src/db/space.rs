@@ -1,5 +1,5 @@
 //! The vector space the database holds, and [`Vectors`], the one way the
-//! adapters reach an embedder (`docs/proposals/providers.md` §4.3).
+//! adapters reach an embedder (`docs/PROVIDERS.md` §4.3).
 //!
 //! `embedding_space` is a one-row table naming the provider, model and width
 //! of every stored vector. It is written once by `ingest embed` (first use),

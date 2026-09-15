@@ -1,0 +1,323 @@
+# Design decisions
+
+The decisions that shaped this codebase and why each was made, in one place, so that a
+new reader (or a future maintainer) can tell a load-bearing choice from an accident.
+`docs/ARCHITECTURE.md` describes *what* exists and is kept current with the code;
+`docs/EXPLAINER.md` is the narrative tour; this file records *why*. Each entry names the
+alternative that was rejected. Dates are when the decision was made; the longer design
+documents that preceded some of them were retired in September 2026 and live in git
+history (`docs/proposals/`, `docs/LANGUAGE_EVALUATION.md` before that date).
+
+## D1. Correctness comes from the compiler, not from test discipline
+
+*Decided 2026-08-29.*
+
+The project was started with an explicit priority order: (1) what the compiler enforces,
+(2) how naturally the domain can be expressed, (3) whether the ecosystem makes it
+buildable without inventing infrastructure. Code volume and build time were declared
+non-criteria. Nine invariants were written down first, and the language, the libraries
+and most of the type design follow from them:
+
+| # | Invariant | Where it bites |
+|---|---|---|
+| I1 | `Resolution`, `Citation`, `JudgeError`, `Source` are closed sums; every consumer handles every case | "Ambiguous" can never be silently treated as "resolved" |
+| I2 | `Card.faces` is non-empty; `RuleId` matches `^[0-9]{3}(\.[0-9]+[a-z]{0,2})?$`; a rating is 1, 2 or 3 | Invalid data is unconstructible |
+| I3 | A `Verdict` cannot be persisted or sent to Discord until citation validation has run | Hallucinated citations never reach users |
+| I4 | The synthesis tool loop runs at most one `lookup_rules` round | Bounded cost, no runaway loops |
+| I5 | The model's output schema and the type we decode into are one definition | Schema drift is a compile error, not a 400 |
+| I6 | SQL parameter and column types match the schema | Retrieval cannot silently return the wrong shape |
+| I7 | `core` (resolution, context assembly, validation) performs no I/O | Pure logic is testable and cannot sneak in a model call |
+| I8 | Errors on the judge path are values of `JudgeError`, not exceptions | The Discord layer must render every failure |
+| I9 | No `null`/`undefined` reaches domain code | No boundary leaks |
+
+**Rule that follows.** When adding an invariant, make the bad state unrepresentable
+(exhaustive enums, `nutype` newtypes with validators, `NonEmpty`, typestates). A runtime
+check is the fallback; a test is the fallback to that. `CONTRIBUTING.md` restates the ones
+a change is most likely to bump into.
+
+## D2. Rust
+
+*Decided 2026-08-29.*
+
+Eight languages were scored against I1–I9. Three cleared the bar and the gap between them
+was small; the gap from third to fourth was not.
+
+- **Haskell** scored highest on paper: the only language enforcing I5, I7, I8 and I9 at
+  once (autodocodec derives schema and parser from one codec; effect systems give
+  per-port effect sets). Rejected for ecosystem concentration (single-team Discord and
+  model-API libraries) and toolchain friction.
+- **Scala 3 on the JVM**, the author's best-known stack, enforces the core invariants but
+  every gap is a Java-interop leak (I5, I8, I9 at the SDK and Discord-library boundary)
+  that must be fenced by convention and tests rather than by the compiler. Scala.js was a
+  net correctness loss: the two things you would import arrive as unchecked facades.
+- **Rust** enforces I1–I6, I8 and I9 at compile time and is the *most* idiomatic home for
+  I3 and I4 (typestate). Its one structural gap is I7: an `async fn` can do anything and
+  the compiler will not object. Accepted, and fenced by the dependency graph instead:
+  `crates/core` has no reqwest, sqlx or tokio-net, so I/O there is a build failure by
+  *dependency* rather than by *type*. The other accepted cost is owning the model-API
+  clients (no official Rust SDK); see D3.
+
+F# was ecosystem-safe but bought little beyond Kotlin with discriminated unions;
+TypeScript, Kotlin and Go were below the bar for "compiler over test suite"; OCaml, Gleam,
+Elixir, Swift and the research languages lacked a viable Discord library or
+exhaustiveness.
+
+## D3. Own the wire types; derive the schema from the decode type
+
+*Decided 2026-08-29.*
+
+- **Hand-written HTTP clients** (reqwest + serde) for Anthropic, OpenAI-compatible servers,
+  Voyage and Scryfall, treated as project code and pinned by golden fixtures. The
+  community Anthropic crates were either framework-sized or unmaintained; the wire surface
+  is one endpoint per provider. Non-streaming throughout: every request keeps `max_tokens`
+  ≤ 16k, inside the non-streaming guidance, and streaming would buy nothing the judge
+  needs.
+- **schemars from the serde struct** (I5), with one transform per backend that reduces the
+  schema to what that backend accepts (`additionalProperties:false`, `oneOf→anyOf`,
+  stripped constraints; strict-mode `required`/`anyOf [T, null]` for OpenAI). Stripped
+  constraints are still enforced on decode by serde and `nutype`, so the server's
+  enforcement is an optimisation, not a guarantee.
+- **sqlx with compile-time checked queries** and a committed `.sqlx` offline cache (I6),
+  over Diesel or a query builder; `cargo sqlx prepare --check` in CI keeps the cache honest.
+- **serenity + poise** for Discord (slash commands, buttons, threads all verified before
+  the choice), **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite** for the page:
+  conventional, maintained choices where nothing in the invariants pushed one way.
+- **Workspace lints** deny `unwrap`, `expect`, indexing and `panic!` in every crate, and
+  warn on the pedantic group and missing docs, so I8 is a lint failure, not a review
+  comment.
+
+## D4. Entity-first hybrid retrieval, with the CR chunked at two granularities
+
+*Decided 2026-08-29.*
+
+Rules questions have the shape "card A + card B + rule concept C", so:
+
+- **Card names are entities**: extracted by a cheap structured-output call and resolved by
+  SQL through a typed ladder (alias → possessive-stripped alias → `[[bracket]]` → exact →
+  printed name → short name before the comma → alias suffix → trigram fuzzy). Never by
+  embeddings: a nickname like "bob" has no semantic relation to *Dark Confidant*.
+- **The resolver never guesses.** Genuine ambiguity is `Resolution::Ambiguous` and becomes
+  a "did you mean?" button row (I1). A wrong card silently resolved would produce a
+  confidently wrong ruling with valid-looking citations, which is the worst failure the
+  bot can have.
+- **Three retrieval legs, unioned in priority order**: the curated category → CR-section
+  map (structured, always on), full-text search (keywords like "leaves the battlefield")
+  and pgvector similarity (meaning). Each fails differently; the synthesis budget renders a
+  prefix of the union, so the order is what the model reads. Rulings for every face,
+  glossary entries, hand-curated "nightmare card" notes and rated prior calls are added
+  directly once cards resolve.
+- **CR rows at two granularities**: the rule (`702.19`, body including every lettered
+  sub-rule and example; these carry embeddings and feed retrieval) and the leaf
+  (`702.19b`, `parent_id` set; the citation target). Scoring and `lookup_rules` treat
+  leaf and parent as covering each other.
+- **The category taxonomy is data.** `data/categories.yaml` generates the `Category` enum
+  in `core/build.rs`, so a taxonomy edit is a recompile and every `match` stays exhaustive.
+  The extractor's schema makes the primary category required.
+
+## D5. Citations are validated client-side, and the answer's lifecycle is a type
+
+*Decided 2026-08-29.*
+
+- Every `Citation` carries a verbatim `quote`, checked as a substring of its source in the
+  retrieved `Context`. What is stored is the *source's* span, not the model's string, so a
+  persisted quote is byte-exact and the retirement pass (D11) stays a strict check. The
+  comparison folds typographic punctuation one character to one character (curly quotes,
+  the dash block, non-breaking spaces) because models retype the CR's `’` as `'` and that
+  was the most common rejection; it never folds case or words.
+- Only `Verdict<Validated>` can reach `CallStore::persist` or Discord rendering (I3); only
+  `Verdict<Unvalidated>` is `Deserialize`. `Synth<Fresh | ToolRequested | Final>` makes a
+  second tool round a compile error (I4).
+- **One retry**, with the rejection rendered into the prompt and the rejected answer quoted
+  back as a blockquote, then an error the user sees. Retries live in `judge()`, not in the
+  Discord layer, so every front door gets the same behaviour.
+- The bot **declines tournament policy** (MTR/IPG) after the cheap classification call
+  rather than answering it badly; that material is not ingested.
+
+## D6. Providers are configuration: a TOML file, with env-only as the zero-config default
+
+*Decided 2026-09-02.*
+
+An operator should be able to run the judge on any model they can reach. The alternative,
+a dozen `JUDGE_*_MODEL` / `_PROVIDER` / `_BASE_URL` variables, fits Docker's `env_file`
+better but cannot express per-provider dialect knobs or pricing without becoming a naming
+scheme of its own. So: `judge.toml` (typed structs, `deny_unknown_fields`, `nutype`
+validators, secrets named by environment variable and never written in the file), and
+with no file the binaries build the original setup from `.env` (Anthropic direct,
+`claude-opus-5` for both stages, Voyage if keyed), so upgrading never changes an existing
+deployment, the eval numbers or the pinned prompt digest. A knob that would be silently
+ignored is a load error naming both keys. `docs/PROVIDERS.md` is the reference.
+
+## D7. Every model call is behind the spend cap by type
+
+*Decided 2026-09-02.*
+
+The operator is cost-sensitive and the model calls are the only thing that costs money per
+question. The pipeline's `ChatModel` port is *sealed*: `Metered<B>` is its only
+implementation, and `Models`' fields are private, so there is no way to construct an
+uncapped model or to meter one against a foreign budget. The cap **reserves the worst
+case before sending** and settles on reported usage, which is why caps under about $0.45
+refuse synthesis outright rather than overshooting. Pricing is a closed sum: the built-in
+table for Anthropic models (re-read for the model the *response* names, since a fallback
+may route elsewhere), an operator's per-token rate, or `free`. An unknown Anthropic model
+prices as the most expensive one (erring high is safe); an unpriced model on an
+OpenAI-compatible provider is a startup error, because it could be anything. Dollars stay
+per process rather than per user or per server, because the meter settles after the call
+and a finer-grained dollar cap would either over-reserve or overshoot; question-count
+limits are the tool for finer grain (the MCP transport and the web page have them).
+
+## D8. Native cloud auth for Anthropic, behind Cargo features
+
+*Decided 2026-09-02.*
+
+Bedrock and Vertex were already reachable through LiteLLM or their OpenAI-compatible
+endpoints with no new dependencies. Native SigV4 and ADC support was added anyway, for the
+operator who wants Claude on their own cloud account *without* running a proxy, at the cost
+of two auth crates behind `aws`/`gcp` features (default on, named in the Dockerfile, so a
+lean build cannot even name the doors and the loader says "not built"). Credentials come
+from the platforms' own chains, never from `judge.toml`; they are resolved lazily and
+probed once at startup, so an empty chain fails there, not on the first question. Each
+door's feature mask (what it cannot accept: server-side fallbacks, strict tools, betas)
+was verified against the live docs and is an exhaustive `match`, not a flag.
+
+## D9. The database records which vector space it holds; switching is one explicit command
+
+*Decided 2026-09-02.*
+
+Vectors from two embedding models cannot share a column, and pgvector's HNSW index has a
+fixed width. The alternative to `ingest reembed --yes` was to refuse and tell the operator
+to `ALTER` and re-run `embed` by hand; the command is safer. Every embedder carries its
+`Space` (kind, model, width); a one-row `embedding_space` table names the stored space;
+`ingest embed` writes it with the first vector it writes and refuses to write into another;
+the adapters re-read the row on every use and go **dark, never mixed** on a mismatch
+(error log naming both spaces). Writers hold the space under the shared side of an
+advisory lock and the switch takes the exclusive side, so a switch waits for in-flight
+writes. `reembed` probes the new embedder before clearing anything, because re-embedding
+pays the provider per row, which is also why `scripts/backup-db.sh` exists.
+
+## D10. Ratings shape retrieval and nothing else
+
+*Decided 2026-08-29.*
+
+Answers can be rated 1–3 on Discord. A rating changes exactly one thing: which prior calls
+are shown to the model as *examples* for a similar question. Scores are a Bayesian mean
+(prior 2.0, weight 3) so one early vote cannot swing a call's standing; calls below 1.5
+with at least five votes are excluded; a member holding the operator's judge role
+overrides the crowd (`effective_score`). Prior calls are always rendered *after* the CR
+material and labelled as precedent, never authority: the CR outranks anything the
+community has said. The anonymous web page never rates, because a rating with no identity
+behind it is noise. `/forget` deletes a user's ratings because they are the only per-user
+data kept; questions are stored against the channel, not the asker.
+
+## D11. A stored answer is retired when its citations stop holding, not when the CR changes
+
+*Decided 2026-09-01.*
+
+The alternative, retiring every call on a new CR release, would discard almost everything
+for nothing: most rules do not change. Instead the retirement pass re-runs
+`citation_supported` over every stored call against today's rules, rulings and Oracle
+text and sets `retired_at` both ways, so restored text brings a call back. Each call also
+carries an Oracle-text fingerprint per context card, so an erratum retires calls *about*
+the card even when they cited only the CR. Rulings are keyed by content, so a re-indexed
+ruling is the same ruling. A **renumbered rule keeps its calls**: inside the CR load
+transaction, old and new rules are matched by body with every rule id masked, only where
+the masked body is unique on both sides, and only where rewriting the old rule with the
+whole map reproduces the new one exactly (a fixpoint, so a redirected cross-reference is
+not mistaken for a renumbering). Anything ambiguous is left to the retirement pass: the
+loader never guesses, for the same reason the resolver does not (D4).
+
+## D12. One Postgres for everything
+
+*Decided 2026-08-29.*
+
+Relational storage, full-text search (`tsvector`), trigram fuzzy matching (`pg_trgm`),
+vector search (pgvector, HNSW) and advisory locks, all joinable in one query and covered
+by one transaction and one backup. A separate vector database at a few thousand rows would
+add an operational component and a consistency problem for nothing; a separate rate-limit
+or session store would turn single-process in-memory values into distributed state. The
+spend cap, the concurrency semaphore and the rate limiter are deliberately per process
+(see D16).
+
+## D13. Eval first
+
+*Decided 2026-08-29.*
+
+The build order was chosen so retrieval was measured before any synthesis existed: a gold
+set of adversarially verified questions with expected rule ids (`eval/gold.yaml`, 21
+today, with per-question *equivalence lists* so the metric tracks correctness rather than
+one author's citation taste), then ingest, then extraction and resolution on the gold
+set's card mentions, then retrieval behind a gate of at least 90 % of gold rule ids
+present in the context, then synthesis scored against the gold answers, then Discord, and
+last the prior-call leg, which needs rated data to exist. `judge-eval recall` still runs
+the gate for free on every retrieval change; the paid full run costs about $2.50 and is
+not part of CI. Nothing in the test suite calls a paid API: HTTP backends are tested
+against wiremock.
+
+## D14. Outside agents drive the same pipeline, with the same validation
+
+*Decided 2026-09-02.*
+
+A Claude Code session, or any MCP client, can be the model: `judge_bot::session` hands it
+the extraction prompt, then the synthesis prompt rendered from the same `Context`, and
+admits its verdict only through `Verdict::validate`, with the same one tool round, one
+retry and the same rejection notice. The alternative, exposing the lookups alone and
+letting the agent answer freely, would have produced answers with no validated citations,
+which is the one thing the project exists to prevent. Agent thread ids carry their own
+prefix so a session can never read or write a Discord thread's history; inputs are
+bounded; persisting is idempotent in the database; and a session-persisted call is thread
+history only, because nothing can rate it. The operations are one list (`crates/agent/src/ops.rs`);
+the CLI and the MCP server only transport. This is also the cheapest way to reproduce a
+reported bad answer: no API spend, same code paths.
+
+## D15. A single host behind a Cloudflare Tunnel, with a CI-built image
+
+*Decided 2026-08-31.*
+
+The reference deployment is a machine at home: no public IP, no forwarded port, no cloud
+compute bill. The tunnel keeps two properties a serverless split would lose: the Discord
+gateway stays one long-lived connection (no HTTP-interactions rewrite), and the spend cap,
+semaphore and rate limiter stay single-process values. CI publishes the image and the
+host pulls it, because a release build wants about 4 GB of RAM and real CPU, which a NAS
+does not have. Data refresh is a nightly cron job running a one-shot container, not a
+service. **Rate limiting buckets on an address the caller cannot choose**: `API_CLIENT_IP`
+is `peer` or `cloudflare` (`CF-Connecting-IP`), never `X-Forwarded-For`, because Cloudflare
+*appends* to a caller-supplied header instead of replacing it, which would hand every
+request a fresh allowance against a paid endpoint. The earlier flag that did that is
+rejected at startup rather than ignored. Deploy credentials live in their own env file that
+the internet-facing processes never read.
+
+## D16. One judgebot per community; no multi-tenancy
+
+*Decided 2026-09-15.*
+
+The maintainer's instance is private to their own servers, and the project is offered to
+others as something to **run yourself**, not as a bot to invite. A per-server tenancy
+layer (admission lists, per-guild quotas and judge roles, an admin command) was sketched
+and rejected:
+
+- Everything tenancy would have to partition is *already per process*: the spend cap, the
+  concurrency limit, the judge role name and the Discord token. When the process is
+  yours, that is the behaviour you want, and it needs no new table.
+- The knowledge is global. The Comprehensive Rules, rulings, card text and the rated prior
+  calls apply to every server alike, so nothing in retrieval or persistence needs a tenant
+  boundary; tenancy would have lived entirely in the Discord adapter and bought the
+  maintainer an admission and billing problem.
+- The model calls cost real money per question. A shared instance means one operator
+  paying for strangers' questions, or a billing system; both are out of scope for a
+  hobby project. Running your own puts the bill with the person who chose the model.
+- The licence (AGPL-3.0-or-later) and the design already make self-hosting the first-class
+  path: one compose file, a CI-built image, a zero-config model setup, data loads that
+  cost cents.
+
+What follows for the code and the docs: the setup experience is organised around creating
+your own Discord application and instance (the README's "Running it" and the site's
+"Make your own judgebot" section), `GUILD_ID` keeps its meaning as a registration shortcut
+rather than an allowlist, and the web page at the maintainer's domain is a demonstration
+of the pipeline, not a service. One bot in several servers you administer works today;
+what is shared between them is the spend cap and the judge role name, by design.
+
+## D17. Non-goals
+
+Tournament policy (MTR/IPG). Accounts or ratings on the web page. Streaming responses.
+A plugin system for providers (they are workspace crates chosen by configuration).
+Retraining or fine-tuning of any kind. Automatic detection of "nightmare" cards (the
+notes are curated by hand). Multi-server tenancy (D16).

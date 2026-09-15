@@ -8,8 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   invariants live in types: exhaustive enums, nutype newtypes with validators,
   `NonEmpty`, and typestate (`Verdict<Unvalidated|Validated>`, `Synth<Fresh|ToolRequested|Final>`).
   When adding an invariant, prefer making the bad state unrepresentable; a runtime check
-  or test is the fallback, not the default. `docs/LANGUAGE_EVALUATION.md` §1 lists the
-  nine invariants (I1–I9) the design is built around.
+  or test is the fallback, not the default. `docs/DECISIONS.md` D1 lists the nine
+  invariants (I1–I9) the design is built around; the rest of that file records every
+  load-bearing decision and the alternative it rejected.
 - **`crates/core` has no I/O dependencies.** That dependency-graph fence stands in for
   effect tracking (the one thing Rust doesn't give us). Never add reqwest/sqlx/tokio-net
   to core.
@@ -34,10 +35,16 @@ The documentation site is `site/` (Astro + Starlight): `site/scripts/sync-docs.m
 each canonical file — or a range of its numbered `## N.` sections, or a README section
 between two headings — into `site/src/content/docs/` with Starlight frontmatter (the copies
 are gitignored build output; the manifest at the top of the script is the one list). Pages
-with no canonical file (hosted instance, Discord app setup, configuration reference,
-Discord commands, agents, command reference, data files, attribution, schema) are authored
-directly under `site/src/content/docs/`. `npm --prefix site run build` runs the sync first;
+with no canonical file (the maintainer's instance, Discord app setup, configuration
+reference, Discord commands, agents, command reference, data files, attribution, schema)
+are authored directly under `site/src/content/docs/`; the sync script deletes copies whose
+manifest entry is gone. `npm --prefix site run build` runs the sync first;
 `publish-docs.yml` deploys `site/dist` to GitHub Pages on pushes touching the sources.
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D17),
+`PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`; retired
+proposals live in git history only. **One judgebot per community** (D16): the maintainer's
+bot is private to their servers and the docs teach an operator to create their own Discord
+application; there is no tenancy layer and none is planned.
 Internal links are relative (`../../using/discord/`) so `SITE_BASE` can change. When a
 fact changes in code, fix it in the canonical doc *and* in any authored page that repeats
 it; `CONTRIBUTING.md`, `SECURITY.md` and `CHANGELOG.md` are synced too.
@@ -85,7 +92,8 @@ to anything provider-shaped: wire format, schema dialect, pricing, auth.
 ## Commands
 
 Everything needs env from `.env` (`set -a; source .env; set +a`). Postgres runs in
-Docker on **localhost:5433** (a native Postgres owns 5432 — never touch it).
+Docker on **localhost:5432** (`DB_PORT` in `.env` moves the published port; the
+containers always reach it at `db:5432`).
 
 ```sh
 docker compose up -d                 # db (pgvector/pg16) + bot + api; all restart with Docker
@@ -168,7 +176,7 @@ synthesis (high-effort, one `lookup_rules` tool round max — enforced by typest
 citation validation and one retry) → persist + Discord rating buttons.
 
 Crate graph: `core` (domain ADTs, ports, `judge()`, citation validation — pure) ←
-`llm` (the provider seam, `docs/proposals/providers.md`: neutral `ChatRequest`/`ChatResponse`,
+`llm` (the provider seam, `docs/PROVIDERS.md`: neutral `ChatRequest`/`ChatResponse`,
 the open `Backend` trait providers implement and the sealed `ChatModel` port the pipeline
 calls — only `Metered<B>` implements it, so every send is behind the spend cap by type;
 `SpendMeter` + `Price::{Free, Table, PerToken}` (a table price is re-read for the model the
@@ -336,7 +344,7 @@ Key cross-file facts that aren't obvious from any one file:
 
 ## Environment
 
-`.env` (gitignored; template in `.env.example`): `DATABASE_URL` (port 5433),
+`.env` (gitignored; template in `.env.example`): `DATABASE_URL` (port 5432, or `DB_PORT`),
 `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY` (blank = vector leg off, bot still works; a `judge.toml`
 `[models.embed]` overrides it, including OpenAI-compatible embeddings),
 `JUDGE_CONFIG` (optional path to a `judge.toml`; see above — a *host* path: `cargo run`

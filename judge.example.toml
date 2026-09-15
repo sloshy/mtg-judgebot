@@ -10,7 +10,7 @@
 # and the spend cap do not change with this file; only who is on the other end
 # of the HTTP connection.
 #
-# Rules the loader enforces (docs/proposals/providers.md §5):
+# Rules the loader enforces (docs/PROVIDERS.md §5):
 #   - Secrets are named by environment variable (api_key_env), never written
 #     here. For every provider a stage names, the variable must be set and
 #     non-blank when the file loads — in every binary that loads it, `ingest

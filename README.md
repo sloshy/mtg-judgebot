@@ -40,9 +40,12 @@ You'll lose 2 life, not 0. Tarmogoyf's mana value is 0 anywhere its {X}… [702.
 
 ## Try it
 
-The public instance is <https://mtgjudge.rpeters.dev> (no login; rate limited per IP).
-The documentation site is <https://sloshy.github.io/mtg-judgebot/>: how to use the bot,
-run your own, and how it works inside.
+The maintainer's web page is <https://mtgjudge.rpeters.dev> (no login; rate limited per
+IP): the same pipeline the bot runs, minus rating buttons. The Discord bot itself is
+private to the maintainer's servers. To have one in yours, run your own: it is one
+compose file, a Discord application you create in a few minutes, and a model API key.
+The documentation site, <https://sloshy.github.io/mtg-judgebot/>, walks through it and
+explains how the judge works inside.
 
 ## Running it
 
@@ -55,7 +58,7 @@ you want the bot in a server.
 ```sh
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
 cp .env.example .env               # add ANTHROPIC_API_KEY (and VOYAGE_API_KEY if you have one)
-docker compose up -d db            # pgvector Postgres on localhost:5433
+docker compose up -d db            # pgvector Postgres on localhost:5432
 cargo run --release -p judge-ingest -- migrate              # create the schema (bot and api also do this at startup)
 
 # Load the data (once; the nightly refresh keeps it current afterwards)
@@ -69,27 +72,37 @@ cargo run --release -p judge-ingest -- embed                # optional: every ru
 docker compose up -d api           # first run builds the image (minutes, ~4 GB RAM), then serves the web page
 ```
 
-Open <http://localhost:8787> and ask a question. Postgres publishes on **5433** so it never
-collides with a Postgres already on the host. A typical answer costs $0.08–0.25 in model
-calls; every call is metered and hard-capped per process (`JUDGE_MAX_USD`, default $5).
+Open <http://localhost:8787> and ask a question. (If port 5432 is taken on your machine,
+set `DB_PORT` in `.env` and change `DATABASE_URL` to match.) A typical answer costs
+$0.08–0.25 in model calls; every call is metered and hard-capped per process
+(`JUDGE_MAX_USD`, default $5).
 
-To put it in a Discord server, create an application in the [Discord Developer
-Portal](https://discord.com/developers/applications), add a bot to it, and copy the bot
-token into `.env` as `DISCORD_TOKEN`. The bot needs **no privileged intents**: it only
-receives its own slash commands and button presses. Invite it with the `bot` and
-`applications.commands` scopes (the URL generator under *OAuth2*; no channel permissions
-are required, replies go through the interaction). For instant command registration
-during setup, put your server's id in `GUILD_ID` (Discord: *User Settings → Advanced →
-Developer Mode*, then right-click the server → *Copy Server ID*); without it, `/judge`
-registers globally and can take up to an hour to appear. Then:
+### Your own Discord bot
 
-```sh
-docker compose up -d bot           # /judge, /help and /forget appear in the server
-```
+Every judgebot is its own Discord application, owned by whoever runs it. Create one in
+the [Discord Developer Portal](https://discord.com/developers/applications) (Discord's
+[Building your first Discord Bot](https://docs.discord.com/developers/quick-start/getting-started)
+covers the portal itself), then:
+
+1. Under **Bot**, reset the token and copy it into `.env` as `DISCORD_TOKEN`. Leave every
+   *Privileged Gateway Intent* off: the bot only ever receives its own slash commands and
+   button presses, never messages.
+2. Under **OAuth2 → URL Generator**, tick the scopes `bot` and `applications.commands`,
+   leave the permissions at none (replies go through the interaction), and open the
+   generated URL to add the bot to your server. You need *Manage Server* there.
+3. For instant command registration, put your server's id in `.env` as `GUILD_ID`
+   (*User Settings → Advanced → Developer Mode*, then right-click the server → *Copy
+   Server ID*). Without it the commands register globally, which can take up to an hour
+   to appear but works in every server the bot joins.
+4. `docker compose up -d bot`. The log line `registered /judge, /help and /forget`
+   confirms it; `/help` in the server confirms it end to end.
 
 Members holding a role named `JUDGE_ROLE` (default `Judge`) rate as judges: their rating
-overrides the crowd's. The documentation site walks through the Discord setup step by
-step; `docker compose up -d --build bot api` redeploys after code changes.
+overrides the crowd's. `cargo run --release -p judge-ingest -- emoji` uploads the mana
+symbols as application emoji once, so answers show pictures instead of `{W}`. The
+documentation site's [Make your own judgebot](https://sloshy.github.io/mtg-judgebot/self-hosting/first-run/)
+section has the long form with links into Discord's documentation;
+`docker compose up -d --build bot api` redeploys after code changes.
 
 ### Choosing a model
 
@@ -184,7 +197,7 @@ npm --prefix web run dev             # Vite dev server with /api proxied to :878
 
 ### Hosting
 
-The public instance, <https://mtgjudge.rpeters.dev>, runs on a machine at home behind a [Cloudflare
+The maintainer's instance, <https://mtgjudge.rpeters.dev>, runs on a machine at home behind a [Cloudflare
 Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/):
 no public IP, no forwarded port, no cloud compute bill. `docs/DEPLOYMENT.md` is the
 runbook — tunnel setup, edge rate limiting in front of the anonymous API, and the
@@ -208,8 +221,8 @@ same fact — so the metric tracks correctness rather than one author's citation
 
 ## Design
 
-Rust was chosen for compiler-enforced correctness (the comparison lives in
-`docs/LANGUAGE_EVALUATION.md`): closed enums for every domain sum, refined newtypes for
+Rust was chosen for compiler-enforced correctness (`docs/DECISIONS.md` records that
+decision and every other load-bearing one, with the alternatives rejected): closed enums for every domain sum, refined newtypes for
 ids, `Verdict<Unvalidated> → validate() → Verdict<Validated>` so an unchecked answer
 *cannot* be persisted or shown, a typestate on the synthesis loop so the tool round
 cannot repeat, compile-time-checked SQL (sqlx + committed offline data), and an LLM
@@ -232,11 +245,12 @@ web/         SolidJS + TypeScript single page (Vite)
 site/        the documentation site (Astro + Starlight); docs/ is its source
 data/        categories.yaml (generates the Category enum), aliases.yaml, notes.yaml
 eval/        gold.yaml + stored runs
-docs/        EXPLAINER.md (the tour), ARCHITECTURE.md (the reference), DEPLOYMENT.md (the runbook),
-             LANGUAGE_EVALUATION.md and proposals/ (design history)
+docs/        EXPLAINER.md (the tour), ARCHITECTURE.md (the reference), DECISIONS.md (why),
+             PROVIDERS.md (the model-provider reference), DEPLOYMENT.md (the runbook)
 ```
 
-Not yet built: multi-server tenancy (`docs/proposals/tenancy.md` is the proposal) and
+Each community runs its own judgebot: one process is one spend cap, one judge role and one
+Discord application, by design rather than omission (`docs/DECISIONS.md` D16). Not built:
 tournament-policy (MTR/IPG) coverage — the bot declines those questions rather than winging them.
 
 ## License and attribution

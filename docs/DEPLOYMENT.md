@@ -18,7 +18,7 @@ than becoming distributed state. See `docs/ARCHITECTURE.md` for the pipeline its
 
 Hostnames, paths and the image name below are placeholders (`judge.example.com`,
 `/path/to/mtg-judgebot`, `ghcr.io/<owner>/<repo>`); substitute your own. The
-upstream project's public instance, linked from the README, runs exactly this way.
+maintainer's own instance, whose web page the README links, runs exactly this way.
 
 ## 1. Prerequisites
 
@@ -141,9 +141,9 @@ tunnel to the loopback-bound Postgres writes the same ledger with the same check
 but takes neither the refresh-job lock nor the ahead check; prefer the container form
 on a live host.)
 
-Use a full `docker compose up -d` at least once on an existing host: `db`'s published
-port changed to loopback, and `up -d --build bot api` deliberately leaves `db` alone,
-so the old `0.0.0.0:5433` binding would otherwise persist indefinitely.
+Use a full `docker compose up -d` whenever the compose file's `db` service changes:
+`up -d --build bot api` deliberately leaves `db` alone, so a changed port binding or
+healthcheck would otherwise persist indefinitely.
 
 ### Optional: another model (`judge.toml`)
 

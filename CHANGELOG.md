@@ -16,8 +16,10 @@ unless `JUDGE_AUTO_MIGRATE=false`).
   with it).
 - The web page carries a favicon, a description and Open Graph tags, and its footer
   names the Fan Content Policy, Scryfall and the source repository.
-- `docs/proposals/tenancy.md`: a proposal for per-server admission, quotas and judge
-  roles, not implemented.
+- `docs/DECISIONS.md`: every load-bearing design decision (D1–D17) with the alternative
+  it rejected, in place of the retired language and tenancy proposals; the provider
+  proposal became the reference `docs/PROVIDERS.md`, describing what was built.
+- `DB_PORT` in `.env` moves the port compose publishes Postgres on (default 5432).
 - `NOTICE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue and pull
   request templates, and this changelog, for the public release.
 - A CI workflow (`ci.yml`) running rustfmt, clippy, the offline sqlx build, a `.sqlx`
@@ -32,6 +34,11 @@ unless `JUDGE_AUTO_MIGRATE=false`).
   `Debug` rendering of either configuration prints `<redacted>`.
 - The extractor's "no category" warning no longer includes the question text.
 - The whole workspace is formatted with rustfmt.
+- Compose publishes Postgres on loopback **5432**; `.env.example` and CI use the same
+  port. An existing `.env` pointing at 5433 keeps working with `DB_PORT=5433`.
+- The documentation is organised around running your own judgebot: the Discord setup
+  page links into Discord's own documentation for each step, and the maintainer's
+  instance is described as private to their servers rather than as a bot to invite.
 - `docs/DEPLOYMENT.md` uses placeholder hostnames and paths instead of the upstream
   operator's.
 

@@ -38,14 +38,14 @@ jobs:
           POSTGRES_USER: judgebot
           POSTGRES_PASSWORD: judgebot
           POSTGRES_DB: judgebot
-        ports: ["5433:5432"]
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U judgebot"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
     env:
-      DATABASE_URL: postgres://judgebot:judgebot@localhost:5433/judgebot
+      DATABASE_URL: postgres://judgebot:judgebot@localhost:5432/judgebot
     steps:
       - uses: actions/checkout@v7
 

@@ -17,9 +17,11 @@ services:
       POSTGRES_USER: judgebot
       POSTGRES_PASSWORD: judgebot
       POSTGRES_DB: judgebot
-    # Loopback-only: nothing on the LAN reaches Postgres directly.
+    # Loopback-only: nothing on the LAN reaches Postgres directly. DB_PORT in
+    # .env moves the published port (and DATABASE_URL with it) when something
+    # else on the host already has 5432.
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - judgebot-pgdata:/var/lib/postgresql/data
     healthcheck:

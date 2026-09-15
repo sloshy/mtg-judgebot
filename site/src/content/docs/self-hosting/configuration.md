@@ -15,7 +15,8 @@ variables for its secrets and never holds one.
 
 | Variable | Default | Read by | Meaning |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | (required) | all | Postgres connection string. Compose overrides it to `db:5432` inside the network; the example points at `localhost:5433`. |
+| `DATABASE_URL` | (required) | all | Postgres connection string. Compose overrides it to `db:5432` inside the network; the example points at `localhost:5432`. |
+| `DB_PORT` | `5432` | compose only | The loopback port compose publishes Postgres on. Change it together with the port in `DATABASE_URL` when 5432 is taken. |
 | `ANTHROPIC_API_KEY` | | bot, api, eval, agent, ingest | The zero-config model setup: Anthropic direct, `claude-opus-5` for both stages. Unused when a `judge.toml` names other providers. |
 | `ANTHROPIC_BASE_URL` | Anthropic's | same | Zero-config only; a gateway speaking `/v1/messages`. |
 | `VOYAGE_API_KEY` | | bot, api, ingest, eval, agent | Zero-config embeddings (`voyage-3.5`, 1024). Blank turns the vector leg off. |

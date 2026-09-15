@@ -16,7 +16,7 @@ it and the bot runs on the other two.
 ```sh
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
 cp .env.example .env                                   # set ANTHROPIC_API_KEY (and VOYAGE_API_KEY if you have one)
-docker compose up -d db                                # pgvector Postgres on localhost:5433
+docker compose up -d db                                # pgvector Postgres on localhost:5432
 cargo run --release -p judge-ingest -- migrate         # create the schema
 cargo run --release -p judge-ingest -- cards           # Scryfall bulk data (~110 MB, cached in .cache/)
 cargo run --release -p judge-ingest -- rules latest    # the current Comprehensive Rules
@@ -25,7 +25,9 @@ cargo run --release -p judge-ingest -- notes data/notes.yaml
 cargo run --release -p judge-ingest -- embed           # optional; a few cents on Voyage
 ```
 
-The card sync takes a few minutes the first time; the rules parse is seconds.
+The card sync takes a few minutes the first time; the rules parse is seconds. If port
+5432 is already taken on your machine, set `DB_PORT` in `.env` and change the port in
+`DATABASE_URL` to match before starting the database.
 
 ## The web page
 

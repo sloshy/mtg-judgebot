@@ -1,5 +1,5 @@
 //! `judge.toml` — which models the judge runs on, and through which
-//! providers (`docs/proposals/providers.md` §5). The pipeline, the prompts
+//! providers (`docs/PROVIDERS.md` §5). The pipeline, the prompts
 //! and the validation do not change with it; only who is on the other end
 //! of the HTTP connection.
 //!

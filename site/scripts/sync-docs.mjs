@@ -7,13 +7,15 @@
 // sections, and may strip the first H1 (Starlight renders `title`). Nothing
 // else is rewritten: the docs refer to files in backticks, not links.
 
-import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..", "..");
 const out = resolve(here, "..", "src", "content", "docs");
+// Copies point their edit link at the canonical file, not at themselves.
+const editBase = "https://github.com/sloshy/mtg-judgebot/edit/main/";
 
 /** @type {Array<{src: string, dest: string, title: string, description?: string, order: number, sections?: [number, number], badge?: string, lead?: string}>} */
 const manifest = [
@@ -48,13 +50,18 @@ const manifest = [
     description: "The design reference: pipeline stages, data, domain model.",
   },
   {
-    src: "docs/proposals/providers.md", dest: "how-it-works/providers.md",
-    title: "Providers and the model seam", order: 6,
-    description: "The judge.toml provider model: backends, endpoints, dialects, pricing and the embedding space. Sections 4 and 5 are the normative reference.",
+    src: "docs/DECISIONS.md", dest: "how-it-works/decisions.md",
+    title: "Design decisions", order: 6,
+    description: "Every load-bearing decision, why it was made, and the alternative it rejected.",
+  },
+  {
+    src: "docs/PROVIDERS.md", dest: "how-it-works/providers.md",
+    title: "Model providers", order: 7,
+    description: "The judge.toml provider model: the seam, the backends and their doors, dialect knobs, pricing and the embedding space.",
   },
   {
     src: "README.md", dest: "how-it-works/evaluation.md",
-    title: "Evaluation", order: 7, between: ["## Evaluation", "## Design"],
+    title: "Evaluation", order: 8, between: ["## Evaluation", "## Design"],
     description: "The gold set, the free retrieval gate, and the paid full run.",
   },
   // Self-hosting
@@ -80,28 +87,6 @@ const manifest = [
     title: "Development setup and gates", order: 1,
     description: "Environment, the CI gates, SQL and prompt change procedures, and the design rules.",
   },
-  // Design history
-  {
-    src: "docs/LANGUAGE_EVALUATION.md", dest: "design-history/language-evaluation.md",
-    title: "Why Rust", order: 1, badge: "Historical",
-    description: "The 2026-08-29 language comparison that chose Rust over Scala 3 and TypeScript.",
-  },
-  {
-    src: "docs/proposals/rust.md", dest: "design-history/proposal-rust.md",
-    title: "Proposal C: Rust (selected)", order: 2, badge: "Historical",
-  },
-  {
-    src: "docs/proposals/scala.md", dest: "design-history/proposal-scala.md",
-    title: "Proposal A: Scala 3", order: 3, badge: "Historical",
-  },
-  {
-    src: "docs/proposals/typescript.md", dest: "design-history/proposal-typescript.md",
-    title: "Proposal B: TypeScript", order: 4, badge: "Historical",
-  },
-  {
-    src: "docs/proposals/tenancy.md", dest: "design-history/proposal-tenancy.md",
-    title: "Proposal E: Multi-server tenancy", order: 5, badge: "Proposed",
-  },
   // Reference
   {
     src: "CHANGELOG.md", dest: "reference/changelog.md",
@@ -112,11 +97,6 @@ const manifest = [
     title: "Security", order: 4,
   },
 ];
-
-const historical =
-  "> **Design history.** This document records a decision as it was made and is kept " +
-  "for the reasoning, not maintained as a description of the current code. " +
-  "*Architecture* and the *Explainer* describe what exists today.\n\n";
 
 function sections(text, [from, to]) {
   const lines = text.split("\n");
@@ -153,8 +133,24 @@ function frontmatter(e) {
   const sidebar = [`  order: ${e.order}`];
   if (e.badge) sidebar.push(`  badge:`, `    text: ${JSON.stringify(e.badge)}`, `    variant: note`);
   fm.push("sidebar:", ...sidebar);
-  fm.push(`editUrl: ${JSON.stringify("https://github.com/sloshy/mtg-judgebot/edit/main/" + e.src)}`);
+  fm.push(`editUrl: ${JSON.stringify(editBase + e.src)}`);
   return `---\n${fm.join("\n")}\n---\n\n`;
+}
+
+// Copies whose manifest entry is gone would otherwise stay in the tree (and be
+// built) forever. A copy is recognisable by the frontmatter this script writes —
+// an `editUrl` pointing at a repository file — so sweep those, never an authored
+// page. (The .gitignore below is tracked, so it cannot serve as the list: a pull
+// rewrites it before this runs.)
+// JSON.stringify closes the quote; drop it so the marker is a prefix of every copy's editUrl.
+const marker = `editUrl: ${JSON.stringify(editBase).slice(0, -1)}`;
+const inManifest = new Set(manifest.map((e) => e.dest));
+for (const file of readdirSync(out, { recursive: true, withFileTypes: true })) {
+  if (!file.isFile() || !file.name.endsWith(".md")) continue;
+  const rel = join(file.parentPath ?? file.path, file.name).slice(out.length + 1);
+  if (inManifest.has(rel)) continue;
+  const head = readFileSync(join(out, rel), "utf8").slice(0, 2000);
+  if (head.includes(marker)) rmSync(join(out, rel), { force: true });
 }
 
 const written = [];
@@ -162,7 +158,6 @@ for (const e of manifest) {
   const raw = readFileSync(join(repo, e.src), "utf8");
   let body = e.sections ? sections(raw, e.sections) : e.between ? between(raw, e.between) : stripH1(raw);
   if (e.lead) body = `*${e.lead}*\n\n${body}`;
-  if (e.badge === "Historical") body = historical + body;
   const dest = join(out, e.dest);
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, frontmatter(e) + body.trimEnd() + "\n");

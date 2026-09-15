@@ -4,16 +4,12 @@
 /how-it-works/explainer-3-failure-feedback-money.md
 /how-it-works/explainer-4-providers-eval-technology.md
 /how-it-works/architecture.md
+/how-it-works/decisions.md
 /how-it-works/providers.md
 /how-it-works/evaluation.md
 /self-hosting/models.md
 /self-hosting/deployment.md
 /using/web.md
 /contributing/development.md
-/design-history/language-evaluation.md
-/design-history/proposal-rust.md
-/design-history/proposal-scala.md
-/design-history/proposal-typescript.md
-/design-history/proposal-tenancy.md
 /reference/changelog.md
 /reference/security.md

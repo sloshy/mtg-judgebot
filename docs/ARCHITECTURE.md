@@ -1,8 +1,8 @@
 # MTG Judge Bot — Architecture
 
 The design reference, kept current with the code. Written stack-independent before the
-language was chosen (Rust, 2026-08-29: `docs/LANGUAGE_EVALUATION.md`, proposals in
-`docs/proposals/`) and maintained since. `docs/EXPLAINER.md` is the narrative version for
+language was chosen (Rust, 2026-08-29) and maintained since. `docs/DECISIONS.md` records
+why each load-bearing choice was made; `docs/EXPLAINER.md` is the narrative version for
 someone new to the ideas; this file is the terse one.
 
 ## 1. Goal
@@ -117,7 +117,7 @@ Discord message (+ last N Q&A in the same thread)
 ```
 
 The two model calls ([1] and [5]) and the vector leg of [4] reach their providers through
-one seam (`docs/proposals/providers.md`). `crates/llm` holds the provider-neutral
+one seam (`docs/PROVIDERS.md`). `crates/llm` holds the provider-neutral
 request and response (`ChatRequest` with system blocks, turns, tools, an output schema
 and an effort; `ChatResponse` with text, tool calls, a stop reason and usage), the spend
 cap and the one-tool-round typestate; `crates/anthropic` and `crates/openai` are backends
@@ -232,7 +232,7 @@ Embeddings: **Voyage AI** by default (`voyage-3.5` or `voyage-4` family — `voy
 stored vectors belong to, `ingest embed` refuses to write into another, the adapters' vector legs go
 dark (error log, never mixed) on a mismatch — re-checked on every use, and held under a shared
 advisory lock by anything that writes a vector — and `ingest reembed --yes` switches the database in
-one transaction after probing the new embedder (`docs/proposals/providers.md` §4.3).
+one transaction after probing the new embedder (`docs/PROVIDERS.md` §4.3).
 
 Rating aggregation: Bayesian-smoothed mean (prior 2.0, weight 3). A rating with
 `is_judge = true` (operator-assigned role) dominates crowd votes. Used for
@@ -280,5 +280,6 @@ data to exist. `judge-eval recall` still runs that gate for free on every retrie
 Tournament policy (MTR/IPG): the bot declines those questions rather than winging them.
 Accounts or ratings on the web page: the anonymous page never rates. Retraining of any
 kind. Automatic detection of "nightmare" cards (the notes are curated by hand).
-Multi-server tenancy is not a non-goal but is not built; `docs/proposals/tenancy.md`
-is the proposal.
+Multi-server tenancy: the bot is meant to be run by each community for itself
+(`docs/DECISIONS.md` D16), so one process has one spend cap, one judge role and one
+token by design.

@@ -561,8 +561,8 @@ has to a regression suite for the parts that are probabilistic.
 
 ## 13. Technology choices and what they buy
 
-**Rust.** Chosen for what the compiler enforces (`docs/LANGUAGE_EVALUATION.md` lists nine
-invariants). Concretely, in this codebase:
+**Rust.** Chosen for what the compiler enforces (`docs/DECISIONS.md` D1 lists nine
+invariants, D2 the languages it was weighed against). Concretely, in this codebase:
 
 - Exhaustive enums: every consumer of `Resolution`, `Citation` and `JudgeError` handles
   every case, so "ambiguous" cannot be silently treated as "resolved".
@@ -643,8 +643,8 @@ to R2. `docs/DEPLOYMENT.md` is the runbook.
 - Vector-space bookkeeping: `crates/bot/src/db/space.rs`, `crates/embed/src/space.rs`.
 - The model contract: `crates/bot/src/prompts/synth_system.md`.
 - The spend cap: `crates/llm/src/spend.rs`.
-- Design history: `docs/ARCHITECTURE.md`, `docs/proposals/providers.md`,
-  `docs/LANGUAGE_EVALUATION.md`.
+- The reference and the reasoning: `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`,
+  `docs/PROVIDERS.md`.
 - Outside reading: the pgvector README (HNSW, distance operators), the Postgres full-text
   search chapter, Voyage AI's docs on `input_type`, and Anthropic's docs on structured
   outputs, tool use and prompt caching.

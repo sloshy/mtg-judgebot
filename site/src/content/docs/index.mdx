@@ -5,13 +5,13 @@ template: splash
 hero:
   tagline: Rules questions answered like a judge. Every claim cites the Comprehensive Rules, an official ruling or the card's Oracle text, and the citation is checked before you see it.
   actions:
-    - text: Ask the public instance
-      link: https://mtgjudge.rpeters.dev
-      icon: external
-      variant: primary
-    - text: Run your own
+    - text: Make your own judgebot
       link: ./self-hosting/first-run/
       icon: rocket
+      variant: primary
+    - text: Try the web page
+      link: https://mtgjudge.rpeters.dev
+      icon: external
     - text: How it works
       link: ./how-it-works/explainer-1-what-and-why/
       icon: open-book
@@ -38,3 +38,11 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     including a local Ollama: one `judge.toml`, no code.
   </Card>
 </CardGrid>
+
+## Yours to run
+
+The maintainer's bot is private to their servers; the [web page](./start-here/hosted-bot/)
+is a demonstration. A judgebot is meant to be run by the community that uses it, so that
+the spend cap, the judge role and the Discord application are yours. It is one compose
+file, a Discord application you create in a few minutes, and a model API key:
+[start here](./self-hosting/first-run/).

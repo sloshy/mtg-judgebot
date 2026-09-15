@@ -3,7 +3,7 @@
 //! [`Dialect`], and how a [`wire::ChatResponse`] reads as a
 //! [`ChatResponse`]. Pure: unit-tested against JSON shapes, no network.
 //!
-//! The mapping (`docs/proposals/providers.md` §4.2):
+//! The mapping (`docs/PROVIDERS.md` §4.2):
 //!
 //! | neutral | chat completions |
 //! |---|---|

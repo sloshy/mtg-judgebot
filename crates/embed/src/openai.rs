@@ -1,5 +1,5 @@
 //! `Embedder` over an OpenAI-compatible `POST {base_url}/embeddings`
-//! (`docs/proposals/providers.md` §4.3): `OpenAI` itself, `LiteLLM`, Ollama,
+//! (`docs/PROVIDERS.md` §4.3): `OpenAI` itself, `LiteLLM`, Ollama,
 //! vLLM, llama.cpp, Azure. The request is `input`, `model` and, unless the
 //! server is known to reject it, `dimensions`; the response's `data[].embedding`
 //! in `index` order. The API has no query/document distinction, so

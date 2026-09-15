@@ -1,5 +1,5 @@
 //! Golden test for the provider seam: the Anthropic request bodies and headers
-//! of the four call shapes (`docs/proposals/providers.md` §2) must be
+//! of the four call shapes (`docs/PROVIDERS.md` §2) must be
 //! byte-identical to what the pre-seam code sent.
 //!
 //! The fixtures under `tests/fixtures/anthropic/` were captured at commit

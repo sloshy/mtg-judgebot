@@ -12,15 +12,15 @@ so `rustup` installs it on first use) and Node 22 for the web page.
 
 ```sh
 cp .env.example .env            # DATABASE_URL already points at the compose database
-docker compose up -d db         # pgvector Postgres on localhost:5433
+docker compose up -d db         # pgvector Postgres on localhost:5432
 set -a; source .env; set +a     # optional: the binaries read .env themselves; this puts it in your shell too
 cargo build --workspace
 cargo test --workspace          # the #[sqlx::test] suites create throwaway databases off DATABASE_URL
 ```
 
-The database publishes on **5433**, not 5432, so it never collides with a Postgres
-already installed on the host. If you change it, change both `DATABASE_URL` in `.env`
-and the port mapping in `docker-compose.yml`.
+The database publishes on loopback port **5432**. If something on your machine already
+has it, set `DB_PORT` in `.env` and change the port in `DATABASE_URL` to match; the
+compose file reads the same variable.
 
 Nothing in the test suite calls a paid API. HTTP backends are tested against
 `wiremock`; develop against it too, and keep `ANTHROPIC_API_KEY` blank unless you are
@@ -76,7 +76,7 @@ float and is rejected). `cargo run -p judge-eval -- recall` is the free retrieva
 
 ## Design rules
 
-The full statement is `docs/LANGUAGE_EVALUATION.md` §1; these are the ones a change is
+The full statement is `docs/DECISIONS.md` D1; these are the ones a change is
 most likely to bump into.
 
 - **Make the bad state unrepresentable.** Invariants live in types: closed enums,
