@@ -92,16 +92,21 @@ impl ApiConfig {
     /// `API_RATE_WINDOW_SECS` or `API_CLIENT_IP`, a short `MCP_TOKEN`, or
     /// the presence of the removed `API_TRUST_FORWARDED`.
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
-        let var = |k: &str| get(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        let var = |k: &str| {
+            get(k)
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+        };
         let addr = var("API_ADDR")
             .unwrap_or_else(|| Self::DEFAULT_ADDR.to_owned())
             .parse::<SocketAddr>()
             .context("API_ADDR must be a socket address such as 0.0.0.0:8787")?;
-        let web_dist = PathBuf::from(var("WEB_DIST").unwrap_or_else(|| Self::DEFAULT_WEB_DIST.to_owned()));
+        let web_dist =
+            PathBuf::from(var("WEB_DIST").unwrap_or_else(|| Self::DEFAULT_WEB_DIST.to_owned()));
         let max_concurrent = parse_min(var("JUDGE_CONCURRENCY"), "JUDGE_CONCURRENCY", 1usize)?
             .unwrap_or(Self::DEFAULT_CONCURRENCY);
-        let rate_limit =
-            parse_min(var("API_RATE_LIMIT"), "API_RATE_LIMIT", 1u32)?.unwrap_or(Self::DEFAULT_RATE_LIMIT);
+        let rate_limit = parse_min(var("API_RATE_LIMIT"), "API_RATE_LIMIT", 1u32)?
+            .unwrap_or(Self::DEFAULT_RATE_LIMIT);
         let rate_window = parse_min(var("API_RATE_WINDOW_SECS"), "API_RATE_WINDOW_SECS", 1u64)?
             .map_or(Self::DEFAULT_RATE_WINDOW, Duration::from_secs);
         // Refuse to start rather than silently ignore the removed variable: a
@@ -133,12 +138,19 @@ impl ApiConfig {
                 "MCP_TOKEN must be printable ASCII without spaces (try `openssl rand -base64 32`)"
             );
         }
-        let mcp_judge_limit =
-            parse_min(var("MCP_JUDGE_LIMIT"), "MCP_JUDGE_LIMIT", 1u32)?.unwrap_or(Self::DEFAULT_MCP_JUDGE_LIMIT);
-        let mcp_judge_window = parse_min(var("MCP_JUDGE_WINDOW_SECS"), "MCP_JUDGE_WINDOW_SECS", 1u64)?
-            .map_or(Self::DEFAULT_MCP_JUDGE_WINDOW, Duration::from_secs);
+        let mcp_judge_limit = parse_min(var("MCP_JUDGE_LIMIT"), "MCP_JUDGE_LIMIT", 1u32)?
+            .unwrap_or(Self::DEFAULT_MCP_JUDGE_LIMIT);
+        let mcp_judge_window =
+            parse_min(var("MCP_JUDGE_WINDOW_SECS"), "MCP_JUDGE_WINDOW_SECS", 1u64)?
+                .map_or(Self::DEFAULT_MCP_JUDGE_WINDOW, Duration::from_secs);
         let mcp_hosts = var("MCP_ALLOWED_HOSTS")
-            .map(|v| v.split(',').map(str::trim).filter(|h| !h.is_empty()).map(str::to_owned).collect())
+            .map(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|h| !h.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default();
         Ok(Self {
             addr,
@@ -177,8 +189,10 @@ mod tests {
     use std::collections::HashMap;
 
     fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: HashMap<String, String> =
-            pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
         move |k| map.get(k).cloned()
     }
 
@@ -186,11 +200,26 @@ mod tests {
     fn empty_environment_gets_defaults() {
         let cfg = ApiConfig::from_vars(vars(&[])).ok();
         let cfg = cfg.as_ref();
-        assert_eq!(cfg.map(|c| c.addr.to_string()), Some(ApiConfig::DEFAULT_ADDR.to_owned()));
-        assert_eq!(cfg.map(|c| c.web_dist.clone()), Some(PathBuf::from("web/dist")));
-        assert_eq!(cfg.map(|c| c.max_concurrent), Some(ApiConfig::DEFAULT_CONCURRENCY));
-        assert_eq!(cfg.map(|c| c.rate_limit), Some(ApiConfig::DEFAULT_RATE_LIMIT));
-        assert_eq!(cfg.map(|c| c.rate_window), Some(ApiConfig::DEFAULT_RATE_WINDOW));
+        assert_eq!(
+            cfg.map(|c| c.addr.to_string()),
+            Some(ApiConfig::DEFAULT_ADDR.to_owned())
+        );
+        assert_eq!(
+            cfg.map(|c| c.web_dist.clone()),
+            Some(PathBuf::from("web/dist"))
+        );
+        assert_eq!(
+            cfg.map(|c| c.max_concurrent),
+            Some(ApiConfig::DEFAULT_CONCURRENCY)
+        );
+        assert_eq!(
+            cfg.map(|c| c.rate_limit),
+            Some(ApiConfig::DEFAULT_RATE_LIMIT)
+        );
+        assert_eq!(
+            cfg.map(|c| c.rate_window),
+            Some(ApiConfig::DEFAULT_RATE_WINDOW)
+        );
         assert_eq!(cfg.map(|c| c.client_ip), Some(ClientIpSource::PeerAddr));
         assert_eq!(cfg.map(|c| c.mcp_token.clone()), Some(None));
         assert_eq!(cfg.map(|c| c.mcp_hosts.clone()), Some(vec![]));
@@ -198,21 +227,45 @@ mod tests {
 
     #[test]
     fn the_mcp_token_must_be_long_and_header_safe_and_hosts_are_a_list() {
-        for bad in ["short", "0123456789abcdef0123456789 abcdef", "0123456789abcdef0123456789abcdé"] {
+        for bad in [
+            "short",
+            "0123456789abcdef0123456789 abcdef",
+            "0123456789abcdef0123456789abcdé",
+        ] {
             let r = ApiConfig::from_vars(vars(&[("MCP_TOKEN", bad)]));
-            assert!(r.as_ref().is_err_and(|e| format!("{e:#}").contains("MCP_TOKEN")), "{bad:?}: {r:?}");
+            assert!(
+                r.as_ref()
+                    .is_err_and(|e| format!("{e:#}").contains("MCP_TOKEN")),
+                "{bad:?}: {r:?}"
+            );
         }
         let cfg = ApiConfig::from_vars(vars(&[
             ("MCP_TOKEN", "0123456789abcdef0123456789abcdef"),
             ("MCP_ALLOWED_HOSTS", "judge.example.com, localhost,"),
         ]))
         .ok();
-        assert_eq!(cfg.as_ref().map(|c| c.mcp_token.as_deref()), Some(Some("0123456789abcdef0123456789abcdef")));
-        assert_eq!(cfg.as_ref().map(|c| c.mcp_hosts.clone()), Some(vec!["judge.example.com".to_owned(), "localhost".to_owned()]));
-        assert_eq!(cfg.as_ref().map(|c| c.mcp_judge_limit), Some(ApiConfig::DEFAULT_MCP_JUDGE_LIMIT));
-        assert_eq!(cfg.map(|c| c.mcp_judge_window), Some(ApiConfig::DEFAULT_MCP_JUDGE_WINDOW));
+        assert_eq!(
+            cfg.as_ref().map(|c| c.mcp_token.as_deref()),
+            Some(Some("0123456789abcdef0123456789abcdef"))
+        );
+        assert_eq!(
+            cfg.as_ref().map(|c| c.mcp_hosts.clone()),
+            Some(vec!["judge.example.com".to_owned(), "localhost".to_owned()])
+        );
+        assert_eq!(
+            cfg.as_ref().map(|c| c.mcp_judge_limit),
+            Some(ApiConfig::DEFAULT_MCP_JUDGE_LIMIT)
+        );
+        assert_eq!(
+            cfg.map(|c| c.mcp_judge_window),
+            Some(ApiConfig::DEFAULT_MCP_JUDGE_WINDOW)
+        );
         let r = ApiConfig::from_vars(vars(&[("MCP_JUDGE_LIMIT", "0")]));
-        assert!(r.as_ref().is_err_and(|e| format!("{e:#}").contains("MCP_JUDGE_LIMIT")), "{r:?}");
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| format!("{e:#}").contains("MCP_JUDGE_LIMIT")),
+            "{r:?}"
+        );
     }
 
     #[test]
@@ -222,7 +275,8 @@ mod tests {
         for value in ["true", "false"] {
             let r = ApiConfig::from_vars(vars(&[("API_TRUST_FORWARDED", value)]));
             assert!(
-                r.as_ref().is_err_and(|e| format!("{e:#}").contains("API_CLIENT_IP")),
+                r.as_ref()
+                    .is_err_and(|e| format!("{e:#}").contains("API_CLIENT_IP")),
                 "{value}: {r:?}"
             );
         }
@@ -240,15 +294,27 @@ mod tests {
         ]))
         .ok();
         let cfg = cfg.as_ref();
-        assert_eq!(cfg.map(|c| c.addr.to_string()), Some("127.0.0.1:9000".to_owned()));
-        assert_eq!(cfg.map(|c| c.web_dist.clone()), Some(PathBuf::from("/srv/web")));
+        assert_eq!(
+            cfg.map(|c| c.addr.to_string()),
+            Some("127.0.0.1:9000".to_owned())
+        );
+        assert_eq!(
+            cfg.map(|c| c.web_dist.clone()),
+            Some(PathBuf::from("/srv/web"))
+        );
         assert_eq!(cfg.map(|c| c.max_concurrent), Some(4));
         assert_eq!(cfg.map(|c| c.rate_limit), Some(10));
         assert_eq!(cfg.map(|c| c.rate_window), Some(Duration::from_mins(1)));
-        assert_eq!(cfg.map(|c| c.client_ip), Some(ClientIpSource::CloudflareConnectingIp));
+        assert_eq!(
+            cfg.map(|c| c.client_ip),
+            Some(ClientIpSource::CloudflareConnectingIp)
+        );
 
         let cfg = ApiConfig::from_vars(vars(&[("API_RATE_LIMIT", "  ")])).ok();
-        assert_eq!(cfg.map(|c| c.rate_limit), Some(ApiConfig::DEFAULT_RATE_LIMIT));
+        assert_eq!(
+            cfg.map(|c| c.rate_limit),
+            Some(ApiConfig::DEFAULT_RATE_LIMIT)
+        );
     }
 
     #[test]
@@ -261,7 +327,10 @@ mod tests {
             ("API_CLIENT_IP", "maybe"),
         ] {
             let r = ApiConfig::from_vars(vars(&[bad]));
-            assert!(r.as_ref().is_err_and(|e| format!("{e:#}").contains(bad.0)), "{bad:?}: {r:?}");
+            assert!(
+                r.as_ref().is_err_and(|e| format!("{e:#}").contains(bad.0)),
+                "{bad:?}: {r:?}"
+            );
         }
     }
 }

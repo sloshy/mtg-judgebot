@@ -38,13 +38,13 @@ pub use prompt::{needs_schema_in_prompt, schema_block, strip_json_fence};
 pub use secret::ApiKey;
 pub use spend::{DEFAULT_MAX_SPEND_USD, Metered, PRICES, Price, Pricing, SpendMeter, pricing_for};
 pub use synth::{
-    Final, Fresh, LOOKUP_RULES, LookupRulesInput, SendOutcome, Step, Synth, SynthConfig, ToolRequested, Truncated,
-    classify,
+    Final, Fresh, LOOKUP_RULES, LookupRulesInput, SendOutcome, Step, Synth, SynthConfig,
+    ToolRequested, Truncated, classify,
 };
 pub use types::{
-    AssistantTurn, Backend, Billed, CacheHint, Capabilities, ChatModel, ChatRequest, ChatResponse, Effort, OutputSchema,
-    Refusal, RefusalFallback, Stop, StructuredOutput, TextBlock, ToolCall, ToolChoice, ToolResult, ToolSpec, Turn,
-    Usage, schema_of,
+    AssistantTurn, Backend, Billed, CacheHint, Capabilities, ChatModel, ChatRequest, ChatResponse,
+    Effort, OutputSchema, Refusal, RefusalFallback, Stop, StructuredOutput, TextBlock, ToolCall,
+    ToolChoice, ToolResult, ToolSpec, Turn, Usage, schema_of,
 };
 
 /// Longest raw model text logged at debug level before parsing.

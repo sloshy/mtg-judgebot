@@ -104,8 +104,15 @@ mod tests {
 
     #[test]
     fn every_scryfall_symbol_maps_to_a_distinct_name() {
-        assert_eq!(SCRYFALL_BODIES.len(), 84, "the fixture is the published set");
-        let names: Vec<String> = SCRYFALL_BODIES.iter().filter_map(|b| emoji_name(b)).collect();
+        assert_eq!(
+            SCRYFALL_BODIES.len(),
+            84,
+            "the fixture is the published set"
+        );
+        let names: Vec<String> = SCRYFALL_BODIES
+            .iter()
+            .filter_map(|b| emoji_name(b))
+            .collect();
         // Total: every symbol names. Injective: no two share a name, so the
         // uploader cannot overwrite one symbol's emoji with another's.
         assert_eq!(
@@ -134,7 +141,11 @@ mod tests {
         assert_eq!(emoji_name("emoji😀"), None);
         assert_eq!(emoji_name(&"W".repeat(MAX_BODY_CHARS + 1)), None);
         // Multi-byte bodies are measured in characters, not bytes.
-        assert_eq!(emoji_name(&"∞".repeat(12)), None, "36 chars is over the limit");
+        assert_eq!(
+            emoji_name(&"∞".repeat(12)),
+            None,
+            "36 chars is over the limit"
+        );
     }
 
     #[test]

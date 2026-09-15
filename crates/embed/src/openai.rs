@@ -100,13 +100,26 @@ impl OpenAiEmbedder {
     ///
     /// # Errors
     /// If the underlying HTTP client cannot be built.
-    pub fn new(base_url: &str, auth: Auth, model: impl Into<String>, dimensions: usize, send_dimensions: bool) -> Result<Self, JudgeError> {
-        let http = reqwest::Client::builder().timeout(Duration::from_mins(5)).build().map_err(anyhow::Error::from)?;
+    pub fn new(
+        base_url: &str,
+        auth: Auth,
+        model: impl Into<String>,
+        dimensions: usize,
+        send_dimensions: bool,
+    ) -> Result<Self, JudgeError> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_mins(5))
+            .build()
+            .map_err(anyhow::Error::from)?;
         Ok(Self {
             http,
             url: embeddings_url(base_url),
             auth,
-            space: Space { provider: Provider::OpenAi, model: model.into(), dimensions },
+            space: Space {
+                provider: Provider::OpenAi,
+                model: model.into(),
+                dimensions,
+            },
             send_dimensions,
         })
     }
@@ -128,7 +141,9 @@ impl OpenAiEmbedder {
 
 /// `{base_url}/embeddings`, keeping a query string the base carries after the path.
 fn embeddings_url(base_url: &str) -> String {
-    let (path, query) = base_url.split_once('?').map_or((base_url, None), |(p, q)| (p, Some(q)));
+    let (path, query) = base_url
+        .split_once('?')
+        .map_or((base_url, None), |(p, q)| (p, Some(q)));
     let path = format!("{}/embeddings", path.trim_end_matches('/'));
     match query {
         Some(q) => format!("{path}?{q}"),
@@ -144,12 +159,24 @@ fn retryable(status: reqwest::StatusCode) -> bool {
 impl Embedder for OpenAiEmbedder {
     async fn embed(&self, texts: &[&str], _kind: InputKind) -> Result<Vec<Vec<f32>>, JudgeError> {
         if texts.is_empty() {
-            return Err(anyhow::anyhow!("embed: no texts given (the embeddings API rejects an empty input)").into());
+            return Err(anyhow::anyhow!(
+                "embed: no texts given (the embeddings API rejects an empty input)"
+            )
+            .into());
         }
-        let req = Req { input: texts, model: &self.space.model, dimensions: self.send_dimensions.then_some(self.space.dimensions) };
+        let req = Req {
+            input: texts,
+            model: &self.space.model,
+            dimensions: self.send_dimensions.then_some(self.space.dimensions),
+        };
         let mut attempt = 1;
         let body = loop {
-            let resp = self.authorize(self.http.post(&self.url)).json(&req).send().await.map_err(anyhow::Error::from)?;
+            let resp = self
+                .authorize(self.http.post(&self.url))
+                .json(&req)
+                .send()
+                .await
+                .map_err(anyhow::Error::from)?;
             let status = resp.status();
             let retry_after = resp
                 .headers()
@@ -161,10 +188,14 @@ impl Embedder for OpenAiEmbedder {
             if status.is_success() {
                 break body;
             }
-            let message = serde_json::from_slice::<ErrorBody>(&body)
-                .map_or_else(|_| String::from_utf8_lossy(&body).into_owned(), |b| b.error.message);
+            let message = serde_json::from_slice::<ErrorBody>(&body).map_or_else(
+                |_| String::from_utf8_lossy(&body).into_owned(),
+                |b| b.error.message,
+            );
             if retryable(status) && attempt < MAX_ATTEMPTS {
-                let delay = retry_after.unwrap_or_else(|| BASE_BACKOFF * 2u32.pow(attempt - 1)).min(MAX_BACKOFF);
+                let delay = retry_after
+                    .unwrap_or_else(|| BASE_BACKOFF * 2u32.pow(attempt - 1))
+                    .min(MAX_BACKOFF);
                 tracing::warn!(attempt, ?delay, %status, message, "retrying embeddings request");
                 tokio::time::sleep(delay).await;
                 attempt += 1;
@@ -174,7 +205,12 @@ impl Embedder for OpenAiEmbedder {
         };
         let parsed: Resp = serde_json::from_slice(&body).map_err(anyhow::Error::from)?;
         if parsed.data.len() != texts.len() {
-            return Err(anyhow::anyhow!("embeddings returned {} vectors for {} texts", parsed.data.len(), texts.len()).into());
+            return Err(anyhow::anyhow!(
+                "embeddings returned {} vectors for {} texts",
+                parsed.data.len(),
+                texts.len()
+            )
+            .into());
         }
         // Servers answer in input order; `index` is honoured when present in case one
         // does not. Indices that are not exactly 0..n (a proxy answering `[1, 1]`) would
@@ -228,7 +264,13 @@ mod tests {
 
     #[test]
     fn debug_redacts_the_key() -> Result<(), JudgeError> {
-        let e = OpenAiEmbedder::new("http://x/v1", Auth::Bearer("sk-secret".into()), "m", 4, true)?;
+        let e = OpenAiEmbedder::new(
+            "http://x/v1",
+            Auth::Bearer("sk-secret".into()),
+            "m",
+            4,
+            true,
+        )?;
         let s = format!("{e:?}");
         assert!(!s.contains("sk-secret") && s.contains("<redacted>"), "{s}");
         let s = format!("{:?}", Auth::ApiKeyHeader("sk-secret".into()));
@@ -238,10 +280,18 @@ mod tests {
 
     #[test]
     fn urls_keep_a_query_string_after_the_path() {
-        assert_eq!(embeddings_url("http://ollama:11434/v1"), "http://ollama:11434/v1/embeddings");
-        assert_eq!(embeddings_url("http://litellm:4000/v1/"), "http://litellm:4000/v1/embeddings");
         assert_eq!(
-            embeddings_url("https://x.openai.azure.com/openai/deployments/d?api-version=2024-10-21"),
+            embeddings_url("http://ollama:11434/v1"),
+            "http://ollama:11434/v1/embeddings"
+        );
+        assert_eq!(
+            embeddings_url("http://litellm:4000/v1/"),
+            "http://litellm:4000/v1/embeddings"
+        );
+        assert_eq!(
+            embeddings_url(
+                "https://x.openai.azure.com/openai/deployments/d?api-version=2024-10-21"
+            ),
             "https://x.openai.azure.com/openai/deployments/d/embeddings?api-version=2024-10-21"
         );
     }
@@ -252,7 +302,9 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
             .and(header("authorization", "Bearer sk-test"))
-            .and(body_json(json!({"input": ["a", "b"], "model": "text-embedding-3-small", "dimensions": 3})))
+            .and(body_json(
+                json!({"input": ["a", "b"], "model": "text-embedding-3-small", "dimensions": 3}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "object": "list", "model": "text-embedding-3-small",
                 "data": [
@@ -264,8 +316,21 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::Bearer("sk-test".into()), "text-embedding-3-small", 3, true)?;
-        assert_eq!(e.space(), &Space { provider: Provider::OpenAi, model: "text-embedding-3-small".into(), dimensions: 3 });
+        let e = OpenAiEmbedder::new(
+            &format!("{}/v1", server.uri()),
+            Auth::Bearer("sk-test".into()),
+            "text-embedding-3-small",
+            3,
+            true,
+        )?;
+        assert_eq!(
+            e.space(),
+            &Space {
+                provider: Provider::OpenAi,
+                model: "text-embedding-3-small".into(),
+                dimensions: 3
+            }
+        );
         assert_eq!(e.dimensions(), 3);
         // `InputKind` is ignored: both kinds send the same body.
         let docs = e.embed(&["a", "b"], InputKind::Document).await?;
@@ -274,20 +339,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dimensions_can_be_left_off_the_wire_and_azure_gets_its_header_and_query() -> Result<(), JudgeError> {
+    async fn dimensions_can_be_left_off_the_wire_and_azure_gets_its_header_and_query()
+    -> Result<(), JudgeError> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/openai/deployments/d/embeddings"))
             .and(query_param("api-version", "2024-10-21"))
             .and(header("api-key", "az-key"))
-            .and(body_json(json!({"input": ["q"], "model": "nomic-embed-text"})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [{"embedding": [0.5, 0.5]}]})))
+            .and(body_json(
+                json!({"input": ["q"], "model": "nomic-embed-text"}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data": [{"embedding": [0.5, 0.5]}]})),
+            )
             .expect(1)
             .mount(&server)
             .await;
-        let base = format!("{}/openai/deployments/d?api-version=2024-10-21", server.uri());
-        let e = OpenAiEmbedder::new(&base, Auth::ApiKeyHeader("az-key".into()), "nomic-embed-text", 2, false)?;
-        assert_eq!(e.embed(&["q"], InputKind::Query).await?, vec![vec_of(2, 0.5)]);
+        let base = format!(
+            "{}/openai/deployments/d?api-version=2024-10-21",
+            server.uri()
+        );
+        let e = OpenAiEmbedder::new(
+            &base,
+            Auth::ApiKeyHeader("az-key".into()),
+            "nomic-embed-text",
+            2,
+            false,
+        )?;
+        assert_eq!(
+            e.embed(&["q"], InputKind::Query).await?,
+            vec![vec_of(2, 0.5)]
+        );
         Ok(())
     }
 
@@ -302,7 +385,9 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [{"embedding": [1.0]}]})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data": [{"embedding": [1.0]}]})),
+            )
             .mount(&server)
             .await;
         let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 1, true)?;
@@ -315,22 +400,50 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
-            .and(body_json(json!({"input": ["a", "b"], "model": "m", "dimensions": 2})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [{"embedding": [1.0, 1.0]}]})))
+            .and(body_json(
+                json!({"input": ["a", "b"], "model": "m", "dimensions": 2}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data": [{"embedding": [1.0, 1.0]}]})),
+            )
             .mount(&server)
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
-            .and(body_json(json!({"input": ["a"], "model": "m", "dimensions": 2})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [{"embedding": [1.0, 1.0, 1.0]}]})))
+            .and(body_json(
+                json!({"input": ["a"], "model": "m", "dimensions": 2}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data": [{"embedding": [1.0, 1.0, 1.0]}]})),
+            )
             .mount(&server)
             .await;
         let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 2, true)?;
-        let err = e.embed(&["a", "b"], InputKind::Document).await.err().map(|e| e.to_string()).unwrap_or_default();
+        let err = e
+            .embed(&["a", "b"], InputKind::Document)
+            .await
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
         assert!(err.contains("returned 1 vectors for 2 texts"), "{err}");
-        let err = e.embed(&["a"], InputKind::Document).await.err().map(|e| e.to_string()).unwrap_or_default();
-        assert!(err.contains("3-dimensional") && err.contains("configured space is 2"), "{err}");
-        let err = e.embed(&[], InputKind::Document).await.err().map(|e| e.to_string()).unwrap_or_default();
+        let err = e
+            .embed(&["a"], InputKind::Document)
+            .await
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            err.contains("3-dimensional") && err.contains("configured space is 2"),
+            "{err}"
+        );
+        let err = e
+            .embed(&[], InputKind::Document)
+            .await
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
         assert!(err.contains("no texts"), "{err}");
         Ok(())
     }
@@ -347,7 +460,12 @@ mod tests {
             .mount(&server)
             .await;
         let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 2, true)?;
-        let err = e.embed(&["a", "b"], InputKind::Document).await.err().map(|e| e.to_string()).unwrap_or_default();
+        let err = e
+            .embed(&["a", "b"], InputKind::Document)
+            .await
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
         assert!(err.contains("index Some(1) where 0 was expected"), "{err}");
         Ok(())
     }
@@ -361,37 +479,73 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::Bearer("bad".into()), "m", 2, true)?;
-        let err = e.embed(&["a"], InputKind::Document).await.err().map(|e| e.to_string()).unwrap_or_default();
-        assert_eq!(err, "embeddings 401 Unauthorized: Incorrect API key provided");
+        let e = OpenAiEmbedder::new(
+            &format!("{}/v1", server.uri()),
+            Auth::Bearer("bad".into()),
+            "m",
+            2,
+            true,
+        )?;
+        let err = e
+            .embed(&["a"], InputKind::Document)
+            .await
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert_eq!(
+            err,
+            "embeddings 401 Unauthorized: Incorrect API key provided"
+        );
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
-            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0").set_body_string("slow down"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("retry-after", "0")
+                    .set_body_string("slow down"),
+            )
             .up_to_n_times(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [{"embedding": [1.0, 2.0]}]})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data": [{"embedding": [1.0, 2.0]}]})),
+            )
             .mount(&server)
             .await;
         let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 2, true)?;
-        assert_eq!(e.embed(&["a"], InputKind::Document).await?, vec![vec![1.0, 2.0]]);
+        assert_eq!(
+            e.embed(&["a"], InputKind::Document).await?,
+            vec![vec![1.0, 2.0]]
+        );
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 2);
 
         // Retries are bounded: a server that keeps failing fails the call after MAX_ATTEMPTS.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
-            .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0").set_body_json(json!({"error": {"message": "overloaded"}})))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .insert_header("retry-after", "0")
+                    .set_body_json(json!({"error": {"message": "overloaded"}})),
+            )
             .mount(&server)
             .await;
         let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 2, true)?;
-        let err = e.embed(&["a"], InputKind::Document).await.err().map(|e| e.to_string()).unwrap_or_default();
+        let err = e
+            .embed(&["a"], InputKind::Document)
+            .await
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
         assert_eq!(err, "embeddings 503 Service Unavailable: overloaded");
-        assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), MAX_ATTEMPTS as usize);
+        assert_eq!(
+            server.received_requests().await.map_or(0, |r| r.len()),
+            MAX_ATTEMPTS as usize
+        );
         Ok(())
     }
 }

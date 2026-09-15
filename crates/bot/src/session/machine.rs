@@ -25,9 +25,9 @@ use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use judge_core::{
-    AnswerableSource, CallId, Context, Extraction, JudgeError, MAX_ANSWER_CHARS, Qa, Question, RejectedAttempt, Rejection,
-    Resolver,
-    Retriever, RuleChunk, RuleId, Source, Unvalidated, Validated, Verdict, judge::collect_resolved,
+    AnswerableSource, CallId, Context, Extraction, JudgeError, MAX_ANSWER_CHARS, Qa, Question,
+    RejectedAttempt, Rejection, Resolver, Retriever, RuleChunk, RuleId, Source, Unvalidated,
+    Validated, Verdict, judge::collect_resolved,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -135,7 +135,9 @@ impl std::str::FromStr for AgentThread {
         let s = s.trim();
         match s.strip_prefix(THREAD_PREFIX).map(str::parse::<Uuid>) {
             Some(Ok(_)) => Ok(Self(s.to_owned())),
-            _ => Err(format!("thread must be an id this server issued ({THREAD_PREFIX}<uuid>), got {s:?}")),
+            _ => Err(format!(
+                "thread must be an id this server issued ({THREAD_PREFIX}<uuid>), got {s:?}"
+            )),
         }
     }
 }
@@ -258,7 +260,9 @@ pub enum SessionError {
     #[error("no session {0} (unknown, or expired)")]
     Unknown(SessionId),
     /// Another step ran on this session concurrently; reload and retry.
-    #[error("session {0} changed underneath this step (a concurrent step ran); re-read it and retry")]
+    #[error(
+        "session {0} changed underneath this step (a concurrent step ran); re-read it and retry"
+    )]
     Conflict(SessionId),
     /// The session is not at the stage this transition needs.
     #[error("session is {actual}; expected {expected}")]
@@ -334,24 +338,35 @@ impl Stage {
 }
 
 static EXTRACTION_SCHEMA: LazyLock<serde_json::Value> = LazyLock::new(extract::schema);
-static VERDICT_SCHEMA: LazyLock<serde_json::Value> =
-    LazyLock::new(|| serde_json::to_value(schemars::schema_for!(Verdict<Unvalidated>)).unwrap_or_default());
+static VERDICT_SCHEMA: LazyLock<serde_json::Value> = LazyLock::new(|| {
+    serde_json::to_value(schemars::schema_for!(Verdict<Unvalidated>)).unwrap_or_default()
+});
 
 impl Session {
     /// A session at its first step.
     ///
     /// # Errors
     /// `Invalid` for an empty or over-long question.
-    pub fn begin(id: SessionId, thread: AgentThread, text: String, history: Vec<Qa>) -> Result<Self, SessionError> {
+    pub fn begin(
+        id: SessionId,
+        thread: AgentThread,
+        text: String,
+        history: Vec<Qa>,
+    ) -> Result<Self, SessionError> {
         if text.trim().is_empty() {
             return Err(SessionError::Invalid("question must not be empty".into()));
         }
         if text.chars().count() > MAX_QUESTION_CHARS {
-            return Err(SessionError::Invalid(format!("question must be at most {MAX_QUESTION_CHARS} characters")));
+            return Err(SessionError::Invalid(format!(
+                "question must be at most {MAX_QUESTION_CHARS} characters"
+            )));
         }
         Ok(Self {
             id,
-            question: Question { thread_id: thread.into(), text },
+            question: Question {
+                thread_id: thread.into(),
+                text,
+            },
             stage: Stage::AwaitingExtraction { history },
         })
     }
@@ -360,7 +375,10 @@ impl Session {
     ///
     /// # Errors
     /// `WrongStage` unless the session is awaiting an extraction.
-    pub fn extraction_prompt(&self, history_turns: usize) -> Result<ExtractionPrompt, SessionError> {
+    pub fn extraction_prompt(
+        &self,
+        history_turns: usize,
+    ) -> Result<ExtractionPrompt, SessionError> {
         let Stage::AwaitingExtraction { history } = &self.stage else {
             return Err(self.wrong_stage("awaiting_extraction"));
         };
@@ -402,7 +420,13 @@ impl Session {
         let mut ctx = retriever.retrieve(&self.question, &cards, &e).await?;
         ctx.history.clone_from(history);
         let prompt = synthesis_prompt(&self.question, &ctx, None, true, harness, budget);
-        self.stage = Stage::AwaitingVerdict { source, ctx, lookup_used: false, rejected: None, attempts: 0 };
+        self.stage = Stage::AwaitingVerdict {
+            source,
+            ctx,
+            lookup_used: false,
+            rejected: None,
+            attempts: 0,
+        };
         Ok(Extracted::Ready(prompt))
     }
 
@@ -413,18 +437,29 @@ impl Session {
     /// `WrongStage`; `Invalid` for no ids or too many (the round is not
     /// spent); `LookupUsed` if the round was spent, or forfeited by a retry
     /// (the Anthropic path disables the tool on the retry too).
-    pub async fn lookup_rules(&mut self, ids: &[RuleId], retriever: &dyn Retriever) -> Result<Vec<RuleChunk>, SessionError> {
-        let Stage::AwaitingVerdict { ctx, lookup_used, .. } = &mut self.stage else {
+    pub async fn lookup_rules(
+        &mut self,
+        ids: &[RuleId],
+        retriever: &dyn Retriever,
+    ) -> Result<Vec<RuleChunk>, SessionError> {
+        let Stage::AwaitingVerdict {
+            ctx, lookup_used, ..
+        } = &mut self.stage
+        else {
             return Err(self.wrong_stage("awaiting_verdict"));
         };
         if *lookup_used {
             return Err(SessionError::LookupUsed);
         }
         if ids.is_empty() {
-            return Err(SessionError::Invalid("lookup_rules needs at least one rule id".into()));
+            return Err(SessionError::Invalid(
+                "lookup_rules needs at least one rule id".into(),
+            ));
         }
         if ids.len() > MAX_LOOKUP_IDS {
-            return Err(SessionError::Invalid(format!("lookup_rules takes at most {MAX_LOOKUP_IDS} ids per round")));
+            return Err(SessionError::Invalid(format!(
+                "lookup_rules takes at most {MAX_LOOKUP_IDS} ids per round"
+            )));
         }
         let chunks = retriever.lookup_rules(ids).await?;
         for c in &chunks {
@@ -450,7 +485,14 @@ impl Session {
         harness: Harness,
         budget: &Budget,
     ) -> Result<Verdict<Validated>, SessionError> {
-        let Stage::AwaitingVerdict { source, ctx, lookup_used, rejected, attempts } = &mut self.stage else {
+        let Stage::AwaitingVerdict {
+            source,
+            ctx,
+            lookup_used,
+            rejected,
+            attempts,
+        } = &mut self.stage
+        else {
             return Err(self.wrong_stage("awaiting_verdict"));
         };
         // Size before validation: an over-long answer is stored and rendered
@@ -464,8 +506,12 @@ impl Session {
             hydrate_leaf_citations(&v, ctx, retriever).await?;
             match v.clone().validate(ctx, *source) {
                 Ok(validated) => {
-                    let outcome =
-                        Outcome::Answered { verdict: v, ctx: Box::new(std::mem::take(ctx)), source: *source, call: None };
+                    let outcome = Outcome::Answered {
+                        verdict: v,
+                        ctx: Box::new(std::mem::take(ctx)),
+                        source: *source,
+                        call: None,
+                    };
                     self.stage = Stage::Closed(outcome);
                     return Ok(validated);
                 }
@@ -477,7 +523,9 @@ impl Session {
         };
         *attempts += 1;
         if *attempts >= MAX_ATTEMPTS {
-            self.stage = Stage::Closed(Outcome::Failed { rejection: rejection.clone() });
+            self.stage = Stage::Closed(Outcome::Failed {
+                rejection: rejection.clone(),
+            });
             return Err(SessionError::Exhausted { rejection });
         }
         // As in `judge()`: the retry sees the rejection and the tool-round
@@ -494,18 +542,41 @@ impl Session {
     ///
     /// # Errors
     /// `WrongStage` unless the session is awaiting a verdict.
-    pub fn synthesis_prompt(&self, harness: Harness, budget: &Budget) -> Result<SynthesisPrompt, SessionError> {
-        let Stage::AwaitingVerdict { ctx, lookup_used, rejected, .. } = &self.stage else {
+    pub fn synthesis_prompt(
+        &self,
+        harness: Harness,
+        budget: &Budget,
+    ) -> Result<SynthesisPrompt, SessionError> {
+        let Stage::AwaitingVerdict {
+            ctx,
+            lookup_used,
+            rejected,
+            ..
+        } = &self.stage
+        else {
             return Err(self.wrong_stage("awaiting_verdict"));
         };
-        Ok(synthesis_prompt(&self.question, ctx, rejected.as_ref(), !*lookup_used, harness, budget))
+        Ok(synthesis_prompt(
+            &self.question,
+            ctx,
+            rejected.as_ref(),
+            !*lookup_used,
+            harness,
+            budget,
+        ))
     }
 
     /// The accepted verdict, re-validated. `None` unless the session closed
     /// with an answer.
     #[must_use]
     pub fn accepted(&self) -> Option<Verdict<Validated>> {
-        let Stage::Closed(Outcome::Answered { verdict, ctx, source, .. }) = &self.stage else {
+        let Stage::Closed(Outcome::Answered {
+            verdict,
+            ctx,
+            source,
+            ..
+        }) = &self.stage
+        else {
             return None;
         };
         // Cannot fail: it is the verdict `validate` admitted against this
@@ -520,23 +591,33 @@ impl Session {
     /// `WrongStage` unless the session closed with an answer; `Pipeline` from
     /// the store.
     pub async fn persist(&mut self, store: &dyn PersistCall) -> Result<CallId, SessionError> {
-        let Stage::Closed(Outcome::Answered { verdict, ctx, source, call }) = &mut self.stage else {
+        let Stage::Closed(Outcome::Answered {
+            verdict,
+            ctx,
+            source,
+            call,
+        }) = &mut self.stage
+        else {
             return Err(self.wrong_stage("closed with an answer"));
         };
         if let Some(id) = call {
             return Ok(*id);
         }
-        let validated = verdict
-            .clone()
-            .validate(ctx, *source)
-            .map_err(|e| JudgeError::Upstream(anyhow::anyhow!("accepted verdict no longer validates: {e}")))?;
-        let id = store.persist_call(self.id, &self.question, &validated, ctx).await?;
+        let validated = verdict.clone().validate(ctx, *source).map_err(|e| {
+            JudgeError::Upstream(anyhow::anyhow!("accepted verdict no longer validates: {e}"))
+        })?;
+        let id = store
+            .persist_call(self.id, &self.question, &validated, ctx)
+            .await?;
         *call = Some(id);
         Ok(id)
     }
 
     fn wrong_stage(&self, expected: &'static str) -> SessionError {
-        SessionError::WrongStage { expected, actual: self.stage.name() }
+        SessionError::WrongStage {
+            expected,
+            actual: self.stage.name(),
+        }
     }
 }
 
@@ -545,9 +626,14 @@ impl Session {
 fn check_extraction(e: &Extraction) -> Result<(), SessionError> {
     for (what, items) in [("card_spans", &e.card_spans), ("concepts", &e.concepts)] {
         if items.len() > MAX_EXTRACTION_ITEMS {
-            return Err(SessionError::Invalid(format!("{what} holds at most {MAX_EXTRACTION_ITEMS} entries")));
+            return Err(SessionError::Invalid(format!(
+                "{what} holds at most {MAX_EXTRACTION_ITEMS} entries"
+            )));
         }
-        if let Some(long) = items.iter().find(|s| s.chars().count() > MAX_EXTRACTION_ITEM_CHARS) {
+        if let Some(long) = items
+            .iter()
+            .find(|s| s.chars().count() > MAX_EXTRACTION_ITEM_CHARS)
+        {
             return Err(SessionError::Invalid(format!(
                 "{what} entry {:?}… is over {MAX_EXTRACTION_ITEM_CHARS} characters",
                 long.chars().take(40).collect::<String>()
@@ -571,7 +657,11 @@ fn synthesis_prompt(
     harness: Harness,
     budget: &Budget,
 ) -> SynthesisPrompt {
-    let pinned: &[RuleId] = if lookup_available { &[] } else { &ctx.tool_round };
+    let pinned: &[RuleId] = if lookup_available {
+        &[]
+    } else {
+        &ctx.tool_round
+    };
     let mut question = synth::render_question(q, ctx, rejected);
     if !lookup_available && harness != Harness::Tool {
         question.push_str("\n(The rules lookup has been used for this question; answer from the material shown.)\n");
@@ -589,13 +679,14 @@ fn synthesis_prompt(
 mod tests {
     use super::*;
     use judge_core::{
-        Card, CardId, Category, CategoryGuess, Citation, Confidence, CrVersion, EmptyVerdict, Face, Layout,
-        MalformedCitation, MatchedVia, PriorCall, Resolution, Ruling, ruling_key,
+        Card, CardId, Category, CategoryGuess, Citation, Confidence, CrVersion, EmptyVerdict, Face,
+        Layout, MalformedCitation, MatchedVia, PriorCall, Resolution, Ruling, ruling_key,
     };
     use nonempty::NonEmpty;
     use std::sync::Mutex;
 
-    const BODY: &str = "Damage dealt by a source with lifelink causes its controller to gain that much life.";
+    const BODY: &str =
+        "Damage dealt by a source with lifelink causes its controller to gain that much life.";
     const LEAF: &str = "702.15b Damage dealt by a source with lifelink causes that source's controller to gain that much life.";
 
     fn rid(id: &str) -> anyhow::Result<RuleId> {
@@ -610,7 +701,11 @@ mod tests {
             parent_id: if leaf { Some(rid(parent)?) } else { None },
             subsection: rid("702")?,
             heading: "Lifelink".into(),
-            body: if leaf { LEAF.into() } else { format!("{BODY}\n{LEAF}") },
+            body: if leaf {
+                LEAF.into()
+            } else {
+                format!("{BODY}\n{LEAF}")
+            },
             examples: vec![],
             cr_version: CrVersion::try_new("20260819".to_owned())?,
         })
@@ -641,10 +736,16 @@ mod tests {
             Ok(match span {
                 "urza" => Resolution::Ambiguous {
                     query: span.into(),
-                    candidates: NonEmpty::from((card(1, "Urza, Lord High Artificer"), vec![card(2, "Urza's Saga")])),
+                    candidates: NonEmpty::from((
+                        card(1, "Urza, Lord High Artificer"),
+                        vec![card(2, "Urza's Saga")],
+                    )),
                     via: MatchedVia::Fuzzy,
                 },
-                "[[Urza's Saga]]" => Resolution::Resolved { card: card(2, "Urza's Saga"), via: MatchedVia::Bracket },
+                "[[Urza's Saga]]" => Resolution::Resolved {
+                    card: card(2, "Urza's Saga"),
+                    via: MatchedVia::Bracket,
+                },
                 _ => Resolution::NotFound { query: span.into() },
             })
         }
@@ -652,7 +753,12 @@ mod tests {
 
     #[async_trait]
     impl Retriever for Ports {
-        async fn retrieve(&self, _q: &Question, cards: &[Card], _e: &Extraction) -> Result<Context, JudgeError> {
+        async fn retrieve(
+            &self,
+            _q: &Question,
+            cards: &[Card],
+            _e: &Extraction,
+        ) -> Result<Context, JudgeError> {
             // A populated context: every kind of material the store must round-trip.
             let text = "Urza's Saga's third chapter ability can find a card with mana value 0.";
             let ruling = Ruling {
@@ -666,18 +772,35 @@ mod tests {
                 question: "does lifelink stack?".into(),
                 answer: "No, multiple instances are redundant.".into(),
                 category: Category::Combat,
-                citations: vec![Citation::Rule { id: rid("702.15")?, quote: judge_core::Quote::try_new(BODY).map_err(anyhow::Error::from)? }],
-                cr_version: CrVersion::try_new("20260819".to_owned()).map_err(anyhow::Error::from)?,
+                citations: vec![Citation::Rule {
+                    id: rid("702.15")?,
+                    quote: judge_core::Quote::try_new(BODY).map_err(anyhow::Error::from)?,
+                }],
+                cr_version: CrVersion::try_new("20260819".to_owned())
+                    .map_err(anyhow::Error::from)?,
                 rating: 2.5,
                 rating_count: 3,
             };
             Ok(Context {
                 cards: cards.to_vec(),
                 rules: vec![rule("702.15")?],
-                rulings: if cards.is_empty() { vec![] } else { vec![ruling] },
-                glossary: vec![judge_core::GlossaryEntry { term: "Lifelink".into(), text: "A keyword ability.".into() }],
+                rulings: if cards.is_empty() {
+                    vec![]
+                } else {
+                    vec![ruling]
+                },
+                glossary: vec![judge_core::GlossaryEntry {
+                    term: "Lifelink".into(),
+                    text: "A keyword ability.".into(),
+                }],
                 prior: vec![prior],
-                notes: cards.iter().map(|c| judge_core::CardNote { card: c.id, note: "tricky".into() }).collect(),
+                notes: cards
+                    .iter()
+                    .map(|c| judge_core::CardNote {
+                        card: c.id,
+                        note: "tricky".into(),
+                    })
+                    .collect(),
                 ..Context::default()
             })
         }
@@ -685,8 +808,14 @@ mod tests {
             if self.fail_lookup {
                 return Err(anyhow::anyhow!("db is down").into());
             }
-            self.lookups.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(ids.to_vec());
-            Ok(ids.iter().map(|id| rule(id.as_ref())).collect::<anyhow::Result<Vec<_>>>()?)
+            self.lookups
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(ids.to_vec());
+            Ok(ids
+                .iter()
+                .map(|id| rule(id.as_ref()))
+                .collect::<anyhow::Result<Vec<_>>>()?)
         }
     }
 
@@ -701,24 +830,35 @@ mod tests {
             _v: &Verdict<Validated>,
             _ctx: &Context,
         ) -> Result<CallId, JudgeError> {
-            let mut seen = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut seen = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let n = seen.iter().position(|s| *s == session).unwrap_or_else(|| {
                 seen.push(session);
                 seen.len() - 1
             });
-            Ok(CallId::new(Uuid::from_u128(u128::try_from(n + 1).unwrap_or(1))))
+            Ok(CallId::new(Uuid::from_u128(
+                u128::try_from(n + 1).unwrap_or(1),
+            )))
         }
     }
 
     fn ports() -> Ports {
-        Ports { lookups: Mutex::new(vec![]), fail_lookup: false }
+        Ports {
+            lookups: Mutex::new(vec![]),
+            fail_lookup: false,
+        }
     }
 
     fn extraction(spans: &[&str], source: Source) -> Extraction {
         Extraction {
             card_spans: spans.iter().map(|s| (*s).to_owned()).collect(),
             concepts: vec!["lifelink".into()],
-            primary: CategoryGuess { category: Category::Combat, confidence: Confidence::High },
+            primary: CategoryGuess {
+                category: Category::Combat,
+                confidence: Confidence::High,
+            },
             secondary: vec![],
             source,
         }
@@ -729,7 +869,10 @@ mod tests {
             SessionId::new(),
             AgentThread::new(),
             "does lifelink stack?".into(),
-            vec![Qa { question: "earlier".into(), answer: "yes".into() }],
+            vec![Qa {
+                question: "earlier".into(),
+                answer: "yes".into(),
+            }],
         )?)
     }
 
@@ -737,13 +880,25 @@ mod tests {
         Ok(Verdict::new(
             "No. Multiple instances of lifelink are redundant; the life gain happens once.".into(),
             Confidence::High,
-            vec![Citation::Rule { id: rid("702.15")?, quote: judge_core::Quote::try_new(quote)? }],
+            vec![Citation::Rule {
+                id: rid("702.15")?,
+                quote: judge_core::Quote::try_new(quote)?,
+            }],
             Category::Combat,
         ))
     }
 
     async fn ready(s: &mut Session, p: &Ports, spans: &[&str]) -> anyhow::Result<SynthesisPrompt> {
-        match s.submit_extraction(extraction(spans, Source::Cr), p, p, Harness::Mcp, &Budget::default()).await? {
+        match s
+            .submit_extraction(
+                extraction(spans, Source::Cr),
+                p,
+                p,
+                Harness::Mcp,
+                &Budget::default(),
+            )
+            .await?
+        {
             Extracted::Ready(prompt) => Ok(prompt),
             Extracted::OutOfScope { .. } => Err(anyhow::anyhow!("unexpected")),
         }
@@ -754,8 +909,17 @@ mod tests {
         let t = AgentThread::new();
         assert!(t.as_str().starts_with("agent:"));
         assert_eq!(t.as_str().parse::<AgentThread>().ok(), Some(t.clone()));
-        for bad in ["1234567890", "web:0b6a0f4e-1c5b-4a2e-9d3e-7f4c1b2a3d4e", "agent:", "agent:nope", ""] {
-            assert!(bad.parse::<AgentThread>().is_err(), "{bad:?} must not parse");
+        for bad in [
+            "1234567890",
+            "web:0b6a0f4e-1c5b-4a2e-9d3e-7f4c1b2a3d4e",
+            "agent:",
+            "agent:nope",
+            "",
+        ] {
+            assert!(
+                bad.parse::<AgentThread>().is_err(),
+                "{bad:?} must not parse"
+            );
         }
         let j: Result<AgentThread, _> = serde_json::from_str("\"1234567890\"");
         assert!(j.is_err(), "deserialization is validated too");
@@ -764,8 +928,14 @@ mod tests {
     #[test]
     fn begin_bounds_the_question() {
         let long = "x".repeat(MAX_QUESTION_CHARS + 1);
-        assert!(matches!(Session::begin(SessionId::new(), AgentThread::new(), long, vec![]), Err(SessionError::Invalid(_))));
-        assert!(matches!(Session::begin(SessionId::new(), AgentThread::new(), "  ".into(), vec![]), Err(SessionError::Invalid(_))));
+        assert!(matches!(
+            Session::begin(SessionId::new(), AgentThread::new(), long, vec![]),
+            Err(SessionError::Invalid(_))
+        ));
+        assert!(matches!(
+            Session::begin(SessionId::new(), AgentThread::new(), "  ".into(), vec![]),
+            Err(SessionError::Invalid(_))
+        ));
     }
 
     #[test]
@@ -775,8 +945,17 @@ mod tests {
         assert!(p.system.contains("Taxonomy"));
         assert!(p.user.contains("Q: earlier"));
         assert!(p.user.contains("does lifelink stack?"));
-        assert_eq!(p.schema.pointer("/required").and_then(|r| r.as_array()).map(Vec::len), Some(4));
-        assert!(VERDICT_SCHEMA.pointer("/properties/citations").is_some(), "verdict schema is real, not null");
+        assert_eq!(
+            p.schema
+                .pointer("/required")
+                .and_then(|r| r.as_array())
+                .map(Vec::len),
+            Some(4)
+        );
+        assert!(
+            VERDICT_SCHEMA.pointer("/properties/citations").is_some(),
+            "verdict schema is real, not null"
+        );
         Ok(())
     }
 
@@ -786,18 +965,30 @@ mod tests {
         let mut s = session()?;
         let prompt = ready(&mut s, &ports, &[]).await?;
         assert!(prompt.lookup_available);
-        assert!(prompt.system.contains("call the `lookup_rules` tool ONCE, with"));
+        assert!(
+            prompt
+                .system
+                .contains("call the `lookup_rules` tool ONCE, with")
+        );
         assert!(prompt.system.contains("`submit_verdict`"));
         assert!(prompt.material.contains("[702.15]"));
-        assert!(prompt.material.contains("Q: earlier"), "history rendered into the material");
+        assert!(
+            prompt.material.contains("Q: earlier"),
+            "history rendered into the material"
+        );
         assert!(prompt.question.ends_with("does lifelink stack?\n"));
-        let validated = s.submit_verdict(verdict(BODY)?, &ports, Harness::Mcp, &Budget::default()).await?;
+        let validated = s
+            .submit_verdict(verdict(BODY)?, &ports, Harness::Mcp, &Budget::default())
+            .await?;
         assert_eq!(validated.cr_version().as_ref(), "20260819");
         assert!(s.accepted().is_some());
         let first = s.persist(&store).await?;
         let second = s.persist(&store).await?;
         assert_eq!(first, second, "persist is idempotent");
-        assert!(matches!(s.stage, Stage::Closed(Outcome::Answered { call: Some(_), .. })));
+        assert!(matches!(
+            s.stage,
+            Stage::Closed(Outcome::Answered { call: Some(_), .. })
+        ));
         Ok(())
     }
 
@@ -806,32 +997,61 @@ mod tests {
         let p = ports();
         let mut s = session()?;
         ready(&mut s, &p, &[]).await?;
-        let Err(SessionError::Rejected { retry, .. }) =
-            s.submit_verdict(verdict("not in the rule")?, &p, Harness::Cli, &Budget::default()).await
+        let Err(SessionError::Rejected { retry, .. }) = s
+            .submit_verdict(
+                verdict("not in the rule")?,
+                &p,
+                Harness::Cli,
+                &Budget::default(),
+            )
+            .await
         else {
             return Err(anyhow::anyhow!("expected a rejection"));
         };
         assert!(retry.question.contains("Previous attempt rejected"));
         // The same notice the bot's retry renders, rejected answer included, and it survives a re-read.
-        assert!(retry.question.contains("> No. Multiple instances of lifelink are redundant"), "{}", retry.question);
-        assert_eq!(s.synthesis_prompt(Harness::Cli, &Budget::default())?.question, retry.question);
+        assert!(
+            retry
+                .question
+                .contains("> No. Multiple instances of lifelink are redundant"),
+            "{}",
+            retry.question
+        );
+        assert_eq!(
+            s.synthesis_prompt(Harness::Cli, &Budget::default())?
+                .question,
+            retry.question
+        );
         assert!(!retry.lookup_available);
         assert!(retry.question.contains("lookup has been used"));
         let id = rid("702.19")?;
         assert!(
-            matches!(s.lookup_rules(std::slice::from_ref(&id), &p).await, Err(SessionError::LookupUsed)),
+            matches!(
+                s.lookup_rules(std::slice::from_ref(&id), &p).await,
+                Err(SessionError::LookupUsed)
+            ),
             "retry forfeits the round"
         );
-        let Err(SessionError::Exhausted { .. }) =
-            s.submit_verdict(verdict("still wrong")?, &p, Harness::Cli, &Budget::default()).await
+        let Err(SessionError::Exhausted { .. }) = s
+            .submit_verdict(
+                verdict("still wrong")?,
+                &p,
+                Harness::Cli,
+                &Budget::default(),
+            )
+            .await
         else {
             return Err(anyhow::anyhow!("expected exhaustion"));
         };
         assert!(matches!(s.stage, Stage::Closed(Outcome::Failed { .. })));
         assert!(s.accepted().is_none());
         assert!(matches!(
-            s.submit_verdict(verdict(BODY)?, &p, Harness::Cli, &Budget::default()).await,
-            Err(SessionError::WrongStage { actual: "closed", .. })
+            s.submit_verdict(verdict(BODY)?, &p, Harness::Cli, &Budget::default())
+                .await,
+            Err(SessionError::WrongStage {
+                actual: "closed",
+                ..
+            })
         ));
         Ok(())
     }
@@ -844,18 +1064,28 @@ mod tests {
         let big = Verdict::new(
             "x".repeat(MAX_ANSWER_CHARS + 1),
             Confidence::High,
-            vec![Citation::Rule { id: rid("702.15")?, quote: judge_core::Quote::try_new(BODY)? }],
+            vec![Citation::Rule {
+                id: rid("702.15")?,
+                quote: judge_core::Quote::try_new(BODY)?,
+            }],
             Category::Combat,
         );
-        let Err(SessionError::Rejected { rejection: Rejection::Oversized { chars }, retry }) =
-            s.submit_verdict(big, &p, Harness::Mcp, &Budget::default()).await
+        let Err(SessionError::Rejected {
+            rejection: Rejection::Oversized { chars },
+            retry,
+        }) = s
+            .submit_verdict(big, &p, Harness::Mcp, &Budget::default())
+            .await
         else {
             return Err(anyhow::anyhow!("expected an oversized rejection"));
         };
         assert_eq!(chars, MAX_ANSWER_CHARS + 1);
         assert!(retry.question.contains("characters long"));
         assert!(
-            p.lookups.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
+            p.lookups
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
             "no hydration for a rejected size"
         );
         Ok(())
@@ -866,26 +1096,54 @@ mod tests {
         let p = ports();
         let mut s = session()?;
         ready(&mut s, &p, &[]).await?;
-        assert!(matches!(s.lookup_rules(&[], &p).await, Err(SessionError::Invalid(_))), "empty request");
-        let many: Vec<RuleId> = (0..=MAX_LOOKUP_IDS).map(|i| rid(&format!("{}", 100 + i))).collect::<anyhow::Result<_>>()?;
-        assert!(matches!(s.lookup_rules(&many, &p).await, Err(SessionError::Invalid(_))), "too many");
-        assert!(s.synthesis_prompt(Harness::Mcp, &Budget::default())?.lookup_available, "neither spent the round");
+        assert!(
+            matches!(s.lookup_rules(&[], &p).await, Err(SessionError::Invalid(_))),
+            "empty request"
+        );
+        let many: Vec<RuleId> = (0..=MAX_LOOKUP_IDS)
+            .map(|i| rid(&format!("{}", 100 + i)))
+            .collect::<anyhow::Result<_>>()?;
+        assert!(
+            matches!(
+                s.lookup_rules(&many, &p).await,
+                Err(SessionError::Invalid(_))
+            ),
+            "too many"
+        );
+        assert!(
+            s.synthesis_prompt(Harness::Mcp, &Budget::default())?
+                .lookup_available,
+            "neither spent the round"
+        );
         let id = rid("702.19")?;
         let chunks = s.lookup_rules(std::slice::from_ref(&id), &p).await?;
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(s.lookup_rules(std::slice::from_ref(&id), &p).await, Err(SessionError::LookupUsed)));
+        assert!(matches!(
+            s.lookup_rules(std::slice::from_ref(&id), &p).await,
+            Err(SessionError::LookupUsed)
+        ));
         // A budget with room for one chunk: the fetched chunk must still be rendered.
-        let tight = Budget { max_rule_chunks: 1, ..Budget::default() };
+        let tight = Budget {
+            max_rule_chunks: 1,
+            ..Budget::default()
+        };
         let prompt = s.synthesis_prompt(Harness::Mcp, &tight)?;
         assert!(!prompt.lookup_available);
-        assert!(prompt.material.contains("[702.19]"), "fetched chunk is pinned past the budget");
+        assert!(
+            prompt.material.contains("[702.19]"),
+            "fetched chunk is pinned past the budget"
+        );
         let v = Verdict::new(
             "Lifelink and the fetched rule together decide this question in favour of no.".into(),
             Confidence::Medium,
-            vec![Citation::Rule { id, quote: judge_core::Quote::try_new(BODY)? }],
+            vec![Citation::Rule {
+                id,
+                quote: judge_core::Quote::try_new(BODY)?,
+            }],
             Category::Combat,
         );
-        s.submit_verdict(v, &p, Harness::Mcp, &Budget::default()).await?;
+        s.submit_verdict(v, &p, Harness::Mcp, &Budget::default())
+            .await?;
         Ok(())
     }
 
@@ -893,11 +1151,33 @@ mod tests {
     async fn ambiguity_leaves_the_session_open_for_a_pinned_resubmission() -> anyhow::Result<()> {
         let p = ports();
         let mut s = session()?;
-        let r = s.submit_extraction(extraction(&["urza"], Source::Cr), &p, &p, Harness::Mcp, &Budget::default()).await;
-        assert!(matches!(r, Err(SessionError::Pipeline(JudgeError::AmbiguousCards(_)))));
+        let r = s
+            .submit_extraction(
+                extraction(&["urza"], Source::Cr),
+                &p,
+                &p,
+                Harness::Mcp,
+                &Budget::default(),
+            )
+            .await;
+        assert!(matches!(
+            r,
+            Err(SessionError::Pipeline(JudgeError::AmbiguousCards(_)))
+        ));
         assert!(matches!(s.stage, Stage::AwaitingExtraction { .. }));
-        let r = s.submit_extraction(extraction(&["nope"], Source::Cr), &p, &p, Harness::Mcp, &Budget::default()).await;
-        assert!(matches!(r, Err(SessionError::Pipeline(JudgeError::CardsNotFound(_)))));
+        let r = s
+            .submit_extraction(
+                extraction(&["nope"], Source::Cr),
+                &p,
+                &p,
+                Harness::Mcp,
+                &Budget::default(),
+            )
+            .await;
+        assert!(matches!(
+            r,
+            Err(SessionError::Pipeline(JudgeError::CardsNotFound(_)))
+        ));
         let prompt = ready(&mut s, &p, &["[[Urza's Saga]]"]).await?;
         assert!(prompt.material.contains("Urza's Saga"));
         Ok(())
@@ -910,13 +1190,15 @@ mod tests {
         let mut e = extraction(&[], Source::Cr);
         e.concepts = (0..=MAX_EXTRACTION_ITEMS).map(|i| i.to_string()).collect();
         assert!(matches!(
-            s.submit_extraction(e, &p, &p, Harness::Mcp, &Budget::default()).await,
+            s.submit_extraction(e, &p, &p, Harness::Mcp, &Budget::default())
+                .await,
             Err(SessionError::Invalid(_))
         ));
         let mut e = extraction(&[], Source::Cr);
         e.card_spans = vec!["x".repeat(MAX_EXTRACTION_ITEM_CHARS + 1)];
         assert!(matches!(
-            s.submit_extraction(e, &p, &p, Harness::Mcp, &Budget::default()).await,
+            s.submit_extraction(e, &p, &p, Harness::Mcp, &Budget::default())
+                .await,
             Err(SessionError::Invalid(_))
         ));
         assert!(matches!(s.stage, Stage::AwaitingExtraction { .. }));
@@ -927,10 +1209,31 @@ mod tests {
     async fn out_of_scope_closes_the_session() -> anyhow::Result<()> {
         let p = ports();
         let mut s = session()?;
-        let r = s.submit_extraction(extraction(&[], Source::Tournament), &p, &p, Harness::Cli, &Budget::default()).await?;
-        assert_eq!(r, Extracted::OutOfScope { source: Source::Tournament });
-        assert!(matches!(s.stage, Stage::Closed(Outcome::OutOfScope { source: Source::Tournament })));
-        assert!(matches!(s.extraction_prompt(5), Err(SessionError::WrongStage { .. })));
+        let r = s
+            .submit_extraction(
+                extraction(&[], Source::Tournament),
+                &p,
+                &p,
+                Harness::Cli,
+                &Budget::default(),
+            )
+            .await?;
+        assert_eq!(
+            r,
+            Extracted::OutOfScope {
+                source: Source::Tournament
+            }
+        );
+        assert!(matches!(
+            s.stage,
+            Stage::Closed(Outcome::OutOfScope {
+                source: Source::Tournament
+            })
+        ));
+        assert!(matches!(
+            s.extraction_prompt(5),
+            Err(SessionError::WrongStage { .. })
+        ));
         Ok(())
     }
 
@@ -939,12 +1242,27 @@ mod tests {
         let p = ports();
         let mut s = session()?;
         assert!(matches!(
-            s.submit_verdict(verdict(BODY)?, &p, Harness::Mcp, &Budget::default()).await,
-            Err(SessionError::WrongStage { expected: "awaiting_verdict", actual: "awaiting_extraction" })
+            s.submit_verdict(verdict(BODY)?, &p, Harness::Mcp, &Budget::default())
+                .await,
+            Err(SessionError::WrongStage {
+                expected: "awaiting_verdict",
+                actual: "awaiting_extraction"
+            })
         ));
-        assert!(matches!(s.lookup_rules(&[], &p).await, Err(SessionError::WrongStage { .. })));
-        assert!(matches!(s.persist(&Store(Mutex::new(vec![]))).await, Err(SessionError::WrongStage { .. })));
-        assert!(p.lookups.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
+        assert!(matches!(
+            s.lookup_rules(&[], &p).await,
+            Err(SessionError::WrongStage { .. })
+        ));
+        assert!(matches!(
+            s.persist(&Store(Mutex::new(vec![]))).await,
+            Err(SessionError::WrongStage { .. })
+        ));
+        assert!(
+            p.lookups
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -960,11 +1278,15 @@ mod tests {
         let leaf = Verdict::new(
             "No. Multiple instances of lifelink are redundant; the life gain happens once.".into(),
             Confidence::High,
-            vec![Citation::Rule { id: rid("702.15b")?, quote: judge_core::Quote::try_new("gain that much life")? }],
+            vec![Citation::Rule {
+                id: rid("702.15b")?,
+                quote: judge_core::Quote::try_new("gain that much life")?,
+            }],
             Category::Combat,
         );
         assert!(matches!(
-            s.submit_verdict(leaf, &p, Harness::Mcp, &Budget::default()).await,
+            s.submit_verdict(leaf, &p, Harness::Mcp, &Budget::default())
+                .await,
             Err(SessionError::Pipeline(JudgeError::Upstream(_)))
         ));
         assert_eq!(s, before);
@@ -984,20 +1306,33 @@ mod tests {
         };
         assert_eq!(roundtrip(&s)?, s);
         ready(&mut s, &p, &["[[Urza's Saga]]"]).await?;
-        assert_eq!(roundtrip(&s)?, s, "with cards, rulings, glossary, prior calls and notes");
-        let _ = s.submit_verdict(verdict("wrong")?, &p, Harness::Mcp, &Budget::default()).await;
+        assert_eq!(
+            roundtrip(&s)?,
+            s,
+            "with cards, rulings, glossary, prior calls and notes"
+        );
+        let _ = s
+            .submit_verdict(verdict("wrong")?, &p, Harness::Mcp, &Budget::default())
+            .await;
         assert_eq!(roundtrip(&s)?, s, "with a pending BadCitation rejection");
         // A leaf citation: the parent 702.15 is in the context, 702.15b is hydrated.
         let leaf = Verdict::new(
             "No. Multiple instances of lifelink are redundant; the life gain happens once.".into(),
             Confidence::High,
-            vec![Citation::Rule { id: rid("702.15b")?, quote: judge_core::Quote::try_new("that source's controller to gain")? }],
+            vec![Citation::Rule {
+                id: rid("702.15b")?,
+                quote: judge_core::Quote::try_new("that source's controller to gain")?,
+            }],
             Category::Combat,
         );
-        s.submit_verdict(leaf, &p, Harness::Mcp, &Budget::default()).await?;
+        s.submit_verdict(leaf, &p, Harness::Mcp, &Budget::default())
+            .await?;
         let back = roundtrip(&s)?;
         assert_eq!(back, s);
-        assert!(back.accepted().is_some(), "the hydrated context is what was stored, so the leaf still validates");
+        assert!(
+            back.accepted().is_some(),
+            "the hydrated context is what was stored, so the leaf still validates"
+        );
 
         // The other rejection kinds, and a failed close, round-trip too.
         for rejection in [
@@ -1006,7 +1341,10 @@ mod tests {
             Rejection::Empty(EmptyVerdict::NoCitations),
             Rejection::Oversized { chars: 9000 },
         ] {
-            let closed = Session { stage: Stage::Closed(Outcome::Failed { rejection }), ..s.clone() };
+            let closed = Session {
+                stage: Stage::Closed(Outcome::Failed { rejection }),
+                ..s.clone()
+            };
             assert_eq!(roundtrip(&closed)?, closed);
         }
         Ok(())

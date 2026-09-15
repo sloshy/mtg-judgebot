@@ -121,10 +121,24 @@ mod tests {
         let c = d.capabilities();
         assert_eq!(c.structured_output, StructuredOutput::Enforced);
         assert!(c.strict_tools && !c.effort && !c.cache_hints && !c.refusal_fallbacks);
-        let d = Dialect { structured_output: StructuredOutputMode::JsonObject, strict_tools: false, reasoning_effort: true, cache_hints: true, ..d };
+        let d = Dialect {
+            structured_output: StructuredOutputMode::JsonObject,
+            strict_tools: false,
+            reasoning_effort: true,
+            cache_hints: true,
+            ..d
+        };
         let c = d.capabilities();
         assert_eq!(c.structured_output, StructuredOutput::JsonMode);
         assert!(!c.strict_tools && c.effort && c.cache_hints && !c.refusal_fallbacks);
-        assert_eq!(Dialect { structured_output: StructuredOutputMode::Prompt, ..d }.capabilities().structured_output, StructuredOutput::PromptOnly);
+        assert_eq!(
+            Dialect {
+                structured_output: StructuredOutputMode::Prompt,
+                ..d
+            }
+            .capabilities()
+            .structured_output,
+            StructuredOutput::PromptOnly
+        );
     }
 }

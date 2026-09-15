@@ -57,3 +57,6 @@ todo = "warn"
 dbg_macro = "warn"
 # JudgeError carries NonEmpty<Ambiguous>; boxing it buys nothing at this scale.
 result_large_err = "allow"
+# Counts physical lines, so rustfmt's line breaking decides it; the functions
+# it flags are a CLI dispatcher, a loader and a few table-driven tests.
+too_many_lines = "allow"

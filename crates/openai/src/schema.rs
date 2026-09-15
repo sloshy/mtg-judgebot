@@ -17,7 +17,11 @@
 //! Removed constraints are still enforced client-side by serde/nutype when
 //! the response is deserialized.
 
-use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings, transform::{Transform, transform_subschemas}};
+use schemars::{
+    JsonSchema, Schema, SchemaGenerator,
+    generate::SchemaSettings,
+    transform::{Transform, transform_subschemas},
+};
 use serde_json::Value;
 
 /// Keys strict mode rejects; stripped from every subschema. The constraint
@@ -47,7 +51,11 @@ pub struct OpenAiStrict;
 
 fn is_object(obj: &serde_json::Map<String, Value>) -> bool {
     obj.contains_key("properties")
-        || obj.get("type").is_some_and(|t| t == "object" || t.as_array().is_some_and(|a| a.iter().any(|x| x == "object")))
+        || obj.get("type").is_some_and(|t| {
+            t == "object"
+                || t.as_array()
+                    .is_some_and(|a| a.iter().any(|x| x == "object"))
+        })
 }
 
 impl Transform for OpenAiStrict {
@@ -77,7 +85,9 @@ impl Transform for OpenAiStrict {
 #[must_use]
 pub fn openai_schema<T: JsonSchema>() -> Value {
     let settings = SchemaSettings::draft2020_12().with_transform(OpenAiStrict);
-    SchemaGenerator::new(settings).into_root_schema_for::<T>().to_value()
+    SchemaGenerator::new(settings)
+        .into_root_schema_for::<T>()
+        .to_value()
 }
 
 /// Apply the strict subset to an already generated (untransformed) schema,
@@ -117,10 +127,26 @@ mod tests {
             }
             if is_object(m) {
                 objects += 1;
-                assert_eq!(m.get("additionalProperties"), Some(&Value::Bool(false)), "open object: {schema:#}");
-                let props: Vec<&String> = m.get("properties").and_then(Value::as_object).map(|p| p.keys().collect()).unwrap_or_default();
-                let required: Vec<&str> = m.get("required").and_then(Value::as_array).map(|r| r.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-                assert_eq!(props.iter().map(|s| s.as_str()).collect::<Vec<_>>(), required, "not every property required: {schema:#}");
+                assert_eq!(
+                    m.get("additionalProperties"),
+                    Some(&Value::Bool(false)),
+                    "open object: {schema:#}"
+                );
+                let props: Vec<&String> = m
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .map(|p| p.keys().collect())
+                    .unwrap_or_default();
+                let required: Vec<&str> = m
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .map(|r| r.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                assert_eq!(
+                    props.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    required,
+                    "not every property required: {schema:#}"
+                );
             }
         });
         assert!(objects >= 1, "{schema:#}");
@@ -128,26 +154,50 @@ mod tests {
 
     #[test]
     fn transforming_after_generation_equals_generating_with_the_transform() {
-        assert_eq!(to_openai_strict(&judge_llm::schema_of::<Verdict>()), openai_schema::<Verdict>());
-        assert_eq!(to_openai_strict(&judge_llm::schema_of::<Extraction>()), openai_schema::<Extraction>());
-        assert_eq!(to_openai_strict(&judge_llm::schema_of::<Outer>()), openai_schema::<Outer>());
+        assert_eq!(
+            to_openai_strict(&judge_llm::schema_of::<Verdict>()),
+            openai_schema::<Verdict>()
+        );
+        assert_eq!(
+            to_openai_strict(&judge_llm::schema_of::<Extraction>()),
+            openai_schema::<Extraction>()
+        );
+        assert_eq!(
+            to_openai_strict(&judge_llm::schema_of::<Outer>()),
+            openai_schema::<Outer>()
+        );
     }
 
     #[test]
     fn the_pipeline_schemas_fit_strict_mode() {
-        for (name, schema) in [("Verdict", openai_schema::<Verdict>()), ("Extraction", openai_schema::<Extraction>()), ("LookupRulesInput", openai_schema::<LookupRulesInput>())] {
+        for (name, schema) in [
+            ("Verdict", openai_schema::<Verdict>()),
+            ("Extraction", openai_schema::<Extraction>()),
+            ("LookupRulesInput", openai_schema::<LookupRulesInput>()),
+        ] {
             assert_strict(&schema);
             let s = schema.to_string();
-            assert!(!s.contains("uint32") && !s.contains("\"uuid\"") && !s.contains("\"format\""), "{name}: {schema:#}");
+            assert!(
+                !s.contains("uint32") && !s.contains("\"uuid\"") && !s.contains("\"format\""),
+                "{name}: {schema:#}"
+            );
         }
         // The tagged Citation enum became anyOf and kept its discriminator.
         let s = openai_schema::<Verdict>().to_string();
         assert!(s.contains("anyOf") && s.contains("\"kind\""), "{s}");
         // `secondary` (serde default, so not required by schemars) is now required, still an array, not nullable.
         let e = openai_schema::<Extraction>();
-        let required = e.pointer("/required").and_then(Value::as_array).cloned().unwrap_or_default();
+        let required = e
+            .pointer("/required")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         assert!(required.iter().any(|r| r == "secondary"), "{e:#}");
-        assert_eq!(e.pointer("/properties/secondary/type"), Some(&Value::String("array".into())), "{e:#}");
+        assert_eq!(
+            e.pointer("/properties/secondary/type"),
+            Some(&Value::String("array".into())),
+            "{e:#}"
+        );
     }
 
     #[derive(JsonSchema)]
@@ -177,15 +227,33 @@ mod tests {
         let schema = openai_schema::<Outer>();
         assert_strict(&schema);
         let s = schema.to_string();
-        assert!(!s.contains("uint8") && !s.contains("\"default\""), "{schema:#}");
+        assert!(
+            !s.contains("uint8") && !s.contains("\"default\""),
+            "{schema:#}"
+        );
         // The Option<Inner> field keeps whatever nullable form schemars gave it.
-        let maybe = schema.pointer("/properties/maybe").cloned().unwrap_or_default().to_string();
+        let maybe = schema
+            .pointer("/properties/maybe")
+            .cloned()
+            .unwrap_or_default()
+            .to_string();
         assert!(maybe.contains("null"), "{maybe}");
-        let required: Vec<&str> = schema.pointer("/required").and_then(Value::as_array).map(|r| r.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-        assert_eq!(required, ["count", "list", "maybe", "name", "tags"], "every property, in the map's (sorted) order");
+        let required: Vec<&str> = schema
+            .pointer("/required")
+            .and_then(Value::as_array)
+            .map(|r| r.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            required,
+            ["count", "list", "maybe", "name", "tags"],
+            "every property, in the map's (sorted) order"
+        );
         // $defs are transformed too.
         let inner = schema.pointer("/$defs/Inner").cloned().unwrap_or_default();
-        assert_eq!(inner.pointer("/additionalProperties"), Some(&Value::Bool(false)));
+        assert_eq!(
+            inner.pointer("/additionalProperties"),
+            Some(&Value::Bool(false))
+        );
         assert!(!inner.to_string().contains("pattern"), "{inner:#}");
     }
 }

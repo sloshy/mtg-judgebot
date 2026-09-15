@@ -49,7 +49,10 @@ impl PgCallStore {
     }
 
     async fn embed(&self, text: &str) -> Option<Vector> {
-        self.vectors.as_ref()?.embed(text, InputKind::Document).await
+        self.vectors
+            .as_ref()?
+            .embed(text, InputKind::Document)
+            .await
     }
 }
 

@@ -188,7 +188,8 @@ struct RulingRow {
 impl ScryfallCard {
     /// The card's oracle id: top-level, or (reversible cards) the first face's.
     fn effective_oracle_id(&self) -> Option<Uuid> {
-        self.oracle_id.or_else(|| self.card_faces.iter().find_map(|f| f.oracle_id))
+        self.oracle_id
+            .or_else(|| self.card_faces.iter().find_map(|f| f.oracle_id))
     }
 
     /// Skip-rule parts 1, 2 and 4: non-game layouts, non-game set types, no oracle id.
@@ -200,7 +201,9 @@ impl ScryfallCard {
 
     /// Skip-rule part 3: this *printing* is not available on paper.
     fn is_digital_only(&self) -> bool {
-        self.games.as_ref().is_some_and(|g| !g.iter().any(|x| x == "paper"))
+        self.games
+            .as_ref()
+            .is_some_and(|g| !g.iter().any(|x| x == "paper"))
     }
 
     /// Module-level skip rule for a card whose oracle id is known to have a
@@ -242,7 +245,12 @@ impl ScryfallCard {
         };
         // Reversible cards carry no top-level type_line; join the faces'.
         let type_line = self.type_line.clone().unwrap_or_else(|| {
-            faces.iter().map(|f| f.type_line.as_str()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" // ")
+            faces
+                .iter()
+                .map(|f| f.type_line.as_str())
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(" // ")
         });
         let card = CardRow {
             oracle_id,
@@ -253,7 +261,11 @@ impl ScryfallCard {
             color_identity: self.color_identity.clone(),
             keywords: self.keywords.clone(),
             scryfall_id: self.id,
-            legalities: if self.legalities.is_object() { self.legalities.clone() } else { serde_json::json!({}) },
+            legalities: if self.legalities.is_object() {
+                self.legalities.clone()
+            } else {
+                serde_json::json!({})
+            },
         };
         Some((card, faces))
     }
@@ -311,7 +323,10 @@ fn key_rulings(raw: HashMap<Uuid, Vec<(String, String)>>) -> Vec<RulingRow> {
 // ---------------------------------------------------------------------------
 
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder().user_agent(USER_AGENT).build().context("building HTTP client")
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .context("building HTTP client")
 }
 
 /// Fetch the bulk index and return the entries we need, keyed by type.
@@ -327,15 +342,25 @@ async fn bulk_index(client: &reqwest::Client) -> Result<HashMap<String, BulkEntr
         .json()
         .await
         .context("parsing /bulk-data")?;
-    Ok(index.data.into_iter().map(|e| (e.kind.clone(), e)).collect())
+    Ok(index
+        .data
+        .into_iter()
+        .map(|e| (e.kind.clone(), e))
+        .collect())
 }
 
 /// Return the cached JSONL path for `kind`, downloading only if `updated_at` changed.
-async fn fetch_bulk(client: &reqwest::Client, cache_dir: &Path, entry: &BulkEntry) -> Result<PathBuf> {
-    std::fs::create_dir_all(cache_dir).with_context(|| format!("creating {}", cache_dir.display()))?;
+async fn fetch_bulk(
+    client: &reqwest::Client,
+    cache_dir: &Path,
+    entry: &BulkEntry,
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(cache_dir)
+        .with_context(|| format!("creating {}", cache_dir.display()))?;
     let path = cache_dir.join(format!("{}.jsonl", entry.kind));
     let stamp = cache_dir.join(format!("{}.updated_at", entry.kind));
-    if path.is_file() && std::fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == entry.updated_at) {
+    if path.is_file() && std::fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == entry.updated_at)
+    {
         tracing::info!(kind = %entry.kind, path = %path.display(), "bulk file unchanged; using cache");
         return Ok(path);
     }
@@ -354,9 +379,15 @@ async fn fetch_bulk(client: &reqwest::Client, cache_dir: &Path, entry: &BulkEntr
         .error_for_status()
         .with_context(|| format!("GET {uri} status"))?;
     let tmp = cache_dir.join(format!("{}.jsonl.part", entry.kind));
-    let mut file = std::io::BufWriter::new(std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?);
+    let mut file = std::io::BufWriter::new(
+        std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?,
+    );
     let mut bytes: u64 = 0;
-    while let Some(chunk) = resp.chunk().await.with_context(|| format!("reading {uri}"))? {
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .with_context(|| format!("reading {uri}"))?
+    {
         file.write_all(&chunk)?;
         bytes += chunk.len() as u64;
     }
@@ -379,10 +410,12 @@ async fn fetch_bulk(client: &reqwest::Client, cache_dir: &Path, entry: &BulkEntr
 /// the cached file is decompressed transparently when it starts with the gzip
 /// magic bytes, so both plain and gzipped caches work.
 fn jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<impl Iterator<Item = Result<T>>> {
-    let mut file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut magic = [0u8; 2];
     let gzipped = file.read_exact(&mut magic).is_ok() && magic == [0x1f, 0x8b];
-    file.seek(std::io::SeekFrom::Start(0)).with_context(|| format!("rewinding {}", path.display()))?;
+    file.seek(std::io::SeekFrom::Start(0))
+        .with_context(|| format!("rewinding {}", path.display()))?;
     let raw: Box<dyn std::io::Read> = if gzipped {
         tracing::info!(path = %path.display(), "gzip-compressed bulk file; decompressing on the fly");
         Box::new(flate2::read::GzDecoder::new(file))
@@ -390,7 +423,9 @@ fn jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<impl Iterator<It
         Box::new(file)
     };
     let shown = path.display().to_string();
-    let mut lines = std::io::BufReader::with_capacity(1 << 20, raw).lines().enumerate();
+    let mut lines = std::io::BufReader::with_capacity(1 << 20, raw)
+        .lines()
+        .enumerate();
     let mut bad: u32 = 0;
     let mut done = false;
     Ok(std::iter::from_fn(move || {
@@ -406,7 +441,9 @@ fn jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<impl Iterator<It
                 Ok(l) => l,
                 Err(err) => {
                     done = true; // stop pulling from the broken reader
-                    return Some(Err(anyhow::Error::new(err).context(format!("reading {shown} line {}", n + 1))));
+                    return Some(Err(
+                        anyhow::Error::new(err).context(format!("reading {shown} line {}", n + 1))
+                    ));
                 }
             };
             let trimmed = line.trim();
@@ -456,7 +493,10 @@ async fn insert_cards(pool: &PgPool, cards: &[CardRow], faces: &[FaceRow]) -> Re
          keywords = EXCLUDED.keywords, scryfall_id = EXCLUDED.scryfall_id, legalities = EXCLUDED.legalities, \
          updated_at = now()",
     );
-    qb.build().execute(&mut *tx).await.context("upserting cards")?;
+    qb.build()
+        .execute(&mut *tx)
+        .await
+        .context("upserting cards")?;
 
     // Faces: a card may lose faces between syncs (layout errata), so clear first.
     let ids: Vec<Uuid> = cards.iter().map(|c| c.oracle_id).collect();
@@ -465,8 +505,9 @@ async fn insert_cards(pool: &PgPool, cards: &[CardRow], faces: &[FaceRow]) -> Re
         .await
         .context("clearing card_faces")?;
     for chunk in faces.chunks(BATCH) {
-        let mut qb: QueryBuilder<Postgres> =
-            QueryBuilder::new("INSERT INTO card_faces (oracle_id, face_idx, name, oracle_text, mana_cost, type_line) ");
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "INSERT INTO card_faces (oracle_id, face_idx, name, oracle_text, mana_cost, type_line) ",
+        );
         qb.push_values(chunk, |mut b, f| {
             b.push_bind(f.oracle_id)
                 .push_bind(f.face_idx)
@@ -476,7 +517,10 @@ async fn insert_cards(pool: &PgPool, cards: &[CardRow], faces: &[FaceRow]) -> Re
                 .push_bind(&f.type_line);
         });
         qb.push(" ON CONFLICT (oracle_id, face_idx) DO UPDATE SET name = EXCLUDED.name, oracle_text = EXCLUDED.oracle_text, mana_cost = EXCLUDED.mana_cost, type_line = EXCLUDED.type_line");
-        qb.build().execute(&mut *tx).await.context("upserting card_faces")?;
+        qb.build()
+            .execute(&mut *tx)
+            .await
+            .context("upserting card_faces")?;
     }
     tx.commit().await?;
     Ok(())
@@ -488,12 +532,16 @@ async fn insert_printed_names(pool: &PgPool, rows: &[(String, Uuid)]) -> Result<
     }
     let mut tx = pool.begin().await?;
     for chunk in rows.chunks(BATCH) {
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("INSERT INTO printed_names (printed_name, oracle_id) ");
+        let mut qb: QueryBuilder<Postgres> =
+            QueryBuilder::new("INSERT INTO printed_names (printed_name, oracle_id) ");
         qb.push_values(chunk, |mut b, (name, id)| {
             b.push_bind(name).push_bind(id);
         });
         qb.push(" ON CONFLICT (printed_name, oracle_id) DO NOTHING");
-        qb.build().execute(&mut *tx).await.context("inserting printed_names")?;
+        qb.build()
+            .execute(&mut *tx)
+            .await
+            .context("inserting printed_names")?;
     }
     tx.commit().await?;
     Ok(())
@@ -505,20 +553,33 @@ async fn insert_rulings(pool: &PgPool, rows: &[RulingRow]) -> Result<()> {
     }
     let mut tx = pool.begin().await?;
     // A card's ruling list can shrink; replace the whole list for each touched card.
-    let ids: Vec<Uuid> = rows.iter().map(|r| r.oracle_id).collect::<HashSet<_>>().into_iter().collect();
+    let ids: Vec<Uuid> = rows
+        .iter()
+        .map(|r| r.oracle_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
     sqlx::query!("DELETE FROM rulings WHERE oracle_id = ANY($1)", &ids)
         .execute(&mut *tx)
         .await
         .context("clearing rulings")?;
     for chunk in rows.chunks(BATCH) {
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("INSERT INTO rulings (oracle_id, key, published_at, text) ");
+        let mut qb: QueryBuilder<Postgres> =
+            QueryBuilder::new("INSERT INTO rulings (oracle_id, key, published_at, text) ");
         qb.push_values(chunk, |mut b, r| {
-            b.push_bind(r.oracle_id).push_bind(r.key.to_string()).push_bind(&r.published_at).push_unseparated("::date").push_bind(&r.text);
+            b.push_bind(r.oracle_id)
+                .push_bind(r.key.to_string())
+                .push_bind(&r.published_at)
+                .push_unseparated("::date")
+                .push_bind(&r.text);
         });
         // The list was just cleared, so a conflict is only possible within this
         // batch and key_rulings has deduplicated it; DO NOTHING is a safety net.
         qb.push(" ON CONFLICT (oracle_id, key) DO NOTHING");
-        qb.build().execute(&mut *tx).await.context("inserting rulings")?;
+        qb.build()
+            .execute(&mut *tx)
+            .await
+            .context("inserting rulings")?;
     }
     tx.commit().await?;
     Ok(())
@@ -535,7 +596,11 @@ async fn insert_rulings(pool: &PgPool, rows: &[RulingRow]) -> Result<()> {
 pub async fn run(pool: &PgPool, cache_dir: &Path) -> Result<()> {
     let client = client()?;
     let index = bulk_index(&client).await?;
-    let entry = |kind: &str| index.get(kind).ok_or_else(|| anyhow::anyhow!("bulk index has no `{kind}` entry"));
+    let entry = |kind: &str| {
+        index
+            .get(kind)
+            .ok_or_else(|| anyhow::anyhow!("bulk index has no `{kind}` entry"))
+    };
     let oracle_path = fetch_bulk(&client, cache_dir, entry("oracle_cards")?).await?;
     let default_path = fetch_bulk(&client, cache_dir, entry("default_cards")?).await?;
     let rulings_path = fetch_bulk(&client, cache_dir, entry("rulings")?).await?;
@@ -564,7 +629,9 @@ pub async fn run(pool: &PgPool, cache_dir: &Path) -> Result<()> {
     for card in jsonl::<ScryfallCard>(&oracle_path)? {
         let card = card?;
         seen += 1;
-        let has_paper = card.effective_oracle_id().is_some_and(|id| paper.contains(&id));
+        let has_paper = card
+            .effective_oracle_id()
+            .is_some_and(|id| paper.contains(&id));
         let Some((row, fs)) = card.to_rows(has_paper) else {
             skipped += 1;
             continue;
@@ -590,7 +657,9 @@ pub async fn run(pool: &PgPool, cache_dir: &Path) -> Result<()> {
     for card in jsonl::<ScryfallCard>(&default_path)? {
         let card = card?;
         printings += 1;
-        let Some(oracle_id) = card.effective_oracle_id() else { continue };
+        let Some(oracle_id) = card.effective_oracle_id() else {
+            continue;
+        };
         // Names from digital printings of a known paper card are still real names.
         if card.is_skipped_shape() || !known.contains(&oracle_id) {
             continue;
@@ -620,10 +689,14 @@ pub async fn run(pool: &PgPool, cache_dir: &Path) -> Result<()> {
             orphaned += 1;
             continue;
         }
-        raw.entry(r.oracle_id).or_default().push((r.published_at, r.comment));
+        raw.entry(r.oracle_id)
+            .or_default()
+            .push((r.published_at, r.comment));
     }
     let mut rows = key_rulings(raw);
-    rows.sort_by(|a, b| (a.oracle_id, &a.published_at, &a.key).cmp(&(b.oracle_id, &b.published_at, &b.key)));
+    rows.sort_by(|a, b| {
+        (a.oracle_id, &a.published_at, &a.key).cmp(&(b.oracle_id, &b.published_at, &b.key))
+    });
     // Group whole cards per batch so the DELETE+INSERT stays consistent per card.
     let mut start = 0;
     while start < rows.len() {
@@ -653,12 +726,17 @@ async fn remove_stale(pool: &PgPool, known: &HashSet<Uuid>, ruled: &HashSet<Uuid
         .context("deleting retired cards")?
         .rows_affected();
     let ruled_ids: Vec<Uuid> = ruled.iter().copied().collect();
-    let removed_rulings = sqlx::query!("DELETE FROM rulings WHERE oracle_id <> ALL($1)", &ruled_ids)
-        .execute(pool)
-        .await
-        .context("deleting withdrawn rulings")?
-        .rows_affected();
-    tracing::info!(removed_cards, removed_rulings, "removed rows no longer in the bulk files");
+    let removed_rulings =
+        sqlx::query!("DELETE FROM rulings WHERE oracle_id <> ALL($1)", &ruled_ids)
+            .execute(pool)
+            .await
+            .context("deleting withdrawn rulings")?
+            .rows_affected();
+    tracing::info!(
+        removed_cards,
+        removed_rulings,
+        "removed rows no longer in the bulk files"
+    );
     Ok(())
 }
 
@@ -673,7 +751,8 @@ async fn remove_stale(pool: &PgPool, known: &HashSet<Uuid>, ruled: &HashSet<Uuid
 /// # Errors
 /// If the text is not a YAML mapping of string to string.
 fn parse_alias_yaml(text: &str) -> Result<Vec<(String, String)>> {
-    let map: BTreeMap<String, String> = serde_yaml_ng::from_str(text).context("aliases: expected a flat `alias: Card Name` mapping")?;
+    let map: BTreeMap<String, String> = serde_yaml_ng::from_str(text)
+        .context("aliases: expected a flat `alias: Card Name` mapping")?;
     Ok(map
         .into_iter()
         .filter_map(|(k, v)| {
@@ -694,16 +773,23 @@ fn parse_alias_yaml(text: &str) -> Result<Vec<(String, String)>> {
 /// # Errors
 /// On read, parse or database failure.
 pub async fn load_aliases(pool: &PgPool, path: &Path) -> Result<()> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let pairs = parse_alias_yaml(&text)?;
-    let wanted: Vec<String> = pairs.iter().map(|(_, n)| n.to_lowercase()).collect::<HashSet<_>>().into_iter().collect();
+    let wanted: Vec<String> = pairs
+        .iter()
+        .map(|(_, n)| n.to_lowercase())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
 
     let mut by_name: BTreeMap<String, Uuid> = BTreeMap::new();
-    let rows: Vec<(String, Uuid)> = sqlx::query_as("SELECT lower(name), oracle_id FROM cards WHERE lower(name) = ANY($1)")
-        .bind(&wanted)
-        .fetch_all(pool)
-        .await
-        .context("resolving alias names against cards")?;
+    let rows: Vec<(String, Uuid)> =
+        sqlx::query_as("SELECT lower(name), oracle_id FROM cards WHERE lower(name) = ANY($1)")
+            .bind(&wanted)
+            .fetch_all(pool)
+            .await
+            .context("resolving alias names against cards")?;
     by_name.extend(rows);
     let face_rows: Vec<(String, Uuid)> =
         sqlx::query_as("SELECT lower(name), oracle_id FROM card_faces WHERE lower(name) = ANY($1) ORDER BY face_idx DESC")
@@ -726,22 +812,37 @@ pub async fn load_aliases(pool: &PgPool, path: &Path) -> Result<()> {
         if let Some(id) = by_name.get(&name.to_lowercase()) {
             resolved.push((alias, *id));
         } else {
-            tracing::warn!(alias, name, "aliases: card name not found in cards/card_faces");
+            tracing::warn!(
+                alias,
+                name,
+                "aliases: card name not found in cards/card_faces"
+            );
             unresolved.push(name);
         }
     }
 
     let mut tx = pool.begin().await?;
-    sqlx::query!("DELETE FROM card_aliases").execute(&mut *tx).await.context("clearing card_aliases")?;
+    sqlx::query!("DELETE FROM card_aliases")
+        .execute(&mut *tx)
+        .await
+        .context("clearing card_aliases")?;
     for chunk in resolved.chunks(BATCH) {
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("INSERT INTO card_aliases (alias, oracle_id) ");
+        let mut qb: QueryBuilder<Postgres> =
+            QueryBuilder::new("INSERT INTO card_aliases (alias, oracle_id) ");
         qb.push_values(chunk, |mut b, (alias, id)| {
             b.push_bind(alias).push_bind(id);
         });
-        qb.build().execute(&mut *tx).await.context("inserting card_aliases")?;
+        qb.build()
+            .execute(&mut *tx)
+            .await
+            .context("inserting card_aliases")?;
     }
     tx.commit().await?;
-    tracing::info!(loaded = resolved.len(), unresolved = unresolved.len(), "card_aliases replaced");
+    tracing::info!(
+        loaded = resolved.len(),
+        unresolved = unresolved.len(),
+        "card_aliases replaced"
+    );
     if !unresolved.is_empty() {
         tracing::warn!(names = ?unresolved, "aliases: unresolved card names (run `ingest cards` first?)");
     }
@@ -774,7 +875,10 @@ mod tests {
         assert_eq!(card.layout, "normal");
         assert_eq!(card.type_line, "Instant");
         assert_eq!(card.color_identity, vec!["R"]);
-        assert_eq!(card.scryfall_id, Some(Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap()));
+        assert_eq!(
+            card.scryfall_id,
+            Some(Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap())
+        );
         assert_eq!(card.legalities["modern"], "legal");
         assert_eq!(faces.len(), 1);
         assert_eq!(faces[0].face_idx, 0);
@@ -799,11 +903,29 @@ mod tests {
         let (card, faces) = c.to_rows(true).expect("kept");
         assert_eq!(card.name, "Delver of Secrets // Insectile Aberration");
         assert_eq!(faces.len(), 2);
-        assert_eq!((faces[0].face_idx, faces[0].name.as_str(), faces[0].mana_cost.as_str()), (0, "Delver of Secrets", "{U}"));
-        assert_eq!((faces[1].face_idx, faces[1].name.as_str(), faces[1].oracle_text.as_str()), (1, "Insectile Aberration", "Flying"));
+        assert_eq!(
+            (
+                faces[0].face_idx,
+                faces[0].name.as_str(),
+                faces[0].mana_cost.as_str()
+            ),
+            (0, "Delver of Secrets", "{U}")
+        );
+        assert_eq!(
+            (
+                faces[1].face_idx,
+                faces[1].name.as_str(),
+                faces[1].oracle_text.as_str()
+            ),
+            (1, "Insectile Aberration", "Flying")
+        );
         assert_eq!(
             c.printed_names(),
-            vec!["delver of secrets // insectile aberration", "delver of secrets", "insectile aberration"]
+            vec![
+                "delver of secrets // insectile aberration",
+                "delver of secrets",
+                "insectile aberration"
+            ]
         );
     }
 
@@ -820,7 +942,13 @@ mod tests {
         let (card, faces) = c.to_rows(true).expect("kept");
         assert_eq!(card.layout, "modal_dfc");
         assert_eq!(card.scryfall_id, None);
-        assert_eq!(faces.iter().map(|f| f.type_line.as_str()).collect::<Vec<_>>(), vec!["Instant", "Land"]);
+        assert_eq!(
+            faces
+                .iter()
+                .map(|f| f.type_line.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Instant", "Land"]
+        );
     }
 
     #[test]
@@ -854,7 +982,10 @@ mod tests {
         let (card, faces) = c.to_rows(true).expect("kept");
         assert_eq!(card.name, "Fire // Ice");
         assert_eq!(card.color_identity, vec!["U", "R"]);
-        assert_eq!(faces.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Fire", "Ice"]);
+        assert_eq!(
+            faces.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            vec!["Fire", "Ice"]
+        );
         assert_eq!(c.printed_names(), vec!["fire // ice", "fire", "ice"]);
     }
 
@@ -868,8 +999,14 @@ mod tests {
             ]}"#,
         );
         let (card, faces) = c.to_rows(true).expect("kept");
-        assert_eq!(card.oracle_id, Uuid::parse_str("77777777-7777-7777-7777-777777777777").unwrap());
-        assert_eq!(card.type_line, "Legendary Creature — Homunculus // Legendary Creature — Homunculus");
+        assert_eq!(
+            card.oracle_id,
+            Uuid::parse_str("77777777-7777-7777-7777-777777777777").unwrap()
+        );
+        assert_eq!(
+            card.type_line,
+            "Legendary Creature — Homunculus // Legendary Creature — Homunculus"
+        );
         assert_eq!(faces.len(), 2);
     }
 
@@ -882,14 +1019,27 @@ mod tests {
         };
         assert!(base("").to_rows(false).is_some());
         assert!(base(r#","games":["paper"]"#).to_rows(false).is_some());
-        assert!(base(r#","games":["arena"]"#).to_rows(false).is_none(), "digital-only");
-        assert!(base(r#","games":["mtgo"]"#).to_rows(true).is_some(), "MTGO representative of a paper card");
+        assert!(
+            base(r#","games":["arena"]"#).to_rows(false).is_none(),
+            "digital-only"
+        );
+        assert!(
+            base(r#","games":["mtgo"]"#).to_rows(true).is_some(),
+            "MTGO representative of a paper card"
+        );
         assert!(base(r#","set_type":"alchemy""#).to_rows(true).is_none());
-        assert!(base(r#","set_type":"funny""#).to_rows(false).is_some(), "acorn cards kept");
+        assert!(
+            base(r#","set_type":"funny""#).to_rows(false).is_some(),
+            "acorn cards kept"
+        );
         for layout in SKIPPED_LAYOUTS {
             assert!(parse(&format!(r#"{{"oracle_id":"88888888-8888-8888-8888-888888888888","name":"X","layout":"{layout}"}}"#)).to_rows(true).is_none());
         }
-        assert!(parse(r#"{"name":"No Oracle","layout":"normal"}"#).to_rows(true).is_none());
+        assert!(
+            parse(r#"{"name":"No Oracle","layout":"normal"}"#)
+                .to_rows(true)
+                .is_none()
+        );
     }
 
     #[test]
@@ -897,7 +1047,10 @@ mod tests {
         let c = parse(
             r#"{"oracle_id":"99999999-9999-9999-9999-999999999999","name":"Ugin's Conjurant","layout":"normal","flavor_name":"Godzilla, King of the Monsters"}"#,
         );
-        assert_eq!(c.printed_names(), vec!["ugin's conjurant", "godzilla, king of the monsters"]);
+        assert_eq!(
+            c.printed_names(),
+            vec!["ugin's conjurant", "godzilla, king of the monsters"]
+        );
     }
 
     #[test]
@@ -913,11 +1066,23 @@ mod tests {
             ],
         );
         let rows = key_rulings(raw);
-        assert_eq!(rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), vec!["z", "a", "b"]);
+        assert_eq!(
+            rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            vec!["z", "a", "b"]
+        );
         // The key is the ruling's identity: a function of date and text only, so
         // the same ruling gets the same key wherever it sits in the list.
-        assert!(rows.iter().all(|r| r.key == ruling_key(&r.published_at, &r.text)));
-        assert_eq!(rows.iter().map(|r| &r.key).collect::<std::collections::HashSet<_>>().len(), 3);
+        assert!(
+            rows.iter()
+                .all(|r| r.key == ruling_key(&r.published_at, &r.text))
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|r| &r.key)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
     }
 
     #[test]

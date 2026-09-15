@@ -37,7 +37,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use judge_core::{
-    CallId, Category, Citation, Context, CrVersion, JudgeError, PriorCall, citation_supported, oracle_fingerprint,
+    CallId, Category, Citation, Context, CrVersion, JudgeError, PriorCall, citation_supported,
+    oracle_fingerprint,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -135,28 +136,39 @@ pub async fn retire_unsupported(pool: &PgPool) -> Result<RetireSummary, JudgeErr
         match (reason_to_retire(call, &ctx), was_retired) {
             (None, false) => {}
             (None, true) => {
-                sqlx::query!("UPDATE calls SET retired_at = NULL, retired_reason = NULL WHERE id = $1", call.id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(upstream("restore call"))?;
+                sqlx::query!(
+                    "UPDATE calls SET retired_at = NULL, retired_reason = NULL WHERE id = $1",
+                    call.id
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(upstream("restore call"))?;
                 tracing::info!(call = %call.id, "call restored: its citations hold again");
                 summary.restored += 1;
             }
             (Some(reason), true) => {
                 if call.retired_reason.as_deref() != Some(reason.as_str()) {
                     // Only the reason changed; keep the original retirement time.
-                    sqlx::query!("UPDATE calls SET retired_reason = $2 WHERE id = $1", call.id, reason)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(upstream("update retirement reason"))?;
+                    sqlx::query!(
+                        "UPDATE calls SET retired_reason = $2 WHERE id = $1",
+                        call.id,
+                        reason
+                    )
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(upstream("update retirement reason"))?;
                 }
                 summary.still_retired += 1;
             }
             (Some(reason), false) => {
-                sqlx::query!("UPDATE calls SET retired_at = now(), retired_reason = $2 WHERE id = $1", call.id, reason)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(upstream("retire call"))?;
+                sqlx::query!(
+                    "UPDATE calls SET retired_at = now(), retired_reason = $2 WHERE id = $1",
+                    call.id,
+                    reason
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(upstream("retire call"))?;
                 tracing::info!(call = %call.id, %reason, "call retired");
                 summary.retired += 1;
             }
@@ -190,9 +202,10 @@ fn changed_card(call: &StoredCall, ctx: &Context) -> Option<String> {
     call.card_text.iter().find_map(|(id, fingerprint)| {
         match ctx.cards.iter().find(|c| c.id.into_inner() == *id) {
             None => Some(format!("card {id} is no longer in the card data")),
-            Some(card) if oracle_fingerprint(card) != *fingerprint => {
-                Some(format!("the Oracle text of {} ({id}) changed since the answer", card.name))
-            }
+            Some(card) if oracle_fingerprint(card) != *fingerprint => Some(format!(
+                "the Oracle text of {} ({id}) changed since the answer",
+                card.name
+            )),
             Some(_) => None,
         }
     })
@@ -209,12 +222,19 @@ fn truncate(s: &str, chars: usize) -> String {
 /// Everything the calls depend on, loaded once: exactly the rules, cards (with
 /// faces), rulings and prior-call answers their citations name, plus the cards
 /// their contexts were fingerprinted with, nothing else.
-async fn context_for(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, calls: &[StoredCall]) -> Result<Context, JudgeError> {
+async fn context_for(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    calls: &[StoredCall],
+) -> Result<Context, JudgeError> {
     let mut rule_ids: BTreeSet<String> = BTreeSet::new();
     let mut card_ids: BTreeSet<Uuid> = BTreeSet::new();
     let mut call_ids: BTreeSet<Uuid> = BTreeSet::new();
     card_ids.extend(calls.iter().flat_map(|c| c.card_text.keys().copied()));
-    for c in calls.iter().filter_map(|c| c.citations.as_ref().ok()).flatten() {
+    for c in calls
+        .iter()
+        .filter_map(|c| c.citations.as_ref().ok())
+        .flatten()
+    {
         match c {
             Citation::Rule { id, .. } => {
                 rule_ids.insert(id.as_ref().to_owned());
@@ -235,7 +255,13 @@ async fn context_for(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, calls: &[St
     let cards = cards::load_cards(&mut **tx, &card_ids).await?;
     let rulings = retrieve::load_rulings(&mut **tx, &card_ids).await?;
     let prior = prior_answers(&mut **tx, &call_ids).await?;
-    Ok(Context { cards, rules, rulings, prior, ..Context::default() })
+    Ok(Context {
+        cards,
+        rules,
+        rulings,
+        prior,
+        ..Context::default()
+    })
 }
 
 /// The cited prior calls, with only what a `prior_call` citation is checked
@@ -243,14 +269,20 @@ async fn context_for(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, calls: &[St
 /// is of the answer as written, which does not change with its status. A row
 /// with an unreadable `cr_version` is skipped with a warning, as retrieval
 /// skips it, so one corrupt row retires its citers rather than aborting the pass.
-async fn prior_answers(pool: impl sqlx::PgExecutor<'_>, ids: &[Uuid]) -> Result<Vec<PriorCall>, JudgeError> {
+async fn prior_answers(
+    pool: impl sqlx::PgExecutor<'_>,
+    ids: &[Uuid],
+) -> Result<Vec<PriorCall>, JudgeError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let rows = sqlx::query!("SELECT id, question, answer, category, cr_version FROM calls WHERE id = ANY($1)", ids)
-        .fetch_all(pool)
-        .await
-        .map_err(upstream("cited prior calls"))?;
+    let rows = sqlx::query!(
+        "SELECT id, question, answer, category, cr_version FROM calls WHERE id = ANY($1)",
+        ids
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(upstream("cited prior calls"))?;
     Ok(rows
         .into_iter()
         .filter_map(|r| {

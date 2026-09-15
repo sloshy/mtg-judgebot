@@ -185,9 +185,7 @@ impl Rendered {
     /// The characters Discord counts for the whole thing.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0
-            .iter()
-            .fold(0usize, |n, s| n.saturating_add(s.len()))
+        self.0.iter().fold(0usize, |n, s| n.saturating_add(s.len()))
     }
 
     /// Whether there is nothing to send. Cheap: it does not count characters.
@@ -332,9 +330,16 @@ mod tests {
         let out = Rendered::substitute("{ZZZ} {not a symbol} { {W}", &t).to_string();
         assert_eq!(out, "{ZZZ} {not a symbol} { <:mana_w:1000000000000000000>");
         // A doubled brace still finds the symbol inside it.
-        assert!(Rendered::substitute("{{W}", &t).to_string().starts_with("{<:mana_w:"));
+        assert!(
+            Rendered::substitute("{{W}", &t)
+                .to_string()
+                .starts_with("{<:mana_w:")
+        );
         // An unclosed brace is not a runaway scan.
-        assert_eq!(Rendered::substitute("{W is not closed", &t).to_string(), "{W is not closed");
+        assert_eq!(
+            Rendered::substitute("{W is not closed", &t).to_string(),
+            "{W is not closed"
+        );
         // Lowercase and flipped hybrids resolve to the canonical emoji.
         let w = Rendered::substitute("{W}", &t).to_string();
         assert_eq!(Rendered::substitute("{w}", &t).to_string(), w);
@@ -397,7 +402,11 @@ mod tests {
         let text = "The quick brown fox jumps over the lazy dog.  ";
         let r = Rendered::plain(text);
         for limit in 0..text.chars().count() + 5 {
-            assert_eq!(r.fit(limit), super::super::render::fit(text, limit), "limit {limit}");
+            assert_eq!(
+                r.fit(limit),
+                super::super::render::fit(text, limit),
+                "limit {limit}"
+            );
         }
     }
 

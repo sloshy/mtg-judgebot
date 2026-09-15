@@ -18,7 +18,8 @@ pub mod machine;
 use std::{sync::Arc, time::Duration};
 
 use judge_core::{
-    CallId, CallStore, Extraction, Qa, Resolver, Retriever, RuleChunk, RuleId, Unvalidated, Validated, Verdict,
+    CallId, CallStore, Extraction, Qa, Resolver, Retriever, RuleChunk, RuleId, Unvalidated,
+    Validated, Verdict,
 };
 
 use crate::{
@@ -26,9 +27,9 @@ use crate::{
     synth::{Budget, Harness},
 };
 pub use machine::{
-    AgentThread, Extracted, ExtractionPrompt, MAX_ATTEMPTS, MAX_EXTRACTION_ITEM_CHARS, MAX_EXTRACTION_ITEMS,
-    MAX_LOOKUP_IDS, MAX_QUESTION_CHARS, Outcome, PersistCall, Session, SessionError, SessionId, Stage,
-    SynthesisPrompt, THREAD_PREFIX,
+    AgentThread, Extracted, ExtractionPrompt, MAX_ATTEMPTS, MAX_EXTRACTION_ITEM_CHARS,
+    MAX_EXTRACTION_ITEMS, MAX_LOOKUP_IDS, MAX_QUESTION_CHARS, Outcome, PersistCall, Session,
+    SessionError, SessionId, Stage, SynthesisPrompt, THREAD_PREFIX,
 };
 
 /// A session an agent has not touched for this long is dropped.
@@ -51,7 +52,10 @@ pub struct Sessions {
 
 impl std::fmt::Debug for Sessions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Sessions").field("harness", &self.harness).field("ttl", &self.ttl).finish_non_exhaustive()
+        f.debug_struct("Sessions")
+            .field("harness", &self.harness)
+            .field("ttl", &self.ttl)
+            .finish_non_exhaustive()
     }
 }
 
@@ -132,17 +136,28 @@ impl Sessions {
     /// # Errors
     /// `Invalid` for an empty or over-long question; the store.
     pub async fn begin(&self, thread: AgentThread, text: String) -> Result<Begun, SessionError> {
-        let history: Vec<Qa> = match self.history.history(thread.as_str(), self.history_len).await {
+        let history: Vec<Qa> = match self
+            .history
+            .history(thread.as_str(), self.history_len)
+            .await
+        {
             Ok(h) => h,
             Err(e) => {
-                tracing::warn!(error = format_args!("{e:#}"), "thread history unavailable; judging without it");
+                tracing::warn!(
+                    error = format_args!("{e:#}"),
+                    "thread history unavailable; judging without it"
+                );
                 vec![]
             }
         };
         let session = Session::begin(SessionId::new(), thread.clone(), text, history)?;
         let extraction = session.extraction_prompt(self.history_len)?;
         self.store.insert(&session, self.ttl).await?;
-        Ok(Begun { session: session.id, thread, extraction })
+        Ok(Begun {
+            session: session.id,
+            thread,
+            extraction,
+        })
     }
 
     /// The session as stored.
@@ -160,9 +175,16 @@ impl Sessions {
     pub async fn prompt(&self, id: SessionId) -> Result<Prompt, SessionError> {
         let s = self.load(id).await?;
         match &s.stage {
-            Stage::AwaitingExtraction { .. } => Ok(Prompt::Extraction(s.extraction_prompt(self.history_len)?)),
-            Stage::AwaitingVerdict { .. } => Ok(Prompt::Synthesis(s.synthesis_prompt(self.harness, &self.budget)?)),
-            Stage::Closed(_) => Err(SessionError::WrongStage { expected: "an open session", actual: "closed" }),
+            Stage::AwaitingExtraction { .. } => {
+                Ok(Prompt::Extraction(s.extraction_prompt(self.history_len)?))
+            }
+            Stage::AwaitingVerdict { .. } => Ok(Prompt::Synthesis(
+                s.synthesis_prompt(self.harness, &self.budget)?,
+            )),
+            Stage::Closed(_) => Err(SessionError::WrongStage {
+                expected: "an open session",
+                actual: "closed",
+            }),
         }
     }
 
@@ -170,10 +192,24 @@ impl Sessions {
     ///
     /// # Errors
     /// See [`Session::submit_extraction`]; plus `Unknown`, `Conflict`, the store.
-    pub async fn submit_extraction(&self, id: SessionId, e: Extraction) -> Result<Extracted, SessionError> {
-        let (mut s, version) = self.store.load_versioned(id).await?.ok_or(SessionError::Unknown(id))?;
+    pub async fn submit_extraction(
+        &self,
+        id: SessionId,
+        e: Extraction,
+    ) -> Result<Extracted, SessionError> {
+        let (mut s, version) = self
+            .store
+            .load_versioned(id)
+            .await?
+            .ok_or(SessionError::Unknown(id))?;
         let out = s
-            .submit_extraction(e, self.resolver.as_ref(), self.retriever.as_ref(), self.harness, &self.budget)
+            .submit_extraction(
+                e,
+                self.resolver.as_ref(),
+                self.retriever.as_ref(),
+                self.harness,
+                &self.budget,
+            )
             .await?;
         self.save(&s, version).await?;
         Ok(out)
@@ -183,8 +219,16 @@ impl Sessions {
     ///
     /// # Errors
     /// See [`Session::lookup_rules`]; plus `Unknown`, `Conflict`, the store.
-    pub async fn lookup_rules(&self, id: SessionId, ids: &[RuleId]) -> Result<Vec<RuleChunk>, SessionError> {
-        let (mut s, version) = self.store.load_versioned(id).await?.ok_or(SessionError::Unknown(id))?;
+    pub async fn lookup_rules(
+        &self,
+        id: SessionId,
+        ids: &[RuleId],
+    ) -> Result<Vec<RuleChunk>, SessionError> {
+        let (mut s, version) = self
+            .store
+            .load_versioned(id)
+            .await?
+            .ok_or(SessionError::Unknown(id))?;
         let chunks = s.lookup_rules(ids, self.retriever.as_ref()).await?;
         self.save(&s, version).await?;
         Ok(chunks)
@@ -195,9 +239,19 @@ impl Sessions {
     ///
     /// # Errors
     /// See [`Session::submit_verdict`]; plus `Unknown`, `Conflict`, the store.
-    pub async fn submit_verdict(&self, id: SessionId, v: Verdict<Unvalidated>) -> Result<Verdict<Validated>, SessionError> {
-        let (mut s, version) = self.store.load_versioned(id).await?.ok_or(SessionError::Unknown(id))?;
-        let out = s.submit_verdict(v, self.retriever.as_ref(), self.harness, &self.budget).await;
+    pub async fn submit_verdict(
+        &self,
+        id: SessionId,
+        v: Verdict<Unvalidated>,
+    ) -> Result<Verdict<Validated>, SessionError> {
+        let (mut s, version) = self
+            .store
+            .load_versioned(id)
+            .await?
+            .ok_or(SessionError::Unknown(id))?;
+        let out = s
+            .submit_verdict(v, self.retriever.as_ref(), self.harness, &self.budget)
+            .await;
         match &out {
             // The stage moved: save it, whichever way it went.
             Ok(_) | Err(SessionError::Rejected { .. } | SessionError::Exhausted { .. }) => {
@@ -223,12 +277,18 @@ impl Sessions {
     /// # Errors
     /// See [`Session::persist`]; plus `Unknown`, `Conflict`, the store.
     pub async fn persist(&self, id: SessionId) -> Result<CallId, SessionError> {
-        let (mut s, version) = self.store.load_versioned(id).await?.ok_or(SessionError::Unknown(id))?;
+        let (mut s, version) = self
+            .store
+            .load_versioned(id)
+            .await?
+            .ok_or(SessionError::Unknown(id))?;
         let call = s.persist(self.persist.as_ref()).await?;
         match self.save(&s, version).await {
             Ok(()) => {}
             // A concurrent persist won the save; it stored the same call.
-            Err(SessionError::Conflict(_)) => tracing::debug!(session = %id, "persist raced; the call is the same"),
+            Err(SessionError::Conflict(_)) => {
+                tracing::debug!(session = %id, "persist raced; the call is the same");
+            }
             Err(e) => return Err(e),
         }
         Ok(call)
@@ -265,7 +325,10 @@ mod tests {
         Extraction {
             card_spans: vec!["[[Lightning Bolt]]".into()],
             concepts: vec!["damage".into()],
-            primary: CategoryGuess { category: Category::DamageAndLife, confidence: Confidence::High },
+            primary: CategoryGuess {
+                category: Category::DamageAndLife,
+                confidence: Confidence::High,
+            },
             secondary: vec![],
             source: Source::Cr,
         }
@@ -277,8 +340,13 @@ mod tests {
     async fn a_session_over_postgres_persists_exactly_one_call(pool: PgPool) -> anyhow::Result<()> {
         seed(&pool).await?;
         let sessions = sessions(&pool);
-        let begun = sessions.begin(AgentThread::new(), "does bolt kill a 3/3?".into()).await?;
-        let Extracted::Ready(prompt) = sessions.submit_extraction(begun.session, extraction()).await? else {
+        let begun = sessions
+            .begin(AgentThread::new(), "does bolt kill a 3/3?".into())
+            .await?;
+        let Extracted::Ready(prompt) = sessions
+            .submit_extraction(begun.session, extraction())
+            .await?
+        else {
             return Err(anyhow::anyhow!("expected ready"));
         };
         assert!(prompt.material.contains("Lightning Bolt"));
@@ -288,7 +356,10 @@ mod tests {
         let Stage::AwaitingVerdict { ctx, .. } = &chunk.stage else {
             return Err(anyhow::anyhow!("expected awaiting_verdict"));
         };
-        let rule = ctx.rules.first().ok_or_else(|| anyhow::anyhow!("no rules retrieved"))?;
+        let rule = ctx
+            .rules
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no rules retrieved"))?;
         let quote = rule.body.lines().next().unwrap_or_default().to_owned();
         let v = Verdict::new(
             "Yes: three damage to a creature with toughness three is lethal, and it is destroyed as a state-based action.".into(),
@@ -299,7 +370,11 @@ mod tests {
         sessions.submit_verdict(begun.session, v).await?;
 
         // Two persists from the same loaded version, then a third from fresh.
-        let (s1, v1) = sessions.store.load_versioned(begun.session).await?.ok_or_else(|| anyhow::anyhow!("gone"))?;
+        let (s1, v1) = sessions
+            .store
+            .load_versioned(begun.session)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("gone"))?;
         let mut a = s1.clone();
         let mut b = s1;
         let ca = a.persist(sessions.persist.as_ref()).await?;
@@ -308,10 +383,14 @@ mod tests {
         sessions.store.save(&a, v1, DEFAULT_TTL).await?;
         let cc = sessions.persist(begun.session).await?;
         assert_eq!(ca, cc);
-        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM calls").fetch_one(&pool).await?;
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM calls")
+            .fetch_one(&pool)
+            .await?;
         assert_eq!(n, 1, "exactly one call row");
         // The follow-up sees the answer as history and files under the same agent thread.
-        let again = sessions.begin(begun.thread.clone(), "and a 4/4?".into()).await?;
+        let again = sessions
+            .begin(begun.thread.clone(), "and a 4/4?".into())
+            .await?;
         assert!(again.extraction.user.contains("does bolt kill a 3/3?"));
         let _ = RuleId::try_new("100".to_owned())?;
         Ok(())
@@ -322,11 +401,22 @@ mod tests {
         seed(&pool).await?;
         let sessions = sessions(&pool);
         let missing = SessionId::new();
-        assert!(matches!(sessions.prompt(missing).await, Err(SessionError::Unknown(id)) if id == missing));
+        assert!(
+            matches!(sessions.prompt(missing).await, Err(SessionError::Unknown(id)) if id == missing)
+        );
         let begun = sessions.begin(AgentThread::new(), "q?".into()).await?;
-        let (s, stale) = sessions.store.load_versioned(begun.session).await?.ok_or_else(|| anyhow::anyhow!("gone"))?;
-        sessions.submit_extraction(begun.session, extraction()).await?;
-        assert!(matches!(sessions.save(&s, stale).await, Err(SessionError::Conflict(_))));
+        let (s, stale) = sessions
+            .store
+            .load_versioned(begun.session)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("gone"))?;
+        sessions
+            .submit_extraction(begun.session, extraction())
+            .await?;
+        assert!(matches!(
+            sessions.save(&s, stale).await,
+            Err(SessionError::Conflict(_))
+        ));
         Ok(())
     }
 }

@@ -10,11 +10,14 @@ use std::time::Instant;
 
 use judge_bot::{
     discord::{question::pin_card, render},
-    session::{AgentThread, Begun, Extracted, Prompt, SessionError, SessionId, Stage, SynthesisPrompt},
+    session::{
+        AgentThread, Begun, Extracted, Prompt, SessionError, SessionId, Stage, SynthesisPrompt,
+    },
 };
 use judge_core::{
-    Ambiguous, CallId, Card, CardId, CardNote, Citation, Confidence, Context, Extraction, GlossaryEntry, JudgeError,
-    Question, Rejection, Resolution, RuleChunk, RuleId, Ruling, Source, Unvalidated, Validated, Verdict, judge,
+    Ambiguous, CallId, Card, CardId, CardNote, Citation, Confidence, Context, Extraction,
+    GlossaryEntry, JudgeError, Question, Rejection, Resolution, RuleChunk, RuleId, Ruling, Source,
+    Unvalidated, Validated, Verdict, judge,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -370,13 +373,19 @@ impl Toolbox {
             });
         };
         check_question(&input.question)?;
-        anyhow::ensure!(input.pins.len() <= MAX_PINS, "at most {MAX_PINS} pins are accepted");
+        anyhow::ensure!(
+            input.pins.len() <= MAX_PINS,
+            "at most {MAX_PINS} pins are accepted"
+        );
         for p in &input.pins {
             check_short(&p.span, "pin span")?;
             check_short(&p.name, "pin name")?;
         }
-        let Ok(Ok(_permit)) = tokio::time::timeout(ACQUIRE_WAIT, self.permits.acquire()).await else {
-            return Ok(JudgeReply::Busy { message: render::BUSY.to_owned() });
+        let Ok(Ok(_permit)) = tokio::time::timeout(ACQUIRE_WAIT, self.permits.acquire()).await
+        else {
+            return Ok(JudgeReply::Busy {
+                message: render::BUSY.to_owned(),
+            });
         };
         // Counted only once a slot is held: the quota is in pipeline runs, and
         // a `busy` reply is not one.
@@ -386,8 +395,14 @@ impl Toolbox {
             });
         }
         let thread = input.thread.unwrap_or_default();
-        let text = input.pins.iter().fold(input.question, |t, pin| pin_card(&t, &pin.span, &pin.name));
-        let q = Question { thread_id: thread.as_str().to_owned(), text };
+        let text = input
+            .pins
+            .iter()
+            .fold(input.question, |t, pin| pin_card(&t, &pin.span, &pin.name));
+        let q = Question {
+            thread_id: thread.as_str().to_owned(),
+            text,
+        };
         let history = self.history(&q.thread_id).await;
         let (t0, usd0, calls0) = (Instant::now(), p.meter.spent_usd(), p.meter.calls());
         let result = judge(&p.deps, &q, &history).await;
@@ -406,13 +421,20 @@ impl Toolbox {
                     Some(ctx) => match self.calls.persist(&q, &v, ctx).await {
                         Ok(id) => Some(id),
                         Err(e) => {
-                            tracing::error!(error = format_args!("{e:#}"), "persist failed; answering anyway");
+                            tracing::error!(
+                                error = format_args!("{e:#}"),
+                                "persist failed; answering anyway"
+                            );
                             None
                         }
                     },
                     None => None,
                 };
-                JudgeReply::Answer { answer: answer(&v, captured.as_ref()), call, thread }
+                JudgeReply::Answer {
+                    answer: answer(&v, captured.as_ref()),
+                    call,
+                    thread,
+                }
             }
             Err(e) => {
                 if e.is_operator_failure() {
@@ -428,7 +450,10 @@ impl Toolbox {
     /// # Errors
     /// The store.
     pub async fn begin_session(&self, input: BeginInput) -> Result<Begun, OpError> {
-        Ok(self.sessions.begin(input.thread.unwrap_or_default(), input.question).await?)
+        Ok(self
+            .sessions
+            .begin(input.thread.unwrap_or_default(), input.question)
+            .await?)
     }
 
     /// The prompt for the session's current step.
@@ -447,7 +472,11 @@ impl Toolbox {
         let s = self.sessions.load(input.session).await?;
         let (lookup_available, attempts, outcome) = match &s.stage {
             Stage::AwaitingExtraction { .. } => (true, Some(0), None),
-            Stage::AwaitingVerdict { lookup_used, attempts, .. } => (!lookup_used, Some(*attempts), None),
+            Stage::AwaitingVerdict {
+                lookup_used,
+                attempts,
+                ..
+            } => (!lookup_used, Some(*attempts), None),
             Stage::Closed(o) => (
                 false,
                 None,
@@ -476,17 +505,29 @@ impl Toolbox {
     ///
     /// # Errors
     /// Unknown session, wrong stage, or the store.
-    pub async fn submit_extraction(&self, input: ExtractionInput) -> Result<ExtractionReply, OpError> {
-        match self.sessions.submit_extraction(input.session, input.extraction).await {
+    pub async fn submit_extraction(
+        &self,
+        input: ExtractionInput,
+    ) -> Result<ExtractionReply, OpError> {
+        match self
+            .sessions
+            .submit_extraction(input.session, input.extraction)
+            .await
+        {
             Ok(Extracted::Ready(prompt)) => Ok(ExtractionReply::Ready { prompt }),
-            Ok(Extracted::OutOfScope { source }) => {
-                Ok(ExtractionReply::OutOfScope { source, message: render::OUT_OF_SCOPE.to_owned() })
-            }
+            Ok(Extracted::OutOfScope { source }) => Ok(ExtractionReply::OutOfScope {
+                source,
+                message: render::OUT_OF_SCOPE.to_owned(),
+            }),
             Err(SessionError::Pipeline(JudgeError::AmbiguousCards(spans))) => {
-                Ok(ExtractionReply::Ambiguous { spans: spans.iter().map(ambiguous_span).collect() })
+                Ok(ExtractionReply::Ambiguous {
+                    spans: spans.iter().map(ambiguous_span).collect(),
+                })
             }
             Err(SessionError::Pipeline(JudgeError::CardsNotFound(names))) => {
-                Ok(ExtractionReply::NotFound { names: names.into_iter().collect() })
+                Ok(ExtractionReply::NotFound {
+                    names: names.into_iter().collect(),
+                })
             }
             Err(e) => Err(e.into()),
         }
@@ -497,7 +538,12 @@ impl Toolbox {
     /// # Errors
     /// Unknown session, wrong stage, round already used, or the store.
     pub async fn lookup_rules(&self, input: LookupInput) -> Result<Rules, OpError> {
-        Ok(Rules { rules: self.sessions.lookup_rules(input.session, &input.ids).await? })
+        Ok(Rules {
+            rules: self
+                .sessions
+                .lookup_rules(input.session, &input.ids)
+                .await?,
+        })
     }
 
     /// Hand in the verdict; it is validated against the session's material.
@@ -505,7 +551,11 @@ impl Toolbox {
     /// # Errors
     /// Unknown session, wrong stage, or the store. A rejection is a reply.
     pub async fn submit_verdict(&self, input: VerdictInput) -> Result<VerdictReply, OpError> {
-        match self.sessions.submit_verdict(input.session, input.verdict).await {
+        match self
+            .sessions
+            .submit_verdict(input.session, input.verdict)
+            .await
+        {
             Ok(v) => {
                 // The verdict is accepted and saved whatever happens next:
                 // a failed persist or reload is reported, not turned into an
@@ -521,22 +571,34 @@ impl Toolbox {
                 // The context is in the closed session; use it for citation labels.
                 let ctx = match self.sessions.load(input.session).await {
                     Ok(s) => match s.stage {
-                        Stage::Closed(judge_bot::session::Outcome::Answered { ctx, .. }) => Some(*ctx),
+                        Stage::Closed(judge_bot::session::Outcome::Answered { ctx, .. }) => {
+                            Some(*ctx)
+                        }
                         _ => None,
                     },
                     Err(e) => {
-                        tracing::warn!(error = format_args!("{e:#}"), "accepted verdict; could not reload its context for labels");
+                        tracing::warn!(
+                            error = format_args!("{e:#}"),
+                            "accepted verdict; could not reload its context for labels"
+                        );
                         None
                     }
                 };
-                Ok(VerdictReply::Accepted { answer: answer(&v, ctx.as_ref()), call, persist_error })
+                Ok(VerdictReply::Accepted {
+                    answer: answer(&v, ctx.as_ref()),
+                    call,
+                    persist_error,
+                })
             }
-            Err(SessionError::Rejected { rejection, retry }) => {
-                Ok(VerdictReply::Rejected { reason: rejection.to_string(), rejection, retry })
-            }
-            Err(SessionError::Exhausted { rejection }) => {
-                Ok(VerdictReply::Exhausted { reason: rejection.to_string(), rejection })
-            }
+            Err(SessionError::Rejected { rejection, retry }) => Ok(VerdictReply::Rejected {
+                reason: rejection.to_string(),
+                rejection,
+                retry,
+            }),
+            Err(SessionError::Exhausted { rejection }) => Ok(VerdictReply::Exhausted {
+                reason: rejection.to_string(),
+                rejection,
+            }),
             Err(e) => Err(e.into()),
         }
     }
@@ -546,7 +608,9 @@ impl Toolbox {
     /// # Errors
     /// Unknown session, not answered, or the store.
     pub async fn persist_session(&self, input: SessionInput) -> Result<Persisted, OpError> {
-        Ok(Persisted { call: self.sessions.persist(input.session).await? })
+        Ok(Persisted {
+            call: self.sessions.persist(input.session).await?,
+        })
     }
 
     /// Resolve a card name the way the pipeline does. Never guesses.
@@ -568,7 +632,11 @@ impl Toolbox {
             self.library.rulings(input.card),
             self.library.notes(input.card)
         )?;
-        Ok(CardInfo { card, rulings, notes })
+        Ok(CardInfo {
+            card,
+            rulings,
+            notes,
+        })
     }
 
     /// CR chunks by id.
@@ -576,9 +644,17 @@ impl Toolbox {
     /// # Errors
     /// The store.
     pub async fn get_rules(&self, input: IdsInput) -> Result<Rules, OpError> {
-        anyhow::ensure!(!input.ids.is_empty(), "get_rules needs at least one rule id");
-        anyhow::ensure!(input.ids.len() <= MAX_RULE_IDS, "get_rules takes at most {MAX_RULE_IDS} ids per call");
-        Ok(Rules { rules: self.retriever.lookup_rules(&input.ids).await? })
+        anyhow::ensure!(
+            !input.ids.is_empty(),
+            "get_rules needs at least one rule id"
+        );
+        anyhow::ensure!(
+            input.ids.len() <= MAX_RULE_IDS,
+            "get_rules takes at most {MAX_RULE_IDS} ids per call"
+        );
+        Ok(Rules {
+            rules: self.retriever.lookup_rules(&input.ids).await?,
+        })
     }
 
     /// Search the CR.
@@ -588,9 +664,14 @@ impl Toolbox {
     pub async fn search_rules(&self, input: SearchInput) -> Result<Rules, OpError> {
         let query = input.query.trim();
         anyhow::ensure!(!query.is_empty(), "query must not be empty");
-        anyhow::ensure!(query.chars().count() <= MAX_QUERY_CHARS, "query must be at most {MAX_QUERY_CHARS} characters");
+        anyhow::ensure!(
+            query.chars().count() <= MAX_QUERY_CHARS,
+            "query must be at most {MAX_QUERY_CHARS} characters"
+        );
         let limit = input.limit.unwrap_or(10).clamp(1, MAX_SEARCH);
-        Ok(Rules { rules: self.library.search_rules(query, limit).await? })
+        Ok(Rules {
+            rules: self.library.search_rules(query, limit).await?,
+        })
     }
 
     /// Glossary lookup.
@@ -599,14 +680,19 @@ impl Toolbox {
     /// The store.
     pub async fn glossary(&self, input: TermInput) -> Result<Glossary, OpError> {
         check_short(&input.term, "term")?;
-        Ok(Glossary { entries: self.library.glossary(&input.term).await? })
+        Ok(Glossary {
+            entries: self.library.glossary(&input.term).await?,
+        })
     }
 
     async fn history(&self, thread: &str) -> Vec<judge_core::Qa> {
         match self.calls.history(thread, self.history_len).await {
             Ok(h) => h,
             Err(e) => {
-                tracing::warn!(error = format_args!("{e:#}"), "thread history unavailable; judging without it");
+                tracing::warn!(
+                    error = format_args!("{e:#}"),
+                    "thread history unavailable; judging without it"
+                );
                 vec![]
             }
         }
@@ -626,14 +712,22 @@ fn check_question(q: &str) -> Result<(), OpError> {
 /// A name-sized input: non-empty and at most [`MAX_NAME_CHARS`].
 fn check_short(s: &str, what: &str) -> Result<(), OpError> {
     anyhow::ensure!(!s.trim().is_empty(), "{what} must not be empty");
-    anyhow::ensure!(s.chars().count() <= MAX_NAME_CHARS, "{what} must be at most {MAX_NAME_CHARS} characters");
+    anyhow::ensure!(
+        s.chars().count() <= MAX_NAME_CHARS,
+        "{what} must be at most {MAX_NAME_CHARS} characters"
+    );
     Ok(())
 }
 
 fn ambiguous_span(a: &Ambiguous) -> AmbiguousSpan {
     AmbiguousSpan {
         query: a.query.clone(),
-        choices: a.candidates.iter().map(|c| c.name.clone()).take(MAX_CHOICES).collect(),
+        choices: a
+            .candidates
+            .iter()
+            .map(|c| c.name.clone())
+            .take(MAX_CHOICES)
+            .collect(),
         truncated: a.candidates.len() > MAX_CHOICES,
     }
 }
@@ -641,14 +735,22 @@ fn ambiguous_span(a: &Ambiguous) -> AmbiguousSpan {
 /// Shape a failed `judge()`. Exhaustive over `JudgeError`.
 fn judge_error(e: &JudgeError) -> JudgeReply {
     match e {
-        JudgeError::AmbiguousCards(spans) => JudgeReply::Ambiguous { spans: spans.iter().map(ambiguous_span).collect() },
-        JudgeError::CardsNotFound(names) => JudgeReply::NotFound { names: names.iter().cloned().collect() },
-        JudgeError::OutOfScope(_) => JudgeReply::OutOfScope { message: render::OUT_OF_SCOPE.to_owned() },
+        JudgeError::AmbiguousCards(spans) => JudgeReply::Ambiguous {
+            spans: spans.iter().map(ambiguous_span).collect(),
+        },
+        JudgeError::CardsNotFound(names) => JudgeReply::NotFound {
+            names: names.iter().cloned().collect(),
+        },
+        JudgeError::OutOfScope(_) => JudgeReply::OutOfScope {
+            message: render::OUT_OF_SCOPE.to_owned(),
+        },
         JudgeError::BadCitation(_)
         | JudgeError::MalformedCitation(_)
         | JudgeError::EmptyVerdict(_)
         | JudgeError::LlmRefused
-        | JudgeError::Upstream(_) => JudgeReply::Error { message: render::error(e) },
+        | JudgeError::Upstream(_) => JudgeReply::Error {
+            message: render::error(e),
+        },
     }
 }
 
@@ -661,7 +763,11 @@ pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>) -> Answer {
         source: v.source(),
         cr_version: v.cr_version().as_ref().to_owned(),
         category: v.category().id().to_owned(),
-        citations: v.citations().iter().map(|c| citation_view(c, ctx)).collect(),
+        citations: v
+            .citations()
+            .iter()
+            .map(|c| citation_view(c, ctx))
+            .collect(),
     }
 }
 
@@ -670,7 +776,10 @@ fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
     let (label, url) = match c {
         Citation::Rule { id, .. } => (id.to_string(), Some(render::rule_url(id))),
         Citation::ScryfallRuling { card, ruling, .. } => {
-            let date = ctx.and_then(|x| x.ruling(*card, ruling)).map(|r| format!(" ({})", r.published_at)).unwrap_or_default();
+            let date = ctx
+                .and_then(|x| x.ruling(*card, ruling))
+                .map(|r| format!(" ({})", r.published_at))
+                .unwrap_or_default();
             let label = match card_name(*card) {
                 Some(name) => format!("Ruling{date} — {name}"),
                 None => format!("Ruling{date} — card {card}"),
@@ -686,7 +795,11 @@ fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
         }
         Citation::PriorCall { id, .. } => (format!("Prior call {id}"), None),
     };
-    CitationView { label, url, citation: c.clone() }
+    CitationView {
+        label,
+        url,
+        citation: c.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -705,7 +818,10 @@ mod tests {
             citations: vec![CitationView {
                 label: "702.15b".into(),
                 url: Some("https://example".into()),
-                citation: Citation::Rule { id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?, quote: judge_core::Quote::try_new("q")? },
+                citation: Citation::Rule {
+                    id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?,
+                    quote: judge_core::Quote::try_new("q")?,
+                },
             }],
         })
     }
@@ -720,7 +836,9 @@ mod tests {
         }
     }
 
-    fn roundtrip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(v: &T) -> anyhow::Result<()> {
+    fn roundtrip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(
+        v: &T,
+    ) -> anyhow::Result<()> {
         let j = serde_json::to_value(v)?;
         let back: T = serde_json::from_value(j.clone())?;
         anyhow::ensure!(&back == v, "round trip changed {v:?} into {back:?} via {j}");
@@ -732,10 +850,21 @@ mod tests {
     #[test]
     fn flattened_replies_round_trip_with_their_kind() -> anyhow::Result<()> {
         let thread = AgentThread::new();
-        let j = JudgeReply::Answer { answer: answer_fixture()?, call: None, thread: thread.clone() };
+        let j = JudgeReply::Answer {
+            answer: answer_fixture()?,
+            call: None,
+            thread: thread.clone(),
+        };
         roundtrip(&j)?;
-        assert_eq!(serde_json::to_value(&j)?.get("kind"), Some(&serde_json::json!("answer")));
-        let v = VerdictReply::Accepted { answer: answer_fixture()?, call: None, persist_error: Some("db".into()) };
+        assert_eq!(
+            serde_json::to_value(&j)?.get("kind"),
+            Some(&serde_json::json!("answer"))
+        );
+        let v = VerdictReply::Accepted {
+            answer: answer_fixture()?,
+            call: None,
+            persist_error: Some("db".into()),
+        };
         roundtrip(&v)?;
         let v = VerdictReply::Rejected {
             reason: "bad".into(),
@@ -743,7 +872,9 @@ mod tests {
             retry: prompt_fixture(),
         };
         roundtrip(&v)?;
-        let e = ExtractionReply::Ready { prompt: prompt_fixture() };
+        let e = ExtractionReply::Ready {
+            prompt: prompt_fixture(),
+        };
         roundtrip(&e)?;
         let ej = serde_json::to_value(&e)?;
         assert_eq!(ej.get("kind"), Some(&serde_json::json!("ready")));
@@ -766,8 +897,13 @@ mod tests {
                 }),
             })
             .collect();
-        let Some(candidates) = NonEmpty::from_vec(cards) else { return };
-        let span = ambiguous_span(&Ambiguous { query: "card".into(), candidates });
+        let Some(candidates) = NonEmpty::from_vec(cards) else {
+            return;
+        };
+        let span = ambiguous_span(&Ambiguous {
+            query: "card".into(),
+            candidates,
+        });
         assert_eq!(span.choices.len(), MAX_CHOICES);
         assert!(span.truncated);
     }
@@ -775,8 +911,16 @@ mod tests {
     #[test]
     fn citation_labels_work_with_and_without_a_context() -> anyhow::Result<()> {
         let card = CardId::new(uuid::Uuid::from_u128(7));
-        let c = Citation::OracleText { card, face: 0, quote: judge_core::Quote::try_new("x")? };
-        assert!(citation_view(&c, None).label.contains("card 00000000-0000-0000-0000-000000000007"));
+        let c = Citation::OracleText {
+            card,
+            face: 0,
+            quote: judge_core::Quote::try_new("x")?,
+        };
+        assert!(
+            citation_view(&c, None)
+                .label
+                .contains("card 00000000-0000-0000-0000-000000000007")
+        );
         let ctx = Context {
             cards: vec![Card {
                 id: card,
@@ -791,8 +935,14 @@ mod tests {
             }],
             ..Context::default()
         };
-        assert_eq!(citation_view(&c, Some(&ctx)).label, "Oracle text — Blood Moon (face 0)");
-        let r = Citation::Rule { id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?, quote: judge_core::Quote::try_new("x")? };
+        assert_eq!(
+            citation_view(&c, Some(&ctx)).label,
+            "Oracle text — Blood Moon (face 0)"
+        );
+        let r = Citation::Rule {
+            id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?,
+            quote: judge_core::Quote::try_new("x")?,
+        };
         assert_eq!(citation_view(&r, None).label, "702.15b");
         Ok(())
     }

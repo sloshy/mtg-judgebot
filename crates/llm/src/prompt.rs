@@ -65,7 +65,13 @@ mod tests {
 
     #[test]
     fn schema_goes_in_the_prompt_only_when_not_enforced() {
-        let caps = |s| Capabilities { structured_output: s, strict_tools: false, effort: false, cache_hints: false, refusal_fallbacks: false };
+        let caps = |s| Capabilities {
+            structured_output: s,
+            strict_tools: false,
+            effort: false,
+            cache_hints: false,
+            refusal_fallbacks: false,
+        };
         assert!(!needs_schema_in_prompt(caps(StructuredOutput::Enforced)));
         assert!(needs_schema_in_prompt(caps(StructuredOutput::JsonMode)));
         assert!(needs_schema_in_prompt(caps(StructuredOutput::PromptOnly)));
@@ -76,7 +82,11 @@ mod tests {
         let b = schema_block(&OutputSchema::of::<judge_core::Verdict>());
         assert!(b.cache.is_none());
         assert!(b.text.starts_with("\n# Output format\n"), "{}", b.text);
-        assert!(b.text.contains("```json\n{") && b.text.trim_end().ends_with("```"), "{}", b.text);
+        assert!(
+            b.text.contains("```json\n{") && b.text.trim_end().ends_with("```"),
+            "{}",
+            b.text
+        );
         // Full schemars output: the tagged enum is still a oneOf (a backend subset would have rewritten it).
         assert!(b.text.contains("\"oneOf\""), "{}", b.text);
     }
@@ -92,6 +102,9 @@ mod tests {
         assert_eq!(strip_json_fence("```[1, 2]```"), "[1, 2]");
         // A fence with no closing fence, or prose around it, is left alone: the parse error should show it.
         assert_eq!(strip_json_fence("```json\n{"), "```json\n{");
-        assert_eq!(strip_json_fence("Here:\n```json\n{}\n```"), "Here:\n```json\n{}\n```");
+        assert_eq!(
+            strip_json_fence("Here:\n```json\n{}\n```"),
+            "Here:\n```json\n{}\n```"
+        );
     }
 }

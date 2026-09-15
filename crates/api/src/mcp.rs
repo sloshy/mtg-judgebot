@@ -83,18 +83,26 @@ pub(crate) mod tests {
         type Error = std::convert::Infallible;
         type Future = std::future::Ready<Result<Response, Self::Error>>;
 
-        fn poll_ready(&mut self, _: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        fn poll_ready(
+            &mut self,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
             std::task::Poll::Ready(Ok(()))
         }
 
         fn call(&mut self, req: Request<Body>) -> Self::Future {
-            std::future::ready(Ok((StatusCode::OK, req.uri().path().to_owned()).into_response()))
+            std::future::ready(Ok(
+                (StatusCode::OK, req.uri().path().to_owned()).into_response()
+            ))
         }
     }
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
-    async fn status(auth: Option<&str>, path: &str) -> Result<StatusCode, Box<dyn std::error::Error>> {
+    async fn status(
+        auth: Option<&str>,
+        path: &str,
+    ) -> Result<StatusCode, Box<dyn std::error::Error>> {
         let mut req = HttpRequest::post(path).body(Body::empty())?;
         if let Some(a) = auth {
             req.headers_mut().insert(header::AUTHORIZATION, a.parse()?);
@@ -105,11 +113,26 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn only_the_exact_bearer_token_passes() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(status(None, "/mcp").await?, StatusCode::UNAUTHORIZED);
-        assert_eq!(status(Some("Bearer nope"), "/mcp").await?, StatusCode::UNAUTHORIZED);
-        assert_eq!(status(Some(&format!("Bearer {TOKEN}x")), "/mcp").await?, StatusCode::UNAUTHORIZED);
-        assert_eq!(status(Some(&format!("Basic {TOKEN}")), "/mcp").await?, StatusCode::UNAUTHORIZED);
-        assert_eq!(status(Some(&format!("Bearer {TOKEN}")), "/mcp").await?, StatusCode::OK);
-        assert_eq!(status(Some(&format!("Bearer {TOKEN}")), "/mcp/anything").await?, StatusCode::OK);
+        assert_eq!(
+            status(Some("Bearer nope"), "/mcp").await?,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(Some(&format!("Bearer {TOKEN}x")), "/mcp").await?,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(Some(&format!("Basic {TOKEN}")), "/mcp").await?,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(Some(&format!("Bearer {TOKEN}")), "/mcp").await?,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(Some(&format!("Bearer {TOKEN}")), "/mcp/anything").await?,
+            StatusCode::OK
+        );
         Ok(())
     }
 

@@ -95,7 +95,9 @@ impl LlmError {
     pub fn is_retryable(&self) -> bool {
         match self {
             LlmError::Transport(e) => e.is_timeout() || e.is_connect() || e.is_request(),
-            LlmError::Api { status, .. } => matches!(status.as_u16(), 408 | 409 | 429 | 529) || status.is_server_error(),
+            LlmError::Api { status, .. } => {
+                matches!(status.as_u16(), 408 | 409 | 429 | 529) || status.is_server_error()
+            }
             LlmError::Decode { .. }
             | LlmError::Request(_)
             | LlmError::ForeignTurn { .. }
@@ -126,8 +128,26 @@ mod tests {
             assert!(!api(code).is_retryable(), "{code}");
         }
         assert!(!LlmError::MissingApiKey { var: "X" }.is_retryable());
-        assert!(!LlmError::Auth { door: "bedrock", message: String::new() }.is_retryable());
-        assert!(!LlmError::SpendCapExceeded { spent: 1.0, cap: 1.0 }.is_retryable());
-        assert!(!LlmError::ForeignTurn { expected: "a", found: "b" }.is_retryable());
+        assert!(
+            !LlmError::Auth {
+                door: "bedrock",
+                message: String::new()
+            }
+            .is_retryable()
+        );
+        assert!(
+            !LlmError::SpendCapExceeded {
+                spent: 1.0,
+                cap: 1.0
+            }
+            .is_retryable()
+        );
+        assert!(
+            !LlmError::ForeignTurn {
+                expected: "a",
+                found: "b"
+            }
+            .is_retryable()
+        );
     }
 }

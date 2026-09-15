@@ -316,8 +316,7 @@ mod tests {
     fn painted_rows(pixmap: &resvg::tiny_skia::Pixmap) -> Vec<u32> {
         (0..pixmap.height())
             .filter(|y| {
-                (0..pixmap.width())
-                    .any(|x| pixmap.pixel(x, *y).is_some_and(|p| p.alpha() > 0))
+                (0..pixmap.width()).any(|x| pixmap.pixel(x, *y).is_some_and(|p| p.alpha() > 0))
             })
             .collect()
     }
@@ -437,7 +436,11 @@ mod tests {
         assert_eq!(got, b"<svg/>");
         // An empty cache entry does not count as a hit.
         std::fs::write(&path, b"")?;
-        assert!(cached_get(&client, "http://127.0.0.1:1/nope", &path).await.is_err());
+        assert!(
+            cached_get(&client, "http://127.0.0.1:1/nope", &path)
+                .await
+                .is_err()
+        );
         std::fs::remove_dir_all(&dir)?;
         Ok(())
     }

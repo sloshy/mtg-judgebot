@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    CallId, Card, Context, Extraction, JudgeError, Qa, Question, RejectedAttempt, Resolution, RuleChunk, RuleId,
-    Score, Validated, Verdict, verdict::Unvalidated,
+    CallId, Card, Context, Extraction, JudgeError, Qa, Question, RejectedAttempt, Resolution,
+    RuleChunk, RuleId, Score, Validated, Verdict, verdict::Unvalidated,
 };
 
 /// Pipeline steps 1 + 3: entity extraction and classification (one LLM call).
@@ -25,7 +25,12 @@ pub trait Resolver: Send + Sync {
 #[async_trait]
 pub trait Retriever: Send + Sync {
     /// Build the Context for `q`. Thread history is filled in by `judge()`.
-    async fn retrieve(&self, q: &Question, cards: &[Card], e: &Extraction) -> Result<Context, JudgeError>;
+    async fn retrieve(
+        &self,
+        q: &Question,
+        cards: &[Card],
+        e: &Extraction,
+    ) -> Result<Context, JudgeError>;
     /// Fetch full rule chunks by id (expands a subsection id to all rules under it).
     async fn lookup_rules(&self, ids: &[RuleId]) -> Result<Vec<RuleChunk>, JudgeError>;
 }
@@ -70,9 +75,20 @@ pub trait Embedder: Send + Sync {
 #[async_trait]
 pub trait CallStore: Send + Sync {
     /// Store the question, verdict and the ids of the context it was answered from.
-    async fn persist(&self, q: &Question, v: &Verdict<Validated>, ctx: &Context) -> Result<CallId, JudgeError>;
+    async fn persist(
+        &self,
+        q: &Question,
+        v: &Verdict<Validated>,
+        ctx: &Context,
+    ) -> Result<CallId, JudgeError>;
     /// Record (or replace) one user's rating of a call.
-    async fn rate(&self, call: CallId, user_id: &str, score: Score, is_judge: bool) -> Result<(), JudgeError>;
+    async fn rate(
+        &self,
+        call: CallId,
+        user_id: &str,
+        score: Score,
+        is_judge: bool,
+    ) -> Result<(), JudgeError>;
     /// The last `n` question/answer pairs persisted in `thread_id`, oldest
     /// first: the shape [`crate::judge`] takes as thread history. `n == 0`
     /// yields nothing.

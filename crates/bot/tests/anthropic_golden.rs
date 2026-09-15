@@ -28,8 +28,8 @@ use judge_bot::{
     synth::LlmSynthesizer,
 };
 use judge_core::{
-    Card, Citation, Context, CrVersion, Extraction, Extractor as _, JudgeError, Qa, Question, Rejection, Retriever,
-    RuleChunk, RuleId, Synthesizer as _,
+    Card, Citation, Context, CrVersion, Extraction, Extractor as _, JudgeError, Qa, Question,
+    Rejection, Retriever, RuleChunk, RuleId, Synthesizer as _,
 };
 use judge_llm::{ChatModel, Metered, SpendMeter, SynthConfig};
 use serde::Deserialize;
@@ -48,12 +48,25 @@ struct StubRetriever {
 
 #[async_trait]
 impl Retriever for StubRetriever {
-    async fn retrieve(&self, _q: &Question, _c: &[Card], _e: &Extraction) -> Result<Context, JudgeError> {
+    async fn retrieve(
+        &self,
+        _q: &Question,
+        _c: &[Card],
+        _e: &Extraction,
+    ) -> Result<Context, JudgeError> {
         Err(anyhow::anyhow!("not used").into())
     }
     async fn lookup_rules(&self, ids: &[RuleId]) -> Result<Vec<RuleChunk>, JudgeError> {
-        self.calls.lock().unwrap_or_else(PoisonError::into_inner).push(ids.to_vec());
-        Ok(self.table.iter().filter(|c| ids.contains(&c.id)).cloned().collect())
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(ids.to_vec());
+        Ok(self
+            .table
+            .iter()
+            .filter(|c| ids.contains(&c.id))
+            .cloned()
+            .collect())
     }
 }
 
@@ -81,7 +94,10 @@ fn message(stop: &str, content: &Value) -> Value {
 
 /// The production stack against the mock server: the Anthropic backend behind the spend cap.
 fn model(server: &MockServer) -> Result<Arc<dyn ChatModel>, judge_llm::LlmError> {
-    let backend = Anthropic::new(Endpoint::Direct { base_url: server.uri(), api_key: "test-key".into() })?;
+    let backend = Anthropic::new(Endpoint::Direct {
+        base_url: server.uri(),
+        api_key: "test-key".into(),
+    })?;
     Ok(Arc::new(Metered::new(backend, SpendMeter::new())?))
 }
 
@@ -115,7 +131,9 @@ fn assert_golden(name: &str, r: &wiremock::Request) -> R {
         let got: Value = serde_json::from_slice(&r.body)?;
         let want: Value = serde_json::from_slice(&body)?;
         assert_eq!(got, want, "{name}: body differs from the fixture");
-        return Err(format!("{name}: body is JSON-equal but not byte-identical to the fixture").into());
+        return Err(
+            format!("{name}: body is JSON-equal but not byte-identical to the fixture").into(),
+        );
     }
     let want = String::from_utf8(read(&format!("{name}.headers.txt"))?)?;
     assert_eq!(headers(r), want, "{name}: headers differ from the fixture");
@@ -156,7 +174,10 @@ async fn synthesis_first_turn_continuation_and_retry_are_byte_identical() -> R {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_string_contains(r#""type":"tool_result""#))
-        .respond_with(ResponseTemplate::new(200).set_body_json(message("end_turn", &json!([{"type": "text", "text": verdict}]))))
+        .respond_with(ResponseTemplate::new(200).set_body_json(message(
+            "end_turn",
+            &json!([{"type": "text", "text": verdict}]),
+        )))
         .mount(&server)
         .await;
     // The first fresh request gets a tool round whose assistant turn carries
@@ -181,7 +202,10 @@ async fn synthesis_first_turn_continuation_and_retry_are_byte_identical() -> R {
     // Any later fresh request (the citation retry) answers directly.
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(message("end_turn", &json!([{"type": "text", "text": verdict}]))))
+        .respond_with(ResponseTemplate::new(200).set_body_json(message(
+            "end_turn",
+            &json!([{"type": "text", "text": verdict}]),
+        )))
         .mount(&server)
         .await;
 
@@ -194,16 +218,32 @@ async fn synthesis_first_turn_continuation_and_retry_are_byte_identical() -> R {
         examples: vec![],
         cr_version: CrVersion::try_new("20250801".to_owned())?,
     }];
-    let retriever = Arc::new(StubRetriever { table, calls: Mutex::new(Vec::new()) });
+    let retriever = Arc::new(StubRetriever {
+        table,
+        calls: Mutex::new(Vec::new()),
+    });
     let synth = LlmSynthesizer::new(model(&server)?, SynthConfig::default(), retriever.clone());
     synth.answer(&asked.question, &mut ctx, None).await?;
     assert_eq!(
-        retriever.calls.lock().unwrap_or_else(PoisonError::into_inner).clone(),
-        vec![vec![RuleId::try_new("613.7".to_owned())?, RuleId::try_new("613.1".to_owned())?]],
+        retriever
+            .calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone(),
+        vec![vec![
+            RuleId::try_new("613.7".to_owned())?,
+            RuleId::try_new("613.1".to_owned())?
+        ]],
         "the tool round unions the ids of both calls"
     );
-    let bad = Rejection::BadCitation(Citation::Rule { id: RuleId::try_new("613.7".to_owned())?, quote: judge_core::Quote::try_new("not there")? });
-    let bad = judge_core::RejectedAttempt::new(bad, "Timestamps decide: the later effect wins within the same layer.\n\nPer 613.7.");
+    let bad = Rejection::BadCitation(Citation::Rule {
+        id: RuleId::try_new("613.7".to_owned())?,
+        quote: judge_core::Quote::try_new("not there")?,
+    });
+    let bad = judge_core::RejectedAttempt::new(
+        bad,
+        "Timestamps decide: the later effect wins within the same layer.\n\nPer 613.7.",
+    );
     synth.answer(&asked.question, &mut ctx, Some(&bad)).await?;
 
     let reqs = server.received_requests().await.unwrap_or_default();

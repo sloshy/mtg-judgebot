@@ -21,7 +21,9 @@
 //! behind it; vectors it did not write are never relabelled.
 
 use anyhow::Context as _;
-use judge_bot::db::space::{VECTOR_TABLES, column_width, hold_space, record_space, stored_counts, stored_space};
+use judge_bot::db::space::{
+    VECTOR_TABLES, column_width, hold_space, record_space, stored_counts, stored_space,
+};
 use judge_core::InputKind;
 use judge_embed::{Space, WithSpace};
 use pgvector::Vector;
@@ -32,7 +34,11 @@ const MAX_BATCH: usize = 128;
 /// Free-tier Voyage allows only 10K tokens/request-minute; `VOYAGE_MAX_BATCH`
 /// lets an ingest run shrink batches to fit (default: [`MAX_BATCH`]).
 fn max_batch() -> usize {
-    std::env::var("VOYAGE_MAX_BATCH").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(MAX_BATCH)
+    std::env::var("VOYAGE_MAX_BATCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MAX_BATCH)
 }
 /// Soft cap on characters per request so a batch of long rule chunks stays under the
 /// provider's token budget (voyage-3.5: 320k tokens; ~4 chars/token, with margin).
@@ -72,15 +78,22 @@ const TARGETS: [Target; 3] = [
 /// # Errors
 /// When the embedder's space is not the database's (see [`check_space`]), or on
 /// embedding or database failure. Returns the rows embedded per table.
-pub async fn run(pool: &PgPool, embedder: Option<&dyn WithSpace>) -> anyhow::Result<Vec<(&'static str, usize)>> {
+pub async fn run(
+    pool: &PgPool,
+    embedder: Option<&dyn WithSpace>,
+) -> anyhow::Result<Vec<(&'static str, usize)>> {
     let Some(embedder) = embedder else {
-        tracing::warn!("ingest embed: skipped, no embedder configured (set VOYAGE_API_KEY or [models.embed])");
+        tracing::warn!(
+            "ingest embed: skipped, no embedder configured (set VOYAGE_API_KEY or [models.embed])"
+        );
         return Ok(Vec::new());
     };
     check_space(pool, embedder.space()).await?;
     let mut counts = Vec::with_capacity(TARGETS.len());
     for t in &TARGETS {
-        let n = embed_table(pool, embedder, t).await.with_context(|| format!("embedding {}", t.name))?;
+        let n = embed_table(pool, embedder, t)
+            .await
+            .with_context(|| format!("embedding {}", t.name))?;
         tracing::info!(table = t.name, embedded = n, "ingest embed");
         counts.push((t.name, n));
     }
@@ -101,7 +114,9 @@ pub async fn check_space(pool: &PgPool, space: &Space) -> anyhow::Result<()> {
     for t in VECTOR_TABLES {
         let width = column_width(pool, t.table).await?;
         if width != space.dimensions {
-            let holds = stored.as_ref().map_or_else(String::new, |s| format!(" (the database holds {s}: configure that model, or)"));
+            let holds = stored.as_ref().map_or_else(String::new, |s| {
+                format!(" (the database holds {s}: configure that model, or)")
+            });
             anyhow::bail!(
                 "{}.embedding is vector({width}) but the configured embedder {space} produces {}-dimensional vectors;{holds} \
                  run `ingest reembed --yes` to switch the database (re-embeds everything, which costs money)",
@@ -142,20 +157,33 @@ async fn embed_table(pool: &PgPool, embedder: &dyn WithSpace, t: &Target) -> any
             let key: String = r.try_get("key")?;
             let txt: String = r.try_get("txt")?;
             // An empty text would be rejected by the provider; embed a placeholder instead.
-            let txt = if txt.trim().is_empty() { key.clone() } else { txt };
+            let txt = if txt.trim().is_empty() {
+                key.clone()
+            } else {
+                txt
+            };
             pairs.push((key, txt));
         }
         let batch = fit_chars(&pairs);
         let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
-        let vectors = embedder.embed(&texts, InputKind::Document).await.map_err(|e| anyhow::anyhow!("embedder: {e}"))?;
+        let vectors = embedder
+            .embed(&texts, InputKind::Document)
+            .await
+            .map_err(|e| anyhow::anyhow!("embedder: {e}"))?;
         if vectors.len() != batch.len() {
-            anyhow::bail!("embedder returned {} vectors for {} texts", vectors.len(), batch.len());
+            anyhow::bail!(
+                "embedder returned {} vectors for {} texts",
+                vectors.len(),
+                batch.len()
+            );
         }
         let mut written = 0u64;
         let mut tx = pool.begin().await?;
         // Under the shared lock until commit: the row cannot change under this batch.
         if let Some(stored) = hold_space(&mut tx).await? {
-            space.check(&stored).context("the embedding space changed while embedding (a concurrent `ingest reembed`?)")?;
+            space.check(&stored).context(
+                "the embedding space changed while embedding (a concurrent `ingest reembed`?)",
+            )?;
         } else {
             // The first write establishes the space ([`check_space`] saw no vectors).
             record_space(&mut *tx, space).await?;
@@ -164,14 +192,27 @@ async fn embed_table(pool: &PgPool, embedder: &dyn WithSpace, t: &Target) -> any
         let want = space.dimensions;
         for ((key, _), v) in batch.iter().zip(vectors) {
             if v.len() != want {
-                anyhow::bail!("embedding for {} {key} has {} dimensions, expected {want}", t.name, v.len());
+                anyhow::bail!(
+                    "embedding for {} {key} has {} dimensions, expected {want}",
+                    t.name,
+                    v.len()
+                );
             }
-            written += sqlx::query(t.update).bind(Vector::from(v)).bind(key).execute(&mut *tx).await?.rows_affected();
+            written += sqlx::query(t.update)
+                .bind(Vector::from(v))
+                .bind(key)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
         }
         tx.commit().await?;
         if written == 0 {
             // Nothing was updated although rows were selected: bail rather than spin.
-            anyhow::bail!("{}: selected {} unembedded rows but updated none", t.name, batch.len());
+            anyhow::bail!(
+                "{}: selected {} unembedded rows but updated none",
+                t.name,
+                batch.len()
+            );
         }
         total += usize::try_from(written)?;
         tracing::debug!(table = t.name, batch = batch.len(), total, "embedded batch");
@@ -222,7 +263,11 @@ pub(crate) mod fake {
     impl Fake {
         pub(crate) fn new(provider: Provider, model: &str, dimensions: usize) -> Self {
             Self {
-                space: Space { provider, model: model.to_owned(), dimensions },
+                space: Space {
+                    provider,
+                    model: model.to_owned(),
+                    dimensions,
+                },
                 calls: AtomicUsize::new(0),
                 reply_dimensions: dimensions,
                 switch: Mutex::new(None),
@@ -237,7 +282,10 @@ pub(crate) mod fake {
 
         /// Run `switch_space(pool, to)` inside the first `embed` call.
         pub(crate) fn switching_on_first_call(self, pool: PgPool, to: Space) -> Self {
-            *self.switch.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pool, to));
+            *self
+                .switch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pool, to));
             self
         }
 
@@ -248,13 +296,24 @@ pub(crate) mod fake {
 
     #[async_trait]
     impl Embedder for Fake {
-        async fn embed(&self, texts: &[&str], _kind: InputKind) -> Result<Vec<Vec<f32>>, JudgeError> {
+        async fn embed(
+            &self,
+            texts: &[&str],
+            _kind: InputKind,
+        ) -> Result<Vec<Vec<f32>>, JudgeError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let staged = self.switch.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+            let staged = self
+                .switch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
             if let Some((pool, to)) = staged {
                 switch_space(&pool, &to).await?;
             }
-            Ok(texts.iter().map(|_| vec![0.5; self.reply_dimensions]).collect())
+            Ok(texts
+                .iter()
+                .map(|_| vec![0.5; self.reply_dimensions])
+                .collect())
         }
         fn dimensions(&self) -> usize {
             self.space.dimensions
@@ -280,11 +339,17 @@ mod tests {
     }
 
     async fn embedded_glossary(pool: &PgPool) -> anyhow::Result<i64> {
-        Ok(sqlx::query_scalar("SELECT count(*) FROM glossary WHERE embedding IS NOT NULL").fetch_one(pool).await?)
+        Ok(
+            sqlx::query_scalar("SELECT count(*) FROM glossary WHERE embedding IS NOT NULL")
+                .fetch_one(pool)
+                .await?,
+        )
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
-    async fn first_embed_records_the_space_and_later_runs_only_fill_nulls(pool: PgPool) -> anyhow::Result<()> {
+    async fn first_embed_records_the_space_and_later_runs_only_fill_nulls(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
         glossary_row(&pool).await?;
         assert_eq!(stored_space(&pool).await?, None);
         let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024);
@@ -307,23 +372,48 @@ mod tests {
         // so the corrected run is a first embed, not a "mismatch" pointing at reembed.
         glossary_row(&pool).await?;
         let wrong = Fake::new(Provider::OpenAi, "nomic-embed-text:v1.5", 1024).replying(768);
-        let err = run(&pool, Some(&wrong)).await.err().map(|e| format!("{e:#}")).unwrap_or_default();
+        let err = run(&pool, Some(&wrong))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
         assert!(err.contains("has 768 dimensions, expected 1024"), "{err}");
-        assert_eq!((stored_space(&pool).await?, embedded_glossary(&pool).await?), (None, 0));
+        assert_eq!(
+            (stored_space(&pool).await?, embedded_glossary(&pool).await?),
+            (None, 0)
+        );
         let fixed = Fake::new(Provider::OpenAi, "nomic-embed-text", 1024);
         run(&pool, Some(&fixed)).await?;
-        assert_eq!((stored_space(&pool).await?, embedded_glossary(&pool).await?), (Some(fixed.space.clone()), 1));
+        assert_eq!(
+            (stored_space(&pool).await?, embedded_glossary(&pool).await?),
+            (Some(fixed.space.clone()), 1)
+        );
         Ok(())
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
-    async fn a_different_space_is_refused_before_anything_is_embedded(pool: PgPool) -> anyhow::Result<()> {
+    async fn a_different_space_is_refused_before_anything_is_embedded(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
         glossary_row(&pool).await?;
-        let voyage = Space { provider: Provider::Voyage, model: "voyage-3.5".into(), dimensions: 1024 };
+        let voyage = Space {
+            provider: Provider::Voyage,
+            model: "voyage-3.5".into(),
+            dimensions: 1024,
+        };
         record_space(&pool, &voyage).await?;
         let fake = Fake::new(Provider::OpenAi, "nomic-embed-text", 1024);
-        let err = run(&pool, Some(&fake)).await.err().map(|e| format!("{e:#}")).unwrap_or_default();
-        assert!(err.contains("embedding space mismatch") && err.contains("openai/nomic-embed-text (1024 dims)") && err.contains("voyage/voyage-3.5 (1024 dims)"), "{err}");
+        let err = run(&pool, Some(&fake))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(
+            err.contains("embedding space mismatch")
+                && err.contains("openai/nomic-embed-text (1024 dims)")
+                && err.contains("voyage/voyage-3.5 (1024 dims)"),
+            "{err}"
+        );
         assert_eq!(fake.calls(), 0);
         assert_eq!(embedded_glossary(&pool).await?, 0);
         assert_eq!(stored_space(&pool).await?, Some(voyage));
@@ -331,19 +421,41 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
-    async fn a_switch_that_lands_mid_batch_is_seen_by_the_write(pool: PgPool) -> anyhow::Result<()> {
+    async fn a_switch_that_lands_mid_batch_is_seen_by_the_write(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
         glossary_row(&pool).await?;
-        let voyage = Space { provider: Provider::Voyage, model: "voyage-3.5".into(), dimensions: 1024 };
+        let voyage = Space {
+            provider: Provider::Voyage,
+            model: "voyage-3.5".into(),
+            dimensions: 1024,
+        };
         record_space(&pool, &voyage).await?;
         // The check passes (the row is voyage), the request goes out, and while it is
         // in flight `ingest reembed --yes` moves the database to another 1024-wide
         // model. The batch's write must not land those Voyage vectors under the new row.
-        let nomic = Space { provider: Provider::OpenAi, model: "nomic-embed-text".into(), dimensions: 1024 };
-        let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024).switching_on_first_call(pool.clone(), nomic.clone());
-        let err = run(&pool, Some(&fake)).await.err().map(|e| format!("{e:#}")).unwrap_or_default();
-        assert!(err.contains("changed while embedding") && err.contains("embedding space mismatch"), "{err}");
+        let nomic = Space {
+            provider: Provider::OpenAi,
+            model: "nomic-embed-text".into(),
+            dimensions: 1024,
+        };
+        let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024)
+            .switching_on_first_call(pool.clone(), nomic.clone());
+        let err = run(&pool, Some(&fake))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(
+            err.contains("changed while embedding") && err.contains("embedding space mismatch"),
+            "{err}"
+        );
         assert_eq!(fake.calls(), 1);
-        assert_eq!(embedded_glossary(&pool).await?, 0, "nothing of the old space was written");
+        assert_eq!(
+            embedded_glossary(&pool).await?,
+            0,
+            "nothing of the old space was written"
+        );
         assert_eq!(stored_space(&pool).await?, Some(nomic));
         Ok(())
     }
@@ -352,27 +464,66 @@ mod tests {
     async fn a_width_the_columns_do_not_have_points_at_reembed(pool: PgPool) -> anyhow::Result<()> {
         glossary_row(&pool).await?;
         let fake = Fake::new(Provider::OpenAi, "nomic-embed-text", 768);
-        let err = run(&pool, Some(&fake)).await.err().map(|e| format!("{e:#}")).unwrap_or_default();
-        assert!(err.contains("rules.embedding is vector(1024)") && err.contains("768-dimensional") && err.contains("ingest reembed --yes"), "{err}");
-        assert!(!err.contains("the database holds"), "no row, nothing to name: {err}");
+        let err = run(&pool, Some(&fake))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(
+            err.contains("rules.embedding is vector(1024)")
+                && err.contains("768-dimensional")
+                && err.contains("ingest reembed --yes"),
+            "{err}"
+        );
+        assert!(
+            !err.contains("the database holds"),
+            "no row, nothing to name: {err}"
+        );
         assert_eq!(fake.calls(), 0);
-        assert_eq!(stored_space(&pool).await?, None, "the space is not recorded on a refusal");
+        assert_eq!(
+            stored_space(&pool).await?,
+            None,
+            "the space is not recorded on a refusal"
+        );
         // With a row, the message names the stored space so the operator can fix the
         // configuration instead of re-embedding.
-        let voyage = Space { provider: Provider::Voyage, model: "voyage-3.5".into(), dimensions: 1024 };
+        let voyage = Space {
+            provider: Provider::Voyage,
+            model: "voyage-3.5".into(),
+            dimensions: 1024,
+        };
         record_space(&pool, &voyage).await?;
-        let err = run(&pool, Some(&fake)).await.err().map(|e| format!("{e:#}")).unwrap_or_default();
-        assert!(err.contains("the database holds voyage/voyage-3.5 (1024 dims): configure that model, or") && err.contains("ingest reembed --yes"), "{err}");
+        let err = run(&pool, Some(&fake))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(
+            err.contains(
+                "the database holds voyage/voyage-3.5 (1024 dims): configure that model, or"
+            ) && err.contains("ingest reembed --yes"),
+            "{err}"
+        );
         Ok(())
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn vectors_of_unknown_origin_are_not_labelled(pool: PgPool) -> anyhow::Result<()> {
         glossary_row(&pool).await?;
-        sqlx::query("UPDATE glossary SET embedding = $1").bind(Vector::from(vec![0.1; 1024])).execute(&pool).await?;
+        sqlx::query("UPDATE glossary SET embedding = $1")
+            .bind(Vector::from(vec![0.1; 1024]))
+            .execute(&pool)
+            .await?;
         let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024);
-        let err = run(&pool, Some(&fake)).await.err().map(|e| format!("{e:#}")).unwrap_or_default();
-        assert!(err.contains("1 vectors are stored but embedding_space is empty"), "{err}");
+        let err = run(&pool, Some(&fake))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(
+            err.contains("1 vectors are stored but embedding_space is empty"),
+            "{err}"
+        );
         assert_eq!(stored_space(&pool).await?, None);
         Ok(())
     }
@@ -380,9 +531,14 @@ mod tests {
     #[test]
     fn fit_chars_keeps_at_least_one_and_respects_cap() {
         let big = "x".repeat(MAX_BATCH_CHARS);
-        let pairs = vec![("a".to_owned(), big.clone()), ("b".to_owned(), big), ("c".to_owned(), "s".to_owned())];
+        let pairs = vec![
+            ("a".to_owned(), big.clone()),
+            ("b".to_owned(), big),
+            ("c".to_owned(), "s".to_owned()),
+        ];
         assert_eq!(fit_chars(&pairs).len(), 1);
-        let small: Vec<(String, String)> = (0..10).map(|i| (i.to_string(), "t".to_owned())).collect();
+        let small: Vec<(String, String)> =
+            (0..10).map(|i| (i.to_string(), "t".to_owned())).collect();
         assert_eq!(fit_chars(&small).len(), 10);
         assert!(fit_chars(&[]).is_empty());
     }

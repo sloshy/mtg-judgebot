@@ -66,20 +66,27 @@ enum Command {
 /// The `rules` argument that means "whatever Wizards currently publishes".
 const LATEST: &str = "latest";
 
-const USAGE: &str =
-    "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh>";
+const USAGE: &str = "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh>";
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     match args.next().as_deref() {
         Some("cards") => Ok(Command::Cards),
         Some("rules") => Ok(Command::Rules {
-            source: args.next().ok_or_else(|| anyhow::anyhow!("usage: ingest rules <path-or-url | latest>"))?,
+            source: args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("usage: ingest rules <path-or-url | latest>"))?,
         }),
         Some("aliases") => Ok(Command::Aliases {
-            path: args.next().map(PathBuf::from).ok_or_else(|| anyhow::anyhow!("usage: ingest aliases <aliases.yaml>"))?,
+            path: args
+                .next()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("usage: ingest aliases <aliases.yaml>"))?,
         }),
         Some("notes") => Ok(Command::Notes {
-            path: args.next().map(PathBuf::from).ok_or_else(|| anyhow::anyhow!("usage: ingest notes <notes.yaml>"))?,
+            path: args
+                .next()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("usage: ingest notes <notes.yaml>"))?,
         }),
         Some("embed") => Ok(Command::Embed),
         Some("reembed") => {
@@ -122,7 +129,9 @@ fn embedder_from_config() -> Result<Option<Arc<dyn WithSpace>>> {
     tracing::info!("{}", config.summary());
     let embedder = config.embedder()?;
     if embedder.is_none() {
-        tracing::warn!("no embedder configured (VOYAGE_API_KEY or [models.embed]); embedding steps will be skipped");
+        tracing::warn!(
+            "no embedder configured (VOYAGE_API_KEY or [models.embed]); embedding steps will be skipped"
+        );
     }
     Ok(embedder)
 }
@@ -134,22 +143,42 @@ async fn main() -> Result<()> {
         Ok(_) | Err(dotenvy::Error::Io(_)) => {}
         Err(err) => return Err(err).context("reading .env"),
     }
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
     let cmd = parse_args(std::env::args().skip(1))?;
-    let cache_dir = std::env::var_os("INGEST_CACHE_DIR").map_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR), PathBuf::from);
+    let cache_dir = std::env::var_os("INGEST_CACHE_DIR")
+        .map_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR), PathBuf::from);
     tracing::info!(?cmd, cache_dir = %cache_dir.display(), categories = judge_core::Category::ALL.len(), "ingest");
     // The pool is opened per arm rather than up front: `emoji` talks to
     // Scryfall and Discord only, and must not fail on a missing DATABASE_URL.
     match cmd {
         Command::Cards => scryfall::run(&connect().await?, &cache_dir).await,
-        Command::Rules { source } if source == LATEST => cr::run_latest(&connect().await?, &cache_dir).await.map(drop),
+        Command::Rules { source } if source == LATEST => {
+            cr::run_latest(&connect().await?, &cache_dir)
+                .await
+                .map(drop)
+        }
         Command::Rules { source } => cr::run(&connect().await?, &source, &cache_dir).await,
         Command::Aliases { path } => aliases::run(&connect().await?, &path).await,
         Command::Notes { path } => notes::run(&connect().await?, &path).await,
-        Command::Embed => embed::run(&connect().await?, embedder_from_config()?.as_deref()).await.map(drop),
-        Command::Reembed { yes, clear } => reembed::run(&connect().await?, embedder_from_config()?.as_deref(), yes, clear).await,
+        Command::Embed => embed::run(&connect().await?, embedder_from_config()?.as_deref())
+            .await
+            .map(drop),
+        Command::Reembed { yes, clear } => {
+            reembed::run(
+                &connect().await?,
+                embedder_from_config()?.as_deref(),
+                yes,
+                clear,
+            )
+            .await
+        }
         Command::Emoji => emoji::run(&cache_dir).await.map(drop),
-        Command::Retire => judge_bot::db::retire_unsupported(&connect().await?).await.map(drop).map_err(Into::into),
+        Command::Retire => judge_bot::db::retire_unsupported(&connect().await?)
+            .await
+            .map(drop)
+            .map_err(Into::into),
         Command::Migrate => migrate::command(&connect().await?).await.map(drop),
         Command::Refresh => refresh(&connect().await?, &cache_dir).await,
     }
@@ -170,21 +199,37 @@ async fn refresh(pool: &PgPool, cache_dir: &Path) -> Result<()> {
     };
     step("cards", scryfall::run(pool, cache_dir).await);
     step("rules", cr::run_latest(pool, cache_dir).await.map(drop));
-    step("retire", judge_bot::db::retire_unsupported(pool).await.map(drop).map_err(Into::into));
-    step("embed", match embedder_from_config() {
-        Ok(embedder) => embed::run(pool, embedder.as_deref()).await.map(drop),
-        Err(e) => Err(e),
-    });
+    step(
+        "retire",
+        judge_bot::db::retire_unsupported(pool)
+            .await
+            .map(drop)
+            .map_err(Into::into),
+    );
+    step(
+        "embed",
+        match embedder_from_config() {
+            Ok(embedder) => embed::run(pool, embedder.as_deref()).await.map(drop),
+            Err(e) => Err(e),
+        },
+    );
     // The emoji belong to the bot's Discord application; a database-only
     // deployment (no bot) has no token and nothing to upload to.
     if std::env::var("DISCORD_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
         step("emoji", emoji::run(cache_dir).await.map(drop));
     } else {
-        tracing::warn!(step = "emoji", "refresh step skipped: DISCORD_TOKEN is not set");
+        tracing::warn!(
+            step = "emoji",
+            "refresh step skipped: DISCORD_TOKEN is not set"
+        );
     }
     if failed.is_empty() {
         Ok(())
     } else {
-        anyhow::bail!("refresh: {} step(s) failed: {}", failed.len(), failed.join(", "))
+        anyhow::bail!(
+            "refresh: {} step(s) failed: {}",
+            failed.len(),
+            failed.join(", ")
+        )
     }
 }

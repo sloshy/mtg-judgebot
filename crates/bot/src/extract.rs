@@ -16,8 +16,9 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use judge_core::{Category, Extraction, Extractor, JudgeError, Qa, Question};
 use judge_llm::{
-    Capabilities, ChatModel, ChatRequest, ChatResponse, Effort, LOG_TEXT_CHARS, OutputSchema, Stop, TextBlock, ToolChoice,
-    Turn, needs_schema_in_prompt, schema_block, strip_json_fence, truncate_for_log,
+    Capabilities, ChatModel, ChatRequest, ChatResponse, Effort, LOG_TEXT_CHARS, OutputSchema, Stop,
+    TextBlock, ToolChoice, Turn, needs_schema_in_prompt, schema_block, strip_json_fence,
+    truncate_for_log,
 };
 
 /// Knobs for the extraction request. The model itself is the backend's.
@@ -67,7 +68,11 @@ impl LlmExtractor {
 impl Extractor for LlmExtractor {
     async fn extract(&self, q: &Question, history: &[Qa]) -> Result<Extraction, JudgeError> {
         let req = build_request(&self.cfg, self.model.capabilities(), q, history);
-        let resp = self.model.complete(&req).await.map_err(anyhow::Error::from)?;
+        let resp = self
+            .model
+            .complete(&req)
+            .await
+            .map_err(anyhow::Error::from)?;
         let e = parse_extraction(&resp)?;
         if e.categories().all(|g| g.category == Category::Other) {
             tracing::warn!(question = %q.text, "extractor returned no category other than `other`; the category-map leg will be empty");
@@ -171,7 +176,12 @@ pub fn schema() -> serde_json::Value {
 /// temperature. On a backend that cannot enforce the schema (`caps`) the
 /// schema is also appended to the user turn, never to the system prompt.
 #[must_use]
-pub fn build_request(cfg: &ExtractConfig, caps: Capabilities, q: &Question, history: &[Qa]) -> ChatRequest {
+pub fn build_request(
+    cfg: &ExtractConfig,
+    caps: Capabilities,
+    q: &Question,
+    history: &[Qa],
+) -> ChatRequest {
     let output = OutputSchema::of::<Extraction>();
     let mut user = vec![TextBlock::plain(user_turn(q, history, cfg.history_turns))];
     if needs_schema_in_prompt(caps) {
@@ -205,7 +215,9 @@ pub fn parse_extraction(resp: &ChatResponse) -> Result<Extraction, JudgeError> {
         }
         Stop::MaxTokens => Err(anyhow::anyhow!("extraction truncated at max_tokens").into()),
         Stop::EndTurn => {
-            let text = resp.last_text().ok_or_else(|| anyhow::anyhow!("extraction response had no text block"))?;
+            let text = resp
+                .last_text()
+                .ok_or_else(|| anyhow::anyhow!("extraction response had no text block"))?;
             tracing::debug!(raw = %truncate_for_log(text, LOG_TEXT_CHARS), "extraction raw model text");
             // A backend that only asked for JSON in the prompt may get it fenced.
             let text = strip_json_fence(text);
@@ -220,12 +232,17 @@ pub fn parse_extraction(resp: &ChatResponse) -> Result<Extraction, JudgeError> {
             if e.secondary.len() > Extraction::MAX_SECONDARY {
                 // The schema subsets cannot express maxItems (stripped for
                 // Anthropic); `Extraction::categories()` ignores the extras.
-                tracing::debug!(n = e.secondary.len(), "model returned more than two secondary categories");
+                tracing::debug!(
+                    n = e.secondary.len(),
+                    "model returned more than two secondary categories"
+                );
             }
             Ok(e)
         }
         Stop::ToolUse => Err(anyhow::anyhow!("unexpected tool call from extraction").into()),
-        Stop::Other(reason) => Err(anyhow::anyhow!("unexpected stop reason {reason:?} from extraction").into()),
+        Stop::Other(reason) => {
+            Err(anyhow::anyhow!("unexpected stop reason {reason:?} from extraction").into())
+        }
     }
 }
 
@@ -244,7 +261,13 @@ mod tests {
 
     /// What the Anthropic backend reports: nothing needs to go in the prompt.
     fn enforced() -> Capabilities {
-        Capabilities { structured_output: StructuredOutput::Enforced, strict_tools: true, effort: true, cache_hints: true, refusal_fallbacks: true }
+        Capabilities {
+            structured_output: StructuredOutput::Enforced,
+            strict_tools: true,
+            effort: true,
+            cache_hints: true,
+            refusal_fallbacks: true,
+        }
     }
 
     fn at<'a>(v: &'a Value, p: &str) -> &'a Value {
@@ -299,7 +322,10 @@ mod tests {
 
     /// The Anthropic backend against the mock server, metered as in production.
     fn model(server: &MockServer) -> Result<Arc<dyn ChatModel>, judge_llm::LlmError> {
-        let backend = Anthropic::new(Endpoint::Direct { base_url: server.uri(), api_key: "test-key".into() })?;
+        let backend = Anthropic::new(Endpoint::Direct {
+            base_url: server.uri(),
+            api_key: "test-key".into(),
+        })?;
         Ok(Arc::new(Metered::new(backend, SpendMeter::new())?))
     }
 
@@ -308,9 +334,18 @@ mod tests {
     }
 
     /// The `OpenAI` backend against the mock server under `dialect`, free (a local server).
-    fn openai_extractor(server: &MockServer, dialect: Dialect) -> Result<LlmExtractor, judge_llm::LlmError> {
-        let backend = OpenAi::new(&format!("{}/v1", server.uri()), Auth::None, "qwen3:8b", dialect)?;
-        let model: Arc<dyn ChatModel> = Arc::new(Metered::priced(backend, SpendMeter::new(), Price::Free));
+    fn openai_extractor(
+        server: &MockServer,
+        dialect: Dialect,
+    ) -> Result<LlmExtractor, judge_llm::LlmError> {
+        let backend = OpenAi::new(
+            &format!("{}/v1", server.uri()),
+            Auth::None,
+            "qwen3:8b",
+            dialect,
+        )?;
+        let model: Arc<dyn ChatModel> =
+            Arc::new(Metered::priced(backend, SpendMeter::new(), Price::Free));
         Ok(LlmExtractor::new(model, ExtractConfig::default()))
     }
 
@@ -347,7 +382,10 @@ mod tests {
             stop,
             usage: Usage::default(),
             model: "claude-opus-5".into(),
-            assistant: AssistantTurn { backend: "test", raw: Value::Null },
+            assistant: AssistantTurn {
+                backend: "test",
+                raw: Value::Null,
+            },
         }
     }
 
@@ -358,10 +396,19 @@ mod tests {
         assert_eq!(req.max_tokens, 2000);
         assert_eq!(req.effort, Some(Effort::Low));
         assert!(!req.thinking && req.tools.is_empty() && req.fallbacks.is_none());
-        let schema = req.output.as_ref().map(|o| o.schema.clone().to_value()).unwrap_or_default();
+        let schema = req
+            .output
+            .as_ref()
+            .map(|o| o.schema.clone().to_value())
+            .unwrap_or_default();
         // The schema requires a primary category: an empty classification is an API-level error.
         let required = at(&schema, "/required");
-        assert!(required.as_array().is_some_and(|r| r.iter().any(|x| x == "primary")), "{required}");
+        assert!(
+            required
+                .as_array()
+                .is_some_and(|r| r.iter().any(|x| x == "primary")),
+            "{required}"
+        );
         let v = serde_json::to_value(&req)?;
         assert_eq!(at(&v, "/system/0/cache"), "Short");
         let sys = at(&v, "/system/0/text").as_str().unwrap_or_default();
@@ -374,11 +421,26 @@ mod tests {
         for src in ["cr:", "commander:", "tournament:", "out_of_scope:"] {
             assert!(sys.contains(src), "missing {src}");
         }
-        assert!(sys.contains("3. primary:") && sys.contains("4. secondary:") && sys.contains("5. source:"), "{sys}");
+        assert!(
+            sys.contains("3. primary:")
+                && sys.contains("4. secondary:")
+                && sys.contains("5. source:"),
+            "{sys}"
+        );
         // Nickname-artefact rules: printing qualifiers, collectives beside their members, generic basics.
-        assert!(sys.contains("\"mirage LED\" -> \"LED\"") && sys.contains("\"Urza's Saga Waylay\" -> \"Waylay\""), "{sys}");
-        assert!(sys.contains("Never emit a collective nickname") && sys.contains("\"the tron lands\""), "{sys}");
-        assert!(sys.contains("Do not emit generic basic land words"), "{sys}");
+        assert!(
+            sys.contains("\"mirage LED\" -> \"LED\"")
+                && sys.contains("\"Urza's Saga Waylay\" -> \"Waylay\""),
+            "{sys}"
+        );
+        assert!(
+            sys.contains("Never emit a collective nickname") && sys.contains("\"the tron lands\""),
+            "{sys}"
+        );
+        assert!(
+            sys.contains("Do not emit generic basic land words"),
+            "{sys}"
+        );
         let user = at(&v, "/turns/0/User/0/text").as_str().unwrap_or_default();
         assert!(at(&v, "/turns/0/User/0/cache").is_null());
         // Only the last `history_turns` Q&As, oldest first, then the question.
@@ -398,20 +460,42 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_goes_into_the_user_turn_only_when_the_backend_cannot_enforce_it() -> Result<(), serde_json::Error> {
+    fn the_schema_goes_into_the_user_turn_only_when_the_backend_cannot_enforce_it()
+    -> Result<(), serde_json::Error> {
         let cfg = ExtractConfig::default();
         let enforced_req = build_request(&cfg, enforced(), &question(), &[]);
         for mode in [StructuredOutput::JsonMode, StructuredOutput::PromptOnly] {
-            let req = build_request(&cfg, Capabilities { structured_output: mode, ..enforced() }, &question(), &[]);
+            let req = build_request(
+                &cfg,
+                Capabilities {
+                    structured_output: mode,
+                    ..enforced()
+                },
+                &question(),
+                &[],
+            );
             // Same system prompt, byte for byte: the digest test in synth.rs guards the other prompt the same way.
             assert_eq!(req.system, enforced_req.system, "{mode:?}");
             let v = serde_json::to_value(&req)?;
-            let blocks = at(&v, "/turns/0/User").as_array().cloned().unwrap_or_default();
-            assert_eq!(blocks.len(), 2, "{mode:?}: question block, then the schema block");
+            let blocks = at(&v, "/turns/0/User")
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(
+                blocks.len(),
+                2,
+                "{mode:?}: question block, then the schema block"
+            );
             let schema = at(&v, "/turns/0/User/1/text").as_str().unwrap_or_default();
-            assert!(schema.starts_with("\n# Output format\n") && schema.contains("\"card_spans\""), "{schema}");
+            assert!(
+                schema.starts_with("\n# Output format\n") && schema.contains("\"card_spans\""),
+                "{schema}"
+            );
             assert!(at(&v, "/turns/0/User/1/cache").is_null());
-            assert!(req.output.is_some(), "the structured output is still asked for; json mode uses it");
+            assert!(
+                req.output.is_some(),
+                "the structured output is still asked for; json mode uses it"
+            );
         }
         let v = serde_json::to_value(&enforced_req)?;
         assert_eq!(at(&v, "/turns/0/User").as_array().map_or(0, Vec::len), 1);
@@ -419,10 +503,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn openai_happy_path_sends_json_object_and_the_schema_in_the_user_turn() -> Result<(), Box<dyn std::error::Error>> {
-        let server = openai_server_with(completion("stop", &json!({"role": "assistant", "content": GOOD}))).await;
-        let dialect = Dialect { structured_output: StructuredOutputMode::JsonObject, ..Dialect::default() };
-        let e = openai_extractor(&server, dialect)?.extract(&question(), &history()).await?;
+    async fn openai_happy_path_sends_json_object_and_the_schema_in_the_user_turn()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = openai_server_with(completion(
+            "stop",
+            &json!({"role": "assistant", "content": GOOD}),
+        ))
+        .await;
+        let dialect = Dialect {
+            structured_output: StructuredOutputMode::JsonObject,
+            ..Dialect::default()
+        };
+        let e = openai_extractor(&server, dialect)?
+            .extract(&question(), &history())
+            .await?;
         assert_eq!(e.card_spans, ["[[Humility]]", "Bob"]);
         assert_eq!(e.primary_category(), Category::Layers);
 
@@ -431,63 +525,147 @@ mod tests {
         assert_eq!(at(&sent, "/model"), "qwen3:8b");
         assert_eq!(at(&sent, "/max_tokens"), 2000);
         assert_eq!(at(&sent, "/messages/0/role"), "system");
-        assert_eq!(at(&sent, "/messages/0/content").as_str(), Some(system_prompt().as_str()), "the system prompt is untouched");
+        assert_eq!(
+            at(&sent, "/messages/0/content").as_str(),
+            Some(system_prompt().as_str()),
+            "the system prompt is untouched"
+        );
         assert_eq!(at(&sent, "/messages/1/role"), "user");
-        let user = at(&sent, "/messages/1/content").as_str().unwrap_or_default();
-        assert!(user.contains("## Question\nDoes [[Humility]] turn off Bob's lifelink?\n\n# Output format\n"), "{user}");
-        assert!(user.contains("```json") && user.contains("\"card_spans\""), "{user}");
-        assert_eq!(at(&sent, "/response_format"), &json!({"type": "json_object"}));
-        assert!(sent.get("tools").is_none() && sent.get("tool_choice").is_none() && sent.get("parallel_tool_calls").is_none());
-        assert!(sent.get("reasoning_effort").is_none(), "the default dialect does not send effort");
+        let user = at(&sent, "/messages/1/content")
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            user.contains(
+                "## Question\nDoes [[Humility]] turn off Bob's lifelink?\n\n# Output format\n"
+            ),
+            "{user}"
+        );
+        assert!(
+            user.contains("```json") && user.contains("\"card_spans\""),
+            "{user}"
+        );
+        assert_eq!(
+            at(&sent, "/response_format"),
+            &json!({"type": "json_object"})
+        );
+        assert!(
+            sent.get("tools").is_none()
+                && sent.get("tool_choice").is_none()
+                && sent.get("parallel_tool_calls").is_none()
+        );
+        assert!(
+            sent.get("reasoning_effort").is_none(),
+            "the default dialect does not send effort"
+        );
         assert!(sent.get("temperature").is_none() && sent.get("thinking").is_none());
 
         // With the schema enforced server-side the user turn carries only the question.
-        let server = openai_server_with(completion("stop", &json!({"role": "assistant", "content": GOOD}))).await;
-        let dialect = Dialect { reasoning_effort: true, ..Dialect::default() };
-        openai_extractor(&server, dialect)?.extract(&question(), &[]).await?;
+        let server = openai_server_with(completion(
+            "stop",
+            &json!({"role": "assistant", "content": GOOD}),
+        ))
+        .await;
+        let dialect = Dialect {
+            reasoning_effort: true,
+            ..Dialect::default()
+        };
+        openai_extractor(&server, dialect)?
+            .extract(&question(), &[])
+            .await?;
         let sent = first_body(&server).await?;
-        let user = at(&sent, "/messages/1/content").as_str().unwrap_or_default();
+        let user = at(&sent, "/messages/1/content")
+            .as_str()
+            .unwrap_or_default();
         assert!(!user.contains("# Output format"), "{user}");
         assert_eq!(at(&sent, "/response_format/type"), "json_schema");
         assert_eq!(at(&sent, "/response_format/json_schema/name"), "Extraction");
-        assert_eq!(at(&sent, "/response_format/json_schema/strict"), &Value::Bool(true));
-        assert_eq!(at(&sent, "/response_format/json_schema/schema/additionalProperties"), &Value::Bool(false));
+        assert_eq!(
+            at(&sent, "/response_format/json_schema/strict"),
+            &Value::Bool(true)
+        );
+        assert_eq!(
+            at(
+                &sent,
+                "/response_format/json_schema/schema/additionalProperties"
+            ),
+            &Value::Bool(false)
+        );
         assert_eq!(at(&sent, "/reasoning_effort"), "low");
         Ok(())
     }
 
     #[tokio::test]
-    async fn openai_fenced_json_from_a_prompt_only_server_is_accepted() -> Result<(), Box<dyn std::error::Error>> {
+    async fn openai_fenced_json_from_a_prompt_only_server_is_accepted()
+    -> Result<(), Box<dyn std::error::Error>> {
         let fenced = format!("```json\n{GOOD}\n```");
-        let server = openai_server_with(completion("stop", &json!({"role": "assistant", "content": fenced}))).await;
-        let dialect = Dialect { structured_output: StructuredOutputMode::Prompt, ..Dialect::default() };
-        let e = openai_extractor(&server, dialect)?.extract(&question(), &[]).await?;
+        let server = openai_server_with(completion(
+            "stop",
+            &json!({"role": "assistant", "content": fenced}),
+        ))
+        .await;
+        let dialect = Dialect {
+            structured_output: StructuredOutputMode::Prompt,
+            ..Dialect::default()
+        };
+        let e = openai_extractor(&server, dialect)?
+            .extract(&question(), &[])
+            .await?;
         assert_eq!(e.source, Source::Cr);
         let sent = first_body(&server).await?;
         assert!(sent.get("response_format").is_none(), "prompt only");
-        assert!(at(&sent, "/messages/1/content").as_str().is_some_and(|u| u.contains("# Output format")));
+        assert!(
+            at(&sent, "/messages/1/content")
+                .as_str()
+                .is_some_and(|u| u.contains("# Output format"))
+        );
         Ok(())
     }
 
     #[tokio::test]
     async fn openai_error_paths() -> Result<(), Box<dyn std::error::Error>> {
         // content_filter and message.refusal are refusals; length is truncation; a bad arguments string is a decode error.
-        let server = openai_server_with(completion("content_filter", &json!({"role": "assistant", "content": null}))).await;
-        let r = openai_extractor(&server, Dialect::default())?.extract(&question(), &[]).await;
+        let server = openai_server_with(completion(
+            "content_filter",
+            &json!({"role": "assistant", "content": null}),
+        ))
+        .await;
+        let r = openai_extractor(&server, Dialect::default())?
+            .extract(&question(), &[])
+            .await;
         assert!(matches!(r, Err(JudgeError::LlmRefused)), "{r:?}");
 
-        let server = openai_server_with(completion("stop", &json!({"role": "assistant", "content": null, "refusal": "I can't help with that."}))).await;
-        let r = openai_extractor(&server, Dialect::default())?.extract(&question(), &[]).await;
+        let server = openai_server_with(completion(
+            "stop",
+            &json!({"role": "assistant", "content": null, "refusal": "I can't help with that."}),
+        ))
+        .await;
+        let r = openai_extractor(&server, Dialect::default())?
+            .extract(&question(), &[])
+            .await;
         assert!(matches!(r, Err(JudgeError::LlmRefused)), "{r:?}");
 
-        let server = openai_server_with(completion("length", &json!({"role": "assistant", "content": "{\"card_spans\": ["}))).await;
-        let r = openai_extractor(&server, Dialect::default())?.extract(&question(), &[]).await;
-        assert!(matches!(&r, Err(JudgeError::Upstream(e)) if format!("{e:#}").contains("truncated")), "{r:?}");
+        let server = openai_server_with(completion(
+            "length",
+            &json!({"role": "assistant", "content": "{\"card_spans\": ["}),
+        ))
+        .await;
+        let r = openai_extractor(&server, Dialect::default())?
+            .extract(&question(), &[])
+            .await;
+        assert!(
+            matches!(&r, Err(JudgeError::Upstream(e)) if format!("{e:#}").contains("truncated")),
+            "{r:?}"
+        );
 
         let bad_args = json!({"role": "assistant", "content": null, "tool_calls": [{"id": "c", "type": "function", "function": {"name": "x", "arguments": "{oops"}}]});
         let server = openai_server_with(completion("tool_calls", &bad_args)).await;
-        let r = openai_extractor(&server, Dialect::default())?.extract(&question(), &[]).await;
-        assert!(matches!(&r, Err(JudgeError::Upstream(e)) if e.downcast_ref::<judge_llm::LlmError>().is_some_and(|e| matches!(e, judge_llm::LlmError::Decode { .. }))), "{r:?}");
+        let r = openai_extractor(&server, Dialect::default())?
+            .extract(&question(), &[])
+            .await;
+        assert!(
+            matches!(&r, Err(JudgeError::Upstream(e)) if e.downcast_ref::<judge_llm::LlmError>().is_some_and(|e| matches!(e, judge_llm::LlmError::Decode { .. }))),
+            "{r:?}"
+        );
         Ok(())
     }
 
@@ -553,15 +731,30 @@ mod tests {
     #[test]
     fn parse_edge_cases() -> Result<(), Box<dyn std::error::Error>> {
         let truncated = resp(Stop::MaxTokens, &["{"]);
-        assert!(matches!(parse_extraction(&truncated), Err(JudgeError::Upstream(_))));
+        assert!(matches!(
+            parse_extraction(&truncated),
+            Err(JudgeError::Upstream(_))
+        ));
         let no_text = resp(Stop::EndTurn, &[]);
-        assert!(matches!(parse_extraction(&no_text), Err(JudgeError::Upstream(_))));
+        assert!(matches!(
+            parse_extraction(&no_text),
+            Err(JudgeError::Upstream(_))
+        ));
         let odd = resp(Stop::Other("pause_turn".into()), &[GOOD]);
-        assert!(matches!(parse_extraction(&odd), Err(JudgeError::Upstream(_))));
+        assert!(matches!(
+            parse_extraction(&odd),
+            Err(JudgeError::Upstream(_))
+        ));
         let tool = resp(Stop::ToolUse, &[GOOD]);
-        assert!(matches!(parse_extraction(&tool), Err(JudgeError::Upstream(_))));
+        assert!(matches!(
+            parse_extraction(&tool),
+            Err(JudgeError::Upstream(_))
+        ));
         let refused = resp(Stop::Refusal(Refusal::default()), &[]);
-        assert!(matches!(parse_extraction(&refused), Err(JudgeError::LlmRefused)));
+        assert!(matches!(
+            parse_extraction(&refused),
+            Err(JudgeError::LlmRefused)
+        ));
         // Prose before the JSON is ignored; only the last text block is parsed.
         let prose = resp(Stop::EndTurn, &["Here:", GOOD]);
         assert_eq!(parse_extraction(&prose)?.source, Source::Cr);
@@ -573,25 +766,49 @@ mod tests {
         let four = resp(Stop::EndTurn, &[&many]);
         assert_eq!(parse_extraction(&four)?.categories().count(), 3);
         // A missing secondary array is fine; a missing primary is a schema violation.
-        let no_secondary = GOOD.replace(r#","secondary":[{"category":"keyword_abilities","confidence":"medium"}]"#, "");
-        assert_eq!(parse_extraction(&resp(Stop::EndTurn, &[&no_secondary]))?.categories().count(), 1);
-        let no_primary = GOOD.replace(r#""primary":{"category":"layers","confidence":"high"},"#, "");
-        assert!(matches!(parse_extraction(&resp(Stop::EndTurn, &[&no_primary])), Err(JudgeError::Upstream(_))));
+        let no_secondary = GOOD.replace(
+            r#","secondary":[{"category":"keyword_abilities","confidence":"medium"}]"#,
+            "",
+        );
+        assert_eq!(
+            parse_extraction(&resp(Stop::EndTurn, &[&no_secondary]))?
+                .categories()
+                .count(),
+            1
+        );
+        let no_primary = GOOD.replace(
+            r#""primary":{"category":"layers","confidence":"high"},"#,
+            "",
+        );
+        assert!(matches!(
+            parse_extraction(&resp(Stop::EndTurn, &[&no_primary])),
+            Err(JudgeError::Upstream(_))
+        ));
         Ok(())
     }
 
     #[tokio::test]
     async fn config_is_used_for_the_request() -> Result<(), Box<dyn std::error::Error>> {
         let server = server_with(body("end_turn", json!([{"type": "text", "text": GOOD}]))).await;
-        let cfg = ExtractConfig { effort: Effort::Medium, max_tokens: 777, history_turns: 1 };
+        let cfg = ExtractConfig {
+            effort: Effort::Medium,
+            max_tokens: 777,
+            history_turns: 1,
+        };
         let x = LlmExtractor::new(model(&server)?, cfg);
         x.extract(&question(), &history()).await?;
         let reqs = server.received_requests().await.unwrap_or_default();
-        let sent: Value = serde_json::from_slice(&reqs.first().map(|r| r.body.clone()).unwrap_or_default())?;
+        let sent: Value =
+            serde_json::from_slice(&reqs.first().map(|r| r.body.clone()).unwrap_or_default())?;
         assert_eq!(at(&sent, "/output_config/effort"), "medium");
         assert_eq!(at(&sent, "/max_tokens"), 777);
-        let user = at(&sent, "/messages/0/content/0/text").as_str().unwrap_or_default();
-        assert!(!user.contains("Q: q5\n") && user.contains("Q: q6\n"), "{user}");
+        let user = at(&sent, "/messages/0/content/0/text")
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            !user.contains("Q: q5\n") && user.contains("Q: q6\n"),
+            "{user}"
+        );
         Ok(())
     }
 }

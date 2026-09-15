@@ -18,12 +18,19 @@ pub async fn command(pool: &PgPool) -> Result<Report> {
     println!("migrating (waits for a running refresh or reembed, if any)");
     let r = run(pool, Ahead::Refuse).await?;
     if r.applied.is_empty() {
-        println!("schema is current: {} migrations in place, nothing to apply", r.already);
+        println!(
+            "schema is current: {} migrations in place, nothing to apply",
+            r.already
+        );
     } else {
         for v in &r.applied {
             println!("applied {v}");
         }
-        println!("applied {} migration(s); {} in place", r.applied.len(), r.already + r.applied.len());
+        println!(
+            "applied {} migration(s); {} in place",
+            r.applied.len(),
+            r.already + r.applied.len()
+        );
     }
     Ok(r)
 }

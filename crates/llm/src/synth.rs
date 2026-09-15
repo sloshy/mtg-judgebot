@@ -21,8 +21,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AssistantTurn, ChatModel, ChatRequest, ChatResponse, Effort, OutputSchema, RefusalFallback, Stop, TextBlock,
-    ToolChoice, ToolResult, ToolSpec, Turn, schema_of,
+    AssistantTurn, ChatModel, ChatRequest, ChatResponse, Effort, OutputSchema, RefusalFallback,
+    Stop, TextBlock, ToolChoice, ToolResult, ToolSpec, Turn, schema_of,
 };
 
 /// Name of the one tool the synthesizer may call.
@@ -81,7 +81,12 @@ pub struct SynthConfig {
 
 impl Default for SynthConfig {
     fn default() -> Self {
-        Self { max_tokens: 16_000, effort: Effort::High, fallbacks: Some(RefusalFallback::Default), max_tool_result_chars: 30_000 }
+        Self {
+            max_tokens: 16_000,
+            effort: Effort::High,
+            fallbacks: Some(RefusalFallback::Default),
+            max_tool_result_chars: 30_000,
+        }
     }
 }
 
@@ -129,7 +134,12 @@ impl<S: Stage> std::fmt::Debug for Synth<S> {
 /// (the caller puts a cache hint on the material block), the `lookup_rules`
 /// tool (single call per turn), extended reasoning, and the `Verdict` schema
 /// as structured output.
-fn first_request(cfg: &SynthConfig, system: String, user: Vec<TextBlock>, tool_choice: ToolChoice) -> ChatRequest {
+fn first_request(
+    cfg: &SynthConfig,
+    system: String,
+    user: Vec<TextBlock>,
+    tool_choice: ToolChoice,
+) -> ChatRequest {
     ChatRequest {
         max_tokens: cfg.max_tokens,
         system: vec![TextBlock::cached(system)],
@@ -163,7 +173,11 @@ impl<S: Stage> Synth<S> {
     /// One round trip, logging output tokens against `max_tokens` so the
     /// truncation margin is observable.
     async fn round_trip(&self) -> Result<ChatResponse, JudgeError> {
-        let resp = self.model.complete(&self.req).await.map_err(anyhow::Error::from)?;
+        let resp = self
+            .model
+            .complete(&self.req)
+            .await
+            .map_err(anyhow::Error::from)?;
         tracing::info!(output_tokens = resp.usage.output, max_tokens = self.req.max_tokens, stop = ?resp.stop, "synthesis response");
         Ok(resp)
     }
@@ -172,9 +186,24 @@ impl<S: Stage> Synth<S> {
 impl Synth<Fresh> {
     /// Build the first request (see [`first_request`]) with the tool allowed.
     #[must_use]
-    pub fn new(model: Arc<dyn ChatModel>, cfg: &SynthConfig, system: impl Into<String>, user: Vec<TextBlock>) -> Self {
-        let req = first_request(cfg, system.into(), user, ToolChoice::Auto { parallel: false });
-        Self { model, cfg: cfg.clone(), req, stage: Fresh }
+    pub fn new(
+        model: Arc<dyn ChatModel>,
+        cfg: &SynthConfig,
+        system: impl Into<String>,
+        user: Vec<TextBlock>,
+    ) -> Self {
+        let req = first_request(
+            cfg,
+            system.into(),
+            user,
+            ToolChoice::Auto { parallel: false },
+        );
+        Self {
+            model,
+            cfg: cfg.clone(),
+            req,
+            stage: Fresh,
+        }
     }
 
     /// # Errors
@@ -184,13 +213,20 @@ impl Synth<Fresh> {
         let resp = self.round_trip().await?;
         match classify(resp)? {
             Step::Verdict(v) => Ok(SendOutcome::Done(v)),
-            Step::Tool { call_ids, requested, assistant } => {
+            Step::Tool {
+                call_ids,
+                requested,
+                assistant,
+            } => {
                 self.req.turns.push(Turn::Assistant(assistant));
                 Ok(SendOutcome::ToolRequested(Synth {
                     model: self.model,
                     cfg: self.cfg,
                     req: self.req,
-                    stage: ToolRequested { call_ids, requested },
+                    stage: ToolRequested {
+                        call_ids,
+                        requested,
+                    },
                 }))
             }
         }
@@ -215,10 +251,19 @@ impl Synth<ToolRequested> {
             .stage
             .call_ids
             .into_iter()
-            .map(|call_id| ToolResult { call_id, content: content.clone(), is_error: false })
+            .map(|call_id| ToolResult {
+                call_id,
+                content: content.clone(),
+                is_error: false,
+            })
             .collect();
         self.req.turns.push(Turn::ToolResults(results));
-        Synth { model: self.model, cfg: self.cfg, req: self.req, stage: Final }
+        Synth {
+            model: self.model,
+            cfg: self.cfg,
+            req: self.req,
+            stage: Final,
+        }
     }
 }
 
@@ -237,14 +282,26 @@ pub fn render_tool_result(chunks: &[RuleChunk], max_chars: usize) -> String {
         // A prefix in id order, so the "omitted" count is honest and the model can ask for the rest by id.
         if omitted == 0 && (parts.is_empty() || used + size <= max_chars) {
             used += size;
-            parts.push(format!("[{}] {}\n{}\n{}", c.id, c.heading, c.body, c.examples.join("\n")));
+            parts.push(format!(
+                "[{}] {}\n{}\n{}",
+                c.id,
+                c.heading,
+                c.body,
+                c.examples.join("\n")
+            ));
         } else {
             omitted += 1;
         }
     }
     if omitted > 0 {
-        tracing::warn!(shown = parts.len(), omitted, "lookup_rules result truncated");
-        parts.push(format!("({omitted} more rules omitted: the request was too broad; cite only what is shown)"));
+        tracing::warn!(
+            shown = parts.len(),
+            omitted,
+            "lookup_rules result truncated"
+        );
+        parts.push(format!(
+            "({omitted} more rules omitted: the request was too broad; cite only what is shown)"
+        ));
     }
     parts.join("\n\n")
 }
@@ -253,9 +310,19 @@ impl Synth<Final> {
     /// A conversation that may not call the tool at all (`tool_choice: none`):
     /// the citation retry, whose Context already holds the earlier tool round.
     #[must_use]
-    pub fn new_final(model: Arc<dyn ChatModel>, cfg: &SynthConfig, system: impl Into<String>, user: Vec<TextBlock>) -> Self {
+    pub fn new_final(
+        model: Arc<dyn ChatModel>,
+        cfg: &SynthConfig,
+        system: impl Into<String>,
+        user: Vec<TextBlock>,
+    ) -> Self {
         let req = first_request(cfg, system.into(), user, ToolChoice::None);
-        Self { model, cfg: cfg.clone(), req, stage: Final }
+        Self {
+            model,
+            cfg: cfg.clone(),
+            req,
+            stage: Final,
+        }
     }
 
     /// # Errors
@@ -264,7 +331,9 @@ impl Synth<Final> {
         let resp = self.round_trip().await?;
         match classify(resp)? {
             Step::Verdict(v) => Ok(v),
-            Step::Tool { .. } => Err(anyhow::anyhow!("model requested a second tool round; not allowed").into()),
+            Step::Tool { .. } => {
+                Err(anyhow::anyhow!("model requested a second tool round; not allowed").into())
+            }
         }
     }
 }
@@ -298,16 +367,21 @@ pub fn classify(resp: ChatResponse) -> Result<Step, JudgeError> {
             tracing::warn!(?details, "model refused");
             Err(JudgeError::LlmRefused)
         }
-        Stop::MaxTokens => Err(anyhow::Error::from(Truncated { output_tokens: resp.usage.output }).into()),
+        Stop::MaxTokens => Err(anyhow::Error::from(Truncated {
+            output_tokens: resp.usage.output,
+        })
+        .into()),
         Stop::ToolUse => {
             let mut call_ids = Vec::new();
             let mut requested: Vec<RuleId> = Vec::new();
             for call in &resp.tool_calls {
                 if call.name != LOOKUP_RULES {
-                    return Err(anyhow::anyhow!("model requested an unknown tool: {}", call.name).into());
+                    return Err(
+                        anyhow::anyhow!("model requested an unknown tool: {}", call.name).into(),
+                    );
                 }
-                let parsed: LookupRulesInput =
-                    serde_json::from_value(call.input.clone()).context("lookup_rules input did not match schema")?;
+                let parsed: LookupRulesInput = serde_json::from_value(call.input.clone())
+                    .context("lookup_rules input did not match schema")?;
                 call_ids.push(call.id.clone());
                 for r in parsed.ids {
                     if !requested.contains(&r) {
@@ -318,7 +392,11 @@ pub fn classify(resp: ChatResponse) -> Result<Step, JudgeError> {
             if call_ids.is_empty() {
                 return Err(anyhow::anyhow!("tool-use stop without a tool call").into());
             }
-            Ok(Step::Tool { call_ids, requested, assistant: resp.assistant })
+            Ok(Step::Tool {
+                call_ids,
+                requested,
+                assistant: resp.assistant,
+            })
         }
         Stop::EndTurn => {
             if !resp.tool_calls.is_empty() {
@@ -335,10 +413,15 @@ pub fn classify(resp: ChatResponse) -> Result<Step, JudgeError> {
 fn parse_verdict(resp: &ChatResponse) -> Result<Verdict<Unvalidated>, JudgeError> {
     if let Some((_, prose)) = resp.text.split_last() {
         for t in prose {
-            tracing::debug!(text = t, "ignoring prose text block before the structured output");
+            tracing::debug!(
+                text = t,
+                "ignoring prose text block before the structured output"
+            );
         }
     }
-    let text = resp.last_text().ok_or_else(|| anyhow::anyhow!("response contained no text block"))?;
+    let text = resp
+        .last_text()
+        .ok_or_else(|| anyhow::anyhow!("response contained no text block"))?;
     tracing::debug!(raw = %crate::truncate_for_log(text, crate::LOG_TEXT_CHARS), "synthesis raw model text");
     // A backend that only asked for JSON in the prompt may get it fenced.
     let text = crate::strip_json_fence(text);
@@ -346,14 +429,22 @@ fn parse_verdict(resp: &ChatResponse) -> Result<Verdict<Unvalidated>, JudgeError
         // Bounded: this string becomes the `Upstream` error chain, which the
         // adapters log at warn. `max_tokens` is 16k, so an unbounded `{text}`
         // could write ~64 KB to an unrotated container log per request.
-        .with_context(|| format!("verdict JSON did not match schema: {}", crate::truncate_for_log(text, crate::LOG_TEXT_CHARS)))
+        .with_context(|| {
+            format!(
+                "verdict JSON did not match schema: {}",
+                crate::truncate_for_log(text, crate::LOG_TEXT_CHARS)
+            )
+        })
         .map_err(JudgeError::from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Backend, Capabilities, LlmError, Metered, Price, Refusal, SpendMeter, StructuredOutput, ToolCall, Usage};
+    use crate::{
+        Backend, Capabilities, LlmError, Metered, Price, Refusal, SpendMeter, StructuredOutput,
+        ToolCall, Usage,
+    };
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
@@ -366,7 +457,13 @@ mod tests {
             Err(LlmError::Request("not sent".into()))
         }
         fn capabilities(&self) -> Capabilities {
-            Capabilities { structured_output: StructuredOutput::Enforced, strict_tools: true, effort: true, cache_hints: true, refusal_fallbacks: true }
+            Capabilities {
+                structured_output: StructuredOutput::Enforced,
+                strict_tools: true,
+                effort: true,
+                cache_hints: true,
+                refusal_fallbacks: true,
+            }
         }
         fn provider(&self) -> &'static str {
             "test"
@@ -385,14 +482,26 @@ mod tests {
             text: text.iter().map(|t| (*t).to_owned()).collect(),
             tool_calls,
             stop,
-            usage: Usage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
+            usage: Usage {
+                input: 1,
+                output: 1,
+                cache_read: 0,
+                cache_write: 0,
+            },
             model: "m".into(),
-            assistant: AssistantTurn { backend: "test", raw: json!(["replayed"]) },
+            assistant: AssistantTurn {
+                backend: "test",
+                raw: json!(["replayed"]),
+            },
         }
     }
 
     fn call(id: &str, name: &str, input: Value) -> ToolCall {
-        ToolCall { id: id.into(), name: name.into(), input }
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input,
+        }
     }
 
     const VERDICT: &str = r#"{"answer":"a","confidence":"low","citations":[{"kind":"rule","id":"702.15b","quote":"q"}],"category":"layers"}"#;
@@ -401,12 +510,21 @@ mod tests {
     fn lookup_rules_schema_requires_ids() {
         let s = schema_of::<LookupRulesInput>().to_value();
         assert_eq!(s.pointer("/required"), Some(&json!(["ids"])));
-        assert_eq!(s.pointer("/additionalProperties"), Some(&Value::Bool(false)), "deny_unknown_fields closes it");
+        assert_eq!(
+            s.pointer("/additionalProperties"),
+            Some(&Value::Bool(false)),
+            "deny_unknown_fields closes it"
+        );
     }
 
     #[test]
     fn fresh_request_has_tool_thinking_format_and_fallbacks() {
-        let s = Synth::new(model(), &SynthConfig::default(), "sys", vec![TextBlock::plain("q")]);
+        let s = Synth::new(
+            model(),
+            &SynthConfig::default(),
+            "sys",
+            vec![TextBlock::plain("q")],
+        );
         let r = s.request();
         assert_eq!(r.max_tokens, 16_000);
         assert_eq!(r.system, [TextBlock::cached("sys")]);
@@ -418,13 +536,20 @@ mod tests {
         assert_eq!(r.effort, Some(Effort::High));
         assert_eq!(r.fallbacks, Some(RefusalFallback::Default));
 
-        let cfg = SynthConfig { fallbacks: None, ..SynthConfig::default() };
+        let cfg = SynthConfig {
+            fallbacks: None,
+            ..SynthConfig::default()
+        };
         let s = Synth::new(model(), &cfg, "sys", vec![TextBlock::plain("q")]);
         assert!(s.request().fallbacks.is_none());
 
         let f = Synth::new_final(model(), &cfg, "sys", vec![TextBlock::plain("q")]);
         assert_eq!(f.request().tool_choice, ToolChoice::None);
-        assert_eq!(f.request().tools.first().map(|t| t.name.as_str()), Some(LOOKUP_RULES), "the tool stays listed");
+        assert_eq!(
+            f.request().tools.first().map(|t| t.name.as_str()),
+            Some(LOOKUP_RULES),
+            "the tool stays listed"
+        );
     }
 
     fn chunk(id: &str, body: &str) -> Result<RuleChunk, Box<dyn std::error::Error>> {
@@ -440,34 +565,66 @@ mod tests {
     }
 
     #[test]
-    fn answer_tool_answers_every_id_and_keeps_tool_choice() -> Result<(), Box<dyn std::error::Error>> {
-        let s = Synth::new(model(), &SynthConfig::default(), "sys", vec![TextBlock::plain("q")]);
+    fn answer_tool_answers_every_id_and_keeps_tool_choice() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let s = Synth::new(
+            model(),
+            &SynthConfig::default(),
+            "sys",
+            vec![TextBlock::plain("q")],
+        );
         let t: Synth<ToolRequested> = Synth {
             model: s.model,
             cfg: s.cfg,
             req: s.req,
-            stage: ToolRequested { call_ids: vec!["tu_1".into(), "tu_2".into()], requested: vec![RuleId::try_new("613".to_owned())?] },
+            stage: ToolRequested {
+                call_ids: vec!["tu_1".into(), "tu_2".into()],
+                requested: vec![RuleId::try_new("613".to_owned())?],
+            },
         };
         assert_eq!(t.requested().len(), 1);
         let f = t.answer_tool(&[]);
-        assert_eq!(f.request().tool_choice, ToolChoice::Auto { parallel: false }, "cache-preserving");
+        assert_eq!(
+            f.request().tool_choice,
+            ToolChoice::Auto { parallel: false },
+            "cache-preserving"
+        );
         let Some(Turn::ToolResults(results)) = f.request().turns.last() else {
             return Err("expected a tool-results turn".into());
         };
         let ids: Vec<&str> = results.iter().map(|r| r.call_id.as_str()).collect();
         assert_eq!(ids, ["tu_1", "tu_2"]);
-        assert!(results.iter().all(|r| r.content == "No rules found for the requested ids." && !r.is_error));
+        assert!(
+            results
+                .iter()
+                .all(|r| r.content == "No rules found for the requested ids." && !r.is_error)
+        );
         Ok(())
     }
 
     #[test]
     fn tool_result_is_capped() -> Result<(), Box<dyn std::error::Error>> {
-        let chunks = vec![chunk("613.1", &"a".repeat(60))?, chunk("613.2", &"b".repeat(60))?, chunk("613.3", "c")?];
+        let chunks = vec![
+            chunk("613.1", &"a".repeat(60))?,
+            chunk("613.2", &"b".repeat(60))?,
+            chunk("613.3", "c")?,
+        ];
         let full = render_tool_result(&chunks, 1_000);
-        assert!(full.contains("[613.3]") && !full.contains("omitted"), "{full}");
+        assert!(
+            full.contains("[613.3]") && !full.contains("omitted"),
+            "{full}"
+        );
         let capped = render_tool_result(&chunks, 100);
-        assert!(capped.contains("[613.1]") && !capped.contains("[613.2]"), "{capped}");
-        assert!(capped.ends_with("(2 more rules omitted: the request was too broad; cite only what is shown)"), "{capped}");
+        assert!(
+            capped.contains("[613.1]") && !capped.contains("[613.2]"),
+            "{capped}"
+        );
+        assert!(
+            capped.ends_with(
+                "(2 more rules omitted: the request was too broad; cite only what is shown)"
+            ),
+            "{capped}"
+        );
         // An over-sized first chunk is still shown.
         let one = render_tool_result(&chunks, 10);
         assert!(one.contains("[613.1]"), "{one}");
@@ -493,7 +650,8 @@ mod tests {
     }
 
     #[test]
-    fn classify_tool_round_unions_ids_and_keeps_the_turn() -> Result<(), Box<dyn std::error::Error>> {
+    fn classify_tool_round_unions_ids_and_keeps_the_turn() -> Result<(), Box<dyn std::error::Error>>
+    {
         let r = resp(
             Stop::ToolUse,
             &[],
@@ -502,7 +660,12 @@ mod tests {
                 call("tu_2", "lookup_rules", json!({"ids": ["614", "702.19b"]})),
             ],
         );
-        let Step::Tool { call_ids, requested, assistant } = classify(r)? else {
+        let Step::Tool {
+            call_ids,
+            requested,
+            assistant,
+        } = classify(r)?
+        else {
             return Err("expected tool step".into());
         };
         assert_eq!(call_ids, ["tu_1", "tu_2"]);
@@ -514,27 +677,50 @@ mod tests {
 
     #[test]
     fn classify_errors() {
-        let refusal = resp(Stop::Refusal(Refusal { category: Some("cyber".into()), explanation: None }), &[], vec![]);
+        let refusal = resp(
+            Stop::Refusal(Refusal {
+                category: Some("cyber".into()),
+                explanation: None,
+            }),
+            &[],
+            vec![],
+        );
         assert!(matches!(classify(refusal), Err(JudgeError::LlmRefused)));
 
         let truncated = resp(Stop::MaxTokens, &["{\"answer\": \"a"], vec![]);
-        assert!(matches!(classify(truncated), Err(JudgeError::Upstream(e)) if e.downcast_ref::<Truncated>().is_some_and(|t| t.output_tokens == 1)));
+        assert!(
+            matches!(classify(truncated), Err(JudgeError::Upstream(e)) if e.downcast_ref::<Truncated>().is_some_and(|t| t.output_tokens == 1))
+        );
 
         let unknown_tool = resp(Stop::ToolUse, &[], vec![call("t", "other", json!({}))]);
-        assert!(matches!(classify(unknown_tool), Err(JudgeError::Upstream(_))));
+        assert!(matches!(
+            classify(unknown_tool),
+            Err(JudgeError::Upstream(_))
+        ));
 
-        let bad_input = resp(Stop::ToolUse, &[], vec![call("t", "lookup_rules", json!({"ids": ["abc"]}))]);
+        let bad_input = resp(
+            Stop::ToolUse,
+            &[],
+            vec![call("t", "lookup_rules", json!({"ids": ["abc"]}))],
+        );
         assert!(matches!(classify(bad_input), Err(JudgeError::Upstream(_))));
 
         let no_call = resp(Stop::ToolUse, &["x"], vec![]);
         assert!(matches!(classify(no_call), Err(JudgeError::Upstream(_))));
 
-        let stray_tool = resp(Stop::EndTurn, &[VERDICT], vec![call("t", "lookup_rules", json!({"ids": []}))]);
+        let stray_tool = resp(
+            Stop::EndTurn,
+            &[VERDICT],
+            vec![call("t", "lookup_rules", json!({"ids": []}))],
+        );
         assert!(matches!(classify(stray_tool), Err(JudgeError::Upstream(_))));
 
         for stop in ["pause_turn", "something_new"] {
             let r = resp(Stop::Other(stop.into()), &[VERDICT], vec![]);
-            assert!(matches!(classify(r), Err(JudgeError::Upstream(_))), "{stop}");
+            assert!(
+                matches!(classify(r), Err(JudgeError::Upstream(_))),
+                "{stop}"
+            );
         }
 
         let bad_json = resp(Stop::EndTurn, &["{\"answer\":1}"], vec![]);
@@ -549,17 +735,25 @@ mod tests {
     /// model text would write tens of KB to an unrotated container log per
     /// failed request.
     #[test]
-    fn a_parse_failure_does_not_log_the_whole_model_response() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_parse_failure_does_not_log_the_whole_model_response()
+    -> Result<(), Box<dyn std::error::Error>> {
         let huge = format!(r#"{{"answer":"{}","citations":1}}"#, "はい".repeat(20_000));
         let r = resp(Stop::EndTurn, &[&huge], vec![]);
         let Err(JudgeError::Upstream(e)) = classify(r) else {
             return Err("expected an Upstream parse failure".into());
         };
         let logged = format!("{e:#}");
-        assert!(logged.contains("verdict JSON did not match schema"), "{logged}");
+        assert!(
+            logged.contains("verdict JSON did not match schema"),
+            "{logged}"
+        );
         // Bounded by LOG_TEXT_CHARS, and cut on a char boundary (the text is
         // multi-byte, so a byte-wise cut would have panicked before this).
-        assert!(logged.chars().count() < crate::LOG_TEXT_CHARS + 200, "{} chars", logged.chars().count());
+        assert!(
+            logged.chars().count() < crate::LOG_TEXT_CHARS + 200,
+            "{} chars",
+            logged.chars().count()
+        );
         assert!(logged.contains('…'), "{logged}");
         Ok(())
     }

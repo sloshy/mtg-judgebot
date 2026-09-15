@@ -33,7 +33,11 @@ mod tests {
 
     #[test]
     fn taxonomy_has_roughly_25_entries() {
-        assert!((20..=30).contains(&Category::ALL.len()), "got {}", Category::ALL.len());
+        assert!(
+            (20..=30).contains(&Category::ALL.len()),
+            "got {}",
+            Category::ALL.len()
+        );
     }
 
     #[test]
@@ -50,7 +54,10 @@ mod tests {
 
     #[test]
     fn rejects_unknown_id() {
-        assert_eq!("banana".parse::<Category>(), Err(UnknownCategory("banana".into())));
+        assert_eq!(
+            "banana".parse::<Category>(),
+            Err(UnknownCategory("banana".into()))
+        );
     }
 
     #[test]
@@ -67,7 +74,10 @@ mod tests {
     fn subsection_ids_are_valid_rule_ids() {
         for c in Category::ALL {
             for s in c.subsections() {
-                assert!(crate::RuleId::try_new((*s).to_owned()).is_ok(), "{c}: bad subsection {s}");
+                assert!(
+                    crate::RuleId::try_new((*s).to_owned()).is_ok(),
+                    "{c}: bad subsection {s}"
+                );
             }
         }
     }

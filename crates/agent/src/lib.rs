@@ -169,10 +169,15 @@ impl Toolbox {
         let calls: Arc<dyn CallStore> = calls;
         let pipeline = opts.models.map(|models| {
             let meter = models.meter().clone();
-            let mut deps = judge_bot::build_deps_with(pool, &models, opts.vectors, &opts.deps_config);
+            let mut deps =
+                judge_bot::build_deps_with(pool, &models, opts.vectors, &opts.deps_config);
             let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
             deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
-            Pipeline { deps, capture, meter }
+            Pipeline {
+                deps,
+                capture,
+                meter,
+            }
         });
         Self {
             sessions,
@@ -182,7 +187,13 @@ impl Toolbox {
             calls,
             pipeline,
             permits: opts.permits,
-            meter: opts.judge_quota.map(|quota| Mutex::new(Meter { quota, started: Instant::now(), count: 0 })),
+            meter: opts.judge_quota.map(|quota| {
+                Mutex::new(Meter {
+                    quota,
+                    started: Instant::now(),
+                    count: 0,
+                })
+            }),
             history_len: opts.history_len,
         }
     }
@@ -190,9 +201,11 @@ impl Toolbox {
     /// Count one `judge` run against the quota; `false` means the window is
     /// used up. Always `true` without a quota.
     pub(crate) fn allow_judge(&self) -> bool {
-        self.meter
-            .as_ref()
-            .is_none_or(|m| m.lock().unwrap_or_else(std::sync::PoisonError::into_inner).allow(Instant::now()))
+        self.meter.as_ref().is_none_or(|m| {
+            m.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .allow(Instant::now())
+        })
     }
 
     /// Build from the environment: `DATABASE_URL` (required); the models
@@ -221,7 +234,9 @@ impl Toolbox {
         tracing::info!("{}", config.summary());
         let models = config.models_if_configured().context("models")?;
         if models.is_none() {
-            tracing::info!("no model configured (ANTHROPIC_API_KEY or a judge.toml); the built-in `judge` pipeline is unavailable, sessions are not affected");
+            tracing::info!(
+                "no model configured (ANTHROPIC_API_KEY or a judge.toml); the built-in `judge` pipeline is unavailable, sessions are not affected"
+            );
         } else {
             // A cloud door with no credentials fails here, not on the first `judge` call.
             config.probe_auth().await?;
@@ -234,7 +249,11 @@ impl Toolbox {
             tracing::info!("no embedder configured; running without the vector legs");
         }
         let concurrency = match set("JUDGE_CONCURRENCY") {
-            Some(v) => v.trim().parse::<usize>().context("JUDGE_CONCURRENCY must be an integer")?.max(1),
+            Some(v) => v
+                .trim()
+                .parse::<usize>()
+                .context("JUDGE_CONCURRENCY must be an integer")?
+                .max(1),
             None => DEFAULT_CONCURRENCY,
         };
         Ok(Self::new(
@@ -265,10 +284,20 @@ mod meter_tests {
     #[test]
     fn the_window_resets_and_the_limit_holds() {
         let start = Instant::now();
-        let mut m = Meter { quota: Quota { limit: 2, window: Duration::from_mins(1) }, started: start, count: 0 };
+        let mut m = Meter {
+            quota: Quota {
+                limit: 2,
+                window: Duration::from_mins(1),
+            },
+            started: start,
+            count: 0,
+        };
         assert!(m.allow(start));
         assert!(m.allow(start + Duration::from_secs(1)));
-        assert!(!m.allow(start + Duration::from_secs(2)), "third run in the window");
+        assert!(
+            !m.allow(start + Duration::from_secs(2)),
+            "third run in the window"
+        );
         assert!(m.allow(start + Duration::from_mins(1)), "a new window");
         assert!(m.allow(start + Duration::from_secs(61)));
         assert!(!m.allow(start + Duration::from_secs(62)));

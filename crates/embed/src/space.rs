@@ -73,14 +73,25 @@ impl Space {
     /// # Errors
     /// [`SpaceMismatch`] naming both spaces.
     pub fn check(&self, stored: &Space) -> Result<(), SpaceMismatch> {
-        if self == stored { Ok(()) } else { Err(SpaceMismatch { configured: self.clone(), stored: stored.clone() }) }
+        if self == stored {
+            Ok(())
+        } else {
+            Err(SpaceMismatch {
+                configured: self.clone(),
+                stored: stored.clone(),
+            })
+        }
     }
 }
 
 impl fmt::Display for Space {
     /// `voyage/voyage-3.5 (1024 dims)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{} ({} dims)", self.provider, self.model, self.dimensions)
+        write!(
+            f,
+            "{}/{} ({} dims)",
+            self.provider, self.model, self.dimensions
+        )
     }
 }
 
@@ -103,7 +114,10 @@ impl fmt::Display for SpaceMismatch {
     /// for every row.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { configured, stored } = self;
-        write!(f, "embedding space mismatch: configured {configured}, database holds {stored}; ")?;
+        write!(
+            f,
+            "embedding space mismatch: configured {configured}, database holds {stored}; "
+        )?;
         if configured.provider == stored.provider && configured.dimensions == stored.dimensions {
             write!(
                 f,
@@ -111,7 +125,10 @@ impl fmt::Display for SpaceMismatch {
                 configured.model, configured.model
             )?;
         }
-        write!(f, "run `ingest reembed --yes` to switch (re-embeds everything), or configure the stored model")
+        write!(
+            f,
+            "run `ingest reembed --yes` to switch (re-embeds everything), or configure the stored model"
+        )
     }
 }
 
@@ -129,7 +146,11 @@ mod tests {
     use super::*;
 
     fn space(provider: Provider, model: &str, dimensions: usize) -> Space {
-        Space { provider, model: model.to_owned(), dimensions }
+        Space {
+            provider,
+            model: model.to_owned(),
+            dimensions,
+        }
     }
 
     #[test]
@@ -142,9 +163,20 @@ mod tests {
             space(Provider::Voyage, "voyage-3.5", 512),
         ] {
             let err = voyage.check(&other);
-            assert_eq!(err, Err(SpaceMismatch { configured: voyage.clone(), stored: other.clone() }));
+            assert_eq!(
+                err,
+                Err(SpaceMismatch {
+                    configured: voyage.clone(),
+                    stored: other.clone()
+                })
+            );
             let msg = err.map_or_else(|e| e.to_string(), |()| String::new());
-            assert!(msg.contains("voyage/voyage-3.5 (1024 dims)") && msg.contains(&other.to_string()) && msg.contains("reembed"), "{msg}");
+            assert!(
+                msg.contains("voyage/voyage-3.5 (1024 dims)")
+                    && msg.contains(&other.to_string())
+                    && msg.contains("reembed"),
+                "{msg}"
+            );
             // Only a model-name difference suggests the relabel, which is free.
             let relabel = msg.contains("UPDATE embedding_space SET model = 'voyage-3.5'");
             assert_eq!(relabel, other.model == "voyage-3-large", "{msg}");
@@ -157,7 +189,10 @@ mod tests {
             assert_eq!(p.as_str().parse::<Provider>()?, p);
             assert_eq!(p.to_string(), p.as_str());
         }
-        assert_eq!("cohere".parse::<Provider>(), Err(UnknownProvider("cohere".into())));
+        assert_eq!(
+            "cohere".parse::<Provider>(),
+            Err(UnknownProvider("cohere".into()))
+        );
         Ok(())
     }
 }

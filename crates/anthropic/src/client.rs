@@ -168,7 +168,10 @@ impl Endpoint {
     /// [`Endpoint::Direct`] at the public origin.
     #[must_use]
     pub fn direct(api_key: impl Into<ApiKey>) -> Self {
-        Self::Direct { base_url: DEFAULT_BASE_URL.to_owned(), api_key: api_key.into() }
+        Self::Direct {
+            base_url: DEFAULT_BASE_URL.to_owned(),
+            api_key: api_key.into(),
+        }
     }
 
     /// [`Endpoint::Direct`] from `ANTHROPIC_API_KEY` and optional
@@ -180,15 +183,23 @@ impl Endpoint {
     /// `MissingApiKey` when the key is unset or blank.
     pub fn from_env() -> Result<Self, LlmError> {
         let set = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        let api_key = set("ANTHROPIC_API_KEY").ok_or(LlmError::MissingApiKey { var: "ANTHROPIC_API_KEY" })?;
+        let api_key = set("ANTHROPIC_API_KEY").ok_or(LlmError::MissingApiKey {
+            var: "ANTHROPIC_API_KEY",
+        })?;
         let base_url = set("ANTHROPIC_BASE_URL").unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
-        Ok(Self::Direct { base_url, api_key: api_key.into() })
+        Ok(Self::Direct {
+            base_url,
+            api_key: api_key.into(),
+        })
     }
 
     /// [`Endpoint::ClaudePlatformOnAws`] on the default credential chain.
     #[cfg(feature = "aws")]
     #[must_use]
-    pub fn claude_platform_on_aws(region: impl Into<String>, workspace_id: impl Into<String>) -> Self {
+    pub fn claude_platform_on_aws(
+        region: impl Into<String>,
+        workspace_id: impl Into<String>,
+    ) -> Self {
         let region = region.into();
         Self::ClaudePlatformOnAws {
             base_url: claude_platform_on_aws_origin(&region),
@@ -203,7 +214,11 @@ impl Endpoint {
     #[must_use]
     pub fn bedrock(region: impl Into<String>) -> Self {
         let region = region.into();
-        Self::Bedrock { base_url: bedrock_origin(&region), credentials: Arc::new(DefaultChain::new(region.clone())), region }
+        Self::Bedrock {
+            base_url: bedrock_origin(&region),
+            credentials: Arc::new(DefaultChain::new(region.clone())),
+            region,
+        }
     }
 
     /// [`Endpoint::Vertex`] on Application Default Credentials.
@@ -211,7 +226,12 @@ impl Endpoint {
     #[must_use]
     pub fn vertex(project: impl Into<String>, region: impl Into<String>) -> Self {
         let region = region.into();
-        Self::Vertex { base_url: vertex_origin(&region), project: project.into(), region, token: Arc::new(Adc::new()) }
+        Self::Vertex {
+            base_url: vertex_origin(&region),
+            project: project.into(),
+            region,
+            token: Arc::new(Adc::new()),
+        }
     }
 
     /// The same door at another origin (an operator's override, a test's mock).
@@ -219,9 +239,13 @@ impl Endpoint {
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         let origin = base_url.into();
         match &mut self {
-            Endpoint::Direct { base_url, .. } | Endpoint::Proxy { base_url, .. } => *base_url = origin,
+            Endpoint::Direct { base_url, .. } | Endpoint::Proxy { base_url, .. } => {
+                *base_url = origin;
+            }
             #[cfg(feature = "aws")]
-            Endpoint::ClaudePlatformOnAws { base_url, .. } | Endpoint::Bedrock { base_url, .. } => *base_url = origin,
+            Endpoint::ClaudePlatformOnAws { base_url, .. } | Endpoint::Bedrock { base_url, .. } => {
+                *base_url = origin;
+            }
             #[cfg(feature = "gcp")]
             Endpoint::Vertex { base_url, .. } => *base_url = origin,
         }
@@ -229,18 +253,30 @@ impl Endpoint {
     }
 
     /// The messages URL for `model` (only Vertex puts the model there).
-    #[cfg_attr(not(feature = "gcp"), expect(unused_variables, reason = "only Vertex names the model in the URL"))]
+    #[cfg_attr(
+        not(feature = "gcp"),
+        expect(unused_variables, reason = "only Vertex names the model in the URL")
+    )]
     fn url(&self, model: &str) -> String {
         match self {
             Endpoint::Direct { base_url, .. } | Endpoint::Proxy { base_url, .. } => {
                 format!("{}/v1/messages", base_url.trim_end_matches('/'))
             }
             #[cfg(feature = "aws")]
-            Endpoint::ClaudePlatformOnAws { base_url, .. } => format!("{}/v1/messages", base_url.trim_end_matches('/')),
+            Endpoint::ClaudePlatformOnAws { base_url, .. } => {
+                format!("{}/v1/messages", base_url.trim_end_matches('/'))
+            }
             #[cfg(feature = "aws")]
-            Endpoint::Bedrock { base_url, .. } => format!("{}/anthropic/v1/messages", base_url.trim_end_matches('/')),
+            Endpoint::Bedrock { base_url, .. } => {
+                format!("{}/anthropic/v1/messages", base_url.trim_end_matches('/'))
+            }
             #[cfg(feature = "gcp")]
-            Endpoint::Vertex { base_url, project, region, .. } => format!(
+            Endpoint::Vertex {
+                base_url,
+                project,
+                region,
+                ..
+            } => format!(
                 "{}/v1/projects/{project}/locations/{region}/publishers/anthropic/models/{model}:rawPredict",
                 base_url.trim_end_matches('/')
             ),
@@ -252,7 +288,9 @@ impl Endpoint {
         match self {
             Endpoint::Direct { .. } | Endpoint::Proxy { .. } => ModelField::from(model),
             #[cfg(feature = "aws")]
-            Endpoint::ClaudePlatformOnAws { .. } | Endpoint::Bedrock { .. } => ModelField::from(model),
+            Endpoint::ClaudePlatformOnAws { .. } | Endpoint::Bedrock { .. } => {
+                ModelField::from(model)
+            }
             #[cfg(feature = "gcp")]
             Endpoint::Vertex { .. } => ModelField::in_url(),
         }
@@ -263,7 +301,9 @@ impl Endpoint {
         match self {
             Endpoint::Direct { .. } | Endpoint::Proxy { .. } => Vec::new(),
             #[cfg(feature = "aws")]
-            Endpoint::ClaudePlatformOnAws { workspace_id, .. } => vec![(WORKSPACE_HEADER, workspace_id.clone())],
+            Endpoint::ClaudePlatformOnAws { workspace_id, .. } => {
+                vec![(WORKSPACE_HEADER, workspace_id.clone())]
+            }
             #[cfg(feature = "aws")]
             Endpoint::Bedrock { .. } => Vec::new(),
             #[cfg(feature = "gcp")]
@@ -315,19 +355,46 @@ impl Endpoint {
 
     /// This door's auth for one call: the key it holds, or the credentials
     /// its platform chain hands out now.
-    #[cfg_attr(not(any(feature = "aws", feature = "gcp")), expect(clippy::unused_async, reason = "only the cloud doors fetch credentials"))]
+    #[cfg_attr(
+        not(any(feature = "aws", feature = "gcp")),
+        expect(
+            clippy::unused_async,
+            reason = "only the cloud doors fetch credentials"
+        )
+    )]
     async fn auth(&self) -> Result<Auth, LlmError> {
         Ok(match self {
-            Endpoint::Direct { api_key, .. } | Endpoint::Proxy { api_key, header: ProxyAuth::XApiKey, .. } => Auth::XApiKey(api_key.clone()),
-            Endpoint::Proxy { api_key, header: ProxyAuth::Bearer, .. } => Auth::Bearer(api_key.clone()),
+            Endpoint::Direct { api_key, .. }
+            | Endpoint::Proxy {
+                api_key,
+                header: ProxyAuth::XApiKey,
+                ..
+            } => Auth::XApiKey(api_key.clone()),
+            Endpoint::Proxy {
+                api_key,
+                header: ProxyAuth::Bearer,
+                ..
+            } => Auth::Bearer(api_key.clone()),
             #[cfg(feature = "aws")]
-            Endpoint::ClaudePlatformOnAws { region, credentials, .. } => {
-                Auth::SigV4 { door: AwsDoor::ClaudePlatform, region: region.clone(), credentials: credentials.credentials().await? }
-            }
+            Endpoint::ClaudePlatformOnAws {
+                region,
+                credentials,
+                ..
+            } => Auth::SigV4 {
+                door: AwsDoor::ClaudePlatform,
+                region: region.clone(),
+                credentials: credentials.credentials().await?,
+            },
             #[cfg(feature = "aws")]
-            Endpoint::Bedrock { region, credentials, .. } => {
-                Auth::SigV4 { door: AwsDoor::Bedrock, region: region.clone(), credentials: credentials.credentials().await? }
-            }
+            Endpoint::Bedrock {
+                region,
+                credentials,
+                ..
+            } => Auth::SigV4 {
+                door: AwsDoor::Bedrock,
+                region: region.clone(),
+                credentials: credentials.credentials().await?,
+            },
             #[cfg(feature = "gcp")]
             Endpoint::Vertex { token, .. } => Auth::Bearer(token.token().await?),
         })
@@ -345,7 +412,10 @@ impl Endpoint {
         };
         match self {
             Endpoint::Direct { .. } => first_party,
-            Endpoint::Proxy { .. } => Capabilities { refusal_fallbacks: false, ..first_party },
+            Endpoint::Proxy { .. } => Capabilities {
+                refusal_fallbacks: false,
+                ..first_party
+            },
             #[cfg(feature = "aws")]
             Endpoint::ClaudePlatformOnAws { .. } => first_party,
             #[cfg(feature = "aws")]
@@ -356,7 +426,10 @@ impl Endpoint {
                 ..first_party
             },
             #[cfg(feature = "gcp")]
-            Endpoint::Vertex { .. } => Capabilities { refusal_fallbacks: false, ..first_party },
+            Endpoint::Vertex { .. } => Capabilities {
+                refusal_fallbacks: false,
+                ..first_party
+            },
         }
     }
 
@@ -365,13 +438,23 @@ impl Endpoint {
     pub fn describe(&self) -> String {
         match self {
             Endpoint::Direct { base_url, .. } => format!("direct {base_url}"),
-            Endpoint::Proxy { base_url, header, .. } => format!("proxy {base_url} ({header:?})"),
+            Endpoint::Proxy {
+                base_url, header, ..
+            } => format!("proxy {base_url} ({header:?})"),
             #[cfg(feature = "aws")]
-            Endpoint::ClaudePlatformOnAws { region, workspace_id, .. } => format!("claude-platform-on-aws {region} {workspace_id}"),
+            Endpoint::ClaudePlatformOnAws {
+                region,
+                workspace_id,
+                ..
+            } => format!("claude-platform-on-aws {region} {workspace_id}"),
             #[cfg(feature = "aws")]
-            Endpoint::Bedrock { base_url, region, .. } => format!("bedrock {region} {base_url}"),
+            Endpoint::Bedrock {
+                base_url, region, ..
+            } => format!("bedrock {region} {base_url}"),
             #[cfg(feature = "gcp")]
-            Endpoint::Vertex { project, region, .. } => format!("vertex {project}/{region}"),
+            Endpoint::Vertex {
+                project, region, ..
+            } => format!("vertex {project}/{region}"),
         }
     }
 }
@@ -393,15 +476,36 @@ enum Auth {
 impl Auth {
     /// `builder` with this auth added; signing needs the finished request,
     /// so `SigV4` builds it, signs it and re-wraps it.
-    #[cfg_attr(not(feature = "aws"), expect(unused_variables, clippy::unnecessary_wraps, reason = "only SigV4 re-wraps the request, and only signing can fail"))]
-    fn apply(&self, http: &reqwest::Client, builder: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder, LlmError> {
+    #[cfg_attr(
+        not(feature = "aws"),
+        expect(
+            unused_variables,
+            clippy::unnecessary_wraps,
+            reason = "only SigV4 re-wraps the request, and only signing can fail"
+        )
+    )]
+    fn apply(
+        &self,
+        http: &reqwest::Client,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, LlmError> {
         match self {
             Auth::XApiKey(key) => Ok(builder.header("x-api-key", key.expose())),
             Auth::Bearer(key) => Ok(builder.bearer_auth(key.expose())),
             #[cfg(feature = "aws")]
-            Auth::SigV4 { door, region, credentials } => {
+            Auth::SigV4 {
+                door,
+                region,
+                credentials,
+            } => {
                 let mut request = builder.build()?;
-                sign_request(&mut request, *door, region, credentials, std::time::SystemTime::now())?;
+                sign_request(
+                    &mut request,
+                    *door,
+                    region,
+                    credentials,
+                    std::time::SystemTime::now(),
+                )?;
                 Ok(reqwest::RequestBuilder::from_parts(http.clone(), request))
             }
         }
@@ -427,8 +531,16 @@ impl Anthropic {
     /// # Errors
     /// If the underlying HTTP client cannot be built.
     pub fn new(endpoint: Endpoint) -> Result<Self, LlmError> {
-        let http = reqwest::Client::builder().timeout(Duration::from_mins(10)).build()?;
-        Ok(Self { http, endpoint, model: DEFAULT_MODEL.to_owned(), betas: Vec::new(), warned_mask: Arc::new(AtomicBool::new(false)) })
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_mins(10))
+            .build()?;
+        Ok(Self {
+            http,
+            endpoint,
+            model: DEFAULT_MODEL.to_owned(),
+            betas: Vec::new(),
+            warned_mask: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     /// [`Endpoint::from_env`] at [`DEFAULT_MODEL`].
@@ -525,12 +637,22 @@ impl Anthropic {
         if !reply.status.is_success() {
             let (kind, message) = match serde_json::from_slice::<ApiErrorBody>(&reply.body) {
                 Ok(b) => (b.error.kind, b.error.message),
-                Err(_) => ("unknown".to_owned(), String::from_utf8_lossy(&reply.body).into_owned()),
+                Err(_) => (
+                    "unknown".to_owned(),
+                    String::from_utf8_lossy(&reply.body).into_owned(),
+                ),
             };
-            return Err(LlmError::Api { status: reply.status, kind, message });
+            return Err(LlmError::Api {
+                status: reply.status,
+                kind,
+                message,
+            });
         }
-        let parsed: MessagesResponse = serde_json::from_slice(&reply.body)
-            .map_err(|source| LlmError::Decode { source, billed: usage_of(&reply.body) })?;
+        let parsed: MessagesResponse =
+            serde_json::from_slice(&reply.body).map_err(|source| LlmError::Decode {
+                source,
+                billed: usage_of(&reply.body),
+            })?;
         tracing::debug!(
             input = parsed.usage.input_tokens,
             output = parsed.usage.output_tokens,
@@ -538,7 +660,10 @@ impl Anthropic {
             stop = ?parsed.stop_reason,
             "messages ok"
         );
-        from_wire(&parsed).map_err(|source| LlmError::Decode { source, billed: usage_of(&reply.body) })
+        from_wire(&parsed).map_err(|source| LlmError::Decode {
+            source,
+            billed: usage_of(&reply.body),
+        })
     }
 }
 
@@ -550,7 +675,11 @@ impl Backend for Anthropic {
         let body = serde_json::to_vec(&to_wire(self.endpoint.model_field(&self.model), &req)?)
             .map_err(|e| LlmError::Request(format!("serialize Messages API body: {e}")))?;
         let betas: Vec<&str> = if self.endpoint.accepts_betas() {
-            self.betas.iter().map(String::as_str).chain(betas_for(&req)).collect()
+            self.betas
+                .iter()
+                .map(String::as_str)
+                .chain(betas_for(&req))
+                .collect()
         } else {
             Vec::new()
         };
@@ -558,7 +687,11 @@ impl Backend for Anthropic {
         let door_headers = self.endpoint.door_headers();
         let auth = self.endpoint.auth().await?;
         let build = || {
-            let mut builder = self.http.post(&url).header("anthropic-version", API_VERSION).header("content-type", "application/json");
+            let mut builder = self
+                .http
+                .post(&url)
+                .header("anthropic-version", API_VERSION)
+                .header("content-type", "application/json");
             for (name, value) in &door_headers {
                 builder = builder.header(*name, value);
             }
@@ -586,7 +719,9 @@ impl Backend for Anthropic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use judge_llm::{ChatModel as _, Metered, RefusalFallback, SpendMeter, TextBlock, ToolChoice, Turn};
+    use judge_llm::{
+        ChatModel as _, Metered, RefusalFallback, SpendMeter, TextBlock, ToolChoice, Turn,
+    };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path},
@@ -618,7 +753,10 @@ mod tests {
     }
 
     fn against(server: &MockServer) -> Result<Anthropic, LlmError> {
-        Anthropic::new(Endpoint::Direct { base_url: server.uri(), api_key: "k".into() })
+        Anthropic::new(Endpoint::Direct {
+            base_url: server.uri(),
+            api_key: "k".into(),
+        })
     }
 
     #[tokio::test]
@@ -629,15 +767,28 @@ mod tests {
             .and(header("x-api-key", "k"))
             .and(header("anthropic-version", API_VERSION))
             // 1M input + 200k output = $5 + $5 = $10 per call.
-            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(1_000_000, 200_000, 0, 0)))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ok_body(1_000_000, 200_000, 0, 0)),
+            )
             .mount(&server)
             .await;
-        let client = Metered::new(against(&server)?, SpendMeter::new().with_max_spend_usd(15.0)?)?;
+        let client = Metered::new(
+            against(&server)?,
+            SpendMeter::new().with_max_spend_usd(15.0)?,
+        )?;
         let clone = client.clone();
         client.complete(&req()).await?;
-        assert!((client.meter().spent_usd() - 10.0).abs() < 1e-6, "{}", client.meter().spent_usd());
+        assert!(
+            (client.meter().spent_usd() - 10.0).abs() < 1e-6,
+            "{}",
+            client.meter().spent_usd()
+        );
         clone.complete(&req()).await?;
-        assert!((client.meter().spent_usd() - 20.0).abs() < 1e-6, "{}", client.meter().spent_usd());
+        assert!(
+            (client.meter().spent_usd() - 20.0).abs() < 1e-6,
+            "{}",
+            client.meter().spent_usd()
+        );
         assert_eq!(client.meter().calls(), 2);
         assert_eq!(clone.meter().calls(), 2);
         let third = client.complete(&req()).await;
@@ -662,7 +813,10 @@ mod tests {
             .await;
         let client = Metered::new(against(&server)?, SpendMeter::new())?;
         let r = client.complete(&req()).await;
-        assert!(matches!(&r, Err(LlmError::Api { kind, message, .. }) if kind == "invalid_request_error" && message == "nope"), "{r:?}");
+        assert!(
+            matches!(&r, Err(LlmError::Api { kind, message, .. }) if kind == "invalid_request_error" && message == "nope"),
+            "{r:?}"
+        );
         assert_eq!(client.meter().calls(), 0);
         assert!(client.meter().spent_usd().abs() < f64::EPSILON);
         Ok(())
@@ -681,8 +835,18 @@ mod tests {
             .mount(&server)
             .await;
         let client = Metered::new(against(&server)?, SpendMeter::new())?;
-        assert!(matches!(client.complete(&req()).await, Err(LlmError::Decode { billed: Some(_), .. })));
-        assert!((client.meter().spent_usd() - 5.0).abs() < 1e-6, "{}", client.meter().spent_usd());
+        assert!(matches!(
+            client.complete(&req()).await,
+            Err(LlmError::Decode {
+                billed: Some(_),
+                ..
+            })
+        ));
+        assert!(
+            (client.meter().spent_usd() - 5.0).abs() < 1e-6,
+            "{}",
+            client.meter().spent_usd()
+        );
         assert_eq!(client.meter().calls(), 1);
         Ok(())
     }
@@ -696,12 +860,25 @@ mod tests {
             .mount(&server)
             .await;
         // 16k output tokens at $25/MTok reserve $0.40; a $0.10 cap cannot fit it.
-        let client = Metered::new(against(&server)?, SpendMeter::new().with_max_spend_usd(0.10)?)?;
-        let big = ChatRequest { max_tokens: 16_000, ..req() };
-        assert!(matches!(client.complete(&big).await, Err(LlmError::SpendCapExceeded { .. })));
+        let client = Metered::new(
+            against(&server)?,
+            SpendMeter::new().with_max_spend_usd(0.10)?,
+        )?;
+        let big = ChatRequest {
+            max_tokens: 16_000,
+            ..req()
+        };
+        assert!(matches!(
+            client.complete(&big).await,
+            Err(LlmError::SpendCapExceeded { .. })
+        ));
         // The small request fits, and afterwards the reservation is gone.
         client.complete(&req()).await?;
-        assert!(client.meter().spent_usd() < 0.001, "{}", client.meter().spent_usd());
+        assert!(
+            client.meter().spent_usd() < 0.001,
+            "{}",
+            client.meter().spent_usd()
+        );
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 1);
         Ok(())
     }
@@ -716,13 +893,32 @@ mod tests {
             .await;
         let client = against(&server)?;
         client.complete(&req()).await?;
-        client.complete(&ChatRequest { fallbacks: Some(RefusalFallback::Default), ..req() }).await?;
-        client.with_beta("x-beta").complete(&ChatRequest { fallbacks: Some(RefusalFallback::Default), ..req() }).await?;
+        client
+            .complete(&ChatRequest {
+                fallbacks: Some(RefusalFallback::Default),
+                ..req()
+            })
+            .await?;
+        client
+            .with_beta("x-beta")
+            .complete(&ChatRequest {
+                fallbacks: Some(RefusalFallback::Default),
+                ..req()
+            })
+            .await?;
         let reqs = server.received_requests().await.unwrap_or_default();
-        let beta = |i: usize| reqs.get(i).and_then(|r| r.headers.get("anthropic-beta")).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let beta = |i: usize| {
+            reqs.get(i)
+                .and_then(|r| r.headers.get("anthropic-beta"))
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
         assert_eq!(beta(0), None);
         assert_eq!(beta(1).as_deref(), Some(crate::wire::Fallbacks::BETA));
-        assert_eq!(beta(2), Some(format!("x-beta,{}", crate::wire::Fallbacks::BETA)));
+        assert_eq!(
+            beta(2),
+            Some(format!("x-beta,{}", crate::wire::Fallbacks::BETA))
+        );
         Ok(())
     }
 
@@ -743,7 +939,12 @@ mod tests {
         if std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.trim().is_empty()) {
             return;
         }
-        assert!(matches!(Anthropic::from_env(), Err(LlmError::MissingApiKey { var: "ANTHROPIC_API_KEY" })));
+        assert!(matches!(
+            Anthropic::from_env(),
+            Err(LlmError::MissingApiKey {
+                var: "ANTHROPIC_API_KEY"
+            })
+        ));
     }
 
     #[tokio::test]
@@ -756,21 +957,51 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(1, 1, 0, 0)))
             .mount(&server)
             .await;
-        let proxy = Endpoint::Proxy { base_url: format!("{}/", server.uri()), api_key: "sk-proxy".into(), header: ProxyAuth::Bearer };
+        let proxy = Endpoint::Proxy {
+            base_url: format!("{}/", server.uri()),
+            api_key: "sk-proxy".into(),
+            header: ProxyAuth::Bearer,
+        };
         assert!(!proxy.capabilities().refusal_fallbacks);
-        assert_eq!(proxy.capabilities().structured_output, StructuredOutput::Enforced);
+        assert_eq!(
+            proxy.capabilities().structured_output,
+            StructuredOutput::Enforced
+        );
         let client = Anthropic::new(proxy)?;
-        client.complete(&ChatRequest { fallbacks: Some(RefusalFallback::Default), ..req() }).await?;
-        client.clone().complete(&ChatRequest { fallbacks: Some(RefusalFallback::Default), ..req() }).await?;
+        client
+            .complete(&ChatRequest {
+                fallbacks: Some(RefusalFallback::Default),
+                ..req()
+            })
+            .await?;
+        client
+            .clone()
+            .complete(&ChatRequest {
+                fallbacks: Some(RefusalFallback::Default),
+                ..req()
+            })
+            .await?;
         let reqs = server.received_requests().await.unwrap_or_default();
         assert_eq!(reqs.len(), 2);
         for r in &reqs {
-            assert!(r.headers.get("anthropic-beta").is_none(), "no beta on a proxy");
-            assert!(r.headers.get("x-api-key").is_none(), "bearer, not x-api-key");
+            assert!(
+                r.headers.get("anthropic-beta").is_none(),
+                "no beta on a proxy"
+            );
+            assert!(
+                r.headers.get("x-api-key").is_none(),
+                "bearer, not x-api-key"
+            );
             let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap_or_default();
-            assert!(body.get("fallbacks").is_none(), "fallbacks masked off: {body}");
+            assert!(
+                body.get("fallbacks").is_none(),
+                "fallbacks masked off: {body}"
+            );
         }
-        assert!(client.warned_mask.load(Ordering::Relaxed), "warned (once; the clone shares the flag)");
+        assert!(
+            client.warned_mask.load(Ordering::Relaxed),
+            "warned (once; the clone shares the flag)"
+        );
 
         // The x-api-key flavour, and no mask without fallbacks in the request.
         let server = MockServer::start().await;
@@ -781,9 +1012,16 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let client = Anthropic::new(Endpoint::Proxy { base_url: server.uri(), api_key: "k2".into(), header: ProxyAuth::XApiKey })?;
+        let client = Anthropic::new(Endpoint::Proxy {
+            base_url: server.uri(),
+            api_key: "k2".into(),
+            header: ProxyAuth::XApiKey,
+        })?;
         client.complete(&req()).await?;
-        assert!(!client.warned_mask.load(Ordering::Relaxed), "nothing to mask, nothing to warn about");
+        assert!(
+            !client.warned_mask.load(Ordering::Relaxed),
+            "nothing to mask, nothing to warn about"
+        );
         Ok(())
     }
 
@@ -792,10 +1030,21 @@ mod tests {
     #[tokio::test]
     async fn key_doors_probe_without_io() -> Result<(), LlmError> {
         let server = MockServer::start().await;
-        Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).expect(0).mount(&server).await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
         for endpoint in [
-            Endpoint::Direct { base_url: server.uri(), api_key: "k".into() },
-            Endpoint::Proxy { base_url: server.uri(), api_key: "k".into(), header: ProxyAuth::Bearer },
+            Endpoint::Direct {
+                base_url: server.uri(),
+                api_key: "k".into(),
+            },
+            Endpoint::Proxy {
+                base_url: server.uri(),
+                api_key: "k".into(),
+                header: ProxyAuth::Bearer,
+            },
         ] {
             assert!(!endpoint.lazy_credentials());
             endpoint.probe().await?;
@@ -805,11 +1054,20 @@ mod tests {
 
     #[test]
     fn direct_endpoint_url_and_capabilities() -> Result<(), LlmError> {
-        let e = Endpoint::Direct { base_url: "http://x/".into(), api_key: "k".into() };
+        let e = Endpoint::Direct {
+            base_url: "http://x/".into(),
+            api_key: "k".into(),
+        };
         assert_eq!(e.url("m"), "http://x/v1/messages");
         assert_eq!(e.model_field("m"), ModelField::from("m"));
-        assert_eq!(e.clone().with_base_url("http://y").url("m"), "http://y/v1/messages");
-        assert_eq!(e.capabilities().structured_output, StructuredOutput::Enforced);
+        assert_eq!(
+            e.clone().with_base_url("http://y").url("m"),
+            "http://y/v1/messages"
+        );
+        assert_eq!(
+            e.capabilities().structured_output,
+            StructuredOutput::Enforced
+        );
         assert!(e.capabilities().refusal_fallbacks);
         let a = Anthropic::new(e)?.with_model("claude-something");
         assert_eq!(a.model(), "claude-something");
@@ -824,7 +1082,9 @@ mod tests {
 #[cfg(all(test, any(feature = "aws", feature = "gcp")))]
 mod door_tests {
     use super::*;
-    use judge_llm::{Effort, OutputSchema, RefusalFallback, TextBlock, ToolChoice, ToolSpec, Turn, schema_of};
+    use judge_llm::{
+        Effort, OutputSchema, RefusalFallback, TextBlock, ToolChoice, ToolSpec, Turn, schema_of,
+    };
     use wiremock::{
         Mock, MockServer, Request, ResponseTemplate,
         matchers::{header, method, path},
@@ -845,7 +1105,12 @@ mod door_tests {
             max_tokens: 64,
             system: vec![TextBlock::cached("sys")],
             turns: vec![Turn::User(vec![TextBlock::plain("hi")])],
-            tools: vec![ToolSpec { name: "lookup_rules".into(), description: "d".into(), input_schema: schema_of::<judge_llm::LookupRulesInput>(), strict: true }],
+            tools: vec![ToolSpec {
+                name: "lookup_rules".into(),
+                description: "d".into(),
+                input_schema: schema_of::<judge_llm::LookupRulesInput>(),
+                strict: true,
+            }],
             tool_choice: ToolChoice::Auto { parallel: false },
             output: Some(OutputSchema::of::<judge_core::Verdict>()),
             effort: Some(Effort::Low),
@@ -855,7 +1120,10 @@ mod door_tests {
     }
 
     fn hdr(r: &Request, name: &str) -> Option<String> {
-        r.headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
+        r.headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
     }
 
     fn body(r: &Request) -> serde_json::Value {
@@ -875,20 +1143,34 @@ mod door_tests {
         let auth = hdr(r, "authorization").unwrap_or_default();
         let date = hdr(r, "x-amz-date").unwrap_or_default();
         assert!(
-            date.len() == 16 && date.ends_with('Z') && date.chars().nth(8) == Some('T') && date.chars().filter(char::is_ascii_digit).count() == 14,
+            date.len() == 16
+                && date.ends_with('Z')
+                && date.chars().nth(8) == Some('T')
+                && date.chars().filter(char::is_ascii_digit).count() == 14,
             "x-amz-date {date:?}"
         );
-        let scope = format!("AWS4-HMAC-SHA256 Credential={access_key}/{}/{region}/{service}/aws4_request, SignedHeaders=", date.get(..8).unwrap_or_default());
+        let scope = format!(
+            "AWS4-HMAC-SHA256 Credential={access_key}/{}/{region}/{service}/aws4_request, SignedHeaders=",
+            date.get(..8).unwrap_or_default()
+        );
         assert!(auth.starts_with(&scope), "{auth}\nexpected prefix {scope}");
         let signature = auth.split("Signature=").nth(1).unwrap_or_default();
-        assert!(signature.len() == 64 && signature.chars().all(|c| c.is_ascii_hexdigit()), "{auth}");
+        assert!(
+            signature.len() == 64 && signature.chars().all(|c| c.is_ascii_hexdigit()),
+            "{auth}"
+        );
         assert!(hdr(r, "x-api-key").is_none(), "SigV4, not a key");
-        auth.split("SignedHeaders=").nth(1).and_then(|s| s.split(',').next()).unwrap_or_default().to_owned()
+        auth.split("SignedHeaders=")
+            .nth(1)
+            .and_then(|s| s.split(',').next())
+            .unwrap_or_default()
+            .to_owned()
     }
 
     #[cfg(feature = "aws")]
     #[tokio::test]
-    async fn claude_platform_on_aws_signs_with_its_service_and_sends_the_workspace() -> Result<(), LlmError> {
+    async fn claude_platform_on_aws_signs_with_its_service_and_sends_the_workspace()
+    -> Result<(), LlmError> {
         use super::tests::req;
         use crate::aws::StaticCredentials;
         let server = MockServer::start().await;
@@ -903,28 +1185,65 @@ mod door_tests {
             base_url: server.uri(),
             region: "us-west-2".into(),
             workspace_id: "wrkspc_01Test".into(),
-            credentials: Arc::new(StaticCredentials::new("AKIDTEST", "secret", Some("session-token".into()))),
+            credentials: Arc::new(StaticCredentials::new(
+                "AKIDTEST",
+                "secret",
+                Some("session-token".into()),
+            )),
         };
-        assert_eq!(endpoint.capabilities(), Endpoint::direct("k").capabilities(), "first-party parity");
+        assert_eq!(
+            endpoint.capabilities(),
+            Endpoint::direct("k").capabilities(),
+            "first-party parity"
+        );
         let client = Anthropic::new(endpoint)?;
         client.complete(&full_req()).await?;
         let r = only_request(&server).await;
         let signed = assert_sigv4(&r, "AKIDTEST", "us-west-2", "aws-external-anthropic");
-        for name in ["anthropic-beta", "anthropic-version", WORKSPACE_HEADER, "content-type", "host", "x-amz-date", "x-amz-security-token"] {
-            assert!(signed.split(';').any(|h| h == name), "{name} not in SignedHeaders={signed}");
+        for name in [
+            "anthropic-beta",
+            "anthropic-version",
+            WORKSPACE_HEADER,
+            "content-type",
+            "host",
+            "x-amz-date",
+            "x-amz-security-token",
+        ] {
+            assert!(
+                signed.split(';').any(|h| h == name),
+                "{name} not in SignedHeaders={signed}"
+            );
         }
-        assert_eq!(hdr(&r, "x-amz-security-token").as_deref(), Some("session-token"));
-        assert_eq!(hdr(&r, "anthropic-beta").as_deref(), Some(crate::wire::Fallbacks::BETA), "no mask on this door");
+        assert_eq!(
+            hdr(&r, "x-amz-security-token").as_deref(),
+            Some("session-token")
+        );
+        assert_eq!(
+            hdr(&r, "anthropic-beta").as_deref(),
+            Some(crate::wire::Fallbacks::BETA),
+            "no mask on this door"
+        );
         let b = body(&r);
-        assert_eq!(b.get("model"), Some(&serde_json::json!(DEFAULT_MODEL)), "bare model id, in the body: {b}");
+        assert_eq!(
+            b.get("model"),
+            Some(&serde_json::json!(DEFAULT_MODEL)),
+            "bare model id, in the body: {b}"
+        );
         assert_eq!(b.get("fallbacks"), Some(&serde_json::json!("default")));
-        assert_eq!(b.pointer("/output_config/format/type"), Some(&serde_json::json!("json_schema")));
+        assert_eq!(
+            b.pointer("/output_config/format/type"),
+            Some(&serde_json::json!("json_schema"))
+        );
         assert_eq!(b.pointer("/tools/0/strict"), Some(&serde_json::json!(true)));
         assert!(!client.warned_mask.load(Ordering::Relaxed));
 
         // Long-term keys carry no session token.
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(200).set_body_json(ok_body())).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+            .mount(&server)
+            .await;
         let endpoint = Endpoint::ClaudePlatformOnAws {
             base_url: server.uri(),
             region: "us-east-1".into(),
@@ -934,13 +1253,17 @@ mod door_tests {
         Anthropic::new(endpoint)?.complete(&req()).await?;
         let r = only_request(&server).await;
         let signed = assert_sigv4(&r, "AKIDLONG", "us-east-1", "aws-external-anthropic");
-        assert!(hdr(&r, "x-amz-security-token").is_none() && !signed.contains("x-amz-security-token"), "{signed}");
+        assert!(
+            hdr(&r, "x-amz-security-token").is_none() && !signed.contains("x-amz-security-token"),
+            "{signed}"
+        );
         Ok(())
     }
 
     #[cfg(feature = "aws")]
     #[tokio::test]
-    async fn bedrock_signs_as_bedrock_mantle_and_masks_what_it_does_not_support() -> Result<(), LlmError> {
+    async fn bedrock_signs_as_bedrock_mantle_and_masks_what_it_does_not_support()
+    -> Result<(), LlmError> {
         use crate::aws::StaticCredentials;
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -957,19 +1280,39 @@ mod door_tests {
         let caps = endpoint.capabilities();
         assert_eq!(caps.structured_output, StructuredOutput::PromptOnly);
         assert!(!caps.strict_tools && !caps.refusal_fallbacks && caps.effort && caps.cache_hints);
-        let client = Anthropic::new(endpoint)?.with_model("anthropic.claude-opus-5").with_beta("context-1m-2025-08-07");
+        let client = Anthropic::new(endpoint)?
+            .with_model("anthropic.claude-opus-5")
+            .with_beta("context-1m-2025-08-07");
         client.complete(&full_req()).await?;
         let r = only_request(&server).await;
         assert_sigv4(&r, "AKIDTEST", "eu-central-1", "bedrock-mantle");
-        assert!(hdr(&r, "anthropic-beta").is_none(), "no beta header on this door: not the request's fallbacks beta, not the process-wide one");
+        assert!(
+            hdr(&r, "anthropic-beta").is_none(),
+            "no beta header on this door: not the request's fallbacks beta, not the process-wide one"
+        );
         assert!(hdr(&r, WORKSPACE_HEADER).is_none());
         let b = body(&r);
-        assert_eq!(b.get("model"), Some(&serde_json::json!("anthropic.claude-opus-5")));
+        assert_eq!(
+            b.get("model"),
+            Some(&serde_json::json!("anthropic.claude-opus-5"))
+        );
         assert!(b.get("fallbacks").is_none(), "{b}");
-        assert_eq!(b.get("output_config"), Some(&serde_json::json!({"effort": "low"})), "format masked, effort kept: {b}");
+        assert_eq!(
+            b.get("output_config"),
+            Some(&serde_json::json!({"effort": "low"})),
+            "format masked, effort kept: {b}"
+        );
         assert!(b.pointer("/tools/0/strict").is_none(), "strict masked: {b}");
-        assert_eq!(b.pointer("/tools/0/name"), Some(&serde_json::json!("lookup_rules")), "the tool itself stays");
-        assert_eq!(b.pointer("/system/0/cache_control/type"), Some(&serde_json::json!("ephemeral")), "explicit breakpoints stay");
+        assert_eq!(
+            b.pointer("/tools/0/name"),
+            Some(&serde_json::json!("lookup_rules")),
+            "the tool itself stays"
+        );
+        assert_eq!(
+            b.pointer("/system/0/cache_control/type"),
+            Some(&serde_json::json!("ephemeral")),
+            "explicit breakpoints stay"
+        );
         assert!(client.warned_mask.load(Ordering::Relaxed));
         Ok(())
     }
@@ -983,7 +1326,10 @@ mod door_tests {
     #[async_trait]
     impl AwsCredentials for NoCredentials {
         async fn credentials(&self) -> Result<aws_credential_types::Credentials, LlmError> {
-            Err(LlmError::Auth { door: "aws", message: "no providers in chain".to_owned() })
+            Err(LlmError::Auth {
+                door: "aws",
+                message: "no providers in chain".to_owned(),
+            })
         }
     }
 
@@ -994,20 +1340,41 @@ mod door_tests {
     async fn a_cloud_door_probes_its_chain_without_sending() -> Result<(), LlmError> {
         use super::tests::req;
         let server = MockServer::start().await;
-        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(ok_body())).expect(0).mount(&server).await;
-        let empty = Endpoint::Bedrock { base_url: server.uri(), region: "us-east-1".into(), credentials: Arc::new(NoCredentials) };
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let empty = Endpoint::Bedrock {
+            base_url: server.uri(),
+            region: "us-east-1".into(),
+            credentials: Arc::new(NoCredentials),
+        };
         assert!(empty.lazy_credentials());
-        let Err(LlmError::Auth { door, message }) = empty.probe().await else { return Err(LlmError::Request("probe should fail".into())) };
+        let Err(LlmError::Auth { door, message }) = empty.probe().await else {
+            return Err(LlmError::Request("probe should fail".into()));
+        };
         assert_eq!((door, message.as_str()), ("aws", "no providers in chain"));
         // The same failure per question, had nothing probed — and still nothing sent.
-        let Err(LlmError::Auth { .. }) = Anthropic::new(empty)?.complete(&req()).await else { return Err(LlmError::Request("complete should fail".into())) };
+        let Err(LlmError::Auth { .. }) = Anthropic::new(empty)?.complete(&req()).await else {
+            return Err(LlmError::Request("complete should fail".into()));
+        };
         let full = Endpoint::Bedrock {
             base_url: server.uri(),
             region: "us-east-1".into(),
-            credentials: Arc::new(crate::aws::StaticCredentials::new("AKIDTEST", "secret", None)),
+            credentials: Arc::new(crate::aws::StaticCredentials::new(
+                "AKIDTEST", "secret", None,
+            )),
         };
         full.probe().await?;
-        assert!(server.received_requests().await.unwrap_or_default().is_empty(), "a probe sends nothing");
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "a probe sends nothing"
+        );
         Ok(())
     }
 
@@ -1015,20 +1382,36 @@ mod door_tests {
     #[test]
     fn aws_constructors_derive_the_documented_urls() {
         let cpa = Endpoint::claude_platform_on_aws("us-west-2", "wrkspc_01X");
-        assert_eq!(cpa.url("claude-opus-5"), "https://aws-external-anthropic.us-west-2.api.aws/v1/messages");
-        assert_eq!(cpa.door_headers(), [(WORKSPACE_HEADER, "wrkspc_01X".to_owned())]);
-        assert_eq!(cpa.describe(), "claude-platform-on-aws us-west-2 wrkspc_01X");
+        assert_eq!(
+            cpa.url("claude-opus-5"),
+            "https://aws-external-anthropic.us-west-2.api.aws/v1/messages"
+        );
+        assert_eq!(
+            cpa.door_headers(),
+            [(WORKSPACE_HEADER, "wrkspc_01X".to_owned())]
+        );
+        assert_eq!(
+            cpa.describe(),
+            "claude-platform-on-aws us-west-2 wrkspc_01X"
+        );
         let bedrock = Endpoint::bedrock("us-east-1");
-        assert_eq!(bedrock.url("anthropic.claude-opus-5"), "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages");
+        assert_eq!(
+            bedrock.url("anthropic.claude-opus-5"),
+            "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages"
+        );
         assert!(bedrock.door_headers().is_empty());
-        assert_eq!(bedrock.with_base_url("http://vpce.internal/").url("m"), "http://vpce.internal/anthropic/v1/messages");
+        assert_eq!(
+            bedrock.with_base_url("http://vpce.internal/").url("m"),
+            "http://vpce.internal/anthropic/v1/messages"
+        );
         let s = format!("{:?}", Endpoint::bedrock("us-east-1"));
         assert!(s.contains("DefaultChain") && s.contains("us-east-1"), "{s}");
     }
 
     #[cfg(feature = "gcp")]
     #[tokio::test]
-    async fn vertex_uses_a_bearer_token_names_the_model_in_the_url_and_versions_the_body() -> Result<(), LlmError> {
+    async fn vertex_uses_a_bearer_token_names_the_model_in_the_url_and_versions_the_body()
+    -> Result<(), LlmError> {
         use crate::{gcp::StaticToken, wire::VERTEX_API_VERSION};
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1051,12 +1434,22 @@ mod door_tests {
         client.complete(&full_req()).await?;
         let r = only_request(&server).await;
         assert!(hdr(&r, "x-api-key").is_none() && hdr(&r, "x-amz-date").is_none());
-        assert!(hdr(&r, "anthropic-beta").is_none(), "the fallbacks beta is masked off");
+        assert!(
+            hdr(&r, "anthropic-beta").is_none(),
+            "the fallbacks beta is masked off"
+        );
         let b = body(&r);
         assert!(b.get("model").is_none(), "the model is in the URL: {b}");
-        assert_eq!(b.get("anthropic_version"), Some(&serde_json::json!(VERTEX_API_VERSION)));
+        assert_eq!(
+            b.get("anthropic_version"),
+            Some(&serde_json::json!(VERTEX_API_VERSION))
+        );
         assert!(b.get("fallbacks").is_none(), "{b}");
-        assert_eq!(b.pointer("/output_config/format/type"), Some(&serde_json::json!("json_schema")), "structured outputs stay: {b}");
+        assert_eq!(
+            b.pointer("/output_config/format/type"),
+            Some(&serde_json::json!("json_schema")),
+            "structured outputs stay: {b}"
+        );
         assert_eq!(b.pointer("/tools/0/strict"), Some(&serde_json::json!(true)));
         assert!(client.warned_mask.load(Ordering::Relaxed));
         let s = format!("{client:?}");
@@ -1068,9 +1461,18 @@ mod door_tests {
     #[test]
     fn vertex_origins_follow_the_region_kind() {
         assert_eq!(vertex_origin("global"), "https://aiplatform.googleapis.com");
-        assert_eq!(vertex_origin("us"), "https://aiplatform.us.rep.googleapis.com");
-        assert_eq!(vertex_origin("eu"), "https://aiplatform.eu.rep.googleapis.com");
-        assert_eq!(vertex_origin("us-east5"), "https://us-east5-aiplatform.googleapis.com");
+        assert_eq!(
+            vertex_origin("us"),
+            "https://aiplatform.us.rep.googleapis.com"
+        );
+        assert_eq!(
+            vertex_origin("eu"),
+            "https://aiplatform.eu.rep.googleapis.com"
+        );
+        assert_eq!(
+            vertex_origin("us-east5"),
+            "https://us-east5-aiplatform.googleapis.com"
+        );
         let e = Endpoint::vertex("p", "us-east5");
         assert_eq!(
             e.url("claude-sonnet-4-6"),

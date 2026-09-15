@@ -11,12 +11,18 @@ const SYNONYMS: &[(&str, Category)] = &[
     ("type_changing", Category::Layers),
     ("dependency", Category::Layers),
     ("timestamps", Category::Layers),
-    ("characteristic_defining_abilities", Category::StaticAbilities),
+    (
+        "characteristic_defining_abilities",
+        Category::StaticAbilities,
+    ),
     ("copy_effects", Category::Copying),
     ("copy", Category::Copying),
     ("lands", Category::CardTypesAndCharacteristics),
     ("characteristics", Category::CardTypesAndCharacteristics),
-    ("card_characteristics", Category::CardTypesAndCharacteristics),
+    (
+        "card_characteristics",
+        Category::CardTypesAndCharacteristics,
+    ),
     ("mana_value", Category::CardTypesAndCharacteristics),
     ("errata_oracle_text", Category::GameConcepts),
     ("errata", Category::GameConcepts),
@@ -82,7 +88,11 @@ pub fn map_labels(question_id: &str, labels: &[String]) -> Vec<Category> {
         match map_label(label) {
             Some(c) if !out.contains(&c) => out.push(c),
             Some(_) => {}
-            None => tracing::warn!(question = question_id, label, "gold category has no Category mapping"),
+            None => tracing::warn!(
+                question = question_id,
+                label,
+                "gold category has no Category mapping"
+            ),
         }
     }
     out
@@ -95,10 +105,19 @@ mod tests {
     #[test]
     fn maps_ids_and_synonyms() {
         assert_eq!(map_label("layers"), Some(Category::Layers));
-        assert_eq!(map_label("replacement-effects"), Some(Category::ReplacementEffects));
+        assert_eq!(
+            map_label("replacement-effects"),
+            Some(Category::ReplacementEffects)
+        );
         assert_eq!(map_label("casting spells"), Some(Category::CastingSpells));
-        assert_eq!(map_label("state-based-actions"), Some(Category::StateBasedActions));
-        assert_eq!(map_label("multi-face-cards"), Some(Category::MultiFacedCards));
+        assert_eq!(
+            map_label("state-based-actions"),
+            Some(Category::StateBasedActions)
+        );
+        assert_eq!(
+            map_label("multi-face-cards"),
+            Some(Category::MultiFacedCards)
+        );
         assert_eq!(map_label("not a rules question"), None);
     }
 }

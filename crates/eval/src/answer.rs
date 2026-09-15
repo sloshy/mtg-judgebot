@@ -43,17 +43,32 @@ impl Options {
     /// # Errors
     /// On an unknown flag or a missing value.
     pub fn parse(mut args: impl Iterator<Item = String>) -> anyhow::Result<Self> {
-        let (mut gold, mut limit, mut ids, mut max_usd, mut out, mut label) =
-            (None, None::<usize>, Vec::<String>::new(), 2.00f64, None::<PathBuf>, None::<String>);
+        let (mut gold, mut limit, mut ids, mut max_usd, mut out, mut label) = (
+            None,
+            None::<usize>,
+            Vec::<String>::new(),
+            2.00f64,
+            None::<PathBuf>,
+            None::<String>,
+        );
         let mut gold_extraction = false;
         let mut config = None;
         while let Some(a) = args.next() {
-            let mut val = || args.next().ok_or_else(|| anyhow::anyhow!("{a} needs a value"));
+            let mut val = || {
+                args.next()
+                    .ok_or_else(|| anyhow::anyhow!("{a} needs a value"))
+            };
             match a.as_str() {
                 "--gold" => gold = Some(PathBuf::from(val()?)),
                 "--config" => config = Some(PathBuf::from(val()?)),
                 "--limit" => limit = Some(val()?.parse().context("--limit must be an integer")?),
-                "--ids" => ids = val()?.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect(),
+                "--ids" => {
+                    ids = val()?
+                        .split(',')
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
                 "--max-usd" => max_usd = val()?.parse().context("--max-usd must be a number")?,
                 "--out" => out = Some(PathBuf::from(val()?)),
                 "--label" => label = Some(val()?),
@@ -63,7 +78,10 @@ impl Options {
         }
         let label = match (&label, &out) {
             (Some(l), _) => l.clone(),
-            (None, Some(o)) => o.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+            (None, Some(o)) => o
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             (None, None) => anyhow::bail!("--label <name> is required (or pass --out <path>)"),
         };
         let out = out.unwrap_or_else(|| PathBuf::from("eval/runs").join(format!("{label}.json")));
@@ -75,7 +93,16 @@ impl Options {
         if !(max_usd.is_finite() && max_usd >= 0.0) {
             anyhow::bail!("--max-usd must be a finite non-negative number");
         }
-        Ok(Self { gold: gold.unwrap_or_else(crate::gold::default_path), limit, ids, max_usd, out, label, gold_extraction, config })
+        Ok(Self {
+            gold: gold.unwrap_or_else(crate::gold::default_path),
+            limit,
+            ids,
+            max_usd,
+            out,
+            label,
+            gold_extraction,
+            config,
+        })
     }
 }
 
@@ -180,7 +207,10 @@ impl Run {
     /// JSON; `models=unknown` for a run file from before that was recorded.
     #[must_use]
     pub fn models_line(&self) -> String {
-        self.models.as_ref().map_or_else(|| "models=unknown".to_owned(), |m| format!("extract={} synth={}", m.extract, m.synth))
+        self.models.as_ref().map_or_else(
+            || "models=unknown".to_owned(),
+            |m| format!("extract={} synth={}", m.extract, m.synth),
+        )
     }
 
     /// `(questions with ≥1 expected id cited, questions expecting any id)`.
@@ -195,7 +225,11 @@ impl Run {
     #[must_use]
     pub fn recall(&self) -> Option<f64> {
         let hit: usize = self.rows.iter().map(|r| r.recall.hit.len()).sum();
-        let total: usize = self.rows.iter().map(|r| r.recall.hit.len() + r.recall.missed.len()).sum();
+        let total: usize = self
+            .rows
+            .iter()
+            .map(|r| r.recall.hit.len() + r.recall.missed.len())
+            .sum();
         if total == 0 {
             return None;
         }
@@ -220,7 +254,11 @@ fn select<'a>(gold: &'a Gold, opts: &Options) -> Vec<&'a GoldQuestion> {
 /// DB / client construction, or writing the run file. Per-question failures are recorded, not raised.
 pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
     let gold = crate::gold::load(&opts.gold)?;
-    if let Some(known) = opts.ids.iter().find(|id| !gold.questions.iter().any(|q| &q.id == *id)) {
+    if let Some(known) = opts
+        .ids
+        .iter()
+        .find(|id| !gold.questions.iter().any(|q| &q.id == *id))
+    {
         anyhow::bail!("--ids: no gold question with id {known:?}");
     }
     let config = Config::load_from(opts.config.as_deref())?;
@@ -238,24 +276,51 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
         tracing::warn!("no embedder; retrieval runs without vector search");
     }
     let run_models = RunModels {
-        extract: if opts.gold_extraction { "gold".to_owned() } else { config.extract().map(judge_bot::config::Stage::label).unwrap_or_default() },
-        synth: config.synth().map(judge_bot::config::Stage::label).unwrap_or_default(),
+        extract: if opts.gold_extraction {
+            "gold".to_owned()
+        } else {
+            config
+                .extract()
+                .map(judge_bot::config::Stage::label)
+                .unwrap_or_default()
+        },
+        synth: config
+            .synth()
+            .map(judge_bot::config::Stage::label)
+            .unwrap_or_default(),
     };
-    let deps = crate::deps::build(pool, &models, vectors, &config.deps_config(), &gold, opts.gold_extraction);
+    let deps = crate::deps::build(
+        pool,
+        &models,
+        vectors,
+        &config.deps_config(),
+        &gold,
+        opts.gold_extraction,
+    );
     let selected = select(&gold, opts);
 
     let mut rows = Vec::with_capacity(selected.len());
     for q in selected {
         let (usd0, calls0) = (meter.spent_usd(), meter.calls());
-        let question = Question { thread_id: q.id.clone(), text: q.question.clone() };
+        let question = Question {
+            thread_id: q.id.clone(),
+            text: q.question.clone(),
+        };
         let started = Instant::now();
         let result = judge(&deps, &question, &[]).await;
         let elapsed_ms = started.elapsed().as_millis();
-        let row = score_row(q, &result, elapsed_ms, meter.calls() - calls0, meter.spent_usd() - usd0);
+        let row = score_row(
+            q,
+            &result,
+            elapsed_ms,
+            meter.calls() - calls0,
+            meter.spent_usd() - usd0,
+        );
         tracing::info!(id = %row.id, ok = row.correct_shape, usd = format_args!("{:.4}", row.usd), "scored");
         rows.push(row);
         if let Err(JudgeError::Upstream(e)) = &result
-            && e.downcast_ref::<LlmError>().is_some_and(|c| matches!(c, LlmError::SpendCapExceeded { .. }))
+            && e.downcast_ref::<LlmError>()
+                .is_some_and(|c| matches!(c, LlmError::SpendCapExceeded { .. }))
         {
             tracing::warn!("spend cap reached; stopping the run");
             break;
@@ -273,7 +338,8 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
     if let Some(dir) = opts.out.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    std::fs::write(&opts.out, serde_json::to_string_pretty(&run)?).with_context(|| format!("writing {}", opts.out.display()))?;
+    std::fs::write(&opts.out, serde_json::to_string_pretty(&run)?)
+        .with_context(|| format!("writing {}", opts.out.display()))?;
     print!("{}", table(&run));
     println!("wrote {}", opts.out.display());
     Ok(run)
@@ -286,12 +352,19 @@ fn score_row(
     calls: u64,
     usd: f64,
 ) -> Row {
-    let expected_rule_ids: Vec<String> = q.expected_rule_ids.iter().map(crate::gold::YamlScalar::as_text).collect();
+    let expected_rule_ids: Vec<String> = q
+        .expected_rule_ids
+        .iter()
+        .map(crate::gold::YamlScalar::as_text)
+        .collect();
     let (outcome, cited, counts, source_ok, correct_shape) = match result {
         Ok(v) => {
             let cited = score::cited_rule_ids(v.citations());
             let counts = score::cite_counts(v.citations());
-            let source = serde_json::to_value(v.source()).ok().and_then(|s| s.as_str().map(str::to_owned)).unwrap_or_default();
+            let source = serde_json::to_value(v.source())
+                .ok()
+                .and_then(|s| s.as_str().map(str::to_owned))
+                .unwrap_or_default();
             let outcome = Outcome::Verdict {
                 answer: v.answer().to_owned(),
                 confidence: format!("{:?}", v.confidence()).to_ascii_lowercase(),
@@ -300,7 +373,13 @@ fn score_row(
                 source,
                 cr_version: v.cr_version().to_string(),
             };
-            (outcome, cited, counts, score::source_matches(&q.source, v.source()), q.is_answerable())
+            (
+                outcome,
+                cited,
+                counts,
+                score::source_matches(&q.source, v.source()),
+                q.is_answerable(),
+            )
         }
         Err(e) => {
             let variant = match e {
@@ -314,13 +393,31 @@ fn score_row(
                 JudgeError::Upstream(_) => "Upstream",
             };
             let (source_ok, shape) = match e {
-                JudgeError::OutOfScope(s) => (score::source_matches(&q.source, *s), !q.is_answerable()),
+                JudgeError::OutOfScope(s) => {
+                    (score::source_matches(&q.source, *s), !q.is_answerable())
+                }
                 _ => (false, false),
             };
-            (Outcome::Error { variant: variant.into(), message: format!("{e:#}") }, Vec::new(), CiteCounts::default(), source_ok, shape)
+            (
+                Outcome::Error {
+                    variant: variant.into(),
+                    message: format!("{e:#}"),
+                },
+                Vec::new(),
+                CiteCounts::default(),
+                source_ok,
+                shape,
+            )
         }
     };
-    let recall = if q.is_answerable() { score::recall_with(&cited, &expected_rule_ids, &q.equivalents()) } else { Recall { hit: vec![], missed: vec![] } };
+    let recall = if q.is_answerable() {
+        score::recall_with(&cited, &expected_rule_ids, &q.equivalents())
+    } else {
+        Recall {
+            hit: vec![],
+            missed: vec![],
+        }
+    };
     let any_expected_cited = recall.any_hit();
     Row {
         id: q.id.clone(),
@@ -353,19 +450,40 @@ fn secs(ms: u128) -> f64 {
 #[must_use]
 pub fn table(run: &Run) -> String {
     use std::fmt::Write as _;
-    let width = run.rows.iter().map(|r| r.id.len()).max().unwrap_or(8).max(8);
+    let width = run
+        .rows
+        .iter()
+        .map(|r| r.id.len())
+        .max()
+        .unwrap_or(8)
+        .max(8);
     let mut s = String::new();
     let _ = writeln!(
         s,
         "{:<width$}  {:<12}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7}  {:>5}  {:>8}",
-        "question", "outcome", "recall", "any", "rules", "rlngs", "orcl", "src", "ok", "secs", "calls", "usd"
+        "question",
+        "outcome",
+        "recall",
+        "any",
+        "rules",
+        "rlngs",
+        "orcl",
+        "src",
+        "ok",
+        "secs",
+        "calls",
+        "usd"
     );
     for r in &run.rows {
         let outcome = match &r.outcome {
             Outcome::Verdict { confidence, .. } => format!("verdict/{confidence}"),
             Outcome::Error { variant, .. } => variant.clone(),
         };
-        let recall = format!("{}/{}", r.recall.hit.len(), r.recall.hit.len() + r.recall.missed.len());
+        let recall = format!(
+            "{}/{}",
+            r.recall.hit.len(),
+            r.recall.hit.len() + r.recall.missed.len()
+        );
         let _ = writeln!(
             s,
             "{:<width$}  {:<12}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7.1}  {:>5}  {:>8.4}",
@@ -393,13 +511,17 @@ pub fn table(run: &Run) -> String {
         s,
         "\n{} questions: {ok} correct shape, {src} source match, citation recall {}, {} calls, TOTAL ${:.4} (cap ${:.2}); {}",
         run.rows.len(),
-        run.recall().map_or_else(|| "n/a".to_owned(), |f| format!("{:.1}%", f * 100.0)),
+        run.recall()
+            .map_or_else(|| "n/a".to_owned(), |f| format!("{:.1}%", f * 100.0)),
         run.total_calls,
         run.total_usd,
         run.max_usd,
         run.models_line()
     );
-    let _ = writeln!(s, "questions with ≥1 expected id cited: {any}/{expecting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations");
+    let _ = writeln!(
+        s,
+        "questions with ≥1 expected id cited: {any}/{expecting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations"
+    );
     s
 }
 
@@ -412,8 +534,10 @@ pub fn table(run: &Run) -> String {
 /// Recomputes each row's recall from its stored `cited_rule_ids` and rewrites
 /// the derived columns; the run file itself is not modified.
 pub fn rescore(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Result<String> {
-    let raw = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut run: Run = serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut run: Run =
+        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
     let gold = crate::gold::load(gold_path)?;
     for row in &mut run.rows {
         let Some(q) = gold.questions.iter().find(|q| q.id == row.id) else {
@@ -421,7 +545,14 @@ pub fn rescore(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::R
             continue;
         };
         if q.is_answerable() {
-            row.recall = score::recall_with(&row.cited_rule_ids, &q.expected_rule_ids.iter().map(crate::gold::YamlScalar::as_text).collect::<Vec<_>>(), &q.equivalents());
+            row.recall = score::recall_with(
+                &row.cited_rule_ids,
+                &q.expected_rule_ids
+                    .iter()
+                    .map(crate::gold::YamlScalar::as_text)
+                    .collect::<Vec<_>>(),
+                &q.equivalents(),
+            );
             row.any_expected_cited = row.recall.any_hit();
         }
     }
@@ -430,17 +561,48 @@ pub fn rescore(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::R
 
 pub fn show(path: &std::path::Path) -> anyhow::Result<String> {
     use std::fmt::Write as _;
-    let raw = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let run: Run = serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let run: Run =
+        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
     let mut s = String::new();
-    let _ = writeln!(s, "run {} ({} questions, ${:.4}; {})\n", run.label, run.rows.len(), run.total_usd, run.models_line());
+    let _ = writeln!(
+        s,
+        "run {} ({} questions, ${:.4}; {})\n",
+        run.label,
+        run.rows.len(),
+        run.total_usd,
+        run.models_line()
+    );
     for r in &run.rows {
-        let _ = writeln!(s, "{}\n=== {} [{}] ===", "=".repeat(78), r.id, r.expected_source);
+        let _ = writeln!(
+            s,
+            "{}\n=== {} [{}] ===",
+            "=".repeat(78),
+            r.id,
+            r.expected_source
+        );
         let _ = writeln!(s, "Q: {}\n", r.question.trim());
-        let _ = writeln!(s, "--- expected ({}) ---\n{}\n", r.expected_rule_ids.join(" "), r.expected_answer.trim());
+        let _ = writeln!(
+            s,
+            "--- expected ({}) ---\n{}\n",
+            r.expected_rule_ids.join(" "),
+            r.expected_answer.trim()
+        );
         match &r.outcome {
-            Outcome::Verdict { answer, confidence, citations, category, source, cr_version } => {
-                let _ = writeln!(s, "--- bot ({confidence}, {category}, {source}, CR {cr_version}) ---\n{}\n", answer.trim());
+            Outcome::Verdict {
+                answer,
+                confidence,
+                citations,
+                category,
+                source,
+                cr_version,
+            } => {
+                let _ = writeln!(
+                    s,
+                    "--- bot ({confidence}, {category}, {source}, CR {cr_version}) ---\n{}\n",
+                    answer.trim()
+                );
                 for c in citations {
                     let _ = writeln!(s, "  * {c}");
                 }
@@ -477,17 +639,53 @@ mod tests {
         assert!((o.max_usd - 2.0).abs() < f64::EPSILON);
         assert_eq!(o.out, PathBuf::from("eval/runs/smoke.json"));
         let o = Options::parse(
-            ["--limit", "5", "--ids", "a, b", "--max-usd", "0.5", "--out", "x/y.json"].iter().map(|s| (*s).to_owned()),
+            [
+                "--limit",
+                "5",
+                "--ids",
+                "a, b",
+                "--max-usd",
+                "0.5",
+                "--out",
+                "x/y.json",
+            ]
+            .iter()
+            .map(|s| (*s).to_owned()),
         )?;
         assert_eq!((o.limit, o.ids.len(), o.label.as_str()), (5, 2, "y"));
         // --ids without --limit runs every listed id.
-        let o = Options::parse(["--label", "l", "--ids", "a,b,c,d,e"].iter().map(|s| (*s).to_owned()))?;
+        let o = Options::parse(
+            ["--label", "l", "--ids", "a,b,c,d,e"]
+                .iter()
+                .map(|s| (*s).to_owned()),
+        )?;
         assert_eq!(o.limit, 5);
         assert!(Options::parse(std::iter::empty()).is_err());
         assert!(Options::parse(["--bogus"].iter().map(|s| (*s).to_owned())).is_err());
-        assert!(Options::parse(["--label", "l", "--limit", "0"].iter().map(|s| (*s).to_owned())).is_err());
-        assert!(Options::parse(["--label", "l", "--max-usd", "nan"].iter().map(|s| (*s).to_owned())).is_err());
-        assert!(Options::parse(["--label", "l", "--max-usd", "-1"].iter().map(|s| (*s).to_owned())).is_err());
+        assert!(
+            Options::parse(
+                ["--label", "l", "--limit", "0"]
+                    .iter()
+                    .map(|s| (*s).to_owned())
+            )
+            .is_err()
+        );
+        assert!(
+            Options::parse(
+                ["--label", "l", "--max-usd", "nan"]
+                    .iter()
+                    .map(|s| (*s).to_owned())
+            )
+            .is_err()
+        );
+        assert!(
+            Options::parse(
+                ["--label", "l", "--max-usd", "-1"]
+                    .iter()
+                    .map(|s| (*s).to_owned())
+            )
+            .is_err()
+        );
         Ok(())
     }
 
@@ -504,23 +702,65 @@ mod tests {
             expected_answer: String::new(),
             equivalent_rule_ids: std::collections::BTreeMap::default(),
         };
-        let r = score_row(&q, &Err(JudgeError::OutOfScope(judge_core::Source::Tournament)), 1, 1, 0.01);
+        let r = score_row(
+            &q,
+            &Err(JudgeError::OutOfScope(judge_core::Source::Tournament)),
+            1,
+            1,
+            0.01,
+        );
         assert!(r.correct_shape && r.source_ok);
-        let r = score_row(&q, &Err(JudgeError::OutOfScope(judge_core::Source::OutOfScope)), 1, 1, 0.01);
+        let r = score_row(
+            &q,
+            &Err(JudgeError::OutOfScope(judge_core::Source::OutOfScope)),
+            1,
+            1,
+            0.01,
+        );
         assert!(r.correct_shape && !r.source_ok);
         let r = score_row(&q, &Err(JudgeError::LlmRefused), 1, 1, 0.01);
         assert!(!r.correct_shape);
-        let run = Run { label: "l".into(), gold: "g".into(), max_usd: 1.0, models: None, rows: vec![r], total_usd: 0.01, total_calls: 1 };
+        let run = Run {
+            label: "l".into(),
+            gold: "g".into(),
+            max_usd: 1.0,
+            models: None,
+            rows: vec![r],
+            total_usd: 0.01,
+            total_calls: 1,
+        };
         assert!(table(&run).contains("TOTAL $0.0100"));
-        assert!(table(&run).contains("(cap $1.00); models=unknown"), "{}", table(&run));
-        assert!(table(&run).contains("questions with ≥1 expected id cited: 0/0"), "{}", table(&run));
-        let with_models = Run { models: Some(RunModels { extract: "ollama/qwen3:8b".into(), synth: "anthropic/claude-opus-5".into() }), ..run };
-        assert!(table(&with_models).contains("(cap $1.00); extract=ollama/qwen3:8b synth=anthropic/claude-opus-5"), "{}", table(&with_models));
+        assert!(
+            table(&run).contains("(cap $1.00); models=unknown"),
+            "{}",
+            table(&run)
+        );
+        assert!(
+            table(&run).contains("questions with ≥1 expected id cited: 0/0"),
+            "{}",
+            table(&run)
+        );
+        let with_models = Run {
+            models: Some(RunModels {
+                extract: "ollama/qwen3:8b".into(),
+                synth: "anthropic/claude-opus-5".into(),
+            }),
+            ..run
+        };
+        assert!(
+            table(&with_models)
+                .contains("(cap $1.00); extract=ollama/qwen3:8b synth=anthropic/claude-opus-5"),
+            "{}",
+            table(&with_models)
+        );
     }
 
     #[test]
     fn verdict_rows_count_cites_and_any_expected() -> anyhow::Result<()> {
-        use judge_core::{AnswerableSource, Category, Citation, Confidence, Context, CrVersion, RuleChunk, RuleId, Verdict};
+        use judge_core::{
+            AnswerableSource, Category, Citation, Confidence, Context, CrVersion, RuleChunk,
+            RuleId, Verdict,
+        };
         let q = GoldQuestion {
             id: "t".into(),
             question: "q".into(),
@@ -528,7 +768,10 @@ mod tests {
             nicknames_used: vec![],
             categories: vec![],
             source: "CR".into(),
-            expected_rule_ids: vec![crate::gold::YamlScalar::Text("702.15".into()), crate::gold::YamlScalar::Text("1.1".into())],
+            expected_rule_ids: vec![
+                crate::gold::YamlScalar::Text("702.15".into()),
+                crate::gold::YamlScalar::Text("1.1".into()),
+            ],
             expected_answer: String::new(),
             equivalent_rule_ids: std::collections::BTreeMap::default(),
         };
@@ -547,7 +790,10 @@ mod tests {
         let v = Verdict::new(
             "Lifelink causes its controller to gain that much life at the same time.".into(),
             Confidence::High,
-            vec![Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("gain that much life")? }],
+            vec![Citation::Rule {
+                id: RuleId::try_new("702.15b".to_owned())?,
+                quote: judge_core::Quote::try_new("gain that much life")?,
+            }],
             Category::KeywordAbilities,
         )
         .validate(&ctx, AnswerableSource::Cr)?;
@@ -555,12 +801,22 @@ mod tests {
         assert!(r.any_expected_cited);
         assert_eq!((r.cites.n_rule_cites, r.cites.n_ruling_cites), (1, 0));
         assert_eq!(r.recall.missed, vec!["1.1".to_owned()]);
-        let run = Run { label: "l".into(), gold: "g".into(), max_usd: 1.0, models: None, rows: vec![r], total_usd: 0.01, total_calls: 1 };
+        let run = Run {
+            label: "l".into(),
+            gold: "g".into(),
+            max_usd: 1.0,
+            models: None,
+            rows: vec![r],
+            total_usd: 0.01,
+            total_calls: 1,
+        };
         assert_eq!(run.any_expected_cited(), (1, 1));
         let t = table(&run);
         assert!(t.contains("questions with ≥1 expected id cited: 1/1; 1 rule citations, 0 ruling citations, 0 oracle citations"), "{t}");
         // Old run files without the new fields still load.
-        let json = serde_json::to_string(&run)?.replace(",\"any_expected_cited\":true", "").replace(",\"n_rule_cites\":1", "");
+        let json = serde_json::to_string(&run)?
+            .replace(",\"any_expected_cited\":true", "")
+            .replace(",\"n_rule_cites\":1", "");
         let old: Run = serde_json::from_str(&json)?;
         assert!(!old.rows.first().is_some_and(|r| r.any_expected_cited));
         Ok(())

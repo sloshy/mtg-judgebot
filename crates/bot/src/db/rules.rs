@@ -195,8 +195,12 @@ pub(super) async fn in_subsections_ranked(
             RuleChunk::try_from(row).map(|c| (r.score, c))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    scored.sort_by(|(a, x), (b, y)| b.total_cmp(a).then_with(|| sort_key(x.id.as_ref()).cmp(&sort_key(y.id.as_ref()))));
-    let (matching, rest): (Vec<_>, Vec<_>) = scored.into_iter().partition(|(score, _)| *score > 0.0);
+    scored.sort_by(|(a, x), (b, y)| {
+        b.total_cmp(a)
+            .then_with(|| sort_key(x.id.as_ref()).cmp(&sort_key(y.id.as_ref())))
+    });
+    let (matching, rest): (Vec<_>, Vec<_>) =
+        scored.into_iter().partition(|(score, _)| *score > 0.0);
     Ok(CategoryRules {
         matching: matching.into_iter().map(|(_, c)| c).collect(),
         rest: rest.into_iter().map(|(_, c)| c).collect(),

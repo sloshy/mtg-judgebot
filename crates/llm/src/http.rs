@@ -47,7 +47,9 @@ where
         match once(&build, &decode).await {
             Ok(resp) => return Ok(resp),
             Err(Failure { err, retry_after }) if attempt < MAX_ATTEMPTS && err.is_retryable() => {
-                let delay = retry_after.unwrap_or_else(|| BASE_BACKOFF * 2u32.pow(attempt - 1)).min(MAX_BACKOFF);
+                let delay = retry_after
+                    .unwrap_or_else(|| BASE_BACKOFF * 2u32.pow(attempt - 1))
+                    .min(MAX_BACKOFF);
                 tracing::warn!(attempt, ?delay, error = %err, "retrying chat request");
                 tokio::time::sleep(delay).await;
                 attempt += 1;
@@ -69,8 +71,14 @@ where
     B: Fn() -> Result<reqwest::RequestBuilder, LlmError>,
     D: Fn(&Reply) -> Result<ChatResponse, LlmError>,
 {
-    let builder = build().map_err(|err| Failure { err, retry_after: None })?;
-    let resp = builder.send().await.map_err(|e| Failure { err: LlmError::Transport(e), retry_after: None })?;
+    let builder = build().map_err(|err| Failure {
+        err,
+        retry_after: None,
+    })?;
+    let resp = builder.send().await.map_err(|e| Failure {
+        err: LlmError::Transport(e),
+        retry_after: None,
+    })?;
     let status = resp.status();
     let retry_after = resp
         .headers()
@@ -78,8 +86,15 @@ where
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<u64>().ok())
         .map(Duration::from_secs);
-    let body = resp.bytes().await.map_err(|e| Failure { err: LlmError::Transport(e), retry_after })?;
-    decode(&Reply { status, body: body.to_vec() }).map_err(|err| Failure { err, retry_after })
+    let body = resp.bytes().await.map_err(|e| Failure {
+        err: LlmError::Transport(e),
+        retry_after,
+    })?;
+    decode(&Reply {
+        status,
+        body: body.to_vec(),
+    })
+    .map_err(|err| Failure { err, retry_after })
 }
 
 #[cfg(test)]
@@ -93,7 +108,11 @@ mod tests {
 
     fn decode(reply: &Reply) -> Result<ChatResponse, LlmError> {
         if !reply.status.is_success() {
-            return Err(LlmError::Api { status: reply.status, kind: "k".into(), message: String::from_utf8_lossy(&reply.body).into_owned() });
+            return Err(LlmError::Api {
+                status: reply.status,
+                kind: "k".into(),
+                message: String::from_utf8_lossy(&reply.body).into_owned(),
+            });
         }
         Ok(ChatResponse {
             text: vec![String::from_utf8_lossy(&reply.body).into_owned()],
@@ -101,7 +120,10 @@ mod tests {
             stop: Stop::EndTurn,
             usage: Usage::default(),
             model: "m".into(),
-            assistant: AssistantTurn { backend: "test", raw: serde_json::Value::Null },
+            assistant: AssistantTurn {
+                backend: "test",
+                raw: serde_json::Value::Null,
+            },
         })
     }
 
@@ -110,11 +132,19 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/x"))
-            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0").set_body_string("slow down"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("retry-after", "0")
+                    .set_body_string("slow down"),
+            )
             .up_to_n_times(1)
             .mount(&server)
             .await;
-        Mock::given(method("POST")).and(path("/x")).respond_with(ResponseTemplate::new(200).set_body_string("ok")).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
         let http = reqwest::Client::new();
         let url = format!("{}/x", server.uri());
         let resp = post_with_retries(|| Ok(http.post(&url)), decode).await?;
@@ -122,10 +152,17 @@ mod tests {
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 2);
 
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/x")).respond_with(ResponseTemplate::new(400).set_body_string("nope")).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("nope"))
+            .mount(&server)
+            .await;
         let url = format!("{}/x", server.uri());
         let err = post_with_retries(|| Ok(http.post(&url)), decode).await;
-        assert!(matches!(err, Err(LlmError::Api { status, .. }) if status == StatusCode::BAD_REQUEST), "{err:?}");
+        assert!(
+            matches!(err, Err(LlmError::Api { status, .. }) if status == StatusCode::BAD_REQUEST),
+            "{err:?}"
+        );
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 1);
         Ok(())
     }
@@ -141,15 +178,44 @@ mod tests {
         let http = reqwest::Client::new();
         let url = format!("{}/x", server.uri());
         let err = post_with_retries(|| Ok(http.post(&url)), decode).await;
-        assert!(matches!(err, Err(LlmError::Api { status, .. }) if status == StatusCode::SERVICE_UNAVAILABLE), "{err:?}");
-        assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), MAX_ATTEMPTS as usize);
+        assert!(
+            matches!(err, Err(LlmError::Api { status, .. }) if status == StatusCode::SERVICE_UNAVAILABLE),
+            "{err:?}"
+        );
+        assert_eq!(
+            server.received_requests().await.map_or(0, |r| r.len()),
+            MAX_ATTEMPTS as usize
+        );
     }
 
     #[tokio::test]
     async fn a_request_that_cannot_be_built_is_not_sent_or_retried() {
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/x")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
-        let err = post_with_retries(|| Err(LlmError::Auth { door: "bedrock", message: "no credentials".into() }), decode).await;
-        assert!(matches!(err, Err(LlmError::Auth { door: "bedrock", .. })), "{err:?}");
+        Mock::given(method("POST"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let err = post_with_retries(
+            || {
+                Err(LlmError::Auth {
+                    door: "bedrock",
+                    message: "no credentials".into(),
+                })
+            },
+            decode,
+        )
+        .await;
+        assert!(
+            matches!(
+                err,
+                Err(LlmError::Auth {
+                    door: "bedrock",
+                    ..
+                })
+            ),
+            "{err:?}"
+        );
     }
 }

@@ -40,7 +40,8 @@ use core::ops::Range;
 #[must_use]
 pub fn canonical(c: char) -> char {
     match c {
-        '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '\u{2032}' | '\u{00B4}' | '\u{0060}' => '\'',
+        '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '\u{2032}' | '\u{00B4}'
+        | '\u{0060}' => '\'',
         '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' | '\u{2033}' => '"',
         // The dash block and the minus sign, and with them the bullets: modal
         // spells ("Choose one —") mark their modes with U+2022, 2000-odd
@@ -108,7 +109,10 @@ mod tests {
     #[test]
     fn an_ascii_apostrophe_finds_the_curly_original() {
         let typed = "Havengul Lich's ability changes the zone";
-        assert_eq!(locate(RULING, typed), Some("Havengul Lich’s ability changes the zone"));
+        assert_eq!(
+            locate(RULING, typed),
+            Some("Havengul Lich’s ability changes the zone")
+        );
     }
 
     /// An exact copy is returned unchanged, byte for byte.
@@ -133,8 +137,14 @@ mod tests {
         // Modal spells: the bullet is the most common non-ASCII character in
         // Oracle text after the apostrophe.
         let modal = "Choose one —\n• Target creature gets +2/+0.";
-        assert_eq!(locate(modal, "- Target creature gets +2/+0."), Some("• Target creature gets +2/+0."));
-        assert_eq!(locate(modal, "* Target creature gets +2/+0."), Some("• Target creature gets +2/+0."));
+        assert_eq!(
+            locate(modal, "- Target creature gets +2/+0."),
+            Some("• Target creature gets +2/+0.")
+        );
+        assert_eq!(
+            locate(modal, "* Target creature gets +2/+0."),
+            Some("• Target creature gets +2/+0.")
+        );
         // The ellipsis is not folded: it cannot be, one char to one char.
         assert_eq!(locate("wait…now", "wait...now"), None);
     }

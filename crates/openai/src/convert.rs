@@ -26,8 +26,8 @@
 //! feature the capabilities already report as absent.
 
 use judge_llm::{
-    AssistantTurn, Billed, CacheHint, ChatRequest, ChatResponse, Effort, LlmError, Refusal, Stop, TextBlock, ToolCall,
-    ToolChoice, Turn, Usage,
+    AssistantTurn, Billed, CacheHint, ChatRequest, ChatResponse, Effort, LlmError, Refusal, Stop,
+    TextBlock, ToolCall, ToolChoice, Turn, Usage,
 };
 use serde_json::Value;
 
@@ -35,8 +35,8 @@ use crate::{
     Dialect, MaxTokensParam, StructuredOutputMode,
     schema::to_openai_strict,
     wire::{
-        self, AssistantMessage, CacheControl, CacheKind, CacheTtl, Content, Function, FunctionKind, JsonSchemaFormat,
-        Message, Part, ReasoningEffort, ResponseFormat, Tool,
+        self, AssistantMessage, CacheControl, CacheKind, CacheTtl, Content, Function, FunctionKind,
+        JsonSchemaFormat, Message, Part, ReasoningEffort, ResponseFormat, Tool,
     },
 };
 
@@ -48,26 +48,42 @@ pub const BACKEND: &str = "openai";
 /// # Errors
 /// `ForeignTurn` when a replayed assistant turn came from another backend;
 /// `Request` when its payload is not a message object.
-pub fn to_wire(model: &str, dialect: Dialect, req: &ChatRequest) -> Result<wire::ChatRequest, LlmError> {
+pub fn to_wire(
+    model: &str,
+    dialect: Dialect,
+    req: &ChatRequest,
+) -> Result<wire::ChatRequest, LlmError> {
     let mut messages = Vec::with_capacity(req.turns.len() + 1);
     if !req.system.is_empty() {
-        messages.push(Message::System { content: content(&req.system, dialect.cache_hints) });
+        messages.push(Message::System {
+            content: content(&req.system, dialect.cache_hints),
+        });
     }
     for turn in &req.turns {
         match turn {
-            Turn::User(blocks) => messages.push(Message::User { content: content(blocks, dialect.cache_hints) }),
+            Turn::User(blocks) => messages.push(Message::User {
+                content: content(blocks, dialect.cache_hints),
+            }),
             Turn::Assistant(AssistantTurn { backend, raw }) => {
                 if *backend != BACKEND {
-                    return Err(LlmError::ForeignTurn { expected: BACKEND, found: backend });
+                    return Err(LlmError::ForeignTurn {
+                        expected: BACKEND,
+                        found: backend,
+                    });
                 }
                 if !raw.is_object() {
-                    return Err(LlmError::Request("assistant turn is not a chat completions message object".into()));
+                    return Err(LlmError::Request(
+                        "assistant turn is not a chat completions message object".into(),
+                    ));
                 }
                 messages.push(Message::Assistant(raw.clone()));
             }
             Turn::ToolResults(results) => {
                 for r in results {
-                    messages.push(Message::Tool { tool_call_id: r.call_id.clone(), content: r.content.clone() });
+                    messages.push(Message::Tool {
+                        tool_call_id: r.call_id.clone(),
+                        content: r.content.clone(),
+                    });
                 }
             }
         }
@@ -98,13 +114,20 @@ pub fn to_wire(model: &str, dialect: Dialect, req: &ChatRequest) -> Result<wire:
             ToolChoice::None => (Some(wire::ToolChoice::None), None),
         }
     };
-    let response_format = req.output.as_ref().and_then(|o| match dialect.structured_output {
-        StructuredOutputMode::JsonSchema => Some(ResponseFormat::JsonSchema {
-            json_schema: JsonSchemaFormat { name: schema_name(&o.schema), schema: to_openai_strict(&o.schema), strict: true },
-        }),
-        StructuredOutputMode::JsonObject => Some(ResponseFormat::JsonObject),
-        StructuredOutputMode::Prompt => None,
-    });
+    let response_format = req
+        .output
+        .as_ref()
+        .and_then(|o| match dialect.structured_output {
+            StructuredOutputMode::JsonSchema => Some(ResponseFormat::JsonSchema {
+                json_schema: JsonSchemaFormat {
+                    name: schema_name(&o.schema),
+                    schema: to_openai_strict(&o.schema),
+                    strict: true,
+                },
+            }),
+            StructuredOutputMode::JsonObject => Some(ResponseFormat::JsonObject),
+            StructuredOutputMode::Prompt => None,
+        });
     Ok(wire::ChatRequest {
         model: model.to_owned(),
         messages,
@@ -114,21 +137,37 @@ pub fn to_wire(model: &str, dialect: Dialect, req: &ChatRequest) -> Result<wire:
         tool_choice,
         parallel_tool_calls,
         response_format,
-        reasoning_effort: if dialect.reasoning_effort { req.effort.map(effort) } else { None },
+        reasoning_effort: if dialect.reasoning_effort {
+            req.effort.map(effort)
+        } else {
+            None
+        },
     })
 }
 
 /// The name `response_format.json_schema` needs: the schema's title (the
 /// type name, from schemars) or a placeholder.
 fn schema_name(schema: &schemars::Schema) -> String {
-    schema.get("title").and_then(Value::as_str).unwrap_or("output").to_owned()
+    schema
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("output")
+        .to_owned()
 }
 
 /// Blocks as one message content: joined text, or parts when cache hints are
 /// forwarded (a part is the only place `cache_control` can go).
 fn content(blocks: &[TextBlock], cache_hints: bool) -> Content {
     if cache_hints && blocks.iter().any(|b| b.cache.is_some()) {
-        Content::Parts(blocks.iter().map(|b| Part::Text { text: b.text.clone(), cache_control: b.cache.map(cache_control) }).collect())
+        Content::Parts(
+            blocks
+                .iter()
+                .map(|b| Part::Text {
+                    text: b.text.clone(),
+                    cache_control: b.cache.map(cache_control),
+                })
+                .collect(),
+        )
     } else {
         Content::Text(blocks.iter().map(|b| b.text.as_str()).collect())
     }
@@ -136,8 +175,14 @@ fn content(blocks: &[TextBlock], cache_hints: bool) -> Content {
 
 fn cache_control(hint: CacheHint) -> CacheControl {
     match hint {
-        CacheHint::Short => CacheControl { kind: CacheKind::Ephemeral, ttl: None },
-        CacheHint::Long => CacheControl { kind: CacheKind::Ephemeral, ttl: Some(CacheTtl::OneHour) },
+        CacheHint::Short => CacheControl {
+            kind: CacheKind::Ephemeral,
+            ttl: None,
+        },
+        CacheHint::Long => CacheControl {
+            kind: CacheKind::Ephemeral,
+            ttl: Some(CacheTtl::OneHour),
+        },
     }
 }
 
@@ -161,21 +206,37 @@ fn effort(e: Effort) -> ReasoningEffort {
 /// # Errors
 /// No choices, a message that is not a message, or `function.arguments`
 /// that is not a JSON document.
-pub fn from_wire(resp: &wire::ChatResponse, model: &str) -> Result<ChatResponse, serde_json::Error> {
-    let choice = resp.choices.first().ok_or_else(|| serde::de::Error::custom("response has no choices"))?;
+pub fn from_wire(
+    resp: &wire::ChatResponse,
+    model: &str,
+) -> Result<ChatResponse, serde_json::Error> {
+    let choice = resp
+        .choices
+        .first()
+        .ok_or_else(|| serde::de::Error::custom("response has no choices"))?;
     let message: AssistantMessage = serde_json::from_value(choice.message.clone())?;
     let tool_calls = message
         .tool_calls
         .iter()
         .map(|c| {
             let input: Value = serde_json::from_str(&c.function.arguments)?;
-            Ok(ToolCall { id: c.id.clone(), name: c.function.name.clone(), input })
+            Ok(ToolCall {
+                id: c.id.clone(),
+                name: c.function.name.clone(),
+                input,
+            })
         })
         .collect::<Result<Vec<_>, serde_json::Error>>()?;
     let refusal = message.refusal.as_deref().filter(|r| !r.trim().is_empty());
     let stop = match (choice.finish_reason.as_deref(), refusal) {
-        (_, Some(text)) => Stop::Refusal(Refusal { category: None, explanation: Some(text.to_owned()) }),
-        (Some("content_filter"), None) => Stop::Refusal(Refusal { category: Some("content_filter".into()), explanation: None }),
+        (_, Some(text)) => Stop::Refusal(Refusal {
+            category: None,
+            explanation: Some(text.to_owned()),
+        }),
+        (Some("content_filter"), None) => Stop::Refusal(Refusal {
+            category: Some("content_filter".into()),
+            explanation: None,
+        }),
         (Some("length"), None) => Stop::MaxTokens,
         (Some("tool_calls" | "function_call"), None) => Stop::ToolUse,
         (Some("stop") | None, None) if !tool_calls.is_empty() => Stop::ToolUse,
@@ -184,12 +245,21 @@ pub fn from_wire(resp: &wire::ChatResponse, model: &str) -> Result<ChatResponse,
         (None, None) => Stop::Other("none".into()),
     };
     Ok(ChatResponse {
-        text: message.content.iter().flat_map(Content::texts).filter(|t| !t.is_empty()).map(str::to_owned).collect(),
+        text: message
+            .content
+            .iter()
+            .flat_map(Content::texts)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+            .collect(),
         tool_calls,
         stop,
         usage: resp.usage.as_ref().map(usage).unwrap_or_default(),
         model: resp.model.clone().unwrap_or_else(|| model.to_owned()),
-        assistant: AssistantTurn { backend: BACKEND, raw: choice.message.clone() },
+        assistant: AssistantTurn {
+            backend: BACKEND,
+            raw: choice.message.clone(),
+        },
     })
 }
 
@@ -197,8 +267,17 @@ pub fn from_wire(resp: &wire::ChatResponse, model: &str) -> Result<ChatResponse,
 /// uncached input is the difference (what the provider bills at the input
 /// price).
 fn usage(u: &wire::Usage) -> Usage {
-    let cached = u.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens).unwrap_or(0);
-    Usage { input: u.prompt_tokens.saturating_sub(cached), output: u.completion_tokens, cache_read: cached, cache_write: 0 }
+    let cached = u
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|d| d.cached_tokens)
+        .unwrap_or(0);
+    Usage {
+        input: u.prompt_tokens.saturating_sub(cached),
+        output: u.completion_tokens,
+        cache_read: cached,
+        cache_write: 0,
+    }
 }
 
 /// `usage` (and `model`) of a 2xx body, parsed leniently so that a response
@@ -213,7 +292,12 @@ struct UsageOnly {
 /// What a body that did not decode can still be billed as.
 #[must_use]
 pub fn usage_of(body: &[u8]) -> Option<Billed> {
-    serde_json::from_slice::<UsageOnly>(body).ok().map(|u| Billed { model: u.model, usage: usage(&u.usage) })
+    serde_json::from_slice::<UsageOnly>(body)
+        .ok()
+        .map(|u| Billed {
+            model: u.model,
+            usage: usage(&u.usage),
+        })
 }
 
 #[cfg(test)]
@@ -230,7 +314,10 @@ mod tests {
         ChatRequest {
             max_tokens: 64,
             system: vec![TextBlock::cached("sys")],
-            turns: vec![Turn::User(vec![TextBlock::cached("material"), TextBlock::plain("question")])],
+            turns: vec![Turn::User(vec![
+                TextBlock::cached("material"),
+                TextBlock::plain("question"),
+            ])],
             tools: vec![],
             tool_choice: ToolChoice::None,
             output: None,
@@ -243,20 +330,28 @@ mod tests {
     #[test]
     fn a_bare_request_sends_only_what_it_has() -> Result<(), Box<dyn std::error::Error>> {
         let v = serde_json::to_value(to_wire("qwen3:8b", Dialect::default(), &req())?)?;
-        assert_eq!(v, json!({
-            "model": "qwen3:8b", "max_tokens": 64,
-            "messages": [
-                {"role": "system", "content": "sys"},
-                {"role": "user", "content": "materialquestion"}
-            ]
-        }));
+        assert_eq!(
+            v,
+            json!({
+                "model": "qwen3:8b", "max_tokens": 64,
+                "messages": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "materialquestion"}
+                ]
+            })
+        );
         Ok(())
     }
 
     #[test]
     fn every_knob_maps_to_its_field() -> Result<(), Box<dyn std::error::Error>> {
         let r = ChatRequest {
-            tools: vec![ToolSpec { name: "t".into(), description: "d".into(), input_schema: schema_of::<judge_llm::LookupRulesInput>(), strict: true }],
+            tools: vec![ToolSpec {
+                name: "t".into(),
+                description: "d".into(),
+                input_schema: schema_of::<judge_llm::LookupRulesInput>(),
+                strict: true,
+            }],
             tool_choice: ToolChoice::Auto { parallel: false },
             output: Some(OutputSchema::of::<judge_core::Verdict>()),
             effort: Some(Effort::XHigh),
@@ -264,54 +359,136 @@ mod tests {
             fallbacks: Some(judge_llm::RefusalFallback::Default),
             ..req()
         };
-        let d = Dialect { reasoning_effort: true, cache_hints: true, max_tokens_param: MaxTokensParam::MaxCompletionTokens, ..Dialect::default() };
+        let d = Dialect {
+            reasoning_effort: true,
+            cache_hints: true,
+            max_tokens_param: MaxTokensParam::MaxCompletionTokens,
+            ..Dialect::default()
+        };
         let v = serde_json::to_value(to_wire("gpt-5", d, &r)?)?;
-        assert_eq!(at(&v, "/messages/0"), &json!({"role": "system", "content": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]}));
-        assert_eq!(at(&v, "/messages/1/content"), &json!([
-            {"type": "text", "text": "material", "cache_control": {"type": "ephemeral"}},
-            {"type": "text", "text": "question"}
-        ]));
+        assert_eq!(
+            at(&v, "/messages/0"),
+            &json!({"role": "system", "content": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]})
+        );
+        assert_eq!(
+            at(&v, "/messages/1/content"),
+            &json!([
+                {"type": "text", "text": "material", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "question"}
+            ])
+        );
         assert_eq!(at(&v, "/tools/0/type"), "function");
         assert_eq!(at(&v, "/tools/0/function/name"), "t");
         assert_eq!(at(&v, "/tools/0/function/strict"), &Value::Bool(true));
-        assert_eq!(at(&v, "/tools/0/function/parameters/additionalProperties"), &Value::Bool(false), "the strict transform ran");
-        assert_eq!(at(&v, "/tools/0/function/parameters/required"), &json!(["ids"]));
+        assert_eq!(
+            at(&v, "/tools/0/function/parameters/additionalProperties"),
+            &Value::Bool(false),
+            "the strict transform ran"
+        );
+        assert_eq!(
+            at(&v, "/tools/0/function/parameters/required"),
+            &json!(["ids"])
+        );
         assert_eq!(at(&v, "/tool_choice"), "auto");
         assert_eq!(at(&v, "/parallel_tool_calls"), &Value::Bool(false));
         assert_eq!(at(&v, "/response_format/type"), "json_schema");
         assert_eq!(at(&v, "/response_format/json_schema/name"), "Verdict");
-        assert_eq!(at(&v, "/response_format/json_schema/strict"), &Value::Bool(true));
-        assert!(!at(&v, "/response_format/json_schema/schema").to_string().contains("oneOf"), "the strict transform ran");
-        assert_eq!(at(&v, "/reasoning_effort"), "high", "xhigh maps down to high");
+        assert_eq!(
+            at(&v, "/response_format/json_schema/strict"),
+            &Value::Bool(true)
+        );
+        assert!(
+            !at(&v, "/response_format/json_schema/schema")
+                .to_string()
+                .contains("oneOf"),
+            "the strict transform ran"
+        );
+        assert_eq!(
+            at(&v, "/reasoning_effort"),
+            "high",
+            "xhigh maps down to high"
+        );
         assert!(v.get("max_tokens").is_none());
         assert_eq!(at(&v, "/max_completion_tokens"), 64);
         // Nothing Anthropic-shaped leaks.
-        assert!(v.get("thinking").is_none() && v.get("fallbacks").is_none() && v.get("output_config").is_none());
+        assert!(
+            v.get("thinking").is_none()
+                && v.get("fallbacks").is_none()
+                && v.get("output_config").is_none()
+        );
 
         // The other settings of each knob.
-        let plain = Dialect { structured_output: StructuredOutputMode::JsonObject, strict_tools: false, ..Dialect::default() };
+        let plain = Dialect {
+            structured_output: StructuredOutputMode::JsonObject,
+            strict_tools: false,
+            ..Dialect::default()
+        };
         let v = serde_json::to_value(to_wire("m", plain, &r)?)?;
         assert_eq!(at(&v, "/response_format"), &json!({"type": "json_object"}));
-        assert!(at(&v, "/tools/0/function").get("strict").is_none(), "strict off");
-        assert!(v.get("reasoning_effort").is_none(), "effort not sent unless the dialect says so");
-        assert_eq!(at(&v, "/messages/0"), &json!({"role": "system", "content": "sys"}), "no cache parts without the knob");
-        let prompt = Dialect { structured_output: StructuredOutputMode::Prompt, ..Dialect::default() };
-        assert!(serde_json::to_value(to_wire("m", prompt, &r)?)?.get("response_format").is_none());
-        let none = ChatRequest { tool_choice: ToolChoice::None, ..r.clone() };
+        assert!(
+            at(&v, "/tools/0/function").get("strict").is_none(),
+            "strict off"
+        );
+        assert!(
+            v.get("reasoning_effort").is_none(),
+            "effort not sent unless the dialect says so"
+        );
+        assert_eq!(
+            at(&v, "/messages/0"),
+            &json!({"role": "system", "content": "sys"}),
+            "no cache parts without the knob"
+        );
+        let prompt = Dialect {
+            structured_output: StructuredOutputMode::Prompt,
+            ..Dialect::default()
+        };
+        assert!(
+            serde_json::to_value(to_wire("m", prompt, &r)?)?
+                .get("response_format")
+                .is_none()
+        );
+        let none = ChatRequest {
+            tool_choice: ToolChoice::None,
+            ..r.clone()
+        };
         let v = serde_json::to_value(to_wire("m", Dialect::default(), &none)?)?;
         assert_eq!(at(&v, "/tool_choice"), "none");
         assert!(v.get("parallel_tool_calls").is_none());
-        let parallel = ChatRequest { tool_choice: ToolChoice::Auto { parallel: true }, ..r };
-        assert_eq!(at(&serde_json::to_value(to_wire("m", Dialect::default(), &parallel)?)?, "/parallel_tool_calls"), &Value::Bool(true));
-        for (e, w) in [(Effort::Low, "low"), (Effort::Medium, "medium"), (Effort::High, "high"), (Effort::Max, "high")] {
-            let r = ChatRequest { effort: Some(e), ..req() };
-            assert_eq!(at(&serde_json::to_value(to_wire("m", d, &r)?)?, "/reasoning_effort"), w);
+        let parallel = ChatRequest {
+            tool_choice: ToolChoice::Auto { parallel: true },
+            ..r
+        };
+        assert_eq!(
+            at(
+                &serde_json::to_value(to_wire("m", Dialect::default(), &parallel)?)?,
+                "/parallel_tool_calls"
+            ),
+            &Value::Bool(true)
+        );
+        for (e, w) in [
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::Max, "high"),
+        ] {
+            let r = ChatRequest {
+                effort: Some(e),
+                ..req()
+            };
+            assert_eq!(
+                at(
+                    &serde_json::to_value(to_wire("m", d, &r)?)?,
+                    "/reasoning_effort"
+                ),
+                w
+            );
         }
         Ok(())
     }
 
     #[test]
-    fn assistant_turns_replay_verbatim_and_foreign_ones_are_refused() -> Result<(), Box<dyn std::error::Error>> {
+    fn assistant_turns_replay_verbatim_and_foreign_ones_are_refused()
+    -> Result<(), Box<dyn std::error::Error>> {
         let message = json!({
             "role": "assistant", "content": null, "reasoning_content": "let me think",
             "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "lookup_rules", "arguments": "{\"ids\":[\"613\"]}"}}],
@@ -320,27 +497,72 @@ mod tests {
         let r = ChatRequest {
             turns: vec![
                 Turn::User(vec![TextBlock::plain("q")]),
-                Turn::Assistant(AssistantTurn { backend: BACKEND, raw: message.clone() }),
+                Turn::Assistant(AssistantTurn {
+                    backend: BACKEND,
+                    raw: message.clone(),
+                }),
                 Turn::ToolResults(vec![
-                    ToolResult { call_id: "call_1".into(), content: "rules".into(), is_error: false },
-                    ToolResult { call_id: "call_2".into(), content: "more".into(), is_error: true },
+                    ToolResult {
+                        call_id: "call_1".into(),
+                        content: "rules".into(),
+                        is_error: false,
+                    },
+                    ToolResult {
+                        call_id: "call_2".into(),
+                        content: "more".into(),
+                        is_error: true,
+                    },
                 ]),
             ],
             ..req()
         };
         let v = serde_json::to_value(to_wire("m", Dialect::default(), &r)?)?;
-        assert_eq!(at(&v, "/messages/2"), &message, "byte-for-byte, reasoning_content and tool_calls included");
-        assert_eq!(at(&v, "/messages/3"), &json!({"role": "tool", "tool_call_id": "call_1", "content": "rules"}));
-        assert_eq!(at(&v, "/messages/4"), &json!({"role": "tool", "tool_call_id": "call_2", "content": "more"}));
+        assert_eq!(
+            at(&v, "/messages/2"),
+            &message,
+            "byte-for-byte, reasoning_content and tool_calls included"
+        );
+        assert_eq!(
+            at(&v, "/messages/3"),
+            &json!({"role": "tool", "tool_call_id": "call_1", "content": "rules"})
+        );
+        assert_eq!(
+            at(&v, "/messages/4"),
+            &json!({"role": "tool", "tool_call_id": "call_2", "content": "more"})
+        );
 
-        let foreign = ChatRequest { turns: vec![Turn::Assistant(AssistantTurn { backend: "anthropic", raw: json!([]) })], ..req() };
-        assert!(matches!(to_wire("m", Dialect::default(), &foreign), Err(LlmError::ForeignTurn { expected: BACKEND, found: "anthropic" })));
-        let garbage = ChatRequest { turns: vec![Turn::Assistant(AssistantTurn { backend: BACKEND, raw: json!([1]) })], ..req() };
-        assert!(matches!(to_wire("m", Dialect::default(), &garbage), Err(LlmError::Request(_))));
+        let foreign = ChatRequest {
+            turns: vec![Turn::Assistant(AssistantTurn {
+                backend: "anthropic",
+                raw: json!([]),
+            })],
+            ..req()
+        };
+        assert!(matches!(
+            to_wire("m", Dialect::default(), &foreign),
+            Err(LlmError::ForeignTurn {
+                expected: BACKEND,
+                found: "anthropic"
+            })
+        ));
+        let garbage = ChatRequest {
+            turns: vec![Turn::Assistant(AssistantTurn {
+                backend: BACKEND,
+                raw: json!([1]),
+            })],
+            ..req()
+        };
+        assert!(matches!(
+            to_wire("m", Dialect::default(), &garbage),
+            Err(LlmError::Request(_))
+        ));
         Ok(())
     }
 
-    fn resp(finish: Option<&str>, message: &Value) -> Result<wire::ChatResponse, serde_json::Error> {
+    fn resp(
+        finish: Option<&str>,
+        message: &Value,
+    ) -> Result<wire::ChatResponse, serde_json::Error> {
         serde_json::from_value(json!({
             "id": "chatcmpl-1", "model": "served-model",
             "choices": [{"index": 0, "message": message, "finish_reason": finish}],
@@ -356,18 +578,43 @@ mod tests {
         });
         let c = from_wire(&resp(Some("tool_calls"), &message)?, "asked")?;
         assert!(c.text.is_empty());
-        assert_eq!(c.tool_calls, [ToolCall { id: "call_1".into(), name: "lookup_rules".into(), input: json!({"ids": ["613"]}) }]);
+        assert_eq!(
+            c.tool_calls,
+            [ToolCall {
+                id: "call_1".into(),
+                name: "lookup_rules".into(),
+                input: json!({"ids": ["613"]})
+            }]
+        );
         assert_eq!(c.stop, Stop::ToolUse);
-        assert_eq!(c.usage, Usage { input: 40, output: 7, cache_read: 60, cache_write: 0 }, "cached tokens come out of the input");
+        assert_eq!(
+            c.usage,
+            Usage {
+                input: 40,
+                output: 7,
+                cache_read: 60,
+                cache_write: 0
+            },
+            "cached tokens come out of the input"
+        );
         assert_eq!(c.model, "served-model");
         assert_eq!(c.assistant.backend, BACKEND);
-        assert_eq!(c.assistant.raw, message, "the whole message object, reasoning included");
+        assert_eq!(
+            c.assistant.raw, message,
+            "the whole message object, reasoning included"
+        );
 
         let text = json!({"role": "assistant", "content": "{}"});
         for (finish, stop) in [
             (Some("stop"), Stop::EndTurn),
             (Some("length"), Stop::MaxTokens),
-            (Some("content_filter"), Stop::Refusal(Refusal { category: Some("content_filter".into()), explanation: None })),
+            (
+                Some("content_filter"),
+                Stop::Refusal(Refusal {
+                    category: Some("content_filter".into()),
+                    explanation: None,
+                }),
+            ),
             (Some("brand_new"), Stop::Other("brand_new".into())),
             (None, Stop::Other("none".into())),
         ] {
@@ -376,9 +623,16 @@ mod tests {
             assert_eq!(c.text, ["{}"]);
         }
         // A refusal in the message wins over the finish reason.
-        let refused = json!({"role": "assistant", "content": null, "refusal": "I can't help with that."});
+        let refused =
+            json!({"role": "assistant", "content": null, "refusal": "I can't help with that."});
         let c = from_wire(&resp(Some("stop"), &refused)?, "asked")?;
-        assert_eq!(c.stop, Stop::Refusal(Refusal { category: None, explanation: Some("I can't help with that.".into()) }));
+        assert_eq!(
+            c.stop,
+            Stop::Refusal(Refusal {
+                category: None,
+                explanation: Some("I can't help with that.".into())
+            })
+        );
         assert!(c.text.is_empty());
         // The Ollama shape: `stop` with tool calls is a tool round.
         let c = from_wire(&resp(Some("stop"), &message)?, "asked")?;
@@ -395,12 +649,14 @@ mod tests {
     }
 
     #[test]
-    fn bad_arguments_and_missing_choices_are_decode_errors() -> Result<(), Box<dyn std::error::Error>> {
+    fn bad_arguments_and_missing_choices_are_decode_errors()
+    -> Result<(), Box<dyn std::error::Error>> {
         let bad = json!({"role": "assistant", "content": null, "tool_calls": [{"id": "c", "type": "function", "function": {"name": "lookup_rules", "arguments": "{not json"}}]});
         assert!(from_wire(&resp(Some("tool_calls"), &bad)?, "m").is_err());
         let none: wire::ChatResponse = serde_json::from_value(json!({"choices": []}))?;
         assert!(from_wire(&none, "m").is_err());
-        let not_a_message: wire::ChatResponse = serde_json::from_value(json!({"choices": [{"message": 7}]}))?;
+        let not_a_message: wire::ChatResponse =
+            serde_json::from_value(json!({"choices": [{"message": 7}]}))?;
         assert!(from_wire(&not_a_message, "m").is_err());
         Ok(())
     }
@@ -408,7 +664,18 @@ mod tests {
     #[test]
     fn usage_of_reads_a_body_that_is_not_a_response() {
         let b = usage_of(br#"{"id": "x", "model": "m", "usage": {"prompt_tokens": 5, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 2}}}"#);
-        assert_eq!(b, Some(Billed { model: Some("m".into()), usage: Usage { input: 3, output: 1, cache_read: 2, cache_write: 0 } }));
+        assert_eq!(
+            b,
+            Some(Billed {
+                model: Some("m".into()),
+                usage: Usage {
+                    input: 3,
+                    output: 1,
+                    cache_read: 2,
+                    cache_write: 0
+                }
+            })
+        );
         assert_eq!(usage_of(b"not json"), None);
         assert_eq!(usage_of(br#"{"id": "x"}"#), None);
     }

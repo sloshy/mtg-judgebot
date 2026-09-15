@@ -47,8 +47,14 @@ pub struct Models {
 impl std::fmt::Debug for Models {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Models")
-            .field("extract", &format_args!("{}/{}", self.extract.provider(), self.extract.model()))
-            .field("synth", &format_args!("{}/{}", self.synth.provider(), self.synth.model()))
+            .field(
+                "extract",
+                &format_args!("{}/{}", self.extract.provider(), self.extract.model()),
+            )
+            .field(
+                "synth",
+                &format_args!("{}/{}", self.synth.provider(), self.synth.model()),
+            )
             .field("meter", &self.meter)
             .finish()
     }
@@ -61,14 +67,22 @@ impl Models {
     /// `Unpriced` when the table cannot price the model.
     pub fn single<B: Backend + 'static>(meter: SpendMeter, model: B) -> Result<Self, LlmError> {
         let model: Arc<dyn ChatModel> = Arc::new(Metered::new(model, meter.clone())?);
-        Ok(Self { extract: Arc::clone(&model), synth: model, meter })
+        Ok(Self {
+            extract: Arc::clone(&model),
+            synth: model,
+            meter,
+        })
     }
 
     /// One model per stage, both behind `meter` at the built-in table's price.
     ///
     /// # Errors
     /// `Unpriced` when the table cannot price either model.
-    pub fn pair<A: Backend + 'static, B: Backend + 'static>(meter: SpendMeter, extract: A, synth: B) -> Result<Self, LlmError> {
+    pub fn pair<A: Backend + 'static, B: Backend + 'static>(
+        meter: SpendMeter,
+        extract: A,
+        synth: B,
+    ) -> Result<Self, LlmError> {
         Ok(Self {
             extract: Arc::new(Metered::new(extract, meter.clone())?),
             synth: Arc::new(Metered::new(synth, meter.clone())?),
@@ -121,7 +135,10 @@ impl Models {
     /// # Errors
     /// `MissingApiKey`, `BadMaxSpend`, or if the HTTP client cannot be built.
     pub fn from_env() -> Result<Self, LlmError> {
-        Self::single(SpendMeter::from_env()?, judge_anthropic::Anthropic::from_env()?)
+        Self::single(
+            SpendMeter::from_env()?,
+            judge_anthropic::Anthropic::from_env()?,
+        )
     }
 }
 
@@ -148,16 +165,25 @@ pub fn build_deps(pool: PgPool, models: &Models, vectors: Option<Arc<Vectors>>) 
 
 /// [`build_deps`] with explicit configuration.
 #[must_use]
-pub fn build_deps_with(pool: PgPool, models: &Models, vectors: Option<Arc<Vectors>>, cfg: &DepsConfig) -> Deps {
+pub fn build_deps_with(
+    pool: PgPool,
+    models: &Models,
+    vectors: Option<Arc<Vectors>>,
+    cfg: &DepsConfig,
+) -> Deps {
     let mut retriever = PgRetriever::new(pool.clone());
     if let Some(v) = vectors {
         retriever = retriever.with_vectors(v);
     }
     let retriever: Arc<dyn Retriever> = Arc::new(retriever);
     let synthesizer =
-        synth::LlmSynthesizer::new(models.synth(), cfg.synth.clone(), Arc::clone(&retriever)).with_budget(cfg.budget);
+        synth::LlmSynthesizer::new(models.synth(), cfg.synth.clone(), Arc::clone(&retriever))
+            .with_budget(cfg.budget);
     Deps {
-        extractor: Arc::new(extract::LlmExtractor::new(models.extract(), cfg.extract.clone())),
+        extractor: Arc::new(extract::LlmExtractor::new(
+            models.extract(),
+            cfg.extract.clone(),
+        )),
         resolver: Arc::new(PgResolver::new(pool)),
         retriever,
         synthesizer: Arc::new(synthesizer),

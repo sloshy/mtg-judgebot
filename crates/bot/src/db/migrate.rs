@@ -131,7 +131,10 @@ pub async fn run(pool: &PgPool, ahead: Ahead) -> Result<Report, Error> {
     // Session-level (not transaction-level) so it spans every migration's
     // own transaction; released explicitly, and by the server if the
     // connection drops.
-    let mut guard = pool.acquire().await.map_err(db("connecting for the migration lock"))?;
+    let mut guard = pool
+        .acquire()
+        .await
+        .map_err(db("connecting for the migration lock"))?;
     // Say so before blocking: a deploy that lands during the nightly CR load
     // waits minutes here, and an empty log reads as a hang.
     let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
@@ -140,7 +143,9 @@ pub async fn run(pool: &PgPool, ahead: Ahead) -> Result<Report, Error> {
         .await
         .map_err(db("trying the calls rewrite lock"))?;
     if !free {
-        tracing::warn!("another job holds the calls rewrite lock (a refresh CR load, retirement pass or reembed); waiting for it before migrating");
+        tracing::warn!(
+            "another job holds the calls rewrite lock (a refresh CR load, retirement pass or reembed); waiting for it before migrating"
+        );
         sqlx::query("SELECT pg_advisory_lock($1)")
             .bind(CALLS_REWRITE_LOCK)
             .execute(&mut *guard)
@@ -149,7 +154,11 @@ pub async fn run(pool: &PgPool, ahead: Ahead) -> Result<Report, Error> {
     }
     match apply(&mut guard, ahead).await {
         Ok(report) => {
-            if let Err(e) = sqlx::query("SELECT pg_advisory_unlock($1)").bind(CALLS_REWRITE_LOCK).execute(&mut *guard).await {
+            if let Err(e) = sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(CALLS_REWRITE_LOCK)
+                .execute(&mut *guard)
+                .await
+            {
                 tracing::warn!(error = %e, "releasing the calls rewrite lock (the server releases it with the connection)");
             }
             Ok(report)
@@ -178,17 +187,28 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
         }
     }
     let before: Vec<i64> = ledger.iter().map(|a| a.version).collect();
-    let unknown: Vec<i64> = before.iter().copied().filter(|v| !MIGRATOR.version_exists(*v)).collect();
+    let unknown: Vec<i64> = before
+        .iter()
+        .copied()
+        .filter(|v| !MIGRATOR.version_exists(*v))
+        .collect();
     if !unknown.is_empty() {
         match ahead {
             Ahead::Refuse => return Err(Error::Ahead(unknown)),
             Ahead::Skip => {
                 tracing::warn!(versions = ?unknown, "database is ahead of this binary (a newer release migrated it); not migrating");
-                return Ok(Report { applied: Vec::new(), already: before.len(), ahead: unknown });
+                return Ok(Report {
+                    applied: Vec::new(),
+                    already: before.len(),
+                    ahead: unknown,
+                });
             }
         }
     }
-    let pending: Vec<&Migration> = MIGRATOR.iter().filter(|m| !before.contains(&m.version)).collect();
+    let pending: Vec<&Migration> = MIGRATOR
+        .iter()
+        .filter(|m| !before.contains(&m.version))
+        .collect();
     for m in &pending {
         tracing::info!(version = m.version, description = %m.description, "migration pending");
     }
@@ -197,13 +217,21 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
     // checked before anything is applied.
     MIGRATOR.run(&mut *conn).await.map_err(explain)?;
     let after: Vec<i64> = applied(conn).await?.iter().map(|a| a.version).collect();
-    let applied: Vec<i64> = pending.iter().map(|m| m.version).filter(|v| after.contains(v)).collect();
+    let applied: Vec<i64> = pending
+        .iter()
+        .map(|m| m.version)
+        .filter(|v| after.contains(v))
+        .collect();
     if applied.is_empty() {
         tracing::info!(in_place = after.len(), "schema is current");
     } else {
         tracing::info!(?applied, in_place = after.len(), "schema migrated");
     }
-    Ok(Report { applied, already: before.len(), ahead: Vec::new() })
+    Ok(Report {
+        applied,
+        already: before.len(),
+        ahead: Vec::new(),
+    })
 }
 
 /// The `_sqlx_migrations` ledger (version + checksum), creating the table if
@@ -248,7 +276,9 @@ fn parse_flag(raw: Option<&str>) -> Result<bool, Error> {
 /// [`Error`] as [`run`] with [`Ahead::Skip`], or a bad opt-out value.
 pub async fn at_startup(pool: &PgPool) -> Result<Report, Error> {
     if !auto_migrate_enabled()? {
-        tracing::info!("{AUTO_MIGRATE_ENV} is off; schema left as it is (run `judge-ingest migrate` yourself)");
+        tracing::info!(
+            "{AUTO_MIGRATE_ENV} is off; schema left as it is (run `judge-ingest migrate` yourself)"
+        );
         return Ok(Report::default());
     }
     run(pool, Ahead::Skip).await
@@ -263,26 +293,43 @@ mod tests {
     }
 
     #[sqlx::test(migrations = false)]
-    async fn an_empty_database_gets_every_migration_and_a_second_run_does_nothing(pool: PgPool) -> anyhow::Result<()> {
+    async fn an_empty_database_gets_every_migration_and_a_second_run_does_nothing(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
         let first = run(&pool, Ahead::Refuse).await?;
         assert_eq!(first.applied, all_versions());
         assert_eq!(first.already, 0);
         let mut conn = pool.acquire().await?;
-        let ledger: Vec<i64> = applied(&mut conn).await?.iter().map(|a| a.version).collect();
+        let ledger: Vec<i64> = applied(&mut conn)
+            .await?
+            .iter()
+            .map(|a| a.version)
+            .collect();
         assert_eq!(ledger, all_versions());
         // The schema is real, not just the ledger.
-        let one: bool = sqlx::query_scalar("SELECT to_regclass('embedding_space') IS NOT NULL").fetch_one(&pool).await?;
+        let one: bool = sqlx::query_scalar("SELECT to_regclass('embedding_space') IS NOT NULL")
+            .fetch_one(&pool)
+            .await?;
         assert!(one);
 
         let second = run(&pool, Ahead::Refuse).await?;
-        assert_eq!(second, Report { applied: Vec::new(), already: all_versions().len(), ahead: Vec::new() });
+        assert_eq!(
+            second,
+            Report {
+                applied: Vec::new(),
+                already: all_versions().len(),
+                ahead: Vec::new()
+            }
+        );
         Ok(())
     }
 
     #[sqlx::test(migrations = false)]
     async fn a_partly_migrated_database_gets_only_the_rest(pool: PgPool) -> anyhow::Result<()> {
         let versions = all_versions();
-        let Some(&first) = versions.first() else { return Err(anyhow::anyhow!("no migrations embedded")) };
+        let Some(&first) = versions.first() else {
+            return Err(anyhow::anyhow!("no migrations embedded"));
+        };
         MIGRATOR.run_to(first, &pool).await?;
         let r = run(&pool, Ahead::Refuse).await?;
         assert_eq!(r.already, 1);
@@ -291,27 +338,42 @@ mod tests {
     }
 
     #[sqlx::test(migrations = false)]
-    async fn a_migration_applied_from_a_changed_file_is_refused(pool: PgPool) -> anyhow::Result<()> {
+    async fn a_migration_applied_from_a_changed_file_is_refused(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
         MIGRATOR.run(&pool).await?;
-        let Some(m) = MIGRATOR.iter().last() else { return Err(anyhow::anyhow!("no migrations embedded")) };
+        let Some(m) = MIGRATOR.iter().last() else {
+            return Err(anyhow::anyhow!("no migrations embedded"));
+        };
         // Forge the ledger: the last migration "ran" from different SQL.
         sqlx::query("UPDATE _sqlx_migrations SET checksum = $1 WHERE version = $2")
             .bind(&b"not the file"[..])
             .bind(m.version)
             .execute(&pool)
             .await?;
-        assert!(matches!(run(&pool, Ahead::Refuse).await, Err(Error::VersionMismatch(v)) if v == m.version));
+        assert!(
+            matches!(run(&pool, Ahead::Refuse).await, Err(Error::VersionMismatch(v)) if v == m.version)
+        );
         // Startup is just as strict about a changed file: only "ahead" is tolerated.
-        assert!(matches!(run(&pool, Ahead::Skip).await, Err(Error::VersionMismatch(_))));
+        assert!(matches!(
+            run(&pool, Ahead::Skip).await,
+            Err(Error::VersionMismatch(_))
+        ));
         // A failed run must not leave a connection holding sqlx's migrator
         // lock in the pool, or this third run would block forever.
-        let third = tokio::time::timeout(std::time::Duration::from_secs(10), run(&pool, Ahead::Skip)).await;
-        assert!(matches!(third, Ok(Err(Error::VersionMismatch(_)))), "{third:?}");
+        let third =
+            tokio::time::timeout(std::time::Duration::from_secs(10), run(&pool, Ahead::Skip)).await;
+        assert!(
+            matches!(third, Ok(Err(Error::VersionMismatch(_)))),
+            "{third:?}"
+        );
         Ok(())
     }
 
     #[sqlx::test(migrations = false)]
-    async fn a_database_ahead_of_the_binary_is_refused_explicitly_and_skipped_at_startup(pool: PgPool) -> anyhow::Result<()> {
+    async fn a_database_ahead_of_the_binary_is_refused_explicitly_and_skipped_at_startup(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
         MIGRATOR.run(&pool).await?;
         // A version from a "newer release", as its migrator would have recorded it.
         sqlx::query(
@@ -321,26 +383,40 @@ mod tests {
         .bind(&b"future"[..])
         .execute(&pool)
         .await?;
-        assert!(matches!(run(&pool, Ahead::Refuse).await, Err(Error::Ahead(v)) if v == [99_990_101_000_001]));
+        assert!(
+            matches!(run(&pool, Ahead::Refuse).await, Err(Error::Ahead(v)) if v == [99_990_101_000_001])
+        );
         let r = run(&pool, Ahead::Skip).await?;
         assert_eq!(r.ahead, [99_990_101_000_001]);
         assert!(r.applied.is_empty());
         assert_eq!(r.already, all_versions().len() + 1);
         // Ahead does not excuse a changed known file: the rolled-back image
         // must not boot against a schema its own migration did not produce.
-        let Some(m) = MIGRATOR.iter().last() else { return Err(anyhow::anyhow!("no migrations embedded")) };
+        let Some(m) = MIGRATOR.iter().last() else {
+            return Err(anyhow::anyhow!("no migrations embedded"));
+        };
         sqlx::query("UPDATE _sqlx_migrations SET checksum = $1 WHERE version = $2")
             .bind(&b"rewritten"[..])
             .bind(m.version)
             .execute(&pool)
             .await?;
-        assert!(matches!(run(&pool, Ahead::Skip).await, Err(Error::VersionMismatch(v)) if v == m.version));
+        assert!(
+            matches!(run(&pool, Ahead::Skip).await, Err(Error::VersionMismatch(v)) if v == m.version)
+        );
         Ok(())
     }
 
     #[test]
     fn the_opt_out_flag_is_a_boolean_with_on_as_the_default() {
-        for on in [None, Some(""), Some(" "), Some("true"), Some("1"), Some("YES"), Some("on")] {
+        for on in [
+            None,
+            Some(""),
+            Some(" "),
+            Some("true"),
+            Some("1"),
+            Some("YES"),
+            Some("on"),
+        ] {
             assert!(matches!(parse_flag(on), Ok(true)), "{on:?}");
         }
         for off in [Some("false"), Some("0"), Some("No"), Some("off ")] {

@@ -14,7 +14,7 @@ use judge_bot::{
     db::{PgResolver, PgRetriever, Vectors},
     synth::{Budget, shown_rules},
 };
-use judge_core::{Resolution, Resolver, RuleChunk, Retriever};
+use judge_core::{Resolution, Resolver, Retriever, RuleChunk};
 use sqlx::PgPool;
 
 use crate::gold::Gold;
@@ -72,12 +72,31 @@ fn ratio(n: usize, total: usize) -> f64 {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let width = self.rows.iter().map(|r| r.id.len()).max().unwrap_or(8).max(8);
-        writeln!(f, "{:<width$}  {:>5}  {:<40}  cards", "question", "shown", "missed (* = retrieved, cut by the budget)")?;
+        let width = self
+            .rows
+            .iter()
+            .map(|r| r.id.len())
+            .max()
+            .unwrap_or(8)
+            .max(8);
+        writeln!(
+            f,
+            "{:<width$}  {:>5}  {:<40}  cards",
+            "question", "shown", "missed (* = retrieved, cut by the budget)"
+        )?;
         for r in &self.rows {
             let total = r.hit.len() + r.missed.len();
-            let missed: Vec<String> =
-                r.missed.iter().map(|m| if r.cut.contains(m) { format!("{m}*") } else { m.clone() }).collect();
+            let missed: Vec<String> = r
+                .missed
+                .iter()
+                .map(|m| {
+                    if r.cut.contains(m) {
+                        format!("{m}*")
+                    } else {
+                        m.clone()
+                    }
+                })
+                .collect();
             writeln!(
                 f,
                 "{:<width$}  {:>2}/{:<2}  {:<40}  {}",
@@ -105,7 +124,11 @@ impl fmt::Display for Report {
 ///
 /// # Errors
 /// On database failure.
-pub async fn run(pool: &PgPool, gold: &Gold, vectors: Option<Arc<Vectors>>) -> anyhow::Result<Report> {
+pub async fn run(
+    pool: &PgPool,
+    gold: &Gold,
+    vectors: Option<Arc<Vectors>>,
+) -> anyhow::Result<Report> {
     let resolver = PgResolver::new(pool.clone());
     let retriever = match vectors {
         Some(v) => PgRetriever::new(pool.clone()).with_vectors(v),
@@ -130,11 +153,18 @@ pub async fn run(pool: &PgPool, gold: &Gold, vectors: Option<Arc<Vectors>>) -> a
             }
         }
         let extraction = q.extraction();
-        let question = judge_core::Question { thread_id: q.id.clone(), text: q.question.clone() };
+        let question = judge_core::Question {
+            thread_id: q.id.clone(),
+            text: q.question.clone(),
+        };
         let ctx = retriever.retrieve(&question, &cards, &extraction).await?;
         let shown = shown_rules(&ctx, &[], &Budget::default());
         let (mut hit, mut cut, mut missed) = (Vec::new(), Vec::new(), Vec::new());
-        for expected in q.expected_rule_ids.iter().map(super::gold::YamlScalar::as_text) {
+        for expected in q
+            .expected_rule_ids
+            .iter()
+            .map(super::gold::YamlScalar::as_text)
+        {
             if present(shown.iter().copied(), &expected) {
                 hit.push(expected);
             } else {
@@ -144,7 +174,13 @@ pub async fn run(pool: &PgPool, gold: &Gold, vectors: Option<Arc<Vectors>>) -> a
                 missed.push(expected);
             }
         }
-        rows.push(Row { id: q.id.clone(), resolutions, hit, cut, missed });
+        rows.push(Row {
+            id: q.id.clone(),
+            resolutions,
+            hit,
+            cut,
+            missed,
+        });
     }
     Ok(Report { rows, skipped })
 }
@@ -167,7 +203,9 @@ fn describe(name: &str, r: &Resolution) -> String {
                 format!("{name}={via:?}({})", card.name)
             }
         }
-        Resolution::Ambiguous { candidates, .. } => format!("{name}=AMBIGUOUS({})", candidates.len()),
+        Resolution::Ambiguous { candidates, .. } => {
+            format!("{name}=AMBIGUOUS({})", candidates.len())
+        }
         Resolution::NotFound { .. } => format!("{name}=NOT_FOUND"),
     }
 }

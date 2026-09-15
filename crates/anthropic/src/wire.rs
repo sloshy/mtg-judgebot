@@ -65,13 +65,17 @@ impl ModelField {
     /// The Vertex form.
     #[must_use]
     pub fn in_url() -> Self {
-        Self::InUrl { anthropic_version: VERTEX_API_VERSION.to_owned() }
+        Self::InUrl {
+            anthropic_version: VERTEX_API_VERSION.to_owned(),
+        }
     }
 }
 
 impl From<&str> for ModelField {
     fn from(model: &str) -> Self {
-        Self::InBody { model: model.to_owned() }
+        Self::InBody {
+            model: model.to_owned(),
+        }
     }
 }
 
@@ -134,12 +138,18 @@ impl SystemBlock {
     /// An uncached text block.
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into(), cache_control: None }
+        Self::Text {
+            text: text.into(),
+            cache_control: None,
+        }
     }
     /// A text block ending a 5-minute cache prefix.
     #[must_use]
     pub fn cached(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into(), cache_control: Some(CacheControl::ephemeral()) }
+        Self::Text {
+            text: text.into(),
+            cache_control: Some(CacheControl::ephemeral()),
+        }
     }
 }
 
@@ -158,12 +168,18 @@ impl CacheControl {
     /// Default (5-minute) breakpoint.
     #[must_use]
     pub const fn ephemeral() -> Self {
-        Self { kind: CacheKind::Ephemeral, ttl: None }
+        Self {
+            kind: CacheKind::Ephemeral,
+            ttl: None,
+        }
     }
     /// Breakpoint with an explicit TTL.
     #[must_use]
     pub const fn with_ttl(ttl: CacheTtl) -> Self {
-        Self { kind: CacheKind::Ephemeral, ttl: Some(ttl) }
+        Self {
+            kind: CacheKind::Ephemeral,
+            ttl: Some(ttl),
+        }
     }
 }
 
@@ -209,7 +225,10 @@ impl Message {
     /// A user turn holding one text block.
     #[must_use]
     pub fn user_text(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: vec![ContentBlock::text(text)] }
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::text(text)],
+        }
     }
 }
 
@@ -267,7 +286,10 @@ impl ContentBlock {
     /// An uncached text block.
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into(), cache_control: None }
+        Self::Text {
+            text: text.into(),
+            cache_control: None,
+        }
     }
 }
 
@@ -321,7 +343,9 @@ impl ToolChoice {
     /// `auto` with parallel tool use disabled: at most one `tool_use` per turn.
     #[must_use]
     pub const fn auto_single() -> Self {
-        Self::Auto { disable_parallel_tool_use: Some(true) }
+        Self::Auto {
+            disable_parallel_tool_use: Some(true),
+        }
     }
 }
 
@@ -522,27 +546,57 @@ mod tests {
             tools: vec![],
             tool_choice: Some(ToolChoice::auto_single()),
             thinking: Some(Thinking::adaptive()),
-            output_config: Some(OutputConfig { effort: Some(Effort::High), format: None }),
+            output_config: Some(OutputConfig {
+                effort: Some(Effort::High),
+                format: None,
+            }),
             fallbacks: Some(Fallbacks::default_mode()),
         };
         let v = serde_json::to_value(&req)?;
-        assert_eq!(at(&v, "/thinking"), &serde_json::json!({"type": "adaptive"}));
-        assert_eq!(at(&v, "/output_config"), &serde_json::json!({"effort": "high"}));
-        assert_eq!(at(&v, "/system/0/cache_control"), &serde_json::json!({"type": "ephemeral"}));
-        assert_eq!(at(&v, "/messages/0/content/0"), &serde_json::json!({"type": "text", "text": "hi"}));
-        assert_eq!(at(&v, "/tool_choice"), &serde_json::json!({"type": "auto", "disable_parallel_tool_use": true}));
+        assert_eq!(
+            at(&v, "/thinking"),
+            &serde_json::json!({"type": "adaptive"})
+        );
+        assert_eq!(
+            at(&v, "/output_config"),
+            &serde_json::json!({"effort": "high"})
+        );
+        assert_eq!(
+            at(&v, "/system/0/cache_control"),
+            &serde_json::json!({"type": "ephemeral"})
+        );
+        assert_eq!(
+            at(&v, "/messages/0/content/0"),
+            &serde_json::json!({"type": "text", "text": "hi"})
+        );
+        assert_eq!(
+            at(&v, "/tool_choice"),
+            &serde_json::json!({"type": "auto", "disable_parallel_tool_use": true})
+        );
         assert_eq!(at(&v, "/fallbacks"), "default");
         assert!(v.get("tools").is_none());
         assert_eq!(at(&v, "/model"), "claude-opus-5");
         assert!(v.get("anthropic_version").is_none());
         // The model field comes first, as the first-party body has it.
-        assert!(serde_json::to_string(&req)?.starts_with(r#"{"model":"claude-opus-5","max_tokens":16000,"#));
+        assert!(
+            serde_json::to_string(&req)?
+                .starts_with(r#"{"model":"claude-opus-5","max_tokens":16000,"#)
+        );
 
-        let vertex = MessagesRequest { model: ModelField::in_url(), ..req };
+        let vertex = MessagesRequest {
+            model: ModelField::in_url(),
+            ..req
+        };
         let v = serde_json::to_value(&vertex)?;
-        assert!(v.get("model").is_none(), "Vertex names the model in the URL: {v}");
+        assert!(
+            v.get("model").is_none(),
+            "Vertex names the model in the URL: {v}"
+        );
         assert_eq!(at(&v, "/anthropic_version"), VERTEX_API_VERSION);
-        assert!(serde_json::to_string(&vertex)?.starts_with(r#"{"anthropic_version":"vertex-2023-10-16","max_tokens":16000,"#));
+        assert!(
+            serde_json::to_string(&vertex)?
+                .starts_with(r#"{"anthropic_version":"vertex-2023-10-16","max_tokens":16000,"#)
+        );
         Ok(())
     }
 
@@ -557,10 +611,21 @@ mod tests {
             strict: None,
             cache_control: Some(CacheControl::ephemeral()),
         };
-        assert_eq!(at(&serde_json::to_value(&tool)?, "/cache_control/type"), "ephemeral");
-        let block = ContentBlock::Text { text: "x".into(), cache_control: Some(CacheControl::ephemeral()) };
-        assert_eq!(at(&serde_json::to_value(&block)?, "/cache_control/type"), "ephemeral");
-        let models = serde_json::to_value(Fallbacks::Models(vec![FallbackModel { model: "claude-opus-4-8".into() }]))?;
+        assert_eq!(
+            at(&serde_json::to_value(&tool)?, "/cache_control/type"),
+            "ephemeral"
+        );
+        let block = ContentBlock::Text {
+            text: "x".into(),
+            cache_control: Some(CacheControl::ephemeral()),
+        };
+        assert_eq!(
+            at(&serde_json::to_value(&block)?, "/cache_control/type"),
+            "ephemeral"
+        );
+        let models = serde_json::to_value(Fallbacks::Models(vec![FallbackModel {
+            model: "claude-opus-4-8".into(),
+        }]))?;
         assert_eq!(models, serde_json::json!([{"model": "claude-opus-4-8"}]));
         Ok(())
     }
@@ -573,8 +638,12 @@ mod tests {
         let r: MessagesResponse = serde_json::from_str(raw)?;
         assert_eq!(r.stop_reason, Some(StopReason::Refusal));
         assert_eq!(r.text(), "t");
-        assert_eq!(r.stop_details.and_then(|d| d.category).as_deref(), Some("cyber"));
-        let r: MessagesResponse = serde_json::from_str(&raw.replace("\"refusal\",", "\"brand_new\","))?;
+        assert_eq!(
+            r.stop_details.and_then(|d| d.category).as_deref(),
+            Some("cyber")
+        );
+        let r: MessagesResponse =
+            serde_json::from_str(&raw.replace("\"refusal\",", "\"brand_new\","))?;
         assert_eq!(r.stop_reason, Some(StopReason::Unknown));
         Ok(())
     }

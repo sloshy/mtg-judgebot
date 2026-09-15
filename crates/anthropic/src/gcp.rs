@@ -52,8 +52,14 @@ impl fmt::Debug for Adc {
 #[async_trait]
 impl TokenSource for Adc {
     async fn token(&self) -> Result<ApiKey, LlmError> {
-        let auth = |e: gcp_auth::Error| LlmError::Auth { door: PLATFORM, message: e.to_string() };
-        let provider = self.provider.get_or_try_init(|| async { gcp_auth::provider().await.map_err(auth) }).await?;
+        let auth = |e: gcp_auth::Error| LlmError::Auth {
+            door: PLATFORM,
+            message: e.to_string(),
+        };
+        let provider = self
+            .provider
+            .get_or_try_init(|| async { gcp_auth::provider().await.map_err(auth) })
+            .await?;
         let token = provider.token(&[SCOPE]).await.map_err(auth)?;
         Ok(ApiKey::from(token.as_str()))
     }

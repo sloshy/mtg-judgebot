@@ -3,9 +3,9 @@
 
 use nonempty::NonEmpty;
 use nutype::nutype;
+use regex::Regex;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use regex::Regex;
 use std::{borrow::Cow, fmt, sync::LazyLock};
 use uuid::Uuid;
 
@@ -51,7 +51,18 @@ impl JsonSchema for RuleId {
 }
 
 /// Scryfall `oracle_id`.
-#[nutype(derive(Clone, Copy, Debug, Display, Serialize, Deserialize, PartialEq, Eq, Hash, AsRef))]
+#[nutype(derive(
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Hash,
+    AsRef
+))]
 pub struct CardId(Uuid);
 
 impl JsonSchema for CardId {
@@ -64,7 +75,18 @@ impl JsonSchema for CardId {
 }
 
 /// Identifier of a persisted call (question + verdict).
-#[nutype(derive(Clone, Copy, Debug, Display, Serialize, Deserialize, PartialEq, Eq, Hash, AsRef))]
+#[nutype(derive(
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Hash,
+    AsRef
+))]
 pub struct CallId(Uuid);
 
 impl JsonSchema for CallId {
@@ -116,12 +138,19 @@ impl std::str::FromStr for RulingKey {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
         let bad = || InvalidRulingKey(s.to_owned());
-        if s.len() != 16 || !s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        if s.len() != 16
+            || !s
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
             return Err(bad());
         }
         let mut out = [0u8; 8];
         for (i, slot) in out.iter_mut().enumerate() {
-            *slot = s.get(2 * i..2 * i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()).ok_or_else(bad)?;
+            *slot = s
+                .get(2 * i..2 * i + 2)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+                .ok_or_else(bad)?;
         }
         Ok(Self(out))
     }
@@ -333,7 +362,9 @@ impl From<AnswerableSource> for Source {
 }
 
 /// Model self-reported confidence in a verdict.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Confidence {
     /// Model is unsure; rendering should say so.
@@ -433,7 +464,11 @@ pub struct Quote(String);
 pub struct BlankQuote;
 
 fn not_blank(s: &str) -> Result<(), BlankQuote> {
-    if s.trim().is_empty() { Err(BlankQuote) } else { Ok(()) }
+    if s.trim().is_empty() {
+        Err(BlankQuote)
+    } else {
+        Ok(())
+    }
 }
 
 impl JsonSchema for Quote {
@@ -511,9 +546,17 @@ impl Citation {
     pub fn with_quote(self, span: Quote) -> Self {
         match self {
             Citation::Rule { id, .. } => Citation::Rule { id, quote: span },
-            Citation::ScryfallRuling { card, ruling, .. } => Citation::ScryfallRuling { card, ruling, quote: span },
+            Citation::ScryfallRuling { card, ruling, .. } => Citation::ScryfallRuling {
+                card,
+                ruling,
+                quote: span,
+            },
             Citation::PriorCall { id, .. } => Citation::PriorCall { id, quote: span },
-            Citation::OracleText { card, face, .. } => Citation::OracleText { card, face, quote: span },
+            Citation::OracleText { card, face, .. } => Citation::OracleText {
+                card,
+                face,
+                quote: span,
+            },
         }
     }
 }
@@ -553,7 +596,10 @@ impl MalformedCitation {
         if kept.len() < raw.len() {
             kept.push('…');
         }
-        Self { raw: kept, error: error.to_owned() }
+        Self {
+            raw: kept,
+            error: error.to_owned(),
+        }
     }
 }
 
@@ -585,11 +631,19 @@ impl fmt::Display for Citation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Citation::Rule { id, quote } => write!(f, "rule {id}: {}", shown(quote.as_ref())),
-            Citation::ScryfallRuling { card, ruling, quote } => {
+            Citation::ScryfallRuling {
+                card,
+                ruling,
+                quote,
+            } => {
                 write!(f, "ruling {card}/{ruling}: {}", shown(quote.as_ref()))
             }
-            Citation::PriorCall { id, quote } => write!(f, "prior call {id}: {}", shown(quote.as_ref())),
-            Citation::OracleText { card, face, quote } => write!(f, "oracle {card}#{face}: {}", shown(quote.as_ref())),
+            Citation::PriorCall { id, quote } => {
+                write!(f, "prior call {id}: {}", shown(quote.as_ref()))
+            }
+            Citation::OracleText { card, face, quote } => {
+                write!(f, "oracle {card}#{face}: {}", shown(quote.as_ref()))
+            }
         }
     }
 }
@@ -647,7 +701,8 @@ impl RuleChunk {
     /// The body's (or an example's) own span for `quote` (see [`quote::locate`]).
     #[must_use]
     pub fn locate_quote(&self, quote: &str) -> Option<&str> {
-        quote::locate(&self.body, quote).or_else(|| self.examples.iter().find_map(|e| quote::locate(e, quote)))
+        quote::locate(&self.body, quote)
+            .or_else(|| self.examples.iter().find_map(|e| quote::locate(e, quote)))
     }
 }
 
@@ -801,7 +856,9 @@ impl fmt::Display for EmptyVerdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EmptyVerdict::NoCitations => write!(f, "the answer had no citations"),
-            EmptyVerdict::ShortAnswer { chars } => write!(f, "the answer was empty or too short ({chars} characters)"),
+            EmptyVerdict::ShortAnswer { chars } => {
+                write!(f, "the answer was empty or too short ({chars} characters)")
+            }
         }
     }
 }
@@ -867,12 +924,20 @@ impl RejectedAttempt {
     #[must_use]
     pub fn new(rejection: Rejection, answer: &str) -> Self {
         let worth_showing = match rejection {
-            Rejection::BadCitation(_) | Rejection::Malformed(_) | Rejection::Empty(EmptyVerdict::NoCitations) => {
+            Rejection::BadCitation(_)
+            | Rejection::Malformed(_)
+            | Rejection::Empty(EmptyVerdict::NoCitations) => {
                 answer.trim().chars().count() >= crate::MIN_ANSWER_CHARS
             }
-            Rejection::Empty(EmptyVerdict::ShortAnswer { .. }) | Rejection::Oversized { .. } => false,
+            Rejection::Empty(EmptyVerdict::ShortAnswer { .. }) | Rejection::Oversized { .. } => {
+                false
+            }
         };
-        let answer = if worth_showing { answer.to_owned() } else { String::new() };
+        let answer = if worth_showing {
+            answer.to_owned()
+        } else {
+            String::new()
+        };
         Self { rejection, answer }
     }
 
@@ -902,7 +967,9 @@ impl fmt::Display for Rejection {
             Rejection::BadCitation(c) => write!(f, "bad citation {c}"),
             Rejection::Malformed(m) => write!(f, "{m}"),
             Rejection::Empty(e) => write!(f, "{e}"),
-            Rejection::Oversized { chars } => write!(f, "answer is {chars} characters, over the limit"),
+            Rejection::Oversized { chars } => {
+                write!(f, "answer is {chars} characters, over the limit")
+            }
         }
     }
 }
@@ -962,7 +1029,9 @@ impl Context {
     /// The Scryfall ruling of `card` with this key, if present.
     #[must_use]
     pub fn ruling(&self, card: CardId, key: &RulingKey) -> Option<&Ruling> {
-        self.rulings.iter().find(|r| r.card == card && &r.key == key)
+        self.rulings
+            .iter()
+            .find(|r| r.card == card && &r.key == key)
     }
 
     /// The prior call with this id, if present.
@@ -1005,11 +1074,25 @@ mod tests {
         let k = ruling_key("2019-10-04", "Stomp can target a player.");
         let shown = k.to_string();
         assert_eq!(shown.len(), 16);
-        assert!(shown.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert!(
+            shown
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
         assert_eq!(shown.parse::<RulingKey>(), Ok(k));
-        assert_eq!(serde_json::from_str::<RulingKey>(&format!("\" {shown} \"")).ok(), Some(k), "whitespace is trimmed like the model's other ids");
+        assert_eq!(
+            serde_json::from_str::<RulingKey>(&format!("\" {shown} \"")).ok(),
+            Some(k),
+            "whitespace is trimmed like the model's other ids"
+        );
         assert_eq!(serde_json::to_string(&k).ok(), Some(format!("\"{shown}\"")));
-        for bad in ["", "0123456789abcde", "0123456789abcdef0", "0123456789ABCDEF", "0123456789abcdeg"] {
+        for bad in [
+            "",
+            "0123456789abcde",
+            "0123456789abcdef0",
+            "0123456789ABCDEF",
+            "0123456789abcdeg",
+        ] {
             assert!(bad.parse::<RulingKey>().is_err(), "{bad:?}");
         }
         // Same text on another date is another ruling; same inputs are the same key.
@@ -1049,10 +1132,20 @@ mod tests {
 
     #[test]
     fn citation_displays_for_humans() -> Result<(), Box<dyn std::error::Error>> {
-        let c = Citation::Rule { id: RuleId::try_new("702.19b".to_owned())?, quote: Quote::try_new("quote")? };
+        let c = Citation::Rule {
+            id: RuleId::try_new("702.19b".to_owned())?,
+            quote: Quote::try_new("quote")?,
+        };
         assert_eq!(c.to_string(), "rule 702.19b: \"quote\"");
-        let o = Citation::OracleText { card: CardId::new(Uuid::from_u128(7)), face: 1, quote: Quote::try_new("q")? };
-        assert_eq!(o.to_string(), "oracle 00000000-0000-0000-0000-000000000007#1: \"q\"");
+        let o = Citation::OracleText {
+            card: CardId::new(Uuid::from_u128(7)),
+            face: 1,
+            quote: Quote::try_new("q")?,
+        };
+        assert_eq!(
+            o.to_string(),
+            "oracle 00000000-0000-0000-0000-000000000007#1: \"q\""
+        );
         assert_eq!(o.quote(), "q");
         // Serde tag is consistent with the other variants.
         let v = serde_json::to_value(&o)?;
@@ -1062,43 +1155,76 @@ mod tests {
     }
 
     fn guess(category: Category) -> CategoryGuess {
-        CategoryGuess { category, confidence: Confidence::Low }
+        CategoryGuess {
+            category,
+            confidence: Confidence::Low,
+        }
     }
 
     /// Agent sessions stored before `RejectedAttempt` hold a bare `Rejection`;
     /// they must still load, with no answer to quote back.
     #[test]
-    fn a_rejected_attempt_reads_a_bare_stored_rejection() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_rejected_attempt_reads_a_bare_stored_rejection() -> Result<(), Box<dyn std::error::Error>>
+    {
         let bare = serde_json::json!({"kind": "empty", "detail": "no_citations"});
         let old: RejectedAttempt = serde_json::from_value(bare)?;
-        assert_eq!(old, RejectedAttempt::new(Rejection::Empty(EmptyVerdict::NoCitations), ""));
+        assert_eq!(
+            old,
+            RejectedAttempt::new(Rejection::Empty(EmptyVerdict::NoCitations), "")
+        );
         assert_eq!(old.answer(), None);
         let answer = "Yes: the trample creature assigns lethal damage first.";
         let new = RejectedAttempt::new(
-            Rejection::BadCitation(Citation::Rule { id: RuleId::try_new("702.19b".to_owned())?, quote: Quote::try_new("q")? }),
+            Rejection::BadCitation(Citation::Rule {
+                id: RuleId::try_new("702.19b".to_owned())?,
+                quote: Quote::try_new("q")?,
+            }),
             answer,
         );
         assert_eq!(new.answer(), Some(answer));
         let json = serde_json::to_value(&new)?;
-        assert_eq!(json.get("kind").and_then(|k| k.as_str()), Some("bad_citation"));
+        assert_eq!(
+            json.get("kind").and_then(|k| k.as_str()),
+            Some("bad_citation")
+        );
         assert_eq!(serde_json::from_value::<RejectedAttempt>(json)?, new);
         Ok(())
     }
 
     /// Only an answer the model could be asked to keep is kept.
     #[test]
-    fn a_rejected_attempt_keeps_only_an_answer_worth_showing() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_rejected_attempt_keeps_only_an_answer_worth_showing()
+    -> Result<(), Box<dyn std::error::Error>> {
         let real = "Yes: the trample creature assigns lethal damage first.";
         let stub = || MalformedCitation::new(r#"{"id":""}"#, "bad RuleId");
-        assert_eq!(RejectedAttempt::new(Rejection::Malformed(stub()), real).answer(), Some(real));
-        assert_eq!(RejectedAttempt::new(Rejection::Empty(EmptyVerdict::NoCitations), real).answer(), Some(real));
+        assert_eq!(
+            RejectedAttempt::new(Rejection::Malformed(stub()), real).answer(),
+            Some(real)
+        );
+        assert_eq!(
+            RejectedAttempt::new(Rejection::Empty(EmptyVerdict::NoCitations), real).answer(),
+            Some(real)
+        );
         // A placeholder beside a stub citation arrives as Malformed, and is still not shown.
-        assert_eq!(RejectedAttempt::new(Rejection::Malformed(stub()), "pending").answer(), None);
-        assert_eq!(RejectedAttempt::new(Rejection::Empty(EmptyVerdict::ShortAnswer { chars: 7 }), real).answer(), None);
+        assert_eq!(
+            RejectedAttempt::new(Rejection::Malformed(stub()), "pending").answer(),
+            None
+        );
+        assert_eq!(
+            RejectedAttempt::new(
+                Rejection::Empty(EmptyVerdict::ShortAnswer { chars: 7 }),
+                real
+            )
+            .answer(),
+            None
+        );
         let huge = "x".repeat(9000);
         let oversized = RejectedAttempt::new(Rejection::Oversized { chars: 9000 }, &huge);
         assert_eq!(oversized.answer(), None);
-        assert!(serde_json::to_string(&oversized)?.len() < 100, "an over-long answer is not stored");
+        assert!(
+            serde_json::to_string(&oversized)?.len() < 100,
+            "an over-long answer is not stored"
+        );
         Ok(())
     }
 
@@ -1118,12 +1244,16 @@ mod tests {
             source: Source::Cr,
         };
         let cats: Vec<Category> = e.categories().map(|g| g.category).collect();
-        assert_eq!(cats, vec![Category::Layers, Category::Combat, Category::Zones]);
+        assert_eq!(
+            cats,
+            vec![Category::Layers, Category::Combat, Category::Zones]
+        );
         assert_eq!(e.primary_category(), Category::Layers);
     }
 
     #[test]
-    fn extraction_schema_requires_primary_and_secondary_is_optional() -> Result<(), serde_json::Error> {
+    fn extraction_schema_requires_primary_and_secondary_is_optional()
+    -> Result<(), serde_json::Error> {
         let s = schemars::schema_for!(Extraction).to_value();
         let required: Vec<&str> = s
             .get("required")
@@ -1132,7 +1262,8 @@ mod tests {
             .unwrap_or_default();
         assert!(required.contains(&"primary"), "{s}");
         assert!(!required.contains(&"secondary"), "{s}");
-        let e: Result<Extraction, _> = serde_json::from_str(r#"{"card_spans":[],"concepts":[],"source":"cr"}"#);
+        let e: Result<Extraction, _> =
+            serde_json::from_str(r#"{"card_spans":[],"concepts":[],"source":"cr"}"#);
         assert!(e.is_err(), "no primary must not deserialize");
         let e: Extraction = serde_json::from_str(
             r#"{"card_spans":[],"concepts":[],"primary":{"category":"layers","confidence":"high"},"source":"cr"}"#,

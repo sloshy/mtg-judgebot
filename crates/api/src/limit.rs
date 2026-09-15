@@ -33,7 +33,11 @@ impl RateLimiter {
     /// A limiter allowing `limit` requests per `window` per IP.
     #[must_use]
     pub fn new(limit: u32, window: Duration) -> Self {
-        Self { limit, window, seen: Mutex::new(HashMap::new()) }
+        Self {
+            limit,
+            window,
+            seen: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Record a request from `ip` now; `false` means the window is used up.
@@ -50,9 +54,15 @@ impl RateLimiter {
             let window = self.window;
             seen.retain(|_, w| now.duration_since(w.started) < window);
         }
-        let w = seen.entry(ip).or_insert(Window { started: now, count: 0 });
+        let w = seen.entry(ip).or_insert(Window {
+            started: now,
+            count: 0,
+        });
         if now.duration_since(w.started) >= self.window {
-            *w = Window { started: now, count: 0 };
+            *w = Window {
+                started: now,
+                count: 0,
+            };
         }
         if w.count >= self.limit {
             return false;
@@ -77,7 +87,10 @@ mod tests {
         let t0 = Instant::now();
         assert!(l.allow_at(ip(1), t0));
         assert!(l.allow_at(ip(1), t0));
-        assert!(!l.allow_at(ip(1), t0), "third request in the window is refused");
+        assert!(
+            !l.allow_at(ip(1), t0),
+            "third request in the window is refused"
+        );
         // Another IP has its own window.
         assert!(l.allow_at(ip(2), t0));
         // A refused request does not extend the window: it still ends on time.
@@ -97,6 +110,9 @@ mod tests {
         }
         // 512 tracked entries is under the sweep threshold; a live window
         // still refuses even after many other IPs were seen.
-        assert!(!l.allow_at(IpAddr::V4(Ipv4Addr::new(10, 0, 1, 0)), t0 + Duration::from_secs(1)));
+        assert!(!l.allow_at(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 1, 0)),
+            t0 + Duration::from_secs(1)
+        ));
     }
 }

@@ -9,8 +9,9 @@ use std::sync::{
 
 use async_trait::async_trait;
 use judge_core::{
-    AnswerableSource, CallStore, Category, CategoryGuess, Confidence, Embedder, Extraction, InputKind, JudgeError,
-    MatchedVia, Qa, Question, Resolution, Resolver, Retriever, RuleId, Score, Source, Verdict,
+    AnswerableSource, CallStore, Category, CategoryGuess, Confidence, Embedder, Extraction,
+    InputKind, JudgeError, MatchedVia, Qa, Question, Resolution, Resolver, Retriever, RuleId,
+    Score, Source, Verdict,
 };
 use judge_embed::{Provider, Space, WithSpace};
 use pgvector::Vector;
@@ -40,7 +41,10 @@ const BRUNA_ALABASTER: Uuid = Uuid::from_u128(13);
 type FaceSeed = (i16, &'static str, &'static str);
 
 /// One fixture for every sqlx test; its length is the data, not logic.
-#[expect(clippy::too_many_lines, reason = "test fixture: one row per seeded card")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test fixture: one row per seeded card"
+)]
 pub(crate) async fn seed(pool: &PgPool) -> anyhow::Result<()> {
     let cards: [(Uuid, &str, &str, &[FaceSeed]); 13] = [
         (
@@ -196,7 +200,10 @@ pub(crate) async fn seed(pool: &PgPool) -> anyhow::Result<()> {
     .bind(BONECRUSHER)
     .execute(pool)
     .await?;
-    for text in ["Stomp can target a player.", "The creature ability triggers on any spell."] {
+    for text in [
+        "Stomp can target a player.",
+        "The creature ability triggers on any spell.",
+    ] {
         sqlx::query("INSERT INTO rulings (oracle_id, key, published_at, text) VALUES ($1, $2, '2019-10-04', $3)")
             .bind(BONECRUSHER)
             .bind(judge_core::ruling_key("2019-10-04", text).to_string())
@@ -289,7 +296,10 @@ fn resolved_name(r: &Resolution) -> Option<(&str, MatchedVia)> {
 async fn ruling_key_sql_backfill_matches_rust(pool: PgPool) -> anyhow::Result<()> {
     for (date, text) in [
         ("2019-10-04", "Stomp can target a player."),
-        ("2004-10-04", "If Humility’s effect is applied — “all creatures lose all abilities” — layer 6 governs."),
+        (
+            "2004-10-04",
+            "If Humility’s effect is applied — “all creatures lose all abilities” — layer 6 governs.",
+        ),
         ("2020-01-01", ""),
     ] {
         let sql: String = sqlx::query_scalar(
@@ -299,7 +309,11 @@ async fn ruling_key_sql_backfill_matches_rust(pool: PgPool) -> anyhow::Result<()
         .bind(text)
         .fetch_one(&pool)
         .await?;
-        assert_eq!(sql, judge_core::ruling_key(date, text).to_string(), "{date} {text:?}");
+        assert_eq!(
+            sql,
+            judge_core::ruling_key(date, text).to_string(),
+            "{date} {text:?}"
+        );
     }
     Ok(())
 }
@@ -417,7 +431,9 @@ async fn short_name_before_the_comma_beats_fuzzy(pool: PgPool) -> anyhow::Result
     );
     // Two cards share the short name: still a "did you mean…?".
     match resolver.resolve("Bruna").await? {
-        Resolution::Ambiguous { candidates, via, .. } => {
+        Resolution::Ambiguous {
+            candidates, via, ..
+        } => {
             assert_eq!(candidates.len(), 2);
             assert_eq!(via, MatchedVia::ShortName);
             assert!(candidates.iter().all(|c| c.name.starts_with("Bruna, ")));
@@ -432,7 +448,11 @@ async fn fuzzy_ambiguous_for_urza(pool: PgPool) -> anyhow::Result<()> {
     seed(&pool).await?;
     let r = PgResolver::new(pool).resolve("urza").await?;
     match r {
-        Resolution::Ambiguous { query, candidates, via } => {
+        Resolution::Ambiguous {
+            query,
+            candidates,
+            via,
+        } => {
             assert_eq!(query, "urza");
             assert_eq!(via, MatchedVia::Fuzzy);
             assert!((2..=5).contains(&candidates.len()), "{candidates:?}");
@@ -469,7 +489,10 @@ async fn not_found_for_gibberish(pool: PgPool) -> anyhow::Result<()> {
 }
 
 fn extraction(categories: &[Category], concepts: &[&str]) -> Extraction {
-    let guess = |c: &Category| CategoryGuess { category: *c, confidence: Confidence::High };
+    let guess = |c: &Category| CategoryGuess {
+        category: *c,
+        confidence: Confidence::High,
+    };
     let (primary, secondary) = categories.split_first().map_or_else(
         || (guess(&Category::Other), vec![]),
         |(p, rest)| (guess(p), rest.iter().map(guess).collect()),
@@ -485,10 +508,22 @@ fn extraction(categories: &[Category], concepts: &[&str]) -> Extraction {
 
 /// A validatable answer: long enough, citing the first line of the first rule chunk in `ctx`.
 fn cite_first_rule(ctx: &judge_core::Context) -> anyhow::Result<Vec<judge_core::Citation>> {
-    let rule = ctx.rules.first().ok_or_else(|| anyhow::anyhow!("context has no rules to cite"))?;
-    let quote = rule.body.lines().next().unwrap_or_default().trim().to_owned();
+    let rule = ctx
+        .rules
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("context has no rules to cite"))?;
+    let quote = rule
+        .body
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
     anyhow::ensure!(!quote.is_empty(), "first rule has an empty first line");
-    Ok(vec![judge_core::Citation::Rule { id: rule.id.clone(), quote: judge_core::Quote::try_new(quote)? }])
+    Ok(vec![judge_core::Citation::Rule {
+        id: rule.id.clone(),
+        quote: judge_core::Quote::try_new(quote)?,
+    }])
 }
 
 fn question(text: &str) -> Question {
@@ -549,17 +584,30 @@ async fn retrieve_unions_category_map_and_full_text(pool: PgPool) -> anyhow::Res
 /// question (not by id), then the full-text hits, then the secondary
 /// categories.
 #[sqlx::test(migrations = "./migrations")]
-async fn retrieve_orders_primary_by_relevance_then_full_text_then_secondary(pool: PgPool) -> anyhow::Result<()> {
+async fn retrieve_orders_primary_by_relevance_then_full_text_then_secondary(
+    pool: PgPool,
+) -> anyhow::Result<()> {
     seed(&pool).await?;
     let ctx = PgRetriever::new(pool)
         .retrieve(
             &question("with trample, which abilities apply first within layers?"),
             &[],
-            &extraction(&[Category::Layers, Category::ReplacementEffects], &["apply first"]),
+            &extraction(
+                &[Category::Layers, Category::ReplacementEffects],
+                &["apply first"],
+            ),
         )
         .await?;
-    let ids: Vec<&str> = ctx.rules.iter().map(|r| -> &str { r.id.as_ref() }).collect();
-    let at = |id: &str| ids.iter().position(|x| *x == id).ok_or_else(|| anyhow::anyhow!("{id} missing from {ids:?}"));
+    let ids: Vec<&str> = ctx
+        .rules
+        .iter()
+        .map(|r| -> &str { r.id.as_ref() })
+        .collect();
+    let at = |id: &str| {
+        ids.iter()
+            .position(|x| *x == id)
+            .ok_or_else(|| anyhow::anyhow!("{id} missing from {ids:?}"))
+    };
     // 613.2 matches more of the question ("layers", "apply", "abilities", "first") than 613.1
     // does, so it ranks first despite the higher id.
     assert!(at("613.2")? < at("613.1")?, "{ids:?}");
@@ -743,8 +791,14 @@ async fn history_returns_the_last_n_oldest_first(pool: PgPool) -> anyhow::Result
     )
     .execute(&pool)
     .await?;
-    let qa = |q: &str, a: &str| Qa { question: q.into(), answer: a.into() };
-    assert_eq!(store.history("t1", 2).await?, vec![qa("q2", "a2"), qa("q3", "a3")]);
+    let qa = |q: &str, a: &str| Qa {
+        question: q.into(),
+        answer: a.into(),
+    };
+    assert_eq!(
+        store.history("t1", 2).await?,
+        vec![qa("q2", "a2"), qa("q3", "a3")]
+    );
     assert_eq!(
         store.history("t1", 10).await?,
         vec![qa("q1", "a1"), qa("q2", "a2"), qa("q3", "a3")]
@@ -770,11 +824,16 @@ async fn possessive_nickname_hits_the_alias_rung(pool: PgPool) -> anyhow::Result
 }
 
 /// `(retired?, retired_reason)` of one call.
-async fn retirement_state(pool: &PgPool, id: judge_core::CallId) -> anyhow::Result<(bool, Option<String>)> {
-    Ok(sqlx::query_as("SELECT retired_at IS NOT NULL, retired_reason FROM calls WHERE id = $1")
-        .bind(id.into_inner())
-        .fetch_one(pool)
-        .await?)
+async fn retirement_state(
+    pool: &PgPool,
+    id: judge_core::CallId,
+) -> anyhow::Result<(bool, Option<String>)> {
+    Ok(
+        sqlx::query_as("SELECT retired_at IS NOT NULL, retired_reason FROM calls WHERE id = $1")
+            .bind(id.into_inner())
+            .fetch_one(pool)
+            .await?,
+    )
 }
 
 /// Retirement is a function of the data: a call is live exactly while every
@@ -786,7 +845,9 @@ async fn retirement_follows_citation_validity_both_ways(pool: PgPool) -> anyhow:
     let retriever = PgRetriever::new(pool.clone());
     let store = PgCallStore::new(pool.clone());
     let q = question("how do layers work?");
-    let ctx = retriever.retrieve(&q, &[], &extraction(&[Category::Layers], &[])).await?;
+    let ctx = retriever
+        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .await?;
     let cites = cite_first_rule(&ctx)?;
     let rule_id = match cites.first() {
         Some(judge_core::Citation::Rule { id, .. }) => id.as_ref().to_owned(),
@@ -801,24 +862,40 @@ async fn retirement_follows_citation_validity_both_ways(pool: PgPool) -> anyhow:
     .validate(&ctx, AnswerableSource::Cr)?;
     let call = store.persist(&q, &verdict, &ctx).await?;
     let prior_visible = || async {
-        let c = retriever.retrieve(&q, &[], &extraction(&[Category::Layers], &[])).await?;
+        let c = retriever
+            .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+            .await?;
         anyhow::Ok(c.prior.iter().any(|p| p.id == call))
     };
 
     // Nothing changed: nothing retired.
     let s = retire_unsupported(&pool).await?;
-    assert_eq!((s.checked, s.retired, s.restored, s.still_retired), (1, 0, 0, 0));
+    assert_eq!(
+        (s.checked, s.retired, s.restored, s.still_retired),
+        (1, 0, 0, 0)
+    );
     assert!(prior_visible().await?);
 
     // The cited rule is reworded so the quote no longer appears: retired, with
     // the offending citation named, and gone from retrieval.
-    let (original,): (String,) = sqlx::query_as("SELECT body FROM rules WHERE id = $1").bind(&rule_id).fetch_one(&pool).await?;
-    sqlx::query("UPDATE rules SET body = 'Rewritten in a later release.' WHERE id = $1").bind(&rule_id).execute(&pool).await?;
+    let (original,): (String,) = sqlx::query_as("SELECT body FROM rules WHERE id = $1")
+        .bind(&rule_id)
+        .fetch_one(&pool)
+        .await?;
+    sqlx::query("UPDATE rules SET body = 'Rewritten in a later release.' WHERE id = $1")
+        .bind(&rule_id)
+        .execute(&pool)
+        .await?;
     let s = retire_unsupported(&pool).await?;
     assert_eq!((s.retired, s.restored, s.still_retired), (1, 0, 0));
     let (retired, reason) = retirement_state(&pool, call).await?;
     assert!(retired);
-    assert!(reason.as_deref().is_some_and(|r| r.starts_with(&format!("unsupported citation: rule {rule_id}:"))), "{reason:?}");
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with(&format!("unsupported citation: rule {rule_id}:"))),
+        "{reason:?}"
+    );
     assert!(!prior_visible().await?);
 
     // A second pass changes nothing but confirms the state.
@@ -826,7 +903,11 @@ async fn retirement_follows_citation_validity_both_ways(pool: PgPool) -> anyhow:
     assert_eq!((s.retired, s.restored, s.still_retired), (0, 0, 1));
 
     // The text is restored: the call comes back.
-    sqlx::query("UPDATE rules SET body = $2 WHERE id = $1").bind(&rule_id).bind(&original).execute(&pool).await?;
+    sqlx::query("UPDATE rules SET body = $2 WHERE id = $1")
+        .bind(&rule_id)
+        .bind(&original)
+        .execute(&pool)
+        .await?;
     let s = retire_unsupported(&pool).await?;
     assert_eq!((s.retired, s.restored, s.still_retired), (0, 1, 0));
     assert_eq!(retirement_state(&pool, call).await?, (false, None));
@@ -841,7 +922,13 @@ async fn retirement_follows_citation_validity_both_ways(pool: PgPool) -> anyhow:
     let s = retire_unsupported(&pool).await?;
     assert_eq!(s.retired, 1);
     let (retired, reason) = retirement_state(&pool, call).await?;
-    assert!(retired && reason.as_deref().is_some_and(|r| r.starts_with("stored citations do not decode")), "{reason:?}");
+    assert!(
+        retired
+            && reason
+                .as_deref()
+                .is_some_and(|r| r.starts_with("stored citations do not decode")),
+        "{reason:?}"
+    );
 
     // The CR version no longer gates retrieval on its own: a live call from an
     // older release is still an example.
@@ -849,7 +936,10 @@ async fn retirement_follows_citation_validity_both_ways(pool: PgPool) -> anyhow:
         .bind(call.into_inner())
         .execute(&pool)
         .await?;
-    assert!(prior_visible().await?, "retrieval filters on retired_at, not cr_version");
+    assert!(
+        prior_visible().await?,
+        "retrieval filters on retired_at, not cr_version"
+    );
     Ok(())
 }
 
@@ -864,7 +954,9 @@ async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::
     let bonecrusher = judge_core::CardId::new(BONECRUSHER);
     let q = question("can Stomp target a player?");
     let card = super::cards::load_cards(&pool, &[BONECRUSHER]).await?;
-    let ctx = retriever.retrieve(&q, &card, &extraction(&[Category::Layers], &[])).await?;
+    let ctx = retriever
+        .retrieve(&q, &card, &extraction(&[Category::Layers], &[]))
+        .await?;
     let ruling = ctx
         .rulings
         .iter()
@@ -872,7 +964,11 @@ async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::
         .ok_or_else(|| anyhow::anyhow!("seeded ruling not retrieved"))?
         .clone();
     let mut cites = cite_first_rule(&ctx)?;
-    cites.push(judge_core::Citation::ScryfallRuling { card: bonecrusher, ruling: ruling.key, quote: judge_core::Quote::try_new("target a player")? });
+    cites.push(judge_core::Citation::ScryfallRuling {
+        card: bonecrusher,
+        ruling: ruling.key,
+        quote: judge_core::Quote::try_new("target a player")?,
+    });
     let verdict = Verdict::new(
         "Yes: Stomp can target a player, and the damage cannot be prevented this turn.".into(),
         Confidence::High,
@@ -884,20 +980,32 @@ async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::
     assert_eq!(retire_unsupported(&pool).await?.retired, 0);
 
     // The ruling is removed (as a refresh does before reinserting): retired, naming it.
-    sqlx::query("DELETE FROM rulings WHERE oracle_id = $1 AND key = $2").bind(BONECRUSHER).bind(ruling.key.to_string()).execute(&pool).await?;
+    sqlx::query("DELETE FROM rulings WHERE oracle_id = $1 AND key = $2")
+        .bind(BONECRUSHER)
+        .bind(ruling.key.to_string())
+        .execute(&pool)
+        .await?;
     assert_eq!(retire_unsupported(&pool).await?.retired, 1);
     let (retired, reason) = retirement_state(&pool, call).await?;
-    assert!(retired && reason.as_deref().is_some_and(|r| r.starts_with("unsupported citation: ruling")), "{reason:?}");
+    assert!(
+        retired
+            && reason
+                .as_deref()
+                .is_some_and(|r| r.starts_with("unsupported citation: ruling")),
+        "{reason:?}"
+    );
 
     // Reinserted with the same date and text — a different position would have
     // broken a positional citation; the content key does not care.
-    sqlx::query("INSERT INTO rulings (oracle_id, key, published_at, text) VALUES ($1, $2, $3::date, $4)")
-        .bind(BONECRUSHER)
-        .bind(ruling.key.to_string())
-        .bind(&ruling.published_at)
-        .bind(&ruling.text)
-        .execute(&pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO rulings (oracle_id, key, published_at, text) VALUES ($1, $2, $3::date, $4)",
+    )
+    .bind(BONECRUSHER)
+    .bind(ruling.key.to_string())
+    .bind(&ruling.published_at)
+    .bind(&ruling.text)
+    .execute(&pool)
+    .await?;
     assert_eq!(retire_unsupported(&pool).await?.restored, 1);
 
     // An erratum to a context card retires the call even though no citation
@@ -908,10 +1016,19 @@ async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::
         .await?;
     assert_eq!(retire_unsupported(&pool).await?.retired, 1);
     let (retired, reason) = retirement_state(&pool, call).await?;
-    assert!(retired && reason.as_deref().is_some_and(|r| r.contains("Oracle text of Bonecrusher Giant")), "{reason:?}");
+    assert!(
+        retired
+            && reason
+                .as_deref()
+                .is_some_and(|r| r.contains("Oracle text of Bonecrusher Giant")),
+        "{reason:?}"
+    );
 
     // A call persisted before fingerprints existed declares no card dependency.
-    sqlx::query("UPDATE calls SET context_ids = context_ids - 'card_text' WHERE id = $1").bind(call.into_inner()).execute(&pool).await?;
+    sqlx::query("UPDATE calls SET context_ids = context_ids - 'card_text' WHERE id = $1")
+        .bind(call.into_inner())
+        .execute(&pool)
+        .await?;
     assert_eq!(retire_unsupported(&pool).await?.restored, 1);
     Ok(())
 }
@@ -926,7 +1043,14 @@ struct FakeEmbedder {
 
 impl FakeEmbedder {
     fn new(provider: Provider, model: &str, dimensions: usize) -> Arc<Self> {
-        Arc::new(Self { space: Space { provider, model: model.to_owned(), dimensions }, calls: AtomicUsize::new(0) })
+        Arc::new(Self {
+            space: Space {
+                provider,
+                model: model.to_owned(),
+                dimensions,
+            },
+            calls: AtomicUsize::new(0),
+        })
     }
     fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
@@ -937,7 +1061,10 @@ impl FakeEmbedder {
 impl Embedder for FakeEmbedder {
     async fn embed(&self, texts: &[&str], _kind: InputKind) -> Result<Vec<Vec<f32>>, JudgeError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(texts.iter().map(|_| vec![0.25; self.space.dimensions]).collect())
+        Ok(texts
+            .iter()
+            .map(|_| vec![0.25; self.space.dimensions])
+            .collect())
     }
     fn dimensions(&self) -> usize {
         self.space.dimensions
@@ -951,16 +1078,22 @@ impl WithSpace for FakeEmbedder {
 }
 
 fn voyage() -> Space {
-    Space { provider: Provider::Voyage, model: "voyage-3.5".into(), dimensions: 1024 }
+    Space {
+        provider: Provider::Voyage,
+        model: "voyage-3.5".into(),
+        dimensions: 1024,
+    }
 }
 
 /// The HNSW index definitions the catalogue holds, by index name.
 async fn index_definitions(pool: &PgPool) -> anyhow::Result<Vec<(String, String)>> {
     let names: Vec<&str> = VECTOR_TABLES.iter().map(|t| t.index).collect();
-    Ok(sqlx::query_as::<_, (String, String)>("SELECT indexname, indexdef FROM pg_indexes WHERE indexname = ANY($1) ORDER BY indexname")
-        .bind(&names)
-        .fetch_all(pool)
-        .await?)
+    Ok(sqlx::query_as::<_, (String, String)>(
+        "SELECT indexname, indexdef FROM pg_indexes WHERE indexname = ANY($1) ORDER BY indexname",
+    )
+    .bind(&names)
+    .fetch_all(pool)
+    .await?)
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -975,15 +1108,31 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
     // The row appears (the first `ingest embed`): the same `Vectors` picks it up without a restart.
     record_space(&pool, &voyage()).await?;
     assert!(vectors.enabled().await);
-    assert!(vectors.embed("lifelink", InputKind::Query).await.is_some_and(|v| v.as_slice().len() == 1024));
+    assert!(
+        vectors
+            .embed("lifelink", InputKind::Query)
+            .await
+            .is_some_and(|v| v.as_slice().len() == 1024)
+    );
     assert_eq!(fake.calls(), 1);
 
     // Another model at the same width: a mismatch, never mixed.
     let other = FakeEmbedder::new(Provider::OpenAi, "nomic-embed-text", 1024);
-    let mismatched = Arc::new(Vectors::new(pool.clone(), Arc::clone(&other) as Arc<dyn WithSpace>));
+    let mismatched = Arc::new(Vectors::new(
+        pool.clone(),
+        Arc::clone(&other) as Arc<dyn WithSpace>,
+    ));
     assert!(!mismatched.enabled().await);
-    assert!(mismatched.embed("lifelink", InputKind::Query).await.is_none());
-    assert!(format!("{mismatched:?}").contains("Mismatch"), "{mismatched:?}");
+    assert!(
+        mismatched
+            .embed("lifelink", InputKind::Query)
+            .await
+            .is_none()
+    );
+    assert!(
+        format!("{mismatched:?}").contains("Mismatch"),
+        "{mismatched:?}"
+    );
 
     // Through the adapters: retrieval still succeeds (the other legs run), a persisted call
     // carries no vector, and the embedder behind the mismatch is never called.
@@ -1002,14 +1151,25 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
     )
     .validate(&ctx, AnswerableSource::Cr)?;
     let id = store.persist(&q, &v, &ctx).await?;
-    let embedded: bool = sqlx::query_scalar("SELECT embedding IS NOT NULL FROM calls WHERE id = $1").bind(id.into_inner()).fetch_one(&pool).await?;
-    assert!(!embedded, "a call is stored without a vector rather than with one of another space");
+    let embedded: bool =
+        sqlx::query_scalar("SELECT embedding IS NOT NULL FROM calls WHERE id = $1")
+            .bind(id.into_inner())
+            .fetch_one(&pool)
+            .await?;
+    assert!(
+        !embedded,
+        "a call is stored without a vector rather than with one of another space"
+    );
     assert_eq!(other.calls(), 0);
     assert_eq!(fake.calls(), 1);
 
     // A `reembed` under a running process: the same `Vectors` that was on goes dark on its
     // next use (the row is re-read every time), instead of erroring on the new width.
-    let nomic = Space { provider: Provider::OpenAi, model: "nomic-embed-text".into(), dimensions: 768 };
+    let nomic = Space {
+        provider: Provider::OpenAi,
+        model: "nomic-embed-text".into(),
+        dimensions: 768,
+    };
     switch_space(&pool, &nomic).await?;
     assert!(!vectors.enabled().await);
     assert!(vectors.embed("lifelink", InputKind::Query).await.is_none());
@@ -1027,80 +1187,168 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_persisted_call_carries_a_vector_only_of_the_stored_space(pool: PgPool) -> anyhow::Result<()> {
+async fn a_persisted_call_carries_a_vector_only_of_the_stored_space(
+    pool: PgPool,
+) -> anyhow::Result<()> {
     seed(&pool).await?;
     record_space(&pool, &voyage()).await?;
     let fake = FakeEmbedder::new(Provider::Voyage, "voyage-3.5", 1024);
-    let vectors = Arc::new(Vectors::new(pool.clone(), Arc::clone(&fake) as Arc<dyn WithSpace>));
+    let vectors = Arc::new(Vectors::new(
+        pool.clone(),
+        Arc::clone(&fake) as Arc<dyn WithSpace>,
+    ));
     let store = PgCallStore::new(pool.clone()).with_vectors(Arc::clone(&vectors));
     let q = question("Does lifelink work on Dark Confidant's trigger?");
-    let ctx = PgRetriever::new(pool.clone()).retrieve(&q, &[], &extraction(&[Category::Layers], &["lifelink"])).await?;
-    let v = Verdict::new("Lifelink applies to any damage the creature deals.".into(), Confidence::High, cite_first_rule(&ctx)?, Category::Layers)
-        .validate(&ctx, AnswerableSource::Cr)?;
+    let ctx = PgRetriever::new(pool.clone())
+        .retrieve(&q, &[], &extraction(&[Category::Layers], &["lifelink"]))
+        .await?;
+    let v = Verdict::new(
+        "Lifelink applies to any damage the creature deals.".into(),
+        Confidence::High,
+        cite_first_rule(&ctx)?,
+        Category::Layers,
+    )
+    .validate(&ctx, AnswerableSource::Cr)?;
     let embedded = |id: judge_core::CallId| {
         let pool = pool.clone();
-        async move { anyhow::Ok(sqlx::query_scalar::<_, bool>("SELECT embedding IS NOT NULL FROM calls WHERE id = $1").bind(id.into_inner()).fetch_one(&pool).await?) }
+        async move {
+            anyhow::Ok(
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT embedding IS NOT NULL FROM calls WHERE id = $1",
+                )
+                .bind(id.into_inner())
+                .fetch_one(&pool)
+                .await?,
+            )
+        }
     };
     // The stored space is the embedder's: the vector is written.
     let id = store.persist(&q, &v, &ctx).await?;
     assert!(embedded(id).await?);
     // The database moves to another model of the same width: the next persist, whose
     // embedder still matched a moment ago, stores no vector rather than a Voyage one.
-    let nomic = Space { provider: Provider::OpenAi, model: "nomic-embed-text".into(), dimensions: 1024 };
+    let nomic = Space {
+        provider: Provider::OpenAi,
+        model: "nomic-embed-text".into(),
+        dimensions: 1024,
+    };
     switch_space(&pool, &nomic).await?;
-    let id = store.persist(&question("Another question about lifelink?"), &v, &ctx).await?;
+    let id = store
+        .persist(&question("Another question about lifelink?"), &v, &ctx)
+        .await?;
     assert!(!embedded(id).await?);
-    assert_eq!(fake.calls(), 1, "the mismatch is seen before the request goes out");
+    assert_eq!(
+        fake.calls(),
+        1,
+        "the mismatch is seen before the request goes out"
+    );
     Ok(())
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn switch_space_retypes_columns_clears_vectors_and_rebuilds_indexes_atomically(pool: PgPool) -> anyhow::Result<()> {
+async fn switch_space_retypes_columns_clears_vectors_and_rebuilds_indexes_atomically(
+    pool: PgPool,
+) -> anyhow::Result<()> {
     seed(&pool).await?;
     record_space(&pool, &voyage()).await?;
     sqlx::query("INSERT INTO glossary (term, text, cr_version, embedding) VALUES ('Lifelink', 'A keyword.', '20260819', $1)")
         .bind(Vector::from(vec![0.1; 1024]))
         .execute(&pool)
         .await?;
-    sqlx::query("UPDATE rules SET embedding = $1 WHERE parent_id IS NULL").bind(Vector::from(vec![0.1; 1024])).execute(&pool).await?;
+    sqlx::query("UPDATE rules SET embedding = $1 WHERE parent_id IS NULL")
+        .bind(Vector::from(vec![0.1; 1024]))
+        .execute(&pool)
+        .await?;
     let before = index_definitions(&pool).await?;
     assert_eq!(before.len(), 3, "{before:?}");
     assert!(stored_counts(&pool).await?.iter().any(|(_, n)| *n > 0));
 
-    let nomic = Space { provider: Provider::OpenAi, model: "nomic-embed-text".into(), dimensions: 768 };
+    let nomic = Space {
+        provider: Provider::OpenAi,
+        model: "nomic-embed-text".into(),
+        dimensions: 768,
+    };
     switch_space(&pool, &nomic).await?;
     for t in VECTOR_TABLES {
         assert_eq!(column_width(&pool, t.table).await?, 768, "{}", t.table);
     }
-    assert!(stored_counts(&pool).await?.iter().all(|(_, n)| *n == 0), "{:?}", stored_counts(&pool).await?);
+    assert!(
+        stored_counts(&pool).await?.iter().all(|(_, n)| *n == 0),
+        "{:?}",
+        stored_counts(&pool).await?
+    );
     assert_eq!(stored_space(&pool).await?, Some(nomic.clone()));
     // The indexes are back exactly as the migrations define them: HNSW, cosine, partial on rules.
     let after = index_definitions(&pool).await?;
     assert_eq!(after, before, "index definitions survive the switch");
-    let rules_idx = after.iter().find(|(n, _)| n == "rules_embedding_idx").map(|(_, d)| d.clone()).unwrap_or_default();
-    assert!(rules_idx.contains("USING hnsw") && rules_idx.contains("vector_cosine_ops") && rules_idx.contains("WHERE (parent_id IS NULL)"), "{rules_idx}");
+    let rules_idx = after
+        .iter()
+        .find(|(n, _)| n == "rules_embedding_idx")
+        .map(|(_, d)| d.clone())
+        .unwrap_or_default();
+    assert!(
+        rules_idx.contains("USING hnsw")
+            && rules_idx.contains("vector_cosine_ops")
+            && rules_idx.contains("WHERE (parent_id IS NULL)"),
+        "{rules_idx}"
+    );
     // The new width is what the columns accept now.
-    sqlx::query("UPDATE glossary SET embedding = $1").bind(Vector::from(vec![0.2; 768])).execute(&pool).await?;
-    assert!(sqlx::query("UPDATE glossary SET embedding = $1").bind(Vector::from(vec![0.2; 1024])).execute(&pool).await.is_err());
+    sqlx::query("UPDATE glossary SET embedding = $1")
+        .bind(Vector::from(vec![0.2; 768]))
+        .execute(&pool)
+        .await?;
+    assert!(
+        sqlx::query("UPDATE glossary SET embedding = $1")
+            .bind(Vector::from(vec![0.2; 1024]))
+            .execute(&pool)
+            .await
+            .is_err()
+    );
     let held = stored_counts(&pool).await?;
-    assert!(held.iter().any(|(t, n)| *t == "glossary" && *n > 0), "{held:?}");
+    assert!(
+        held.iter().any(|(t, n)| *t == "glossary" && *n > 0),
+        "{held:?}"
+    );
 
     // A width pgvector refuses (`vector(N)` allows at most 16000) fails the switch, and
     // nothing of it survives: the width, the vectors and the row are as before.
-    let huge = Space { provider: Provider::OpenAi, model: "huge".into(), dimensions: 20_000 };
-    let err = switch_space(&pool, &huge).await.err().map(|e| format!("{e:#}")).unwrap_or_default();
-    assert!(err.contains("ALTER TABLE rules ALTER COLUMN embedding TYPE vector(20000)"), "{err}");
+    let huge = Space {
+        provider: Provider::OpenAi,
+        model: "huge".into(),
+        dimensions: 20_000,
+    };
+    let err = switch_space(&pool, &huge)
+        .await
+        .err()
+        .map(|e| format!("{e:#}"))
+        .unwrap_or_default();
+    assert!(
+        err.contains("ALTER TABLE rules ALTER COLUMN embedding TYPE vector(20000)"),
+        "{err}"
+    );
     for t in VECTOR_TABLES {
         assert_eq!(column_width(&pool, t.table).await?, 768, "{}", t.table);
     }
-    assert_eq!(stored_counts(&pool).await?, held, "the vectors cleared inside the failed transaction are back");
+    assert_eq!(
+        stored_counts(&pool).await?,
+        held,
+        "the vectors cleared inside the failed transaction are back"
+    );
     assert_eq!(stored_space(&pool).await?, Some(nomic.clone()));
     assert_eq!(index_definitions(&pool).await?, before);
     // A width the column accepts but HNSW does not (2000 is its limit): the failing step
     // is `CREATE INDEX`, after the columns were retyped, and still nothing survives. This
     // is the bound `config::Dimensions` enforces at load.
-    let wide = Space { provider: Provider::OpenAi, model: "text-embedding-3-large".into(), dimensions: 2048 };
-    let err = switch_space(&pool, &wide).await.err().map(|e| format!("{e:#}")).unwrap_or_default();
+    let wide = Space {
+        provider: Provider::OpenAi,
+        model: "text-embedding-3-large".into(),
+        dimensions: 2048,
+    };
+    let err = switch_space(&pool, &wide)
+        .await
+        .err()
+        .map(|e| format!("{e:#}"))
+        .unwrap_or_default();
     assert!(err.contains("CREATE INDEX rules_embedding_idx"), "{err}");
     assert_eq!(column_width(&pool, "rules").await?, 768);
     assert_eq!(stored_counts(&pool).await?, held);

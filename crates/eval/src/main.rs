@@ -72,12 +72,18 @@ async fn run() -> anyhow::Result<bool> {
             let mut rest: Vec<String> = args.collect();
             let with_vectors = rest.iter().any(|a| a == "--vectors");
             rest.retain(|a| a != "--vectors");
-            let path = rest.first().map_or_else(gold::default_path, std::path::PathBuf::from);
+            let path = rest
+                .first()
+                .map_or_else(gold::default_path, std::path::PathBuf::from);
             let gold = gold::load(&path)?;
             let pool = connect().await?;
             let vectors = if with_vectors {
                 let config = judge_bot::config::Config::load()?;
-                Some(config.vectors(pool.clone())?.ok_or_else(|| anyhow::anyhow!("--vectors: no embedder configured"))?)
+                Some(
+                    config
+                        .vectors(pool.clone())?
+                        .ok_or_else(|| anyhow::anyhow!("--vectors: no embedder configured"))?,
+                )
             } else {
                 None
             };
@@ -98,7 +104,10 @@ async fn run() -> anyhow::Result<bool> {
         }
         "rescore" => {
             let path = args.next().ok_or_else(usage)?;
-            print!("{}", answer::rescore(std::path::Path::new(&path), &gold::default_path())?);
+            print!(
+                "{}",
+                answer::rescore(std::path::Path::new(&path), &gold::default_path())?
+            );
             Ok(true)
         }
         _ => Err(usage()),

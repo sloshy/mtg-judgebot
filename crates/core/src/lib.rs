@@ -19,4 +19,6 @@ pub use domain::*;
 pub use error::JudgeError;
 pub use judge::{Deps, judge};
 pub use ports::{CallStore, Embedder, Extractor, InputKind, Resolver, Retriever, Synthesizer};
-pub use verdict::{MAX_ANSWER_CHARS, MIN_ANSWER_CHARS, State, Unvalidated, Validated, Verdict, citation_supported};
+pub use verdict::{
+    MAX_ANSWER_CHARS, MIN_ANSWER_CHARS, State, Unvalidated, Validated, Verdict, citation_supported,
+};

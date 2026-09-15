@@ -84,10 +84,12 @@ impl Content {
             Content::Text(t) => (Some(t.as_str()), None),
             Content::Parts(p) => (None, Some(p)),
         };
-        single.into_iter().chain(parts.into_iter().flatten().filter_map(|p| match p {
-            Part::Text { text, .. } => Some(text.as_str()),
-            Part::Other(_) => None,
-        }))
+        single
+            .into_iter()
+            .chain(parts.into_iter().flatten().filter_map(|p| match p {
+                Part::Text { text, .. } => Some(text.as_str()),
+                Part::Other(_) => None,
+            }))
     }
 }
 
@@ -325,43 +327,83 @@ mod tests {
         let req = ChatRequest {
             model: "gpt-5".into(),
             messages: vec![
-                Message::System { content: Content::Text("sys".into()) },
+                Message::System {
+                    content: Content::Text("sys".into()),
+                },
                 Message::User {
                     content: Content::Parts(vec![Part::Text {
                         text: "hi".into(),
-                        cache_control: Some(CacheControl { kind: CacheKind::Ephemeral, ttl: None }),
+                        cache_control: Some(CacheControl {
+                            kind: CacheKind::Ephemeral,
+                            ttl: None,
+                        }),
                     }]),
                 },
-                Message::Assistant(json!({"role": "assistant", "content": null, "reasoning_content": "r", "tool_calls": [{"id": "c1"}]})),
-                Message::Tool { tool_call_id: "c1".into(), content: "rules".into() },
+                Message::Assistant(
+                    json!({"role": "assistant", "content": null, "reasoning_content": "r", "tool_calls": [{"id": "c1"}]}),
+                ),
+                Message::Tool {
+                    tool_call_id: "c1".into(),
+                    content: "rules".into(),
+                },
             ],
             max_tokens: None,
             max_completion_tokens: Some(16000),
             tools: vec![Tool {
                 kind: FunctionKind::Function,
-                function: Function { name: "lookup_rules".into(), description: "d".into(), parameters: json!({"type": "object"}), strict: Some(true) },
+                function: Function {
+                    name: "lookup_rules".into(),
+                    description: "d".into(),
+                    parameters: json!({"type": "object"}),
+                    strict: Some(true),
+                },
             }],
             tool_choice: Some(ToolChoice::Auto),
             parallel_tool_calls: Some(false),
             response_format: Some(ResponseFormat::JsonSchema {
-                json_schema: JsonSchemaFormat { name: "Verdict".into(), schema: json!({"type": "object"}), strict: true },
+                json_schema: JsonSchemaFormat {
+                    name: "Verdict".into(),
+                    schema: json!({"type": "object"}),
+                    strict: true,
+                },
             }),
             reasoning_effort: Some(ReasoningEffort::High),
         };
         let v = serde_json::to_value(&req)?;
-        assert_eq!(at(&v, "/messages/0"), &json!({"role": "system", "content": "sys"}));
-        assert_eq!(at(&v, "/messages/1"), &json!({"role": "user", "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]}));
-        assert_eq!(at(&v, "/messages/2"), &json!({"role": "assistant", "content": null, "reasoning_content": "r", "tool_calls": [{"id": "c1"}]}));
-        assert_eq!(at(&v, "/messages/3"), &json!({"role": "tool", "tool_call_id": "c1", "content": "rules"}));
+        assert_eq!(
+            at(&v, "/messages/0"),
+            &json!({"role": "system", "content": "sys"})
+        );
+        assert_eq!(
+            at(&v, "/messages/1"),
+            &json!({"role": "user", "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]})
+        );
+        assert_eq!(
+            at(&v, "/messages/2"),
+            &json!({"role": "assistant", "content": null, "reasoning_content": "r", "tool_calls": [{"id": "c1"}]})
+        );
+        assert_eq!(
+            at(&v, "/messages/3"),
+            &json!({"role": "tool", "tool_call_id": "c1", "content": "rules"})
+        );
         assert!(v.get("max_tokens").is_none());
         assert_eq!(at(&v, "/max_completion_tokens"), 16000);
-        assert_eq!(at(&v, "/tools/0"), &json!({"type": "function", "function": {"name": "lookup_rules", "description": "d", "parameters": {"type": "object"}, "strict": true}}));
+        assert_eq!(
+            at(&v, "/tools/0"),
+            &json!({"type": "function", "function": {"name": "lookup_rules", "description": "d", "parameters": {"type": "object"}, "strict": true}})
+        );
         assert_eq!(at(&v, "/tool_choice"), "auto");
         assert_eq!(at(&v, "/parallel_tool_calls"), false);
-        assert_eq!(at(&v, "/response_format"), &json!({"type": "json_schema", "json_schema": {"name": "Verdict", "schema": {"type": "object"}, "strict": true}}));
+        assert_eq!(
+            at(&v, "/response_format"),
+            &json!({"type": "json_schema", "json_schema": {"name": "Verdict", "schema": {"type": "object"}, "strict": true}})
+        );
         assert_eq!(at(&v, "/reasoning_effort"), "high");
         assert_eq!(serde_json::to_value(ToolChoice::None)?, "none");
-        assert_eq!(serde_json::to_value(ResponseFormat::JsonObject)?, json!({"type": "json_object"}));
+        assert_eq!(
+            serde_json::to_value(ResponseFormat::JsonObject)?,
+            json!({"type": "json_object"})
+        );
         Ok(())
     }
 
@@ -377,16 +419,36 @@ mod tests {
         });
         let r: ChatResponse = serde_json::from_value(raw)?;
         assert_eq!(r.model.as_deref(), Some("deepseek-r1"));
-        let c = r.choices.first().ok_or_else(|| serde::de::Error::custom("no choice"))?;
+        let c = r
+            .choices
+            .first()
+            .ok_or_else(|| serde::de::Error::custom("no choice"))?;
         assert_eq!(c.finish_reason.as_deref(), Some("tool_calls"));
         assert_eq!(at(&c.message, "/reasoning_content"), "think");
         let m: AssistantMessage = serde_json::from_value(c.message.clone())?;
         assert!(m.content.is_none() && m.refusal.is_none());
-        assert_eq!(m.tool_calls.first().map(|t| (t.id.as_str(), t.function.name.as_str(), t.function.arguments.as_str())), Some(("call_1", "lookup_rules", "{\"ids\":[\"613\"]}")));
-        assert_eq!(r.usage.and_then(|u| u.prompt_tokens_details).and_then(|d| d.cached_tokens), Some(60));
+        assert_eq!(
+            m.tool_calls.first().map(|t| (
+                t.id.as_str(),
+                t.function.name.as_str(),
+                t.function.arguments.as_str()
+            )),
+            Some(("call_1", "lookup_rules", "{\"ids\":[\"613\"]}"))
+        );
+        assert_eq!(
+            r.usage
+                .and_then(|u| u.prompt_tokens_details)
+                .and_then(|d| d.cached_tokens),
+            Some(60)
+        );
 
-        let m: AssistantMessage = serde_json::from_value(json!({"role": "assistant", "content": [{"type": "text", "text": "a"}, {"type": "image_url", "image_url": {}}], "refusal": "no"}))?;
-        assert_eq!(m.content.as_ref().map(|c| c.texts().collect::<Vec<_>>()), Some(vec!["a"]));
+        let m: AssistantMessage = serde_json::from_value(
+            json!({"role": "assistant", "content": [{"type": "text", "text": "a"}, {"type": "image_url", "image_url": {}}], "refusal": "no"}),
+        )?;
+        assert_eq!(
+            m.content.as_ref().map(|c| c.texts().collect::<Vec<_>>()),
+            Some(vec!["a"])
+        );
         assert_eq!(m.refusal.as_deref(), Some("no"));
         Ok(())
     }

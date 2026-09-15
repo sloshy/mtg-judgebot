@@ -122,7 +122,10 @@ pub fn normalize_source(label: &str) -> String {
 /// Whether a gold source label matches a pipeline `Source`.
 #[must_use]
 pub fn source_matches(label: &str, actual: judge_core::Source) -> bool {
-    let actual = serde_json::to_value(actual).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+    let actual = serde_json::to_value(actual)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default();
     normalize_source(label) == actual
 }
 
@@ -135,7 +138,10 @@ mod tests {
 
     #[test]
     fn equivalents_satisfy_an_expected_id() {
-        let eq = Equivalents::from([("707.2".to_owned(), vec!["613.1a".to_owned(), "613.2c".to_owned()])]);
+        let eq = Equivalents::from([(
+            "707.2".to_owned(),
+            vec!["613.1a".to_owned(), "613.2c".to_owned()],
+        )]);
         // Direct equivalent, leaf-of-equivalent, and an untouched miss.
         let r = recall_with(&v(&["613.1a"]), &v(&["707.2", "108.1"]), &eq);
         assert_eq!(r.hit, v(&["707.2"]));
@@ -168,7 +174,10 @@ mod tests {
 
     #[test]
     fn recall_counts_hits_over_expected() {
-        let r = recall(&v(&["614.1c", "616.1", "999.9"]), &v(&["614.1", "616.1e", "614.5"]));
+        let r = recall(
+            &v(&["614.1c", "616.1", "999.9"]),
+            &v(&["614.1", "616.1e", "614.5"]),
+        );
         assert_eq!(r.hit, v(&["614.1", "616.1e"]));
         assert_eq!(r.missed, v(&["614.5"]));
         assert!(recall(&v(&["1.1"]), &[]).hit.is_empty());
@@ -177,25 +186,62 @@ mod tests {
     #[test]
     fn cited_ids_come_from_rule_citations_only() -> anyhow::Result<()> {
         let c = vec![
-            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("x")? },
-            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("y")? },
-            Citation::PriorCall { id: judge_core::CallId::new(uuid_nil()), quote: judge_core::Quote::try_new("z")? },
+            Citation::Rule {
+                id: RuleId::try_new("702.15b".to_owned())?,
+                quote: judge_core::Quote::try_new("x")?,
+            },
+            Citation::Rule {
+                id: RuleId::try_new("702.15b".to_owned())?,
+                quote: judge_core::Quote::try_new("y")?,
+            },
+            Citation::PriorCall {
+                id: judge_core::CallId::new(uuid_nil()),
+                quote: judge_core::Quote::try_new("z")?,
+            },
         ];
         assert_eq!(cited_rule_ids(&c), v(&["702.15b"]));
-        assert_eq!(recall(&cited_rule_ids(&c), &v(&["702.15"])).hit, v(&["702.15"]));
+        assert_eq!(
+            recall(&cited_rule_ids(&c), &v(&["702.15"])).hit,
+            v(&["702.15"])
+        );
         Ok(())
     }
 
     #[test]
     fn cite_counts_by_kind() -> anyhow::Result<()> {
         let c = vec![
-            Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("x")? },
-            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), ruling: judge_core::ruling_key("2020-01-01", "a"), quote: judge_core::Quote::try_new("y")? },
-            Citation::ScryfallRuling { card: judge_core::CardId::new(uuid_nil()), ruling: judge_core::ruling_key("2020-01-01", "b"), quote: judge_core::Quote::try_new("y")? },
-            Citation::PriorCall { id: judge_core::CallId::new(uuid_nil()), quote: judge_core::Quote::try_new("z")? },
-            Citation::OracleText { card: judge_core::CardId::new(uuid_nil()), face: 0, quote: judge_core::Quote::try_new("w")? },
+            Citation::Rule {
+                id: RuleId::try_new("702.15b".to_owned())?,
+                quote: judge_core::Quote::try_new("x")?,
+            },
+            Citation::ScryfallRuling {
+                card: judge_core::CardId::new(uuid_nil()),
+                ruling: judge_core::ruling_key("2020-01-01", "a"),
+                quote: judge_core::Quote::try_new("y")?,
+            },
+            Citation::ScryfallRuling {
+                card: judge_core::CardId::new(uuid_nil()),
+                ruling: judge_core::ruling_key("2020-01-01", "b"),
+                quote: judge_core::Quote::try_new("y")?,
+            },
+            Citation::PriorCall {
+                id: judge_core::CallId::new(uuid_nil()),
+                quote: judge_core::Quote::try_new("z")?,
+            },
+            Citation::OracleText {
+                card: judge_core::CardId::new(uuid_nil()),
+                face: 0,
+                quote: judge_core::Quote::try_new("w")?,
+            },
         ];
-        assert_eq!(cite_counts(&c), CiteCounts { n_rule_cites: 1, n_ruling_cites: 2, n_oracle_cites: 1 });
+        assert_eq!(
+            cite_counts(&c),
+            CiteCounts {
+                n_rule_cites: 1,
+                n_ruling_cites: 2,
+                n_oracle_cites: 1
+            }
+        );
         assert_eq!(cite_counts(&[]), CiteCounts::default());
         let r = recall(&v(&["702.15b"]), &v(&["702.15", "1.1"]));
         assert!(r.any_hit() && r.expects_any());

@@ -48,7 +48,9 @@ impl JudgeError {
     #[must_use]
     pub const fn is_operator_failure(&self) -> bool {
         match self {
-            JudgeError::AmbiguousCards(_) | JudgeError::CardsNotFound(_) | JudgeError::OutOfScope(_) => false,
+            JudgeError::AmbiguousCards(_)
+            | JudgeError::CardsNotFound(_)
+            | JudgeError::OutOfScope(_) => false,
             JudgeError::BadCitation(_)
             | JudgeError::MalformedCitation(_)
             | JudgeError::EmptyVerdict(_)
@@ -61,7 +63,10 @@ impl JudgeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Card, CardId, Category, Citation, Confidence, Face, Layout, MalformedCitation, RuleId, Verdict};
+    use crate::{
+        Card, CardId, Category, Citation, Confidence, Face, Layout, MalformedCitation, RuleId,
+        Verdict,
+    };
     use nonempty::NonEmpty;
     use uuid::Uuid;
 
@@ -96,7 +101,10 @@ mod tests {
             assert!(!e.is_operator_failure(), "{e}");
         }
         let loud = [
-            JudgeError::BadCitation(Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: crate::Quote::try_new("x")? }),
+            JudgeError::BadCitation(Citation::Rule {
+                id: RuleId::try_new("702.15b".to_owned())?,
+                quote: crate::Quote::try_new("x")?,
+            }),
             JudgeError::MalformedCitation(MalformedCitation::new(r#"{"id":""}"#, "bad RuleId")),
             JudgeError::EmptyVerdict(EmptyVerdict::NoCitations),
             JudgeError::LlmRefused,

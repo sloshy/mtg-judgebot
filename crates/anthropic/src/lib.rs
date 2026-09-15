@@ -27,7 +27,8 @@ pub mod schema;
 pub mod wire;
 
 pub use client::{
-    Anthropic, Endpoint, ProxyAuth, WORKSPACE_HEADER, bedrock_origin, claude_platform_on_aws_origin, vertex_origin,
+    Anthropic, Endpoint, ProxyAuth, WORKSPACE_HEADER, bedrock_origin,
+    claude_platform_on_aws_origin, vertex_origin,
 };
 pub use convert::BACKEND;
 pub use judge_llm::ApiKey;

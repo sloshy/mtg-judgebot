@@ -66,7 +66,10 @@ impl PgResolver {
     }
 
     /// Aliases among `candidates` (already lowercased), with their cards.
-    async fn aliases_among(&self, candidates: &[String]) -> Result<Vec<(String, Uuid)>, JudgeError> {
+    async fn aliases_among(
+        &self,
+        candidates: &[String],
+    ) -> Result<Vec<(String, Uuid)>, JudgeError> {
         let rows = sqlx::query!(
             "SELECT alias, oracle_id FROM card_aliases WHERE alias = ANY($1) ORDER BY alias",
             candidates
@@ -80,7 +83,11 @@ impl PgResolver {
     /// The alias-suffix rung: `None` unless exactly one word-suffix of a
     /// multi-word span is an alias and the words before it are all
     /// [`QUALIFIERS`].
-    async fn alias_suffix(&self, query: &str, lowered: &str) -> Result<Option<Resolution>, JudgeError> {
+    async fn alias_suffix(
+        &self,
+        query: &str,
+        lowered: &str,
+    ) -> Result<Option<Resolution>, JudgeError> {
         let candidates = alias_suffix_candidates(lowered);
         if candidates.is_empty() {
             return Ok(None);
@@ -88,11 +95,17 @@ impl PgResolver {
         match self.aliases_among(&candidates).await?.as_slice() {
             [(alias, id)] => {
                 if !only_qualifiers_before(lowered, alias) {
-                    tracing::debug!(span = query, alias, "alias suffix preceded by a non-qualifier; skipping rung");
+                    tracing::debug!(
+                        span = query,
+                        alias,
+                        "alias suffix preceded by a non-qualifier; skipping rung"
+                    );
                     return Ok(None);
                 }
                 tracing::debug!(span = query, alias, "alias suffix matched");
-                self.resolved(query, *id, MatchedVia::AliasSuffix).await.map(Some)
+                self.resolved(query, *id, MatchedVia::AliasSuffix)
+                    .await
+                    .map(Some)
             }
             [] => Ok(None),
             many => {
@@ -295,20 +308,105 @@ impl PgResolver {
 /// name", and fuzzy gets the span instead.
 pub const QUALIFIERS: &[&str] = &[
     // articles, possessives, filler
-    "a", "an", "the", "my", "your", "his", "her", "their", "our", "this", "that", "of",
+    "a",
+    "an",
+    "the",
+    "my",
+    "your",
+    "his",
+    "her",
+    "their",
+    "our",
+    "this",
+    "that",
+    "of",
     // printings and finishes
-    "foil", "nonfoil", "promo", "borderless", "showcase", "extended", "retro", "etched",
-    "textless", "old", "new", "frame", "judge", "fnm", "prerelease", "misprint", "altered",
-    "signed", "proxy", "card", "copy", "version", "printing", "printed", "edition",
-    "original", "reprint", "reprinted", "reserved", "list", "secret", "lair", "mystical",
-    "archive", "masters", "modern", "eternal", "vintage", "legacy", "commander", "collectors",
+    "foil",
+    "nonfoil",
+    "promo",
+    "borderless",
+    "showcase",
+    "extended",
+    "retro",
+    "etched",
+    "textless",
+    "old",
+    "new",
+    "frame",
+    "judge",
+    "fnm",
+    "prerelease",
+    "misprint",
+    "altered",
+    "signed",
+    "proxy",
+    "card",
+    "copy",
+    "version",
+    "printing",
+    "printed",
+    "edition",
+    "original",
+    "reprint",
+    "reprinted",
+    "reserved",
+    "list",
+    "secret",
+    "lair",
+    "mystical",
+    "archive",
+    "masters",
+    "modern",
+    "eternal",
+    "vintage",
+    "legacy",
+    "commander",
+    "collectors",
     // classic set names (single words only)
-    "alpha", "beta", "unlimited", "revised", "arabian", "nights", "antiquities", "legends",
-    "dark", "fallen", "empires", "ice", "age", "homelands", "alliances", "mirage", "visions",
-    "weatherlight", "tempest", "stronghold", "exodus", "urza's", "saga", "destiny", "mercadian",
-    "masques", "nemesis", "prophecy", "invasion", "planeshift", "apocalypse", "odyssey",
-    "torment", "judgment", "onslaught", "mirrodin", "kamigawa", "ravnica", "chronicles",
-    "portal", "starter", "conspiracy", "jumpstart", "horizons",
+    "alpha",
+    "beta",
+    "unlimited",
+    "revised",
+    "arabian",
+    "nights",
+    "antiquities",
+    "legends",
+    "dark",
+    "fallen",
+    "empires",
+    "ice",
+    "age",
+    "homelands",
+    "alliances",
+    "mirage",
+    "visions",
+    "weatherlight",
+    "tempest",
+    "stronghold",
+    "exodus",
+    "urza's",
+    "saga",
+    "destiny",
+    "mercadian",
+    "masques",
+    "nemesis",
+    "prophecy",
+    "invasion",
+    "planeshift",
+    "apocalypse",
+    "odyssey",
+    "torment",
+    "judgment",
+    "onslaught",
+    "mirrodin",
+    "kamigawa",
+    "ravnica",
+    "chronicles",
+    "portal",
+    "starter",
+    "conspiracy",
+    "jumpstart",
+    "horizons",
 ];
 
 /// For a multi-word span, every proper word-suffix ("b c", "c" of "a b c"),
@@ -385,11 +483,17 @@ impl Resolver for PgResolver {
                 return self.resolved(&query, id, MatchedVia::Alias).await;
             }
             let ids = self.exact_name(&stripped).await?;
-            if let Some(r) = self.decide(&query, &stripped, ids, MatchedVia::Exact).await? {
+            if let Some(r) = self
+                .decide(&query, &stripped, ids, MatchedVia::Exact)
+                .await?
+            {
                 return Ok(r);
             }
             let ids = self.short_name(&stripped).await?;
-            if let Some(r) = self.decide(&query, &stripped, ids, MatchedVia::ShortName).await? {
+            if let Some(r) = self
+                .decide(&query, &stripped, ids, MatchedVia::ShortName)
+                .await?
+            {
                 return Ok(r);
             }
         }
@@ -426,9 +530,7 @@ impl Resolver for PgResolver {
             return Ok(r);
         }
         // A bracketed span is the user's exact spelling: a nickname at its end is not a hint.
-        if !bracketed
-            && let Some(r) = self.alias_suffix(&query, &lowered).await?
-        {
+        if !bracketed && let Some(r) = self.alias_suffix(&query, &lowered).await? {
             return Ok(r);
         }
         self.fuzzy(&query, text).await
@@ -437,13 +539,18 @@ impl Resolver for PgResolver {
 
 #[cfg(test)]
 mod unit {
-    use super::{alias_suffix_candidates, only_qualifiers_before, strip_brackets, strip_possessive};
+    use super::{
+        alias_suffix_candidates, only_qualifiers_before, strip_brackets, strip_possessive,
+    };
 
     #[test]
     fn suffix_candidates() {
         assert!(alias_suffix_candidates("led").is_empty());
         assert_eq!(alias_suffix_candidates("mirage led"), ["led"]);
-        assert_eq!(alias_suffix_candidates("the foil  bob"), ["foil bob", "bob"]);
+        assert_eq!(
+            alias_suffix_candidates("the foil  bob"),
+            ["foil bob", "bob"]
+        );
         assert_eq!(alias_suffix_candidates("a b a"), ["b a", "a"]);
     }
 
@@ -453,7 +560,10 @@ mod unit {
         assert!(only_qualifiers_before("the foil bob", "bob"));
         assert!(only_qualifiers_before("the foil bob", "foil bob"));
         assert!(!only_qualifiers_before("warleaders helix", "helix"));
-        assert!(!only_qualifiers_before("lattice blade mantis", "lattice"), "not a suffix");
+        assert!(
+            !only_qualifiers_before("lattice blade mantis", "lattice"),
+            "not a suffix"
+        );
         assert!(!only_qualifiers_before("bob led", "led"));
         assert!(!only_qualifiers_before("led", "led"), "nothing precedes it");
         assert!(!only_qualifiers_before("foil", "foil bob"));
@@ -499,14 +609,38 @@ mod pg {
 
     async fn seed(pool: &PgPool) -> anyhow::Result<()> {
         for (id, name, text) in [
-            (LED, "Lion's Eye Diamond", "Sacrifice this artifact, Discard your hand: Add three mana of any one color."),
-            (BOB, "Dark Confidant", "At the beginning of your upkeep, reveal the top card of your library."),
+            (
+                LED,
+                "Lion's Eye Diamond",
+                "Sacrifice this artifact, Discard your hand: Add three mana of any one color.",
+            ),
+            (
+                BOB,
+                "Dark Confidant",
+                "At the beginning of your upkeep, reveal the top card of your library.",
+            ),
             (GRIZZLED, "Grizzled Leotau", ""),
-            (LIGHTNING_HELIX, "Lightning Helix", "Lightning Helix deals 3 damage to any target and you gain 3 life."),
-            (WARLEADERS_HELIX, "Warleader's Helix", "Warleader's Helix deals 4 damage to any target and you gain 4 life."),
-            (BAZAAR, "Bazaar of Baghdad", "{T}: Draw two cards, then discard three cards."),
+            (
+                LIGHTNING_HELIX,
+                "Lightning Helix",
+                "Lightning Helix deals 3 damage to any target and you gain 3 life.",
+            ),
+            (
+                WARLEADERS_HELIX,
+                "Warleader's Helix",
+                "Warleader's Helix deals 4 damage to any target and you gain 4 life.",
+            ),
+            (
+                BAZAAR,
+                "Bazaar of Baghdad",
+                "{T}: Draw two cards, then discard three cards.",
+            ),
         ] {
-            sqlx::query("INSERT INTO cards (oracle_id, name, layout) VALUES ($1, $2, 'normal')").bind(id).bind(name).execute(pool).await?;
+            sqlx::query("INSERT INTO cards (oracle_id, name, layout) VALUES ($1, $2, 'normal')")
+                .bind(id)
+                .bind(name)
+                .execute(pool)
+                .await?;
             sqlx::query("INSERT INTO card_faces (oracle_id, face_idx, name, oracle_text) VALUES ($1, 0, $2, $3)")
                 .bind(id).bind(name).bind(text).execute(pool).await?;
         }
@@ -523,38 +657,96 @@ mod pg {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn qualifier_before_a_nickname_resolves_via_alias_suffix(pool: PgPool) -> anyhow::Result<()> {
+    async fn qualifier_before_a_nickname_resolves_via_alias_suffix(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
         seed(&pool).await?;
         let resolver = PgResolver::new(pool);
-        assert_eq!(resolved(&resolver.resolve("mirage LED").await?), Some(("Lion's Eye Diamond", MatchedVia::AliasSuffix)));
-        assert_eq!(resolved(&resolver.resolve("the foil Bob").await?), Some(("Dark Confidant", MatchedVia::AliasSuffix)));
+        assert_eq!(
+            resolved(&resolver.resolve("mirage LED").await?),
+            Some(("Lion's Eye Diamond", MatchedVia::AliasSuffix))
+        );
+        assert_eq!(
+            resolved(&resolver.resolve("the foil Bob").await?),
+            Some(("Dark Confidant", MatchedVia::AliasSuffix))
+        );
         // A plain alias still reports `Alias`; a single non-alias word never reaches the rung.
-        assert_eq!(resolved(&resolver.resolve("LED").await?), Some(("Lion's Eye Diamond", MatchedVia::Alias)));
-        assert!(matches!(resolver.resolve("mirage").await?, Resolution::NotFound { .. }));
+        assert_eq!(
+            resolved(&resolver.resolve("LED").await?),
+            Some(("Lion's Eye Diamond", MatchedVia::Alias))
+        );
+        assert!(matches!(
+            resolver.resolve("mirage").await?,
+            Resolution::NotFound { .. }
+        ));
         // Two different aliases in one span: the rung stands down and the ladder falls through.
         let r = resolver.resolve("bob led").await?;
-        assert!(!matches!(&r, Resolution::Resolved { via: MatchedVia::AliasSuffix, .. }), "{r:?}");
+        assert!(
+            !matches!(
+                &r,
+                Resolution::Resolved {
+                    via: MatchedVia::AliasSuffix,
+                    ..
+                }
+            ),
+            "{r:?}"
+        );
         // Exact rungs still win over the suffix rung.
-        assert_eq!(resolved(&resolver.resolve("dark confidant").await?), Some(("Dark Confidant", MatchedVia::Exact)));
+        assert_eq!(
+            resolved(&resolver.resolve("dark confidant").await?),
+            Some(("Dark Confidant", MatchedVia::Exact))
+        );
         Ok(())
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn alias_suffix_does_not_fire_on_typoed_names_or_brackets(pool: PgPool) -> anyhow::Result<()> {
+    async fn alias_suffix_does_not_fire_on_typoed_names_or_brackets(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
         seed(&pool).await?;
         let resolver = PgResolver::new(pool);
         // A dropped apostrophe: "warleaders" is no qualifier, so the rung stands down and fuzzy finds the real card.
         let r = resolver.resolve("Warleaders Helix").await?;
-        assert!(!matches!(&r, Resolution::Resolved { via: MatchedVia::AliasSuffix, .. }), "{r:?}");
+        assert!(
+            !matches!(
+                &r,
+                Resolution::Resolved {
+                    via: MatchedVia::AliasSuffix,
+                    ..
+                }
+            ),
+            "{r:?}"
+        );
         assert_eq!(resolved(&r), Some(("Warleader's Helix", MatchedVia::Fuzzy)));
         // The alias is not the suffix ("bazaar traders"): nothing to match.
         let r = resolver.resolve("bazaar traders").await?;
-        assert!(!matches!(&r, Resolution::Resolved { via: MatchedVia::AliasSuffix, .. }), "{r:?}");
+        assert!(
+            !matches!(
+                &r,
+                Resolution::Resolved {
+                    via: MatchedVia::AliasSuffix,
+                    ..
+                }
+            ),
+            "{r:?}"
+        );
         // A bracketed span is exact spelling; the rung is skipped even with a qualifier prefix.
         let r = resolver.resolve("[[foil helix]]").await?;
-        assert!(!matches!(&r, Resolution::Resolved { via: MatchedVia::AliasSuffix, .. }), "{r:?}");
+        assert!(
+            !matches!(
+                &r,
+                Resolution::Resolved {
+                    via: MatchedVia::AliasSuffix,
+                    ..
+                }
+            ),
+            "{r:?}"
+        );
         // The intended case still works with a qualifier prefix.
-        assert_eq!(resolved(&resolver.resolve("foil helix").await?), Some(("Lightning Helix", MatchedVia::AliasSuffix)));
+        assert_eq!(
+            resolved(&resolver.resolve("foil helix").await?),
+            Some(("Lightning Helix", MatchedVia::AliasSuffix))
+        );
         Ok(())
     }
 }

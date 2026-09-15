@@ -60,7 +60,8 @@ impl PgSessionStore {
         if swept > 0 {
             tracing::debug!(swept, "expired agent sessions removed");
         }
-        let state = serde_json::to_value(&s.stage).map_err(|e| bad_row_from(e, "serialize session state"))?;
+        let state = serde_json::to_value(&s.stage)
+            .map_err(|e| bad_row_from(e, "serialize session state"))?;
         sqlx::query!(
             r#"
             INSERT INTO agent_sessions (id, thread_id, question, state, expires_at)
@@ -90,7 +91,10 @@ impl PgSessionStore {
     ///
     /// # Errors
     /// `Upstream` from sqlx or serde.
-    pub async fn load_versioned(&self, id: SessionId) -> Result<Option<(Session, Version)>, JudgeError> {
+    pub async fn load_versioned(
+        &self,
+        id: SessionId,
+    ) -> Result<Option<(Session, Version)>, JudgeError> {
         let row = sqlx::query!(
             r#"
             SELECT thread_id, question, state, version
@@ -103,10 +107,14 @@ impl PgSessionStore {
         .await
         .map_err(upstream("load session"))?;
         row.map(|r| {
-            let stage = serde_json::from_value(r.state).map_err(|e| bad_row_from(e, format!("session {id}: state")))?;
+            let stage = serde_json::from_value(r.state)
+                .map_err(|e| bad_row_from(e, format!("session {id}: state")))?;
             let session = Session {
                 id,
-                question: judge_core::Question { thread_id: r.thread_id, text: r.question },
+                question: judge_core::Question {
+                    thread_id: r.thread_id,
+                    text: r.question,
+                },
                 stage,
             };
             Ok((session, Version(r.version)))
@@ -120,8 +128,14 @@ impl PgSessionStore {
     /// # Errors
     /// `Upstream` from sqlx or serde. A lost race is [`Saved::Conflict`],
     /// not an error: the caller decides what it means for its step.
-    pub async fn save(&self, s: &Session, version: Version, ttl: Duration) -> Result<Saved, JudgeError> {
-        let state = serde_json::to_value(&s.stage).map_err(|e| bad_row_from(e, "serialize session state"))?;
+    pub async fn save(
+        &self,
+        s: &Session,
+        version: Version,
+        ttl: Duration,
+    ) -> Result<Saved, JudgeError> {
+        let state = serde_json::to_value(&s.stage)
+            .map_err(|e| bad_row_from(e, "serialize session state"))?;
         let updated = sqlx::query!(
             r#"
             UPDATE agent_sessions
@@ -137,7 +151,11 @@ impl PgSessionStore {
         .await
         .map_err(upstream("save session"))?
         .rows_affected();
-        Ok(if updated == 0 { Saved::Conflict } else { Saved::Yes })
+        Ok(if updated == 0 {
+            Saved::Conflict
+        } else {
+            Saved::Yes
+        })
     }
 }
 
@@ -161,7 +179,10 @@ mod tests {
             SessionId::new(),
             AgentThread::new(),
             "q".into(),
-            vec![Qa { question: "a".into(), answer: "b".into() }],
+            vec![Qa {
+                question: "a".into(),
+                answer: "b".into(),
+            }],
         )?)
     }
 
@@ -170,19 +191,39 @@ mod tests {
         let store = PgSessionStore::new(pool);
         let s = session()?;
         store.insert(&s, Duration::from_mins(1)).await?;
-        let (loaded, v1) = store.load_versioned(s.id).await?.ok_or_else(|| anyhow::anyhow!("missing"))?;
+        let (loaded, v1) = store
+            .load_versioned(s.id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing"))?;
         assert_eq!(loaded, s);
         let mut moved = s.clone();
-        moved.stage = Stage::Closed(crate::session::Outcome::OutOfScope { source: judge_core::Source::Tournament });
-        assert_eq!(store.save(&moved, v1, Duration::from_mins(1)).await?, Saved::Yes);
+        moved.stage = Stage::Closed(crate::session::Outcome::OutOfScope {
+            source: judge_core::Source::Tournament,
+        });
+        assert_eq!(
+            store.save(&moved, v1, Duration::from_mins(1)).await?,
+            Saved::Yes
+        );
         assert_eq!(store.load(s.id).await?, Some(moved.clone()));
         // A second save from the stale version loses.
-        assert_eq!(store.save(&s, v1, Duration::from_mins(1)).await?, Saved::Conflict);
-        let (_, v2) = store.load_versioned(s.id).await?.ok_or_else(|| anyhow::anyhow!("missing"))?;
+        assert_eq!(
+            store.save(&s, v1, Duration::from_mins(1)).await?,
+            Saved::Conflict
+        );
+        let (_, v2) = store
+            .load_versioned(s.id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing"))?;
         assert_ne!(v1, v2);
-        assert_eq!(store.save(&moved, v2, Duration::from_mins(1)).await?, Saved::Yes);
+        assert_eq!(
+            store.save(&moved, v2, Duration::from_mins(1)).await?,
+            Saved::Yes
+        );
         // An absurd TTL is clamped rather than rejected by Postgres.
-        assert_eq!(store.save(&moved, Version(3), Duration::MAX).await?, Saved::Yes);
+        assert_eq!(
+            store.save(&moved, Version(3), Duration::MAX).await?,
+            Saved::Yes
+        );
         Ok(())
     }
 
@@ -192,10 +233,19 @@ mod tests {
         let s = session()?;
         store.insert(&s, Duration::ZERO).await?;
         assert_eq!(store.load(s.id).await?, None, "expired at once");
-        assert_eq!(store.save(&s, Version(1), Duration::from_mins(1)).await?, Saved::Conflict, "no resurrection through save");
+        assert_eq!(
+            store.save(&s, Version(1), Duration::from_mins(1)).await?,
+            Saved::Conflict,
+            "no resurrection through save"
+        );
         // The next insert sweeps it.
         store.insert(&session()?, Duration::from_mins(1)).await?;
-        let n = sqlx::query_scalar!("SELECT count(*) AS \"n!\" FROM agent_sessions WHERE id = $1", s.id.0).fetch_one(&pool).await?;
+        let n = sqlx::query_scalar!(
+            "SELECT count(*) AS \"n!\" FROM agent_sessions WHERE id = $1",
+            s.id.0
+        )
+        .fetch_one(&pool)
+        .await?;
         assert_eq!(n, 0);
         Ok(())
     }

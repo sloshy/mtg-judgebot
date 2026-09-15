@@ -52,7 +52,12 @@ impl GoldQuestion {
     pub fn equivalents(&self) -> std::collections::BTreeMap<String, Vec<String>> {
         self.equivalent_rule_ids
             .iter()
-            .map(|(k, v)| (k.trim().to_owned(), v.iter().map(YamlScalar::as_text).collect()))
+            .map(|(k, v)| {
+                (
+                    k.trim().to_owned(),
+                    v.iter().map(YamlScalar::as_text).collect(),
+                )
+            })
             .collect()
     }
 
@@ -82,16 +87,29 @@ impl GoldQuestion {
     pub fn extraction(&self) -> Extraction {
         let mut mapped = categories::map_labels(&self.id, &self.categories).into_iter();
         let primary = mapped.next().map_or(
-            CategoryGuess { category: Category::Other, confidence: Confidence::Low },
-            |category| CategoryGuess { category, confidence: Confidence::Medium },
+            CategoryGuess {
+                category: Category::Other,
+                confidence: Confidence::Low,
+            },
+            |category| CategoryGuess {
+                category,
+                confidence: Confidence::Medium,
+            },
         );
         let secondary = mapped
             .take(Extraction::MAX_SECONDARY)
-            .map(|category| CategoryGuess { category, confidence: Confidence::Medium })
+            .map(|category| CategoryGuess {
+                category,
+                confidence: Confidence::Medium,
+            })
             .collect();
         Extraction {
             card_spans: self.cards.clone(),
-            concepts: self.categories.iter().map(|c| c.replace(['-', '_'], " ")).collect(),
+            concepts: self
+                .categories
+                .iter()
+                .map(|c| c.replace(['-', '_'], " "))
+                .collect(),
             primary,
             secondary,
             source: self.source(),
@@ -129,14 +147,25 @@ fn validate(gold: &Gold) -> anyhow::Result<()> {
     for q in &gold.questions {
         for id in &q.expected_rule_ids {
             if let YamlScalar::Number(n) = id {
-                anyhow::bail!("question {}: expected_rule_id {n} is unquoted; write it as '{n}' (a float drops trailing zeros)", q.id);
+                anyhow::bail!(
+                    "question {}: expected_rule_id {n} is unquoted; write it as '{n}' (a float drops trailing zeros)",
+                    q.id
+                );
             }
-            RuleId::try_new(id.as_text()).with_context(|| format!("question {}: bad expected_rule_id {:?}", q.id, id.as_text()))?;
+            RuleId::try_new(id.as_text()).with_context(|| {
+                format!("question {}: bad expected_rule_id {:?}", q.id, id.as_text())
+            })?;
         }
-        let expected: Vec<String> = q.expected_rule_ids.iter().map(YamlScalar::as_text).collect();
+        let expected: Vec<String> = q
+            .expected_rule_ids
+            .iter()
+            .map(YamlScalar::as_text)
+            .collect();
         for (k, alts) in &q.equivalent_rule_ids {
             let key = k.trim();
-            RuleId::try_new(key.to_owned()).with_context(|| format!("question {}: bad equivalent_rule_ids key {key:?}", q.id))?;
+            RuleId::try_new(key.to_owned()).with_context(|| {
+                format!("question {}: bad equivalent_rule_ids key {key:?}", q.id)
+            })?;
             anyhow::ensure!(
                 expected.iter().any(|e| e == key),
                 "question {}: equivalent_rule_ids key {key:?} is not in expected_rule_ids",
@@ -144,9 +173,18 @@ fn validate(gold: &Gold) -> anyhow::Result<()> {
             );
             for a in alts {
                 if let YamlScalar::Number(n) = a {
-                    anyhow::bail!("question {}: equivalent id {n} is unquoted; write it as '{n}'", q.id);
+                    anyhow::bail!(
+                        "question {}: equivalent id {n} is unquoted; write it as '{n}'",
+                        q.id
+                    );
                 }
-                RuleId::try_new(a.as_text()).with_context(|| format!("question {}: bad equivalent id {:?} under {key:?}", q.id, a.as_text()))?;
+                RuleId::try_new(a.as_text()).with_context(|| {
+                    format!(
+                        "question {}: bad equivalent id {:?} under {key:?}",
+                        q.id,
+                        a.as_text()
+                    )
+                })?;
             }
         }
     }
@@ -168,8 +206,10 @@ pub fn default_path() -> PathBuf {
 /// # Errors
 /// If the file cannot be read or does not match the schema.
 pub fn load(path: &Path) -> anyhow::Result<Gold> {
-    let raw = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let gold: Gold = serde_yaml_ng::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let gold: Gold =
+        serde_yaml_ng::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
     validate(&gold)?;
     Ok(gold)
 }
@@ -179,13 +219,18 @@ mod tests {
     use super::*;
 
     fn gold(ids: &str) -> anyhow::Result<Gold> {
-        Ok(serde_yaml_ng::from_str(&format!("questions:\n- id: a\n  question: q\n  source: CR\n  expected_rule_ids: {ids}\n"))?)
+        Ok(serde_yaml_ng::from_str(&format!(
+            "questions:\n- id: a\n  question: q\n  source: CR\n  expected_rule_ids: {ids}\n"
+        ))?)
     }
 
     #[test]
     fn unquoted_and_malformed_ids_are_rejected() -> anyhow::Result<()> {
         assert!(validate(&gold("['613.10', 614.1c, '704.5aa']")?).is_ok());
-        let err = validate(&gold("[613.10]")?).err().map(|e| e.to_string()).unwrap_or_default();
+        let err = validate(&gold("[613.10]")?)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
         assert!(err.contains("unquoted"), "{err}");
         assert!(validate(&gold("['61.1']")?).is_err());
         Ok(())

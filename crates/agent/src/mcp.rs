@@ -23,8 +23,8 @@ use rmcp::{
 use crate::{
     Toolbox,
     ops::{
-        BeginInput, CardInput, ExtractionInput, IdsInput, JudgeInput, LookupInput, NameInput, SearchInput, SessionInput,
-        TermInput, VerdictInput,
+        BeginInput, CardInput, ExtractionInput, IdsInput, JudgeInput, LookupInput, NameInput,
+        SearchInput, SessionInput, TermInput, VerdictInput,
     },
 };
 
@@ -67,7 +67,9 @@ pub struct JudgeMcp {
 
 impl std::fmt::Debug for JudgeMcp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JudgeMcp").field("toolbox", &self.toolbox).finish_non_exhaustive()
+        f.debug_struct("JudgeMcp")
+            .field("toolbox", &self.toolbox)
+            .finish_non_exhaustive()
     }
 }
 
@@ -81,36 +83,70 @@ impl JudgeMcp {
     /// Over a shared toolbox.
     #[must_use]
     pub fn new(toolbox: Arc<Toolbox>) -> Self {
-        Self { toolbox, tool_router: Self::tool_router() }
+        Self {
+            toolbox,
+            tool_router: Self::tool_router(),
+        }
     }
 
     #[tool(
         name = "judge",
         description = "Answer a Magic rules question with the built-in pipeline (the server's own model calls; costs the operator API budget). Returns a validated, cited answer, or `ambiguous` (re-ask with `pins`), `not_found`, `out_of_scope`, `busy`, `rate_limited` (this client's quota for the window), `unavailable` (no API key on the server: use begin_session instead) or `error`. Pass `thread` back for follow-up questions."
     )]
-    async fn judge(&self, Parameters(input): Parameters<JudgeInput>) -> Result<Json<crate::ops::JudgeReply>, String> {
-        self.toolbox.judge(input).await.map(Json).map_err(|e| msg(&e))
+    async fn judge(
+        &self,
+        Parameters(input): Parameters<JudgeInput>,
+    ) -> Result<Json<crate::ops::JudgeReply>, String> {
+        self.toolbox
+            .judge(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
     #[tool(
         name = "begin_session",
         description = "Start answering a rules question yourself, without any server-side model call. Returns the session id and the extraction prompt: produce JSON matching its schema and pass it to submit_extraction. Use `thread` to give a follow-up question the history of earlier ones."
     )]
-    async fn begin_session(&self, Parameters(input): Parameters<BeginInput>) -> Result<Json<judge_bot::session::Begun>, String> {
-        self.toolbox.begin_session(input).await.map(Json).map_err(|e| msg(&e))
+    async fn begin_session(
+        &self,
+        Parameters(input): Parameters<BeginInput>,
+    ) -> Result<Json<judge_bot::session::Begun>, String> {
+        self.toolbox
+            .begin_session(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
     #[tool(
         name = "session_prompt",
         description = "Re-read the prompt for the session's current step (the extraction prompt, or the synthesis prompt including anything lookup_rules fetched)."
     )]
-    async fn session_prompt(&self, Parameters(input): Parameters<SessionInput>) -> Result<Json<judge_bot::session::Prompt>, String> {
-        self.toolbox.session_prompt(input).await.map(Json).map_err(|e| msg(&e))
+    async fn session_prompt(
+        &self,
+        Parameters(input): Parameters<SessionInput>,
+    ) -> Result<Json<judge_bot::session::Prompt>, String> {
+        self.toolbox
+            .session_prompt(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
-    #[tool(name = "session_status", description = "Where a session is: its stage, whether the lookup round is still available, how it ended.")]
-    async fn session_status(&self, Parameters(input): Parameters<SessionInput>) -> Result<Json<crate::ops::SessionStatus>, String> {
-        self.toolbox.session_status(input).await.map(Json).map_err(|e| msg(&e))
+    #[tool(
+        name = "session_status",
+        description = "Where a session is: its stage, whether the lookup round is still available, how it ended."
+    )]
+    async fn session_status(
+        &self,
+        Parameters(input): Parameters<SessionInput>,
+    ) -> Result<Json<crate::ops::SessionStatus>, String> {
+        self.toolbox
+            .session_status(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
     #[tool(
@@ -121,56 +157,131 @@ impl JudgeMcp {
         &self,
         Parameters(input): Parameters<ExtractionInput>,
     ) -> Result<Json<crate::ops::ExtractionReply>, String> {
-        self.toolbox.submit_extraction(input).await.map(Json).map_err(|e| msg(&e))
+        self.toolbox
+            .submit_extraction(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
     #[tool(
         name = "lookup_rules",
         description = "The session's one chance to fetch CR text beyond the material: rule ids (`702.19`, `613.7b`) or whole subsections (`613`). Ask for everything at once; a second call is refused. The chunks are added to the session's material and become citable."
     )]
-    async fn lookup_rules(&self, Parameters(input): Parameters<LookupInput>) -> Result<Json<crate::ops::Rules>, String> {
-        self.toolbox.lookup_rules(input).await.map(Json).map_err(|e| msg(&e))
+    async fn lookup_rules(
+        &self,
+        Parameters(input): Parameters<LookupInput>,
+    ) -> Result<Json<crate::ops::Rules>, String> {
+        self.toolbox
+            .lookup_rules(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
     #[tool(
         name = "submit_verdict",
         description = "Hand in the verdict JSON for a session (`answer`, `confidence`, `citations`, `category`). Every citation is checked against the session's material: the id must be shown there and the quote must be a verbatim substring. Returns `accepted` (with `persist: true`, also stored as a call), `rejected` (one retry: answer the returned prompt) or `exhausted` (closed)."
     )]
-    async fn submit_verdict(&self, Parameters(input): Parameters<VerdictInput>) -> Result<Json<crate::ops::VerdictReply>, String> {
-        self.toolbox.submit_verdict(input).await.map(Json).map_err(|e| msg(&e))
+    async fn submit_verdict(
+        &self,
+        Parameters(input): Parameters<VerdictInput>,
+    ) -> Result<Json<crate::ops::VerdictReply>, String> {
+        self.toolbox
+            .submit_verdict(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
-    #[tool(name = "persist_session", description = "Store an accepted session verdict as a call (idempotent).")]
-    async fn persist_session(&self, Parameters(input): Parameters<SessionInput>) -> Result<Json<crate::ops::Persisted>, String> {
-        self.toolbox.persist_session(input).await.map(Json).map_err(|e| msg(&e))
+    #[tool(
+        name = "persist_session",
+        description = "Store an accepted session verdict as a call (idempotent)."
+    )]
+    async fn persist_session(
+        &self,
+        Parameters(input): Parameters<SessionInput>,
+    ) -> Result<Json<crate::ops::Persisted>, String> {
+        self.toolbox
+            .persist_session(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
     #[tool(
         name = "resolve_card",
         description = "Resolve a card name or nickname the way the pipeline does (aliases, [[brackets]], printed names, fuzzy). Returns the card with its faces and Oracle text, or `ambiguous` with candidates, or `not_found`. Never guesses."
     )]
-    async fn resolve_card(&self, Parameters(input): Parameters<NameInput>) -> Result<Json<judge_core::Resolution>, String> {
-        self.toolbox.resolve_card(input).await.map(Json).map_err(|e| msg(&e))
+    async fn resolve_card(
+        &self,
+        Parameters(input): Parameters<NameInput>,
+    ) -> Result<Json<judge_core::Resolution>, String> {
+        self.toolbox
+            .resolve_card(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
-    #[tool(name = "card_info", description = "A card by oracle id (from resolve_card): faces with Oracle text, all Scryfall rulings, and any hand-written notes.")]
-    async fn card_info(&self, Parameters(input): Parameters<CardInput>) -> Result<Json<crate::ops::CardInfo>, String> {
-        self.toolbox.card_info(input).await.map(Json).map_err(|e| msg(&e))
+    #[tool(
+        name = "card_info",
+        description = "A card by oracle id (from resolve_card): faces with Oracle text, all Scryfall rulings, and any hand-written notes."
+    )]
+    async fn card_info(
+        &self,
+        Parameters(input): Parameters<CardInput>,
+    ) -> Result<Json<crate::ops::CardInfo>, String> {
+        self.toolbox
+            .card_info(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
-    #[tool(name = "get_rules", description = "Comprehensive Rules chunks by id (`702.19`, `613.7b`) or whole subsection (`613`), with the CR effective date.")]
-    async fn get_rules(&self, Parameters(input): Parameters<IdsInput>) -> Result<Json<crate::ops::Rules>, String> {
-        self.toolbox.get_rules(input).await.map(Json).map_err(|e| msg(&e))
+    #[tool(
+        name = "get_rules",
+        description = "Comprehensive Rules chunks by id (`702.19`, `613.7b`) or whole subsection (`613`), with the CR effective date."
+    )]
+    async fn get_rules(
+        &self,
+        Parameters(input): Parameters<IdsInput>,
+    ) -> Result<Json<crate::ops::Rules>, String> {
+        self.toolbox
+            .get_rules(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
-    #[tool(name = "search_rules", description = "Search the Comprehensive Rules by text (full-text, plus vector similarity when configured). Rules vocabulary works best.")]
-    async fn search_rules(&self, Parameters(input): Parameters<SearchInput>) -> Result<Json<crate::ops::Rules>, String> {
-        self.toolbox.search_rules(input).await.map(Json).map_err(|e| msg(&e))
+    #[tool(
+        name = "search_rules",
+        description = "Search the Comprehensive Rules by text (full-text, plus vector similarity when configured). Rules vocabulary works best."
+    )]
+    async fn search_rules(
+        &self,
+        Parameters(input): Parameters<SearchInput>,
+    ) -> Result<Json<crate::ops::Rules>, String> {
+        self.toolbox
+            .search_rules(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 
-    #[tool(name = "glossary", description = "Comprehensive Rules glossary entries for a term (exact matches first, then containing).")]
-    async fn glossary(&self, Parameters(input): Parameters<TermInput>) -> Result<Json<crate::ops::Glossary>, String> {
-        self.toolbox.glossary(input).await.map(Json).map_err(|e| msg(&e))
+    #[tool(
+        name = "glossary",
+        description = "Comprehensive Rules glossary entries for a term (exact matches first, then containing)."
+    )]
+    async fn glossary(
+        &self,
+        Parameters(input): Parameters<TermInput>,
+    ) -> Result<Json<crate::ops::Glossary>, String> {
+        self.toolbox
+            .glossary(input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
     }
 }
 
@@ -178,7 +289,10 @@ impl JudgeMcp {
 impl ServerHandler for JudgeMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("mtg-judgebot", env!("CARGO_PKG_VERSION")))
+            .with_server_info(Implementation::new(
+                "mtg-judgebot",
+                env!("CARGO_PKG_VERSION"),
+            ))
             .with_instructions(INSTRUCTIONS)
     }
 }
@@ -203,7 +317,10 @@ pub async fn serve_stdio(toolbox: Arc<Toolbox>) -> anyhow::Result<()> {
 /// per connection, and a legacy-mode session per `initialize` would live
 /// until the client sent `DELETE`, which a token holder need never do.
 #[must_use]
-pub fn http_service(toolbox: Arc<Toolbox>, allowed_hosts: Vec<String>) -> StreamableHttpService<JudgeMcp, LocalSessionManager> {
+pub fn http_service(
+    toolbox: Arc<Toolbox>,
+    allowed_hosts: Vec<String>,
+) -> StreamableHttpService<JudgeMcp, LocalSessionManager> {
     let mut config = StreamableHttpServerConfig::default();
     config.legacy_session_mode = false;
     config.json_response = true;
@@ -211,5 +328,9 @@ pub fn http_service(toolbox: Arc<Toolbox>, allowed_hosts: Vec<String>) -> Stream
         config.allowed_hosts = allowed_hosts;
     }
     let handler = JudgeMcp::new(toolbox);
-    StreamableHttpService::new(move || Ok(handler.clone()), Arc::new(LocalSessionManager::default()), config)
+    StreamableHttpService::new(
+        move || Ok(handler.clone()),
+        Arc::new(LocalSessionManager::default()),
+        config,
+    )
 }

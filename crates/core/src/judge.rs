@@ -6,8 +6,8 @@ use futures::future::try_join_all;
 use nonempty::NonEmpty;
 
 use crate::{
-    Ambiguous, Card, Extractor, JudgeError, MatchedVia, Qa, Question, RejectedAttempt, Rejection, Resolution, Resolver,
-    Retriever, Synthesizer, Validated, Verdict,
+    Ambiguous, Card, Extractor, JudgeError, MatchedVia, Qa, Question, RejectedAttempt, Rejection,
+    Resolution, Resolver, Retriever, Synthesizer, Validated, Verdict,
 };
 
 /// The ports `judge()` needs. `CallStore` is deliberately absent: persisting
@@ -27,11 +27,18 @@ pub struct Deps {
 ///
 /// # Errors
 /// See [`JudgeError`]. Ambiguity and not-found are reported for *all* spans at once.
-pub async fn judge(deps: &Deps, q: &Question, history: &[Qa]) -> Result<Verdict<Validated>, JudgeError> {
+pub async fn judge(
+    deps: &Deps,
+    q: &Question,
+    history: &[Qa],
+) -> Result<Verdict<Validated>, JudgeError> {
     let e = deps.extractor.extract(q, history).await?;
     // The verdict's source is stamped from here, not reported by the synthesis
     // model: `validate` takes an `AnswerableSource`, so this is the only way in.
-    let source = e.source.answerable().ok_or(JudgeError::OutOfScope(e.source))?;
+    let source = e
+        .source
+        .answerable()
+        .ok_or(JudgeError::OutOfScope(e.source))?;
     let resolutions = try_join_all(e.card_spans.iter().map(|s| deps.resolver.resolve(s))).await?;
     let cards = collect_resolved(resolutions)?;
     let mut ctx = deps.retriever.retrieve(q, &cards, &e).await?;
@@ -54,7 +61,10 @@ pub async fn judge(deps: &Deps, q: &Question, history: &[Qa]) -> Result<Verdict<
     // At INFO, not DEBUG: when the retry also fails, the *first* rejection is
     // usually what explains the second, and production runs at INFO.
     tracing::info!(%rejected, "verdict rejected; retrying synthesis once");
-    deps.synthesizer.answer(q, &mut ctx, Some(&rejected)).await?.validate(&ctx, source)
+    deps.synthesizer
+        .answer(q, &mut ctx, Some(&rejected))
+        .await?
+        .validate(&ctx, source)
 }
 
 /// Turn per-span resolutions into cards, or the first blocking error.
@@ -90,12 +100,19 @@ pub fn collect_resolved(resolutions: Vec<Resolution>) -> Result<Vec<Card>, Judge
                     cards.push(card);
                 }
             }
-            Resolution::Ambiguous { query, candidates, via } => ambiguous.push((Ambiguous { query, candidates }, via)),
+            Resolution::Ambiguous {
+                query,
+                candidates,
+                via,
+            } => ambiguous.push((Ambiguous { query, candidates }, via)),
             Resolution::NotFound { query } => missing.push(query),
         }
     }
     ambiguous.retain(|(a, via)| {
-        let dup = *via != MatchedVia::Fuzzy && a.candidates.iter().any(|cand| cards.iter().any(|c| c.id == cand.id));
+        let dup = *via != MatchedVia::Fuzzy
+            && a.candidates
+                .iter()
+                .any(|cand| cards.iter().any(|c| c.id == cand.id));
         if dup {
             tracing::debug!(span = %a.query, "ambiguous span duplicates a resolved card; dropped");
         }
@@ -128,7 +145,11 @@ fn card_mentions(card: &Card, span: &str) -> bool {
     }
     std::iter::once(card.name.as_str())
         .chain(card.faces.iter().map(|f| f.name.as_str()))
-        .any(|n| words(n).windows(needle.len()).any(|w| w == needle.as_slice()))
+        .any(|n| {
+            words(n)
+                .windows(needle.len())
+                .any(|w| w == needle.as_slice())
+        })
 }
 
 /// Lower-cased alphanumeric words of `text`.
@@ -143,8 +164,8 @@ fn words(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::{
-        CardId, Category, CategoryGuess, Citation, Confidence, Context, CrVersion, EmptyVerdict, Extraction,
-        Face, Layout, MatchedVia, RuleChunk, RuleId, Source, Unvalidated,
+        CardId, Category, CategoryGuess, Citation, Confidence, Context, CrVersion, EmptyVerdict,
+        Extraction, Face, Layout, MatchedVia, RuleChunk, RuleId, Source, Unvalidated,
     };
     use async_trait::async_trait;
     use std::{
@@ -170,8 +191,14 @@ mod tests {
     #[test]
     fn dedupes_resolved_cards() -> Result<(), JudgeError> {
         let cards = collect_resolved(vec![
-            Resolution::Resolved { card: card(1, "Bob"), via: MatchedVia::Alias },
-            Resolution::Resolved { card: card(1, "Bob"), via: MatchedVia::Exact },
+            Resolution::Resolved {
+                card: card(1, "Bob"),
+                via: MatchedVia::Alias,
+            },
+            Resolution::Resolved {
+                card: card(1, "Bob"),
+                via: MatchedVia::Exact,
+            },
         ])?;
         assert_eq!(cards.len(), 1);
         Ok(())
@@ -180,7 +207,9 @@ mod tests {
     #[test]
     fn ambiguous_beats_not_found() {
         let r = collect_resolved(vec![
-            Resolution::NotFound { query: "zzz".into() },
+            Resolution::NotFound {
+                query: "zzz".into(),
+            },
             ambiguous("Jace", NonEmpty::new(card(2, "Jace Beleren"))),
         ]);
         assert!(matches!(r, Err(JudgeError::AmbiguousCards(a)) if a.len() == 1));
@@ -188,17 +217,26 @@ mod tests {
 
     /// An ambiguous span from a non-fuzzy rung (the nickname + full-name shape).
     fn ambiguous(query: &str, candidates: NonEmpty<Card>) -> Resolution {
-        Resolution::Ambiguous { query: query.into(), candidates, via: MatchedVia::ShortName }
+        Resolution::Ambiguous {
+            query: query.into(),
+            candidates,
+            via: MatchedVia::ShortName,
+        }
     }
 
     #[test]
     fn not_found_reported() {
-        let r = collect_resolved(vec![Resolution::NotFound { query: "zzz".into() }]);
+        let r = collect_resolved(vec![Resolution::NotFound {
+            query: "zzz".into(),
+        }]);
         assert!(matches!(r, Err(JudgeError::CardsNotFound(m)) if m.head == "zzz"));
     }
 
     fn resolved(n: u128, name: &str) -> Resolution {
-        Resolution::Resolved { card: card(n, name), via: MatchedVia::Exact }
+        Resolution::Resolved {
+            card: card(n, name),
+            via: MatchedVia::Exact,
+        }
     }
 
     #[test]
@@ -206,9 +244,18 @@ mod tests {
         // "Ragavan" beside "Ragavan, Nimble Pilferer": the nickname's candidates include the resolved card.
         let cards = collect_resolved(vec![
             resolved(1, "Ragavan, Nimble Pilferer"),
-            ambiguous("Ragavan", NonEmpty::from((card(1, "Ragavan, Nimble Pilferer"), vec![card(2, "Ragavan (token)")]))),
+            ambiguous(
+                "Ragavan",
+                NonEmpty::from((
+                    card(1, "Ragavan, Nimble Pilferer"),
+                    vec![card(2, "Ragavan (token)")],
+                )),
+            ),
         ])?;
-        assert_eq!(cards.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Ragavan, Nimble Pilferer"]);
+        assert_eq!(
+            cards.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["Ragavan, Nimble Pilferer"]
+        );
         // Order does not matter: the resolved span may come after the ambiguous one.
         let cards = collect_resolved(vec![
             Resolution::Ambiguous {
@@ -225,7 +272,13 @@ mod tests {
         let cards = collect_resolved(vec![
             resolved(6, "Bruna, Light of Alabaster"),
             resolved(7, "Bruna, the Fading Light"),
-            ambiguous("Bruna", NonEmpty::from((card(6, "Bruna, Light of Alabaster"), vec![card(7, "Bruna, the Fading Light")]))),
+            ambiguous(
+                "Bruna",
+                NonEmpty::from((
+                    card(6, "Bruna, Light of Alabaster"),
+                    vec![card(7, "Bruna, the Fading Light")],
+                )),
+            ),
         ])?;
         assert_eq!(cards.len(), 2);
         Ok(())
@@ -246,23 +299,35 @@ mod tests {
                 via: MatchedVia::Fuzzy,
             },
         ]);
-        assert!(matches!(r, Err(JudgeError::AmbiguousCards(a)) if a.len() == 1 && a.head.query == "Urza"));
+        assert!(
+            matches!(r, Err(JudgeError::AmbiguousCards(a)) if a.len() == 1 && a.head.query == "Urza")
+        );
     }
 
     #[test]
     fn not_found_span_inside_a_resolved_name_is_a_duplicate() -> Result<(), JudgeError> {
         let cards = collect_resolved(vec![
             resolved(1, "Blood Moon"),
-            Resolution::NotFound { query: "MOON".into() },
-            Resolution::NotFound { query: "  moon ".into() },
-            Resolution::NotFound { query: "blood moon".into() },
+            Resolution::NotFound {
+                query: "MOON".into(),
+            },
+            Resolution::NotFound {
+                query: "  moon ".into(),
+            },
+            Resolution::NotFound {
+                query: "blood moon".into(),
+            },
         ])?;
         assert_eq!(cards.len(), 1);
         // Apostrophes split words: "urza" and "urza's" both name Urza's Tower.
         let cards = collect_resolved(vec![
             resolved(3, "Urza's Tower"),
-            Resolution::NotFound { query: "urza".into() },
-            Resolution::NotFound { query: "Urza's".into() },
+            Resolution::NotFound {
+                query: "urza".into(),
+            },
+            Resolution::NotFound {
+                query: "Urza's".into(),
+            },
         ])?;
         assert_eq!(cards.len(), 1);
         // A face name counts too.
@@ -274,8 +339,13 @@ mod tests {
             type_line: "Creature".into(),
         });
         let cards = collect_resolved(vec![
-            Resolution::Resolved { card: dfc, via: MatchedVia::Exact },
-            Resolution::NotFound { query: "insectile".into() },
+            Resolution::Resolved {
+                card: dfc,
+                via: MatchedVia::Exact,
+            },
+            Resolution::NotFound {
+                query: "insectile".into(),
+            },
         ])?;
         assert_eq!(cards.len(), 1);
         Ok(())
@@ -288,17 +358,40 @@ mod tests {
             resolved(1, "Blood Moon"),
             ambiguous("Jace", NonEmpty::new(card(2, "Jace Beleren"))),
         ]);
-        assert!(matches!(r, Err(JudgeError::AmbiguousCards(a)) if a.len() == 1 && a.head.query == "Jace"));
+        assert!(
+            matches!(r, Err(JudgeError::AmbiguousCards(a)) if a.len() == 1 && a.head.query == "Jace")
+        );
         // A not-found span that is not part of any resolved name.
-        let r = collect_resolved(vec![resolved(1, "Blood Moon"), Resolution::NotFound { query: "sun".into() }]);
+        let r = collect_resolved(vec![
+            resolved(1, "Blood Moon"),
+            Resolution::NotFound {
+                query: "sun".into(),
+            },
+        ]);
         assert!(matches!(r, Err(JudgeError::CardsNotFound(m)) if m.head == "sun"));
         // A substring of a word is not a mention: the user's card must not vanish.
-        for (name, span) in [("Moonmist", "moon"), ("Boltwing Marauder", "bolt"), ("Price of Progress", "ice"), ("Blood Moon", "lood")] {
-            let r = collect_resolved(vec![resolved(1, name), Resolution::NotFound { query: span.into() }]);
-            assert!(matches!(r, Err(JudgeError::CardsNotFound(ref m)) if m.head == span), "{name} / {span}: {r:?}");
+        for (name, span) in [
+            ("Moonmist", "moon"),
+            ("Boltwing Marauder", "bolt"),
+            ("Price of Progress", "ice"),
+            ("Blood Moon", "lood"),
+        ] {
+            let r = collect_resolved(vec![
+                resolved(1, name),
+                Resolution::NotFound { query: span.into() },
+            ]);
+            assert!(
+                matches!(r, Err(JudgeError::CardsNotFound(ref m)) if m.head == span),
+                "{name} / {span}: {r:?}"
+            );
         }
         // Words must be contiguous and in order.
-        let r = collect_resolved(vec![resolved(1, "Blood Moon"), Resolution::NotFound { query: "moon blood".into() }]);
+        let r = collect_resolved(vec![
+            resolved(1, "Blood Moon"),
+            Resolution::NotFound {
+                query: "moon blood".into(),
+            },
+        ]);
         assert!(matches!(r, Err(JudgeError::CardsNotFound(_))));
         // Only the duplicate is dropped; the other ambiguous span is reported.
         let r = collect_resolved(vec![
@@ -306,9 +399,14 @@ mod tests {
             ambiguous("the moon", NonEmpty::new(card(1, "Blood Moon"))),
             ambiguous("Jace", NonEmpty::new(card(2, "Jace Beleren"))),
         ]);
-        assert!(matches!(r, Err(JudgeError::AmbiguousCards(a)) if a.len() == 1 && a.head.query == "Jace"));
+        assert!(
+            matches!(r, Err(JudgeError::AmbiguousCards(a)) if a.len() == 1 && a.head.query == "Jace")
+        );
         // An empty span never matches by containment.
-        let r = collect_resolved(vec![resolved(1, "Blood Moon"), Resolution::NotFound { query: "  ".into() }]);
+        let r = collect_resolved(vec![
+            resolved(1, "Blood Moon"),
+            Resolution::NotFound { query: "  ".into() },
+        ]);
         assert!(matches!(r, Err(JudgeError::CardsNotFound(_))));
     }
 
@@ -321,7 +419,10 @@ mod tests {
             Ok(Extraction {
                 card_spans: vec![],
                 concepts: vec![],
-                primary: CategoryGuess { category: Category::KeywordAbilities, confidence: Confidence::High },
+                primary: CategoryGuess {
+                    category: Category::KeywordAbilities,
+                    confidence: Confidence::High,
+                },
                 secondary: vec![],
                 source: self.0,
             })
@@ -332,14 +433,21 @@ mod tests {
     #[async_trait]
     impl Resolver for StubResolver {
         async fn resolve(&self, span: &str) -> Result<Resolution, JudgeError> {
-            Ok(Resolution::NotFound { query: span.to_owned() })
+            Ok(Resolution::NotFound {
+                query: span.to_owned(),
+            })
         }
     }
 
     struct StubRetriever;
     #[async_trait]
     impl Retriever for StubRetriever {
-        async fn retrieve(&self, _q: &Question, _c: &[Card], _e: &Extraction) -> Result<Context, JudgeError> {
+        async fn retrieve(
+            &self,
+            _q: &Question,
+            _c: &[Card],
+            _e: &Extraction,
+        ) -> Result<Context, JudgeError> {
             Ok(Context {
                 rules: vec![RuleChunk {
                     id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?,
@@ -348,7 +456,8 @@ mod tests {
                     heading: "Lifelink".into(),
                     body: "gain that much life".into(),
                     examples: vec![],
-                    cr_version: CrVersion::try_new("20250801".to_owned()).map_err(anyhow::Error::from)?,
+                    cr_version: CrVersion::try_new("20250801".to_owned())
+                        .map_err(anyhow::Error::from)?,
                 }],
                 ..Context::default()
             })
@@ -377,12 +486,20 @@ mod tests {
         /// Per call: the history length and the rejection it was shown.
         fn seen(&self) -> Vec<(usize, Option<Rejection>)> {
             let seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
-            seen.iter().map(|(h, r)| (*h, r.as_ref().map(|r| r.rejection().clone()))).collect()
+            seen.iter()
+                .map(|(h, r)| (*h, r.as_ref().map(|r| r.rejection().clone())))
+                .collect()
         }
         /// The rejected answers the retries were shown.
         fn retry_answers(&self) -> Vec<String> {
             let seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
-            seen.iter().filter_map(|(_, r)| r.as_ref().and_then(RejectedAttempt::answer).map(ToOwned::to_owned)).collect()
+            seen.iter()
+                .filter_map(|(_, r)| {
+                    r.as_ref()
+                        .and_then(RejectedAttempt::answer)
+                        .map(ToOwned::to_owned)
+                })
+                .collect()
         }
     }
     #[async_trait]
@@ -398,8 +515,13 @@ mod tests {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .pop_front()
-                .ok_or_else(|| anyhow::anyhow!("scripted synthesizer called more times than scripted"))?;
-            self.seen.lock().unwrap_or_else(PoisonError::into_inner).push((ctx.history.len(), rejected.cloned()));
+                .ok_or_else(|| {
+                    anyhow::anyhow!("scripted synthesizer called more times than scripted")
+                })?;
+            self.seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((ctx.history.len(), rejected.cloned()));
             if quote == MALFORMED {
                 let json = format!(
                     r#"{{"answer":"{ANSWER}","confidence":"high","category":"keyword_abilities",
@@ -408,8 +530,20 @@ mod tests {
                 return serde_json::from_str(&json).map_err(|e| anyhow::Error::from(e).into());
             }
             let id = RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?;
-            let citations = if quote.is_empty() { vec![] } else { vec![Citation::Rule { id, quote: crate::Quote::try_new(quote).map_err(anyhow::Error::from)? }] };
-            Ok(Verdict::new(ANSWER.into(), Confidence::High, citations, Category::KeywordAbilities))
+            let citations = if quote.is_empty() {
+                vec![]
+            } else {
+                vec![Citation::Rule {
+                    id,
+                    quote: crate::Quote::try_new(quote).map_err(anyhow::Error::from)?,
+                }]
+            };
+            Ok(Verdict::new(
+                ANSWER.into(),
+                Confidence::High,
+                citations,
+                Category::KeywordAbilities,
+            ))
         }
     }
 
@@ -418,7 +552,10 @@ mod tests {
     }
 
     fn deps_from(source: Source, quotes: Vec<&'static str>) -> (Deps, Arc<ScriptedSynth>) {
-        let synth = Arc::new(ScriptedSynth { quotes: Mutex::new(quotes.into()), seen: Mutex::new(vec![]) });
+        let synth = Arc::new(ScriptedSynth {
+            quotes: Mutex::new(quotes.into()),
+            seen: Mutex::new(vec![]),
+        });
         let d = Deps {
             extractor: Arc::new(StubExtractor(source)),
             resolver: Arc::new(StubResolver),
@@ -429,13 +566,19 @@ mod tests {
     }
 
     fn q() -> Question {
-        Question { thread_id: "t".into(), text: "does lifelink stack?".into() }
+        Question {
+            thread_id: "t".into(),
+            text: "does lifelink stack?".into(),
+        }
     }
 
     #[test]
     fn history_reaches_context_and_first_good_verdict_wins() -> Result<(), JudgeError> {
         let (d, synth) = deps(vec!["gain that much life"]);
-        let history = vec![Qa { question: "q0".into(), answer: "a0".into() }];
+        let history = vec![Qa {
+            question: "q0".into(),
+            answer: "a0".into(),
+        }];
         let v = futures::executor::block_on(judge(&d, &q(), &history))?;
         assert_eq!(v.cr_version().as_ref(), "20250801");
         assert_eq!(v.source(), Source::Cr);
@@ -457,7 +600,10 @@ mod tests {
             let (d, synth) = deps_from(source, vec!["gain that much life"]);
             let r = futures::executor::block_on(judge(&d, &q(), &[]));
             assert!(matches!(r, Err(JudgeError::OutOfScope(s)) if s == source));
-            assert!(synth.seen().is_empty(), "synthesis must not run for {source:?}");
+            assert!(
+                synth.seen().is_empty(),
+                "synthesis must not run for {source:?}"
+            );
         }
     }
 
@@ -468,7 +614,9 @@ mod tests {
         assert_eq!(v.citations().len(), 1);
         let seen = synth.seen();
         assert_eq!(seen.len(), 2);
-        assert!(matches!(&seen.get(1), Some((0, Some(Rejection::BadCitation(Citation::Rule { quote, .. })))) if quote.as_ref() == "not in the rule"));
+        assert!(
+            matches!(&seen.get(1), Some((0, Some(Rejection::BadCitation(Citation::Rule { quote, .. })))) if quote.as_ref() == "not in the rule")
+        );
         // The retry is a fresh conversation: it is handed the answer it is asked to correct.
         assert_eq!(synth.retry_answers(), vec![ANSWER.to_owned()]);
         Ok(())
@@ -481,11 +629,17 @@ mod tests {
         assert_eq!(v.citations().len(), 1);
         let seen = synth.seen();
         assert_eq!(seen.len(), 2);
-        assert!(matches!(&seen.get(1), Some((0, Some(Rejection::Empty(EmptyVerdict::NoCitations))))));
+        assert!(matches!(
+            &seen.get(1),
+            Some((0, Some(Rejection::Empty(EmptyVerdict::NoCitations))))
+        ));
 
         let (d, _) = deps(vec!["", ""]);
         let r = futures::executor::block_on(judge(&d, &q(), &[]));
-        assert!(matches!(r, Err(JudgeError::EmptyVerdict(EmptyVerdict::NoCitations))));
+        assert!(matches!(
+            r,
+            Err(JudgeError::EmptyVerdict(EmptyVerdict::NoCitations))
+        ));
         Ok(())
     }
 
@@ -521,7 +675,9 @@ mod tests {
     fn bad_citation_twice_is_an_error() {
         let (d, synth) = deps(vec!["bad one", "bad two"]);
         let r = futures::executor::block_on(judge(&d, &q(), &[]));
-        assert!(matches!(r, Err(JudgeError::BadCitation(Citation::Rule { quote, .. })) if quote.as_ref() == "bad two"));
+        assert!(
+            matches!(r, Err(JudgeError::BadCitation(Citation::Rule { quote, .. })) if quote.as_ref() == "bad two")
+        );
         assert_eq!(synth.seen().len(), 2);
     }
 }

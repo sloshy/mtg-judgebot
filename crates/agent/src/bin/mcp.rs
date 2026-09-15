@@ -20,6 +20,9 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let toolbox = Toolbox::from_env(Harness::Mcp).await?;
-    tracing::info!(pipeline = toolbox.has_pipeline(), "judge-mcp serving on stdio");
+    tracing::info!(
+        pipeline = toolbox.has_pipeline(),
+        "judge-mcp serving on stdio"
+    );
     serve_stdio(Arc::new(toolbox)).await
 }

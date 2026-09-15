@@ -9,7 +9,11 @@
 //! including `$defs`. Removed constraints are still enforced client-side by
 //! serde/nutype when the response is deserialized.
 
-use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings, transform::{Transform, transform_subschemas}};
+use schemars::{
+    JsonSchema, Schema, SchemaGenerator,
+    generate::SchemaSettings,
+    transform::{Transform, transform_subschemas},
+};
 use serde_json::Value;
 
 /// Keys Anthropic rejects; stripped from every subschema.
@@ -30,8 +34,18 @@ pub const UNSUPPORTED_KEYS: &[&str] = &[
 ];
 
 /// String formats Anthropic accepts; any other `format` is stripped.
-pub const SUPPORTED_FORMATS: &[&str] =
-    &["date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"];
+pub const SUPPORTED_FORMATS: &[&str] = &[
+    "date-time",
+    "time",
+    "date",
+    "duration",
+    "email",
+    "hostname",
+    "uri",
+    "ipv4",
+    "ipv6",
+    "uuid",
+];
 
 /// Rewrites a schema in place so it fits Anthropic's supported subset.
 #[derive(Clone, Copy, Debug, Default)]
@@ -40,7 +54,9 @@ pub struct AnthropicSubset;
 fn is_object(obj: &serde_json::Map<String, Value>) -> bool {
     obj.contains_key("properties")
         || obj.get("type").is_some_and(|t| {
-            t == "object" || t.as_array().is_some_and(|a| a.iter().any(|x| x == "object"))
+            t == "object"
+                || t.as_array()
+                    .is_some_and(|a| a.iter().any(|x| x == "object"))
         })
 }
 
@@ -71,7 +87,9 @@ impl Transform for AnthropicSubset {
 #[must_use]
 pub fn anthropic_schema<T: JsonSchema>() -> Value {
     let settings = SchemaSettings::draft2020_12().with_transform(AnthropicSubset);
-    SchemaGenerator::new(settings).into_root_schema_for::<T>().to_value()
+    SchemaGenerator::new(settings)
+        .into_root_schema_for::<T>()
+        .to_value()
 }
 
 /// Apply the subset to an already generated (untransformed) schema, as a
@@ -109,11 +127,18 @@ mod tests {
                 assert!(!m.contains_key(*k), "{k} present: {schema:#}");
             }
             if let Some(f) = m.get("format") {
-                assert!(f.as_str().is_some_and(|s| SUPPORTED_FORMATS.contains(&s)), "bad format {f}: {schema:#}");
+                assert!(
+                    f.as_str().is_some_and(|s| SUPPORTED_FORMATS.contains(&s)),
+                    "bad format {f}: {schema:#}"
+                );
             }
             if is_object(m) {
                 objects += 1;
-                assert_eq!(m.get("additionalProperties"), Some(&Value::Bool(false)), "open object: {schema:#}");
+                assert_eq!(
+                    m.get("additionalProperties"),
+                    Some(&Value::Bool(false)),
+                    "open object: {schema:#}"
+                );
             }
         });
         assert!(objects >= 1, "{schema:#}");
@@ -121,8 +146,14 @@ mod tests {
 
     #[test]
     fn transforming_after_generation_equals_generating_with_the_transform() {
-        assert_eq!(to_anthropic(&judge_llm::schema_of::<Verdict>()), anthropic_schema::<Verdict>());
-        assert_eq!(to_anthropic(&judge_llm::schema_of::<Outer>()), anthropic_schema::<Outer>());
+        assert_eq!(
+            to_anthropic(&judge_llm::schema_of::<Verdict>()),
+            anthropic_schema::<Verdict>()
+        );
+        assert_eq!(
+            to_anthropic(&judge_llm::schema_of::<Outer>()),
+            anthropic_schema::<Outer>()
+        );
     }
 
     #[test]

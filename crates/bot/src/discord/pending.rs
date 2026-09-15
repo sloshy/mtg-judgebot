@@ -279,8 +279,15 @@ mod tests {
         assert_eq!(store.len(), MAX_PENDING);
         let newest = store.insert_at(pending("u1"), t0 + Duration::from_secs(1));
         assert_eq!(store.len(), MAX_PENDING);
-        assert_eq!(store.take_for_at(first, "u1", t0 + Duration::from_secs(2)), Err(TakeError::Missing));
-        assert!(store.take_for_at(newest, "u1", t0 + Duration::from_secs(2)).is_ok());
+        assert_eq!(
+            store.take_for_at(first, "u1", t0 + Duration::from_secs(2)),
+            Err(TakeError::Missing)
+        );
+        assert!(
+            store
+                .take_for_at(newest, "u1", t0 + Duration::from_secs(2))
+                .is_ok()
+        );
     }
 
     #[test]

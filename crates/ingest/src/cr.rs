@@ -130,8 +130,12 @@ pub fn find_cr_txt_url(html: &str) -> Option<String> {
     for quote in ['"', '\''] {
         let opener = format!("href={quote}");
         for (i, _) in html.match_indices(opener.as_str()) {
-            let Some(rest) = html.get(i + opener.len()..) else { continue };
-            let Some(href) = rest.find(quote).and_then(|end| rest.get(..end)) else { continue };
+            let Some(rest) = html.get(i + opener.len()..) else {
+                continue;
+            };
+            let Some(href) = rest.find(quote).and_then(|end| rest.get(..end)) else {
+                continue;
+            };
             let href = href.trim();
             let file = href.rsplit('/').next().unwrap_or(href);
             let file = file.split(['?', '#']).next().unwrap_or(file);
@@ -172,7 +176,8 @@ async fn fetch(source: &str, cache_dir: &Path) -> anyhow::Result<String> {
         .with_context(|| format!("GET {source}"))?;
     let bytes = resp.bytes().await?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    std::fs::create_dir_all(cache_dir).with_context(|| format!("creating {}", cache_dir.display()))?;
+    std::fs::create_dir_all(cache_dir)
+        .with_context(|| format!("creating {}", cache_dir.display()))?;
     std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
     Ok(text)
 }
@@ -182,8 +187,21 @@ fn cache_file_name(url: &str) -> String {
     let last = url.rsplit('/').next().unwrap_or(url);
     let last = last.split(['?', '#']).next().unwrap_or(last);
     let decoded = percent_decode(last);
-    let safe: String = decoded.chars().map(|c| if c.is_alphanumeric() || " ._-".contains(c) { c } else { '_' }).collect();
-    if safe.trim().is_empty() { "MagicCompRules.txt".to_owned() } else { safe }
+    let safe: String = decoded
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " ._-".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.trim().is_empty() {
+        "MagicCompRules.txt".to_owned()
+    } else {
+        safe
+    }
 }
 
 fn percent_decode(s: &str) -> String {
@@ -226,18 +244,30 @@ enum Line<'a> {
     Continuation(&'a str),
     Example(&'a str),
     /// `702. Keyword Abilities`
-    Section { title: &'a str },
+    Section {
+        title: &'a str,
+    },
     /// `702.19. Trample`
-    Rule { id: &'a str, text: &'a str },
+    Rule {
+        id: &'a str,
+        text: &'a str,
+    },
     /// `702.19b The controller …`
-    Leaf { id: &'a str, parent: &'a str, text: &'a str },
+    Leaf {
+        id: &'a str,
+        parent: &'a str,
+        text: &'a str,
+    },
     /// Anything else (prose, part headers such as `7. Additional Rules`, `Glossary`).
     Other(&'a str),
 }
 
 fn classify(raw: &str) -> Line<'_> {
     let line = raw.trim_end_matches(['\r', '\n']);
-    if line.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}').is_empty() {
+    if line
+        .trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+        .is_empty()
+    {
         return Line::Blank;
     }
     if line.starts_with(' ') || line.starts_with('\t') {
@@ -255,11 +285,14 @@ fn classify(raw: &str) -> Line<'_> {
 
 /// `702. Title` | `702.19. text` | `702.19b text`, ASCII digits only.
 fn classify_numbered(line: &str) -> Option<Line<'_>> {
-    line.get(..3).filter(|s| s.bytes().all(|b| b.is_ascii_digit()))?;
+    line.get(..3)
+        .filter(|s| s.bytes().all(|b| b.is_ascii_digit()))?;
     let after = line.get(3..)?;
     let after = after.strip_prefix('.')?;
     if let Some(title) = after.strip_prefix(' ') {
-        return Some(Line::Section { title: title.trim() });
+        return Some(Line::Section {
+            title: title.trim(),
+        });
     }
     let digits = after.bytes().take_while(u8::is_ascii_digit).count();
     if digits == 0 {
@@ -269,10 +302,16 @@ fn classify_numbered(line: &str) -> Option<Line<'_>> {
     let tail = after.get(digits..)?;
     // `702.19. Trample` is the usual form; `606.5 If the total cost…` (no period) also occurs.
     if let Some(text) = tail.strip_prefix(". ").or_else(|| tail.strip_prefix(' ')) {
-        return Some(Line::Rule { id: rule_id, text: text.trim() });
+        return Some(Line::Rule {
+            id: rule_id,
+            text: text.trim(),
+        });
     }
     if tail == "." {
-        return Some(Line::Rule { id: rule_id, text: "" });
+        return Some(Line::Rule {
+            id: rule_id,
+            text: "",
+        });
     }
     // One or two lowercase letters (`704.5z`, `704.5aa`), optionally followed by a
     // period (`119.1d. In a two-player Brawl game…`), then a space.
@@ -283,7 +322,11 @@ fn classify_numbered(line: &str) -> Option<Line<'_>> {
     let rest = tail.get(letters..)?;
     let text = rest.strip_prefix('.').unwrap_or(rest).strip_prefix(' ')?;
     let leaf_id = line.get(..3 + 1 + digits + letters)?;
-    Some(Line::Leaf { id: leaf_id, parent: rule_id, text: text.trim() })
+    Some(Line::Leaf {
+        id: leaf_id,
+        parent: rule_id,
+        text: text.trim(),
+    })
 }
 
 /// A rule under construction: its own line, sub-rule lines, and examples.
@@ -329,9 +372,16 @@ fn heading_of(text: &str, section_title: &str) -> String {
     if text.is_empty() {
         return section_title.to_owned();
     }
-    let end = text.find(". ").or_else(|| text.strip_suffix('.').map(str::len)).unwrap_or(text.len());
+    let end = text
+        .find(". ")
+        .or_else(|| text.strip_suffix('.').map(str::len))
+        .unwrap_or(text.len());
     let head = text.get(..end).unwrap_or(text).trim();
-    let head = if head.is_empty() || head.chars().count() > MAX_HEADING_CHARS { section_title } else { head };
+    let head = if head.is_empty() || head.chars().count() > MAX_HEADING_CHARS {
+        section_title
+    } else {
+        head
+    };
     head.to_owned()
 }
 
@@ -361,7 +411,9 @@ impl Parser {
 
     fn toc(&mut self, line: Line<'_>) {
         match line {
-            Line::Other(t) if t.starts_with("These rules are effective as of") => self.effective_line = Some(t.to_owned()),
+            Line::Other(t) if t.starts_with("These rules are effective as of") => {
+                self.effective_line = Some(t.to_owned());
+            }
             Line::Section { title } => title.clone_into(&mut self.section_title),
             Line::Rule { id, text } => {
                 self.mode = Mode::Rules;
@@ -389,12 +441,18 @@ impl Parser {
                 }
                 if let Some(cur) = self.current.as_mut() {
                     cur.lines.push(format!("{id} {text}"));
-                    cur.leaves.push(LeafBuilder { id: id.to_owned(), line: format!("{id} {text}"), examples: Vec::new() });
+                    cur.leaves.push(LeafBuilder {
+                        id: id.to_owned(),
+                        line: format!("{id} {text}"),
+                        examples: Vec::new(),
+                    });
                 }
                 self.last = Last::LeafLine;
             }
             Line::Example(t) => {
-                let Some(cur) = self.current.as_mut() else { return };
+                let Some(cur) = self.current.as_mut() else {
+                    return;
+                };
                 cur.examples.push(t.to_owned());
                 if matches!(self.last, Last::LeafLine | Last::LeafExample) {
                     if let Some(leaf) = cur.leaves.last_mut() {
@@ -433,7 +491,11 @@ impl Parser {
                     l.push_str(t);
                 }
             }
-            Line::Section { .. } | Line::Rule { .. } | Line::Leaf { .. } | Line::Example(_) | Line::Other(_) => {
+            Line::Section { .. }
+            | Line::Rule { .. }
+            | Line::Leaf { .. }
+            | Line::Example(_)
+            | Line::Other(_) => {
                 // Glossary text is free prose; use the raw line rather than the classification.
                 let t = raw.trim_end_matches(['\r', '\n']).trim();
                 if self.glossary_open {
@@ -461,9 +523,18 @@ pub fn parse(text: &str, source: &str) -> anyhow::Result<ParsedCr> {
     p.rules.extend(p.current.take());
 
     let cr_version = version_from_source(source)
-        .or_else(|| p.effective_line.as_deref().and_then(version_from_effective_line))
-        .ok_or_else(|| anyhow::anyhow!("cannot determine CR version from {source:?} or an 'effective as of' line"))?;
-    let cr_version = CrVersion::try_new(cr_version).map_err(|e| anyhow::anyhow!("bad CR version: {e}"))?;
+        .or_else(|| {
+            p.effective_line
+                .as_deref()
+                .and_then(version_from_effective_line)
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot determine CR version from {source:?} or an 'effective as of' line"
+            )
+        })?;
+    let cr_version =
+        CrVersion::try_new(cr_version).map_err(|e| anyhow::anyhow!("bad CR version: {e}"))?;
 
     let mut rules = Vec::with_capacity(p.rules.len() * 3);
     for r in p.rules {
@@ -499,15 +570,24 @@ pub fn parse(text: &str, source: &str) -> anyhow::Result<ParsedCr> {
             let mut it = block.into_iter();
             let term = it.next()?.trim().to_owned();
             let text = it.collect::<Vec<_>>().join("\n");
-            (!term.is_empty() && !text.trim().is_empty() && seen.insert(term.to_lowercase())).then_some(GlossaryEntry { term, text })
+            (!term.is_empty() && !text.trim().is_empty() && seen.insert(term.to_lowercase()))
+                .then_some(GlossaryEntry { term, text })
         })
         .collect();
 
-    Ok(ParsedCr { cr_version, rules, glossary })
+    Ok(ParsedCr {
+        cr_version,
+        rules,
+        glossary,
+    })
 }
 
 fn new_rule(id: &str, text: &str, section_title: &str) -> RuleBuilder {
-    let line = if text.is_empty() { format!("{id}.") } else { format!("{id}. {text}") };
+    let line = if text.is_empty() {
+        format!("{id}.")
+    } else {
+        format!("{id}. {text}")
+    };
     RuleBuilder {
         id: id.to_owned(),
         subsection: id.get(..3).unwrap_or(id).to_owned(),
@@ -537,7 +617,12 @@ fn append_continuation(cur: &mut RuleBuilder, last: Last, t: &str) {
             if let Some(e) = cur.examples.last_mut() {
                 extend(e, t);
             }
-            if let Some(e) = cur.leaves.last_mut().and_then(|l| l.examples.last_mut()).filter(|_| last == Last::LeafExample) {
+            if let Some(e) = cur
+                .leaves
+                .last_mut()
+                .and_then(|l| l.examples.last_mut())
+                .filter(|_| last == Last::LeafExample)
+            {
                 extend(e, t);
             }
         }
@@ -570,16 +655,34 @@ pub fn version_from_source(source: &str) -> Option<String> {
 #[must_use]
 pub fn version_from_effective_line(line: &str) -> Option<String> {
     const MONTHS: [&str; 12] = [
-        "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
     ];
     let rest = line.split("as of").nth(1)?;
-    let words: Vec<&str> = rest.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = rest
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
     let (mi, month) = words.iter().enumerate().find_map(|(i, w)| {
-        MONTHS.iter().position(|m| m.eq_ignore_ascii_case(w)).map(|p| (i, p + 1))
+        MONTHS
+            .iter()
+            .position(|m| m.eq_ignore_ascii_case(w))
+            .map(|p| (i, p + 1))
     })?;
     let day: u32 = words.get(mi + 1)?.parse().ok()?;
     let year: u32 = words.get(mi + 2)?.parse().ok()?;
-    ((1..=31).contains(&day) && (1993..=9999).contains(&year)).then(|| format!("{year:04}{month:02}{day:02}"))
+    ((1..=31).contains(&day) && (1993..=9999).contains(&year))
+        .then(|| format!("{year:04}{month:02}{day:02}"))
 }
 
 /// Upsert rules and glossary in one transaction; rows from other CR versions are removed
@@ -594,16 +697,20 @@ async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
     let version = parsed.cr_version.as_ref().to_owned();
     let mut tx = pool.begin().await?;
     // Serializes with the retirement pass, which rewrites the same rows.
-    sqlx::query!("SELECT pg_advisory_xact_lock($1)", judge_bot::db::CALLS_REWRITE_LOCK)
-        .execute(&mut *tx)
-        .await
-        .context("locking calls for renumbering")?;
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock($1)",
+        judge_bot::db::CALLS_REWRITE_LOCK
+    )
+    .execute(&mut *tx)
+    .await
+    .context("locking calls for renumbering")?;
 
     let renumbered = renumber_map_from_db(&mut tx, parsed).await?;
 
     for batch in parsed.rules.chunks(BATCH) {
-        let mut qb: QueryBuilder<Postgres> =
-            QueryBuilder::new("INSERT INTO rules (id, parent_id, subsection, heading, body, examples, cr_version) ");
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "INSERT INTO rules (id, parent_id, subsection, heading, body, examples, cr_version) ",
+        );
         qb.push_values(batch, |mut b, r| {
             b.push_bind(r.id.as_ref().to_owned())
                 .push_bind(r.parent_id.as_ref().map(|p| p.as_ref().to_owned()))
@@ -619,7 +726,10 @@ async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
              embedding = CASE WHEN rules.heading IS DISTINCT FROM EXCLUDED.heading OR rules.body IS DISTINCT FROM EXCLUDED.body \
              OR rules.examples IS DISTINCT FROM EXCLUDED.examples THEN NULL ELSE rules.embedding END",
         );
-        qb.build().execute(&mut *tx).await.context("upserting rules")?;
+        qb.build()
+            .execute(&mut *tx)
+            .await
+            .context("upserting rules")?;
     }
     let stale_rules = sqlx::query!("DELETE FROM rules WHERE cr_version <> $1", version)
         .execute(&mut *tx)
@@ -628,15 +738,21 @@ async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
         .rows_affected();
 
     for batch in parsed.glossary.chunks(BATCH) {
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("INSERT INTO glossary (term, text, cr_version) ");
+        let mut qb: QueryBuilder<Postgres> =
+            QueryBuilder::new("INSERT INTO glossary (term, text, cr_version) ");
         qb.push_values(batch, |mut b, g| {
-            b.push_bind(g.term.clone()).push_bind(g.text.clone()).push_bind(version.clone());
+            b.push_bind(g.term.clone())
+                .push_bind(g.text.clone())
+                .push_bind(version.clone());
         });
         qb.push(
             " ON CONFLICT (term) DO UPDATE SET text = EXCLUDED.text, cr_version = EXCLUDED.cr_version, \
              embedding = CASE WHEN glossary.text IS DISTINCT FROM EXCLUDED.text THEN NULL ELSE glossary.embedding END",
         );
-        qb.build().execute(&mut *tx).await.context("upserting glossary")?;
+        qb.build()
+            .execute(&mut *tx)
+            .await
+            .context("upserting glossary")?;
     }
     let stale_glossary = sqlx::query!("DELETE FROM glossary WHERE cr_version <> $1", version)
         .execute(&mut *tx)
@@ -671,7 +787,10 @@ async fn renumber_map_from_db(
         .fetch_all(&mut **tx)
         .await
         .context("reading stored rules for renumbering")?;
-    if rows.iter().any(|r| r.cr_version == parsed.cr_version.as_ref()) {
+    if rows
+        .iter()
+        .any(|r| r.cr_version == parsed.cr_version.as_ref())
+    {
         return Ok(BTreeMap::new());
     }
     let old: Vec<StoredRule> = rows
@@ -707,10 +826,15 @@ async fn relocate_calls(
     let mut changed = 0u64;
     for c in calls {
         if let Some((citations, answer)) = rewrite_call(&c.citations, &c.answer, map) {
-            sqlx::query!("UPDATE calls SET citations = $2, answer = $3 WHERE id = $1", c.id, citations, answer)
-                .execute(&mut **tx)
-                .await
-                .context("relocating call")?;
+            sqlx::query!(
+                "UPDATE calls SET citations = $2, answer = $3 WHERE id = $1",
+                c.id,
+                citations,
+                answer
+            )
+            .execute(&mut **tx)
+            .await
+            .context("relocating call")?;
             tracing::info!(call = %c.id, "call relocated to renumbered rules");
             changed += 1;
         }
@@ -723,18 +847,25 @@ async fn relocate_calls(
 /// subsection lists the code was built with; stale rows are removed.
 async fn sync_categories(tx: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
     let ids: Vec<&str> = Category::ALL.iter().map(|c| c.id()).collect();
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("INSERT INTO categories (id, label, subsections) ");
+    let mut qb: QueryBuilder<Postgres> =
+        QueryBuilder::new("INSERT INTO categories (id, label, subsections) ");
     qb.push_values(Category::ALL, |mut b, c| {
         let subs: Vec<String> = c.subsections().iter().map(|s| (*s).to_owned()).collect();
         b.push_bind(c.id()).push_bind(c.label()).push_bind(subs);
     });
     qb.push(" ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, subsections = EXCLUDED.subsections");
-    qb.build().execute(&mut **tx).await.context("upserting categories")?;
-    let stale = sqlx::query!("DELETE FROM categories WHERE id <> ALL($1)", &ids as &[&str])
+    qb.build()
         .execute(&mut **tx)
         .await
-        .context("deleting stale categories")?
-        .rows_affected();
+        .context("upserting categories")?;
+    let stale = sqlx::query!(
+        "DELETE FROM categories WHERE id <> ALL($1)",
+        &ids as &[&str]
+    )
+    .execute(&mut **tx)
+    .await
+    .context("deleting stale categories")?
+    .rows_affected();
     tracing::info!(categories = ids.len(), stale, "synced categories");
     Ok(())
 }
@@ -753,7 +884,10 @@ mod tests {
     }
 
     fn find<'a>(p: &'a ParsedCr, id: &str) -> anyhow::Result<&'a RuleChunk> {
-        p.rules.iter().find(|r| r.id.as_ref() == id).ok_or_else(|| anyhow::anyhow!("rule {id} not found"))
+        p.rules
+            .iter()
+            .find(|r| r.id.as_ref() == id)
+            .ok_or_else(|| anyhow::anyhow!("rule {id} not found"))
     }
 
     #[test]
@@ -771,25 +905,44 @@ mod tests {
 
     #[test]
     fn find_cr_txt_url_needs_a_txt_link() {
-        assert_eq!(find_cr_txt_url("<a href=\"https://x/MagicCompRules 20260819.pdf\">"), None);
+        assert_eq!(
+            find_cr_txt_url("<a href=\"https://x/MagicCompRules 20260819.pdf\">"),
+            None
+        );
         assert_eq!(find_cr_txt_url(""), None);
         // A versionless link still counts; run_latest then loads it unconditionally.
-        assert_eq!(find_cr_txt_url("<a href=\"/MagicCompRules.txt\">"), Some("/MagicCompRules.txt".to_owned()));
+        assert_eq!(
+            find_cr_txt_url("<a href=\"/MagicCompRules.txt\">"),
+            Some("/MagicCompRules.txt".to_owned())
+        );
     }
 
     #[test]
     fn fixture_is_crlf_and_has_unicode() {
-        assert!(SAMPLE.contains("\r\n"), "fixture should keep Windows line endings");
-        assert!(SAMPLE.contains('\u{2019}') || SAMPLE.contains('\u{201c}'), "fixture should contain Unicode quotes");
+        assert!(
+            SAMPLE.contains("\r\n"),
+            "fixture should keep Windows line endings"
+        );
+        assert!(
+            SAMPLE.contains('\u{2019}') || SAMPLE.contains('\u{201c}'),
+            "fixture should contain Unicode quotes"
+        );
     }
 
     #[test]
     fn toc_lines_produce_no_rows() -> R {
         let p = parsed()?;
         // The TOC lists every section; only 100, 613, 702 and 707 have bodies in the sample.
-        let subsections: std::collections::BTreeSet<&str> = p.rules.iter().map(|r| r.subsection.as_ref()).collect();
-        assert_eq!(subsections.into_iter().collect::<Vec<_>>(), vec!["100", "613", "702", "707"]);
-        assert!(p.rules.iter().all(|r| r.id.as_ref().contains('.')), "no section-only rows");
+        let subsections: std::collections::BTreeSet<&str> =
+            p.rules.iter().map(|r| r.subsection.as_ref()).collect();
+        assert_eq!(
+            subsections.into_iter().collect::<Vec<_>>(),
+            vec!["100", "613", "702", "707"]
+        );
+        assert!(
+            p.rules.iter().all(|r| r.id.as_ref().contains('.')),
+            "no section-only rows"
+        );
         assert!(!p.rules.iter().any(|r| r.body.is_empty()));
         Ok(())
     }
@@ -803,7 +956,10 @@ mod tests {
         assert!(r.body.starts_with("613.1. The values of an object"));
         for letter in ['a', 'b', 'c', 'd', 'e', 'f', 'g'] {
             let leaf_id = format!("613.1{letter}");
-            assert!(r.body.contains(&format!("\n{leaf_id} Layer")), "body lacks {leaf_id}");
+            assert!(
+                r.body.contains(&format!("\n{leaf_id} Layer")),
+                "body lacks {leaf_id}"
+            );
             let leaf = find(&p, &leaf_id)?;
             assert_eq!(leaf.parent_id.as_ref().map(AsRef::as_ref), Some("613.1"));
             assert_eq!(leaf.subsection.as_ref(), "613");
@@ -814,7 +970,11 @@ mod tests {
         assert!(!r.body.contains("613.2"));
         // The first sentence is prose (> MAX_HEADING_CHARS), so the section title is the heading.
         assert_eq!(r.heading, "Interaction of Continuous Effects");
-        let n613 = p.rules.iter().filter(|x| x.parent_id.is_none() && x.subsection.as_ref() == "613").count();
+        let n613 = p
+            .rules
+            .iter()
+            .filter(|x| x.parent_id.is_none() && x.subsection.as_ref() == "613")
+            .count();
         assert!(n613 >= 8, "{n613}");
         Ok(())
     }
@@ -825,17 +985,38 @@ mod tests {
         let r = find(&p, "613.4")?;
         let leaf = find(&p, "613.4d")?;
         assert!(!leaf.examples.is_empty());
-        assert!(leaf.examples.iter().all(|e| e.starts_with("A 1/3 creature")));
+        assert!(
+            leaf.examples
+                .iter()
+                .all(|e| e.starts_with("A 1/3 creature"))
+        );
         assert!(leaf.examples.iter().all(|e| r.examples.contains(e)));
         assert!(r.examples.len() >= leaf.examples.len());
         // 613.4's examples belong to it alone; 613.3 and 613.5 don't get them.
-        assert!(!find(&p, "613.3")?.examples.iter().any(|e| e.starts_with("A 1/3 creature")));
+        assert!(
+            !find(&p, "613.3")?
+                .examples
+                .iter()
+                .any(|e| e.starts_with("A 1/3 creature"))
+        );
         let r5 = find(&p, "613.5")?;
-        assert!(r5.examples.iter().any(|e| e.starts_with("Honor of the Pure")));
-        assert!(!r.examples.iter().any(|e| e.starts_with("Honor of the Pure")));
+        assert!(
+            r5.examples
+                .iter()
+                .any(|e| e.starts_with("Honor of the Pure"))
+        );
+        assert!(
+            !r.examples
+                .iter()
+                .any(|e| e.starts_with("Honor of the Pure"))
+        );
         // 707.2 has examples directly on the rule (before any leaf).
         let r707 = find(&p, "707.2")?;
-        assert!(r707.examples.iter().any(|e| e.starts_with("Chimeric Staff")));
+        assert!(
+            r707.examples
+                .iter()
+                .any(|e| e.starts_with("Chimeric Staff"))
+        );
         assert!(find(&p, "707.2a")?.examples.is_empty());
         assert!(r707.contains_quote("Chimeric Staff"));
         Ok(())
@@ -847,14 +1028,26 @@ mod tests {
         let r = find(&p, "702.19")?;
         assert_eq!(r.heading, "Trample");
         assert_eq!(r.subsection.as_ref(), "702");
-        assert!(r.body.starts_with("702.19. Trample\n702.19a Trample is a static ability"));
+        assert!(
+            r.body
+                .starts_with("702.19. Trample\n702.19a Trample is a static ability")
+        );
         let leaves: Vec<&str> = p
             .rules
             .iter()
-            .filter(|x| x.parent_id.as_ref().is_some_and(|pid| pid.as_ref() == "702.19"))
+            .filter(|x| {
+                x.parent_id
+                    .as_ref()
+                    .is_some_and(|pid| pid.as_ref() == "702.19")
+            })
             .map(|x| x.id.as_ref())
             .collect();
-        assert_eq!(leaves, ["702.19a", "702.19b", "702.19c", "702.19d", "702.19e", "702.19f", "702.19g"]);
+        assert_eq!(
+            leaves,
+            [
+                "702.19a", "702.19b", "702.19c", "702.19d", "702.19e", "702.19f", "702.19g"
+            ]
+        );
         assert_eq!(find(&p, "702.19b")?.heading, "Trample");
         Ok(())
     }
@@ -868,7 +1061,9 @@ mod tests {
         assert!(terms.contains(&"Zone-Change Triggers"));
         assert!(!terms.contains(&"Credits"));
         let ability = p.glossary.iter().find(|g| g.term == "Ability");
-        assert!(ability.is_some_and(|g| g.text.lines().count() == 3 && g.text.starts_with("1. Text on an object")));
+        assert!(ability.is_some_and(
+            |g| g.text.lines().count() == 3 && g.text.starts_with("1. Text on an object")
+        ));
         assert!(p.glossary.iter().all(|g| !g.text.trim().is_empty()));
         Ok(())
     }
@@ -877,10 +1072,20 @@ mod tests {
     fn cr_version_extraction() -> R {
         assert_eq!(parsed()?.cr_version.as_ref(), "20260819");
         assert_eq!(version_from_source(SOURCE).as_deref(), Some("20260819"));
-        assert_eq!(version_from_source("/x/MagicCompRules 20250801.txt").as_deref(), Some("20250801"));
+        assert_eq!(
+            version_from_source("/x/MagicCompRules 20250801.txt").as_deref(),
+            Some("20250801")
+        );
         assert_eq!(version_from_source("/2026/rules.txt"), None);
-        assert_eq!(version_from_effective_line("These rules are effective as of August 7, 2026.").as_deref(), Some("20260807"));
-        assert_eq!(version_from_effective_line("These rules are effective as of Foo 7, 2026."), None);
+        assert_eq!(
+            version_from_effective_line("These rules are effective as of August 7, 2026.")
+                .as_deref(),
+            Some("20260807")
+        );
+        assert_eq!(
+            version_from_effective_line("These rules are effective as of Foo 7, 2026."),
+            None
+        );
         // Fallback to the effective-as-of line when the name carries no date.
         let p = parse(SAMPLE, "rules.txt")?;
         assert_eq!(p.cr_version.as_ref(), "20260807");
@@ -899,7 +1104,13 @@ mod tests {
         assert_eq!(r.heading, "First");
         assert_eq!(r.body, "100.1. First. More.\n100.1a Sub continued here");
         assert_eq!(r.examples, leaf.examples);
-        assert_eq!(p.glossary, vec![GlossaryEntry { term: "Term".into(), text: "Def.".into() }]);
+        assert_eq!(
+            p.glossary,
+            vec![GlossaryEntry {
+                term: "Term".into(),
+                text: "Def.".into()
+            }]
+        );
         Ok(())
     }
 
@@ -942,9 +1153,16 @@ mod tests {
 
         let old = parsed()?;
         store(&pool, &old).await?;
-        let moved = old.rules.iter().find(|r| r.id.as_ref() == "702.19b").ok_or_else(|| anyhow::anyhow!("fixture lacks 702.19b"))?;
+        let moved = old
+            .rules
+            .iter()
+            .find(|r| r.id.as_ref() == "702.19b")
+            .ok_or_else(|| anyhow::anyhow!("fixture lacks 702.19b"))?;
         let quote = moved.body.lines().next().unwrap_or_default().to_owned();
-        anyhow::ensure!(quote.starts_with("702.19b"), "leaf bodies start with their id: {quote:?}");
+        anyhow::ensure!(
+            quote.starts_with("702.19b"),
+            "leaf bodies start with their id: {quote:?}"
+        );
         let cite = |id: &str, q: &str| serde_json::json!([{"kind": "rule", "id": id, "quote": q}]);
         let insert = |retired: bool| {
             sqlx::query_scalar::<_, uuid::Uuid>(
@@ -966,8 +1184,13 @@ mod tests {
                 map.insert(r.id.clone(), rule_id(&format!("702.20{rest}"))?);
             }
         }
-        let version = CrVersion::try_new("20260919".to_owned()).map_err(|e| anyhow::anyhow!("{e}"))?;
-        let mut new = ParsedCr { cr_version: version.clone(), rules: Vec::new(), glossary: old.glossary.clone() };
+        let version =
+            CrVersion::try_new("20260919".to_owned()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut new = ParsedCr {
+            cr_version: version.clone(),
+            rules: Vec::new(),
+            glossary: old.glossary.clone(),
+        };
         for r in &old.rules {
             let mut r = r.clone();
             r.id = map.get(&r.id).cloned().unwrap_or(r.id);
@@ -988,25 +1211,46 @@ mod tests {
         store(&pool, &new).await?;
 
         let row = |id: uuid::Uuid| {
-            sqlx::query_as::<_, (serde_json::Value, String)>("SELECT citations, answer FROM calls WHERE id = $1").bind(id).fetch_one(&pool)
+            sqlx::query_as::<_, (serde_json::Value, String)>(
+                "SELECT citations, answer FROM calls WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
         };
         let (c, a) = row(live).await?;
         let moved_quote = quote.replacen("702.19b", "702.20b", 1);
-        assert_eq!(c, cite("702.20b", &moved_quote), "live call follows the renumbering");
-        assert_eq!(a, "See 702.20 and 702.20b. Unrelated 613.1 and 613.1a stay.");
+        assert_eq!(
+            c,
+            cite("702.20b", &moved_quote),
+            "live call follows the renumbering"
+        );
+        assert_eq!(
+            a,
+            "See 702.20 and 702.20b. Unrelated 613.1 and 613.1a stay."
+        );
         let (c, a) = row(retired).await?;
-        assert_eq!(c, cite("702.20b", &moved_quote), "a retired call follows the numbering too");
-        assert_eq!(a, "See 702.20 and 702.20b. Unrelated 613.1 and 613.1a stay.");
+        assert_eq!(
+            c,
+            cite("702.20b", &moved_quote),
+            "a retired call follows the numbering too"
+        );
+        assert_eq!(
+            a,
+            "See 702.20 and 702.20b. Unrelated 613.1 and 613.1a stay."
+        );
 
         // Both citations validate against the new rows: the live call stays live
         // and the retired one (retired for a reason that no longer holds) comes back.
         let s = judge_bot::db::retire_unsupported(&pool).await?;
-        assert_eq!((s.checked, s.retired, s.restored, s.still_retired), (2, 0, 1, 0), "{s:?}");
+        assert_eq!(
+            (s.checked, s.retired, s.restored, s.still_retired),
+            (2, 0, 1, 0),
+            "{s:?}"
+        );
 
         // A re-parse of the same release computes no map and rewrites nothing.
         store(&pool, &new).await?;
         assert_eq!(row(live).await?.0, cite("702.20b", &moved_quote));
         Ok(())
     }
-
 }

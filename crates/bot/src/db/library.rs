@@ -26,7 +26,9 @@ pub struct PgLibrary {
 
 impl fmt::Debug for PgLibrary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PgLibrary").field("vectors", &self.vectors.as_ref().map(|v| v.space())).finish_non_exhaustive()
+        f.debug_struct("PgLibrary")
+            .field("vectors", &self.vectors.as_ref().map(|v| v.space()))
+            .finish_non_exhaustive()
     }
 }
 
@@ -34,7 +36,10 @@ impl PgLibrary {
     /// Without an embedder: `search_rules` is full-text only.
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self { pool, vectors: None }
+        Self {
+            pool,
+            vectors: None,
+        }
     }
 
     /// Add the vector leg to `search_rules`, subject to the space check in [`Vectors`].
@@ -52,7 +57,11 @@ impl PgLibrary {
     ///
     /// # Errors
     /// `Upstream` from sqlx.
-    pub async fn search_rules(&self, query: &str, limit: usize) -> Result<Vec<RuleChunk>, JudgeError> {
+    pub async fn search_rules(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<RuleChunk>, JudgeError> {
         let query = query.trim();
         if query.is_empty() {
             return Ok(Vec::new());
@@ -86,7 +95,10 @@ impl PgLibrary {
     /// # Errors
     /// `Upstream` from sqlx.
     pub async fn card(&self, id: CardId) -> Result<Option<Card>, JudgeError> {
-        Ok(cards::load_cards(&self.pool, &[id.into_inner()]).await?.into_iter().next())
+        Ok(cards::load_cards(&self.pool, &[id.into_inner()])
+            .await?
+            .into_iter()
+            .next())
     }
 
     /// All Scryfall rulings of a card, newest first.
@@ -102,11 +114,17 @@ impl PgLibrary {
     /// # Errors
     /// `Upstream` from sqlx.
     pub async fn notes(&self, card: CardId) -> Result<Vec<CardNote>, JudgeError> {
-        let rows = sqlx::query!("SELECT note FROM card_notes WHERE oracle_id = $1", card.into_inner())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(upstream("card notes"))?;
-        Ok(rows.into_iter().map(|r| CardNote { card, note: r.note }).collect())
+        let rows = sqlx::query!(
+            "SELECT note FROM card_notes WHERE oracle_id = $1",
+            card.into_inner()
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(upstream("card notes"))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| CardNote { card, note: r.note })
+            .collect())
     }
 
     /// Glossary entries whose term is `term` (case-insensitively), then those
@@ -120,7 +138,12 @@ impl PgLibrary {
             return Ok(Vec::new());
         }
         // Escape the LIKE metacharacters so a term is matched literally.
-        let pattern = format!("%{}%", term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let pattern = format!(
+            "%{}%",
+            term.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
         let rows = sqlx::query!(
             r#"
             SELECT term, text
@@ -136,6 +159,12 @@ impl PgLibrary {
         .fetch_all(&self.pool)
         .await
         .map_err(upstream("glossary term"))?;
-        Ok(rows.into_iter().map(|r| GlossaryEntry { term: r.term, text: r.text }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| GlossaryEntry {
+                term: r.term,
+                text: r.text,
+            })
+            .collect())
     }
 }

@@ -88,9 +88,17 @@ pub async fn stored_space(exec: impl sqlx::PgExecutor<'_>) -> Result<Option<Spac
         .map_err(upstream("embedding_space"))?;
     row.map(|r| {
         Ok(Space {
-            provider: r.provider.parse::<Provider>().map_err(|e| bad_row(format!("embedding_space: {e}")))?,
+            provider: r
+                .provider
+                .parse::<Provider>()
+                .map_err(|e| bad_row(format!("embedding_space: {e}")))?,
             model: r.model,
-            dimensions: usize::try_from(r.dimensions).map_err(|_| bad_row(format!("embedding_space: dimensions {} out of range", r.dimensions)))?,
+            dimensions: usize::try_from(r.dimensions).map_err(|_| {
+                bad_row(format!(
+                    "embedding_space: dimensions {} out of range",
+                    r.dimensions
+                ))
+            })?,
         })
     })
     .transpose()
@@ -101,12 +109,21 @@ pub async fn stored_space(exec: impl sqlx::PgExecutor<'_>) -> Result<Option<Spac
 ///
 /// # Errors
 /// `Upstream` from sqlx, including the existing-row conflict.
-pub async fn record_space(exec: impl sqlx::PgExecutor<'_>, space: &Space) -> Result<(), JudgeError> {
-    let dimensions = i32::try_from(space.dimensions).map_err(|_| bad_row(format!("dimensions {} out of range", space.dimensions)))?;
-    sqlx::query!("INSERT INTO embedding_space (provider, model, dimensions) VALUES ($1, $2, $3)", space.provider.as_str(), space.model, dimensions)
-        .execute(exec)
-        .await
-        .map_err(upstream("record embedding_space"))?;
+pub async fn record_space(
+    exec: impl sqlx::PgExecutor<'_>,
+    space: &Space,
+) -> Result<(), JudgeError> {
+    let dimensions = i32::try_from(space.dimensions)
+        .map_err(|_| bad_row(format!("dimensions {} out of range", space.dimensions)))?;
+    sqlx::query!(
+        "INSERT INTO embedding_space (provider, model, dimensions) VALUES ($1, $2, $3)",
+        space.provider.as_str(),
+        space.model,
+        dimensions
+    )
+    .execute(exec)
+    .await
+    .map_err(upstream("record embedding_space"))?;
     Ok(())
 }
 
@@ -121,10 +138,13 @@ pub async fn record_space(exec: impl sqlx::PgExecutor<'_>, space: &Space) -> Res
 /// # Errors
 /// `Upstream` from sqlx, or an unreadable row as [`stored_space`].
 pub async fn hold_space(conn: &mut PgConnection) -> Result<Option<Space>, JudgeError> {
-    sqlx::query!("SELECT pg_advisory_xact_lock_shared($1)", CALLS_REWRITE_LOCK)
-        .execute(&mut *conn)
-        .await
-        .map_err(upstream("lock embedding_space for a write"))?;
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock_shared($1)",
+        CALLS_REWRITE_LOCK
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(upstream("lock embedding_space for a write"))?;
     stored_space(&mut *conn).await
 }
 
@@ -133,7 +153,10 @@ pub async fn hold_space(conn: &mut PgConnection) -> Result<Option<Space>, JudgeE
 ///
 /// # Errors
 /// `Upstream` from sqlx, or a column that is not a `vector(N)`.
-pub async fn column_width(exec: impl sqlx::PgExecutor<'_>, table: &str) -> Result<usize, JudgeError> {
+pub async fn column_width(
+    exec: impl sqlx::PgExecutor<'_>,
+    table: &str,
+) -> Result<usize, JudgeError> {
     let ty = sqlx::query_scalar!(
         r#"
         SELECT format_type(a.atttypid, a.atttypmod) AS "type!"
@@ -160,7 +183,9 @@ pub async fn column_width(exec: impl sqlx::PgExecutor<'_>, table: &str) -> Resul
 ///
 /// # Errors
 /// `Upstream` from sqlx.
-pub async fn stored_counts(exec: impl sqlx::PgExecutor<'_>) -> Result<Vec<(&'static str, i64)>, JudgeError> {
+pub async fn stored_counts(
+    exec: impl sqlx::PgExecutor<'_>,
+) -> Result<Vec<(&'static str, i64)>, JudgeError> {
     let r = sqlx::query!(
         r#"
         SELECT (SELECT count(*) FROM rules WHERE embedding IS NOT NULL) AS "rules!",
@@ -171,7 +196,11 @@ pub async fn stored_counts(exec: impl sqlx::PgExecutor<'_>) -> Result<Vec<(&'sta
     .fetch_one(exec)
     .await
     .map_err(upstream("count embeddings"))?;
-    Ok(vec![("rules", r.rules), ("glossary", r.glossary), ("calls", r.calls)])
+    Ok(vec![
+        ("rules", r.rules),
+        ("glossary", r.glossary),
+        ("calls", r.calls),
+    ])
 }
 
 /// Switch the database to `space`, in one transaction: for every table in
@@ -189,7 +218,8 @@ pub async fn stored_counts(exec: impl sqlx::PgExecutor<'_>) -> Result<Vec<(&'sta
 /// # Errors
 /// `Upstream` from sqlx; the transaction is rolled back.
 pub async fn switch_space(pool: &PgPool, space: &Space) -> Result<(), JudgeError> {
-    let dimensions = i32::try_from(space.dimensions).map_err(|_| bad_row(format!("dimensions {} out of range", space.dimensions)))?;
+    let dimensions = i32::try_from(space.dimensions)
+        .map_err(|_| bad_row(format!("dimensions {} out of range", space.dimensions)))?;
     let mut tx = pool.begin().await.map_err(upstream("begin reembed"))?;
     sqlx::query!("SELECT pg_advisory_xact_lock($1)", CALLS_REWRITE_LOCK)
         .execute(&mut *tx)
@@ -200,14 +230,23 @@ pub async fn switch_space(pool: &PgPool, space: &Space) -> Result<(), JudgeError
         for sql in [
             format!("DROP INDEX {}", t.index),
             format!("UPDATE {} SET embedding = NULL", t.table),
-            format!("ALTER TABLE {} ALTER COLUMN embedding TYPE vector({dimensions})", t.table),
+            format!(
+                "ALTER TABLE {} ALTER COLUMN embedding TYPE vector({dimensions})",
+                t.table
+            ),
             t.create_index.to_owned(),
         ] {
             // `AssertSqlSafe`: the strings are built from the constants above and an integer.
-            sqlx::query(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(|e| JudgeError::Upstream(anyhow::Error::new(e).context(sql)))?;
+            sqlx::query(sqlx::AssertSqlSafe(sql.clone()))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| JudgeError::Upstream(anyhow::Error::new(e).context(sql)))?;
         }
     }
-    sqlx::query!("DELETE FROM embedding_space").execute(&mut *tx).await.map_err(upstream("clear embedding_space"))?;
+    sqlx::query!("DELETE FROM embedding_space")
+        .execute(&mut *tx)
+        .await
+        .map_err(upstream("clear embedding_space"))?;
     record_space(&mut *tx, space).await?;
     tx.commit().await.map_err(upstream("commit reembed"))?;
     Ok(())
@@ -238,8 +277,14 @@ pub struct Vectors {
 
 impl fmt::Debug for Vectors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let state = self.state.lock().map_or_else(|_| "<poisoned>".to_owned(), |s| format!("{s:?}"));
-        f.debug_struct("Vectors").field("space", self.embedder.space()).field("state", &state).finish_non_exhaustive()
+        let state = self
+            .state
+            .lock()
+            .map_or_else(|_| "<poisoned>".to_owned(), |s| format!("{s:?}"));
+        f.debug_struct("Vectors")
+            .field("space", self.embedder.space())
+            .field("state", &state)
+            .finish_non_exhaustive()
     }
 }
 
@@ -247,7 +292,11 @@ impl Vectors {
     /// Guard `embedder` with the stored-space check over `pool`.
     #[must_use]
     pub fn new(pool: PgPool, embedder: Arc<dyn WithSpace>) -> Self {
-        Self { pool, embedder, state: Mutex::new(State::Unchecked) }
+        Self {
+            pool,
+            embedder,
+            state: Mutex::new(State::Unchecked),
+        }
     }
 
     /// The space the embedder writes into.
@@ -257,11 +306,17 @@ impl Vectors {
     }
 
     fn state(&self) -> State {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn set_state(&self, s: State) {
-        *self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = s;
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = s;
     }
 
     /// Fold what a read of `embedding_space` found into the state, logging
@@ -284,9 +339,15 @@ impl Vectors {
         };
         if after != self.state() {
             match &after {
-                State::Enabled => tracing::info!(space = %configured, "embedding space matches the database; vector legs on"),
-                State::Absent => tracing::warn!(space = %configured, "no embedding_space row: nothing embedded yet; vector legs off until `ingest embed` runs"),
-                State::Mismatch(stored) => tracing::error!(%configured, %stored, "embedding space mismatch; vector legs off, nothing is mixed (run `ingest reembed --yes` to switch)"),
+                State::Enabled => {
+                    tracing::info!(space = %configured, "embedding space matches the database; vector legs on");
+                }
+                State::Absent => {
+                    tracing::warn!(space = %configured, "no embedding_space row: nothing embedded yet; vector legs off until `ingest embed` runs");
+                }
+                State::Mismatch(stored) => {
+                    tracing::error!(%configured, %stored, "embedding space mismatch; vector legs off, nothing is mixed (run `ingest reembed --yes` to switch)");
+                }
                 State::Unchecked => {}
             }
             self.set_state(after.clone());
@@ -330,7 +391,11 @@ impl Vectors {
         match vectors.into_iter().next() {
             Some(v) if v.len() == want => Some(Vector::from(v)),
             Some(v) => {
-                tracing::warn!(got = v.len(), want, "embedder returned a vector of the wrong width; skipping the vector leg");
+                tracing::warn!(
+                    got = v.len(),
+                    want,
+                    "embedder returned a vector of the wrong width; skipping the vector leg"
+                );
                 None
             }
             None => {

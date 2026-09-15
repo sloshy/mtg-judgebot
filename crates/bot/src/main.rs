@@ -43,7 +43,9 @@ async fn main() -> Result<()> {
     // The schema first: pending migrations are applied here (opt out with
     // JUDGE_AUTO_MIGRATE=false), and a failure exits so the restart policy
     // makes it loud rather than answering without persisting.
-    judge_bot::db::migrate::at_startup(&pool).await.context("migrating the schema")?;
+    judge_bot::db::migrate::at_startup(&pool)
+        .await
+        .context("migrating the schema")?;
     // The models (judge.toml, or the zero-config Anthropic setup; one spend
     // cap); the meter handed to the Discord layer is the one they bill to.
     let judge = JudgeConfig::load()?;
@@ -59,7 +61,9 @@ async fn main() -> Result<()> {
     if let Some(v) = &vectors {
         v.enabled().await;
     } else {
-        tracing::warn!("no embedder configured (VOYAGE_API_KEY or [models.embed]); running without the vector leg");
+        tracing::warn!(
+            "no embedder configured (VOYAGE_API_KEY or [models.embed]); running without the vector leg"
+        );
     }
     let mut store = PgCallStore::new(pool.clone());
     if let Some(v) = &vectors {

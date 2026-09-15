@@ -5,7 +5,9 @@
 //! module only decides the wire shape the web client sees.
 
 use judge_bot::discord::{question, render};
-use judge_core::{Ambiguous, Citation, Confidence, Context, JudgeError, Source, Validated, Verdict};
+use judge_core::{
+    Ambiguous, Citation, Confidence, Context, JudgeError, Source, Validated, Verdict,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -121,7 +123,9 @@ pub fn validate(req: &JudgeRequest) -> Result<(), String> {
         return Err("question must not be empty".to_owned());
     }
     if req.question.chars().count() > MAX_QUESTION_CHARS {
-        return Err(format!("question must be at most {MAX_QUESTION_CHARS} characters"));
+        return Err(format!(
+            "question must be at most {MAX_QUESTION_CHARS} characters"
+        ));
     }
     if req.pins.len() > MAX_PINS {
         return Err(format!("at most {MAX_PINS} pins are accepted"));
@@ -131,7 +135,9 @@ pub fn validate(req: &JudgeRequest) -> Result<(), String> {
             return Err("pins must have a non-empty span and name".to_owned());
         }
         if p.span.chars().count() > MAX_PIN_CHARS || p.name.chars().count() > MAX_PIN_CHARS {
-            return Err(format!("pin spans and names must be at most {MAX_PIN_CHARS} characters"));
+            return Err(format!(
+                "pin spans and names must be at most {MAX_PIN_CHARS} characters"
+            ));
         }
     }
     Ok(())
@@ -141,9 +147,9 @@ pub fn validate(req: &JudgeRequest) -> Result<(), String> {
 /// Discord "did you mean…?" pick would rewrite it.
 #[must_use]
 pub fn question_text(req: &JudgeRequest) -> String {
-    req.pins
-        .iter()
-        .fold(req.question.clone(), |text, p| question::pin_card(&text, &p.span, &p.name))
+    req.pins.iter().fold(req.question.clone(), |text, p| {
+        question::pin_card(&text, &p.span, &p.name)
+    })
 }
 
 /// Shape a validated verdict. `ctx` (the captured retrieval context) supplies
@@ -155,7 +161,11 @@ pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>) -> ApiReply {
         confidence: v.confidence(),
         source: v.source(),
         cr_version: v.cr_version().as_ref().to_owned(),
-        citations: v.citations().iter().map(|c| citation_view(c, ctx)).collect(),
+        citations: v
+            .citations()
+            .iter()
+            .map(|c| citation_view(c, ctx))
+            .collect(),
     }
 }
 
@@ -167,20 +177,29 @@ pub fn error(e: &JudgeError) -> ApiReply {
         JudgeError::AmbiguousCards(spans) => ApiReply::Ambiguous {
             spans: spans.iter().map(ambiguous_view).collect(),
         },
-        JudgeError::CardsNotFound(names) => ApiReply::NotFound { names: names.iter().cloned().collect() },
+        JudgeError::CardsNotFound(names) => ApiReply::NotFound {
+            names: names.iter().cloned().collect(),
+        },
         JudgeError::OutOfScope(_)
         | JudgeError::BadCitation(_)
         | JudgeError::MalformedCitation(_)
         | JudgeError::EmptyVerdict(_)
         | JudgeError::LlmRefused
-        | JudgeError::Upstream(_) => ApiReply::Error { message: render::error(e) },
+        | JudgeError::Upstream(_) => ApiReply::Error {
+            message: render::error(e),
+        },
     }
 }
 
 fn ambiguous_view(a: &Ambiguous) -> AmbiguousView {
     AmbiguousView {
         query: a.query.clone(),
-        choices: a.candidates.iter().map(|c| c.name.clone()).take(MAX_CHOICES).collect(),
+        choices: a
+            .candidates
+            .iter()
+            .map(|c| c.name.clone())
+            .take(MAX_CHOICES)
+            .collect(),
         truncated: a.candidates.len() > MAX_CHOICES,
     }
 }
@@ -195,14 +214,25 @@ fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
             quote,
         },
         Citation::ScryfallRuling { card, ruling, .. } => {
-            let date = ctx.and_then(|x| x.ruling(*card, ruling)).map(|r| format!(" ({})", r.published_at)).unwrap_or_default();
+            let date = ctx
+                .and_then(|x| x.ruling(*card, ruling))
+                .map(|r| format!(" ({})", r.published_at))
+                .unwrap_or_default();
             let label = match card_name(*card) {
                 Some(name) => format!("Ruling{date} — {name}"),
                 None => format!("Scryfall ruling{date}"),
             };
-            CitationView { label, url: Some(render::scryfall_url(*card)), quote }
+            CitationView {
+                label,
+                url: Some(render::scryfall_url(*card)),
+                quote,
+            }
         }
-        Citation::PriorCall { .. } => CitationView { label: "Prior call".to_owned(), url: None, quote },
+        Citation::PriorCall { .. } => CitationView {
+            label: "Prior call".to_owned(),
+            url: None,
+            quote,
+        },
         Citation::OracleText { card, face, .. } => {
             let face_note = match face {
                 0 => String::new(),
@@ -212,7 +242,11 @@ fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
                 Some(name) => format!("Oracle text{face_note} — {name}"),
                 None => format!("Oracle text{face_note}"),
             };
-            CitationView { label, url: Some(render::scryfall_url(*card)), quote }
+            CitationView {
+                label,
+                url: Some(render::scryfall_url(*card)),
+                quote,
+            }
         }
     }
 }
@@ -225,14 +259,17 @@ fn collapse_whitespace(s: &str) -> String {
 mod tests {
     use super::*;
     use judge_core::{
-        AnswerableSource, CallId, Card, CardId, Category, CrVersion, Face, Layout, RuleChunk, RuleId,
-        Ruling, Unvalidated,
-        ruling_key,
-};
+        AnswerableSource, CallId, Card, CardId, Category, CrVersion, Face, Layout, RuleChunk,
+        RuleId, Ruling, Unvalidated, ruling_key,
+    };
     use nonempty::NonEmpty;
 
     fn req(question: &str) -> JudgeRequest {
-        JudgeRequest { question: question.to_owned(), session_id: None, pins: vec![] }
+        JudgeRequest {
+            question: question.to_owned(),
+            session_id: None,
+            pins: vec![],
+        }
     }
 
     #[test]
@@ -241,13 +278,28 @@ mod tests {
         assert!(validate(&req("  ")).is_err());
         assert!(validate(&req(&"x".repeat(MAX_QUESTION_CHARS + 1))).is_err());
         let mut r = req("q?");
-        r.pins = vec![Pin { span: "urza".into(), name: "Urza's Tower".into() }; MAX_PINS + 1];
+        r.pins = vec![
+            Pin {
+                span: "urza".into(),
+                name: "Urza's Tower".into()
+            };
+            MAX_PINS + 1
+        ];
         assert!(validate(&r).is_err());
-        r.pins = vec![Pin { span: " ".into(), name: "Urza's Tower".into() }];
+        r.pins = vec![Pin {
+            span: " ".into(),
+            name: "Urza's Tower".into(),
+        }];
         assert!(validate(&r).is_err());
-        r.pins = vec![Pin { span: "urza".into(), name: "n".repeat(MAX_PIN_CHARS + 1) }];
+        r.pins = vec![Pin {
+            span: "urza".into(),
+            name: "n".repeat(MAX_PIN_CHARS + 1),
+        }];
         assert!(validate(&r).is_err());
-        r.pins = vec![Pin { span: "urza".into(), name: "Urza's Tower".into() }];
+        r.pins = vec![Pin {
+            span: "urza".into(),
+            name: "Urza's Tower".into(),
+        }];
         assert!(validate(&r).is_ok());
     }
 
@@ -255,8 +307,14 @@ mod tests {
     fn pins_rewrite_spans_in_order() {
         let mut r = req("can urza and bob block?");
         r.pins = vec![
-            Pin { span: "urza".into(), name: "Urza, Lord High Artificer".into() },
-            Pin { span: "bob".into(), name: "Dark Confidant".into() },
+            Pin {
+                span: "urza".into(),
+                name: "Urza, Lord High Artificer".into(),
+            },
+            Pin {
+                span: "bob".into(),
+                name: "Dark Confidant".into(),
+            },
         ];
         assert_eq!(
             question_text(&r),
@@ -280,7 +338,8 @@ mod tests {
     }
 
     fn validated() -> Result<(Verdict<Validated>, Context), Box<dyn std::error::Error>> {
-        let body = "Damage dealt by a source with lifelink causes its controller to gain that much life.";
+        let body =
+            "Damage dealt by a source with lifelink causes its controller to gain that much life.";
         let card_id = CardId::new(Uuid::from_u128(7));
         let ctx = Context {
             cards: vec![card(7, "Dark Confidant")],
@@ -305,8 +364,15 @@ mod tests {
             "You gain the life at the same time the damage is dealt.".into(),
             Confidence::High,
             vec![
-                Citation::Rule { id: RuleId::try_new("702.15b".to_owned())?, quote: judge_core::Quote::try_new("gain that much life")? },
-                Citation::ScryfallRuling { card: card_id, ruling: ruling_key("2020-01-01", "Lifelink is  not\na triggered ability."), quote: judge_core::Quote::try_new("a triggered ability")? },
+                Citation::Rule {
+                    id: RuleId::try_new("702.15b".to_owned())?,
+                    quote: judge_core::Quote::try_new("gain that much life")?,
+                },
+                Citation::ScryfallRuling {
+                    card: card_id,
+                    ruling: ruling_key("2020-01-01", "Lifelink is  not\na triggered ability."),
+                    quote: judge_core::Quote::try_new("a triggered ability")?,
+                },
             ],
             Category::KeywordAbilities,
         );
@@ -322,15 +388,28 @@ mod tests {
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("answer"));
         assert_eq!(j.get("confidence").and_then(|k| k.as_str()), Some("high"));
         assert_eq!(j.get("source").and_then(|k| k.as_str()), Some("cr"));
-        assert_eq!(j.get("cr_version").and_then(|k| k.as_str()), Some("20260819"));
-        let cites = j.get("citations").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+        assert_eq!(
+            j.get("cr_version").and_then(|k| k.as_str()),
+            Some("20260819")
+        );
+        let cites = j
+            .get("citations")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
         assert_eq!(cites.len(), 2);
         assert_eq!(
-            cites.first().and_then(|c| c.get("url")).and_then(|u| u.as_str()),
+            cites
+                .first()
+                .and_then(|c| c.get("url"))
+                .and_then(|u| u.as_str()),
             Some("https://yawgatog.com/resources/magic-rules/#R70215b")
         );
         assert_eq!(
-            cites.get(1).and_then(|c| c.get("label")).and_then(|l| l.as_str()),
+            cites
+                .get(1)
+                .and_then(|c| c.get("label"))
+                .and_then(|l| l.as_str()),
             Some("Ruling (2020-01-01) — Dark Confidant")
         );
         // Whitespace in quotes is collapsed for display.
@@ -351,14 +430,21 @@ mod tests {
     fn prior_call_and_oracle_text_citations_shape() -> Result<(), Box<dyn std::error::Error>> {
         let quote = "some  prior\nanswer";
         let view = citation_view(
-            &Citation::PriorCall { id: CallId::new(Uuid::from_u128(3)), quote: judge_core::Quote::try_new(quote)? },
+            &Citation::PriorCall {
+                id: CallId::new(Uuid::from_u128(3)),
+                quote: judge_core::Quote::try_new(quote)?,
+            },
             None,
         );
         assert_eq!(view.label, "Prior call");
         assert_eq!(view.url, None);
         assert_eq!(view.quote, "some prior answer");
         let view = citation_view(
-            &Citation::OracleText { card: CardId::new(Uuid::from_u128(4)), face: 1, quote: judge_core::Quote::try_new("Flying")? },
+            &Citation::OracleText {
+                card: CardId::new(Uuid::from_u128(4)),
+                face: 1,
+                quote: judge_core::Quote::try_new("Flying")?,
+            },
             None,
         );
         assert_eq!(view.label, "Oracle text, face 2");
@@ -384,22 +470,38 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert_eq!(span.get("query").and_then(|q| q.as_str()), Some("urza"));
-        assert_eq!(span.get("choices").and_then(|c| c.as_array()).map(Vec::len), Some(MAX_CHOICES));
-        assert_eq!(span.get("truncated").and_then(serde_json::Value::as_bool), Some(true));
+        assert_eq!(
+            span.get("choices").and_then(|c| c.as_array()).map(Vec::len),
+            Some(MAX_CHOICES)
+        );
+        assert_eq!(
+            span.get("truncated").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
 
-        let j = serde_json::to_value(error(&JudgeError::CardsNotFound(NonEmpty::new("Xyzzy".to_owned()))))?;
+        let j = serde_json::to_value(error(&JudgeError::CardsNotFound(NonEmpty::new(
+            "Xyzzy".to_owned(),
+        ))))?;
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("not_found"));
         assert_eq!(
-            j.get("names").and_then(|n| n.as_array()).and_then(|n| n.first()).and_then(|n| n.as_str()),
+            j.get("names")
+                .and_then(|n| n.as_array())
+                .and_then(|n| n.first())
+                .and_then(|n| n.as_str()),
             Some("Xyzzy")
         );
 
         let j = serde_json::to_value(error(&JudgeError::OutOfScope(Source::Tournament)))?;
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("error"));
-        assert_eq!(j.get("message").and_then(|m| m.as_str()), Some(render::OUT_OF_SCOPE));
+        assert_eq!(
+            j.get("message").and_then(|m| m.as_str()),
+            Some(render::OUT_OF_SCOPE)
+        );
 
         // Internal details never leak.
-        let j = serde_json::to_value(error(&JudgeError::Upstream(anyhow::anyhow!("secret detail"))))?;
+        let j = serde_json::to_value(error(&JudgeError::Upstream(anyhow::anyhow!(
+            "secret detail"
+        ))))?;
         assert!(!j.to_string().contains("secret"));
         Ok(())
     }

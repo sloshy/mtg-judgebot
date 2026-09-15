@@ -30,11 +30,19 @@ fn pascal(id: &str) -> String {
 fn generate(file: &File) -> Result<String, Box<dyn Error>> {
     let mut seen = HashSet::new();
     for e in &file.categories {
-        let snake = e.id.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit());
+        let snake =
+            e.id.chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit());
         // Every `_`-separated word becomes part of an enum variant, so each must start with a letter.
-        let words_start_with_letter = e.id.split('_').all(|w| w.chars().next().is_some_and(|c| c.is_ascii_lowercase()));
+        let words_start_with_letter =
+            e.id.split('_')
+                .all(|w| w.chars().next().is_some_and(|c| c.is_ascii_lowercase()));
         if !snake || !words_start_with_letter {
-            return Err(format!("category id must be snake_case and each word must start with a letter: {}", e.id).into());
+            return Err(format!(
+                "category id must be snake_case and each word must start with a letter: {}",
+                e.id
+            )
+            .into());
         }
         if !seen.insert(e.id.as_str()) {
             return Err(format!("duplicate category id: {}", e.id).into());
@@ -47,30 +55,56 @@ fn generate(file: &File) -> Result<String, Box<dyn Error>> {
     out.push_str("#[serde(rename_all = \"snake_case\")]\n#[allow(clippy::doc_markdown)]\n");
     out.push_str("pub enum Category {\n");
     for e in &file.categories {
-        writeln!(out, "    /// {}\n    {},", e.label.replace('\n', " "), pascal(&e.id))?;
+        writeln!(
+            out,
+            "    /// {}\n    {},",
+            e.label.replace('\n', " "),
+            pascal(&e.id)
+        )?;
     }
     out.push_str("}\n\nimpl Category {\n");
-    out.push_str("    /// Every category, in YAML order.\n    pub const ALL: &'static [Category] = &[\n");
+    out.push_str(
+        "    /// Every category, in YAML order.\n    pub const ALL: &'static [Category] = &[\n",
+    );
     for e in &file.categories {
         writeln!(out, "        Category::{},", pascal(&e.id))?;
     }
     out.push_str("    ];\n\n");
     out.push_str("    /// The stable `snake_case` identifier used in YAML, the DB and the wire.\n");
-    out.push_str("    #[must_use]\n    pub const fn id(self) -> &'static str {\n        match self {\n");
+    out.push_str(
+        "    #[must_use]\n    pub const fn id(self) -> &'static str {\n        match self {\n",
+    );
     for e in &file.categories {
-        writeln!(out, "            Category::{} => \"{}\",", pascal(&e.id), e.id)?;
+        writeln!(
+            out,
+            "            Category::{} => \"{}\",",
+            pascal(&e.id),
+            e.id
+        )?;
     }
     out.push_str("        }\n    }\n\n");
     out.push_str("    /// Human-readable label.\n    #[must_use]\n    pub const fn label(self) -> &'static str {\n        match self {\n");
     for e in &file.categories {
-        writeln!(out, "            Category::{} => {:?},", pascal(&e.id), e.label)?;
+        writeln!(
+            out,
+            "            Category::{} => {:?},",
+            pascal(&e.id),
+            e.label
+        )?;
     }
     out.push_str("        }\n    }\n\n");
-    out.push_str("    /// CR sections/subsections always injected into `Context` for this category.\n");
+    out.push_str(
+        "    /// CR sections/subsections always injected into `Context` for this category.\n",
+    );
     out.push_str("    #[must_use]\n    pub const fn subsections(self) -> &'static [&'static str] {\n        match self {\n");
     for e in &file.categories {
         let subs: Vec<String> = e.subsections.iter().map(|s| format!("{s:?}")).collect();
-        writeln!(out, "            Category::{} => &[{}],", pascal(&e.id), subs.join(", "))?;
+        writeln!(
+            out,
+            "            Category::{} => &[{}],",
+            pascal(&e.id),
+            subs.join(", ")
+        )?;
     }
     out.push_str("        }\n    }\n}\n");
     Ok(out)
@@ -81,8 +115,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let yaml_path = manifest.join("../../data/categories.yaml");
     println!("cargo:rerun-if-changed={}", yaml_path.display());
 
-    let raw = fs::read_to_string(&yaml_path).map_err(|e| format!("cannot read {}: {e}", yaml_path.display()))?;
-    let file: File = serde_yaml_ng::from_str(&raw).map_err(|e| format!("bad categories.yaml: {e}"))?;
+    let raw = fs::read_to_string(&yaml_path)
+        .map_err(|e| format!("cannot read {}: {e}", yaml_path.display()))?;
+    let file: File =
+        serde_yaml_ng::from_str(&raw).map_err(|e| format!("bad categories.yaml: {e}"))?;
     if file.categories.is_empty() {
         return Err("categories.yaml has no entries".into());
     }

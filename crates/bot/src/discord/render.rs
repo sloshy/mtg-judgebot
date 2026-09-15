@@ -9,8 +9,7 @@
 use std::fmt::Write as _;
 
 use judge_core::{
-    Ambiguous, CardId, Citation, Confidence, Context, JudgeError, RuleId, Score, Validated,
-    Verdict,
+    Ambiguous, CardId, Citation, Confidence, Context, JudgeError, RuleId, Score, Validated, Verdict,
 };
 use nonempty::NonEmpty;
 
@@ -199,7 +198,10 @@ pub fn citation_line(c: &Citation, ctx: Option<&Context>, symbols: &SymbolTable)
         Citation::ScryfallRuling { card, ruling, .. } => {
             // The date tells two rulings of one card apart; both link to the
             // same Scryfall page.
-            let date = ctx.and_then(|x| x.ruling(*card, ruling)).map(|r| format!(" ({})", r.published_at)).unwrap_or_default();
+            let date = ctx
+                .and_then(|x| x.ruling(*card, ruling))
+                .map(|r| format!(" ({})", r.published_at))
+                .unwrap_or_default();
             let label = match card_name(*card) {
                 Some(name) => format!("Ruling{date} — {name}"),
                 None => format!("Scryfall ruling{date}"),
@@ -431,9 +433,8 @@ mod tests {
     use super::*;
     use judge_core::{
         AnswerableSource, Card, CardId, Category, Context, CrVersion, EmptyVerdict, Face, Layout,
-        RuleChunk, RuleId, Source,
-        ruling_key,
-};
+        RuleChunk, RuleId, Source, ruling_key,
+    };
 
     /// Most tests predate the emoji and assert the literal `{W}` behaviour.
     fn no_symbols() -> SymbolTable {
@@ -520,10 +521,7 @@ mod tests {
     #[test]
     fn header_mentions_the_asker_and_truncates_the_question() {
         let h = header(ASKER, "Does  trample\nwork here?");
-        assert_eq!(
-            h,
-            "<@110372470472613888> asked: Does trample work here?"
-        );
+        assert_eq!(h, "<@110372470472613888> asked: Does trample work here?");
         let long = "why ".repeat(200);
         let h = header(ASKER, &long);
         assert!(h.starts_with("<@110372470472613888> asked: why why"));
@@ -540,7 +538,12 @@ mod tests {
         let c = with_header(ASKER, "short?", "The answer.", &no_symbols());
         assert_eq!(c, "<@110372470472613888> asked: short?\n\nThe answer.");
         // An over-long body is cut from the end; the header survives intact.
-        let c = with_header(ASKER, &"q ".repeat(400), &"body ".repeat(1000), &no_symbols());
+        let c = with_header(
+            ASKER,
+            &"q ".repeat(400),
+            &"body ".repeat(1000),
+            &no_symbols(),
+        );
         assert!(c.chars().count() <= CONTENT_LIMIT, "{}", c.len());
         assert!(c.starts_with("<@110372470472613888> asked: q q"));
         assert!(c.contains("\n\nbody"));
@@ -550,13 +553,22 @@ mod tests {
     #[test]
     fn answer_respects_both_limits() -> Res {
         let v = validated(&"word ".repeat(1000), 60)?;
-        let a = answer(&v, None, ASKER, "does a long answer still fit?", &no_symbols());
+        let a = answer(
+            &v,
+            None,
+            ASKER,
+            "does a long answer still fit?",
+            &no_symbols(),
+        );
         assert!(
             a.content.chars().count() <= CONTENT_LIMIT,
             "{}",
             a.content.len()
         );
-        assert!(a.content.starts_with("<@110372470472613888> asked: does a long answer"));
+        assert!(
+            a.content
+                .starts_with("<@110372470472613888> asked: does a long answer")
+        );
         assert!(a.content.ends_with(TRUNCATION_MARKER));
         assert!(a.citations.chars().count() <= EMBED_DESCRIPTION_LIMIT);
         assert!(a.citations.contains("… and "), "{}", a.citations);
@@ -642,7 +654,10 @@ mod tests {
             citation_line(&o, Some(&ctx), &no_symbols()).to_string(),
             format!("[Oracle text — Dark Confidant]({url}) “Flying”")
         );
-        assert_eq!(citation_line(&o, None, &no_symbols()).to_string(), format!("[Oracle text]({url}) “Flying”"));
+        assert_eq!(
+            citation_line(&o, None, &no_symbols()).to_string(),
+            format!("[Oracle text]({url}) “Flying”")
+        );
         let back = Citation::OracleText {
             card: id,
             face: 1,
@@ -680,7 +695,11 @@ mod tests {
             .collect();
         assert!(lines.iter().all(|l| l.len() > 300));
         let out = fit_lines(&lines, EMBED_DESCRIPTION_LIMIT);
-        assert!(out.chars().count() <= EMBED_DESCRIPTION_LIMIT, "{}", out.len());
+        assert!(
+            out.chars().count() <= EMBED_DESCRIPTION_LIMIT,
+            "{}",
+            out.len()
+        );
         assert!(out.contains("… and "), "some lines must have been dropped");
         Ok(())
     }
@@ -708,7 +727,10 @@ mod tests {
 
     #[test]
     fn symbols_become_emoji_in_the_answer_and_the_quotes() -> Res {
-        let symbols = SymbolTable::new([("mana_t".to_owned(), TAP_ID), ("mana_g".to_owned(), GREEN_ID)]);
+        let symbols = SymbolTable::new([
+            ("mana_t".to_owned(), TAP_ID),
+            ("mana_g".to_owned(), GREEN_ID),
+        ]);
         let id = CardId::new(Uuid::from_u128(1));
         let ctx = Context {
             cards: vec![card(1, "Llanowar Elves")],
@@ -723,12 +745,26 @@ mod tests {
             Some(&ctx),
             &symbols,
         );
-        assert!(line.to_string().ends_with(&format!("“<:mana_t:{TAP_ID}>: Add <:mana_g:{GREEN_ID}>.”")), "{line}");
+        assert!(
+            line.to_string()
+                .ends_with(&format!("“<:mana_t:{TAP_ID}>: Add <:mana_g:{GREEN_ID}>.”")),
+            "{line}"
+        );
         // A symbol with no emoji uploaded stays as Scryfall wrote it.
         let v = validated("Tap it for {G}, not {W}: the elf makes green mana only.", 1)?;
         let a = answer(&v, Some(&ctx), ASKER, "how much for {G}?", &symbols);
-        assert!(a.content.contains(&format!("Tap it for <:mana_g:{GREEN_ID}>, not {{W}}:")), "{}", a.content);
-        assert!(a.content.contains(&format!("asked: how much for <:mana_g:{GREEN_ID}>?")), "{}", a.content);
+        assert!(
+            a.content
+                .contains(&format!("Tap it for <:mana_g:{GREEN_ID}>, not {{W}}:")),
+            "{}",
+            a.content
+        );
+        assert!(
+            a.content
+                .contains(&format!("asked: how much for <:mana_g:{GREEN_ID}>?")),
+            "{}",
+            a.content
+        );
         Ok(())
     }
 
@@ -768,7 +804,8 @@ mod tests {
     /// One symbol-dense quote used to take over half the embed and push every
     /// other citation into "… and N more".
     #[test]
-    fn a_symbol_heavy_quote_leaves_room_for_other_citations() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_symbol_heavy_quote_leaves_room_for_other_citations()
+    -> Result<(), Box<dyn std::error::Error>> {
         let symbols = SymbolTable::new([("mana_t".to_owned(), TAP_ID)]);
         let id = CardId::new(Uuid::from_u128(1));
         let heavy = Citation::OracleText {
@@ -782,7 +819,9 @@ mod tests {
             "one line took {} of {EMBED_DESCRIPTION_LIMIT}",
             line.len()
         );
-        let lines: Vec<Rendered> = (0..6).map(|_| citation_line(&heavy, None, &symbols)).collect();
+        let lines: Vec<Rendered> = (0..6)
+            .map(|_| citation_line(&heavy, None, &symbols))
+            .collect();
         let out = fit_lines(&lines, EMBED_DESCRIPTION_LIMIT);
         assert!(out.chars().count() <= EMBED_DESCRIPTION_LIMIT);
         assert!(
@@ -800,12 +839,23 @@ mod tests {
         let symbols = SymbolTable::new([("mana_t".to_owned(), TAP_ID)]);
         let v = validated(&"{T}".repeat(600), 1)?;
         let a = answer(&v, None, ASKER, "symbols?", &symbols);
-        assert!(a.content.chars().count() <= CONTENT_LIMIT, "{}", a.content.chars().count());
+        assert!(
+            a.content.chars().count() <= CONTENT_LIMIT,
+            "{}",
+            a.content.chars().count()
+        );
         assert!(a.content.ends_with(TRUNCATION_MARKER));
         // No tag was cut in half.
         let tags = a.content.matches(&format!("<:mana_t:{TAP_ID}>")).count();
-        assert_eq!(tags, a.content.matches("<:").count(), "a tag was cut in half");
-        assert!(tags > 10, "only {tags} tags survived; the answer is nearly all symbols");
+        assert_eq!(
+            tags,
+            a.content.matches("<:").count(),
+            "a tag was cut in half"
+        );
+        assert!(
+            tags > 10,
+            "only {tags} tags survived; the answer is nearly all symbols"
+        );
         Ok(())
     }
 

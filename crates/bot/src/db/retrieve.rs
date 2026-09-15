@@ -105,7 +105,10 @@ impl PgRetriever {
                 c.subsections().iter().map(|s| (*s).to_owned()).collect()
             };
             let (subsections, exact) = rules::partition_ids(&wanted);
-            legs.push(rules::in_subsections_ranked(&self.pool, &subsections, &exact, concepts, question).await?);
+            legs.push(
+                rules::in_subsections_ranked(&self.pool, &subsections, &exact, concepts, question)
+                    .await?,
+            );
         }
         Ok(legs)
     }
@@ -310,7 +313,10 @@ impl PriorRow {
 }
 
 /// All rulings of these cards, newest first within a card.
-pub(super) async fn load_rulings(pool: impl sqlx::PgExecutor<'_>, ids: &[Uuid]) -> Result<Vec<Ruling>, JudgeError> {
+pub(super) async fn load_rulings(
+    pool: impl sqlx::PgExecutor<'_>,
+    ids: &[Uuid],
+) -> Result<Vec<Ruling>, JudgeError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -328,8 +334,16 @@ pub(super) async fn load_rulings(pool: impl sqlx::PgExecutor<'_>, ids: &[Uuid]) 
     .map_err(upstream("rulings"))?;
     rows.into_iter()
         .map(|r| {
-            let key: RulingKey = r.key.parse().map_err(|e| bad_row(format!("card {}: {e}", r.oracle_id)))?;
-            Ok(Ruling { card: CardId::new(r.oracle_id), key, published_at: r.published_at, text: r.text })
+            let key: RulingKey = r
+                .key
+                .parse()
+                .map_err(|e| bad_row(format!("card {}: {e}", r.oracle_id)))?;
+            Ok(Ruling {
+                card: CardId::new(r.oracle_id),
+                key,
+                published_at: r.published_at,
+                text: r.text,
+            })
         })
         .collect()
 }
@@ -369,7 +383,10 @@ impl Retriever for PgRetriever {
             prior,
             ..Context::default()
         };
-        let n_map = mapped.iter().map(|c| c.matching.len() + c.rest.len()).sum::<usize>();
+        let n_map = mapped
+            .iter()
+            .map(|c| c.matching.len() + c.rest.len())
+            .sum::<usize>();
         let (n_bm25, n_vec) = (matched.len(), nearest.len());
         ctx.extend_rules(priority_order(mapped, matched, nearest));
         tracing::info!(
@@ -460,18 +477,36 @@ mod tests {
     }
 
     #[test]
-    fn primary_then_full_text_then_vector_then_secondaries_first_occurrence_wins() -> Result<(), Box<dyn std::error::Error>> {
-        let category = |matching: &[&str], rest: &[&str]| -> Result<CategoryRules, Box<dyn std::error::Error>> {
-            Ok(CategoryRules { matching: chunks(matching)?, rest: chunks(rest)? })
+    fn primary_then_full_text_then_vector_then_secondaries_first_occurrence_wins()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let category = |matching: &[&str],
+                        rest: &[&str]|
+         -> Result<CategoryRules, Box<dyn std::error::Error>> {
+            Ok(CategoryRules {
+                matching: chunks(matching)?,
+                rest: chunks(rest)?,
+            })
         };
         let ordered = priority_order(
-            vec![category(&["709.5", "709.1"], &["710.1"])?, category(&["100.1", "702.19"], &["101.1"])?, category(&[], &["205.3"])?],
+            vec![
+                category(&["709.5", "709.1"], &["710.1"])?,
+                category(&["100.1", "702.19"], &["101.1"])?,
+                category(&[], &["205.3"])?,
+            ],
             chunks(&["702.19", "709.5"])?,
             chunks(&["708.4", "100.1"])?,
         );
-        assert_eq!(ids(&ordered), ["709.5", "709.1", "702.19", "708.4", "100.1", "710.1", "101.1", "205.3"]);
+        assert_eq!(
+            ids(&ordered),
+            [
+                "709.5", "709.1", "702.19", "708.4", "100.1", "710.1", "101.1", "205.3"
+            ]
+        );
         assert!(priority_order(vec![], vec![], vec![]).is_empty());
-        assert_eq!(ids(&priority_order(vec![], chunks(&["702.19"])?, vec![])), ["702.19"]);
+        assert_eq!(
+            ids(&priority_order(vec![], chunks(&["702.19"])?, vec![])),
+            ["702.19"]
+        );
         Ok(())
     }
 }

@@ -44,9 +44,9 @@ use judge_llm::SpendMeter;
 use poise::serenity_prelude as serenity;
 use serenity::{
     ButtonStyle, ComponentInteraction, CreateActionRow, CreateAllowedMentions, CreateButton,
-    CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
-    CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
-    EditInteractionResponse, FullEvent, GatewayIntents, GuildId, Interaction, Member, UserId,
+    CreateEmbed, CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseFollowup,
+    CreateInteractionResponseMessage, EditInteractionResponse, FullEvent, GatewayIntents, GuildId,
+    Interaction, Member, UserId,
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -175,12 +175,7 @@ impl Data {
     /// Wire the shared state. `meter` must be the one the models inside
     /// `deps` bill to, so its counters reflect the judge runs.
     #[must_use]
-    pub fn new(
-        mut deps: Deps,
-        store: Arc<dyn CallStore>,
-        meter: SpendMeter,
-        cfg: &Config,
-    ) -> Self {
+    pub fn new(mut deps: Deps, store: Arc<dyn CallStore>, meter: SpendMeter, cfg: &Config) -> Self {
         let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
         deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
         Self {
@@ -271,10 +266,18 @@ impl Data {
                 if e.is_operator_failure() {
                     tracing::warn!(error = format_args!("{e:#}"), "judge failed");
                 } else {
-                    tracing::debug!(error = format_args!("{e:#}"), "question answered with a non-verdict reply");
+                    tracing::debug!(
+                        error = format_args!("{e:#}"),
+                        "question answered with a non-verdict reply"
+                    );
                 }
                 Outgoing {
-                    content: render::with_header(asker.get(), &q.text, &render::error(&e), &self.symbols),
+                    content: render::with_header(
+                        asker.get(),
+                        &q.text,
+                        &render::error(&e),
+                        &self.symbols,
+                    ),
                     embed: None,
                     components: vec![],
                 }
@@ -615,8 +618,7 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
 async fn load_symbols(http: &serenity::Http) -> SymbolTable {
     match http.get_application_emojis().await {
         Ok(emojis) => {
-            let table =
-                SymbolTable::new(emojis.into_iter().map(|e| (e.name, e.id.get())));
+            let table = SymbolTable::new(emojis.into_iter().map(|e| (e.name, e.id.get())));
             if table.is_empty() {
                 tracing::warn!(
                     "no `{}…` application emoji found; card symbols will render as text \

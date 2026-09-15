@@ -16,7 +16,8 @@ use uuid::Uuid;
 /// # Errors
 /// If the text is not a YAML mapping of string to string.
 fn parse_notes_yaml(text: &str) -> Result<Vec<(String, String)>> {
-    let map: BTreeMap<String, String> = serde_yaml_ng::from_str(text).context("notes: expected a flat `Card Name: note` mapping")?;
+    let map: BTreeMap<String, String> = serde_yaml_ng::from_str(text)
+        .context("notes: expected a flat `Card Name: note` mapping")?;
     Ok(map
         .into_iter()
         .filter_map(|(name, note)| {
@@ -35,7 +36,8 @@ fn parse_notes_yaml(text: &str) -> Result<Vec<(String, String)>> {
 /// # Errors
 /// On read, parse or database failure.
 pub async fn run(pool: &PgPool, path: &Path) -> Result<()> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let pairs = parse_notes_yaml(&text)?;
     let wanted: Vec<String> = pairs.iter().map(|(n, _)| n.to_lowercase()).collect();
     let rows = sqlx::query!(
@@ -68,7 +70,11 @@ pub async fn run(pool: &PgPool, path: &Path) -> Result<()> {
         match by_name.get(&key) {
             Some(id) if n == 1 => resolved.push((*id, note)),
             Some(_) => {
-                tracing::warn!(name, candidates = n, "notes: card name is ambiguous; use the full name");
+                tracing::warn!(
+                    name,
+                    candidates = n,
+                    "notes: card name is ambiguous; use the full name"
+                );
                 unresolved.push(name);
             }
             None => {
@@ -79,16 +85,27 @@ pub async fn run(pool: &PgPool, path: &Path) -> Result<()> {
     }
 
     let mut tx = pool.begin().await?;
-    sqlx::query!("DELETE FROM card_notes").execute(&mut *tx).await.context("clearing card_notes")?;
+    sqlx::query!("DELETE FROM card_notes")
+        .execute(&mut *tx)
+        .await
+        .context("clearing card_notes")?;
     if !resolved.is_empty() {
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("INSERT INTO card_notes (oracle_id, note) ");
+        let mut qb: QueryBuilder<Postgres> =
+            QueryBuilder::new("INSERT INTO card_notes (oracle_id, note) ");
         qb.push_values(&resolved, |mut b, (id, note)| {
             b.push_bind(id).push_bind(note);
         });
-        qb.build().execute(&mut *tx).await.context("inserting card_notes")?;
+        qb.build()
+            .execute(&mut *tx)
+            .await
+            .context("inserting card_notes")?;
     }
     tx.commit().await?;
-    tracing::info!(loaded = resolved.len(), unresolved = unresolved.len(), "card_notes replaced");
+    tracing::info!(
+        loaded = resolved.len(),
+        unresolved = unresolved.len(),
+        "card_notes replaced"
+    );
     if !unresolved.is_empty() {
         tracing::warn!(names = ?unresolved, "notes: unresolved card names (run `ingest cards` first?)");
     }
@@ -102,7 +119,10 @@ mod tests {
     #[test]
     fn parses_mapping_and_drops_empties() -> anyhow::Result<()> {
         let pairs = parse_notes_yaml("Blood Moon: |\n  Layer 4.\n\"\": x\nHumility: ''\n")?;
-        assert_eq!(pairs, vec![("Blood Moon".to_owned(), "Layer 4.".to_owned())]);
+        assert_eq!(
+            pairs,
+            vec![("Blood Moon".to_owned(), "Layer 4.".to_owned())]
+        );
         assert!(parse_notes_yaml("- list").is_err());
         Ok(())
     }

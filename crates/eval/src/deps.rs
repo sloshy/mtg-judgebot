@@ -38,7 +38,11 @@ struct GoldExtractor {
 
 impl GoldExtractor {
     fn new(gold: &Gold) -> Self {
-        let by_id = gold.questions.iter().map(|q| (q.id.clone(), q.extraction())).collect();
+        let by_id = gold
+            .questions
+            .iter()
+            .map(|q| (q.id.clone(), q.extraction()))
+            .collect();
         Self { by_id }
     }
 }
@@ -52,4 +56,3 @@ impl Extractor for GoldExtractor {
             .ok_or_else(|| anyhow::anyhow!("no gold entry for question {}", q.thread_id).into())
     }
 }
-

@@ -54,13 +54,19 @@ impl TextBlock {
     /// A block with no cache hint.
     #[must_use]
     pub fn plain(text: impl Into<String>) -> Self {
-        Self { text: text.into(), cache: None }
+        Self {
+            text: text.into(),
+            cache: None,
+        }
     }
 
     /// A block ending a cache prefix with the backend's default lifetime.
     #[must_use]
     pub fn cached(text: impl Into<String>) -> Self {
-        Self { text: text.into(), cache: Some(CacheHint::Short) }
+        Self {
+            text: text.into(),
+            cache: Some(CacheHint::Short),
+        }
     }
 }
 
@@ -148,7 +154,9 @@ impl OutputSchema {
     /// The schema of `T`.
     #[must_use]
     pub fn of<T: JsonSchema>() -> Self {
-        Self { schema: schema_of::<T>() }
+        Self {
+            schema: schema_of::<T>(),
+        }
     }
 }
 
@@ -336,7 +344,12 @@ mod tests {
 
     #[test]
     fn effort_orders_and_blocks_carry_hints() {
-        assert!(Effort::Low < Effort::Medium && Effort::Medium < Effort::High && Effort::High < Effort::XHigh && Effort::XHigh < Effort::Max);
+        assert!(
+            Effort::Low < Effort::Medium
+                && Effort::Medium < Effort::High
+                && Effort::High < Effort::XHigh
+                && Effort::XHigh < Effort::Max
+        );
         assert_eq!(TextBlock::cached("s").cache, Some(CacheHint::Short));
         assert_eq!(TextBlock::plain("s").cache, None);
     }
@@ -352,7 +365,10 @@ mod tests {
             stop: Stop::EndTurn,
             usage: Usage::default(),
             model: "m".into(),
-            assistant: AssistantTurn { backend: "test", raw: Value::Null },
+            assistant: AssistantTurn {
+                backend: "test",
+                raw: Value::Null,
+            },
         };
         assert_eq!(last.last_text(), Some("b"));
     }

@@ -57,7 +57,12 @@ impl App {
     /// Wire the shared state. `meter` must be the one the models inside
     /// `deps` bill to, so its counters reflect the judge runs.
     #[must_use]
-    pub fn new(mut deps: Deps, store: Arc<dyn CallStore>, meter: SpendMeter, cfg: &ApiConfig) -> Self {
+    pub fn new(
+        mut deps: Deps,
+        store: Arc<dyn CallStore>,
+        meter: SpendMeter,
+        cfg: &ApiConfig,
+    ) -> Self {
         let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
         deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
         Self {
@@ -94,7 +99,10 @@ impl App {
         let history = match self.store.history(&q.thread_id, self.history_len).await {
             Ok(h) => h,
             Err(e) => {
-                tracing::warn!(error = format_args!("{e:#}"), "session history unavailable; judging without it");
+                tracing::warn!(
+                    error = format_args!("{e:#}"),
+                    "session history unavailable; judging without it"
+                );
                 vec![]
             }
         };
@@ -117,7 +125,10 @@ impl App {
                     // retrieval leg; web calls arrive unrated, exactly like an
                     // unrated Discord call. Failure only costs those.
                     if let Err(e) = self.store.persist(q, &v, ctx).await {
-                        tracing::error!(error = format_args!("{e:#}"), "persist failed; answering anyway");
+                        tracing::error!(
+                            error = format_args!("{e:#}"),
+                            "persist failed; answering anyway"
+                        );
                     }
                 } else {
                     tracing::warn!("no captured context for the question; call not persisted");
@@ -159,7 +170,8 @@ const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
 /// merged *into* this one, so this fallback wins and the token gate stays
 /// on `/mcp` alone.
 pub fn router(app: Arc<App>, web_dist: &Path) -> Router {
-    let files = ServeDir::new(web_dist).not_found_service(ServeFile::new(web_dist.join("index.html")));
+    let files =
+        ServeDir::new(web_dist).not_found_service(ServeFile::new(web_dist.join("index.html")));
     Router::new()
         .route("/api/judge", post(judge_route))
         .route("/api/health", get(health))
@@ -180,9 +192,12 @@ pub async fn serve(cfg: &ApiConfig, router: Router) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("bind {}", cfg.addr))?;
     tracing::info!(addr = %cfg.addr, web_dist = %cfg.web_dist.display(), "HTTP adapter listening");
-    axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .context("serve HTTP")
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("serve HTTP")
 }
 
 async fn health() -> &'static str {
@@ -197,7 +212,12 @@ impl<S: Send + Sync> FromRequestParts<S> for PeerAddr {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(Self(parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0)))
+        Ok(Self(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|c| c.0),
+        ))
     }
 }
 
@@ -215,15 +235,25 @@ async fn judge_route(
         tracing::info!(%ip, "rate limited");
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(ApiReply::RateLimited { message: shape::RATE_LIMITED.to_owned() }),
+            Json(ApiReply::RateLimited {
+                message: shape::RATE_LIMITED.to_owned(),
+            }),
         );
     }
     let Some(_permit) = app.acquire().await else {
-        return (StatusCode::TOO_MANY_REQUESTS, Json(ApiReply::Busy { message: render::BUSY.to_owned() }));
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ApiReply::Busy {
+                message: render::BUSY.to_owned(),
+            }),
+        );
     };
     // No session id still gets an answer, just no follow-up history.
     let session = req.session_id.unwrap_or_else(Uuid::new_v4);
-    let q = Question { thread_id: format!("web:{session}"), text: shape::question_text(&req) };
+    let q = Question {
+        thread_id: format!("web:{session}"),
+        text: shape::question_text(&req),
+    };
     (StatusCode::OK, Json(app.answer(&q, ip).await))
 }
 
@@ -260,15 +290,16 @@ mod tests {
     use axum::http::Request;
     use http_body_util::BodyExt as _;
     use judge_core::{
-        CallId, Card, CardId, Category, CategoryGuess, Confidence, Context, CrVersion, Extraction, Extractor,
-        Face, Layout, MatchedVia, Qa, Resolution, Resolver, RuleChunk, RuleId, Score, Source,
-        Synthesizer, Unvalidated,
+        CallId, Card, CardId, Category, CategoryGuess, Confidence, Context, CrVersion, Extraction,
+        Extractor, Face, Layout, MatchedVia, Qa, Resolution, Resolver, RuleChunk, RuleId, Score,
+        Source, Synthesizer, Unvalidated,
     };
     use nonempty::NonEmpty;
     use std::sync::Mutex;
     use tower::ServiceExt as _;
 
-    const RULE_BODY: &str = "Damage dealt by a source with lifelink causes its controller to gain that much life.";
+    const RULE_BODY: &str =
+        "Damage dealt by a source with lifelink causes its controller to gain that much life.";
 
     fn card(n: u128, name: &str) -> Card {
         Card {
@@ -302,7 +333,10 @@ mod tests {
             Ok(Extraction {
                 card_spans: spans,
                 concepts: vec![],
-                primary: CategoryGuess { category: Category::KeywordAbilities, confidence: Confidence::High },
+                primary: CategoryGuess {
+                    category: Category::KeywordAbilities,
+                    confidence: Confidence::High,
+                },
                 secondary: vec![],
                 source: Source::Cr,
             })
@@ -315,7 +349,10 @@ mod tests {
     impl Resolver for StubResolver {
         async fn resolve(&self, span: &str) -> Result<Resolution, JudgeError> {
             if let Some(name) = span.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
-                return Ok(Resolution::Resolved { card: card(1, name), via: MatchedVia::Bracket });
+                return Ok(Resolution::Resolved {
+                    card: card(1, name),
+                    via: MatchedVia::Bracket,
+                });
             }
             Ok(Resolution::Ambiguous {
                 query: span.to_owned(),
@@ -328,7 +365,12 @@ mod tests {
     struct StubRetriever;
     #[async_trait]
     impl Retriever for StubRetriever {
-        async fn retrieve(&self, _q: &Question, _c: &[Card], _e: &Extraction) -> Result<Context, JudgeError> {
+        async fn retrieve(
+            &self,
+            _q: &Question,
+            _c: &[Card],
+            _e: &Extraction,
+        ) -> Result<Context, JudgeError> {
             Ok(Context {
                 rules: vec![RuleChunk {
                     id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?,
@@ -337,7 +379,8 @@ mod tests {
                     heading: "Lifelink".into(),
                     body: RULE_BODY.into(),
                     examples: vec![],
-                    cr_version: CrVersion::try_new("20260819".to_owned()).map_err(anyhow::Error::from)?,
+                    cr_version: CrVersion::try_new("20260819".to_owned())
+                        .map_err(anyhow::Error::from)?,
                 }],
                 ..Context::default()
             })
@@ -360,7 +403,11 @@ mod tests {
             Ok(Verdict::new(
                 "Two instances of lifelink are redundant: you gain the life once.".into(),
                 Confidence::High,
-                vec![judge_core::Citation::Rule { id, quote: judge_core::Quote::try_new("gain that much life").map_err(anyhow::Error::from)? }],
+                vec![judge_core::Citation::Rule {
+                    id,
+                    quote: judge_core::Quote::try_new("gain that much life")
+                        .map_err(anyhow::Error::from)?,
+                }],
                 Category::KeywordAbilities,
             ))
         }
@@ -373,13 +420,24 @@ mod tests {
     }
     #[async_trait]
     impl CallStore for StubStore {
-        async fn persist(&self, q: &Question, _v: &Verdict<Validated>, _ctx: &Context) -> Result<CallId, JudgeError> {
+        async fn persist(
+            &self,
+            q: &Question,
+            _v: &Verdict<Validated>,
+            _ctx: &Context,
+        ) -> Result<CallId, JudgeError> {
             if let Ok(mut p) = self.persisted.lock() {
                 p.push(q.text.clone());
             }
             Ok(CallId::new(Uuid::from_u128(9)))
         }
-        async fn rate(&self, _call: CallId, _user: &str, _score: Score, _judge: bool) -> Result<(), JudgeError> {
+        async fn rate(
+            &self,
+            _call: CallId,
+            _user: &str,
+            _score: Score,
+            _judge: bool,
+        ) -> Result<(), JudgeError> {
             Ok(())
         }
         async fn history(&self, _thread: &str, _n: usize) -> Result<Vec<Qa>, JudgeError> {
@@ -414,7 +472,12 @@ mod tests {
             mcp_judge_limit: ApiConfig::DEFAULT_MCP_JUDGE_LIMIT,
             mcp_judge_window: ApiConfig::DEFAULT_MCP_JUDGE_WINDOW,
         };
-        let app = Arc::new(App::new(deps, Arc::clone(&store) as Arc<dyn CallStore>, SpendMeter::new(), &cfg));
+        let app = Arc::new(App::new(
+            deps,
+            Arc::clone(&store) as Arc<dyn CallStore>,
+            SpendMeter::new(),
+            &cfg,
+        ));
         (router(app, &cfg.web_dist), store)
     }
 
@@ -433,7 +496,10 @@ mod tests {
     }
 
     fn persisted(store: &StubStore) -> Vec<String> {
-        store.persisted.lock().map_or_else(|e| e.into_inner().clone(), |p| p.clone())
+        store
+            .persisted
+            .lock()
+            .map_or_else(|e| e.into_inner().clone(), |p| p.clone())
     }
 
     #[tokio::test]
@@ -442,7 +508,10 @@ mod tests {
         let (status, j) = post_judge(router, r#"{"question":"does lifelink stack?"}"#).await?;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("answer"));
-        assert_eq!(j.get("cr_version").and_then(|k| k.as_str()), Some("20260819"));
+        assert_eq!(
+            j.get("cr_version").and_then(|k| k.as_str()),
+            Some("20260819")
+        );
         assert!(
             j.pointer("/citations/0/url")
                 .and_then(|u| u.as_str())
@@ -469,18 +538,27 @@ mod tests {
         assert!(persisted(&store).is_empty());
 
         // The client re-asks with the pick pinned.
-        let body = r#"{"question":"can urza block?","pins":[{"span":"urza","name":"Urza's Tower"}]}"#;
+        let body =
+            r#"{"question":"can urza block?","pins":[{"span":"urza","name":"Urza's Tower"}]}"#;
         let (status, j) = post_judge(router, body).await?;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("answer"), "{j}");
-        assert_eq!(persisted(&store), vec!["can [[Urza's Tower]] block?".to_owned()]);
+        assert_eq!(
+            j.get("kind").and_then(|k| k.as_str()),
+            Some("answer"),
+            "{j}"
+        );
+        assert_eq!(
+            persisted(&store),
+            vec!["can [[Urza's Tower]] block?".to_owned()]
+        );
         Ok(())
     }
 
     #[tokio::test]
     async fn requests_beyond_the_rate_limit_get_429() -> Res {
         let (router, _) = test_app(1);
-        let (status, _) = post_judge(router.clone(), r#"{"question":"does lifelink stack?"}"#).await?;
+        let (status, _) =
+            post_judge(router.clone(), r#"{"question":"does lifelink stack?"}"#).await?;
         assert_eq!(status, StatusCode::OK);
         let (status, j) = post_judge(router, r#"{"question":"does lifelink stack?"}"#).await?;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
@@ -510,7 +588,10 @@ mod tests {
         // A real dist dir, so the SPA fallback answers 200 and proves it survived the merge.
         let dist = std::env::temp_dir().join(format!("judge-api-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dist)?;
-        std::fs::write(dist.join("index.html"), "<!doctype html><title>judge</title>")?;
+        std::fs::write(
+            dist.join("index.html"),
+            "<!doctype html><title>judge</title>",
+        )?;
         let (web, _) = test_app_with_dist(10, &dist);
         let (bare_web, _) = test_app_with_dist(10, &dist);
         let router = web.merge(crate::mcp::router(crate::mcp::tests::Echo, TOKEN));
@@ -524,17 +605,42 @@ mod tests {
         };
         // `/` is answered by the fallback (`ServeDir`) alone: a router that lost
         // it in the merge would 404 here.
-        assert_eq!(send(bare_web, Method::GET, "/", None).await?, StatusCode::OK, "unmerged web fallback");
-        assert_eq!(send(router.clone(), Method::GET, "/api/health", None).await?, StatusCode::OK);
-        assert_eq!(send(router.clone(), Method::GET, "/", None).await?, StatusCode::OK, "web fallback survived the merge");
+        assert_eq!(
+            send(bare_web, Method::GET, "/", None).await?,
+            StatusCode::OK,
+            "unmerged web fallback"
+        );
+        assert_eq!(
+            send(router.clone(), Method::GET, "/api/health", None).await?,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(router.clone(), Method::GET, "/", None).await?,
+            StatusCode::OK,
+            "web fallback survived the merge"
+        );
         for method in [Method::POST, Method::GET, Method::DELETE, Method::OPTIONS] {
-            assert_eq!(send(router.clone(), method.clone(), "/mcp", None).await?, StatusCode::UNAUTHORIZED, "{method}");
+            assert_eq!(
+                send(router.clone(), method.clone(), "/mcp", None).await?,
+                StatusCode::UNAUTHORIZED,
+                "{method}"
+            );
         }
         let bearer = format!("Bearer {TOKEN}");
-        assert_eq!(send(router.clone(), Method::POST, "/mcp", Some(&bearer)).await?, StatusCode::OK);
-        assert_eq!(send(router, Method::DELETE, "/mcp", Some(&bearer)).await?, StatusCode::OK);
+        assert_eq!(
+            send(router.clone(), Method::POST, "/mcp", Some(&bearer)).await?,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(router, Method::DELETE, "/mcp", Some(&bearer)).await?,
+            StatusCode::OK
+        );
         let (bare, _) = test_app(10);
-        assert_ne!(send(bare, Method::POST, "/mcp", None).await?, StatusCode::UNAUTHORIZED, "no token configured: no gate");
+        assert_ne!(
+            send(bare, Method::POST, "/mcp", None).await?,
+            StatusCode::UNAUTHORIZED,
+            "no token configured: no gate"
+        );
         Ok(())
     }
 
@@ -556,11 +662,17 @@ mod tests {
         headers.insert("cf-connecting-ip", "198.51.100.7".parse()?);
         // The header only counts when the operator opted in.
         assert_eq!(client_ip(&headers, Some(peer), PeerAddr), peer.ip());
-        assert_eq!(client_ip(&headers, Some(peer), Cf), "198.51.100.7".parse::<IpAddr>()?);
+        assert_eq!(
+            client_ip(&headers, Some(peer), Cf),
+            "198.51.100.7".parse::<IpAddr>()?
+        );
         // A garbage header falls back to the peer; no peer falls back to loopback.
         headers.insert("cf-connecting-ip", "not-an-ip".parse()?);
         assert_eq!(client_ip(&headers, Some(peer), Cf), peer.ip());
-        assert_eq!(client_ip(&HeaderMap::new(), None, Cf), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(
+            client_ip(&HeaderMap::new(), None, Cf),
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        );
         Ok(())
     }
 
@@ -577,7 +689,10 @@ mod tests {
         assert_eq!(client_ip(&headers, Some(peer), Cf), peer.ip());
         // Even alongside a genuine CF-Connecting-IP, the forged header loses.
         headers.insert("cf-connecting-ip", "198.51.100.7".parse()?);
-        assert_eq!(client_ip(&headers, Some(peer), Cf), "198.51.100.7".parse::<IpAddr>()?);
+        assert_eq!(
+            client_ip(&headers, Some(peer), Cf),
+            "198.51.100.7".parse::<IpAddr>()?
+        );
         Ok(())
     }
 }
