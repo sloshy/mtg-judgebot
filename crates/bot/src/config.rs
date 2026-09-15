@@ -2049,6 +2049,22 @@ provider = "anthropic"
 model = "claude-opus-5"
 "#;
 
+    /// A file that resolves with no environment at all: a free, keyless
+    /// OpenAI-compatible server for both stages.
+    const KEYLESS: &str = r#"
+[providers.local]
+kind = "openai"
+base_url = "http://localhost:11434/v1"
+structured_output = "json_object"
+pricing = "free"
+[models.extract]
+provider = "local"
+model = "qwen3:8b"
+[models.synth]
+provider = "local"
+model = "qwen3:8b"
+"#;
+
     #[test]
     fn a_minimal_file_matches_the_environment_setup() -> R {
         let file = load(MINIMAL, &[("ANTHROPIC_API_KEY", "k")])?;
@@ -3078,17 +3094,11 @@ model = "claude-opus-5"
         let dir = std::env::temp_dir().join(format!("judge-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir)?;
         let good = dir.join("good.toml");
-        std::fs::write(&good, MINIMAL)?;
-        // The test environment may or may not carry ANTHROPIC_API_KEY; MINIMAL needs it.
-        if std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.trim().is_empty()) {
-            let c = Config::load_from(Some(&good))?;
-            assert_eq!(c.source(), &Source::File(good.clone()));
-        } else {
-            assert!(matches!(
-                Config::load_from(Some(&good)),
-                Err(ConfigError::MissingEnv { .. })
-            ));
-        }
+        // A keyless local provider, so the test reads nothing from the real
+        // environment and passes with or without ANTHROPIC_API_KEY set.
+        std::fs::write(&good, KEYLESS)?;
+        let c = Config::load_from(Some(&good))?;
+        assert_eq!(c.source(), &Source::File(good.clone()));
         let missing = dir.join("nope.toml");
         let err = Config::load_from(Some(&missing))
             .err()

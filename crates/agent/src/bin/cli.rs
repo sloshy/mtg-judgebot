@@ -418,7 +418,16 @@ async fn main() -> ExitCode {
         )
         .with_writer(std::io::stderr)
         .init();
-    let outcome = match parse_args(std::env::args().skip(1)) {
+    let mut args = std::env::args().skip(1).peekable();
+    if args
+        .peek()
+        .is_some_and(|a| ["--help", "-h", "help"].contains(&a.as_str()))
+    {
+        // Plain text on purpose: a person asked; every other output is JSON.
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    let outcome = match parse_args(args) {
         Ok(cmd) => run(cmd).await,
         Err(e) => Err(e),
     };

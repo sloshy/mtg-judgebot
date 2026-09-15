@@ -182,7 +182,15 @@ impl Endpoint {
     /// # Errors
     /// `MissingApiKey` when the key is unset or blank.
     pub fn from_env() -> Result<Self, LlmError> {
-        let set = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        Self::from_vars(|k| std::env::var(k).ok())
+    }
+
+    /// [`Self::from_env`] over any source of variables (tests pass a map).
+    ///
+    /// # Errors
+    /// `MissingApiKey` when the key is unset or blank.
+    pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> Result<Self, LlmError> {
+        let set = |k: &str| get(k).filter(|v| !v.trim().is_empty());
         let api_key = set("ANTHROPIC_API_KEY").ok_or(LlmError::MissingApiKey {
             var: "ANTHROPIC_API_KEY",
         })?;
@@ -934,16 +942,31 @@ mod tests {
     }
 
     #[test]
-    fn from_env_without_key_is_typed() {
-        // Only meaningful when the variable is absent or blank in the test environment.
-        if std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.trim().is_empty()) {
-            return;
+    fn from_vars_without_key_is_typed_and_blank_counts_as_unset() {
+        for vars in [
+            &[][..],
+            &[("ANTHROPIC_API_KEY", "  ")][..],
+            &[("ANTHROPIC_BASE_URL", "https://x.example")][..],
+        ] {
+            let get = |k: &str| {
+                vars.iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| (*v).to_owned())
+            };
+            assert!(
+                matches!(
+                    Endpoint::from_vars(get),
+                    Err(LlmError::MissingApiKey {
+                        var: "ANTHROPIC_API_KEY"
+                    })
+                ),
+                "{vars:?}"
+            );
         }
+        let get = |k: &str| (k == "ANTHROPIC_API_KEY").then(|| "sk-ant-x".to_owned());
         assert!(matches!(
-            Anthropic::from_env(),
-            Err(LlmError::MissingApiKey {
-                var: "ANTHROPIC_API_KEY"
-            })
+            Endpoint::from_vars(get),
+            Ok(Endpoint::Direct { .. })
         ));
     }
 

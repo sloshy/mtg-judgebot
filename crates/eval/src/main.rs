@@ -67,6 +67,10 @@ fn usage() -> anyhow::Error {
 async fn run() -> anyhow::Result<bool> {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().ok_or_else(usage)?;
+    if ["--help", "-h", "help"].contains(&cmd.as_str()) {
+        println!("{}", usage());
+        return Ok(true);
+    }
     match cmd.as_str() {
         "recall" => {
             let mut rest: Vec<String> = args.collect();

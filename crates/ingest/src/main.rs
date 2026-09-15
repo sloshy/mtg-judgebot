@@ -146,7 +146,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    let cmd = parse_args(std::env::args().skip(1))?;
+    let mut args = std::env::args().skip(1).peekable();
+    if args
+        .peek()
+        .is_some_and(|a| ["--help", "-h", "help"].contains(&a.as_str()))
+    {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    let cmd = parse_args(args)?;
     let cache_dir = std::env::var_os("INGEST_CACHE_DIR")
         .map_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR), PathBuf::from);
     tracing::info!(?cmd, cache_dir = %cache_dir.display(), categories = judge_core::Category::ALL.len(), "ingest");
