@@ -1,0 +1,40 @@
+---
+title: MTG Judgebot
+description: A Discord bot and web page that answers Magic rules questions like a judge, with every claim backed by a validated citation.
+template: splash
+hero:
+  tagline: Rules questions answered like a judge. Every claim cites the Comprehensive Rules, an official ruling or the card's Oracle text, and the citation is checked before you see it.
+  actions:
+    - text: Ask the public instance
+      link: https://mtgjudge.rpeters.dev
+      icon: external
+      variant: primary
+    - text: Run your own
+      link: ./self-hosting/first-run/
+      icon: rocket
+    - text: How it works
+      link: ./how-it-works/explainer-1-what-and-why/
+      icon: open-book
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="Never guesses" icon="approve-check">
+    Nicknames like "bob" and "goyf" resolve through a typed ladder. Genuine ambiguity becomes
+    a "did you mean…?" prompt, not a best effort.
+  </Card>
+  <Card title="Citations are validated" icon="magnifier">
+    A quote has to appear verbatim in the rule, ruling or Oracle text it names. A citation
+    that fails is rejected and the model is asked again; an answer with none never ships.
+  </Card>
+  <Card title="Spend is capped" icon="seti:lock">
+    Every model call is metered against a hard per-process cap that reserves the worst case
+    before sending. The anonymous web page is rate limited per IP on top.
+  </Card>
+  <Card title="Models are configuration" icon="setting">
+    Anthropic direct, through a proxy, on AWS or Vertex, or any OpenAI-compatible server
+    including a local Ollama: one `judge.toml`, no code.
+  </Card>
+</CardGrid>

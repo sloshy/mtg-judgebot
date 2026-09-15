@@ -1,0 +1,58 @@
+name: Publish docs
+
+# Builds the Starlight site in site/ (which copies docs/*.md, CONTRIBUTING.md,
+# CHANGELOG.md, SECURITY.md and README sections into its content tree) and
+# publishes it to GitHub Pages. Independent of the image workflow: a docs edit
+# publishes no image, and a code push publishes no docs unless it touched one
+# of these paths.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/**'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - 'CHANGELOG.md'
+      - 'SECURITY.md'
+      - '.github/workflows/publish-docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publish-docs
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm --prefix site ci
+      # SITE_URL / SITE_BASE default to <owner>.github.io/<repo>; a custom
+      # domain sets them here (SITE_BASE=/).
+      - run: npm --prefix site run build
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

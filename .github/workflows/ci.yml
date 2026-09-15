@@ -103,6 +103,20 @@ jobs:
       - run: npm --prefix web ci
       - run: npm --prefix web run build
 
+  docs:
+    name: Docs site (astro build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm --prefix site ci
+      - run: npm --prefix site run build
+
   compose:
     name: Compose file parses
     runs-on: ubuntu-latest

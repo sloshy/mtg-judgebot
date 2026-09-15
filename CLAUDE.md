@@ -27,6 +27,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   explicit "nothing severe" rather than manufactured findings. Fix what it confirms, then
   commit. The reviewer inherits this session's model unless the user names another one.
 
+## Public-facing docs
+
+`docs/*.md` stay the canonical sources (the code and this file point at them by path).
+The documentation site is `site/` (Astro + Starlight): `site/scripts/sync-docs.mjs` copies
+each canonical file — or a range of its numbered `## N.` sections, or a README section
+between two headings — into `site/src/content/docs/` with Starlight frontmatter (the copies
+are gitignored build output; the manifest at the top of the script is the one list). Pages
+with no canonical file (hosted instance, Discord app setup, configuration reference,
+Discord commands, agents, command reference, data files, attribution, schema) are authored
+directly under `site/src/content/docs/`. `npm --prefix site run build` runs the sync first;
+`publish-docs.yml` deploys `site/dist` to GitHub Pages on pushes touching the sources.
+Internal links are relative (`../../using/discord/`) so `SITE_BASE` can change. When a
+fact changes in code, fix it in the canonical doc *and* in any authored page that repeats
+it; `CONTRIBUTING.md`, `SECURITY.md` and `CHANGELOG.md` are synced too.
+
+CI is `.github/workflows/ci.yml` (fmt, clippy, `.sqlx` freshness, tests on a pgvector
+service, web and site builds, compose parse), called by `publish-image.yml` before it
+builds. Discord registers three commands: `/judge` (guild-only), `/help`, `/forget`
+(deletes the caller's ratings through `CallStore::forget_user`). `GET /api/health` runs a
+`Probe` (the pool, 3 s timeout) and the compose healthcheck invokes bash explicitly
+(`/bin/sh` is dash in the slim image, no `/dev/tcp`).
+
 ## Reproducing a reported failure
 
 When the user brings a bad or failed answer to troubleshoot, reach for the cheapest

@@ -4,5 +4,6 @@ target
 eval/runs
 web/node_modules
 web/dist
+site
 .claude
 .mcp.json
