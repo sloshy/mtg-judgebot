@@ -1,7 +1,7 @@
 name: Publish image
 
 # Builds the one image both `bot` and `api` run from and pushes it to GHCR, so
-# the deployment host only ever pulls. The Rust release build across seven
+# the deployment host only ever pulls. The Rust release build across ten
 # crates plus a Vite build is far more than a NAS can do comfortably.
 
 on:
@@ -30,7 +30,13 @@ permissions:
   packages: write
 
 jobs:
+  # The same gates a pull request gets; the image is built only from a tree
+  # that passes them.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

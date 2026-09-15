@@ -22,9 +22,11 @@ services:
     build: .
     # `bot` and `api` are one image, two entrypoints. Naming it after the GHCR
     # package lets a low-powered host pull a CI-built image instead of building:
-    # `docker compose pull && docker compose up -d`. Pin JUDGE_IMAGE_TAG to a
-    # `sha-<short>` tag in .env to roll back; `build: .` still works locally.
-    image: ghcr.io/sloshy/mtg-judgebot:${JUDGE_IMAGE_TAG:-latest}
+    # `docker compose pull && docker compose up -d`. JUDGE_IMAGE defaults to the
+    # upstream package; a fork whose CI publishes its own sets it in .env. Pin
+    # JUDGE_IMAGE_TAG to a `sha-<short>` tag to roll back; `build: .` still
+    # works locally.
+    image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
     container_name: judgebot-bot
     restart: unless-stopped
     env_file: .env
@@ -55,7 +57,7 @@ services:
 
   api:
     build: .
-    image: ghcr.io/sloshy/mtg-judgebot:${JUDGE_IMAGE_TAG:-latest}
+    image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
     container_name: judgebot-api
     restart: unless-stopped
     entrypoint: ["judge-api"]
@@ -87,7 +89,7 @@ services:
   # Same image as bot/api, third entrypoint.
   refresh:
     build: .
-    image: ghcr.io/sloshy/mtg-judgebot:${JUDGE_IMAGE_TAG:-latest}
+    image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
     profiles: ["refresh"]
     entrypoint: ["judge-ingest"]
     command: ["refresh"]

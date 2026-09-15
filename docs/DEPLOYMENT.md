@@ -16,7 +16,9 @@ stays a long-lived connection (no HTTP-interactions rewrite), and the spend cap,
 concurrency semaphore and rate limiter stay single-process in-memory values rather
 than becoming distributed state. See `docs/ARCHITECTURE.md` for the pipeline itself.
 
-Live deployment: <https://mtgjudge.rpeters.dev>
+Hostnames, paths and the image name below are placeholders (`judge.example.com`,
+`/path/to/mtg-judgebot`, `ghcr.io/<owner>/<repo>`); substitute your own. The
+upstream project's public instance, linked from the README, runs exactly this way.
 
 ## 1. Prerequisites
 
@@ -78,13 +80,13 @@ and add a public hostname:
 
 | Field | Value |
 | --- | --- |
-| Subdomain | `mtgjudge` |
-| Domain | `rpeters.dev` |
+| Subdomain | `judge` |
+| Domain | `example.com` |
 | Service | `http://api:8787` |
 
 `api` is the compose service name — cloudflared resolves it on the compose network, so
 the API never needs a published port. Cloudflare creates the proxied
-`mtgjudge CNAME <uuid>.cfargotunnel.com` record for you; it must stay **proxied**
+`judge CNAME <uuid>.cfargotunnel.com` record for you; it must stay **proxied**
 (orange cloud), unlike every other record in the zone.
 
 Copy the connector token into `.env.deploy` as `TUNNEL_TOKEN`.
@@ -223,7 +225,7 @@ read-only lookups.
 
 ```ini
 MCP_TOKEN=<openssl rand -base64 32>       # at least 24 characters, or the API refuses to start
-MCP_ALLOWED_HOSTS=mtgjudge.example.com,localhost   # Host values accepted: the tunnel's hostname, plus
+MCP_ALLOWED_HOSTS=judge.example.com,localhost   # Host values accepted: the tunnel's hostname, plus
                                                    # localhost for curl on the host; the list replaces the default
 ```
 
@@ -233,7 +235,7 @@ empty list means every `/mcp` request is refused with 403 while `/api/judge` kee
 working. Then `docker compose up -d api` and, from a workstation:
 
 ```sh
-claude mcp add --transport http judge https://mtgjudge.example.com/mcp   --header "Authorization: Bearer <MCP_TOKEN>"
+claude mcp add --transport http judge https://judge.example.com/mcp   --header "Authorization: Bearer <MCP_TOKEN>"
 ```
 
 The per-IP rate limit of `/api/judge` does not apply to `/mcp` (the token is the
@@ -330,8 +332,8 @@ Scheduler → Create → Scheduled Task → User-defined script**, set **User: r
 the scheduler runs with a minimal environment:
 
 ```sh
-/volume1/homes/ryan/mtg-judgebot/scripts/backup-db.sh \
-  >> /volume1/homes/ryan/judgebot-backup.log 2>&1
+/volume1/homes/<you>/mtg-judgebot/scripts/backup-db.sh \
+  >> /volume1/homes/<you>/judgebot-backup.log 2>&1
 ```
 
 If `docker` isn't found, prefix the task with `PATH=/usr/local/bin:$PATH`. Tick the
@@ -486,7 +488,10 @@ million tokens, chars-to-tokens at 4:1.
 The host never builds. `.github/workflows/publish-image.yml` builds on every push to
 `main` that touches the image (including `data/`, since `crates/core/build.rs`
 generates the `Category` enum from `data/categories.yaml`) and pushes to
-`ghcr.io/sloshy/mtg-judgebot` as `latest` plus an immutable `sha-<short>` tag.
+`ghcr.io/<owner>/<repo>` (the repository the workflow runs in) as `latest` plus an
+immutable `sha-<short>` tag. The compose file pulls `JUDGE_IMAGE`, which defaults to
+the upstream package; a fork sets it to its own in `.env` once its first workflow run
+has published.
 
 ```sh
 git pull                                # runbook + compose changes
@@ -541,16 +546,17 @@ docker compose up -d
 
 ### One-time: let the host pull a private package
 
-The repo is private, so the GHCR package is too. On the host, log in with a classic
-PAT carrying only `read:packages` — as root on Synology, since that is the user
-Container Manager and the Task Scheduler run as:
+The upstream package is public and needs no login. A fork's package inherits the
+fork's visibility, so a private fork's host must log in with a classic PAT carrying
+only `read:packages` — as root on Synology, since that is the user Container Manager
+and the Task Scheduler run as:
 
 ```sh
-echo "$GHCR_TOKEN" | docker login ghcr.io -u sloshy --password-stdin
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
 ```
 
 Making the package public instead (GHCR package settings, independent of repo
-visibility) removes the login step but publishes the built binaries.
+visibility) removes the login step.
 
 ### Rolling back
 
@@ -583,7 +589,7 @@ own if the connector restarts.
 | Symptom | Cause |
 | --- | --- |
 | 502 from the public hostname | `api` is down, or the tunnel's service is not `http://api:8787` |
-| Tunnel healthy, hostname NXDOMAIN | the `mtgjudge` record is grey-clouded; it must be proxied |
+| Tunnel healthy, hostname NXDOMAIN | the `judge` record is grey-clouded; it must be proxied |
 | `/mcp` answers 401 | wrong or missing `Authorization: Bearer <MCP_TOKEN>` |
 | `/mcp` answers 403 while `/api/health` is fine | the public hostname is not in `MCP_ALLOWED_HOSTS` |
 | `/mcp` answers 405 (a browser GET shows the web page) | `MCP_TOKEN` is unset in the api container's `.env`, so `/mcp` is just another page path |
