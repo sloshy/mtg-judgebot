@@ -13,7 +13,7 @@ so `rustup` installs it on first use) and Node 22 for the web page.
 ```sh
 cp .env.example .env            # DATABASE_URL already points at the compose database
 docker compose up -d db         # pgvector Postgres on localhost:5433
-set -a; source .env; set +a     # every cargo command below reads .env from the environment
+set -a; source .env; set +a     # optional: the binaries read .env themselves; this puts it in your shell too
 cargo build --workspace
 cargo test --workspace          # the #[sqlx::test] suites create throwaway databases off DATABASE_URL
 ```

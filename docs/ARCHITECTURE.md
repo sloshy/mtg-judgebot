@@ -1,7 +1,9 @@
-# MTG Judge Bot — Architecture (stack-independent)
+# MTG Judge Bot — Architecture
 
-Status: draft v2, revised after review. **Implementation language: Rust** (decided 2026-08-29). Language comparison in
-`docs/LANGUAGE_EVALUATION.md`; stack-specific proposals in `docs/proposals/`. Target: small Discord server, single operator, prototype.
+The design reference, kept current with the code. Written stack-independent before the
+language was chosen (Rust, 2026-08-29: `docs/LANGUAGE_EVALUATION.md`, proposals in
+`docs/proposals/`) and maintained since. `docs/EXPLAINER.md` is the narrative version for
+someone new to the ideas; this file is the terse one.
 
 ## 1. Goal
 
@@ -47,7 +49,10 @@ Discord message (+ last N Q&A in the same thread)
   │
   ▼
 [2] Card resolution (per span)
-    alias table → [[bracket]] syntax → printed-name table → trigram fuzzy
+    A typed ladder, each rung tried only when the one above found nothing:
+    alias → possessive-stripped alias ("bob's" → "bob") → [[bracket]] syntax →
+    exact name → printed-name table → short name before the comma ("Ragavan")
+    → alias as a suffix → trigram fuzzy
     Output: Resolution = Resolved(card, matchedVia) | Ambiguous(candidates) | NotFound
     A span that is Ambiguous from a non-fuzzy rung and shares a candidate with
     a card Resolved from another span, or NotFound but whose words appear as
@@ -245,30 +250,35 @@ Category      closed set, ~25 values, sourced from categories.yaml
 Source        CR | Commander | Tournament | OutOfScope
 Confidence    Low | Medium | High
 Resolution    Resolved(card, matchedVia) | Ambiguous(query, candidates) | NotFound(query)
-Citation      Rule(id, quote) | ScryfallRuling(card, rulingKey, quote) | PriorCall(id, quote)
+Quote         non-blank text; compared to its source with typographic punctuation folded
+Citation      Rule(id, quote) | ScryfallRuling(card, rulingKey, quote)
+              | OracleText(card, quote) | PriorCall(id, quote)
 Context       { cards, rules, rulings, glossary, prior, notes, history }
-Verdict       { answer, confidence, citations, category, source, crVersion }
-JudgeError    Ambiguous(...) | OutOfScope(source) | BadCitation(citation) | LlmRefused | Upstream(err)
+Verdict<S>    { answer, confidence, citations, category, source, crVersion }
+              S = Unvalidated | Validated; only Verdict<Validated> can be stored or shown
+Rejection     BadCitation(citation) | Malformed(what) | Empty(why) | Oversized { chars }
+RejectedAttempt  { answer, rejection }   — quoted back to the retry as a blockquote
+JudgeError    AmbiguousCards(...) | CardsNotFound(...) | OutOfScope(source)
+              | BadCitation | MalformedCitation | EmptyVerdict | LlmRefused | Upstream(err)
 
 Ports:  Extractor, Resolver, Retriever, Synthesizer, Embedder, CallStore
 judge : Question -> IO[Either[JudgeError, Verdict]]
 ```
 
-## 6. Build order (eval-first)
+## 6. How it was built (eval-first)
 
-1. **Gold set v0**: 20 questions with expected rule IDs and answers, covering
-   DFC/MDFC, adventure/split, Commander, layers, replacement effects, errata,
-   out-of-scope (MTR), and nicknames.
-2. Ingest: cards + faces + printed names + CR chunks + embeddings.
-3. Extraction + resolution; unit tests on the gold set's card mentions.
-4. Retrieval; **gate: ≥ 90% of gold rule IDs present in Context** before any
-   synthesis work.
-5. Synthesis + citation validation, CLI-only; score against gold.
-6. Discord adapter, threads, rating buttons.
-7. Prior-call retrieval (needs data from 6). Extend gold set to ≥ 50.
+The order was chosen so that retrieval was measured before any synthesis existed:
+a gold set of adversarially verified questions with expected rule ids (`eval/gold.yaml`,
+21 questions today), then ingest, then extraction and resolution tested on the gold set's
+card mentions, then retrieval behind a **gate of ≥ 90% of gold rule ids present in the
+Context**, then synthesis with citation validation scored against the gold answers, then
+the Discord adapter with rating buttons, and last the prior-call leg, which needs rated
+data to exist. `judge-eval recall` still runs that gate for free on every retrieval change.
 
-## 7. Non-goals for the prototype
+## 7. Non-goals
 
-Tournament policy (MTR/IPG), multi-server tenancy, accounts/ratings on the web
-UI (the anonymous page never rates), retraining of any kind, automatic
-nightmare-card detection.
+Tournament policy (MTR/IPG): the bot declines those questions rather than winging them.
+Accounts or ratings on the web page: the anonymous page never rates. Retraining of any
+kind. Automatic detection of "nightmare" cards (the notes are curated by hand).
+Multi-server tenancy is not a non-goal but is not built; `docs/proposals/tenancy.md`
+is the proposal.

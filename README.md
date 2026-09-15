@@ -38,32 +38,58 @@ You'll lose 2 life, not 0. Tarmogoyf's mana value is 0 anywhere its {X}… [702.
    users holding a Judge role) decides which prior calls are shown, warned about, or
    excluded — the CR itself always outranks precedent.
 
+## Try it
+
+The public instance is <https://mtgjudge.rpeters.dev> (no login; rate limited per IP).
+The documentation site is <https://sloshy.github.io/mtg-judgebot/>: how to use the bot,
+run your own, and how it works inside.
+
 ## Running it
 
-Requirements: Docker, Rust 1.97+, a Discord bot token, and a model: an Anthropic API
-key out of the box, or a `judge.toml` naming another provider (below); optional Voyage AI
-key for the semantic-search leg.
+Requirements: Docker with the compose plugin, Rust 1.97 (`rust-toolchain.toml` installs
+it through rustup), and a model provider: an Anthropic API key out of the box, or a
+`judge.toml` naming another provider (below). A Voyage AI key turns on the semantic-search
+leg; without it the bot still works on the other two. Nothing here needs Discord until
+you want the bot in a server.
 
 ```sh
-cp .env.example .env          # fill in keys, DISCORD_TOKEN, GUILD_ID
-docker compose up -d          # pgvector Postgres (localhost:5433) + bot + web API
-cargo run --release -p judge-ingest -- migrate   # optional: bot/api already migrated at startup; this is
-                                                 # the explicit form (JUDGE_AUTO_MIGRATE=false, or sqlx-cli)
+git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
+cp .env.example .env               # add ANTHROPIC_API_KEY (and VOYAGE_API_KEY if you have one)
+docker compose up -d db            # pgvector Postgres on localhost:5433
+cargo run --release -p judge-ingest -- migrate              # create the schema (bot and api also do this at startup)
 
-# one-time data load (~110 MB from Scryfall, cached in .cache/)
-cargo run --release -p judge-ingest -- cards
-cargo run --release -p judge-ingest -- rules latest  # the CR release Wizards' rules page links
+# Load the data (once; the nightly refresh keeps it current afterwards)
+cargo run --release -p judge-ingest -- cards                # Scryfall bulk data, ~110 MB, cached in .cache/
+cargo run --release -p judge-ingest -- rules latest         # the current Comprehensive Rules from Wizards' site
 cargo run --release -p judge-ingest -- aliases data/aliases.yaml
 cargo run --release -p judge-ingest -- notes data/notes.yaml
-cargo run --release -p judge-ingest -- embed        # needs VOYAGE_API_KEY or a [models.embed]
+cargo run --release -p judge-ingest -- embed                # optional: every rule and glossary entry through the
+                                                            # embedder once; a few cents on Voyage
 
-docker compose up -d --build bot api                # redeploy after code changes
-scripts/refresh-data.sh                             # nightly: cards, new CR, embeddings, emoji
+docker compose up -d api           # first run builds the image (minutes, ~4 GB RAM), then serves the web page
 ```
 
-Invite the bot with the `bot` + `applications.commands` scopes; `/judge` registers
-instantly in the guild named by `GUILD_ID`. Every LLM call is metered and hard-capped
-(`JUDGE_MAX_USD`); a typical answer costs $0.08–0.25.
+Open <http://localhost:8787> and ask a question. Postgres publishes on **5433** so it never
+collides with a Postgres already on the host. A typical answer costs $0.08–0.25 in model
+calls; every call is metered and hard-capped per process (`JUDGE_MAX_USD`, default $5).
+
+To put it in a Discord server, create an application in the [Discord Developer
+Portal](https://discord.com/developers/applications), add a bot to it, and copy the bot
+token into `.env` as `DISCORD_TOKEN`. The bot needs **no privileged intents**: it only
+receives its own slash commands and button presses. Invite it with the `bot` and
+`applications.commands` scopes (the URL generator under *OAuth2*; no channel permissions
+are required, replies go through the interaction). For instant command registration
+during setup, put your server's id in `GUILD_ID` (Discord: *User Settings → Advanced →
+Developer Mode*, then right-click the server → *Copy Server ID*); without it, `/judge`
+registers globally and can take up to an hour to appear. Then:
+
+```sh
+docker compose up -d bot           # /judge, /help and /forget appear in the server
+```
+
+Members holding a role named `JUDGE_ROLE` (default `Judge`) rate as judges: their rating
+overrides the crowd's. The documentation site walks through the Discord setup step by
+step; `docker compose up -d --build bot api` redeploys after code changes.
 
 ### Choosing a model
 
@@ -128,7 +154,10 @@ beats the table and is what the cap settles at.
 
 Embeddings are chosen the same way: `[models.embed]` on a `voyage` provider or on any
 `openai` one (`POST /v1/embeddings`; `dimensions` is then required — it is the width of
-the `vector(N)` columns). The database records which model's vectors it holds
+the `vector(N)` columns). A fresh database is created 1024 wide, Voyage's width; an
+embedder of another width (OpenAI's `text-embedding-3-small` is 1536) is set up with
+`ingest reembed --yes` *instead of* `ingest embed` the first time, which retypes the
+columns before it fills them. The database records which model's vectors it holds
 (`embedding_space`), and nothing will mix two: a bot configured for another model logs
 an error and runs with the vector leg dark. To actually switch, `cargo run --release -p
 judge-ingest -- reembed` prints the row counts and a rough cost, probes the new model
@@ -197,15 +226,18 @@ crates/
   bot        Postgres adapters (resolver / retriever / call store), judge.toml loader, prompts, Discord (serenity/poise)
   ingest     Scryfall + Comprehensive Rules loaders, embedder  (bin)
   eval       gold-set harness: recall / answer / rescore / show (bin)
-  api        anonymous HTTP adapter (axum) serving the web page (bin)
+  api        anonymous HTTP adapter (axum) serving the web page; the MCP transport at /mcp (bin)
+  agent      the judge for other agents: sessions, lookups and the pipeline as judge-cli and judge-mcp
 web/         SolidJS + TypeScript single page (Vite)
+site/        the documentation site (Astro + Starlight); docs/ is its source
 data/        categories.yaml (generates the Category enum), aliases.yaml, notes.yaml
 eval/        gold.yaml + stored runs
-docs/        architecture, language evaluation, proposals
+docs/        EXPLAINER.md (the tour), ARCHITECTURE.md (the reference), DEPLOYMENT.md (the runbook),
+             LANGUAGE_EVALUATION.md and proposals/ (design history)
 ```
 
-Not yet built: multi-server tenancy, tournament-policy (MTR/IPG) coverage — the bot declines those
-questions rather than winging them.
+Not yet built: multi-server tenancy (`docs/proposals/tenancy.md` is the proposal) and
+tournament-policy (MTR/IPG) coverage — the bot declines those questions rather than winging them.
 
 ## License and attribution
 
