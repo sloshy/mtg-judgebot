@@ -75,7 +75,12 @@ impl Extractor for LlmExtractor {
             .map_err(anyhow::Error::from)?;
         let e = parse_extraction(&resp)?;
         if e.categories().all(|g| g.category == Category::Other) {
-            tracing::warn!(question = %q.text, "extractor returned no category other than `other`; the category-map leg will be empty");
+            // No question text at WARN: it is end-user content and this
+            // level lands in default production logs.
+            tracing::warn!(
+                chars = q.text.chars().count(),
+                "extractor returned no category other than `other`; the category-map leg will be empty"
+            );
         }
         tracing::info!(
             spans = ?e.card_spans,

@@ -3,6 +3,7 @@
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::Context as _;
+use judge_llm::ApiKey;
 
 /// Configuration for the HTTP adapter.
 #[derive(Clone, Debug)]
@@ -23,8 +24,8 @@ pub struct ApiConfig {
     /// Where the rate-limit bucket key comes from (`API_CLIENT_IP`).
     pub client_ip: ClientIpSource,
     /// Bearer token that mounts the MCP transport at `/mcp` (`MCP_TOKEN`);
-    /// unset means no MCP endpoint at all.
-    pub mcp_token: Option<String>,
+    /// unset means no MCP endpoint at all. Redacted in `Debug`.
+    pub mcp_token: Option<ApiKey>,
     /// Hostnames the MCP transport accepts in `Host` (`MCP_ALLOWED_HOSTS`,
     /// comma-separated); empty keeps rmcp's loopback-only default.
     pub mcp_hosts: Vec<String>,
@@ -138,6 +139,7 @@ impl ApiConfig {
                 "MCP_TOKEN must be printable ASCII without spaces (try `openssl rand -base64 32`)"
             );
         }
+        let mcp_token = mcp_token.map(ApiKey::from);
         let mcp_judge_limit = parse_min(var("MCP_JUDGE_LIMIT"), "MCP_JUDGE_LIMIT", 1u32)?
             .unwrap_or(Self::DEFAULT_MCP_JUDGE_LIMIT);
         let mcp_judge_window =
@@ -221,7 +223,7 @@ mod tests {
             Some(ApiConfig::DEFAULT_RATE_WINDOW)
         );
         assert_eq!(cfg.map(|c| c.client_ip), Some(ClientIpSource::PeerAddr));
-        assert_eq!(cfg.map(|c| c.mcp_token.clone()), Some(None));
+        assert_eq!(cfg.map(|c| c.mcp_token.is_none()), Some(true));
         assert_eq!(cfg.map(|c| c.mcp_hosts.clone()), Some(vec![]));
     }
 
@@ -245,8 +247,14 @@ mod tests {
         ]))
         .ok();
         assert_eq!(
-            cfg.as_ref().map(|c| c.mcp_token.as_deref()),
+            cfg.as_ref()
+                .map(|c| c.mcp_token.as_ref().map(ApiKey::expose)),
             Some(Some("0123456789abcdef0123456789abcdef"))
+        );
+        assert!(
+            cfg.as_ref()
+                .is_some_and(|c| !format!("{c:?}").contains("0123456789abcdef")),
+            "the token must not reach a Debug rendering of the config"
         );
         assert_eq!(
             cfg.as_ref().map(|c| c.mcp_hosts.clone()),

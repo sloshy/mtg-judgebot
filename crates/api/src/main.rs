@@ -20,6 +20,7 @@ use judge_agent::{Options, Quota, Toolbox};
 use judge_api::{ApiConfig, App, router, serve};
 use judge_bot::{build_deps_with, config::Config as JudgeConfig, db::PgCallStore, synth::Harness};
 use judge_core::CallStore;
+use judge_llm::ApiKey;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -74,7 +75,7 @@ async fn main() -> Result<()> {
     let mut routes = router(Arc::clone(&app), &cfg.web_dist);
     // The MCP transport shares the judge slots (one JUDGE_CONCURRENCY for
     // both front doors) and the metered models (one cap).
-    if let Some(token) = &cfg.mcp_token {
+    if let Some(token) = cfg.mcp_token.as_ref().map(ApiKey::expose) {
         let toolbox = Toolbox::new(
             pool,
             Options {

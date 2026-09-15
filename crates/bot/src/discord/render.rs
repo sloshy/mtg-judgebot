@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(fit("abcdef", 0), "");
     }
 
-    const ASKER: u64 = 110_372_470_472_613_888;
+    const ASKER: u64 = 1_000_000_000_000_000_042;
     /// Real emoji ids are 19-digit snowflakes; a short one would understate
     /// how much of the budget a tag costs (`<:mana_t:1…>` is 29 characters).
     const TAP_ID: u64 = 1_411_688_015_155_265_557;
@@ -521,13 +521,13 @@ mod tests {
     #[test]
     fn header_mentions_the_asker_and_truncates_the_question() {
         let h = header(ASKER, "Does  trample\nwork here?");
-        assert_eq!(h, "<@110372470472613888> asked: Does trample work here?");
+        assert_eq!(h, "<@1000000000000000042> asked: Does trample work here?");
         let long = "why ".repeat(200);
         let h = header(ASKER, &long);
-        assert!(h.starts_with("<@110372470472613888> asked: why why"));
+        assert!(h.starts_with("<@1000000000000000042> asked: why why"));
         assert!(h.ends_with(TRUNCATION_MARKER), "{h}");
         assert!(
-            h.chars().count() <= QUESTION_LIMIT + "<@110372470472613888> asked: ".len(),
+            h.chars().count() <= QUESTION_LIMIT + "<@1000000000000000042> asked: ".len(),
             "{h}"
         );
         assert_eq!(h.lines().count(), 1, "the header is a single line");
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn with_header_prefixes_and_keeps_the_content_budget() {
         let c = with_header(ASKER, "short?", "The answer.", &no_symbols());
-        assert_eq!(c, "<@110372470472613888> asked: short?\n\nThe answer.");
+        assert_eq!(c, "<@1000000000000000042> asked: short?\n\nThe answer.");
         // An over-long body is cut from the end; the header survives intact.
         let c = with_header(
             ASKER,
@@ -545,7 +545,7 @@ mod tests {
             &no_symbols(),
         );
         assert!(c.chars().count() <= CONTENT_LIMIT, "{}", c.len());
-        assert!(c.starts_with("<@110372470472613888> asked: q q"));
+        assert!(c.starts_with("<@1000000000000000042> asked: q q"));
         assert!(c.contains("\n\nbody"));
         assert!(c.ends_with(TRUNCATION_MARKER));
     }
@@ -567,7 +567,7 @@ mod tests {
         );
         assert!(
             a.content
-                .starts_with("<@110372470472613888> asked: does a long answer")
+                .starts_with("<@1000000000000000042> asked: does a long answer")
         );
         assert!(a.content.ends_with(TRUNCATION_MARKER));
         assert!(a.citations.chars().count() <= EMBED_DESCRIPTION_LIMIT);
@@ -585,7 +585,7 @@ mod tests {
         let a = answer(&v, None, ASKER, "trample?", &no_symbols());
         assert_eq!(
             a.content,
-            format!("<@110372470472613888> asked: trample?\n\n{LONG_ENOUGH}")
+            format!("<@1000000000000000042> asked: trample?\n\n{LONG_ENOUGH}")
         );
         assert_eq!(a.citations.lines().count(), 2);
         assert!(a.citations.lines().all(|l| {

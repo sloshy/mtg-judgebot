@@ -40,7 +40,7 @@ use anyhow::Context as _;
 use judge_core::{
     CallId, CallStore, Deps, JudgeError, Question, Retriever, Score, Validated, Verdict, judge,
 };
-use judge_llm::SpendMeter;
+use judge_llm::{ApiKey, SpendMeter};
 use poise::serenity_prelude as serenity;
 use serenity::{
     ButtonStyle, ComponentInteraction, CreateActionRow, CreateAllowedMentions, CreateButton,
@@ -63,8 +63,9 @@ pub const ACQUIRE_WAIT: Duration = Duration::from_secs(2);
 /// Everything the adapter reads from the environment.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Bot token (`DISCORD_TOKEN`).
-    pub token: String,
+    /// Bot token (`DISCORD_TOKEN`). An [`ApiKey`] so a `{:?}` of this
+    /// struct (a log line, a panic, a test) prints `<redacted>`, never the token.
+    pub token: ApiKey,
     /// Register `/judge` in this guild only (`GUILD_ID`; instant) instead of
     /// globally (up to an hour to propagate).
     pub guild_id: Option<GuildId>,
@@ -107,7 +108,7 @@ impl Config {
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())
         };
-        let token = var("DISCORD_TOKEN").ok_or_else(|| {
+        let token = var("DISCORD_TOKEN").map(ApiKey::from).ok_or_else(|| {
             anyhow::anyhow!(
                 "DISCORD_TOKEN is not set: put the bot token in the environment (or .env) and retry"
             )
@@ -677,7 +678,7 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
         })
         .build();
     // Slash commands and button presses arrive without any gateway intent.
-    let mut client = serenity::ClientBuilder::new(&cfg.token, GatewayIntents::empty())
+    let mut client = serenity::ClientBuilder::new(cfg.token.expose(), GatewayIntents::empty())
         .framework(framework)
         .await
         .context("build Discord client")?;
@@ -713,9 +714,13 @@ mod tests {
             "blank counts as unset"
         );
 
-        let cfg = Config::from_vars(vars(&[("DISCORD_TOKEN", "tok")])).ok();
+        let cfg = Config::from_vars(vars(&[("DISCORD_TOKEN", "s3cret-bot-token")])).ok();
         let cfg = cfg.as_ref();
-        assert_eq!(cfg.map(|c| c.token.as_str()), Some("tok"));
+        assert_eq!(cfg.map(|c| c.token.expose()), Some("s3cret-bot-token"));
+        assert!(
+            cfg.is_some_and(|c| !format!("{c:?}").contains("s3cret")),
+            "the token must not reach a Debug rendering of the config"
+        );
         assert_eq!(cfg.and_then(|c| c.guild_id), None);
         assert_eq!(
             cfg.map(|c| c.judge_role.as_str()),
