@@ -1,8 +1,24 @@
 name: Publish image
 
-# Builds the one image both `bot` and `api` run from and pushes it to GHCR, so
-# the deployment host only ever pulls. The Rust release build across ten
-# crates plus a Vite build is far more than a NAS can do comfortably.
+# Builds the one image `bot`, `api` and `refresh` run from and pushes it to
+# GHCR, so the deployment host only ever pulls. The Rust release build across
+# ten crates plus a Vite build is far more than a NAS can do comfortably.
+#
+# Two ways in:
+#
+#   push to main   builds linux/amd64 and linux/arm64, each on a runner of its
+#                  own architecture (no emulated Rust builds), and publishes
+#                  the manifest list as `latest` plus an immutable `sha-<short>`.
+#   release        tags the image already built for the released commit as
+#                  `<major>.<minor>.<patch>`, `<major>.<minor>` and `<major>`
+#                  (no `<major>` for 0.x) without rebuilding, so a release is
+#                  the image that has been running as `latest`, down to the
+#                  platform digests (only the manifest list's annotations differ).
+#                  When that commit has no image — a docs-only commit, or a
+#                  build cancelled by a later push — it is built here first.
+#
+# Every build goes through ci.yml first; a retag does not need to, since the
+# image it points at already did.
 
 on:
   push:
@@ -19,10 +35,14 @@ on:
       - 'Dockerfile'
       - '.dockerignore'
       - '.github/workflows/publish-image.yml'
+  release:
+    types: [published]
   workflow_dispatch:
 
+# Pushes to main cancel each other (only the newest tree matters); a release
+# run is its own group, so it neither cancels nor is cancelled by a push.
 concurrency:
-  group: publish-image
+  group: publish-image-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -30,14 +50,106 @@ permissions:
   packages: write
 
 jobs:
+  # What this run publishes, and whether the image for this commit already
+  # exists (only asked on a tag: a push to main always builds).
+  meta:
+    name: Resolve tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+      annotations: ${{ steps.meta.outputs.annotations }}
+      existing: ${{ steps.existing.outputs.ref }}
+    steps:
+      # GHCR wants a lowercase repository path; github.repository keeps the
+      # owner's casing.
+      - id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        env:
+          # Annotations go on the manifest list (index), which is what a
+          # release retag creates; the labels are baked into each platform
+          # image at build time.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ${{ steps.image.outputs.name }}
+          # `latest=auto` would also emit `latest` for a semver tag, and a
+          # release of an older commit would then roll every host back; only
+          # the raw line below, gated on main, may produce it.
+          flavor: |
+            latest=false
+          # `latest` for the rolling deploy, `sha-abc1234` as an immutable
+          # handle to roll back to (JUDGE_IMAGE_TAG in the host's .env), and
+          # the semver set for a `vX.Y.Z` release tag.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+
+      # A release whose tag is not `vX.Y.Z` would publish nothing but the
+      # sha tag it already has; refuse it here rather than succeed silently.
+      - name: The release tag is semver
+        if: github.ref_type == 'tag'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          if [[ "$GITHUB_REF_NAME" != v* ]] || ! grep -qvE ':sha-[0-9a-f]+$' <<< "$TAGS"; then
+            echo "::error::release tag '$GITHUB_REF_NAME' is not vX.Y.Z; nothing to publish"
+            exit 1
+          fi
+
+      - uses: docker/login-action@v4
+        if: github.ref_type == 'tag'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Look for the image already built for this commit
+        id: existing
+        if: github.ref_type == 'tag'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          sha_ref=$(grep -m1 -E ':sha-[0-9a-f]+$' <<< "$TAGS")
+          if out=$(docker buildx imagetools inspect "$sha_ref" 2>&1); then
+            echo "found $sha_ref; it will be retagged, not rebuilt"
+            echo "ref=$sha_ref" >> "$GITHUB_OUTPUT"
+          else
+            echo "$out"
+            echo "no image at $sha_ref; building it"
+          fi
+
   # The same gates a pull request gets; the image is built only from a tree
   # that passes them.
   ci:
+    needs: meta
+    if: needs.meta.outputs.existing == ''
     uses: ./.github/workflows/ci.yml
 
+  # One native build per platform, pushed by digest only; `merge` below joins
+  # them under the tags. An arm64 build under QEMU would take hours.
   build:
-    needs: ci
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.arch }}
+    needs: [meta, ci]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
 
@@ -49,38 +161,122 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          # `latest` for the rolling deploy, `sha-abc1234` as an immutable
-          # handle to roll back to (JUDGE_IMAGE_TAG in the host's .env).
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-,format=short
-
       - id: build
         uses: docker/build-push-action@v7
         with:
           context: .
-          # Add linux/arm64 only if the deployment host needs it — emulated
-          # Rust builds are slow enough to be worth avoiding otherwise.
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: ${{ matrix.platform }}
+          labels: ${{ needs.meta.outputs.labels }}
+          outputs: type=image,name=${{ needs.meta.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          # One cache per architecture: the layers differ, and a shared scope
+          # would have each build evict the other's.
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish manifest
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the manifest list under every tag
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ needs.meta.outputs.image }}
+          TAGS: ${{ needs.meta.outputs.tags }}
+          ANNOTATIONS: ${{ needs.meta.outputs.annotations }}
+        run: |
+          args=()
+          while IFS= read -r t; do if [ -n "$t" ]; then args+=(-t "$t"); fi; done <<< "$TAGS"
+          while IFS= read -r a; do if [ -n "$a" ]; then args+=(--annotation "$a"); fi; done <<< "$ANNOTATIONS"
+          sources=()
+          for d in *; do sources+=("$IMAGE@sha256:$d"); done
+          docker buildx imagetools create "${args[@]}" "${sources[@]}"
+          docker buildx imagetools inspect "$(head -n1 <<< "$TAGS")"
 
       - name: Summary
+        env:
+          TAGS: ${{ needs.meta.outputs.tags }}
         run: |
           {
-            echo '### Image published'
+            echo '### Image published (linux/amd64, linux/arm64)'
             echo
             echo '```'
-            echo '${{ steps.meta.outputs.tags }}'
+            echo "$TAGS"
             echo '```'
             echo
             echo 'Deploy:  `docker compose pull && docker compose up -d`'
-            echo 'Roll back: set `JUDGE_IMAGE_TAG=sha-<short>` in the host'\''s .env, then the same.'
+            echo 'Roll back: set `JUDGE_IMAGE_TAG=sha-<short>` (or a release version) in the host'\''s .env, then the same.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # A release of a commit that already has an image: point the version tags
+  # at that image's manifest list. Nothing is rebuilt.
+  retag:
+    name: Tag release
+    needs: meta
+    if: needs.meta.outputs.existing != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag the existing image
+        env:
+          EXISTING: ${{ needs.meta.outputs.existing }}
+          TAGS: ${{ needs.meta.outputs.tags }}
+          ANNOTATIONS: ${{ needs.meta.outputs.annotations }}
+        run: |
+          # The sha tag is the source and stays immutable: only the version
+          # tags are added.
+          args=()
+          while IFS= read -r t; do if [ -n "$t" ] && [ "$t" != "$EXISTING" ]; then args+=(-t "$t"); fi; done <<< "$TAGS"
+          while IFS= read -r a; do if [ -n "$a" ]; then args+=(--annotation "$a"); fi; done <<< "$ANNOTATIONS"
+          docker buildx imagetools create "${args[@]}" "$EXISTING"
+          docker buildx imagetools inspect "$(head -n1 <<< "$TAGS")"
+
+      - name: Summary
+        env:
+          EXISTING: ${{ needs.meta.outputs.existing }}
+          TAGS: ${{ needs.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Release tagged from \`$EXISTING\` (not rebuilt)"
+            echo
+            echo '```'
+            echo "$TAGS"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

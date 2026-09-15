@@ -8,6 +8,11 @@ unless `JUDGE_AUTO_MIGRATE=false`).
 ## [Unreleased]
 
 ### Added
+- The published image is a manifest list for `linux/amd64` and `linux/arm64`, each
+  built on a runner of its own architecture, so an ARM host pulls the same tag.
+- Versioned image tags: publishing a GitHub release `vX.Y.Z` tags the image already
+  built for that commit as `X.Y.Z`, `X.Y` and (from 1.0) `X` without rebuilding it.
+  `JUDGE_IMAGE_TAG` accepts them alongside `sha-<short>`.
 - Discord `/help` (what the bot does, how to ask, what it stores) and `/forget`, which
   deletes the caller's ratings, the only per-user data kept.
 - `GET /api/health` now checks the database and answers 503 when it is unreachable; the
@@ -16,7 +21,7 @@ unless `JUDGE_AUTO_MIGRATE=false`).
   with it).
 - The web page carries a favicon, a description and Open Graph tags, and its footer
   names the Fan Content Policy, Scryfall and the source repository.
-- `docs/DECISIONS.md`: every load-bearing design decision (D1–D17) with the alternative
+- `docs/DECISIONS.md`: every load-bearing design decision (D1–D18) with the alternative
   it rejected, in place of the retired language and tenancy proposals; the provider
   proposal became the reference `docs/PROVIDERS.md`, describing what was built.
 - `DB_PORT` in `.env` moves the port compose publishes Postgres on (default 5432).

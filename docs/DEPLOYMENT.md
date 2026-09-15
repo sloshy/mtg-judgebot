@@ -489,9 +489,23 @@ The host never builds. `.github/workflows/publish-image.yml` builds on every pus
 `main` that touches the image (including `data/`, since `crates/core/build.rs`
 generates the `Category` enum from `data/categories.yaml`) and pushes to
 `ghcr.io/<owner>/<repo>` (the repository the workflow runs in) as `latest` plus an
-immutable `sha-<short>` tag. The compose file pulls `JUDGE_IMAGE`, which defaults to
-the upstream package; a fork sets it to its own in `.env` once its first workflow run
-has published.
+immutable `sha-<short>` tag. The image is a manifest list for `linux/amd64` and
+`linux/arm64`, each built on a runner of its own architecture, so an ARM host (a
+Raspberry Pi, an ARM NAS, Apple silicon under Docker Desktop) pulls the same tag.
+The compose file pulls `JUDGE_IMAGE`, which defaults to the upstream package; a fork
+sets it to its own in `.env` once its first workflow run has published.
+
+A GitHub release whose tag is `vX.Y.Z` adds version tags — `X.Y.Z`, `X.Y` and, from
+1.0 on, `X` — to the image already built for that commit, without rebuilding it: the
+release is the image that has been running as `latest`, down to the platform
+digests. A host that
+prefers to move on releases rather than on every push pins one:
+
+```ini
+JUDGE_IMAGE_TAG=0.3    # in .env: follows 0.3.x patch releases; 0.3.1 pins one exactly
+```
+
+`CONTRIBUTING.md` says how a release is cut.
 
 ```sh
 git pull                                # runbook + compose changes
@@ -561,10 +575,10 @@ visibility) removes the login step.
 ### Rolling back
 
 Every build leaves an immutable tag, so a bad deploy is a one-line revert. Take the
-`sha-<short>` from the workflow run summary:
+`sha-<short>` from the workflow run summary, or the version of the last good release:
 
 ```ini
-JUDGE_IMAGE_TAG=sha-abc1234    # in .env
+JUDGE_IMAGE_TAG=sha-abc1234    # in .env; or a release, e.g. 0.3.1
 ```
 
 ```sh

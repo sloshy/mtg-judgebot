@@ -321,3 +321,24 @@ Tournament policy (MTR/IPG). Accounts or ratings on the web page. Streaming resp
 A plugin system for providers (they are workspace crates chosen by configuration).
 Retraining or fine-tuning of any kind. Automatic detection of "nightmare" cards (the
 notes are curated by hand). Multi-server tenancy (D16).
+
+---
+
+## D18. A release is a tag on the image already running, built natively for two architectures
+
+*Decided 2026-09-15.*
+
+`publish-image.yml` builds on every push to `main` and publishes `latest` plus an
+immutable `sha-<short>`; a GitHub release (`vX.Y.Z`) then points `X.Y.Z`, `X.Y` and
+`X` at the image already built for that commit, through a manifest retag, so a release
+is what has been running as `latest`, down to the platform digests, and costs no
+build. Only a commit
+with no image of its own (docs-only, or a build cancelled by a later push) is built at
+release time, and then through CI like any other. **Rejected:** rebuilding on the tag —
+a second build of the same tree is not guaranteed identical to the one that was
+deployed, and the release would be an untested artefact. The image is a manifest list
+for `linux/amd64` and `linux/arm64`, each built on a GitHub runner of that architecture
+and joined by digest, so a Raspberry Pi or ARM NAS pulls the same tag. **Rejected:**
+emulating arm64 under QEMU (a Rust release build takes hours there) and
+cross-compiling inside the Dockerfile (a second toolchain and linker to keep working for
+`aws-lc-sys` and `ring`, on a build that would then run twice on one runner).

@@ -36,8 +36,8 @@ services:
     # package lets a low-powered host pull a CI-built image instead of building:
     # `docker compose pull && docker compose up -d`. JUDGE_IMAGE defaults to the
     # upstream package; a fork whose CI publishes its own sets it in .env. Pin
-    # JUDGE_IMAGE_TAG to a `sha-<short>` tag to roll back; `build: .` still
-    # works locally.
+    # JUDGE_IMAGE_TAG to a release version or a `sha-<short>` tag to roll back;
+    # the image is amd64 and arm64; `build: .` still works locally.
     image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
     container_name: judgebot-bot
     restart: unless-stopped

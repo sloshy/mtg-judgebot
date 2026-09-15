@@ -40,7 +40,7 @@ reference, Discord commands, agents, command reference, data files, attribution,
 are authored directly under `site/src/content/docs/`; the sync script deletes copies whose
 manifest entry is gone. `npm --prefix site run build` runs the sync first;
 `publish-docs.yml` deploys `site/dist` to GitHub Pages on pushes touching the sources.
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D17),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D18),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`; retired
 proposals live in git history only. **One judgebot per community** (D16): the maintainer's
 bot is private to their servers and the docs teach an operator to create their own Discord

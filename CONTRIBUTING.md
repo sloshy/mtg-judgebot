@@ -116,6 +116,19 @@ when the deployed surface itself is in question; those calls cost money.
 - Card names, rules text and rulings in tests should be short excerpts. Do not commit
   data dumps, `.env` files, `judge.toml` or anything under `eval/runs/`.
 
+## Releases
+
+A release is a GitHub release whose tag is `vX.Y.Z` on a commit of `main`. Move the
+*Unreleased* changelog section under that version first, then create the release
+(`gh release create vX.Y.Z --generate-notes`, or the web form). Publishing it runs
+`publish-image.yml`, which tags the image already built for that commit as `X.Y.Z`,
+`X.Y` and, from 1.0 on, `X`, without rebuilding — the release is the image that has
+been running as `latest`, down to the platform digests. Wait for the push's *Publish
+image* run to finish before publishing the release, or the two build in parallel. A
+commit with no image of its own (a docs-only commit, or a build a later push
+cancelled) is built first, through CI. Pre-release tags such as
+`v1.0.0-rc.1` get only their exact version tag. `latest` keeps following `main`.
+
 ## Claude Code
 
 The repository carries a `.mcp.json` and a `judge` skill under `.claude/skills/`. If
