@@ -44,7 +44,7 @@ It spends the operator's API budget and is only available when the server has an
 produce JSON matching the schema (card-name spans exactly as written, rules concepts, primary/secondary \
 category, source).
    b. `submit_extraction` → the synthesis prompt (system, material, question, schema), or `ambiguous` / \
-`not_found` (fix the spans — write a card as [[Full Name]] — and submit again), or `out_of_scope`.
+`not_found` (fix the spans — write a card as [[Full Card Name]], which matches only that exact name — and submit again), or `out_of_scope`.
    c. Optionally `lookup_rules` ONCE with rule ids or subsections you need beyond the material (at most \
 10); then re-read the prompt with `session_prompt`. A rejected verdict forfeits this round, so look up \
 before you answer, not after.
@@ -151,7 +151,7 @@ impl JudgeMcp {
 
     #[tool(
         name = "submit_extraction",
-        description = "Hand in the extraction JSON for a session. Resolves the card spans and retrieves the material; returns the synthesis prompt (`ready`), or `ambiguous` / `not_found` (the session is unchanged: rewrite the span as [[Full Name]] and submit again), or `out_of_scope` (closed)."
+        description = "Hand in the extraction JSON for a session. Resolves the card spans and retrieves the material; returns the synthesis prompt (`ready`), or `ambiguous` / `not_found` (the session is unchanged: rewrite the span as [[Full Card Name]], which matches only that exact name, and submit again), or `out_of_scope` (closed)."
     )]
     async fn submit_extraction(
         &self,
@@ -211,7 +211,7 @@ impl JudgeMcp {
 
     #[tool(
         name = "resolve_card",
-        description = "Resolve a card name or nickname the way the pipeline does (aliases, [[brackets]], printed names, fuzzy). Returns the card with its faces and Oracle text, or `ambiguous` with candidates, or `not_found`. Never guesses."
+        description = "Resolve a card name or nickname the way the pipeline does (aliases, printed names, fuzzy; a name in [[brackets]] matches only that exact card name, offering near spellings as `ambiguous`). Returns the card with its faces and Oracle text, or `ambiguous` with candidates, or `not_found`. Never guesses."
     )]
     async fn resolve_card(
         &self,

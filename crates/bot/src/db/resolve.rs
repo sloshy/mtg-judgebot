@@ -1,6 +1,15 @@
 //! [`PgResolver`]: the card resolution ladder (ARCHITECTURE.md §3 step 2).
 //!
-//! `card_aliases` → `[[bracket]]` exact name → exact current name →
+//! A bracketed span (`[[Card Name]]`) is the user naming a card exactly, and
+//! takes its own short ladder: exact current or face name → `printed_names`.
+//! When neither matches, nothing is resolved; the span is *offered* back as a
+//! "did you mean…?": the cards the loose ladder's naming rungs (alias,
+//! possessive, short name, alias suffix) point at when there are any — so
+//! `[[bolt]]`, typed out of card-fetcher habit, offers Lightning Bolt and is
+//! dropped as a duplicate when the extractor also named the card — else the
+//! fuzzy neighbours.
+//!
+//! Anything else takes the full ladder: `card_aliases` → exact current name →
 //! `printed_names` → name-before-the-comma → alias suffix → `pg_trgm` fuzzy.
 //! Exact rungs match case-insensitively on both `cards.name` and
 //! `card_faces.name` (so "Stomp" finds "Bonecrusher Giant // Stomp"); every
@@ -42,7 +51,8 @@ pub const MAX_CANDIDATES: usize = 5;
 /// Fetch one more than offered so the margin rule can see the runner-up.
 const FUZZY_FETCH: i64 = 6;
 
-/// alias table → `[[bracket]]` syntax → printed-name table → short name → alias suffix → `pg_trgm` fuzzy.
+/// `[[Exact Name]]` → exact / printed name only; anything else: alias table →
+/// exact name → printed-name table → short name → alias suffix → `pg_trgm` fuzzy.
 #[derive(Clone, Debug)]
 pub struct PgResolver {
     pool: PgPool,
@@ -277,6 +287,136 @@ impl PgResolver {
         })
     }
 
+    /// The bracketed ladder: the exact name, then an old printed name. On a
+    /// miss something is offered but never picked, even a single strong
+    /// match: the brackets say "this spelling", and a different spelling is
+    /// the user's call. The offer is the naming rungs' cards
+    /// ([`Self::named_offer`], reported under their own rung so `judge()`
+    /// drops the offer when another span resolved one of them), else the fuzzy
+    /// neighbours (reported `Fuzzy`, never dropped that way).
+    async fn exact_only(&self, query: &str, name: &str) -> Result<Resolution, JudgeError> {
+        let lowered = name.to_lowercase();
+        let ids = self.exact_name(&lowered).await?;
+        if let Some(r) = self
+            .decide(query, &lowered, ids, MatchedVia::Bracket)
+            .await?
+        {
+            return Ok(r);
+        }
+        let ids = self.printed_name(&lowered).await?;
+        if let Some(r) = self
+            .decide(query, &lowered, ids, MatchedVia::PrintedName)
+            .await?
+        {
+            return Ok(r);
+        }
+        if let Some((ids, via)) = self.named_offer(&lowered).await? {
+            return self.ambiguous(query, &ids, via).await;
+        }
+        let cands = self.fuzzy_candidates(name).await?;
+        if cands.is_empty() {
+            tracing::info!(span = query, "bracketed card not found");
+            return Ok(Resolution::NotFound {
+                query: query.to_owned(),
+            });
+        }
+        let ids: Vec<Uuid> = cands.iter().map(|(id, _)| *id).collect();
+        self.ambiguous(query, &ids, MatchedVia::Fuzzy).await
+    }
+
+    /// The cards the loose ladder's naming rungs would pick for `lowered`, and
+    /// the first rung that named any: alias, the possessive-stripped alias /
+    /// exact / short name, short name, alias suffix. Offers only; the fuzzy
+    /// rung is not a naming rung and is left to the caller.
+    async fn named_offer(
+        &self,
+        lowered: &str,
+    ) -> Result<Option<(Vec<Uuid>, MatchedVia)>, JudgeError> {
+        if let Some(id) = self.alias(lowered).await? {
+            return Ok(Some((vec![id], MatchedVia::Alias)));
+        }
+        if let Some(stripped) = strip_possessive(lowered) {
+            if let Some(id) = self.alias(&stripped).await? {
+                return Ok(Some((vec![id], MatchedVia::Alias)));
+            }
+            let ids = self.exact_name(&stripped).await?;
+            if !ids.is_empty() {
+                return Ok(Some((ids, MatchedVia::Exact)));
+            }
+            let ids = self.short_name(&stripped).await?;
+            if !ids.is_empty() {
+                return Ok(Some((ids, MatchedVia::ShortName)));
+            }
+        }
+        let ids = self.short_name(lowered).await?;
+        if !ids.is_empty() {
+            return Ok(Some((ids, MatchedVia::ShortName)));
+        }
+        let candidates = alias_suffix_candidates(lowered);
+        if !candidates.is_empty()
+            && let [(alias, id)] = self.aliases_among(&candidates).await?.as_slice()
+            && only_qualifiers_before(lowered, alias)
+        {
+            return Ok(Some((vec![*id], MatchedVia::AliasSuffix)));
+        }
+        Ok(None)
+    }
+
+    /// The full ladder for an unbracketed span.
+    async fn ladder(&self, query: &str, text: &str) -> Result<Resolution, JudgeError> {
+        let query = query.to_owned();
+        let lowered = text.to_lowercase();
+        if let Some(id) = self.alias(&lowered).await? {
+            return self.resolved(&query, id, MatchedVia::Alias).await;
+        }
+        // "bob's trigger", "goyf's toughness": retry the alias, exact and short-name
+        // rungs on the span with its possessive/punctuation removed.
+        if let Some(stripped) = strip_possessive(&lowered) {
+            if let Some(id) = self.alias(&stripped).await? {
+                return self.resolved(&query, id, MatchedVia::Alias).await;
+            }
+            let ids = self.exact_name(&stripped).await?;
+            if let Some(r) = self
+                .decide(&query, &stripped, ids, MatchedVia::Exact)
+                .await?
+            {
+                return Ok(r);
+            }
+            let ids = self.short_name(&stripped).await?;
+            if let Some(r) = self
+                .decide(&query, &stripped, ids, MatchedVia::ShortName)
+                .await?
+            {
+                return Ok(r);
+            }
+        }
+        let ids = self.exact_name(&lowered).await?;
+        if let Some(r) = self
+            .decide(&query, &lowered, ids, MatchedVia::Exact)
+            .await?
+        {
+            return Ok(r);
+        }
+        let ids = self.printed_name(&lowered).await?;
+        if let Some(r) = self
+            .decide(&query, &lowered, ids, MatchedVia::PrintedName)
+            .await?
+        {
+            return Ok(r);
+        }
+        let ids = self.short_name(&lowered).await?;
+        if let Some(r) = self
+            .decide(&query, &lowered, ids, MatchedVia::ShortName)
+            .await?
+        {
+            return Ok(r);
+        }
+        if let Some(r) = self.alias_suffix(&query, &lowered).await? {
+            return Ok(r);
+        }
+        self.fuzzy(&query, text).await
+    }
+
     async fn fuzzy(&self, query: &str, text: &str) -> Result<Resolution, JudgeError> {
         let cands = self.fuzzy_candidates(text).await?;
         let winner = match cands.as_slice() {
@@ -457,91 +597,44 @@ fn strip_possessive(lowered: &str) -> Option<String> {
     (!t.is_empty() && t != lowered).then(|| t.to_owned())
 }
 
-/// `[[Card Name]]` → (`Card Name`, true); anything else → (as is, false).
-fn strip_brackets(s: &str) -> (&str, bool) {
-    s.strip_prefix("[[")
-        .and_then(|inner| inner.strip_suffix("]]"))
-        .map_or((s, false), |inner| (inner.trim(), true))
+/// How a span asks to be matched. The two ladders are separate methods
+/// selected by an exhaustive match, so no rung of the loose ladder (alias,
+/// short name, alias suffix, a confident fuzzy pick) can reach a bracketed span.
+#[derive(Debug, PartialEq, Eq)]
+enum CardSpan<'a> {
+    /// `[[Card Name]]`: the inner name, trimmed.
+    Exact(&'a str),
+    /// Anything else, as written.
+    Loose(&'a str),
+}
+
+impl<'a> CardSpan<'a> {
+    fn parse(s: &'a str) -> Self {
+        s.strip_prefix("[[")
+            .and_then(|inner| inner.strip_suffix("]]"))
+            .map_or(Self::Loose(s), |inner| Self::Exact(inner.trim()))
+    }
 }
 
 #[async_trait]
 impl Resolver for PgResolver {
     async fn resolve(&self, span: &str) -> Result<Resolution, JudgeError> {
-        let query = span.trim().to_owned();
-        let (text, bracketed) = strip_brackets(&query);
-        let lowered = text.to_lowercase();
-        if lowered.is_empty() {
-            return Ok(Resolution::NotFound { query });
-        }
-        if let Some(id) = self.alias(&lowered).await? {
-            return self.resolved(&query, id, MatchedVia::Alias).await;
-        }
-        // "bob's trigger", "goyf's toughness": retry the alias, exact and short-name
-        // rungs on the span with its possessive/punctuation removed.
-        if let Some(stripped) = strip_possessive(&lowered) {
-            if let Some(id) = self.alias(&stripped).await? {
-                return self.resolved(&query, id, MatchedVia::Alias).await;
+        let query = span.trim();
+        match CardSpan::parse(query) {
+            CardSpan::Exact(text) | CardSpan::Loose(text) if text.is_empty() => {
+                Ok(Resolution::NotFound {
+                    query: query.to_owned(),
+                })
             }
-            let ids = self.exact_name(&stripped).await?;
-            if let Some(r) = self
-                .decide(&query, &stripped, ids, MatchedVia::Exact)
-                .await?
-            {
-                return Ok(r);
-            }
-            let ids = self.short_name(&stripped).await?;
-            if let Some(r) = self
-                .decide(&query, &stripped, ids, MatchedVia::ShortName)
-                .await?
-            {
-                return Ok(r);
-            }
+            CardSpan::Exact(name) => self.exact_only(query, name).await,
+            CardSpan::Loose(text) => self.ladder(query, text).await,
         }
-        if bracketed {
-            let ids = self.exact_name(&lowered).await?;
-            if let Some(r) = self
-                .decide(&query, &lowered, ids, MatchedVia::Bracket)
-                .await?
-            {
-                return Ok(r);
-            }
-        }
-        if !bracketed {
-            let ids = self.exact_name(&lowered).await?;
-            if let Some(r) = self
-                .decide(&query, &lowered, ids, MatchedVia::Exact)
-                .await?
-            {
-                return Ok(r);
-            }
-        }
-        let ids = self.printed_name(&lowered).await?;
-        if let Some(r) = self
-            .decide(&query, &lowered, ids, MatchedVia::PrintedName)
-            .await?
-        {
-            return Ok(r);
-        }
-        let ids = self.short_name(&lowered).await?;
-        if let Some(r) = self
-            .decide(&query, &lowered, ids, MatchedVia::ShortName)
-            .await?
-        {
-            return Ok(r);
-        }
-        // A bracketed span is the user's exact spelling: a nickname at its end is not a hint.
-        if !bracketed && let Some(r) = self.alias_suffix(&query, &lowered).await? {
-            return Ok(r);
-        }
-        self.fuzzy(&query, text).await
     }
 }
 
 #[cfg(test)]
 mod unit {
-    use super::{
-        alias_suffix_candidates, only_qualifiers_before, strip_brackets, strip_possessive,
-    };
+    use super::{CardSpan, alias_suffix_candidates, only_qualifiers_before, strip_possessive};
 
     #[test]
     fn suffix_candidates() {
@@ -572,11 +665,15 @@ mod unit {
     #[test]
     fn brackets() {
         assert_eq!(
-            strip_brackets("[[ Dark Confidant ]]"),
-            ("Dark Confidant", true)
+            CardSpan::parse("[[ Dark Confidant ]]"),
+            CardSpan::Exact("Dark Confidant")
         );
-        assert_eq!(strip_brackets("Dark Confidant"), ("Dark Confidant", false));
-        assert_eq!(strip_brackets("[[oops"), ("[[oops", false));
+        assert_eq!(
+            CardSpan::parse("Dark Confidant"),
+            CardSpan::Loose("Dark Confidant")
+        );
+        assert_eq!(CardSpan::parse("[[oops"), CardSpan::Loose("[[oops"));
+        assert_eq!(CardSpan::parse("[[ ]]"), CardSpan::Exact(""));
     }
 
     #[test]
@@ -732,21 +829,77 @@ mod pg {
         );
         // A bracketed span is exact spelling; the rung is skipped even with a qualifier prefix.
         let r = resolver.resolve("[[foil helix]]").await?;
-        assert!(
-            !matches!(
-                &r,
-                Resolution::Resolved {
-                    via: MatchedVia::AliasSuffix,
-                    ..
-                }
-            ),
-            "{r:?}"
-        );
+        assert!(!matches!(&r, Resolution::Resolved { .. }), "{r:?}");
         // The intended case still works with a qualifier prefix.
         assert_eq!(
             resolved(&resolver.resolve("foil helix").await?),
             Some(("Lightning Helix", MatchedVia::AliasSuffix))
         );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn brackets_match_exact_names_only(pool: PgPool) -> anyhow::Result<()> {
+        seed(&pool).await?;
+        let resolver = PgResolver::new(pool);
+        assert_eq!(
+            resolved(&resolver.resolve("[[ dark confidant ]]").await?),
+            Some(("Dark Confidant", MatchedVia::Bracket))
+        );
+        // A nickname in brackets is not resolved, only offered, under the rung
+        // that named it (so another span resolving the card drops the offer).
+        let offered = |r: Resolution| match r {
+            Resolution::Ambiguous {
+                candidates, via, ..
+            } => Some((
+                candidates
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>(),
+                via,
+            )),
+            _ => None,
+        };
+        assert_eq!(
+            offered(resolver.resolve("[[Bob]]").await?),
+            Some((vec!["Dark Confidant".to_owned()], MatchedVia::Alias))
+        );
+        assert_eq!(
+            offered(resolver.resolve("[[bob's]]").await?),
+            Some((vec!["Dark Confidant".to_owned()], MatchedVia::Alias))
+        );
+        assert_eq!(
+            offered(resolver.resolve("[[mirage LED]]").await?),
+            Some((
+                vec!["Lion's Eye Diamond".to_owned()],
+                MatchedVia::AliasSuffix
+            ))
+        );
+        // A typo that fuzzy would resolve on its own is offered, not picked.
+        assert_eq!(
+            resolved(&resolver.resolve("Warleaders Helix").await?),
+            Some(("Warleader's Helix", MatchedVia::Fuzzy))
+        );
+        match resolver.resolve("[[Warleaders Helix]]").await? {
+            Resolution::Ambiguous {
+                query,
+                candidates,
+                via,
+            } => {
+                assert_eq!(query, "[[Warleaders Helix]]");
+                assert_eq!(via, MatchedVia::Fuzzy);
+                assert_eq!(candidates.head.name, "Warleader's Helix");
+            }
+            other => anyhow::bail!("expected an offer, got {other:?}"),
+        }
+        assert!(matches!(
+            resolver.resolve("[[Nothing Like Any Card]]").await?,
+            Resolution::NotFound { .. }
+        ));
+        assert!(matches!(
+            resolver.resolve("[[  ]]").await?,
+            Resolution::NotFound { .. }
+        ));
         Ok(())
     }
 }

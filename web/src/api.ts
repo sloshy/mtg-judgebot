@@ -12,6 +12,11 @@ export interface CitationView {
   quote: string;
 }
 
+export interface CardView {
+  name: string;
+  url: string;
+}
+
 export interface AmbiguousView {
   query: string;
   choices: string[];
@@ -26,6 +31,7 @@ export type ApiReply =
       source: "cr" | "commander";
       cr_version: string;
       citations: CitationView[];
+      cards: CardView[];
     }
   | { kind: "ambiguous"; spans: AmbiguousView[] }
   | { kind: "not_found"; names: string[] }

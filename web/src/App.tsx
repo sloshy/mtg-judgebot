@@ -93,7 +93,7 @@ export default function App() {
           }}
           maxLength={MAX_QUESTION_CHARS}
           rows="3"
-          placeholder="Does lifelink stack? Write a card as [[Full Name]] to pin it."
+          placeholder="Does lifelink stack? Use brackets like [[Full Card Name]] to avoid ambiguity."
           disabled={waiting()}
         />
         <button type="submit" disabled={waiting() || !draft().trim()}>
@@ -145,6 +145,21 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
                 </For>
               </ul>
             </Show>
+            <Show when={r().cards.length > 0}>
+              <p class="meta cards">
+                Cards:{" "}
+                <For each={r().cards}>
+                  {(card, j) => (
+                    <>
+                      {j() > 0 && " · "}
+                      <a href={card.url} target="_blank" rel="noopener noreferrer">
+                        {card.name}
+                      </a>
+                    </>
+                  )}
+                </For>
+              </p>
+            </Show>
             <p class="meta">
               Confidence: {CONFIDENCE_LABEL[r().confidence]} · CR {crDate(r().cr_version)} ·{" "}
               {SOURCE_LABEL[r().source]}
@@ -174,7 +189,7 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
                   <Show when={span().truncated}>
                     <p class="hint">
                       Showing the first five. If yours isn't here, re-ask writing its full name as
-                      [[Card Name]].
+                      [[Full Card Name]].
                     </p>
                   </Show>
                   <Show when={r().spans.length > 1}>
@@ -197,7 +212,7 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
         {(r) => (
           <p class="notice">
             I couldn't find a card called {r().names.join(" or ")}. Check the spelling, or write the
-            full name as [[Card Name]].
+            full name as [[Full Card Name]].
           </p>
         )}
       </Match>

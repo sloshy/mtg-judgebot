@@ -15,7 +15,7 @@ use judge_bot::{
     },
 };
 use judge_core::{
-    Ambiguous, CallId, Card, CardId, CardNote, Citation, Confidence, Context, Extraction,
+    Ambiguous, CallId, Card, CardId, CardNote, CardRef, Citation, Confidence, Context, Extraction,
     GlossaryEntry, JudgeError, Question, Rejection, Resolution, RuleChunk, RuleId, Ruling, Source,
     Unvalidated, Validated, Verdict, judge,
 };
@@ -51,7 +51,7 @@ pub struct Pin {
 /// Input of `judge` (the built-in pipeline).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JudgeInput {
-    /// The rules question. Write a card as `[[Full Name]]` to pin it.
+    /// The rules question. Write `[[Full Card Name]]` to match that exact card.
     pub question: String,
     /// A thread returned by an earlier reply, for follow-up history; omit
     /// for a fresh thread. Only `agent:<uuid>` ids are accepted: an agent
@@ -100,6 +100,8 @@ pub struct Answer {
     pub category: String,
     /// Citations in the model's order, each checked against the material.
     pub citations: Vec<CitationView>,
+    /// The cards the question's names were resolved to.
+    pub cards: Vec<CardRef>,
 }
 
 /// Reply of `judge`.
@@ -156,7 +158,7 @@ pub enum JudgeReply {
 /// Input of `begin_session`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BeginInput {
-    /// The rules question. Write a card as `[[Full Name]]` to pin it.
+    /// The rules question. Write `[[Full Card Name]]` to match that exact card.
     pub question: String,
     /// A thread returned by an earlier reply, for follow-up history; omit
     /// for a fresh thread. Only `agent:<uuid>` ids are accepted: an agent
@@ -768,6 +770,7 @@ pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>) -> Answer {
             .iter()
             .map(|c| citation_view(c, ctx))
             .collect(),
+        cards: v.cards().to_vec(),
     }
 }
 
@@ -822,6 +825,10 @@ mod tests {
                     id: RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?,
                     quote: judge_core::Quote::try_new("q")?,
                 },
+            }],
+            cards: vec![CardRef {
+                id: CardId::new(uuid::Uuid::from_u128(7)),
+                name: "Dark Confidant".into(),
             }],
         })
     }

@@ -71,9 +71,10 @@ pub const RATE_FAILED: &str = "Sorry, I couldn't record that rating. Please try 
 pub const HELP: &str = "**MTG Judgebot** answers Magic: The Gathering rules questions like a judge: every \
 claim carries a citation to the Comprehensive Rules, an official ruling, or a card's Oracle text, and a \
 citation is only shown after it has been checked against the source.\n\n\
-**Asking.** `/judge question: <your question>`. Nicknames work (\"bob\", \"goyf\"); write `[[Full Card Name]]` \
-to pin a card exactly. If a name is ambiguous you get a \"did you mean…?\" row instead of a guess. \
-Tournament policy and card prices are out of scope.\n\n\
+**Asking.** `/judge question: <your question>`. Nicknames work (\"bob\", \"goyf\"). Use brackets like \
+`[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the card with exactly that name. If a \
+name could mean several cards you get a \"did you mean…?\" row instead of a guess, and every answer lists \
+the cards it took your question to be about. Tournament policy and card prices are out of scope.\n\n\
 **Rating.** The buttons under an answer record how right it was; rating again replaces yours. Ratings decide \
 which past answers are shown as examples later — the rules themselves always outrank them. Members with the \
 server's judge role rate with an override.\n\n\
@@ -107,7 +108,7 @@ pub struct Answer {
     /// Embed description: one `[702.19b] “…”` line per citation, at most
     /// [`EMBED_DESCRIPTION_LIMIT`] chars.
     pub citations: String,
-    /// Embed footer: confidence and CR version.
+    /// Embed footer: the resolved cards (if any), confidence and CR version.
     pub footer: String,
 }
 
@@ -199,14 +200,37 @@ pub fn scryfall_url(card: CardId) -> String {
     format!("https://scryfall.com/search?q=oracleid%3A{card}")
 }
 
-/// `Confidence: High · CR 2026-08-19`.
+/// `Confidence: High · CR 2026-08-19`, under a `Cards: Dark Confidant · Blood
+/// Moon` line when the question named any: the reader's check that a nickname
+/// or a misspelling was taken to mean the card they had in mind. Names are
+/// separated by ` · `, not commas, because names contain commas.
 #[must_use]
 pub fn footer(v: &Verdict<Validated>) -> String {
-    format!(
+    let meta = format!(
         "Confidence: {} · CR {}",
         confidence_label(v.confidence()),
         cr_date(v.cr_version().as_ref())
-    )
+    );
+    match cards_line(v) {
+        Some(cards) => format!("{cards}\n{meta}"),
+        None => meta,
+    }
+}
+
+/// Longest `Cards: …` footer line, in characters (Discord allows 2048 for the
+/// whole footer; a question naming many cards should not make it a wall).
+pub const CARDS_LINE_LIMIT: usize = 300;
+
+/// `Cards: A · B`, or `None` when the question named no card.
+fn cards_line(v: &Verdict<Validated>) -> Option<String> {
+    if v.cards().is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = v.cards().iter().map(|c| c.name.as_str()).collect();
+    Some(fit(
+        &format!("Cards: {}", names.join(" · ")),
+        CARDS_LINE_LIMIT,
+    ))
 }
 
 /// One compact citation line: `[702.19b](…rule url…) “quote”`. Rule and card
@@ -286,7 +310,7 @@ pub fn did_you_mean(spans: &NonEmpty<Ambiguous>) -> DidYouMean {
     }
     if first.candidates.len() > MAX_CHOICES {
         content.push_str(
-            "\n(Showing the first five. If yours isn't here, write its full name as [[Card Name]].)",
+            "\n(Showing the first five. If yours isn't here, write its full name as [[Full Card Name]].)",
         );
     }
     if spans.len() > 1 {
@@ -314,7 +338,7 @@ pub fn error(e: &JudgeError) -> String {
             let listed: Vec<String> = names.iter().map(|n| format!("**{n}**")).collect();
             fit(
                 &format!(
-                    "I couldn't find a card called {}. Check the spelling, or write the full name as [[Card Name]].",
+                    "I couldn't find a card called {}. Check the spelling, or write the full name as [[Full Card Name]].",
                     listed.join(" or ")
                 ),
                 CONTENT_LIMIT,
@@ -506,6 +530,52 @@ mod tests {
         ];
         let v = Verdict::new(answer.into(), Confidence::High, citations, Category::Combat);
         Ok(v.validate(&ctx, AnswerableSource::Cr)?)
+    }
+
+    #[test]
+    fn footer_names_the_resolved_cards_above_the_confidence() -> Res {
+        let body = "The controller of an attacking creature with trample first assigns the combat damage to the \
+                    creature(s) blocking it.";
+        let ctx = Context {
+            rules: vec![rule(body)?],
+            cards: vec![card(1, "Ragavan, Nimble Pilferer"), card(2, "Blood Moon")],
+            ..Context::default()
+        };
+        let v = Verdict::new(
+            LONG_ENOUGH.into(),
+            Confidence::High,
+            vec![Citation::Rule {
+                id: RuleId::try_new("702.19b".to_owned())?,
+                quote: judge_core::Quote::try_new(body)?,
+            }],
+            Category::Combat,
+        )
+        .validate(&ctx, AnswerableSource::Cr)?;
+        assert_eq!(
+            footer(&v),
+            "Cards: Ragavan, Nimble Pilferer · Blood Moon\nConfidence: High · CR 2026-08-19"
+        );
+        let many = Context {
+            cards: (0..40)
+                .map(|n| card(n, "Emeritus of Conflict // Lightning Bolt"))
+                .collect(),
+            ..ctx
+        };
+        let v = Verdict::new(
+            LONG_ENOUGH.into(),
+            Confidence::High,
+            vec![Citation::Rule {
+                id: RuleId::try_new("702.19b".to_owned())?,
+                quote: judge_core::Quote::try_new(body)?,
+            }],
+            Category::Combat,
+        )
+        .validate(&many, AnswerableSource::Cr)?;
+        let f = footer(&v);
+        let first = f.lines().next().unwrap_or_default();
+        assert_eq!(first.chars().count(), CARDS_LINE_LIMIT, "{f}");
+        assert!(f.ends_with("\nConfidence: High · CR 2026-08-19"), "{f}");
+        Ok(())
     }
 
     fn card(n: u128, name: &str) -> Card {
@@ -944,7 +1014,7 @@ mod tests {
         )));
         let m = error(&not_found);
         assert!(
-            m.contains("**Xyzzy**") && m.contains("**Plugh**") && m.contains("[[Card Name]]"),
+            m.contains("**Xyzzy**") && m.contains("**Plugh**") && m.contains("[[Full Card Name]]"),
             "{m}"
         );
 

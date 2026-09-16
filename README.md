@@ -23,7 +23,9 @@ You'll lose 2 life, not 0. Tarmogoyf's mana value is 0 anywhere its {X}… [702.
    up to three categories from a fixed taxonomy, and a scope check — tournament-policy
    and price questions are politely refused without spending on synthesis.
 2. **Resolve cards** through a typed ladder: alias table (nicknames, possessives) →
-   `[[bracket]]` syntax → old printed names → short names ("Ragavan") → trigram fuzzy.
+   exact name → old printed names → short names ("Ragavan") → trigram fuzzy; a
+   `[[Full Card Name]]` in brackets matches that exact name only. Answers list the cards
+   they resolved to.
    The bot **never guesses**: genuine ambiguity ("Tibalt") becomes a "Did you mean…?"
    button row.
 3. **Retrieve** from Postgres: a curated category→CR-section map, full-text search, and

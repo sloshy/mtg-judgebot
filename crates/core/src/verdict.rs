@@ -5,8 +5,10 @@
 //! Enforced by construction:
 //! * `Deserialize` is implemented for `Verdict<Unvalidated>` **only**, so
 //!   `serde_json::from_str::<Verdict<Validated>>(..)` does not compile.
-//! * `Validated` carries the `cr_version` stamped from Context and has a
-//!   private field, so no code outside `validate` can build one.
+//! * `Validated` carries the `cr_version` and the resolved cards stamped from
+//!   Context and has private fields, so no code outside `validate` can build
+//!   one — and every reply that renders a verdict can name the cards it was
+//!   about without being handed the Context separately.
 //! * The model never reports `cr_version` or `source`: neither is in the
 //!   model-facing schema. `cr_version` is taken from the retrieved CR chunks
 //!   and `source` from the extraction, as an [`AnswerableSource`], so a
@@ -25,8 +27,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    AnswerableSource, Category, Citation, Confidence, Context, CrVersion, EmptyVerdict, JudgeError,
-    MalformedCitation, Quote, Source, quote,
+    AnswerableSource, CardRef, Category, Citation, Confidence, Context, CrVersion, EmptyVerdict,
+    JudgeError, MalformedCitation, Quote, Source, quote,
 };
 
 /// An answer shorter than this (in characters, trimmed) is not an answer:
@@ -85,6 +87,7 @@ pub struct Unvalidated {}
 pub struct Validated {
     cr_version: CrVersion,
     source: AnswerableSource,
+    cards: Vec<CardRef>,
 }
 
 impl sealed::Sealed for Unvalidated {}
@@ -336,7 +339,11 @@ impl Verdict<Unvalidated> {
         };
         Ok(Verdict {
             data,
-            state: Validated { cr_version, source },
+            state: Validated {
+                cr_version,
+                source,
+                cards: ctx.cards.iter().map(CardRef::from).collect(),
+            },
         })
     }
 }
@@ -363,6 +370,11 @@ impl Verdict<Validated> {
     #[must_use]
     pub fn source(&self) -> Source {
         self.state.source.into()
+    }
+    /// The cards the question's names resolved to, in resolution order.
+    #[must_use]
+    pub fn cards(&self) -> &[CardRef] {
+        &self.state.cards
     }
 }
 

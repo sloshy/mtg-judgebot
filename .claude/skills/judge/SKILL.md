@@ -110,7 +110,8 @@ the JSON only. Do it promptly: the session clock is running.
 ## Lookups without a session
 
 - `resolve_card {name}` / `judge-cli card "<name>"`: the pipeline's own resolution
-  (aliases, `[[brackets]]`, printed names, fuzzy); returns `resolved` with the card
+  (aliases, printed names, fuzzy; `[[Full Card Name]]` matches that exact name only, with
+  near spellings offered as `ambiguous`); returns `resolved` with the card
   (faces, Oracle text), or `ambiguous` with `candidates`, or `not_found`. Never guesses.
 - `card_info {card}` / `judge-cli card-info <oracle-uuid>`: faces, all Scryfall rulings,
   notes for tricky cards.

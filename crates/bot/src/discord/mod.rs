@@ -539,7 +539,7 @@ async fn has_role(
 #[poise::command(slash_command, rename = "judge", guild_only)]
 async fn judge_command(
     ctx: Ctx<'_>,
-    #[description = "Your rules question (write a card as [[Full Name]] to pin it)"]
+    #[description = "Your rules question. Use brackets like [[Full Card Name]] to avoid ambiguity."]
     question: String,
 ) -> Result<(), Error> {
     let data = ctx.data();

@@ -9,8 +9,8 @@ A judgebot answers Magic: The Gathering rules questions the way a judge would: a
 ruling, and every claim in it backed by a quote from the Comprehensive Rules, an official
 Scryfall ruling or the card's current Oracle text. The quote is checked against its source
 before the answer is shown, so a rule number the model invented never reaches you. Ask
-from Discord with `/judge`, from a web page, or from the command line; write a card as
-`[[Full Card Name]]` to pin it when a nickname could mean several things.
+from Discord with `/judge`, from a web page, or from the command line; use brackets like
+`[[Full Card Name]]` to avoid ambiguity when a nickname could mean several things.
 
 ## There is no bot to invite
 

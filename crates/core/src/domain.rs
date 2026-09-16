@@ -288,6 +288,25 @@ pub struct Face {
     pub type_line: String,
 }
 
+/// A card a question was resolved to, as a reply names it ("Cards: …"): what
+/// the judge took the question's card names to mean.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CardRef {
+    /// Scryfall oracle id.
+    pub id: CardId,
+    /// Full card name.
+    pub name: String,
+}
+
+impl From<&Card> for CardRef {
+    fn from(c: &Card) -> Self {
+        Self {
+            id: c.id,
+            name: c.name.clone(),
+        }
+    }
+}
+
 /// A card as identified by its oracle id, with all faces. (`JsonSchema` is
 /// for the agent tool surface; `NonEmpty` is mapped to `Vec` there because
 /// `nonempty` has no schemars support.)

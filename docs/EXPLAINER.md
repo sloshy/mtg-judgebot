@@ -104,12 +104,18 @@ answers:
 
 1. hand-curated alias table (`bob` → Dark Confidant),
 2. the same after stripping a possessive (`bob's`), also retrying the exact and short-name rungs,
-3. explicit `[[Card Name]]` bracket syntax,
-4. exact current name (also matches a single face of a two-faced card),
-5. every name the card has ever been printed under (old names, errata'd names),
-6. the part of a name before the comma (`Jace` → several Jaces → ambiguous),
-7. a nickname preceded only by printing words (`foil bob`),
-8. trigram fuzzy match, for typos.
+3. exact current name (also matches a single face of a two-faced card),
+4. every name the card has ever been printed under (old names, errata'd names),
+5. the part of a name before the comma (`Jace` → several Jaces → ambiguous),
+6. a nickname preceded only by printing words (`foil bob`),
+7. trigram fuzzy match, for typos.
+
+A span written in brackets, `[[Full Card Name]]`, skips that ladder. The brackets say "this
+exact name", so it is tried only against current and printed names. Anything else is offered, never
+resolved: `[[bolt]]` asks "did you mean Lightning Bolt?" (and asks nothing when the extractor
+already named Lightning Bolt from the same question), a near miss like `[[Dark Confidnt]]`
+offers the closest spellings. Answers name the cards they resolved to
+("Cards: …"), so the reader can see what a nickname was taken to mean.
 
 The important property: **it never guesses.** If two or more cards remain, the result is
 `Ambiguous` and Discord shows "Did you mean…?" buttons. If nothing matches, `NotFound`. The
@@ -515,7 +521,7 @@ pipeline.
   thirty characters and must never be cut in half by Discord's length limit, so rendered
   text is carried as segments where only plain text is cuttable.
 - **Web** (`crates/api` + `web/`, a SolidJS page): anonymous, so no ratings. Ambiguity comes
-  back as data; the client re-asks with pins that the server rewrites to `[[Card Name]]`.
+  back as data; the client re-asks with pins that the server rewrites to `[[Full Card Name]]`.
   Session history keys on a client UUID. Rate-limited per IP.
 - **Agent** (`crates/agent`, `judge-cli` and `judge-mcp`): the judge as a tool for other AI
   agents. It has two modes. The `judge` tool runs the pipeline as above with the built-in

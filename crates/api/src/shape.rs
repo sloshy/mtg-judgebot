@@ -27,7 +27,7 @@ pub const RATE_LIMITED: &str =
 /// Body of `POST /api/judge`.
 #[derive(Clone, Debug, Deserialize)]
 pub struct JudgeRequest {
-    /// The rules question (write a card as `[[Full Name]]` to pin it).
+    /// The rules question (`[[Full Card Name]]` matches that exact card).
     pub question: String,
     /// Client-generated session id; questions sharing one share history.
     #[serde(default)]
@@ -63,6 +63,8 @@ pub enum ApiReply {
         cr_version: String,
         /// Citations in the model's order.
         citations: Vec<CitationView>,
+        /// The cards the question's names were resolved to.
+        cards: Vec<CardView>,
     },
     /// Card spans that matched several cards; re-ask with `pins`.
     Ambiguous {
@@ -101,6 +103,15 @@ pub struct CitationView {
     pub url: Option<String>,
     /// The verbatim quote, whitespace collapsed.
     pub quote: String,
+}
+
+/// One resolved card, linked to its Scryfall page.
+#[derive(Clone, Debug, Serialize)]
+pub struct CardView {
+    /// Full card name.
+    pub name: String,
+    /// Scryfall search by oracle id.
+    pub url: String,
 }
 
 /// One ambiguous span with its candidate full names.
@@ -165,6 +176,14 @@ pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>) -> ApiReply {
             .citations()
             .iter()
             .map(|c| citation_view(c, ctx))
+            .collect(),
+        cards: v
+            .cards()
+            .iter()
+            .map(|c| CardView {
+                name: c.name.clone(),
+                url: render::scryfall_url(c.id),
+            })
             .collect(),
     }
 }

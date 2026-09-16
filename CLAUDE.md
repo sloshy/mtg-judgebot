@@ -192,8 +192,12 @@ cargo run -p judge-eval -- show eval/runs/<run>.json    # bot vs gold answers si
 
 Pipeline (see `docs/ARCHITECTURE.md` §3, which is kept current): extraction+classification
 (one low-effort LLM call, structured output) → card resolution (typed ladder: alias →
-possessive-stripped alias → `[[bracket]]` → exact → printed name → short-name-before-comma →
-alias-suffix → trigram fuzzy; **never guesses** — genuine ambiguity becomes
+possessive-stripped alias → exact → printed name → short-name-before-comma →
+alias-suffix → trigram fuzzy; a `[[bracketed]]` span is `CardSpan::Exact` and takes only
+exact → printed name; a miss is only ever offered as `Ambiguous` (the alias / short-name
+hits under their own rung, so a duplicate is dropped, else fuzzy neighbours); the
+resolved cards are stamped onto `Verdict<Validated>` (`cards()`) and every front door
+shows them; **never guesses** — genuine ambiguity becomes
 `Resolution::Ambiguous` and a Discord "did you mean?" button row) → retrieval (three legs
 unioned in priority order: the primary category's CR subsections ranked by text relevance
 (those sharing no word with the question after the next two legs), tsvector BM25, pgvector

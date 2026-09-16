@@ -50,9 +50,16 @@ Discord message (+ last N Q&A in the same thread)
   ▼
 [2] Card resolution (per span)
     A typed ladder, each rung tried only when the one above found nothing:
-    alias → possessive-stripped alias ("bob's" → "bob") → [[bracket]] syntax →
+    alias → possessive-stripped alias ("bob's" → "bob") →
     exact name → printed-name table → short name before the comma ("Ragavan")
     → alias as a suffix → trigram fuzzy
+    A [[bracketed]] span takes a ladder of its own (CardSpan::Exact, chosen by
+    an exhaustive match, so no loose rung can resolve it): exact name → printed
+    name. A miss is never resolved, only offered as Ambiguous: the cards the
+    naming rungs (alias, possessive, short name, alias suffix) point at, under
+    that rung's matchedVia — so [[bolt]] offers Lightning Bolt, and the offer is
+    dropped as a duplicate when the extractor also named the card — else the
+    fuzzy neighbours.
     Output: Resolution = Resolved(card, matchedVia) | Ambiguous(candidates) | NotFound
     A span that is Ambiguous from a non-fuzzy rung and shares a candidate with
     a card Resolved from another span, or NotFound but whose words appear as
@@ -99,9 +106,11 @@ Discord message (+ last N Q&A in the same thread)
     Tool: lookup_rules(ids) — the model may request additional CR sections
     once before answering, closing the classifier-miss gap.
     Output: Verdict { answer, confidence: Low|Medium|High, citations[], category }
-    `source` and `crVersion` are not model-reported: validation stamps the
-    source from the extraction (as AnswerableSource — only Cr | Commander
-    reach this step, by type) and crVersion from the retrieved chunks.
+    `source`, `crVersion` and `cards` are not model-reported: validation stamps
+    the source from the extraction (as AnswerableSource — only Cr | Commander
+    reach this step, by type), crVersion from the retrieved chunks and the
+    resolved cards (CardRef: id + name) from Context, so every front door
+    shows "Cards: …" from the verdict alone.
     Each citation = typed reference + quoted span. Validation:
       (a) reference exists in Context, (b) span is a substring of that chunk,
       comparing curly/ASCII punctuation as equal (judge_core::quote) and
@@ -262,7 +271,7 @@ Quote         non-blank text; compared to its source with typographic punctuatio
 Citation      Rule(id, quote) | ScryfallRuling(card, rulingKey, quote)
               | OracleText(card, quote) | PriorCall(id, quote)
 Context       { cards, rules, rulings, glossary, prior, notes, history }
-Verdict<S>    { answer, confidence, citations, category, source, crVersion }
+Verdict<S>    { answer, confidence, citations, category, source, crVersion, cards }
               S = Unvalidated | Validated; only Verdict<Validated> can be stored or shown
 Rejection     BadCitation(citation) | Malformed(what) | Empty(why) | Oversized { chars }
 RejectedAttempt  { answer, rejection }   — quoted back to the retry as a blockquote

@@ -93,8 +93,9 @@ exhaustiveness.
 Rules questions have the shape "card A + card B + rule concept C", so:
 
 - **Card names are entities**: extracted by a cheap structured-output call and resolved by
-  SQL through a typed ladder (alias → possessive-stripped alias → `[[bracket]]` → exact →
-  printed name → short name before the comma → alias suffix → trigram fuzzy). Never by
+  SQL through a typed ladder (alias → possessive-stripped alias → exact →
+  printed name → short name before the comma → alias suffix → trigram fuzzy; a
+  `[[bracketed]]` span is exact or printed name only, near misses offered as choices). Never by
   embeddings: a nickname like "bob" has no semantic relation to *Dark Confidant*.
 - **The resolver never guesses.** Genuine ambiguity is `Resolution::Ambiguous` and becomes
   a "did you mean?" button row (I1). A wrong card silently resolved would produce a

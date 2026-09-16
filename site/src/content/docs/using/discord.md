@@ -8,18 +8,22 @@ sidebar:
 ## `/judge question:`
 
 Ask in plain language. Nicknames work ("bob", "goyf", "snappy", "t3feri"); the alias list
-is `data/aliases.yaml` in the repository and pull requests adding to it are welcome. Write
-`[[Full Card Name]]` to pin a card exactly. Answers take twenty to forty-five seconds; the
+is `data/aliases.yaml` in the repository and pull requests adding to it are welcome. Use
+brackets like `[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the
+card with exactly that name (current or printed, including one face of a split or
+double-faced card), and anything else — a nickname, a near miss — is offered back as a
+choice rather than corrected. Answers take twenty to forty-five seconds; the
 bot acknowledges at once and edits the reply in.
 
 The reply opens with a non-pinging `@you asked:` header, then the ruling, then a citation
 per line. Rule citations link to the Yawgatog mirror of the Comprehensive Rules at the
-exact rule; rulings and Oracle text link to the card on Scryfall. The last line carries
-the model's confidence and the CR version it answered from.
+exact rule; rulings and Oracle text link to the card on Scryfall. The footer names the
+cards the question was resolved to (the check that "bob" was taken to mean Dark Confidant),
+then the model's confidence and the CR version it answered from.
 
 If a name could mean several cards ("Tibalt", "Emrakul") you get a **did you mean…?** row
 of up to five buttons instead of a guess; only the person who asked can pick. If a name
-matches nothing, the reply says which and suggests `[[Card Name]]`. Tournament-policy and
+matches nothing, the reply says which and suggests `[[Full Card Name]]`. Tournament-policy and
 price questions are declined after the cheap classification step, before the expensive
 synthesis call.
 
