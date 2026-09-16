@@ -1,24 +1,22 @@
 ---
-title: The maintainer's instance
-description: What the public web page is, why the Discord bot is not offered for invitation, and how to get one of your own.
+title: What the judge is
+description: What a judgebot does, why there is no bot to invite, what an instance stores, and the limits of an AI answer.
 sidebar:
   order: 1
 ---
 
-The maintainer runs an instance for their own Discord servers, and its web page is public
-at **<https://mtgjudge.rpeters.dev>**. Type a rules question and get a ruling with its
-citations; write a card as `[[Full Card Name]]` to pin it when a nickname could mean
-several things. There is no login. The page is rate limited per IP address (a handful of
-questions every few minutes) because each answer costs the operator real money in model
-calls, and you cannot rate answers there. Treat it as a demonstration of the pipeline, not
-a service with an uptime promise.
+A judgebot answers Magic: The Gathering rules questions the way a judge would: a short
+ruling, and every claim in it backed by a quote from the Comprehensive Rules, an official
+Scryfall ruling or the card's current Oracle text. The quote is checked against its source
+before the answer is shown, so a rule number the model invented never reaches you. Ask
+from Discord with `/judge`, from a web page, or from the command line; write a card as
+`[[Full Card Name]]` to pin it when a nickname could mean several things.
 
-## Want it in your Discord server? Run your own
+## There is no bot to invite
 
-The bot is **not** offered for invitation. Every judgebot is meant to be its own Discord
-application, run by the community that uses it: one process is one spend cap, one judge
-role and one bot token, so the person who chose the model pays for the questions and
-nobody shares a budget with strangers. The
+Every judgebot is its own Discord application, run by the community that uses it: one
+process is one spend cap, one judge role and one bot token, so the person who chose the
+model pays for the questions and nobody shares a budget with strangers. The
 [design decisions](../../how-it-works/decisions/#d16-one-judgebot-per-community-no-multi-tenancy)
 page has the reasoning.
 
@@ -32,7 +30,9 @@ portal in a few minutes, and a model API key:
 3. [Production deployment](../../self-hosting/deployment/), when it should stay up without
    your laptop.
 
-Once yours is in a server, `/help` explains the commands; the
+Nothing in the pipeline depends on Discord, so you can see the judge work before you have
+a bot token at all: [try it without Discord](../without-discord/) brings up the web page
+and the command line. Once yours is in a server, `/help` explains the commands; the
 [Discord commands](../../using/discord/) page has the details.
 
 ## What an instance stores

@@ -289,8 +289,8 @@ the internet-facing processes never read.
 
 *Decided 2026-09-15.*
 
-The maintainer's instance is private to their own servers, and the project is offered to
-others as something to **run yourself**, not as a bot to invite. A per-server tenancy
+Each instance is private to the servers of whoever runs it, and the project is offered
+as something to **run yourself**, not as a bot to invite. A per-server tenancy
 layer (admission lists, per-guild quotas and judge roles, an admin command) was sketched
 and rejected:
 
@@ -311,9 +311,11 @@ and rejected:
 What follows for the code and the docs: the setup experience is organised around creating
 your own Discord application and instance (the README's "Running it" and the site's
 "Make your own judgebot" section), `GUILD_ID` keeps its meaning as a registration shortcut
-rather than an allowlist, and the web page at the maintainer's domain is a demonstration
-of the pipeline, not a service. One bot in several servers you administer works today;
-what is shared between them is the spend cap and the judge role name, by design.
+rather than an allowlist, and an instance's anonymous web page is a second front door to
+the instance its operator runs — public in the sense that it needs no login, not a shared
+service other communities are meant to depend on. One bot in several servers you
+administer works today; what is shared between them is the spend cap and the judge role
+name, by design.
 
 ## D17. Non-goals
 

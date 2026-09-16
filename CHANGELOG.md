@@ -42,10 +42,20 @@ unless `JUDGE_AUTO_MIGRATE=false`).
 - Compose publishes Postgres on loopback **5432**; `.env.example` and CI use the same
   port. An existing `.env` pointing at 5433 keeps working with `DB_PORT=5433`.
 - The documentation is organised around running your own judgebot: the Discord setup
-  page links into Discord's own documentation for each step, and the maintainer's
-  instance is described as private to their servers rather than as a bot to invite.
+  page links into Discord's own documentation for each step, and no instance is offered
+  as a bot to invite or a page to try.
+- No running instance is named anywhere in the documentation. The site's first page is
+  "What the judge is" (what it does, why there is no bot to invite, what an instance
+  stores, the limits of an AI answer) in place of the page describing a public one.
+- The documentation site's header carries a **Docs** link into that first page, at every
+  width, and its search box no longer shifts between the landing page and the docs.
 - `docs/DEPLOYMENT.md` uses placeholder hostnames and paths instead of the upstream
   operator's.
+
+### Fixed
+- Documentation site: a table wider than the text column scrolls inside itself again
+  instead of pushing the whole page sideways on a phone (the provider, configuration,
+  architecture, deployment and explainer pages).
 
 ### Removed
 - `API_TRUST_FORWARDED`. Setting it is a startup error; see `SECURITY.md` for why

@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks. The exact question matters most: card resolution and retrieval both key off its wording.
+        The exact question matters most: card resolution and retrieval both key off its wording.
   - type: textarea
     id: question
     attributes:

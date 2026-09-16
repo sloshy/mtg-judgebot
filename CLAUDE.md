@@ -35,19 +35,42 @@ The documentation site is `site/` (Astro + Starlight): `site/scripts/sync-docs.m
 each canonical file — or a range of its numbered `## N.` sections, or a README section
 between two headings — into `site/src/content/docs/` with Starlight frontmatter (the copies
 are gitignored build output; the manifest at the top of the script is the one list). Pages
-with no canonical file (the maintainer's instance, Discord app setup, configuration
-reference, Discord commands, agents, command reference, data files, attribution, schema)
-are authored directly under `site/src/content/docs/`; the sync script deletes copies whose
-manifest entry is gone. `npm --prefix site run build` runs the sync first;
-`publish-docs.yml` deploys `site/dist` to GitHub Pages on pushes touching the sources.
+with no canonical file (what the judge is, trying it without Discord, requirements and
+first run, Discord app setup, configuration reference, Discord commands, agents, command
+reference, data files, attribution, schema) are authored directly under
+`site/src/content/docs/`; the sync script deletes copies whose manifest entry is gone.
+`npm --prefix site run build` runs the sync first; `publish-docs.yml` deploys `site/dist`
+to GitHub Pages on pushes touching the sources.
 `docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D18),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`; retired
-proposals live in git history only. **One judgebot per community** (D16): the maintainer's
-bot is private to their servers and the docs teach an operator to create their own Discord
-application; there is no tenancy layer and none is planned.
-Internal links are relative (`../../using/discord/`) so `SITE_BASE` can change. When a
-fact changes in code, fix it in the canonical doc *and* in any authored page that repeats
-it; `CONTRIBUTING.md`, `SECURITY.md` and `CHANGELOG.md` are synced too.
+proposals live in git history only. **One judgebot per community** (D16): the docs teach
+an operator to create their own Discord application; there is no tenancy layer and none is
+planned. **No instance is ever named.** There is no bot to invite, no "try it" link and no
+running deployment referenced anywhere in the repository or the site — not a hostname, not
+"the maintainer's instance"; the reader's own instance is the only one that exists. The
+prose is reference documentation, so it also opens on the subject, never on a greeting
+("Thanks for looking at this", "We hope…", "Feel free to…").
+Internal links are relative (`../../using/discord/`) so `SITE_BASE` can change — except in
+`site/src/components/`, which renders at every depth and uses `import.meta.env.BASE_URL`.
+When a fact changes in code, fix it in the canonical doc *and* in any authored page that
+repeats it; `CONTRIBUTING.md`, `SECURITY.md` and `CHANGELOG.md` are synced too.
+
+The site's header is Starlight's, with two deliberate changes, both in aid of the splash
+pages (the landing page and the 404), which have no sidebar and therefore neither a
+sidebar nav nor a mobile menu button. `components.SocialIcons` is overridden by
+`site/src/components/HeaderLinks.astro`, the "Docs" link into the first docs page
+— Starlight has no top nav of its own. And `site/src/styles/custom.css` hands a splash
+page's header the four variables Starlight's header grid reads off a *docs* page
+(`--sl-content-inline-start`, `--__sidebar-pad`, `--__toc-width: initial`,
+`--sl-content-width`), so the search box sits where the docs put it — aligned with the
+article text — instead of 98px to its left at 1440 and 156px from 1600 up; a second rule
+keeps the link (and only the link) visible below 50rem, where Starlight hides the header's
+right-hand group, and a third takes it back out of the printed page.
+Check site changes in a browser with the `playwright-cli` skill against
+`npm --prefix site run dev` (port 4321, base `/`) or a preview of the build (base
+`/mtg-judgebot`, which is what Pages serves): take the page at 1920, 1440, 820 and 390
+wide, on a splash page *and* a docs page, and read positions out of
+`getBoundingClientRect()` rather than by eye.
 
 CI is `.github/workflows/ci.yml` (fmt, clippy, `.sqlx` freshness, tests on a pgvector
 service, web and site builds, compose parse), called by `publish-image.yml` before it

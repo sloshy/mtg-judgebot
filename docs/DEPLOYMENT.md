@@ -17,8 +17,7 @@ concurrency semaphore and rate limiter stay single-process in-memory values rath
 than becoming distributed state. See `docs/ARCHITECTURE.md` for the pipeline itself.
 
 Hostnames, paths and the image name below are placeholders (`judge.example.com`,
-`/path/to/mtg-judgebot`, `ghcr.io/<owner>/<repo>`); substitute your own. The
-maintainer's own instance, whose web page the README links, runs exactly this way.
+`/path/to/mtg-judgebot`, `ghcr.io/<owner>/<repo>`); substitute your own.
 
 ## 1. Prerequisites
 

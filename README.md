@@ -38,14 +38,14 @@ You'll lose 2 life, not 0. Tarmogoyf's mana value is 0 anywhere its {X}… [702.
    users holding a Judge role) decides which prior calls are shown, warned about, or
    excluded — the CR itself always outranks precedent.
 
-## Try it
+## Yours to run
 
-The maintainer's web page is <https://mtgjudge.rpeters.dev> (no login; rate limited per
-IP): the same pipeline the bot runs, minus rating buttons. The Discord bot itself is
-private to the maintainer's servers. To have one in yours, run your own: it is one
-compose file, a Discord application you create in a few minutes, and a model API key.
-The documentation site, <https://sloshy.github.io/mtg-judgebot/>, walks through it and
-explains how the judge works inside.
+There is no bot to invite and no hosted service: a judgebot belongs to the community that
+runs it, so you run your own. It is one compose file, a Discord application you create in
+a few minutes, and a model API key — and nothing in the pipeline needs Discord, so the
+web page and the command line work before you have a bot token. "Running it" below is the
+short version; the documentation site, <https://sloshy.github.io/mtg-judgebot/>, walks
+through it and explains how the judge works inside.
 
 ## Running it
 
@@ -197,7 +197,7 @@ npm --prefix web run dev             # Vite dev server with /api proxied to :878
 
 ### Hosting
 
-The maintainer's instance, <https://mtgjudge.rpeters.dev>, runs on a machine at home behind a [Cloudflare
+The intended deployment is a machine at home behind a [Cloudflare
 Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/):
 no public IP, no forwarded port, no cloud compute bill. `docs/DEPLOYMENT.md` is the
 runbook — tunnel setup, edge rate limiting in front of the anonymous API, and the

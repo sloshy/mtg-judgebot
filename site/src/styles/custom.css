@@ -2,7 +2,61 @@
 .sl-markdown-content blockquote {
   font-size: var(--sl-text-sm);
 }
+/* Tables fill the column. Only the width: Starlight gives tables `display: block;
+   overflow: auto` so a table wider than the column scrolls inside itself, and
+   forcing `display: table` back on took that away — the provider and configuration
+   references then pushed the whole page sideways on a phone. */
 .sl-markdown-content table {
-  display: table;
   width: 100%;
+}
+
+/* Keep the search box in one place across the whole site. Starlight's header is a
+   three-column grid whose first column it sizes from the page's own sidebar and
+   table-of-contents widths — so on a splash page, which has neither, the search
+   box sat 98px left of where the docs put it at 1440, and 156px left from 1600 up
+   (where the splash column stops growing). Rather than override the grid (which
+   would unpick the alignment with the article text on wide screens), hand the
+   splash header the values a docs page's header reads. `initial` is the one way to
+   put a custom property back into the "unset" state Starlight's own `var()`
+   fallbacks expect; setting all four on the header alone keeps them away from the
+   page layout. (Unlayered, so these beat starlight.core.) */
+@media (min-width: 50rem) {
+  :root:not([data-has-sidebar]) div.header {
+    --sl-content-inline-start: var(--sl-sidebar-width);
+    --__sidebar-pad: calc(2 * var(--sl-nav-pad-x));
+    --__toc-width: initial;
+    /* The one value here that is a constant rather than a reference: Starlight's
+       own default from props.css, which its Page.astro widens to 67.5rem on
+       sidebar-less pages — the header must not see that. A fork that sets
+       --sl-content-width has to set it here too. */
+    --sl-content-width: 45rem;
+  }
+}
+
+/* A splash page has no sidebar, and therefore no menu button: below 50rem, where
+   Starlight hides the header's right-hand group, the landing page and the 404
+   would have no route into the documentation at all. Keep the Docs link there —
+   and only it, since the social icons and the theme picker do not fit beside the
+   title and the search button on a phone. `not all and (min-width: 50rem)` rather
+   than a max-width: it is the exact complement of the min-width query Starlight
+   shows the group with, so no viewport falls between the two and strands a phone
+   with no link at all. */
+@media not all and (min-width: 50rem) {
+  :root:not([data-has-sidebar]) .right-group {
+    display: flex;
+  }
+  :root:not([data-has-sidebar]) .right-group > :not(.social-icons),
+  :root:not([data-has-sidebar]) .social-icons > :not(.header-links) {
+    display: none;
+  }
+  :root:not([data-has-sidebar]) .social-icons::after {
+    content: none;
+  }
+}
+/* A printed page box is narrower than 50rem, so the rule above would put the link
+   back into the paper copy that Starlight's `print:hidden` took it out of. */
+@media print {
+  :root:not([data-has-sidebar]) .right-group {
+    display: none;
+  }
 }

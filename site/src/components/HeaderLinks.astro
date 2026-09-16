@@ -1,0 +1,44 @@
+---
+// Starlight's header carries no navigation of its own, and the landing page is a
+// splash (so it has no sidebar either): without this there is no way into the
+// documentation from the front page except the hero buttons. Overriding
+// SocialIcons is the supported place to put header links — it renders inside the
+// header's right-hand group, which Starlight already hides on narrow viewports,
+// where the sidebar's menu button does this job instead.
+import SocialIcons from "@astrojs/starlight/components/SocialIcons.astro";
+
+// This renders on pages at every depth, so the hrefs cannot be relative the way
+// the ones in the Markdown are; BASE_URL is where SITE_BASE ends up.
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+// "Docs", not "Documentation": at 108px the longer label clipped the site title
+// on a 320px phone, where this link is the only navigation in the header.
+const links = [{ label: "Docs", href: `${base}/start-here/what-it-is/` }];
+const here = Astro.url.pathname.replace(/\/$/, "");
+---
+
+<nav class="header-links sl-flex" aria-label="Site">
+  {
+    links.map(({ label, href }) => (
+      <a href={href} aria-current={here === href.replace(/\/$/, "") ? "page" : undefined}>
+        {label}
+      </a>
+    ))
+  }
+</nav>
+<SocialIcons />
+
+<style>
+  .header-links {
+    gap: 1rem;
+    align-items: center;
+    font-size: var(--sl-text-sm);
+  }
+  .header-links a {
+    color: var(--sl-color-gray-2);
+    text-decoration: none;
+  }
+  .header-links a:hover,
+  .header-links a[aria-current="page"] {
+    color: var(--sl-color-white);
+  }
+</style>

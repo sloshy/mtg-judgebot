@@ -9,9 +9,9 @@ hero:
       link: ./self-hosting/first-run/
       icon: rocket
       variant: primary
-    - text: Try the web page
-      link: https://mtgjudge.rpeters.dev
-      icon: external
+    - text: Try it without Discord
+      link: ./start-here/without-discord/
+      icon: laptop
     - text: How it works
       link: ./how-it-works/explainer-1-what-and-why/
       icon: open-book
@@ -41,8 +41,8 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 ## Yours to run
 
-The maintainer's bot is private to their servers; the [web page](./start-here/hosted-bot/)
-is a demonstration. A judgebot is meant to be run by the community that uses it, so that
-the spend cap, the judge role and the Discord application are yours. It is one compose
-file, a Discord application you create in a few minutes, and a model API key:
-[start here](./self-hosting/first-run/).
+There is no bot to invite. A judgebot is meant to be run by the community that uses it, so
+that the spend cap, the judge role and the Discord application are yours — and nothing in
+the pipeline depends on Discord, so the web page and the command line work before you have
+a bot token. Read [what the judge is](./start-here/what-it-is/), or go straight to
+[requirements and first run](./self-hosting/first-run/).

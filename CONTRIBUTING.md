@@ -1,9 +1,8 @@
 # Contributing
 
-Thanks for looking at this. This page covers getting a development environment up,
-the gates a change has to pass, and the design rules that are not obvious from the
-code. `docs/EXPLAINER.md` explains how the bot works end to end; `docs/ARCHITECTURE.md`
-is the design reference.
+This page covers getting a development environment up, the gates a change has to pass,
+and the design rules that are not obvious from the code. `docs/EXPLAINER.md` explains
+how the bot works end to end; `docs/ARCHITECTURE.md` is the design reference.
 
 ## Development setup
 
