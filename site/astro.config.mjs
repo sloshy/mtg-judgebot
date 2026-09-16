@@ -5,12 +5,17 @@ import starlight from "@astrojs/starlight";
 // GitHub Pages serves the site under the repository name; a custom domain
 // (Cloudflare Pages, or Pages with a CNAME) sets SITE_URL and SITE_BASE=/ in the
 // build environment instead. publish-docs.yml leaves both at the defaults.
+// `astro dev` defaults to base "/" instead, so the local dev server's root and
+// links work at http://localhost:4321/ without SITE_BASE having to be set by hand.
+// (Passing a function to defineConfig instead of a plain object, to read Astro's
+// `command`, breaks Starlight's own integration setup — it ends up injecting no
+// pages at all — so the dev/build distinction is read from argv instead.)
 const site = process.env.SITE_URL ?? "https://sloshy.github.io";
-const base = process.env.SITE_BASE ?? "/mtg-judgebot";
+const isDev = process.argv.includes("dev");
 
 export default defineConfig({
   site,
-  base,
+  base: process.env.SITE_BASE ?? (isDev ? "/" : "/mtg-judgebot"),
   // No images to optimise, so no sharp: the site builds anywhere Node runs.
   image: { service: passthroughImageService() },
   integrations: [
