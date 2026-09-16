@@ -39,7 +39,14 @@ where
     let token = Token(token.as_bytes().into());
     Router::new()
         .nest_service("/mcp", service)
-        .layer(middleware::from_fn_with_state(token, require_bearer))
+        // `route_layer`, not `layer`: `layer` wraps this router's *fallback*
+        // too, and merging a router whose fallback is non-default into one
+        // that still has the default fallback replaces it — which turned the
+        // 401 into the catch-all for every unrouted path whenever `/mcp` was
+        // mounted without the web page. `route_layer` runs only where a route
+        // matched, which `nest_service` does for `/mcp` and everything under
+        // it.
+        .route_layer(middleware::from_fn_with_state(token, require_bearer))
 }
 
 async fn require_bearer(State(token): State<Token>, req: Request, next: Next) -> Response {
@@ -133,6 +140,27 @@ pub(crate) mod tests {
             status(Some(&format!("Bearer {TOKEN}")), "/mcp/anything").await?,
             StatusCode::OK
         );
+        Ok(())
+    }
+
+    /// Merging this router must not hand its 401 to every unrouted path: with
+    /// no web page there is no other fallback, and `layer` would have made the
+    /// gate the catch-all, so `GET /` on a `--api --mcp` process answered 401
+    /// (advertising `WWW-Authenticate` to any scanner) instead of 404.
+    #[tokio::test]
+    async fn the_gate_does_not_become_the_fallback() -> Result<(), Box<dyn std::error::Error>> {
+        let merged = Router::new().merge(router(Echo, TOKEN));
+        for path in ["/", "/anything", "/api/judge"] {
+            let res = merged
+                .clone()
+                .oneshot(HttpRequest::get(path).body(Body::empty())?)
+                .await?;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path}");
+            assert!(
+                !res.headers().contains_key(header::WWW_AUTHENTICATE),
+                "{path} advertised the MCP gate"
+            );
+        }
         Ok(())
     }
 

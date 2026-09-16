@@ -40,11 +40,12 @@ variables for its secrets and never holds one.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `API_INTERFACES` | `--api --web` | Read by `docker-compose.yml`, not by the binary: the flags the `api` container passes. Each front door is opt-in — `--api` (`POST /api/judge`), `--web` (the page), `--mcp` (the MCP transport) — and `judge-api` run by hand takes them as arguments, serving the JSON API alone with none. `GET /api/health` is served whatever is off. |
 | `API_ADDR` | `0.0.0.0:8787` | Listen address. Stays `0.0.0.0` in Docker so `cloudflared` can reach it; the published port restricts access. |
-| `WEB_DIST` | `web/dist` | The built web page. The image sets `/srv/web`. |
+| `WEB_DIST` | `web/dist` | The built web page, read only under `--web`. The image sets `/srv/web`. A `--web` launch with no `index.html` there is refused at startup. |
 | `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS` | `4`, `300` | Questions per IP per window, checked before the concurrency semaphore and the spend cap. |
 | `API_CLIENT_IP` | `peer` | `peer` (socket address) or `cloudflare` (`CF-Connecting-IP`). Never `X-Forwarded-For`; see [Security](../../reference/security/). |
-| `MCP_TOKEN` | | Set (24+ printable ASCII bytes) to mount the MCP transport at `/mcp` behind this bearer token. Unset: no endpoint. |
+| `MCP_TOKEN` | | The bearer token for `/mcp` (24+ printable ASCII bytes). The endpoint needs `--mcp` as well: the flag without a token is refused at startup, a token without the flag serves nothing and warns. |
 | `MCP_ALLOWED_HOSTS` | loopback only | Comma-separated `Host` values the MCP transport accepts: the public hostname, plus `localhost` if you curl on the host. |
 | `MCP_JUDGE_LIMIT`, `MCP_JUDGE_WINDOW_SECS` | `20`, `3600` | `judge` runs per window through `/mcp`: the blast radius of a leaked token. |
 

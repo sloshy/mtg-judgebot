@@ -1,7 +1,8 @@
 # web
 
 The anonymous web front end: one SolidJS page, built with Vite and served by
-`judge-api` from `WEB_DIST` (the Docker image builds it into `/srv/web`). It calls
+`judge-api --web` from `WEB_DIST` (the Docker image builds it into `/srv/web`; the
+compose file passes `--api --web`). Without the flag the page is not served at all. It calls
 `POST /api/judge`, renders the answer with its citations and the "did you mean…?"
 choices, and draws mana and card symbols with Scryfall's SVGs (`src/Symbols.tsx`).
 There are no accounts and no rating buttons here; ratings are a Discord feature.

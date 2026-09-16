@@ -95,7 +95,7 @@ pipeline*, not about how much to investigate.
    first and bring the database up if it is down — `docker compose up -d db`, which is
    enough on its own: neither `bot` nor `api` has to be running.
 2. **MCP** — `judge-mcp` over `.mcp.json` locally when the tools are connected, or
-   `judge-api`'s `/mcp` (with `MCP_TOKEN`) when the user is away from this machine and the
+   `judge-api`'s `/mcp` (`--mcp` + `MCP_TOKEN`) when the user is away from this machine and the
    local database is not reachable. Same operations as the CLI; prefer whichever transport
    is actually available.
 3. **A live instance** (`docker compose up -d bot api`, `judge-cli judge`, `judge-eval
@@ -161,7 +161,11 @@ cargo run --release -p judge-ingest -- refresh          # cards + rules latest +
                                                         # step runs even if one fails, exit≠0 if any did
 scripts/refresh-data.sh              # nightly cron on the deploy host: `docker compose run --rm refresh`
 
-cargo run --release -p judge-api                        # HTTP API + web page on API_ADDR (default :8787)
+cargo run --release -p judge-api -- [--api] [--web] [--mcp]   # one flag per front door, all opt-in; no
+                                                        # flags = POST /api/judge alone, on API_ADDR (:8787).
+                                                        # --web needs a built web/dist and --mcp an MCP_TOKEN
+                                                        # (both startup errors); a token with no --mcp only
+                                                        # warns; GET /api/health is served whatever is off
 npm --prefix web run build           # build the SolidJS page into web/dist (served by judge-api)
 npm --prefix web run dev             # Vite dev server, proxies /api to a local judge-api
 
@@ -173,7 +177,7 @@ judge-cli verdict <s> <file|-> [--persist] | persist <s>   # the agent-driven se
 judge-cli card <name> | card-info <uuid> | get-rules <id>.. | search "<q>" [--limit N] | glossary <term>
 judge-cli config                                        # the resolved provider/model setup, secrets redacted
 judge-mcp                                               # the MCP server on stdio (.mcp.json starts it)
-                                                        # remote: judge-api serves /mcp when MCP_TOKEN is set
+                                                        # remote: judge-api --mcp serves /mcp (needs MCP_TOKEN)
 
 cargo run -p judge-eval -- recall [--vectors]           # retrieval gate, no API keys (--vectors: the configured
                                                         # embedder, ~$0.001), exit≠0 below 90% retrieved or 75%
@@ -223,8 +227,15 @@ gets its `Models`/`Vectors` from `config::Config::load()`, whose no-file branch
 `SpendMeter`). `crates/bot/tests/anthropic_golden.rs` pins the four Anthropic request shapes
 byte-for-byte against captured fixtures (`UPDATE_GOLDEN=1` re-captures them after an
 intended prompt/schema change; review the diff). `api` (+ the SolidJS page in `web/`) is the
-anonymous front door: no ratings, stateless "did you mean?" via `pins` → `pin_card`
-rewriting, session history via a client UUID (`web:<uuid>` thread ids), per-IP
+anonymous front door, and which of its doors a process opens is a launch option, not a
+consequence of starting it (`crates/api/src/interfaces.rs`: an exhaustive `Interface`,
+a `NonEmpty` set so "serving nothing" is unrepresentable, `ApiConfig::check` refusing
+`--mcp` with no `MCP_TOKEN` and `--web` with no `index.html` before anything binds; the
+mirror case, a token with no `--mcp`, is a warning, because refusing there would take a
+working page down over a variable that exposes nothing). `mcp::router` gates with
+`route_layer`, not `layer`: `layer` wraps a router's fallback too, and merging that into
+a router with no web fallback made the 401 the catch-all for every unrouted path.
+No ratings, stateless "did you mean?" via `pins` → `pin_card` rewriting, session history via a client UUID (`web:<uuid>` thread ids), per-IP
 fixed-window rate limiting (`API_RATE_LIMIT`/`API_RATE_WINDOW_SECS`) ahead of the
 concurrency semaphore and the spend cap.
 
@@ -383,14 +394,19 @@ cloud doors' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS` — never `.env.deploy`, w
 `DISCORD_TOKEN`, `GUILD_ID` (instant command registration), `JUDGE_ROLE` (default
 "Judge"), `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`, `JUDGE_AUTO_MIGRATE` (default true: bot and
 api apply pending migrations at startup; `judge-ingest migrate` is the explicit form); for the HTTP API also `API_ADDR`
-(default `0.0.0.0:8787`), `WEB_DIST`, `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`,
-`API_CLIENT_IP` (`peer` or `cloudflare`; see below), `MCP_TOKEN` (unset = no `/mcp`; ≥24
-chars; bearer-checked before the protocol), `MCP_ALLOWED_HOSTS` (the `Host` values the
+(default `0.0.0.0:8787`), `WEB_DIST` (read only under `--web`), `API_INTERFACES` (read
+by `docker-compose.yml`, not by the binary: the flags the `api` container passes,
+default `--api --web`), `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`,
+`API_CLIENT_IP` (`peer` or `cloudflare`; see below), `MCP_TOKEN` (the credential for
+`/mcp`, which also needs the `--mcp` interface; ≥24 chars; bearer-checked before the
+protocol), `MCP_ALLOWED_HOSTS` (the `Host` values the
 MCP transport accepts — the public hostname behind the tunnel) and
 `MCP_JUDGE_LIMIT`/`MCP_JUDGE_WINDOW_SECS` (`judge` runs per window through `/mcp`; the
 blast radius of a leaked token). The
 bot/api containers override `DATABASE_URL` to `db:5432` inside the compose network;
-the image builds the web page and sets `WEB_DIST=/srv/web`.
+the image builds the web page and sets `WEB_DIST=/srv/web`; the `api` service's
+`command` is `${API_INTERFACES:---api --web}`, so the page stays on for a compose
+deployment while `judge-api` on its own serves no page.
 
 Deployment is self-hosted behind a Cloudflare Tunnel — `docs/DEPLOYMENT.md` is the
 runbook. `db` and `api` publish on `127.0.0.1` only; public traffic reaches `api:8787`

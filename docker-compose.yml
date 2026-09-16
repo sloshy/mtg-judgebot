@@ -74,6 +74,15 @@ services:
     container_name: judgebot-api
     restart: unless-stopped
     entrypoint: ["judge-api"]
+    # Every front door judge-api can open is opt-in: with no arguments it
+    # serves POST /api/judge and nothing else. This default adds the web page;
+    # drop `--web` for an API-only deployment, and add `--mcp` when MCP_TOKEN
+    # is set — a token with no `--mcp` is refused at startup rather than
+    # leaving an operator thinking /mcp is live. Override the whole list with
+    # API_INTERFACES in .env so nothing here has to be edited on a deploy host.
+    # GET /api/health is served either way, so the healthcheck below is
+    # unaffected by what is switched off.
+    command: ${API_INTERFACES:---api --web}
     env_file: .env
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot

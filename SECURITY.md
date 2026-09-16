@@ -27,8 +27,10 @@ Operators should know these properties; the reasoning behind each is in
   nothing but Cloudflare can reach the origin. The old `API_TRUST_FORWARDED` knob is
   rejected at startup for this reason.
 - **The MCP endpoint is bearer-token only and off by default.** It mounts only when
-  `MCP_TOKEN` (at least 24 bytes) is set, compares in constant time, and applies its
-  own `judge` quota (`MCP_JUDGE_LIMIT`) as the blast radius of a leaked token.
+  `judge-api` is launched with `--mcp` *and* `MCP_TOKEN` (at least 24 bytes) is set —
+  the flag alone is refused at startup, and the token alone serves nothing. It compares
+  the token in constant time and applies its own `judge` quota (`MCP_JUDGE_LIMIT`) as
+  the blast radius of a leak.
   `MCP_ALLOWED_HOSTS` must name the public hostname. Rotate the token by changing the
   variable and restarting `api`.
 - **Secrets never live in tracked files.** `judge.toml` names environment variables;

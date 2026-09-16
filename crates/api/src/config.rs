@@ -1,9 +1,13 @@
-//! Everything the HTTP adapter reads from the environment.
+//! Everything the HTTP adapter reads from the environment. Which front doors
+//! it opens comes from the command line instead ([`crate::interfaces`]);
+//! [`ApiConfig::check`] is where the two have to agree.
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::Context as _;
 use judge_llm::ApiKey;
+
+use crate::interfaces::{Interface, Interfaces};
 
 /// Configuration for the HTTP adapter.
 #[derive(Clone, Debug)]
@@ -23,8 +27,9 @@ pub struct ApiConfig {
     pub rate_window: Duration,
     /// Where the rate-limit bucket key comes from (`API_CLIENT_IP`).
     pub client_ip: ClientIpSource,
-    /// Bearer token that mounts the MCP transport at `/mcp` (`MCP_TOKEN`);
-    /// unset means no MCP endpoint at all. Redacted in `Debug`.
+    /// Bearer token gating the MCP transport at `/mcp` (`MCP_TOKEN`). The
+    /// endpoint also needs [`Interface::Mcp`]; the token is the credential,
+    /// not the switch. Redacted in `Debug`.
     pub mcp_token: Option<ApiKey>,
     /// Hostnames the MCP transport accepts in `Host` (`MCP_ALLOWED_HOSTS`,
     /// comma-separated); empty keeps rmcp's loopback-only default.
@@ -168,6 +173,47 @@ impl ApiConfig {
             mcp_judge_window,
         })
     }
+
+    /// Refuse a launch the environment cannot satisfy, before anything binds
+    /// a port.
+    ///
+    /// Only the interfaces that *cannot work* are refused — a door the
+    /// operator named that has no credential or nothing to serve. The mirror
+    /// cases (an `MCP_TOKEN` with no `--mcp`) are startup warnings in the
+    /// binary instead: refusing there would take a working web page down over
+    /// a variable that exposes nothing, which is not the bargain
+    /// `API_TRUST_FORWARDED` struck — that variable had been *removed*, so any
+    /// value meant a live unsafe configuration.
+    ///
+    /// # Errors
+    /// `--mcp` without `MCP_TOKEN`, or `--web` pointed at a directory holding
+    /// no `index.html`.
+    pub fn check(&self, interfaces: &Interfaces) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !interfaces.mcp() || self.mcp_token.is_some(),
+            "{} was given but MCP_TOKEN is not set. The MCP tools reach the \
+             judge pipeline and the agent sessions, so there is no anonymous \
+             mode: set MCP_TOKEN (`openssl rand -base64 32`, at least {} \
+             characters) or drop {}.",
+            Interface::Mcp.flag(),
+            Self::MIN_MCP_TOKEN_BYTES,
+            Interface::Mcp.flag()
+        );
+        // ServeDir is lazy, so without this a --web launch that cannot find
+        // the build starts cleanly and 404s every page.
+        if interfaces.web() {
+            let index = self.web_dist.join("index.html");
+            anyhow::ensure!(
+                index.is_file(),
+                "{} was given but {} does not exist. Build the page \
+                 (`npm --prefix web run build`) or point WEB_DIST at the \
+                 built directory.",
+                Interface::Web.flag(),
+                index.display()
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Parse an optional integer variable, requiring at least `min`.
@@ -188,7 +234,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nonempty::nonempty;
     use std::collections::HashMap;
+
+    fn serving(interfaces: &nonempty::NonEmpty<Interface>) -> Interfaces {
+        Interfaces::of(interfaces)
+    }
+
+    fn cfg_with(pairs: &[(&str, &str)]) -> Option<ApiConfig> {
+        ApiConfig::from_vars(vars(pairs)).ok()
+    }
 
     fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
@@ -340,5 +395,81 @@ mod tests {
                 "{bad:?}: {r:?}"
             );
         }
+    }
+
+    const A_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+    /// `--mcp` names a door that cannot open without a token, so it is
+    /// refused. The mirror case — a token with no `--mcp` — is deliberately
+    /// *not* an error: it serves nothing and exposes nothing, and refusing
+    /// would take the web page down with it. The binary warns instead.
+    #[test]
+    fn the_mcp_flag_needs_a_token_but_a_token_alone_is_allowed() {
+        let with_token = cfg_with(&[("MCP_TOKEN", A_TOKEN)]);
+        let without = cfg_with(&[]);
+
+        assert!(
+            with_token
+                .as_ref()
+                .is_some_and(|c| c.check(&serving(&nonempty![Interface::Api])).is_ok()),
+            "a token with no --mcp must start"
+        );
+
+        let r = without
+            .as_ref()
+            .map(|c| c.check(&serving(&nonempty![Interface::Mcp])));
+        assert!(
+            r.as_ref().is_some_and(|r| r
+                .as_ref()
+                .is_err_and(|e| format!("{e:#}").contains("MCP_TOKEN"))),
+            "--mcp without MCP_TOKEN: {r:?}"
+        );
+
+        assert!(with_token.as_ref().is_some_and(|c| {
+            c.check(&serving(&nonempty![Interface::Api, Interface::Mcp]))
+                .is_ok()
+        }));
+        assert!(
+            without
+                .as_ref()
+                .is_some_and(|c| c.check(&serving(&nonempty![Interface::Api])).is_ok())
+        );
+    }
+
+    /// `ServeDir` is lazy, so without this check a `--web` launch pointed at
+    /// nothing starts cleanly and 404s every page.
+    #[test]
+    fn web_without_a_built_page_is_refused_and_only_when_web_is_on() {
+        let missing = cfg_with(&[("WEB_DIST", "definitely-not-a-directory")]);
+        let r = missing
+            .as_ref()
+            .map(|c| c.check(&serving(&nonempty![Interface::Web])));
+        assert!(
+            r.as_ref().is_some_and(|r| r.as_ref().is_err_and(|e| {
+                let text = format!("{e:#}");
+                text.contains("--web") && text.contains("index.html")
+            })),
+            "{r:?}"
+        );
+        // The same configuration is fine when nobody asked for the page: the
+        // image sets WEB_DIST unconditionally, so reading it either way would
+        // make `judge-api` refuse to serve the API alone.
+        assert!(
+            missing
+                .as_ref()
+                .is_some_and(|c| c.check(&serving(&nonempty![Interface::Api])).is_ok())
+        );
+
+        let dist = std::env::temp_dir().join(format!("judge-api-cfg-{}", std::process::id()));
+        let built = std::fs::create_dir_all(&dist)
+            .and_then(|()| std::fs::write(dist.join("index.html"), "<!doctype html>"))
+            .is_ok();
+        assert!(built, "could not stage a web build in {}", dist.display());
+        let cfg = cfg_with(&[("WEB_DIST", &dist.to_string_lossy())]);
+        assert!(
+            cfg.as_ref()
+                .is_some_and(|c| c.check(&serving(&nonempty![Interface::Web])).is_ok())
+        );
+        let _ = std::fs::remove_dir_all(&dist);
     }
 }

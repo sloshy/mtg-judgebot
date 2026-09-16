@@ -36,11 +36,13 @@ docker compose up -d api       # builds the image on first run (minutes, ~4 GB R
 ```
 
 Open <http://localhost:8787>. The page is the same pipeline the bot runs, minus rating
-buttons. `API_RATE_LIMIT` and `API_RATE_WINDOW_SECS` in `.env` govern how many questions an
+buttons. Every front door `judge-api` has is a launch option — the compose file passes
+`--api --web`, and `API_INTERFACES` in `.env` changes that list (`--api` alone runs the
+question route with no public page). `API_RATE_LIMIT` and `API_RATE_WINDOW_SECS` in `.env` govern how many questions an
 IP can ask; the defaults are for a public instance, so raise them for yourself.
 
-For development without Docker for the API: `cargo run --release -p judge-api` serves the
-built page from `web/dist` (`npm --prefix web ci && npm --prefix web run build` once), and
+For development without Docker for the API: `cargo run --release -p judge-api -- --api --web`
+serves the built page from `web/dist` (`npm --prefix web ci && npm --prefix web run build` once), and
 `npm --prefix web run dev` runs Vite with `/api` proxied to it.
 
 ## The command line

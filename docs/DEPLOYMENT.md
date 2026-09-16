@@ -215,14 +215,17 @@ and `refresh`, with the mount left as it is.
 ### Optional: MCP for your own agents
 
 `judge-api` can serve the judge's tool surface (`crates/agent`) to an MCP client over
-the same tunnel, at `/mcp`. It is off unless `MCP_TOKEN` is set, and there is no
-anonymous mode: every request must carry `Authorization: Bearer <MCP_TOKEN>` or gets a
+the same tunnel, at `/mcp`. It takes two things to turn on — the `--mcp` interface and
+an `MCP_TOKEN` — and naming one without the other is refused at startup rather than
+quietly ignored, so a token in `.env` never reads as an endpoint that is not there.
+There is no anonymous mode: every request must carry `Authorization: Bearer <MCP_TOKEN>` or gets a
 401 before the protocol sees it. Behind the token are `judge` (the full pipeline, real
 model spend, under the same `JUDGE_MAX_USD` and `JUDGE_CONCURRENCY` as the web
 page), the agent-driven sessions (no model calls, database work only) and the
 read-only lookups.
 
 ```ini
+API_INTERFACES=--api --web --mcp          # the api container's front doors; without --mcp the token is refused
 MCP_TOKEN=<openssl rand -base64 32>       # at least 24 characters, or the API refuses to start
 MCP_ALLOWED_HOSTS=judge.example.com,localhost   # Host values accepted: the tunnel's hostname, plus
                                                    # localhost for curl on the host; the list replaces the default
@@ -512,6 +515,12 @@ docker compose pull
 docker compose up -d
 ```
 
+Upgrading past the release that made `judge-api`'s front doors opt-in: the `api`
+service now passes `${API_INTERFACES:---api --web}`, which serves the page exactly as
+before but does **not** mount `/mcp`. A deployment with an `MCP_TOKEN` keeps starting
+and logs a warning; set `API_INTERFACES=--api --web --mcp` in `.env` and
+`docker compose up -d api` to get the endpoint back.
+
 `docker compose up -d --build` still works on a machine with the CPU and RAM for it;
 `build: .` is retained for local development.
 
@@ -605,7 +614,11 @@ own if the connector restarts.
 | Tunnel healthy, hostname NXDOMAIN | the `judge` record is grey-clouded; it must be proxied |
 | `/mcp` answers 401 | wrong or missing `Authorization: Bearer <MCP_TOKEN>` |
 | `/mcp` answers 403 while `/api/health` is fine | the public hostname is not in `MCP_ALLOWED_HOSTS` |
-| `/mcp` answers 405 (a browser GET shows the web page) | `MCP_TOKEN` is unset in the api container's `.env`, so `/mcp` is just another page path |
+| `/mcp` answers 405 (a browser GET shows the web page) | `--mcp` is not in `API_INTERFACES`, so `/mcp` is just another page path |
+| `api` exits naming `--mcp` and `MCP_TOKEN` | `--mcp` with no token to gate it; set `MCP_TOKEN` or drop the flag |
+| `/mcp` 404s and the log warns about `MCP_TOKEN` | the token is set but `--mcp` is not in `API_INTERFACES` |
+| `api` exits naming `--web` and `index.html` | `--web` with no built page at `WEB_DIST`; drop `--web` or rebuild the image |
+| The page 404s but `/api/health` is fine | `--web` is not in `API_INTERFACES`; the startup log line lists what is on and what is off |
 | Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the tunnel — every request looks like the cloudflared container |
 | Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied |
 | `judge-api` exits citing `API_TRUST_FORWARDED` | that variable was removed as unsafe; use `API_CLIENT_IP` |

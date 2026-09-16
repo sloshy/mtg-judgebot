@@ -7,8 +7,9 @@ sidebar:
 
 `crates/agent` exposes the pipeline to other programs in two transports over one set of
 operations: **`judge-mcp`**, an MCP server on stdio, and **`judge-cli`**, one subcommand
-per operation with JSON output. `judge-api` also serves the same MCP tools over HTTP at
-`/mcp` when `MCP_TOKEN` is set, for agents that are not on the host.
+per operation with JSON output. `judge-api --mcp` also serves the same MCP tools over HTTP at
+`/mcp`, for agents that are not on the host; it needs an `MCP_TOKEN` too, and the flag
+without a token is refused at startup.
 
 ## Two ways to get an answer
 

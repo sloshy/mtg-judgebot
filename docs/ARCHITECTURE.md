@@ -141,15 +141,23 @@ Three front doors share this pipeline through the same composition root
 - **Discord adapter** (`crates/bot`): `/judge` slash command, rating buttons,
   stateful "did you mean…?" buttons (pending store), thread history.
 - **HTTP adapter** (`crates/api` + `web/`): anonymous `POST /api/judge` behind
-  a per-IP fixed-window rate limit, serving a SolidJS single page. No rating
+  a per-IP fixed-window rate limit, and a SolidJS single page. Which of its
+  front doors a process opens is a launch option, not a property of being
+  started: `judge-api` alone is the JSON route, `--web` adds the page, `--mcp`
+  the MCP transport, and an interface nobody named is not mounted
+  (`crates/api/src/interfaces.rs`; the set is a `NonEmpty`, so "serving
+  nothing" is unrepresentable). `GET /api/health` is outside the set, because
+  the container healthcheck has to reach it whatever is switched off. No rating
   endpoints (anonymous callers are not accountable identities). Ambiguity is
   returned as data and resolved statelessly: the client re-asks with
   `pins: [{span, name}]`, which the server rewrites to `[[Full Name]]` with the
   same `pin_card` used by the Discord buttons. Follow-up history comes from a
   client-generated session UUID, stored as thread id `web:<uuid>`.
 - **Agent adapter** (`crates/agent`): the judge as a tool surface for *other*
-  agents, over MCP (`judge-mcp` on stdio for a local client; `judge-api` mounts
-  the same handler at `/mcp` behind `MCP_TOKEN` for a remote one) and as
+  agents, over MCP (`judge-mcp` on stdio for a local client; `judge-api --mcp`
+  mounts the same handler at `/mcp` behind `MCP_TOKEN` for a remote one — the
+  flag without a token is refused at startup, the token without the flag serves
+  nothing and warns) and as
   `judge-cli` (one subcommand per operation, JSON out, for a shell agent — the
   repo's `.claude/skills/judge` skill). It offers the pipeline two ways: the
   `judge` tool runs it as above with the built-in model calls (spend-capped,

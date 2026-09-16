@@ -8,6 +8,11 @@ unless `JUDGE_AUTO_MIGRATE=false`).
 ## [Unreleased]
 
 ### Added
+- `judge-api` takes one flag per front door — `--api` (`POST /api/judge`), `--web` (the
+  built page), `--mcp` (the MCP transport) — and `--help` prints them. `GET /api/health`
+  is served whatever is switched off, and the startup log names both the interfaces that
+  are on and the ones that are not, so a missing page reads as a decision rather than a
+  bug. `API_INTERFACES` in `.env` is what the `api` container passes.
 - The published image is a manifest list for `linux/amd64` and `linux/arm64`, each
   built on a runner of its own architecture, so an ARM host pulls the same tag.
 - Versioned image tags: publishing a GitHub release `vX.Y.Z` tags the image already
@@ -35,6 +40,17 @@ unless `JUDGE_AUTO_MIGRATE=false`).
 - `rust-toolchain.toml` pinning Rust 1.97 with rustfmt and clippy.
 
 ### Changed
+- **The web page is opt-in.** `judge-api` used to serve it whenever the process was
+  running, with no way to turn it off; it now serves the JSON API alone unless `--web`
+  is given. The compose file passes `--api --web`, so a `docker compose` deployment is
+  unchanged; a deployment that starts `judge-api` by hand must add the flag. A `--web`
+  launch whose `WEB_DIST` holds no `index.html` is refused at startup instead of
+  answering 404s.
+- **`/mcp` needs `--mcp` as well as `MCP_TOKEN`.** `--mcp` with no token is a startup
+  error — it would be an anonymous route to the judge pipeline. A token with no `--mcp`
+  serves nothing and logs a warning naming the fix, so an existing deployment upgrades
+  without its web page going down; set `API_INTERFACES=--api --web --mcp` in `.env` to
+  get the endpoint back.
 - The Discord bot token and the MCP bearer token are held as redacted secrets; a
   `Debug` rendering of either configuration prints `<redacted>`.
 - The extractor's "no category" warning no longer includes the question text.

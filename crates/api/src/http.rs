@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use crate::{
     config::{ApiConfig, ClientIpSource},
+    interfaces::Interfaces,
     limit::RateLimiter,
     shape::{self, ApiReply, JudgeRequest},
 };
@@ -207,34 +208,42 @@ const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
     }
 }
 
-/// The routes: `POST /api/judge`, `GET /api/health`, and the built web client
-/// as the fallback (unknown paths get `index.html`, so a client-side route
-/// refresh still loads the app). The MCP router ([`crate::mcp::router`]) is
-/// merged *into* this one, so this fallback wins and the token gate stays
-/// on `/mcp` alone.
-pub fn router(app: Arc<App>, web_dist: &Path) -> Router {
-    let files =
-        ServeDir::new(web_dist).not_found_service(ServeFile::new(web_dist.join("index.html")));
-    Router::new()
-        .route("/api/judge", post(judge_route))
-        .route("/api/health", get(health))
-        .fallback_service(files)
-        .with_state(app)
+/// The routes `interfaces` asks for: `POST /api/judge` for
+/// [`Interface::Api`](crate::Interface::Api), and the built web client as the
+/// router's fallback for [`Web`](crate::Interface::Web) (unknown paths get
+/// `index.html`, so a client-side route refresh still loads the app). An
+/// interface left off is simply not mounted: its paths fall through to
+/// whatever is left, which is a 404 with no web client and the page's own SPA
+/// fallback with one. The startup log is where an operator reads why.
+///
+/// `GET /api/health` is unconditional: it reports on the process, not on a
+/// front door, and the container healthcheck has to reach it whatever else is
+/// switched off.
+///
+/// The MCP router ([`crate::mcp::router`]) is merged *into* this one, so the
+/// web fallback wins and the token gate stays on `/mcp` alone.
+pub fn router(app: Arc<App>, interfaces: &Interfaces, web_dist: &Path) -> Router {
+    let mut router = Router::new().route("/api/health", get(health));
+    if interfaces.api() {
+        router = router.route("/api/judge", post(judge_route));
+    }
+    if interfaces.web() {
+        let files =
+            ServeDir::new(web_dist).not_found_service(ServeFile::new(web_dist.join("index.html")));
+        router = router.fallback_service(files);
+    }
+    router.with_state(app)
 }
 
-/// Bind `cfg.addr` and serve until the listener fails.
-///
-/// # Errors
-/// Binding the address, or a fatal accept-loop error.
 /// Bind `cfg.addr` and serve `router` until the listener fails.
 ///
 /// # Errors
-/// Binding or accepting.
+/// Binding the address, or a fatal accept-loop error.
 pub async fn serve(cfg: &ApiConfig, router: Router) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(cfg.addr)
         .await
         .with_context(|| format!("bind {}", cfg.addr))?;
-    tracing::info!(addr = %cfg.addr, web_dist = %cfg.web_dist.display(), "HTTP adapter listening");
+    tracing::info!(addr = %cfg.addr, "HTTP adapter listening");
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
@@ -341,6 +350,7 @@ fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, source: ClientIpSour
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interfaces::Interface;
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::Request;
@@ -350,7 +360,7 @@ mod tests {
         Extractor, Face, Layout, MatchedVia, Qa, Resolution, Resolver, RuleChunk, RuleId, Score,
         Source, Synthesizer, Unvalidated,
     };
-    use nonempty::NonEmpty;
+    use nonempty::{NonEmpty, nonempty};
     use std::sync::Mutex;
     use tower::ServiceExt as _;
 
@@ -520,6 +530,18 @@ mod tests {
     }
 
     fn test_app_with_dist(rate_limit: u32, dist: &Path) -> (Router, Arc<StubStore>) {
+        test_app_serving(
+            rate_limit,
+            dist,
+            &Interfaces::of(&nonempty![Interface::Api, Interface::Web]),
+        )
+    }
+
+    fn test_app_serving(
+        rate_limit: u32,
+        dist: &Path,
+        interfaces: &Interfaces,
+    ) -> (Router, Arc<StubStore>) {
         let store = Arc::new(StubStore::default());
         let cfg = test_cfg(rate_limit, dist);
         let app = Arc::new(App::new(
@@ -528,7 +550,7 @@ mod tests {
             SpendMeter::new(),
             &cfg,
         ));
-        (router(app, &cfg.web_dist), store)
+        (router(app, interfaces, &cfg.web_dist), store)
     }
 
     fn test_cfg(rate_limit: u32, dist: &Path) -> ApiConfig {
@@ -710,6 +732,73 @@ mod tests {
         Ok(())
     }
 
+    /// The point of the opt-in: a door nobody named is not mounted, and the
+    /// paths behind it are not answered by something else standing in.
+    #[tokio::test]
+    async fn an_interface_left_off_is_not_mounted() -> Res {
+        let dist = std::env::temp_dir().join(format!("judge-api-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dist)?;
+        std::fs::write(
+            dist.join("index.html"),
+            "<!doctype html><title>judge</title>",
+        )?;
+
+        // --api alone: the question route answers and the page is absent, even
+        // though WEB_DIST points at a real build.
+        let (api_only, _) =
+            test_app_serving(10, &dist, &Interfaces::of(&nonempty![Interface::Api]));
+        let (status, j) =
+            post_judge(api_only.clone(), r#"{"question":"does lifelink stack?"}"#).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("answer"));
+        let res = api_only
+            .oneshot(Request::get("/").body(Body::empty())?)
+            .await?;
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "a built page must not be served without --web"
+        );
+
+        // --web alone: the page is served and the route that spends money is
+        // not routed at all.
+        let (web_only, store) =
+            test_app_serving(10, &dist, &Interfaces::of(&nonempty![Interface::Web]));
+        let res = web_only
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty())?)
+            .await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        let (status, _) = post_judge(web_only, r#"{"question":"does lifelink stack?"}"#).await?;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "POST /api/judge must not be answered without --api"
+        );
+        assert!(persisted(&store).is_empty());
+        std::fs::remove_dir_all(&dist)?;
+        Ok(())
+    }
+
+    /// `/api/health` is not an interface: the compose healthcheck and the
+    /// tunnel's readiness read it whatever the operator switched off.
+    #[tokio::test]
+    async fn health_is_served_whatever_is_switched_off() -> Res {
+        for set in [
+            nonempty![Interface::Api],
+            nonempty![Interface::Web],
+            nonempty![Interface::Mcp],
+        ] {
+            let (router, _) =
+                test_app_serving(10, Path::new("does-not-exist"), &Interfaces::of(&set));
+            let res = router
+                .oneshot(Request::get("/api/health").body(Body::empty())?)
+                .await?;
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn health_answers_ok() -> Res {
         let (router, _) = test_app(10);
@@ -747,7 +836,11 @@ mod tests {
                 )
                 .with_probe(Arc::new(Fixed(probe))),
             );
-            let router = router(app, Path::new("does-not-exist"));
+            let router = router(
+                app,
+                &Interfaces::of(&nonempty![Interface::Api]),
+                Path::new("does-not-exist"),
+            );
             let res = router
                 .oneshot(Request::get("/api/health").body(Body::empty())?)
                 .await?;

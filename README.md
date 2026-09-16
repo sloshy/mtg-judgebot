@@ -182,15 +182,19 @@ startup.
 
 ### The web page
 
-`docker compose up -d` also serves an anonymous web front end on
-<http://localhost:8787> (SolidJS, built into the image): the same pipeline, citations
-and "did you mean…?" flow in the browser, no login. Because nobody is logged in there
+Each of `judge-api`'s front doors is a launch option: run on its own it serves
+`POST /api/judge` and nothing else, and the page needs `--web` (the MCP transport needs
+`--mcp`). The compose file passes `--api --web`, so `docker compose up -d` serves an
+anonymous web front end on <http://localhost:8787> (SolidJS, built into the image): the
+same pipeline, citations and "did you mean…?" flow in the browser, no login. Set
+`API_INTERFACES` in `.env` to change that list — `--api` alone for a deployment with no
+public page. Because nobody is logged in there
 are **no rating buttons** on the web, and anonymous traffic is rate limited per IP
 (`API_RATE_LIMIT` questions per `API_RATE_WINDOW_SECS`, default 4 per 5 minutes) on
 top of the global spend cap. For local development:
 
 ```sh
-cargo run --release -p judge-api     # API + static page on localhost:8787
+cargo run --release -p judge-api -- --api --web   # API + static page on localhost:8787
 npm --prefix web install
 npm --prefix web run dev             # Vite dev server with /api proxied to :8787
 ```
@@ -239,7 +243,7 @@ crates/
   bot        Postgres adapters (resolver / retriever / call store), judge.toml loader, prompts, Discord (serenity/poise)
   ingest     Scryfall + Comprehensive Rules loaders, embedder  (bin)
   eval       gold-set harness: recall / answer / rescore / show (bin)
-  api        anonymous HTTP adapter (axum) serving the web page; the MCP transport at /mcp (bin)
+  api        anonymous HTTP adapter (axum); the web page and the /mcp transport are opt-in flags (bin)
   agent      the judge for other agents: sessions, lookups and the pipeline as judge-cli and judge-mcp
 web/         SolidJS + TypeScript single page (Vite)
 site/        the documentation site (Astro + Starlight); docs/ is its source
