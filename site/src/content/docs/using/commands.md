@@ -58,6 +58,7 @@ JSON on stdout; logs on stderr.
 | `card <name>` / `card-info <uuid>` | Resolve a name / a card by id. |
 | `get-rules <id>...` / `search <query> [--limit N]` / `glossary <term>` | Rules text, full-text search, glossary. |
 | `config` | The resolved provider setup, secrets redacted. |
+| `about` | The source offer: the repository holding this instance's source, the commit it was built from, the licence and copyright. No database needed. |
 
 ## Compose and scripts
 

@@ -1,10 +1,12 @@
-import { For, Match, Show, Switch, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createResource, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import {
+  About,
   ApiReply,
   Pin,
   askJudge,
   crDate,
+  fetchAbout,
   sessionId,
 } from "./api";
 import Symbols from "./Symbols";
@@ -26,6 +28,9 @@ export default function App() {
   const [draft, setDraft] = createSignal("");
   const [waiting, setWaiting] = createSignal(false);
   const session = sessionId();
+  // `null` while GET /api/about is pending or after it failed; the footer
+  // then says so rather than naming a repository this instance may not be.
+  const [about] = createResource(fetchAbout);
 
   async function ask(question: string, pins: Pin[], index?: number) {
     const i = index ?? entries.length;
@@ -110,11 +115,59 @@ export default function App() {
           Unofficial Fan Content under the{" "}
           <a href="https://company.wizards.com/en/legal/fancontentpolicy">Fan Content Policy</a>;
           not endorsed by Wizards of the Coast. Card data and rulings from{" "}
-          <a href="https://scryfall.com">Scryfall</a>.{" "}
-          <a href="https://github.com/sloshy/mtg-judgebot">Source</a> (AGPL-3.0).
+          <a href="https://scryfall.com">Scryfall</a>.
         </p>
+        <SourceOffer about={about() ?? null} />
       </footer>
     </main>
+  );
+}
+
+/** The AGPL source offer: where this instance's code is, at which commit,
+ * under which licence. The facts come from the server (GET /api/about), so
+ * an operator who points JUDGE_SOURCE_URL at their fork is covered here
+ * without touching the page; while they are missing the footer says so
+ * instead of guessing a repository. */
+function SourceOffer(props: { about: About | null }) {
+  return (
+    <p class="source-offer">
+      <Show
+        when={props.about}
+        fallback={
+          <>
+            Free software under the{" "}
+            <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU Affero General Public License</a>.
+            The source offer for this instance (repository and commit) comes from{" "}
+            <code>GET /api/about</code>, which has not answered.
+          </>
+        }
+      >
+        {(a) => (
+          <>
+            {a().program} — {a().copyright}. Free software under the{" "}
+            <a href={a().license_url}>{a().license_name}</a>; anyone offering a modified version
+            over a network must offer its source under the same licence.{" "}
+            <a href={a().repository}>Source code of this instance</a>{" "}
+            <Show when={a().commit} fallback={<>(commit unknown)</>}>
+              {(commit) => (
+                <>
+                  (commit{" "}
+                  <Show when={a().commit_url} fallback={<code>{commit().slice(0, 7)}</code>}>
+                    {(url) => (
+                      <a href={url()}>
+                        <code>{commit().slice(0, 7)}</code>
+                      </a>
+                    )}
+                  </Show>
+                  <Show when={a().dirty}>, built with uncommitted changes</Show>)
+                </>
+              )}
+            </Show>
+            .
+          </>
+        )}
+      </Show>
+    </p>
   );
 }
 

@@ -40,7 +40,10 @@ Discord thread id can never have, so a session cannot read a channel's history.
 
 `card <name>`, `card-info <uuid>`, `get-rules <id>...`, `search <query> [--limit N]` and
 `glossary <term>` query the database directly and cost nothing. `config` prints the
-resolved provider and model setup with secrets redacted.
+resolved provider and model setup with secrets redacted, and `about` the source offer:
+the repository holding this instance's source, the commit it was built from, the licence
+and copyright. Over MCP the same offer is the tail of the server's initialization
+instructions and the `about` tool, so a client sees it before calling anything.
 
 ## Connecting an MCP client
 

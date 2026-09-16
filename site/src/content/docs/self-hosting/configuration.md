@@ -27,6 +27,7 @@ variables for its secrets and never holds one.
 | `JUDGE_MAX_USD` | `5` | bot, api, eval, agent | Spend cap per process across every provider. The cap reserves each call's worst case first, so values under about $0.45 refuse synthesis outright. |
 | `JUDGE_CONCURRENCY` | `2` | bot, api | Judge runs in flight at once; further ones get a "busy" reply. The MCP transport shares the API's slots. |
 | `JUDGE_AUTO_MIGRATE` | `true` | bot, api | Apply pending schema migrations at startup. `false` to manage the schema with `judge-ingest migrate` or sqlx-cli. |
+| `JUDGE_SOURCE_URL` | the upstream repository | all | The repository named by the source offer every remote interface makes (the web footer and `GET /api/about`, Discord `/help` and `/license`, the MCP instructions and `about` tool, `judge-cli about`), shown with the commit the binary was built from and the AGPL-3.0-or-later notice. Set it to your fork if you run a modified version; must be an http(s) URL, refused at startup otherwise. |
 
 ## Discord
 
@@ -40,7 +41,7 @@ variables for its secrets and never holds one.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `API_INTERFACES` | `--api --web` | Read by `docker-compose.yml`, not by the binary: the flags the `api` container passes. Each front door is opt-in — `--api` (`POST /api/judge`), `--web` (the page), `--mcp` (the MCP transport) — and `judge-api` run by hand takes them as arguments, serving the JSON API alone with none. `GET /api/health` is served whatever is off. |
+| `API_INTERFACES` | `--api --web` | Read by `docker-compose.yml`, not by the binary: the flags the `api` container passes. Each front door is opt-in — `--api` (`POST /api/judge`), `--web` (the page), `--mcp` (the MCP transport) — and `judge-api` run by hand takes them as arguments, serving the JSON API alone with none. `GET /api/health` and `GET /api/about` are served whatever is off. |
 | `API_ADDR` | `0.0.0.0:8787` | Listen address. Stays `0.0.0.0` in Docker so `cloudflared` can reach it; the published port restricts access. |
 | `WEB_DIST` | `web/dist` | The built web page, read only under `--web`. The image sets `/srv/web`. A `--web` launch with no `index.html` there is refused at startup. |
 | `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS` | `4`, `300` | Questions per IP per window, checked before the concurrency semaphore and the spend cap. |

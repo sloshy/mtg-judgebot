@@ -92,7 +92,7 @@ wait for the global set and remove the guild one the same way).
 docker compose up -d bot           # or: cargo run --release -p judge-bot
 ```
 
-The log line `registered /judge, /help and /forget in one guild` (or `… globally`)
+The log line `registered /judge, /help, /license and /forget in one guild` (or `… globally`)
 confirms registration; `/help` in the server confirms it end to end. Discord's command
 picker shows your bot's icon beside its commands, so another bot's `/judge` in the same
 server does not conflict with yours.

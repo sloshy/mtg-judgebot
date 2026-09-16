@@ -11,6 +11,7 @@ pub mod error;
 pub mod judge;
 pub mod ports;
 pub mod quote;
+pub mod source;
 pub mod symbol;
 pub mod verdict;
 
@@ -19,6 +20,7 @@ pub use domain::*;
 pub use error::JudgeError;
 pub use judge::{Deps, judge};
 pub use ports::{CallStore, Embedder, Extractor, InputKind, Resolver, Retriever, Synthesizer};
+pub use source::{About, Commit, CommitHash, RepositoryUrl, SourceOffer};
 pub use verdict::{
     MAX_ANSWER_CHARS, MIN_ANSWER_CHARS, State, Unvalidated, Validated, Verdict, citation_supported,
 };

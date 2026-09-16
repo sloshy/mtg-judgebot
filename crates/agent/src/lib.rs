@@ -47,7 +47,7 @@ use judge_bot::{
     session::{PersistCall, Sessions},
     synth::Harness,
 };
-use judge_core::{CallStore, Deps, Resolver, Retriever};
+use judge_core::{CallStore, Deps, Resolver, Retriever, SourceOffer};
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
@@ -112,6 +112,9 @@ pub struct Toolbox {
     permits: Arc<Semaphore>,
     meter: Option<Mutex<Meter>>,
     history_len: usize,
+    /// What `about` and the MCP instructions say about where this
+    /// instance's source is.
+    offer: SourceOffer,
 }
 
 impl std::fmt::Debug for Toolbox {
@@ -140,6 +143,8 @@ pub struct Options {
     pub judge_quota: Option<Quota>,
     /// Thread history length.
     pub history_len: usize,
+    /// The source offer (`Config::source_offer`).
+    pub offer: SourceOffer,
 }
 
 impl Toolbox {
@@ -195,7 +200,14 @@ impl Toolbox {
                 })
             }),
             history_len: opts.history_len,
+            offer: opts.offer,
         }
+    }
+
+    /// The source offer this process makes.
+    #[must_use]
+    pub fn offer(&self) -> &SourceOffer {
+        &self.offer
     }
 
     /// Count one `judge` run against the quota; `false` means the window is
@@ -266,6 +278,7 @@ impl Toolbox {
                 permits: Arc::new(Semaphore::new(concurrency)),
                 judge_quota: None,
                 history_len: DEFAULT_HISTORY,
+                offer: config.source_offer().clone(),
             },
         ))
     }

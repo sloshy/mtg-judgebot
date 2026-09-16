@@ -7,6 +7,20 @@ x-bounded-logs: &bounded-logs
     max-size: "10m"
     max-file: "3"
 
+# A local `docker compose build` (the deploy host never builds) stamps the
+# binaries with the commit for the source offer the interfaces make; the
+# context carries no .git, so it has to be passed in, together with whether
+# the tree matches it (an image built from edited files must not claim a
+# clean commit):
+#   JUDGE_COMMIT=$(git rev-parse HEAD) JUDGE_DIRTY=$(git diff-index --quiet HEAD || echo 1) \
+#     docker compose up -d --build bot api
+# Blank builds an image whose offer says "commit unknown".
+x-build: &build
+  context: .
+  args:
+    JUDGE_COMMIT: ${JUDGE_COMMIT:-}
+    JUDGE_DIRTY: ${JUDGE_DIRTY:-}
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -31,7 +45,7 @@ services:
       retries: 10
 
   bot:
-    build: .
+    build: *build
     # `bot` and `api` are one image, two entrypoints. Naming it after the GHCR
     # package lets a low-powered host pull a CI-built image instead of building:
     # `docker compose pull && docker compose up -d`. JUDGE_IMAGE defaults to the
@@ -69,7 +83,7 @@ services:
         condition: service_healthy
 
   api:
-    build: .
+    build: *build
     image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
     container_name: judgebot-api
     restart: unless-stopped
@@ -130,7 +144,7 @@ services:
   # refresh`; `run` enables the profile by itself, so `up -d` never starts it.
   # Same image as bot/api, third entrypoint.
   refresh:
-    build: .
+    build: *build
     image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
     profiles: ["refresh"]
     entrypoint: ["judge-ingest"]

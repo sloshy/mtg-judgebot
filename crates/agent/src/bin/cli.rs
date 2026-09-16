@@ -16,6 +16,7 @@
 //! judge-cli search <query> [--limit N]
 //! judge-cli glossary <term>
 //! judge-cli config                             # the resolved model configuration, secrets redacted
+//! judge-cli about                              # the source offer: repository, commit, licence
 //! ```
 //!
 //! Flags may appear anywhere after the subcommand; `--` ends them so a
@@ -47,7 +48,7 @@ const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span
 | begin <question> [--thread T] | prompt <session> | status <session> \
 | extract <session> <file|-> | rules <session> <id>... | verdict <session> <file|-> [--persist] \
 | persist <session> | card <name> | card-info <uuid> | get-rules <id>... | search <query> [--limit N] \
-| glossary <term> | config>";
+| glossary <term> | config | about>";
 
 #[derive(Debug)]
 enum Command {
@@ -82,6 +83,8 @@ enum Command {
     Glossary(TermInput),
     /// The resolved `judge.toml` (or environment) setup; needs no database.
     Config,
+    /// The source offer; needs no database.
+    About,
 }
 
 /// Flags this CLI knows, with whether each takes a value. Anything else that
@@ -310,6 +313,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
                 term: positional(0)?.clone(),
             })
         }
+        "about" => {
+            no_extra(0)?;
+            Command::About
+        }
         other => anyhow::bail!("{USAGE} (got {other:?})"),
     })
 }
@@ -352,13 +359,17 @@ async fn run(cmd: Command) -> Result<()> {
         },
         other => other,
     };
-    if let Command::Config = cmd {
+    if matches!(cmd, Command::Config | Command::About) {
         // No database needed: load .env as the toolbox would, then resolve.
         match dotenvy::dotenv() {
             Ok(_) | Err(dotenvy::Error::Io(_)) => {}
             Err(e) => return Err(anyhow::Error::from(e).context("load .env")),
         }
-        return print(&judge_bot::config::Config::load()?.report());
+        let config = judge_bot::config::Config::load()?;
+        return match cmd {
+            Command::About => print(&config.source_offer().about()),
+            _ => print(&config.report()),
+        };
     }
     let toolbox = Toolbox::from_env(Harness::Cli).await?;
     match cmd {
@@ -400,7 +411,7 @@ async fn run(cmd: Command) -> Result<()> {
         Command::GetRules(i) => print(&toolbox.get_rules(i).await?),
         Command::Search(i) => print(&toolbox.search_rules(i).await?),
         Command::Glossary(i) => print(&toolbox.glossary(i).await?),
-        Command::Config => anyhow::bail!("unreachable: handled above"),
+        Command::Config | Command::About => anyhow::bail!("unreachable: handled above"),
     }
 }
 
@@ -506,6 +517,8 @@ mod tests {
     #[test]
     fn config_takes_nothing() -> Result<()> {
         assert!(matches!(parse(&["config"])?, Command::Config));
+        assert!(matches!(parse(&["about"])?, Command::About));
+        assert!(parse(&["about", "extra"]).is_err());
         assert!(parse(&["config", "extra"]).is_err());
         assert!(parse(&["config", "--thread", "agent:x"]).is_err());
         Ok(())

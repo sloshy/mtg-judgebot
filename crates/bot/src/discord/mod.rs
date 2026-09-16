@@ -38,7 +38,8 @@ use std::{
 
 use anyhow::Context as _;
 use judge_core::{
-    CallId, CallStore, Deps, JudgeError, Question, Retriever, Score, Validated, Verdict, judge,
+    CallId, CallStore, Deps, JudgeError, Question, Retriever, Score, SourceOffer, Validated,
+    Verdict, judge,
 };
 use judge_llm::{ApiKey, SpendMeter};
 use poise::serenity_prelude as serenity;
@@ -156,6 +157,8 @@ pub struct Data {
     /// Card-symbol emoji, filled in on `Ready` by [`run`]; empty until then
     /// (and for good, if this application has none uploaded).
     symbols: SymbolTable,
+    /// What `/help` and `/license` say about where this instance's source is.
+    offer: SourceOffer,
 }
 
 impl std::fmt::Debug for Data {
@@ -176,7 +179,13 @@ impl Data {
     /// Wire the shared state. `meter` must be the one the models inside
     /// `deps` bill to, so its counters reflect the judge runs.
     #[must_use]
-    pub fn new(mut deps: Deps, store: Arc<dyn CallStore>, meter: SpendMeter, cfg: &Config) -> Self {
+    pub fn new(
+        mut deps: Deps,
+        store: Arc<dyn CallStore>,
+        meter: SpendMeter,
+        cfg: &Config,
+        offer: SourceOffer,
+    ) -> Self {
         let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
         deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
         Self {
@@ -189,6 +198,7 @@ impl Data {
             judge_role: cfg.judge_role.clone(),
             history_len: cfg.history_len,
             symbols: SymbolTable::empty(),
+            offer,
         }
     }
 
@@ -563,10 +573,17 @@ async fn judge_command(
     Ok(())
 }
 
-/// What the bot does, how to ask, and what it stores.
+/// What the bot does, how to ask, what it stores, and where its source is.
 #[poise::command(slash_command, rename = "help", ephemeral)]
 async fn help_command(ctx: Ctx<'_>) -> Result<(), Error> {
-    ctx.say(render::HELP).await?;
+    ctx.say(render::help(&ctx.data().offer)).await?;
+    Ok(())
+}
+
+/// Where this bot's source code is, at which commit, and under which licence.
+#[poise::command(slash_command, rename = "license", ephemeral)]
+async fn license_command(ctx: Ctx<'_>) -> Result<(), Error> {
+    ctx.say(render::license(&ctx.data().offer)).await?;
     Ok(())
 }
 
@@ -675,7 +692,12 @@ async fn load_symbols(http: &serenity::Http) -> SymbolTable {
 pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
     let guild = cfg.guild_id;
     let options = poise::FrameworkOptions {
-        commands: vec![judge_command(), help_command(), forget_command()],
+        commands: vec![
+            judge_command(),
+            help_command(),
+            license_command(),
+            forget_command(),
+        ],
         event_handler: |ctx, event, framework, data| {
             Box::pin(event_handler(ctx, event, framework, data))
         },
@@ -690,11 +712,11 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
                 let commands = &framework.options().commands;
                 if let Some(g) = guild {
                     poise::builtins::register_in_guild(ctx, commands, g).await?;
-                    tracing::info!(guild = %g, "registered /judge, /help and /forget in one guild");
+                    tracing::info!(guild = %g, "registered /judge, /help, /license and /forget in one guild");
                 } else {
                     poise::builtins::register_globally(ctx, commands).await?;
                     tracing::info!(
-                        "registered /judge, /help and /forget globally (propagation can take up to an hour)"
+                        "registered /judge, /help, /license and /forget globally (propagation can take up to an hour)"
                     );
                 }
                 // The application id arrives with `Ready`, which is what got us

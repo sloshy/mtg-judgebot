@@ -495,7 +495,23 @@ immutable `sha-<short>` tag. The image is a manifest list for `linux/amd64` and
 `linux/arm64`, each built on a runner of its own architecture, so an ARM host (a
 Raspberry Pi, an ARM NAS, Apple silicon under Docker Desktop) pulls the same tag.
 The compose file pulls `JUDGE_IMAGE`, which defaults to the upstream package; a fork
-sets it to its own in `.env` once its first workflow run has published.
+sets it to its own in `.env` once its first workflow run has published — and sets
+`JUDGE_SOURCE_URL` to the fork's repository, so that the source offer every interface
+makes (the web footer, `/help` and `/license`, the MCP instructions) points users at
+the code actually running, which is what the AGPL asks of anyone serving a modified
+version. The workflow stamps the image with the commit it built (`JUDGE_COMMIT`, a
+Docker build argument the Dockerfile hands to `crates/bot/build.rs`), so the offer
+names the exact revision; a local `docker compose build` has no `.git` in its context
+and must pass it itself, together with whether the tree matches it, or the offer reads
+"commit unknown":
+
+```sh
+JUDGE_COMMIT=$(git rev-parse HEAD) JUDGE_DIRTY=$(git diff-index --quiet HEAD || echo 1) \
+  docker compose up -d --build bot api
+```
+
+A `JUDGE_COMMIT` that is not a commit id (a branch name, a tag) fails the build rather
+than becoming "commit unknown" on every interface.
 
 A GitHub release whose tag is `vX.Y.Z` adds version tags — `X.Y.Z`, `X.Y` and, from
 1.0 on, `X` — to the image already built for that commit, without rebuilding it: the

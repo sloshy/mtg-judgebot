@@ -9,7 +9,8 @@
 use std::fmt::Write as _;
 
 use judge_core::{
-    Ambiguous, CardId, Citation, Confidence, Context, JudgeError, RuleId, Score, Validated, Verdict,
+    Ambiguous, CardId, Citation, Confidence, Context, JudgeError, RuleId, Score, SourceOffer,
+    Validated, Verdict, source,
 };
 use nonempty::NonEmpty;
 
@@ -66,9 +67,8 @@ pub const UNKNOWN_BUTTON: &str = "I don't recognise that button any more.";
 /// The rating could not be stored.
 pub const RATE_FAILED: &str = "Sorry, I couldn't record that rating. Please try again.";
 
-/// `/help`: what the bot does, how to ask, what it stores. Ephemeral, so it
-/// never clutters a channel; under [`CONTENT_LIMIT`] by a wide margin.
-pub const HELP: &str = "**MTG Judgebot** answers Magic: The Gathering rules questions like a judge: every \
+/// The fixed part of `/help`: what the bot does, how to ask, what it stores.
+const HELP_BODY: &str = "**MTG Judgebot** answers Magic: The Gathering rules questions like a judge: every \
 claim carries a citation to the Comprehensive Rules, an official ruling, or a card's Oracle text, and a \
 citation is only shown after it has been checked against the source.\n\n\
 **Asking.** `/judge question: <your question>`. Nicknames work (\"bob\", \"goyf\"). Use brackets like \
@@ -81,8 +81,37 @@ server's judge role rate with an override.\n\n\
 **What is stored.** The question and answer text, the channel it was asked in, and your user id when you \
 rate. Nothing else is read: the bot sees only its slash commands. `/forget` deletes your ratings.\n\n\
 Answers are AI-generated; verify anything important with a human judge. Unofficial Fan Content under the \
-Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall. Source and issues: \
-<https://github.com/sloshy/mtg-judgebot>";
+Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.\n\n";
+
+/// `/help`: [`HELP_BODY`] followed by the source offer — where this
+/// instance's code is, at which commit, under which licence — so the
+/// AGPL's network clause is met on the bot's own surface. Ephemeral, so it
+/// never clutters a channel; under [`CONTENT_LIMIT`] by a wide margin.
+#[must_use]
+pub fn help(offer: &SourceOffer) -> String {
+    format!("{HELP_BODY}{}", license(offer))
+}
+
+/// `/license`: the source offer alone. Links are wrapped in `<…>` so Discord
+/// does not unfurl them into embeds; the commit links into the repository
+/// when the build knew it.
+#[must_use]
+pub fn license(offer: &SourceOffer) -> String {
+    let revision = match offer.commit_url() {
+        Some(url) => format!("[{}](<{url}>)", offer.revision()),
+        None => offer.revision(),
+    };
+    format!(
+        "**Source and licence.** {} — {}. Free software under the [{}](<{}>): you may run, study, \
+share and modify it, and anyone offering a modified version over a network must offer its source under \
+the same licence. The source code of this instance is at <{}> ({revision}).",
+        source::PROGRAM,
+        source::COPYRIGHT,
+        source::LICENSE_NAME,
+        source::LICENSE_URL,
+        offer.repository(),
+    )
+}
 
 /// `/forget`'s confirmation, naming how much there was to forget.
 #[must_use]
@@ -1083,11 +1112,22 @@ mod info_tests {
     use super::*;
 
     #[test]
-    fn help_fits_one_message_and_names_the_other_commands() {
+    fn help_fits_one_message_and_names_the_other_commands() -> anyhow::Result<()> {
+        // The longest offer: a long repository URL, a dirty build.
+        let offer = SourceOffer::new(
+            judge_core::RepositoryUrl::try_new(
+                "https://gitlab.example-hosting-company.com/some-organisation/some-team/mtg-judgebot-fork",
+            )?,
+            judge_core::Commit::Known {
+                hash: judge_core::CommitHash::try_new("a37d495c937819de39a30ba0624f9bffbfc494d2")?,
+                dirty: true,
+            },
+        );
+        let help = help(&offer);
         assert!(
-            HELP.chars().count() <= CONTENT_LIMIT,
+            help.chars().count() <= CONTENT_LIMIT,
             "{}",
-            HELP.chars().count()
+            help.chars().count()
         );
         for needle in [
             "/judge",
@@ -1095,9 +1135,18 @@ mod info_tests {
             "[[Full Card Name]]",
             "Fan Content",
             "Scryfall",
+            source::COPYRIGHT,
+            "<https://gitlab.example-hosting-company.com/some-organisation/some-team/mtg-judgebot-fork>",
+            "[commit a37d495, built with uncommitted changes](<https://gitlab.example-hosting-company.com/some-organisation/some-team/mtg-judgebot-fork/commit/a37d495c937819de39a30ba0624f9bffbfc494d2>)",
         ] {
-            assert!(HELP.contains(needle), "{needle}");
+            assert!(help.contains(needle), "{needle}\n{help}");
         }
+        assert!(help.ends_with(&license(&offer)));
+        // An unstamped build says so and links nothing for the commit.
+        let unknown = license(&SourceOffer::upstream(judge_core::Commit::Unknown));
+        assert!(unknown.contains("(commit unknown)"), "{unknown}");
+        assert!(!unknown.contains("/commit/"), "{unknown}");
+        Ok(())
     }
 
     #[test]

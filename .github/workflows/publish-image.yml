@@ -166,6 +166,10 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
+          # Stamps the binaries with the commit for the source offer
+          # (crates/bot/build.rs; the context carries no .git).
+          build-args: |
+            JUDGE_COMMIT=${{ github.sha }}
           labels: ${{ needs.meta.outputs.labels }}
           outputs: type=image,name=${{ needs.meta.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           # One cache per architecture: the layers differ, and a shared scope

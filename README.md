@@ -96,8 +96,8 @@ covers the portal itself), then:
    (*User Settings → Advanced → Developer Mode*, then right-click the server → *Copy
    Server ID*). Without it the commands register globally, which can take up to an hour
    to appear but works in every server the bot joins.
-4. `docker compose up -d bot`. The log line `registered /judge, /help and /forget`
-   confirms it; `/help` in the server confirms it end to end.
+4. `docker compose up -d bot`. The log line `registered /judge, /help, /license and
+   /forget` confirms it; `/help` in the server confirms it end to end.
 
 Members holding a role named `JUDGE_ROLE` (default `Judge`) rate as judges: their rating
 overrides the crowd's. `cargo run --release -p judge-ingest -- emoji` uploads the mana
@@ -262,8 +262,15 @@ tournament-policy (MTR/IPG) coverage — the bot declines those questions rather
 ## License and attribution
 
 AGPL-3.0-or-later — see [LICENSE](LICENSE). Running a modified version of this bot
-(Discord or the HTTP API) as a network service requires making the modified source
-available to its users.
+(Discord, the HTTP API or MCP) as a network service requires making the modified source
+available to its users. The bot does that for you: every remote interface — the web
+page's footer and `GET /api/about`, Discord's `/help` and `/license`, the MCP server's
+initialization instructions and its `about` tool, `judge-cli about` — states the licence
+and copyright and names the repository its source is in, with the commit the binary was
+built from (stamped by CI into the published image, and by `git rev-parse HEAD` into a
+local build). If you change anything, set `JUDGE_SOURCE_URL` in `.env` to the repository
+holding your changes and every interface points there; that is the whole of your
+obligation under section 13.
 
 This is unofficial Fan Content permitted under Wizards of the Coast's [Fan Content
 Policy](https://company.wizards.com/en/legal/fancontentpolicy), not approved or

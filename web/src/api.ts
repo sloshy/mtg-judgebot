@@ -65,6 +65,40 @@ function isReply(v: unknown): v is ApiReply {
   return typeof v === "object" && v !== null && typeof (v as { kind?: unknown }).kind === "string";
 }
 
+/** GET /api/about: the source offer (crates/core/src/source.rs `About`). */
+export interface About {
+  program: string;
+  repository: string;
+  commit: string | null;
+  commit_url: string | null;
+  dirty: boolean;
+  license: string;
+  license_name: string;
+  license_url: string;
+  copyright: string;
+  notice: string;
+}
+
+/** The source offer, or null when the server did not answer: the footer
+ * then falls back to the upstream repository so the page never shows
+ * nothing at all. */
+export async function fetchAbout(): Promise<About | null> {
+  try {
+    const res = await fetch("/api/about");
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return isAbout(body) ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAbout(v: unknown): v is About {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.repository === "string" && typeof o.notice === "string";
+}
+
 /** The session id questions share history under; kept per browser tab. */
 export function sessionId(): string {
   const key = "judgebot-session";

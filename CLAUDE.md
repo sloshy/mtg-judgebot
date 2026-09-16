@@ -74,8 +74,16 @@ wide, on a splash page *and* a docs page, and read positions out of
 
 CI is `.github/workflows/ci.yml` (fmt, clippy, `.sqlx` freshness, tests on a pgvector
 service, web and site builds, compose parse), called by `publish-image.yml` before it
-builds. Discord registers three commands: `/judge` (guild-only), `/help`, `/forget`
-(deletes the caller's ratings through `CallStore::forget_user`). `GET /api/health` runs a
+builds. Discord registers four commands: `/judge` (guild-only), `/help`, `/license`, `/forget`
+(deletes the caller's ratings through `CallStore::forget_user`). **The source offer**
+(`judge_core::source`, AGPL §13): every remote interface names the repository the instance's
+source is in, the commit it was built from and the licence/copyright — the web footer via
+`GET /api/about` (served beside `/api/health` whatever doors are off), `/help` and `/license`,
+the MCP instructions and `about` tool, `judge-cli about`. `JUDGE_SOURCE_URL` overrides the
+repository (validated at load, `Config::source_offer`); the commit is stamped by
+`crates/bot/build.rs` from `JUDGE_COMMIT` (+ `JUDGE_DIRTY`; the Dockerfile build args, which
+CI sets to the sha; a non-hash fails the build) else `git rev-parse HEAD` plus a dirty flag,
+and an unstamped build says "commit unknown" rather than guessing. `GET /api/health` runs a
 `Probe` (the pool, 3 s timeout) and the compose healthcheck invokes bash explicitly
 (`/bin/sh` is dash in the slim image, no `/dev/tcp`).
 

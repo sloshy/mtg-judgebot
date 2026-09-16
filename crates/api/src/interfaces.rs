@@ -163,8 +163,8 @@ to it. With no flags the JSON API is served alone.
   --web   the built web page, from WEB_DIST
   --mcp   the MCP transport at /mcp (requires MCP_TOKEN)
 
-GET /api/health is always served. Everything else is configured through the
-environment; see .env.example.";
+GET /api/health and GET /api/about (the source offer) are always served.
+Everything else is configured through the environment; see .env.example.";
 
 /// Parse the arguments after the program name.
 ///

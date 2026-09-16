@@ -15,9 +15,9 @@ use judge_bot::{
     },
 };
 use judge_core::{
-    Ambiguous, CallId, Card, CardId, CardNote, CardRef, Citation, Confidence, Context, Extraction,
-    GlossaryEntry, JudgeError, Question, Rejection, Resolution, RuleChunk, RuleId, Ruling, Source,
-    Unvalidated, Validated, Verdict, judge,
+    About, Ambiguous, CallId, Card, CardId, CardNote, CardRef, Citation, Confidence, Context,
+    Extraction, GlossaryEntry, JudgeError, Question, Rejection, Resolution, RuleChunk, RuleId,
+    Ruling, Source, Unvalidated, Validated, Verdict, judge,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -674,6 +674,13 @@ impl Toolbox {
         Ok(Rules {
             rules: self.library.search_rules(query, limit).await?,
         })
+    }
+
+    /// The source offer: where this instance's code is, at which commit,
+    /// under which licence. Needs nothing from the database.
+    #[must_use]
+    pub fn about(&self) -> About {
+        self.offer().about()
     }
 
     /// Glossary lookup.

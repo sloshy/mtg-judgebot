@@ -79,6 +79,7 @@ fn toolbox(pool: PgPool, quota: Option<Quota>) -> Toolbox {
             permits: Arc::new(Semaphore::new(1)),
             judge_quota: quota,
             history_len: 5,
+            offer: judge_core::SourceOffer::upstream(judge_core::Commit::Unknown),
         },
     )
 }

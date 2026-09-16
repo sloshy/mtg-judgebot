@@ -8,6 +8,13 @@ unless `JUDGE_AUTO_MIGRATE=false`).
 ## [Unreleased]
 
 ### Added
+- The AGPL source offer on every remote interface: the web page's footer (from the new
+  `GET /api/about`, served whatever doors are off), Discord `/help` and a new `/license`
+  command, the MCP server's initialization instructions and a new `about` tool, and
+  `judge-cli about` all state the licence (AGPL-3.0-or-later) and copyright and name the
+  repository holding the instance's source with the commit the binary was built from
+  (CI stamps the image; a local build reads git and says when the tree was dirty).
+  `JUDGE_SOURCE_URL` points the offer at a fork; it must be an http(s) URL.
 - `judge-api` takes one flag per front door — `--api` (`POST /api/judge`), `--web` (the
   built page), `--mcp` (the MCP transport) — and `--help` prints them. `GET /api/health`
   is served whatever is switched off, and the startup log names both the interfaces that

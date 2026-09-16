@@ -155,8 +155,14 @@ Three front doors share this pipeline through the same composition root
   started: `judge-api` alone is the JSON route, `--web` adds the page, `--mcp`
   the MCP transport, and an interface nobody named is not mounted
   (`crates/api/src/interfaces.rs`; the set is a `NonEmpty`, so "serving
-  nothing" is unrepresentable). `GET /api/health` is outside the set, because
-  the container healthcheck has to reach it whatever is switched off. No rating
+  nothing" is unrepresentable). `GET /api/health` and `GET /api/about` are
+  outside the set: the container healthcheck has to reach the one whatever is
+  switched off, and the other is the source offer (`judge_core::source`) —
+  repository, built commit, licence and copyright — that every remote
+  interface owes its users under the AGPL, which the page's footer reads from
+  it; Discord says the same in `/help` and `/license`, the MCP server in its
+  initialization instructions and an `about` tool, and `JUDGE_SOURCE_URL`
+  points all of them at a fork. No rating
   endpoints (anonymous callers are not accountable identities). Ambiguity is
   returned as data and resolved statelessly: the client re-asks with
   `pins: [{span, name}]`, which the server rewrites to `[[Full Name]]` with the

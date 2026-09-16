@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use judge_core::SourceOffer;
 use rmcp::{
     Json, ServerHandler, ServiceExt as _,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -29,7 +30,8 @@ use crate::{
 };
 
 /// What a client is told at initialization: the two ways to get an answer,
-/// and the order of the session steps.
+/// the order of the session steps, and (appended by [`instructions`]) the
+/// source offer.
 pub const INSTRUCTIONS: &str = "\
 Magic: The Gathering rules judge over the Comprehensive Rules, Oracle text, Scryfall rulings and rated prior calls.
 
@@ -56,7 +58,15 @@ to store it as history for follow-ups in the same `thread` (it is never shown to
 `session_status` says where a session is; sessions expire after an hour idle.
 
 Lookups that need no session: `resolve_card` (name → card, or candidates), `card_info` (Oracle text, \
-rulings, notes by oracle id), `get_rules` (by id, at most 10), `search_rules` (free text), `glossary`.";
+rulings, notes by oracle id), `get_rules` (by id, at most 10), `search_rules` (free text), `glossary`. \
+`about` returns the notice below as data.";
+
+/// [`INSTRUCTIONS`] with the source offer appended: the notice reaches every
+/// MCP client at initialization, whatever tools it goes on to call.
+#[must_use]
+pub fn instructions(offer: &SourceOffer) -> String {
+    format!("{INSTRUCTIONS}\n\n{}", offer.notice())
+}
 
 /// The MCP handler.
 #[derive(Clone)]
@@ -270,6 +280,14 @@ impl JudgeMcp {
     }
 
     #[tool(
+        name = "about",
+        description = "Where this server's source code is (repository and commit), its licence (AGPL-3.0-or-later) and copyright; the same notice the initialization instructions carry. No database access."
+    )]
+    fn about(&self) -> Json<judge_core::About> {
+        Json(self.toolbox.about())
+    }
+
+    #[tool(
         name = "glossary",
         description = "Comprehensive Rules glossary entries for a term (exact matches first, then containing)."
     )]
@@ -288,12 +306,15 @@ impl JudgeMcp {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for JudgeMcp {
     fn get_info(&self) -> ServerInfo {
+        // The version carries the commit as build metadata (`0.1.0+a37d495`)
+        // so a client's server listing already identifies the build.
+        let version = match self.toolbox.offer().commit().hash() {
+            Some(h) => format!("{}+{}", env!("CARGO_PKG_VERSION"), h.short()),
+            None => env!("CARGO_PKG_VERSION").to_owned(),
+        };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                "mtg-judgebot",
-                env!("CARGO_PKG_VERSION"),
-            ))
-            .with_instructions(INSTRUCTIONS)
+            .with_server_info(Implementation::new("mtg-judgebot", version))
+            .with_instructions(instructions(self.toolbox.offer()))
     }
 }
 

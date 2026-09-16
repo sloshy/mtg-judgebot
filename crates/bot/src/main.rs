@@ -72,7 +72,8 @@ async fn main() -> Result<()> {
     let store: Arc<dyn CallStore> = Arc::new(store);
     let meter = models.meter().clone();
     let deps = build_deps_with(pool, &models, vectors, &judge.deps_config());
-    let data = Data::new(deps, store, meter, &cfg);
+    tracing::info!(source = %judge.source_offer(), "source offer");
+    let data = Data::new(deps, store, meter, &cfg, judge.source_offer().clone());
     tracing::info!(
         guild = ?cfg.guild_id,
         judge_role = %cfg.judge_role,

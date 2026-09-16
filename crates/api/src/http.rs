@@ -16,7 +16,9 @@ use axum::{
     routing::{get, post},
 };
 use judge_bot::discord::{capture::CapturingRetriever, render};
-use judge_core::{CallStore, Deps, JudgeError, Question, Retriever, Validated, Verdict, judge};
+use judge_core::{
+    About, CallStore, Deps, JudgeError, Question, Retriever, SourceOffer, Validated, Verdict, judge,
+};
 use judge_llm::SpendMeter;
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tower_http::services::{ServeDir, ServeFile};
@@ -77,6 +79,8 @@ pub struct App {
     history_len: usize,
     client_ip: ClientIpSource,
     probe: Option<Arc<dyn Probe>>,
+    /// What `GET /api/about` says about where this instance's source is.
+    offer: SourceOffer,
 }
 
 impl std::fmt::Debug for App {
@@ -97,6 +101,7 @@ impl App {
         store: Arc<dyn CallStore>,
         meter: SpendMeter,
         cfg: &ApiConfig,
+        offer: SourceOffer,
     ) -> Self {
         let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
         deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
@@ -110,6 +115,7 @@ impl App {
             history_len: cfg.history_len,
             client_ip: cfg.client_ip,
             probe: None,
+            offer,
         }
     }
 
@@ -223,7 +229,11 @@ const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
 /// The MCP router ([`crate::mcp::router`]) is merged *into* this one, so the
 /// web fallback wins and the token gate stays on `/mcp` alone.
 pub fn router(app: Arc<App>, interfaces: &Interfaces, web_dist: &Path) -> Router {
-    let mut router = Router::new().route("/api/health", get(health));
+    // `/about` sits beside `/health`, outside the opt-in set: the source
+    // offer is owed on every door, and the page reads it from here.
+    let mut router = Router::new()
+        .route("/api/health", get(health))
+        .route("/api/about", get(about));
     if interfaces.api() {
         router = router.route("/api/judge", post(judge_route));
     }
@@ -267,6 +277,12 @@ async fn health(State(app): State<Arc<App>>) -> (StatusCode, String) {
             }
         },
     }
+}
+
+/// The source offer as JSON (`judge_core::About`): repository, commit,
+/// licence, copyright and the notice in one string.
+async fn about(State(app): State<Arc<App>>) -> Json<About> {
+    Json(app.offer.about())
 }
 
 /// The peer address, when the server was started with connect info (tests
@@ -549,6 +565,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn CallStore>,
             SpendMeter::new(),
             &cfg,
+            SourceOffer::upstream(judge_core::Commit::Unknown),
         ));
         (router(app, interfaces, &cfg.web_dist), store)
     }
@@ -799,6 +816,43 @@ mod tests {
         Ok(())
     }
 
+    /// The source offer is owed on every door, so `/api/about` sits beside
+    /// `/api/health` outside the opt-in set, and carries what the offer
+    /// holds: the repository, the commit and its link, and the notice.
+    #[tokio::test]
+    async fn about_is_served_whatever_is_switched_off_and_carries_the_offer() -> Res {
+        for set in [
+            nonempty![Interface::Api],
+            nonempty![Interface::Web],
+            nonempty![Interface::Mcp],
+        ] {
+            let (router, _) =
+                test_app_serving(10, Path::new("does-not-exist"), &Interfaces::of(&set));
+            let res = router
+                .oneshot(Request::get("/api/about").body(Body::empty())?)
+                .await?;
+            assert_eq!(res.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(res.into_body(), 4096).await?;
+            let j: serde_json::Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(
+                j.get("repository"),
+                Some(&serde_json::json!(judge_core::source::DEFAULT_REPOSITORY))
+            );
+            assert_eq!(j.get("commit"), Some(&serde_json::Value::Null));
+            assert_eq!(
+                j.get("license"),
+                Some(&serde_json::json!("AGPL-3.0-or-later"))
+            );
+            assert!(
+                j.get("notice")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|n| n.contains(judge_core::source::COPYRIGHT)),
+                "{j}"
+            );
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn health_answers_ok() -> Res {
         let (router, _) = test_app(10);
@@ -833,6 +887,7 @@ mod tests {
                     Arc::new(StubStore::default()),
                     SpendMeter::new(),
                     &test_cfg(10, Path::new("does-not-exist")),
+                    SourceOffer::upstream(judge_core::Commit::Unknown),
                 )
                 .with_probe(Arc::new(Fixed(probe))),
             );

@@ -1,7 +1,14 @@
 mtg-judgebot
 
-Copyright (C) 2026 the mtg-judgebot contributors.
+Copyright (C) 2026 Ryan Peters.
 Licensed under the GNU Affero General Public License, version 3 or later (LICENSE).
+
+Every remote interface of a running instance (the web page and GET /api/about, the
+Discord /help and /license commands, the MCP server's instructions and `about` tool)
+states this licence and copyright and names the repository holding the instance's
+source, with the commit it was built from. An operator running a modified version sets
+JUDGE_SOURCE_URL to the repository holding their modifications, which is what section
+13 of the licence asks of them.
 
 This is unofficial Fan Content permitted under Wizards of the Coast's Fan Content
 Policy (https://company.wizards.com/en/legal/fancontentpolicy). It is not approved or

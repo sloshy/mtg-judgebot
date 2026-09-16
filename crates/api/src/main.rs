@@ -109,8 +109,16 @@ async fn main() -> Result<()> {
     let deps = build_deps_with(pool.clone(), &models, vectors.clone(), &judge.deps_config());
     // /api/health answers 503 when Postgres does not: the compose healthcheck
     // and the tunnel's readiness key off it.
+    tracing::info!(source = %judge.source_offer(), "source offer");
     let app = Arc::new(
-        App::new(deps, store, models.meter().clone(), &cfg).with_probe(Arc::new(pool.clone())),
+        App::new(
+            deps,
+            store,
+            models.meter().clone(),
+            &cfg,
+            judge.source_offer().clone(),
+        )
+        .with_probe(Arc::new(pool.clone())),
     );
     let mut routes = router(Arc::clone(&app), &interfaces, &cfg.web_dist);
     // The MCP transport shares the judge slots (one JUDGE_CONCURRENCY for
@@ -136,6 +144,7 @@ async fn main() -> Result<()> {
                     window: cfg.mcp_judge_window,
                 }),
                 history_len: cfg.history_len,
+                offer: judge.source_offer().clone(),
             },
         );
         let service = judge_agent::mcp::http_service(Arc::new(toolbox), cfg.mcp_hosts.clone());

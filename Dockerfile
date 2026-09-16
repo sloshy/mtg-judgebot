@@ -44,6 +44,18 @@ RUN cargo chef cook --release --recipe-path recipe.json \
     -p judge-bot -p judge-api -p judge-ingest -p judge-agent --features judge-bot/aws,judge-bot/gcp \
     && find target -exec touch -h -d "@$(date +%s)" {} +
 COPY . .
+# The commit the image is built from, for the source offer every remote
+# interface makes (`GET /api/about`, `/license`, the MCP instructions): the
+# context has no `.git` (.dockerignore), so crates/bot/build.rs cannot ask git
+# and reads JUDGE_COMMIT instead, with JUDGE_DIRTY=1 when the tree copied in
+# does not match that commit. CI passes github.sha from a clean checkout; a
+# local `docker compose build` passes both from the environment (blank commit
+# = "commit unknown", which the offer says rather than guessing; a commit
+# that is not a hash fails the build). Declared after the cook so a new
+# commit never invalidates the dependency layer.
+ARG JUDGE_COMMIT=
+ARG JUDGE_DIRTY=
+ENV JUDGE_COMMIT=$JUDGE_COMMIT JUDGE_DIRTY=$JUDGE_DIRTY
 # The binaries are copied out and `target/` removed in the same step, so this
 # layer holds megabytes rather than the ~4 GB target directory, which CI would
 # otherwise export to its build cache on every run and never read back.

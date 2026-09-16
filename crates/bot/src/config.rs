@@ -50,7 +50,9 @@ use std::{
 };
 
 use judge_anthropic::{Anthropic, Endpoint, ProxyAuth};
-use judge_core::JudgeError;
+use judge_core::{
+    Commit, CommitHash, JudgeError, RepositoryUrl, SourceOffer, source::SOURCE_URL_ENV,
+};
 use judge_embed::{OpenAiEmbedder, Provider, Space, VoyageEmbedder, WithSpace};
 use judge_llm::{
     ApiKey, Backend, Capabilities, ChatRequest, ChatResponse, Effort, LlmError, Price, Pricing,
@@ -78,6 +80,12 @@ pub const ANTHROPIC_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 pub const VOYAGE_KEY_ENV: &str = "VOYAGE_API_KEY";
 /// The spend cap, read by both setups.
 pub const MAX_SPEND_ENV: &str = "JUDGE_MAX_USD";
+/// The commit this binary was built from, stamped by `build.rs` (`JUDGE_COMMIT`
+/// in the build environment, else `git rev-parse HEAD`); `None` when the
+/// build had neither.
+pub const BUILD_COMMIT: Option<&str> = option_env!("JUDGE_BUILD_COMMIT");
+/// `"1"` when the build's working tree had uncommitted changes.
+const BUILD_DIRTY: Option<&str> = option_env!("JUDGE_BUILD_DIRTY");
 /// Voyage defaults, as `VoyageEmbedder::from_env` has them.
 const VOYAGE_DEFAULT_MODEL: &str = "voyage-3.5";
 const VOYAGE_DEFAULT_DIMENSIONS: usize = 1024;
@@ -728,6 +736,12 @@ pub enum ConfigError {
         /// The chain's answer.
         cause: LlmError,
     },
+    /// `JUDGE_SOURCE_URL` is set but is not an http(s) URL.
+    #[error("{SOURCE_URL_ENV}={value:?}: not an http(s) URL")]
+    BadSourceUrl {
+        /// The value as set.
+        value: String,
+    },
     /// A key that does not apply to the provider as configured.
     #[error("providers.{provider}: {key} {reason}")]
     Misplaced {
@@ -1122,6 +1136,41 @@ pub struct Config {
     embed: Option<Embed>,
     /// The process's one spend cap; every model built from this config bills to it.
     meter: SpendMeter,
+    /// The source offer every remote interface makes: `JUDGE_SOURCE_URL`
+    /// (else the upstream repository) at the commit the binary was built from.
+    offer: SourceOffer,
+}
+
+/// The commit stamped into this binary by `build.rs`.
+#[must_use]
+pub fn build_commit() -> Commit {
+    match BUILD_COMMIT.and_then(|c| CommitHash::try_new(c).ok()) {
+        Some(hash) => Commit::Known {
+            hash,
+            dirty: BUILD_DIRTY == Some("1"),
+        },
+        None => Commit::Unknown,
+    }
+}
+
+/// The offer for this process: `JUDGE_SOURCE_URL` from `env` (blank means
+/// the upstream repository) at [`build_commit`].
+///
+/// # Errors
+/// [`ConfigError::BadSourceUrl`] when the variable is set to something that
+/// is not an http(s) URL: a typo here would make every interface point users
+/// at nothing, so it is refused at startup.
+pub fn source_offer(env: impl Fn(&str) -> Option<String>) -> Result<SourceOffer, ConfigError> {
+    let repository = match env(SOURCE_URL_ENV)
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    {
+        Some(value) => {
+            RepositoryUrl::try_new(&value).map_err(|_| ConfigError::BadSourceUrl { value })?
+        }
+        None => return Ok(SourceOffer::upstream(build_commit())),
+    };
+    Ok(SourceOffer::new(repository, build_commit()))
 }
 
 impl Config {
@@ -1187,11 +1236,13 @@ impl Config {
             .map(|e| resolver.embed(e))
             .transpose()?;
         let meter = SpendMeter::from_var(env(MAX_SPEND_ENV).as_deref())?;
+        let offer = source_offer(&env)?;
         Ok(Self {
             source: Source::File(path.to_path_buf()),
             chat: Some(Chat { extract, synth }),
             embed,
             meter,
+            offer,
         })
     }
 
@@ -1281,6 +1332,7 @@ impl Config {
             chat,
             embed,
             meter: SpendMeter::from_var(set(MAX_SPEND_ENV).as_deref())?,
+            offer: source_offer(&env)?,
         })
     }
 
@@ -1288,6 +1340,12 @@ impl Config {
     #[must_use]
     pub fn source(&self) -> &Source {
         &self.source
+    }
+
+    /// The source offer this process makes on every remote interface.
+    #[must_use]
+    pub fn source_offer(&self) -> &SourceOffer {
+        &self.offer
     }
 
     /// The extraction stage, if a chat model is configured.
@@ -1444,6 +1502,7 @@ impl Config {
         }
         serde_json::json!({
             "source": self.source.to_string(),
+            "source_offer": self.offer.about(),
             "spend_cap_usd": self.meter.max_spend_usd(),
             "providers": providers,
             "models": {
@@ -2139,6 +2198,46 @@ model = "qwen3:8b"
             return Err("direct".into());
         };
         assert_eq!(base_url, "http://proxy:8080");
+        Ok(())
+    }
+
+    #[test]
+    fn the_source_offer_defaults_upstream_and_takes_an_override_or_refuses_it() -> R {
+        let upstream = Config::from_vars(|_| None)?;
+        assert_eq!(
+            upstream.source_offer().repository().as_ref(),
+            judge_core::source::DEFAULT_REPOSITORY
+        );
+        assert_eq!(upstream.source_offer().commit(), &build_commit());
+        // Blank is unset (the .env template ships it blank).
+        let blank = Config::from_vars(|k| (k == SOURCE_URL_ENV).then(|| "  ".to_owned()))?;
+        assert_eq!(blank.source_offer(), upstream.source_offer());
+        // The file path reads the same variable, so a judge.toml deployment
+        // is not a different case.
+        let forked = load(
+            FULL,
+            &[
+                ("ANTHROPIC_API_KEY", "a"),
+                ("LITELLM_KEY", "l"),
+                ("VOYAGE_API_KEY", "v"),
+                (SOURCE_URL_ENV, "https://codeberg.org/me/judge/"),
+            ],
+        )?;
+        assert_eq!(
+            forked.source_offer().repository().as_ref(),
+            "https://codeberg.org/me/judge"
+        );
+        assert_eq!(
+            forked.report().pointer("/source_offer/repository"),
+            Some(&serde_json::json!("https://codeberg.org/me/judge"))
+        );
+        for value in ["codeberg.org/me/judge", "ftp://x/y", "https://a b"] {
+            let bad = Config::from_vars(|k| (k == SOURCE_URL_ENV).then(|| value.to_owned()));
+            assert!(
+                matches!(bad, Err(ConfigError::BadSourceUrl { .. })),
+                "{value}: {bad:?}"
+            );
+        }
         Ok(())
     }
 

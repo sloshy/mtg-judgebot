@@ -1,6 +1,6 @@
 ---
 title: Discord commands and ratings
-description: The three slash commands, how to phrase a question, what the buttons do, and what a rating changes.
+description: The four slash commands, how to phrase a question, what the buttons do, and what a rating changes.
 sidebar:
   order: 1
 ---
@@ -49,8 +49,15 @@ the text is restored.
 
 ## `/help`
 
-What the bot does, how to ask, what it stores, and where the source is. Ephemeral: only
-you see it.
+What the bot does, how to ask, what it stores, and where the source is (the same notice
+as `/license`). Ephemeral: only you see it.
+
+## `/license`
+
+The source offer: the repository holding this instance's source code, the commit it was
+built from (linked into the repository), the licence (AGPL-3.0-or-later) and the
+copyright. An operator running a modified version points it at their fork with
+`JUDGE_SOURCE_URL`; an unmodified build names the upstream repository. Ephemeral.
 
 ## `/forget`
 
