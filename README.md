@@ -42,7 +42,7 @@ You'll lose 2 life, not 0. Tarmogoyf's mana value is 0 anywhere its {X}… [702.
 
 ## Self-hosting
 
-There is no bot to invite and no hosted service. A judgebot belongs to the community that
+A judgebot belongs to the community that
 runs it, so you run your own. It takes one compose file, a Discord application you create
 in a few minutes, and a model API key. Nothing in the pipeline needs Discord, so the web
 page and the command line work before you have a bot token. "Running it" below is the

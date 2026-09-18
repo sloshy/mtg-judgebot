@@ -14,7 +14,7 @@ brackets like `[[Full Card Name]]` when a nickname could mean several things.
 
 ## One bot per community
 
-There is no bot to invite. Every judgebot is its own Discord application, run by the
+Every judgebot is its own Discord application, run by the
 community that uses it. One process is one spend cap, one judge role and one bot token,
 so the person who chose the model pays for the questions and nobody shares a budget with
 strangers. The
