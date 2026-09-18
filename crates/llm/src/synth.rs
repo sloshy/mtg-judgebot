@@ -101,8 +101,6 @@ pub struct Truncated {
 }
 
 /// Result of the first send.
-// One-shot value matched immediately by the caller; boxing the Synth buys nothing.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum SendOutcome {
     /// The model wants rules; answer with `answer_tool`.

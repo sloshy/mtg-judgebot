@@ -1,0 +1,12 @@
+# TOML formatting (`taplo fmt`), checked in CI with `taplo fmt --check`.
+#
+# judge.example.toml is left out: its comments are aligned by hand into columns
+# beside each knob, and taplo would pull every continuation line back to the
+# margin. It is parse-checked anyway, by config::tests::the_example_file_loads_as_shipped.
+include = ["**/*.toml"]
+exclude = ["judge.example.toml", "target/**", "**/node_modules/**", ".cache/**"]
+
+[formatting]
+# rustfmt's width, so a manifest wraps where the code beside it would.
+column_width = 100
+indent_string = "  "

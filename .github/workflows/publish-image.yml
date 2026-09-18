@@ -230,6 +230,8 @@ jobs:
         env:
           TAGS: ${{ needs.meta.outputs.tags }}
         run: |
+          # The backticks are Markdown for the step summary, not substitutions.
+          # shellcheck disable=SC2016
           {
             echo '### Image published (linux/amd64, linux/arm64)'
             echo

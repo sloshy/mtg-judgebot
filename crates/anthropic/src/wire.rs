@@ -382,7 +382,10 @@ pub enum ThinkingDisplay {
 /// `output_config.effort`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "the variants are the wire's output_config.effort values"
+)]
 pub enum Effort {
     Low,
     Medium,

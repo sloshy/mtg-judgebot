@@ -39,7 +39,14 @@ const SHOWN_GATE: f64 = 0.75;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    dotenvy::dotenv().ok();
+    // A missing .env is fine; a malformed one is not.
+    match dotenvy::dotenv() {
+        Ok(_) | Err(dotenvy::Error::Io(_)) => {}
+        Err(e) => {
+            eprintln!("error: load .env: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

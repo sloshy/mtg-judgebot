@@ -169,7 +169,10 @@ pub fn schema_of<T: JsonSchema>() -> Schema {
 /// How hard the model should think. Ordered so an adapter can compare
 /// (the truncation retry lowers the effort).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "the variants are effort levels, self-describing"
+)]
 pub enum Effort {
     Low,
     Medium,
@@ -273,8 +276,10 @@ pub struct Billed {
 
 /// What a backend can enforce server-side. The adapters use it to decide
 /// whether the schema must be in the prompt and to log what they rely on.
-// Independent yes/no facts about a backend, not a state machine.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent yes/no facts about a backend, not a state machine"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     /// How the output schema is honoured.

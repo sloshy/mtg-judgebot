@@ -34,8 +34,10 @@ pub fn cited_rule_ids(citations: &[Citation]) -> Vec<String> {
 }
 
 /// How many citations of each kind a verdict carried.
-// The field names are the keys in persisted run JSON (`eval/runs/*.json`); keep them.
-#[allow(clippy::struct_field_names)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field names are the keys in persisted run JSON (eval/runs/*.json)"
+)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct CiteCounts {

@@ -20,11 +20,17 @@ pub const RULE_ID_PATTERN: &str = r"^[0-9]{3}(\.[0-9]+[a-z]{0,2})?$";
 pub const CR_VERSION_PATTERN: &str = r"^[0-9]{8}$";
 
 static RULE_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "the pattern is a constant: an invalid one panics in every test that uses it"
+    )]
     Regex::new(RULE_ID_PATTERN).expect("RULE_ID_PATTERN is a valid regex")
 });
 static CR_VERSION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "the pattern is a constant: an invalid one panics in every test that uses it"
+    )]
     Regex::new(CR_VERSION_PATTERN).expect("CR_VERSION_PATTERN is a valid regex")
 });
 
@@ -243,7 +249,10 @@ impl JsonSchema for CrVersion {
 }
 
 /// Scryfall card layout (variant names mirror Scryfall's `layout` values).
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "the variants mirror Scryfall's `layout` values"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Layout {
@@ -1077,7 +1086,10 @@ impl Score {
     pub fn smoothed_mean(scores: &[Score]) -> f32 {
         const PRIOR: f32 = 2.0;
         const WEIGHT: f32 = 3.0;
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a vote count, far below f32's 2^24 exact range"
+        )]
         let n = scores.len() as f32;
         let sum: f32 = scores.iter().map(|s| f32::from(*s as u8)).sum();
         (PRIOR * WEIGHT + sum) / (WEIGHT + n)

@@ -44,10 +44,24 @@ uuid.workspace = true
 nutype.workspace = true
 toml.workspace = true
 url.workspace = true
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "json", "macros", "migrate"] }
+sqlx = { version = "0.9", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls",
+  "postgres",
+  "uuid",
+  "json",
+  "macros",
+  "migrate",
+] }
 pgvector = { version = "0.4", features = ["sqlx"] }
 poise = "0.6"
-serenity = { version = "0.12", default-features = false, features = ["builder", "client", "gateway", "rustls_backend", "model"] }
+serenity = { version = "0.12", default-features = false, features = [
+  "builder",
+  "client",
+  "gateway",
+  "rustls_backend",
+  "model",
+] }
 dotenvy = "0.15"
 
 [dev-dependencies]

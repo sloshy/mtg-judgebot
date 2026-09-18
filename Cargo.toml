@@ -1,6 +1,17 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/llm", "crates/anthropic", "crates/openai", "crates/embed", "crates/ingest", "crates/bot", "crates/eval", "crates/api", "crates/agent"]
+members = [
+  "crates/core",
+  "crates/llm",
+  "crates/anthropic",
+  "crates/openai",
+  "crates/embed",
+  "crates/ingest",
+  "crates/bot",
+  "crates/eval",
+  "crates/api",
+  "crates/agent",
+]
 
 [workspace.package]
 edition = "2024"
@@ -35,7 +46,13 @@ uuid = { version = "1", features = ["serde", "v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rmcp = { version = "3.2", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "3.2", default-features = false, features = [
+  "server",
+  "macros",
+  "schemars",
+  "transport-io",
+  "transport-streamable-http-server",
+] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
 # Cloud doors for the Anthropic backend (optional features of judge-anthropic).
@@ -56,6 +73,13 @@ indexing_slicing = "deny"
 panic = "deny"
 todo = "warn"
 dbg_macro = "warn"
+# Every suppression is `#[expect(lint, reason = "…")]`: the reason is stated
+# where the lint is silenced, and a suppression that stops being needed fails
+# the build instead of lingering.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+# `.ok()` on a statement throws the error away without saying so.
+unused_result_ok = "deny"
 # JudgeError carries NonEmpty<Ambiguous>; boxing it buys nothing at this scale.
 result_large_err = "allow"
 # Counts physical lines, so rustfmt's line breaking decides it; the functions

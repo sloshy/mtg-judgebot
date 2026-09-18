@@ -37,7 +37,10 @@ use regex::Regex;
 /// A rule id as it appears in running text: `702.19`, `702.19b`, `704.5aa`.
 /// Three-digit section numbers alone (`rule 704`) are not rows and not matched.
 static RULE_REF: LazyLock<Regex> = LazyLock::new(|| {
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "the pattern is a constant: an invalid one panics in every test that uses it"
+    )]
     Regex::new(r"\b[0-9]{3}\.[0-9]+[a-z]{0,2}\b").expect("RULE_REF is a valid regex")
 });
 
@@ -299,7 +302,10 @@ mod tests {
     use judge_core::CrVersion;
 
     fn rid(s: &str) -> RuleId {
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "a fixture built from a constant in a test"
+        )]
         RuleId::try_new(s.to_owned()).expect("valid rule id in test")
     }
 
@@ -311,7 +317,10 @@ mod tests {
             heading: "H".into(),
             body: body.into(),
             examples: vec![],
-            #[allow(clippy::expect_used)]
+            #[expect(
+                clippy::expect_used,
+                reason = "a fixture built from a constant in a test"
+            )]
             cr_version: CrVersion::try_new("20260919".to_owned())
                 .expect("valid CR version in test"),
         }

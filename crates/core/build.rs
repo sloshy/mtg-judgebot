@@ -52,7 +52,7 @@ fn generate(file: &File) -> Result<String, Box<dyn Error>> {
     let mut out = String::new();
     out.push_str("/// Question category. Generated from `data/categories.yaml` by `build.rs`.\n");
     out.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]\n");
-    out.push_str("#[serde(rename_all = \"snake_case\")]\n#[allow(clippy::doc_markdown)]\n");
+    out.push_str("#[serde(rename_all = \"snake_case\")]\n");
     out.push_str("pub enum Category {\n");
     for e in &file.categories {
         writeln!(

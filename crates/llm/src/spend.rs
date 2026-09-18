@@ -61,8 +61,10 @@ impl Pricing {
     /// Estimated cost of `usage` in USD.
     #[must_use]
     pub fn usd(&self, usage: &Usage) -> f64 {
-        // u64 → f64 loses nothing below 2^53 tokens; billing estimates do not need more.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "u64 -> f64 loses nothing below 2^53 tokens; billing estimates need no more"
+        )]
         let tok = |n: u64| n as f64 / 1_000_000.0;
         tok(usage.input) * self.input
             + tok(usage.output) * self.output
@@ -469,7 +471,10 @@ fn env_cap(raw: &str) -> Result<f64, LlmError> {
 /// replaced by the real usage afterwards.
 fn estimate_micro(req: &ChatRequest, p: &Pricing) -> u64 {
     let body_bytes = serde_json::to_vec(req).map_or(0, |b| b.len());
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a rough token estimate from a byte count; far below 2^53"
+    )]
     let input_tokens = (body_bytes / 4) as f64;
     let usd = (f64::from(req.max_tokens) * p.output + input_tokens * p.input) / 1_000_000.0;
     to_micro(usd)
@@ -477,14 +482,20 @@ fn estimate_micro(req: &ChatRequest, p: &Pricing) -> u64 {
 
 /// USD → micro-dollars, rounded to nearest; negative or NaN clamps to 0.
 fn to_micro(usd: f64) -> u64 {
-    // Rounded, clamped conversion; values are tiny relative to u64::MAX.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rounded and clamped at 0 first; values are tiny relative to u64::MAX"
+    )]
     let m = (usd * MICRO_PER_USD).round().max(0.0) as u64;
     m
 }
 
 fn from_micro(micro: u64) -> f64 {
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "micro-dollar amounts stay far below 2^53"
+    )]
     let usd = micro as f64 / MICRO_PER_USD;
     usd
 }

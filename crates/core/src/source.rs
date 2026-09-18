@@ -78,7 +78,10 @@ impl JsonSchema for RepositoryUrl {
 pub const COMMIT_HASH_PATTERN: &str = r"^[0-9a-f]{7,40}$";
 
 static COMMIT_HASH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "the pattern is a constant: an invalid one panics in every test that uses it"
+    )]
     Regex::new(COMMIT_HASH_PATTERN).expect("COMMIT_HASH_PATTERN is a valid regex")
 });
 
@@ -200,7 +203,10 @@ impl SourceOffer {
     /// Never: [`DEFAULT_REPOSITORY`] is a valid URL (pinned by a test).
     #[must_use]
     pub fn upstream(commit: Commit) -> Self {
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "DEFAULT_REPOSITORY is a constant, pinned valid by a test"
+        )]
         let repository =
             RepositoryUrl::try_new(DEFAULT_REPOSITORY).expect("DEFAULT_REPOSITORY is a valid URL");
         Self::new(repository, commit)

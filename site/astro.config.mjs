@@ -1,6 +1,7 @@
 // @ts-check
-import { defineConfig, passthroughImageService } from "astro/config";
+
 import starlight from "@astrojs/starlight";
+import { defineConfig, passthroughImageService } from "astro/config";
 
 // GitHub Pages serves the site under the repository name; a custom domain
 // (Cloudflare Pages, or Pages with a CNAME) sets SITE_URL and SITE_BASE=/ in the
@@ -23,9 +24,7 @@ export default defineConfig({
       title: "MTG Judgebot",
       description:
         "A Discord bot and web page that answers Magic: The Gathering rules questions with validated citations.",
-      social: [
-        { icon: "github", label: "GitHub", href: "https://github.com/sloshy/mtg-judgebot" },
-      ],
+      social: [{ icon: "github", label: "GitHub", href: "https://github.com/sloshy/mtg-judgebot" }],
       editLink: {
         baseUrl: "https://github.com/sloshy/mtg-judgebot/edit/main/site/",
       },
@@ -43,7 +42,10 @@ export default defineConfig({
       // fixed order and adding a page is a frontmatter line, not a config edit.
       sidebar: [
         { label: "Start here", items: [{ autogenerate: { directory: "start-here" } }] },
-        { label: "Run your own judgebot", items: [{ autogenerate: { directory: "self-hosting" } }] },
+        {
+          label: "Run your own judgebot",
+          items: [{ autogenerate: { directory: "self-hosting" } }],
+        },
         { label: "Using the judge", items: [{ autogenerate: { directory: "using" } }] },
         { label: "How it works", items: [{ autogenerate: { directory: "how-it-works" } }] },
         { label: "Contributing", items: [{ autogenerate: { directory: "contributing" } }] },

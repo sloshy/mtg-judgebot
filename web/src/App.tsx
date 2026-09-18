@@ -1,12 +1,12 @@
-import { For, Match, Show, Switch, createResource, createSignal } from "solid-js";
+import { createResource, createSignal, For, Match, Show, Switch } from "solid-js";
 import { createStore } from "solid-js/store";
 import {
-  About,
-  ApiReply,
-  Pin,
+  type About,
+  type ApiReply,
   askJudge,
   crDate,
   fetchAbout,
+  type Pin,
   sessionId,
 } from "./api";
 import Symbols from "./Symbols";
@@ -75,10 +75,14 @@ export default function App() {
       <For each={entries}>
         {(entry, i) => (
           <section class="exchange">
-            <p class="question"><Symbols text={entry.question} /></p>
+            <p class="question">
+              <Symbols text={entry.question} />
+            </p>
             <Show
               when={entry.reply}
-              fallback={<p class="thinking">Consulting the rules… this usually takes 20–45 seconds.</p>}
+              fallback={
+                <p class="thinking">Consulting the rules… this usually takes 20–45 seconds.</p>
+              }
             >
               {(reply) => <Reply reply={reply()} onPick={(span, name) => pick(i(), span, name)} />}
             </Show>
@@ -108,8 +112,8 @@ export default function App() {
 
       <footer>
         <p>
-          Answers here can't be rated. Answers are AI-generated;
-          verify anything important with a human judge.
+          Answers here can't be rated. Answers are AI-generated; verify anything important with a
+          human judge.
         </p>
         <p>
           MTG Judgebot is unofficial Fan Content permitted under the{" "}
@@ -142,8 +146,10 @@ function SourceOffer(props: { about: About | null }) {
         fallback={
           <>
             Free software under the{" "}
-            <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU Affero General Public License</a>.
-            The source offer for this instance (repository and commit) comes from{" "}
+            <a href="https://www.gnu.org/licenses/agpl-3.0.html">
+              GNU Affero General Public License
+            </a>
+            . The source offer for this instance (repository and commit) comes from{" "}
             <code>GET /api/about</code>, which has not answered.
           </>
         }
@@ -200,7 +206,9 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
       <Match when={props.reply.kind === "answer" && props.reply}>
         {(r) => (
           <div class="answer">
-            <p class="answer-text"><Symbols text={r().answer} /></p>
+            <p class="answer-text">
+              <Symbols text={r().answer} />
+            </p>
             <Show when={r().citations.length > 0}>
               <ul class="citations">
                 <For each={r().citations}>
@@ -208,7 +216,12 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
                     <li>
                       <Show when={c.url} fallback={<span class="cite-label">{c.label}</span>}>
                         {(url) => (
-                          <a class="cite-label" href={url()} target="_blank" rel="noopener noreferrer">
+                          <a
+                            class="cite-label"
+                            href={url()}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
                             {c.label}
                           </a>
                         )}
@@ -251,7 +264,8 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
               {(span) => (
                 <div class="ambiguous">
                   <p>
-                    I'm not sure which card you mean by <strong>{span().query}</strong>. Did you mean…?
+                    I'm not sure which card you mean by <strong>{span().query}</strong>. Did you
+                    mean…?
                   </p>
                   <div class="choices">
                     <For each={span().choices}>
@@ -292,7 +306,14 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
           </p>
         )}
       </Match>
-      <Match when={props.reply.kind !== "answer" && props.reply.kind !== "ambiguous" && props.reply.kind !== "not_found" && props.reply}>
+      <Match
+        when={
+          props.reply.kind !== "answer" &&
+          props.reply.kind !== "ambiguous" &&
+          props.reply.kind !== "not_found" &&
+          props.reply
+        }
+      >
         {(r) => {
           const failed = r() as Extract<ApiReply, { message: string }>;
           return <p class="notice">{failed.message}</p>;

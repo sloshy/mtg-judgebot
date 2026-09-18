@@ -58,7 +58,10 @@ export async function askJudge(
   }
   const body: unknown = await res.json().catch(() => null);
   if (isReply(body)) return body;
-  return { kind: "error", message: `The judge answered strangely (HTTP ${res.status}). Please try again.` };
+  return {
+    kind: "error",
+    message: `The judge answered strangely (HTTP ${res.status}). Please try again.`,
+  };
 }
 
 function isReply(v: unknown): v is ApiReply {

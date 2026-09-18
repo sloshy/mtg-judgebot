@@ -579,7 +579,10 @@ mod tests {
 
     /// A support address and no Discord username: all `judge-api` demands.
     fn test_operator() -> NetworkOperator {
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "a fixture built from a constant in a test"
+        )]
         judge_core::Operator::new(
             None,
             judge_core::SupportEmail::try_new("judge@example.org").ok(),

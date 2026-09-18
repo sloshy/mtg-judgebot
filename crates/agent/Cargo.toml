@@ -23,7 +23,6 @@ path = "src/bin/mcp.rs"
 [dependencies]
 judge-core.workspace = true
 judge-llm.workspace = true
-judge-embed.workspace = true
 judge-bot.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -35,7 +34,13 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 rmcp.workspace = true
 dotenvy = "0.15"
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "migrate"] }
+sqlx = { version = "0.9", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls",
+  "postgres",
+  "uuid",
+  "migrate",
+] }
 
 [dev-dependencies]
 nonempty.workspace = true

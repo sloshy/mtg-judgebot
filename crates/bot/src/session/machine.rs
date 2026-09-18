@@ -1311,9 +1311,15 @@ mod tests {
             s,
             "with cards, rulings, glossary, prior calls and notes"
         );
-        let _ = s
+        let Err(SessionError::Rejected {
+            rejection: Rejection::BadCitation(_),
+            ..
+        }) = s
             .submit_verdict(verdict("wrong")?, &p, Harness::Mcp, &Budget::default())
-            .await;
+            .await
+        else {
+            return Err(anyhow::anyhow!("expected a BadCitation rejection"));
+        };
         assert_eq!(roundtrip(&s)?, s, "with a pending BadCitation rejection");
         // A leaf citation: the parent 702.15 is in the context, 702.15b is hydrated.
         let leaf = Verdict::new(

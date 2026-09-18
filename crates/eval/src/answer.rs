@@ -233,7 +233,10 @@ impl Run {
         if total == 0 {
             return None;
         }
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "counts of gold questions, far below 2^53"
+        )]
         let f = hit as f64 / total as f64;
         Some(f)
     }
@@ -440,8 +443,10 @@ fn score_row(
 
 /// Milliseconds → seconds for display.
 fn secs(ms: u128) -> f64 {
-    // Display only; a run never approaches 2^53 ms.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "display only; a run never approaches 2^53 ms"
+    )]
     let s = ms as f64 / 1000.0;
     s
 }

@@ -30,7 +30,10 @@ pub const OPERATOR_EMAIL_ENV: &str = "JUDGE_OPERATOR_EMAIL";
 pub const DISCORD_USERNAME_PATTERN: &str = r"^[a-z0-9_.]{2,32}$";
 
 static DISCORD_USERNAME_RE: LazyLock<Regex> = LazyLock::new(|| {
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "the pattern is a constant: an invalid one panics in every test that uses it"
+    )]
     Regex::new(DISCORD_USERNAME_PATTERN).expect("DISCORD_USERNAME_PATTERN is a valid regex")
 });
 
@@ -77,7 +80,10 @@ pub const SUPPORT_EMAIL_PATTERN: &str = r"^[A-Za-z0-9._+-]+@[A-Za-z0-9](?:[A-Za-
 const MAX_EMAIL_LEN: usize = 254;
 
 static SUPPORT_EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "the pattern is a constant: an invalid one panics in every test that uses it"
+    )]
     Regex::new(SUPPORT_EMAIL_PATTERN).expect("SUPPORT_EMAIL_PATTERN is a valid regex")
 });
 

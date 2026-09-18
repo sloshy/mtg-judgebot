@@ -854,7 +854,12 @@ pub async fn load_aliases(pool: &PgPool, path: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "tests on fixed fixtures; a panic is the failure report"
+)]
 mod tests {
     use super::*;
 

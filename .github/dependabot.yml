@@ -15,6 +15,12 @@ updates:
     groups:
       web-dependencies:
         patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /site
+    schedule: { interval: weekly }
+    groups:
+      site-dependencies:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }

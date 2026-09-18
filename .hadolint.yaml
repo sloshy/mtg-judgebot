@@ -1,0 +1,9 @@
+# Dockerfile lint (`hadolint Dockerfile`), run in CI.
+ignored:
+  # Pin apt package versions. The one package installed is ca-certificates,
+  # which should be the newest the base image offers, and Debian drops old
+  # versions from its mirrors, so a pin would break the build instead.
+  - DL3008
+  # Non-numeric USER. `nobody` exists in debian:bookworm-slim, and the image
+  # runs under compose, which resolves it inside the container.
+  - DL3066

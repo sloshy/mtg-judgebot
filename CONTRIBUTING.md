@@ -35,12 +35,26 @@ published only from a tree that passes them. Run them locally first:
 cargo fmt --all --check
 SQLX_OFFLINE=true cargo clippy --workspace --all-targets   # must be warning-free
 cargo test --workspace
-npm --prefix web ci && npm --prefix web run build
+npm --prefix web ci && npm --prefix web run lint && npm --prefix web run build
+npm --prefix site ci && npm --prefix site run lint && npm --prefix site run check && npm --prefix site run build
+cargo deny check && cargo machete && taplo fmt --check && typos
+shellcheck scripts/*.sh && actionlint && hadolint Dockerfile
 ```
 
+`npm --prefix web run fix` (or `site`) applies Biome's formatting and safe fixes, and
+`taplo fmt` formats the TOML. The docs job also checks every internal link and
+`#fragment` in the built site with `lychee --offline` (see `ci.yml` for the invocation).
+
 Workspace lints deny `unwrap`, `expect`, indexing and `panic!` in every crate, and warn
-on missing docs and the pedantic group. Reach for a type or a `Result` instead of an
-`#[allow]`. When an allow is right, keep it on the one item and say why in a comment.
+on missing docs and the pedantic group. Reach for a type or a `Result` instead of a
+suppression. When one is right, keep it on the one item as
+`#[expect(lint, reason = "…")]`. A bare `#[allow]` is a build error, and an `expect`
+that stops matching anything fails the build too, so a stale suppression cannot linger.
+
+`deny.toml` is the dependency policy. It covers RustSec advisories, the licences an
+AGPL image may carry, and crates.io as the only source. A dependency that brings a
+new licence fails CI until the licence is added there. An accepted advisory is listed
+there with its reason.
 
 **SQL changes.** Queries are checked at compile time against the schema. After editing
 any `sqlx::query!` or migration, regenerate the committed offline data and include it

@@ -12,9 +12,9 @@
 // crates/bot/src/discord/mana.rs: the same spellings resolve on both surfaces,
 // and the same unresolvable text is left alone.
 
-import { Show, createSignal } from "solid-js";
+import { createSignal, Show } from "solid-js";
 
-import { SYMBOLS, SymbolInfo } from "./symbols";
+import { SYMBOLS, type SymbolInfo } from "./symbols";
 
 /** Where Scryfall serves the symbol SVGs. */
 const SYMBOL_CDN = "https://svgs.scryfall.io/card-symbols";
@@ -28,9 +28,7 @@ const SYMBOL_CDN = "https://svgs.scryfall.io/card-symbols";
 const MAX_BODY = 12;
 
 /** One piece of a split run of text. */
-type Piece =
-  | { kind: "text"; text: string }
-  | { kind: "symbol"; body: string; info: SymbolInfo };
+type Piece = { kind: "text"; text: string } | { kind: "symbol"; body: string; info: SymbolInfo };
 
 /**
  * Split `text` into plain runs and known symbols. Anything in braces that is
@@ -49,8 +47,7 @@ export function split(text: string): Piece[] {
     }
     plain += text.slice(i, open);
     const close = text.indexOf("}", open + 1);
-    const body =
-      close < 0 || close - open - 1 > MAX_BODY ? null : text.slice(open + 1, close);
+    const body = close < 0 || close - open - 1 > MAX_BODY ? null : text.slice(open + 1, close);
     const info = body === null ? undefined : lookup(body);
     if (body === null || info === undefined) {
       // Not a symbol: keep the brace and carry on just past it, so `{{W}`
@@ -82,9 +79,7 @@ const normalize = (body: string) => body.toUpperCase().replaceAll("/", "");
  */
 const BY_NORMALIZED: Record<string, SymbolInfo | undefined> = Object.assign(
   Object.create(null) as Record<string, SymbolInfo | undefined>,
-  Object.fromEntries(
-    Object.entries(SYMBOLS).map(([body, info]) => [normalize(body), info]),
-  ),
+  Object.fromEntries(Object.entries(SYMBOLS).map(([body, info]) => [normalize(body), info])),
 );
 
 /**
@@ -112,25 +107,28 @@ function lookup(body: string): SymbolInfo | undefined {
  * detaches something Solid still owns, and the orphaned text then survives
  * every later update of the surrounding text.
  */
-function Symbol(props: { body: string; info: SymbolInfo }) {
+function CardSymbol(props: { body: string; info: SymbolInfo }) {
   const [failed, setFailed] = createSignal(false);
   const literal = () => `{${props.body}}`;
   // <Show>, not a ternary: a component body runs once, so a ternary there
   // would be evaluated before the image ever had a chance to fail.
   return (
-    <Show when={failed()} fallback={
-      <img
-        class={props.info.flat ? "mana mana-flat" : "mana"}
-        src={`${SYMBOL_CDN}/${props.info.file}.svg`}
-        // `alt` is what a screen reader announces, so it gets the English
-        // Scryfall supplies ("one white mana"); the machine form is the tooltip.
-        alt={props.info.english}
-        title={literal()}
-        decoding="async"
-        referrerpolicy="no-referrer"
-        onError={() => setFailed(true)}
-      />
-    }>
+    <Show
+      when={failed()}
+      fallback={
+        <img
+          class={props.info.flat ? "mana mana-flat" : "mana"}
+          src={`${SYMBOL_CDN}/${props.info.file}.svg`}
+          // `alt` is what a screen reader announces, so it gets the English
+          // Scryfall supplies ("one white mana"); the machine form is the tooltip.
+          alt={props.info.english}
+          title={literal()}
+          decoding="async"
+          referrerpolicy="no-referrer"
+          onError={() => setFailed(true)}
+        />
+      }
+    >
       {literal()}
     </Show>
   );
@@ -145,11 +143,7 @@ export default function Symbols(props: { text: string }) {
   return (
     <>
       {split(props.text).map((piece) =>
-        piece.kind === "symbol" ? (
-          <Symbol body={piece.body} info={piece.info} />
-        ) : (
-          piece.text
-        ),
+        piece.kind === "symbol" ? <CardSymbol body={piece.body} info={piece.info} /> : piece.text,
       )}
     </>
   );

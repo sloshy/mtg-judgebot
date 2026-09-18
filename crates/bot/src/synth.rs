@@ -540,7 +540,12 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
                 Citation::OracleText { card, face, .. } if ctx.card(*card).and_then(|c| c.face(*face)).is_none() => {
                     format!("there is no card face labelled [oracle {card}#{face}] in the material.{INVENTED}")
                 }
-                _ => "the quote is not a verbatim substring of that source; copy the text exactly, within one line".to_owned(),
+                // Listed rather than `_`: a new citation kind must say here how
+                // it can be missing from the material, not fall through to this.
+                Citation::Rule { .. }
+                | Citation::ScryfallRuling { .. }
+                | Citation::OracleText { .. }
+                | Citation::PriorCall { .. } => "the quote is not a verbatim substring of that source; copy the text exactly, within one line".to_owned(),
             };
             let _ = writeln!(
                 s,

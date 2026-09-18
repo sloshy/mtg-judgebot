@@ -173,7 +173,10 @@ mod tests {
     }
 
     #[derive(JsonSchema)]
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the fields exist only to shape the derived JSON schema"
+    )]
     struct Inner {
         n: u8,
         #[schemars(regex(pattern = r"^x+$"), length(min = 1, max = 5))]
@@ -181,7 +184,10 @@ mod tests {
     }
 
     #[derive(JsonSchema)]
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the fields exist only to shape the derived JSON schema"
+    )]
     struct Outer {
         maybe: Option<Inner>,
         #[schemars(length(min = 1))]

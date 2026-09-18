@@ -33,8 +33,6 @@ pub use schema::{OpenAiStrict, to_openai_strict};
 
 /// How an OpenAI-compatible server departs from `OpenAI`. The defaults are
 /// right for `OpenAI` and `LiteLLM`.
-// Independent yes/no facts about a server, not a state machine.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Dialect {
     /// How the output schema is asked for.

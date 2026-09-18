@@ -206,7 +206,10 @@ pub struct JsonSchemaFormat {
 /// `reasoning_effort`.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "the variants are the wire's reasoning_effort values"
+)]
 pub enum ReasoningEffort {
     Low,
     Medium,

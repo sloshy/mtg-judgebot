@@ -93,7 +93,13 @@ wide, on a splash page *and* a docs page. Read positions out of
 `getBoundingClientRect()` rather than by eye.
 
 CI is `.github/workflows/ci.yml`: fmt, clippy, `.sqlx` freshness, tests on a pgvector
-service, web and site builds, compose parse. `publish-image.yml` calls it before it
+service, web and site builds, compose parse. It also runs Biome over `web/` and `site/`
+(`biome.json` at the root, `.astro` files left to `astro check`), `astro check`, and
+lychee over the built site's internal links. A `lint` job runs `cargo deny check`
+(`deny.toml`), `cargo machete`, `taplo fmt --check` (`.taplo.toml`, which leaves out
+`judge.example.toml`'s hand-aligned comments), `typos` (`_typos.toml`), shellcheck,
+actionlint and hadolint (`.hadolint.yaml`). Every tool's config records why each
+ignore is there. `publish-image.yml` calls it before it
 builds.
 
 Discord registers four commands: `/judge` (guild-only), `/help`, `/license` and `/forget`,
@@ -172,7 +178,8 @@ docker compose up -d --build bot api # redeploy bot/api after code changes (one 
 docker compose pull && docker compose up -d  # deploy host: pulls the CI-built GHCR image, never builds
 scripts/backup-db.sh                 # weekly pg_dump -> Cloudflare R2; cron'd on the server
 cargo build --workspace
-cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwrap/expect/indexing/panic
+cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwrap/expect/indexing/panic,
+                                         # and bare #[allow]: suppress with #[expect(lint, reason = "…")]
 cargo test --workspace               # includes #[sqlx::test] suites that spin temp DBs off DATABASE_URL
 cargo test -p judge-bot possessive   # run a single test by substring
 SQLX_OFFLINE=true cargo build --workspace   # must pass; regenerate .sqlx after SQL changes:

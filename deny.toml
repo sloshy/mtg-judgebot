@@ -1,0 +1,66 @@
+# Dependency policy (`cargo deny check`), enforced in CI: known advisories,
+# licences the AGPL can carry, and where crates may come from.
+
+[graph]
+# The cloud doors are default features of judge-anthropic; the image builds
+# them, so their dependencies are checked like any other.
+all-features = true
+
+[advisories]
+# Unmaintained crates are reported for the workspace's own direct dependencies
+# only: a transitive one is not ours to replace.
+unmaintained = "workspace"
+yanked = "deny"
+# An advisory we have read and accepted goes here, with the reason.
+#
+# rustls-webpki 0.102 is reached only through serenity 0.12 (tokio-tungstenite
+# 0.21 → rustls 0.22), i.e. the Discord gateway websocket. The fixes shipped in
+# 0.103 alone, and serenity 0.12.5 is the newest release. Drop these entries
+# when a serenity release moves to rustls 0.23 (`cargo deny check` then warns
+# that they no longer match anything).
+ignore = [
+  { id = "RUSTSEC-2026-0049", reason = "CRL matching; rustls 0.22 is never given CRLs here. No 0.102 fix; via serenity." },
+  { id = "RUSTSEC-2026-0104", reason = "CRL parsing panic; no CRLs are parsed here. No 0.102 fix; via serenity." },
+  { id = "RUSTSEC-2026-0098", reason = "URI name constraints; only the Discord gateway connection is exposed. No 0.102 fix; via serenity." },
+  { id = "RUSTSEC-2026-0099", reason = "Wildcard name constraints; only the Discord gateway connection is exposed. No 0.102 fix; via serenity." },
+]
+
+[licenses]
+# Every licence here is compatible with distributing the image under
+# AGPL-3.0-or-later. A dependency that brings a new one fails CI until the
+# licence is read and added.
+allow = [
+  "0BSD",
+  "AGPL-3.0-or-later",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# The workspace crates are `publish = false`; their licence is checked anyway.
+ignore = false
+
+[bans]
+# Two versions of one crate (e.g. rustls 0.22 via serenity and 0.23 via
+# reqwest) are normal in a graph this size and mostly outside our control.
+multiple-versions = "allow"
+wildcards = "deny"
+# Path dependencies inside the workspace carry no version.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

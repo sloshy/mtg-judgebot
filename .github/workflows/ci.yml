@@ -3,7 +3,9 @@ name: CI
 # The gates CLAUDE.md and CONTRIBUTING.md name, enforced: formatting, a
 # warning-free clippy over every target, the offline sqlx build, the committed
 # .sqlx data in sync with the SQL, the whole test suite against a pgvector
-# Postgres, and the web page's type-check and build. Runs on every pull
+# Postgres, the web page's and the docs site's lint, type-check and build, the
+# docs' internal links, and the repository lints (dependency policy, unused
+# dependencies, TOML format, spelling, shell, workflows, Dockerfile). Runs on every pull
 # request; publish-image.yml calls it before it builds, so an image is never
 # published from a tree that fails here.
 
@@ -101,10 +103,12 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm --prefix web ci
+      # Biome (biome.json at the root): format, lint, import order.
+      - run: npm --prefix web run lint
       - run: npm --prefix web run build
 
   docs:
-    name: Docs site (astro build)
+    name: Docs site (biome, astro check, build, links)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -115,7 +119,50 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
       - run: npm --prefix site ci
+      - run: npm --prefix site run lint
+      # Type-checks the .astro components and content config, which Biome skips.
+      - run: npm --prefix site run check
       - run: npm --prefix site run build
+      # Every internal link and #fragment in the built pages, resolved on disk.
+      # The pages link to /mtg-judgebot/…, so the root holds dist under that name.
+      - name: prepare link root
+        run: mkdir -p "$RUNNER_TEMP/site-root" && ln -s "$PWD/site/dist" "$RUNNER_TEMP/site-root/mtg-judgebot"
+      - uses: lycheeverse/lychee-action@v2.9.0
+        with:
+          args: >-
+            --offline --include-fragments --index-files index.html
+            --root-dir ${{ runner.temp }}/site-root
+            'site/dist/**/*.html'
+          fail: true
+
+  lint:
+    name: Lint (deps, TOML, spelling, shell, workflows, Dockerfile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # cargo deny and cargo machete read `cargo metadata`; installed here
+      # rather than left to rustup's auto-install from rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2,cargo-machete@0.9.2,taplo@0.10.0,typos@1.50.2
+      # Advisories, licences and sources, per deny.toml.
+      - run: cargo deny check
+      - run: cargo machete
+      - run: taplo fmt --check
+      - run: typos
+      # ubuntu-latest ships shellcheck; actionlint uses it for `run:` blocks too.
+      - run: shellcheck scripts/*.sh
+      - name: actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+      - uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: Dockerfile
 
   compose:
     name: Compose file parses

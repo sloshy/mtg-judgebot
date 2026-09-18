@@ -65,7 +65,10 @@ fn ratio(n: usize, total: usize) -> f64 {
     if total == 0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "counts of gold questions, far below 2^53"
+    )]
     let r = n as f64 / total as f64;
     r
 }
