@@ -582,17 +582,6 @@ docker compose pull
 docker compose up -d
 ```
 
-When upgrading past the release that made `judge-api`'s front doors opt-in, note that
-the `api` service now passes `${API_INTERFACES:---api --web}`. That serves the page as
-before but does **not** mount `/mcp`. A deployment with an `MCP_TOKEN` keeps starting
-and logs a warning. Set `API_INTERFACES=--api --web --mcp` in `.env` and run
-`docker compose up -d api` to get the endpoint back.
-
-When upgrading past the release that added the operator contact, set
-`JUDGE_OPERATOR_DISCORD` (your Discord username) and `JUDGE_OPERATOR_EMAIL` (a support
-address) in `.env` *before* `docker compose up -d`. `bot` exits without the first and
-`api` without the second, and with `restart: unless-stopped` that is a restart loop.
-
 `docker compose up -d --build` still works on a machine with the CPU and RAM for it.
 `build: .` is retained for local development.
 
