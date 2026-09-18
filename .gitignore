@@ -18,3 +18,5 @@ eval/runs/
 .claude/settings.local.json
 # Snapshots and screenshots the playwright-cli skill writes beside the repo.
 .playwright-cli/
+# Pinned linter binaries (scripts/tools.sh).
+.tools

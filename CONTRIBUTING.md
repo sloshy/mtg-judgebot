@@ -29,21 +29,37 @@ build or test.
 ## The gates
 
 CI (`.github/workflows/ci.yml`) runs these on every pull request, and the image is
-published only from a tree that passes them. Run them locally first:
+published only from a tree that passes them. `scripts/check.sh` runs the same gates
+locally, and git hooks run it for you:
 
 ```sh
-cargo fmt --all --check
-SQLX_OFFLINE=true cargo clippy --workspace --all-targets   # must be warning-free
-cargo test --workspace
-npm --prefix web ci && npm --prefix web run lint && npm --prefix web run build
-npm --prefix site ci && npm --prefix site run lint && npm --prefix site run check && npm --prefix site run build
-cargo deny check && cargo machete && taplo fmt --check && typos
-shellcheck scripts/*.sh && actionlint && hadolint Dockerfile
+scripts/dev-setup.sh      # once per clone: the pinned linters, npm ci in web/ and site/, the hooks
 ```
 
-`npm --prefix web run fix` (or `site`) applies Biome's formatting and safe fixes, and
-`taplo fmt` formats the TOML. The docs job also checks every internal link and
-`#fragment` in the built site with `lychee --offline` (see `ci.yml` for the invocation).
+Both hooks check exactly what is being committed or pushed, not your working tree. They
+check it out into a scratch worktree under `.git/`, which shares `target/` and the
+linters with your clone, has its own `node_modules` (reinstalled when a lockfile
+changes) and gets `.env.example` as its `.env`, as CI does. The `.sqlx` check migrates a
+throwaway `judgebot_check` database on your server, never your development one. An unstaged fix, a file you forgot to add or another branch's state cannot make
+them pass.
+
+- **pre-commit** checks the staged tree. It runs formatting and clippy when Rust or
+  compiled-in data is staged, Biome and the build for `web/`, and Biome, `astro check`,
+  the build and a link check for the docs site. It always runs the repository lints:
+  `cargo deny` (against the advisory database already fetched, so it works offline),
+  `cargo machete`, `taplo`, `typos`, `shellcheck`, `actionlint`, `hadolint` and the
+  compose file. It takes seconds unless clippy has a lot to recompile.
+- **pre-push** checks each commit being pushed with every group, including
+  `cargo test`, the migrations and the `.sqlx` freshness check. It needs the database
+  up (`docker compose up -d db`) and `sqlx-cli`. CI runs the same script, so a push
+  that gets past it passes CI.
+
+`scripts/check.sh rust test` (any of `rust sqlx test web site lint`) runs chosen
+groups on the working tree, and `scripts/check.sh --at <rev>` on a commit. `git commit --no-verify` / `git push --no-verify` skip a hook once. The
+linters are prebuilt binaries at the versions in `scripts/tools.sh`, which CI installs
+too. They live in `.tools/` (gitignored), and bumping a version there is the whole
+upgrade. `npm --prefix web run fix` (or `site`) applies Biome's formatting and safe
+fixes, and `.tools/bin/taplo fmt` formats the TOML.
 
 Workspace lints deny `unwrap`, `expect`, indexing and `panic!` in every crate, and warn
 on missing docs and the pedantic group. Reach for a type or a `Result` instead of a

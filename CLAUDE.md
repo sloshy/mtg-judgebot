@@ -102,6 +102,21 @@ actionlint and hadolint (`.hadolint.yaml`). Every tool's config records why each
 ignore is there. `publish-image.yml` calls it before it
 builds.
 
+`scripts/check.sh` is those gates locally, in groups (`rust sqlx test web site lint`).
+Every CI job but the compose parse runs it, so local and CI cannot drift. The linters'
+versions live only in `scripts/tools.sh`, which downloads them into `.tools/`. The git
+hooks in `scripts/hooks/` are enabled by `scripts/dev-setup.sh` (`core.hooksPath`). Both
+run `check.sh --at <rev>`, which checks that exact tree in a scratch worktree
+(`.git/judgebot-check`, sharing `target/` and `.tools`, with its own `node_modules`). The
+working tree cannot mask a failure. The `sqlx` group migrates a throwaway
+`judgebot_check` database, never the development one.
+- pre-commit checks the staged tree: the groups the staged paths touch, deletions
+  included, plus `lint`.
+- pre-push checks every pushed commit with every group, so Postgres must be up.
+
+The hooks run on Claude's commits too. Don't bypass them with `--no-verify`. Fix the
+failure instead.
+
 Discord registers four commands: `/judge` (guild-only), `/help`, `/license` and `/forget`,
 which deletes the caller's ratings through `CallStore::forget_user`.
 
@@ -182,6 +197,7 @@ cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwr
                                          # and bare #[allow]: suppress with #[expect(lint, reason = "…")]
 cargo test --workspace               # includes #[sqlx::test] suites that spin temp DBs off DATABASE_URL
 cargo test -p judge-bot possessive   # run a single test by substring
+scripts/check.sh [--staged | group..]   # the CI gates locally (the git hooks run this)
 SQLX_OFFLINE=true cargo build --workspace   # must pass; regenerate .sqlx after SQL changes:
 cargo sqlx prepare --workspace -- --all-targets
 

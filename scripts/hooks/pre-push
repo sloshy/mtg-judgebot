@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Every CI gate, the test suite and the .sqlx check included, on each commit
+# being pushed (scripts/check.sh --at <sha>), so a push that gets past this
+# passes CI whatever the working tree holds. Needs Postgres up
+# (`docker compose up -d db`). Skip once with `git push --no-verify`.
+root="$(git rev-parse --show-toplevel)"
+zero="0000000000000000000000000000000000000000"
+checked=" "
+status=0
+# git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+while read -r _ local_sha _ _; do
+  # A deleted ref pushes nothing; a sha seen for another ref is checked once.
+  case "$local_sha" in "$zero" | "") continue ;; esac
+  case "$checked" in *" $local_sha "*) continue ;; esac
+  checked="$checked$local_sha "
+  echo "checking $local_sha" >&2
+  "$root/scripts/check.sh" --at "$local_sha" < /dev/null || status=1
+done
+exit $status

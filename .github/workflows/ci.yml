@@ -21,9 +21,11 @@ concurrency:
 permissions:
   contents: read
 
+# No RUSTFLAGS=-D warnings: scripts/check.sh denies warnings through clippy's
+# arguments instead, which is what the hooks run locally without changing the
+# fingerprint of every crate.
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   rust:
@@ -59,40 +61,28 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: rustfmt
-        run: cargo fmt --all --check
-
-      - name: clippy (offline sqlx, every target)
-        env:
-          SQLX_OFFLINE: "true"
-        run: cargo clippy --workspace --all-targets
-
       # sqlx-cli has no prebuilt release, so it is compiled once and cached by
-      # version. Its own warnings are not ours to fail on.
+      # version.
       - uses: taiki-e/cache-cargo-install-action@v2
-        env:
-          RUSTFLAGS: ""
         with:
           tool: sqlx-cli@0.9
           locked: true
           no-default-features: true
           features: postgres,rustls
 
-      - name: apply migrations
-        run: sqlx migrate run --source crates/bot/migrations
+      - uses: actions/cache@v6
+        with:
+          path: .tools
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/tools.sh') }}
 
-      # `cargo sqlx prepare --check` fails when a query's committed metadata
-      # under .sqlx differs from what the live schema produces, i.e. when
-      # someone changed SQL without running
-      # `cargo sqlx prepare --workspace -- --all-targets`.
-      - name: .sqlx is in sync
-        run: cargo sqlx prepare --check --workspace -- --all-targets
-
-      - name: tests
-        run: cargo test --workspace
+      # The same script the git hooks run: rustfmt, clippy on every target with
+      # warnings denied (offline sqlx), migrations then `cargo sqlx prepare
+      # --check` (the committed .sqlx metadata matches the live schema), and
+      # the test suite.
+      - run: scripts/check.sh rust sqlx test
 
   web:
-    name: Web page (tsc, vite build)
+    name: Web page (biome, tsc, vite build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -103,9 +93,14 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm --prefix web ci
-      # Biome (biome.json at the root): format, lint, import order.
-      - run: npm --prefix web run lint
-      - run: npm --prefix web run build
+      # scripts/check.sh is what the git hooks run, so a push that passed them
+      # passes here. Its linters are the versions pinned in scripts/tools.sh.
+      - uses: actions/cache@v6
+        with:
+          path: .tools
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/tools.sh') }}
+      # Biome (biome.json at the root), then tsc + vite build.
+      - run: scripts/check.sh web
 
   docs:
     name: Docs site (biome, astro check, build, links)
@@ -119,21 +114,13 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
       - run: npm --prefix site ci
-      - run: npm --prefix site run lint
-      # Type-checks the .astro components and content config, which Biome skips.
-      - run: npm --prefix site run check
-      - run: npm --prefix site run build
-      # Every internal link and #fragment in the built pages, resolved on disk.
-      # The pages link to /mtg-judgebot/…, so the root holds dist under that name.
-      - name: prepare link root
-        run: mkdir -p "$RUNNER_TEMP/site-root" && ln -s "$PWD/site/dist" "$RUNNER_TEMP/site-root/mtg-judgebot"
-      - uses: lycheeverse/lychee-action@v2.9.0
+      - uses: actions/cache@v6
         with:
-          args: >-
-            --offline --include-fragments --index-files index.html
-            --root-dir ${{ runner.temp }}/site-root
-            'site/dist/**/*.html'
-          fail: true
+          path: .tools
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/tools.sh') }}
+      # Biome; astro check for the .astro files Biome skips; the build; lychee
+      # over every internal link and #fragment in the built pages.
+      - run: scripts/check.sh site
 
   lint:
     name: Lint (deps, TOML, spelling, shell, workflows, Dockerfile)
@@ -146,23 +133,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.97"
-      - uses: taiki-e/install-action@v2
+      - uses: actions/cache@v6
         with:
-          tool: cargo-deny@0.20.2,cargo-machete@0.9.2,taplo@0.10.0,typos@1.50.2
-      # Advisories, licences and sources, per deny.toml.
-      - run: cargo deny check
-      - run: cargo machete
-      - run: taplo fmt --check
-      - run: typos
-      # ubuntu-latest ships shellcheck; actionlint uses it for `run:` blocks too.
-      - run: shellcheck scripts/*.sh
-      - name: actionlint
-        run: |
-          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
-          ./actionlint -color
-      - uses: hadolint/hadolint-action@v3.5.0
-        with:
-          dockerfile: Dockerfile
+          path: .tools
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/tools.sh') }}
+      # cargo deny (deny.toml), cargo machete, taplo, typos, shellcheck,
+      # actionlint, hadolint. The compose job below parses the compose file.
+      - run: scripts/check.sh lint
 
   compose:
     name: Compose file parses

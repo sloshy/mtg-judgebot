@@ -7,3 +7,4 @@ web/dist
 site
 .claude
 .mcp.json
+.tools
