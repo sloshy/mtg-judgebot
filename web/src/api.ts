@@ -65,7 +65,8 @@ function isReply(v: unknown): v is ApiReply {
   return typeof v === "object" && v !== null && typeof (v as { kind?: unknown }).kind === "string";
 }
 
-/** GET /api/about: the source offer (crates/core/src/source.rs `About`). */
+/** GET /api/about: the source offer and the operator's contact
+ * (crates/core/src/source.rs `About`). */
 export interface About {
   program: string;
   repository: string;
@@ -76,6 +77,10 @@ export interface About {
   license_name: string;
   license_url: string;
   copyright: string;
+  /** Who runs this instance. judge-api refuses to start without the
+   * address; the Discord username is there when the operator set it too. */
+  operator_discord: string | null;
+  operator_email: string | null;
   notice: string;
 }
 

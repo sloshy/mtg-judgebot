@@ -17,7 +17,8 @@ use axum::{
 };
 use judge_bot::discord::{capture::CapturingRetriever, render};
 use judge_core::{
-    About, CallStore, Deps, JudgeError, Question, Retriever, SourceOffer, Validated, Verdict, judge,
+    About, CallStore, Deps, JudgeError, NetworkOperator, Question, Retriever, SourceOffer,
+    Validated, Verdict, judge,
 };
 use judge_llm::SpendMeter;
 use tokio::sync::{Semaphore, SemaphorePermit};
@@ -81,6 +82,8 @@ pub struct App {
     probe: Option<Arc<dyn Probe>>,
     /// What `GET /api/about` says about where this instance's source is.
     offer: SourceOffer,
+    /// Whom `GET /api/about` (and so the page) tells users to write to.
+    operator: NetworkOperator,
 }
 
 impl std::fmt::Debug for App {
@@ -102,6 +105,7 @@ impl App {
         meter: SpendMeter,
         cfg: &ApiConfig,
         offer: SourceOffer,
+        operator: NetworkOperator,
     ) -> Self {
         let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
         deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
@@ -116,6 +120,7 @@ impl App {
             client_ip: cfg.client_ip,
             probe: None,
             offer,
+            operator,
         }
     }
 
@@ -280,9 +285,10 @@ async fn health(State(app): State<Arc<App>>) -> (StatusCode, String) {
 }
 
 /// The source offer as JSON (`judge_core::About`): repository, commit,
-/// licence, copyright and the notice in one string.
+/// licence, copyright, the operator's support address and the notice in one
+/// string.
 async fn about(State(app): State<Arc<App>>) -> Json<About> {
-    Json(app.offer.about())
+    Json(app.offer.about(app.operator.operator()))
 }
 
 /// The peer address, when the server was started with connect info (tests
@@ -566,8 +572,20 @@ mod tests {
             SpendMeter::new(),
             &cfg,
             SourceOffer::upstream(judge_core::Commit::Unknown),
+            test_operator(),
         ));
         (router(app, interfaces, &cfg.web_dist), store)
+    }
+
+    /// A support address and no Discord username: all `judge-api` demands.
+    fn test_operator() -> NetworkOperator {
+        #[allow(clippy::expect_used)]
+        judge_core::Operator::new(
+            None,
+            judge_core::SupportEmail::try_new("judge@example.org").ok(),
+        )
+        .for_network()
+        .expect("the address is set")
     }
 
     fn test_cfg(rate_limit: u32, dist: &Path) -> ApiConfig {
@@ -843,10 +861,16 @@ mod tests {
                 j.get("license"),
                 Some(&serde_json::json!("AGPL-3.0-or-later"))
             );
+            assert_eq!(
+                j.get("operator_email"),
+                Some(&serde_json::json!("judge@example.org"))
+            );
+            assert_eq!(j.get("operator_discord"), Some(&serde_json::Value::Null));
             assert!(
                 j.get("notice")
                     .and_then(serde_json::Value::as_str)
-                    .is_some_and(|n| n.contains(judge_core::source::COPYRIGHT)),
+                    .is_some_and(|n| n.contains(judge_core::source::COPYRIGHT)
+                        && n.contains("judge@example.org")),
                 "{j}"
             );
         }
@@ -888,6 +912,7 @@ mod tests {
                     SpendMeter::new(),
                     &test_cfg(10, Path::new("does-not-exist")),
                     SourceOffer::upstream(judge_core::Commit::Unknown),
+                    test_operator(),
                 )
                 .with_probe(Arc::new(Fixed(probe))),
             );

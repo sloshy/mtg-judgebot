@@ -63,7 +63,8 @@ other two. Nothing here needs Discord until you want the bot in a server.
 
 ```sh
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
-cp .env.example .env               # add ANTHROPIC_API_KEY (and VOYAGE_API_KEY if you have one)
+cp .env.example .env               # add ANTHROPIC_API_KEY (and VOYAGE_API_KEY if you have one),
+                                   # JUDGE_OPERATOR_EMAIL for judge-api, JUDGE_OPERATOR_DISCORD for the bot
 docker compose up -d db            # pgvector Postgres on localhost:5432
 cargo run --release -p judge-ingest -- migrate              # create the schema (bot and api also do this at startup)
 
@@ -92,7 +93,9 @@ covers the portal. Then:
 
 1. Under **Bot**, reset the token and copy it into `.env` as `DISCORD_TOKEN`. Leave every
    *Privileged Gateway Intent* off. The bot receives only its own slash commands and button
-   presses, never messages.
+   presses, never messages. Put your own Discord username in `.env` as
+   `JUDGE_OPERATOR_DISCORD`. The bot refuses to start without it, and `/help` and
+   `/license` show it so that people know who runs the instance.
 2. Under **OAuth2 → URL Generator**, tick the scopes `bot` and `applications.commands`
    and leave the permissions at none (replies go through the interaction). Open the
    generated URL to add the bot to your server. You need *Manage Server* there.
@@ -201,7 +204,9 @@ Each of `judge-api`'s front doors is a launch option. Run on its own it serves
 anonymous web front end on <http://localhost:8787> (SolidJS, built into the image). It
 has the same pipeline, citations and "did you mean…?" flow in the browser, with no login.
 Set `API_INTERFACES` in `.env` to change that list, for example `--api` alone for a
-deployment with no public page. Nobody is logged in there, so the web has **no rating
+deployment with no public page. `judge-api` refuses to start without
+`JUDGE_OPERATOR_EMAIL`, a support address that `GET /api/about`, the page footer and the
+MCP instructions show. Nobody is logged in there, so the web has **no rating
 buttons**. Anonymous traffic is rate limited per IP (`API_RATE_LIMIT` questions per
 `API_RATE_WINDOW_SECS`, default 4 per 5 minutes) on top of the global spend cap. For
 local development:
@@ -292,6 +297,11 @@ CI stamps the commit into the published image, and `git rev-parse HEAD` stamps i
 local build. If you change anything, set `JUDGE_SOURCE_URL` in `.env` to the repository
 holding your changes and every interface points there. That is the whole of your
 obligation under section 13.
+
+The same interfaces name whoever runs the instance. The bot requires
+`JUDGE_OPERATOR_DISCORD` (a Discord username) and `judge-api` requires
+`JUDGE_OPERATOR_EMAIL` (a support address). Each shows the other contact too when it is
+set. `judge-cli` and `judge-mcp` on stdio need neither.
 
 This is unofficial Fan Content permitted under Wizards of the Coast's [Fan Content
 Policy](https://company.wizards.com/en/legal/fancontentpolicy), not approved or

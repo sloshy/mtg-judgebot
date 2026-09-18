@@ -32,7 +32,9 @@ touch Discord. The bot is the last thing to add.
 ## Order of operations
 
 1. `cp .env.example .env` and fill in the keys. Every knob is documented in the file and in
-   the [configuration reference](../../self-hosting/configuration/).
+   the [configuration reference](../../self-hosting/configuration/). Two are contacts,
+   not keys: the bot requires `JUDGE_OPERATOR_DISCORD` (your Discord username) and
+   `judge-api` requires `JUDGE_OPERATOR_EMAIL` (a support address).
 2. `docker compose up -d db`. Postgres publishes on **localhost:5432** (loopback only). If
    something on the host already has that port, set `DB_PORT` in `.env` and change the
    port in `DATABASE_URL` to match.

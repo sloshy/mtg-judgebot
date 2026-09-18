@@ -20,6 +20,8 @@ use regex::Regex;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
+use crate::operator::{DiscordUsername, Operator, SupportEmail};
+
 /// The upstream repository: the default offer for an unmodified build.
 pub const DEFAULT_REPOSITORY: &str = "https://github.com/sloshy/mtg-judgebot";
 /// The variable an operator sets to point the offer at their own repository.
@@ -174,7 +176,14 @@ pub struct About {
     pub license_url: String,
     /// The copyright line.
     pub copyright: String,
-    /// The whole offer as one paragraph of plain text.
+    /// The Discord username of whoever runs this instance, when they set
+    /// one (the Discord bot always has).
+    pub operator_discord: Option<DiscordUsername>,
+    /// The support address of whoever runs this instance, when they set one
+    /// (every network surface always has).
+    pub operator_email: Option<SupportEmail>,
+    /// The whole offer as one paragraph of plain text, followed by the
+    /// operator's contact when there is one.
     pub notice: String,
 }
 
@@ -245,9 +254,18 @@ impl SourceOffer {
         )
     }
 
-    /// The offer as data.
+    /// [`Self::notice`], then whom to contact ([`Operator::notice`]).
     #[must_use]
-    pub fn about(&self) -> About {
+    pub fn notice_with(&self, operator: &Operator) -> String {
+        match operator.notice() {
+            Some(contact) => format!("{} {contact}", self.notice()),
+            None => self.notice(),
+        }
+    }
+
+    /// The offer as data, beside who runs the instance.
+    #[must_use]
+    pub fn about(&self, operator: &Operator) -> About {
         About {
             program: PROGRAM.to_owned(),
             repository: self.repository.clone(),
@@ -258,7 +276,9 @@ impl SourceOffer {
             license_name: LICENSE_NAME.to_owned(),
             license_url: LICENSE_URL.to_owned(),
             copyright: COPYRIGHT.to_owned(),
-            notice: self.notice(),
+            operator_discord: operator.discord().cloned(),
+            operator_email: operator.email().cloned(),
+            notice: self.notice_with(operator),
         }
     }
 }
@@ -357,12 +377,30 @@ mod tests {
     #[test]
     fn about_carries_the_same_facts_as_the_notice() -> R {
         let offer = SourceOffer::upstream(known(true)?);
-        let a = offer.about();
+        let operator = Operator::new(
+            Some(DiscordUsername::try_new("somejudge")?),
+            Some(SupportEmail::try_new("judge@example.org")?),
+        );
+        let a = offer.about(&operator);
         assert_eq!(a.license, LICENSE_SPDX);
         assert_eq!(a.copyright, COPYRIGHT);
         assert!(a.dirty);
         assert_eq!(a.commit.as_ref().map(CommitHash::short), Some("a37d495"));
-        assert_eq!(a.notice, offer.notice());
+        assert_eq!(a.notice, offer.notice_with(&operator));
+        assert!(a.notice.starts_with(&offer.notice()));
+        assert!(a.notice.contains("judge@example.org"), "{}", a.notice);
+        assert_eq!(
+            a.operator_email.as_ref().map(AsRef::as_ref),
+            Some("judge@example.org")
+        );
+        assert_eq!(
+            a.operator_discord.as_ref().map(AsRef::as_ref),
+            Some("somejudge")
+        );
+        // A local process with no contact set says nothing about one.
+        let bare = offer.about(&Operator::default());
+        assert_eq!(bare.notice, offer.notice());
+        assert_eq!(bare.operator_email, None);
         let json = serde_json::to_string(&a)?;
         let back: About = serde_json::from_str(&json)?;
         assert_eq!(back, a);

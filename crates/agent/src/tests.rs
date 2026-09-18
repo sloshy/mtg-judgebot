@@ -80,6 +80,7 @@ fn toolbox(pool: PgPool, quota: Option<Quota>) -> Toolbox {
             judge_quota: quota,
             history_len: 5,
             offer: judge_core::SourceOffer::upstream(judge_core::Commit::Unknown),
+            operator: judge_core::Operator::default(),
         },
     )
 }

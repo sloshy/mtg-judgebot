@@ -51,7 +51,10 @@ use std::{
 
 use judge_anthropic::{Anthropic, Endpoint, ProxyAuth};
 use judge_core::{
-    Commit, CommitHash, JudgeError, RepositoryUrl, SourceOffer, source::SOURCE_URL_ENV,
+    Commit, CommitHash, DiscordOperator, DiscordUsername, JudgeError, MissingContact,
+    NetworkOperator, Operator, RepositoryUrl, SourceOffer, SupportEmail,
+    operator::{OPERATOR_DISCORD_ENV, OPERATOR_EMAIL_ENV},
+    source::SOURCE_URL_ENV,
 };
 use judge_embed::{OpenAiEmbedder, Provider, Space, VoyageEmbedder, WithSpace};
 use judge_llm::{
@@ -742,6 +745,19 @@ pub enum ConfigError {
         /// The value as set.
         value: String,
     },
+    /// An operator contact is set but is not what it claims to be.
+    #[error("{var}={value:?}: not {expected}")]
+    BadContact {
+        /// The variable.
+        var: &'static str,
+        /// The value as set.
+        value: String,
+        /// What the variable holds when it is right.
+        expected: &'static str,
+    },
+    /// A surface was started without the contact it must name.
+    #[error(transparent)]
+    MissingContact(#[from] MissingContact),
     /// A key that does not apply to the provider as configured.
     #[error("providers.{provider}: {key} {reason}")]
     Misplaced {
@@ -1139,6 +1155,11 @@ pub struct Config {
     /// The source offer every remote interface makes: `JUDGE_SOURCE_URL`
     /// (else the upstream repository) at the commit the binary was built from.
     offer: SourceOffer,
+    /// Who runs this instance: `JUDGE_OPERATOR_DISCORD` and
+    /// `JUDGE_OPERATOR_EMAIL`, each validated when set. Which one a process
+    /// *needs* is its surface's business ([`Config::discord_operator`],
+    /// [`Config::network_operator`]).
+    operator: Operator,
 }
 
 /// The commit stamped into this binary by `build.rs`.
@@ -1171,6 +1192,41 @@ pub fn source_offer(env: impl Fn(&str) -> Option<String>) -> Result<SourceOffer,
         None => return Ok(SourceOffer::upstream(build_commit())),
     };
     Ok(SourceOffer::new(repository, build_commit()))
+}
+
+/// Who runs this process: `JUDGE_OPERATOR_DISCORD` and `JUDGE_OPERATOR_EMAIL`
+/// from `env`, blank meaning unset.
+///
+/// # Errors
+/// [`ConfigError::BadContact`] when either is set to something that is not a
+/// Discord username or an email address. A typo here would send users with a
+/// problem to nobody, so it is refused at startup, whichever surface this is.
+pub fn operator(env: impl Fn(&str) -> Option<String>) -> Result<Operator, ConfigError> {
+    let set = |k: &str| {
+        env(k)
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    };
+    let discord = set(OPERATOR_DISCORD_ENV)
+        .map(|value| {
+            DiscordUsername::try_new(&value).map_err(|_| ConfigError::BadContact {
+                var: OPERATOR_DISCORD_ENV,
+                value,
+                expected: "a Discord username (2 to 32 of a-z, 0-9, '_' and '.'; not a display \
+                           name or a name#1234 tag)",
+            })
+        })
+        .transpose()?;
+    let email = set(OPERATOR_EMAIL_ENV)
+        .map(|value| {
+            SupportEmail::try_new(&value).map_err(|_| ConfigError::BadContact {
+                var: OPERATOR_EMAIL_ENV,
+                value,
+                expected: "an email address (name@host.tld, nothing else)",
+            })
+        })
+        .transpose()?;
+    Ok(Operator::new(discord, email))
 }
 
 impl Config {
@@ -1237,12 +1293,14 @@ impl Config {
             .transpose()?;
         let meter = SpendMeter::from_var(env(MAX_SPEND_ENV).as_deref())?;
         let offer = source_offer(&env)?;
+        let operator = operator(&env)?;
         Ok(Self {
             source: Source::File(path.to_path_buf()),
             chat: Some(Chat { extract, synth }),
             embed,
             meter,
             offer,
+            operator,
         })
     }
 
@@ -1333,6 +1391,7 @@ impl Config {
             embed,
             meter: SpendMeter::from_var(set(MAX_SPEND_ENV).as_deref())?,
             offer: source_offer(&env)?,
+            operator: operator(&env)?,
         })
     }
 
@@ -1346,6 +1405,29 @@ impl Config {
     #[must_use]
     pub fn source_offer(&self) -> &SourceOffer {
         &self.offer
+    }
+
+    /// Who runs this instance, as far as they said. Either contact may be
+    /// absent: this is what a local process (`judge-cli`, `judge-mcp`) shows.
+    #[must_use]
+    pub fn operator(&self) -> &Operator {
+        &self.operator
+    }
+
+    /// The operator as the Discord bot must know them.
+    ///
+    /// # Errors
+    /// [`ConfigError::MissingContact`] without `JUDGE_OPERATOR_DISCORD`.
+    pub fn discord_operator(&self) -> Result<DiscordOperator, ConfigError> {
+        Ok(self.operator.clone().for_discord()?)
+    }
+
+    /// The operator as `judge-api` must know them, whichever doors it opens.
+    ///
+    /// # Errors
+    /// [`ConfigError::MissingContact`] without `JUDGE_OPERATOR_EMAIL`.
+    pub fn network_operator(&self) -> Result<NetworkOperator, ConfigError> {
+        Ok(self.operator.clone().for_network()?)
     }
 
     /// The extraction stage, if a chat model is configured.
@@ -1502,7 +1584,7 @@ impl Config {
         }
         serde_json::json!({
             "source": self.source.to_string(),
-            "source_offer": self.offer.about(),
+            "source_offer": self.offer.about(&self.operator),
             "spend_cap_usd": self.meter.max_spend_usd(),
             "providers": providers,
             "models": {
@@ -2198,6 +2280,76 @@ model = "qwen3:8b"
             return Err("direct".into());
         };
         assert_eq!(base_url, "http://proxy:8080");
+        Ok(())
+    }
+
+    #[test]
+    fn each_surface_demands_its_own_contact_and_a_bad_one_fails_at_load() -> R {
+        // Nothing set loads (a local process needs neither) and no surface starts.
+        let nobody = Config::from_vars(|_| None)?;
+        assert_eq!(nobody.operator(), &Operator::default());
+        let msg = nobody
+            .discord_operator()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(msg.contains("JUDGE_OPERATOR_DISCORD"), "{msg}");
+        let msg = nobody
+            .network_operator()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(msg.contains("JUDGE_OPERATOR_EMAIL"), "{msg}");
+        // Blank is unset, not invalid.
+        let blank = Config::from_vars(|k| match k {
+            "JUDGE_OPERATOR_DISCORD" | "JUDGE_OPERATOR_EMAIL" => Some("  ".to_owned()),
+            _ => None,
+        })?;
+        assert_eq!(blank.operator(), &Operator::default());
+
+        // One contact starts its own surface and not the other.
+        let discord_only = Config::from_vars(|k| match k {
+            "JUDGE_OPERATOR_DISCORD" => Some("@SomeJudge".to_owned()),
+            _ => None,
+        })?;
+        assert_eq!(
+            discord_only.discord_operator()?.username().as_ref(),
+            "somejudge"
+        );
+        assert!(matches!(
+            discord_only.network_operator(),
+            Err(ConfigError::MissingContact(MissingContact::Email))
+        ));
+        let both = Config::from_vars(|k| match k {
+            "JUDGE_OPERATOR_DISCORD" => Some("somejudge".to_owned()),
+            "JUDGE_OPERATOR_EMAIL" => Some("judge@example.org".to_owned()),
+            _ => None,
+        })?;
+        assert_eq!(
+            both.network_operator()?.email().as_ref(),
+            "judge@example.org"
+        );
+        assert_eq!(
+            both.report().pointer("/source_offer/operator_email"),
+            Some(&serde_json::json!("judge@example.org"))
+        );
+
+        // A value that is set and wrong is refused whichever surface this is.
+        for (var, value) in [
+            ("JUDGE_OPERATOR_DISCORD", "Some Judge#1234"),
+            ("JUDGE_OPERATOR_EMAIL", "judge at example dot org"),
+        ] {
+            let bad = Config::from_vars(|k| (k == var).then(|| value.to_owned()));
+            let msg = bad.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(msg.contains(var) && msg.contains(value), "{msg}");
+        }
+        // The file branch reads the same variables.
+        let filed = Config::from_toml(EXAMPLE, Path::new("judge.example.toml"), |k| match k {
+            "JUDGE_OPERATOR_EMAIL" => Some("judge@example.org".to_owned()),
+            "ANTHROPIC_API_KEY" | "VOYAGE_API_KEY" => Some("k".to_owned()),
+            _ => None,
+        })?;
+        assert!(filed.network_operator().is_ok());
         Ok(())
     }
 

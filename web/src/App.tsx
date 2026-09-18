@@ -124,7 +124,7 @@ export default function App() {
 }
 
 /** The AGPL source offer: where this instance's code is, at which commit,
- * under which licence. The facts come from the server (GET /api/about), so
+ * under which licence, and whom to write to about it. The facts come from the server (GET /api/about), so
  * an operator who points JUDGE_SOURCE_URL at their fork is covered here
  * without touching the page; while they are missing the footer says so
  * instead of guessing a repository. */
@@ -164,6 +164,23 @@ function SourceOffer(props: { about: About | null }) {
               )}
             </Show>
             .
+            <Show when={a().operator_email}>
+              {(email) => (
+                <>
+                  {" "}
+                  For support, contact whoever runs this instance:{" "}
+                  <a href={`mailto:${email()}`}>{email()}</a>
+                  <Show when={a().operator_discord}>
+                    {(discord) => (
+                      <>
+                        , or <code>@{discord()}</code> on Discord
+                      </>
+                    )}
+                  </Show>
+                  .
+                </>
+              )}
+            </Show>
           </>
         )}
       </Show>

@@ -50,6 +50,9 @@ async fn main() -> Result<()> {
     // cap); the meter handed to the Discord layer is the one they bill to.
     let judge = JudgeConfig::load()?;
     tracing::info!("{}", judge.summary());
+    // The bot names who runs it: no JUDGE_OPERATOR_DISCORD, no bot.
+    let operator = judge.discord_operator()?;
+    tracing::info!(discord = %operator.username(), "operator contact");
     let models = judge.models()?;
     // A cloud door with no credentials fails here, not on the first question.
     judge.probe_auth().await?;
@@ -73,7 +76,14 @@ async fn main() -> Result<()> {
     let meter = models.meter().clone();
     let deps = build_deps_with(pool, &models, vectors, &judge.deps_config());
     tracing::info!(source = %judge.source_offer(), "source offer");
-    let data = Data::new(deps, store, meter, &cfg, judge.source_offer().clone());
+    let data = Data::new(
+        deps,
+        store,
+        meter,
+        &cfg,
+        judge.source_offer().clone(),
+        operator,
+    );
     tracing::info!(
         guild = ?cfg.guild_id,
         judge_role = %cfg.judge_role,

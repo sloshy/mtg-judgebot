@@ -170,6 +170,12 @@ Three front doors share this pipeline through the same composition root
     and the page's footer reads it from there. Discord says the same in `/help`
     and `/license`, and the MCP server in its initialization instructions and
     an `about` tool. `JUDGE_SOURCE_URL` points all of them at a fork.
+  - The same places name who runs the instance (`judge_core::operator`). The
+    bot takes a `DiscordOperator` and the HTTP layer a `NetworkOperator`, and
+    the only way to either is `Operator::for_discord` / `for_network`. So the
+    bot cannot start without `JUDGE_OPERATOR_DISCORD`, and `judge-api` cannot
+    start without `JUDGE_OPERATOR_EMAIL`, whichever doors it opens. A local
+    `judge-cli` or stdio `judge-mcp` holds a plain `Operator` and needs neither.
   - There are no rating endpoints, because anonymous callers are not
     accountable identities.
   - Ambiguity is returned as data and resolved statelessly. The client re-asks

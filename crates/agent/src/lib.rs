@@ -47,7 +47,7 @@ use judge_bot::{
     session::{PersistCall, Sessions},
     synth::Harness,
 };
-use judge_core::{CallStore, Deps, Resolver, Retriever, SourceOffer};
+use judge_core::{CallStore, Deps, Operator, Resolver, Retriever, SourceOffer};
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
@@ -115,6 +115,8 @@ pub struct Toolbox {
     /// What `about` and the MCP instructions say about where this
     /// instance's source is.
     offer: SourceOffer,
+    /// Who runs this instance, as far as they said.
+    operator: Operator,
 }
 
 impl std::fmt::Debug for Toolbox {
@@ -145,6 +147,10 @@ pub struct Options {
     pub history_len: usize,
     /// The source offer (`Config::source_offer`).
     pub offer: SourceOffer,
+    /// Who runs this instance (`Config::operator`). Optional here because a
+    /// local process has no one else to name; `judge-api` hands `/mcp` the
+    /// one it refused to start without (`NetworkOperator::operator`).
+    pub operator: Operator,
 }
 
 impl Toolbox {
@@ -201,7 +207,14 @@ impl Toolbox {
             }),
             history_len: opts.history_len,
             offer: opts.offer,
+            operator: opts.operator,
         }
+    }
+
+    /// Who runs this instance.
+    #[must_use]
+    pub fn operator(&self) -> &Operator {
+        &self.operator
     }
 
     /// The source offer this process makes.
@@ -279,6 +292,7 @@ impl Toolbox {
                 judge_quota: None,
                 history_len: DEFAULT_HISTORY,
                 offer: config.source_offer().clone(),
+                operator: config.operator().clone(),
             },
         ))
     }

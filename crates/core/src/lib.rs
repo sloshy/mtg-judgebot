@@ -9,6 +9,7 @@ pub mod category;
 pub mod domain;
 pub mod error;
 pub mod judge;
+pub mod operator;
 pub mod ports;
 pub mod quote;
 pub mod source;
@@ -19,6 +20,9 @@ pub use category::{Category, UnknownCategory};
 pub use domain::*;
 pub use error::JudgeError;
 pub use judge::{Deps, judge};
+pub use operator::{
+    DiscordOperator, DiscordUsername, MissingContact, NetworkOperator, Operator, SupportEmail,
+};
 pub use ports::{CallStore, Embedder, Extractor, InputKind, Resolver, Retriever, Synthesizer};
 pub use source::{About, Commit, CommitHash, RepositoryUrl, SourceOffer};
 pub use verdict::{

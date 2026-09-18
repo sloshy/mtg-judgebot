@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use judge_core::SourceOffer;
+use judge_core::{Operator, SourceOffer};
 use rmcp::{
     Json, ServerHandler, ServiceExt as _,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -61,11 +61,12 @@ Lookups that need no session: `resolve_card` (name → card, or candidates), `ca
 rulings, notes by oracle id), `get_rules` (by id, at most 10), `search_rules` (free text), `glossary`. \
 `about` returns the notice below as data.";
 
-/// [`INSTRUCTIONS`] with the source offer appended: the notice reaches every
-/// MCP client at initialization, whatever tools it goes on to call.
+/// [`INSTRUCTIONS`] with the source offer and the operator's contact
+/// appended: the notice reaches every MCP client at initialization, whatever
+/// tools it goes on to call.
 #[must_use]
-pub fn instructions(offer: &SourceOffer) -> String {
-    format!("{INSTRUCTIONS}\n\n{}", offer.notice())
+pub fn instructions(offer: &SourceOffer, operator: &Operator) -> String {
+    format!("{INSTRUCTIONS}\n\n{}", offer.notice_with(operator))
 }
 
 /// The MCP handler.
@@ -281,7 +282,7 @@ impl JudgeMcp {
 
     #[tool(
         name = "about",
-        description = "Where this server's source code is (repository and commit), its licence (AGPL-3.0-or-later) and copyright; the same notice the initialization instructions carry. No database access."
+        description = "Where this server's source code is (repository and commit), its licence (AGPL-3.0-or-later) and copyright, and how to contact whoever runs it; the same notice the initialization instructions carry. No database access."
     )]
     fn about(&self) -> Json<judge_core::About> {
         Json(self.toolbox.about())
@@ -314,7 +315,7 @@ impl ServerHandler for JudgeMcp {
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("mtg-judgebot", version))
-            .with_instructions(instructions(self.toolbox.offer()))
+            .with_instructions(instructions(self.toolbox.offer(), self.toolbox.operator()))
     }
 }
 

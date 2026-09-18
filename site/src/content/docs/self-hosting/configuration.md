@@ -28,6 +28,8 @@ variables for its secrets and never holds one.
 | `JUDGE_CONCURRENCY` | `2` | bot, api | Judge runs in flight at once. Further ones get a "busy" reply. The MCP transport shares the API's slots. |
 | `JUDGE_AUTO_MIGRATE` | `true` | bot, api | Apply pending schema migrations at startup. `false` to manage the schema with `judge-ingest migrate` or sqlx-cli. |
 | `JUDGE_SOURCE_URL` | the upstream repository | all | The repository named by the source offer every remote interface makes (the web footer and `GET /api/about`, Discord `/help` and `/license`, the MCP instructions and `about` tool, `judge-cli about`), shown with the commit the binary was built from and the AGPL-3.0-or-later notice. Set it to your fork if you run a modified version. It must be an http(s) URL, and anything else is refused at startup. |
+| `JUDGE_OPERATOR_DISCORD` | (required by `bot`) | all | The Discord username of whoever runs the instance, shown by `/help` and `/license`. A username, not a display name or a `name#1234` tag. A leading `@` is dropped. The other interfaces show it too when it is set. A malformed value is refused at startup by every binary. |
+| `JUDGE_OPERATOR_EMAIL` | (required by `api`) | all | A support address, shown by `GET /api/about`, the page footer, the MCP instructions and `about` tool. `judge-api` does not start without it, whichever doors it opens. Letters, digits and `._+-` before the `@`. Discord shows it too when it is set. `judge-cli` and `judge-mcp` on stdio show it when set and need neither contact. |
 
 ## Discord
 

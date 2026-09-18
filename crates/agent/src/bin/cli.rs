@@ -367,7 +367,7 @@ async fn run(cmd: Command) -> Result<()> {
         }
         let config = judge_bot::config::Config::load()?;
         return match cmd {
-            Command::About => print(&config.source_offer().about()),
+            Command::About => print(&config.source_offer().about(config.operator())),
             _ => print(&config.report()),
         };
     }

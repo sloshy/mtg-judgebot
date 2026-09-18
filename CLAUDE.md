@@ -109,6 +109,15 @@ Dockerfile build args. CI sets `JUDGE_COMMIT` to the sha, and a non-hash fails t
 Without `JUDGE_COMMIT` it uses `git rev-parse HEAD` plus a dirty flag. An unstamped build says
 "commit unknown" rather than guessing.
 
+**The operator contact** (`judge_core::operator`) travels beside the source offer.
+`JUDGE_OPERATOR_DISCORD` (a `DiscordUsername`) is required by the bot, and
+`JUDGE_OPERATOR_EMAIL` (a `SupportEmail`) by `judge-api` whichever doors it opens.
+"Required" is a type: `Data::new` takes a `DiscordOperator` and `App::new` a
+`NetworkOperator`, made only by `Operator::for_discord` / `for_network`
+(`Config::discord_operator` / `network_operator`). `judge-cli` and stdio `judge-mcp` hold
+a plain `Operator` and need neither. A set-but-malformed value fails `Config` load
+everywhere. `About` carries both as `operator_discord` / `operator_email`.
+
 `GET /api/health` runs a `Probe` (the pool, 3 s timeout). The compose healthcheck invokes
 bash by name, because `/bin/sh` is dash in the slim image and has no `/dev/tcp`.
 

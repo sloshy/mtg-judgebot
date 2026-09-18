@@ -86,6 +86,9 @@ async fn main() -> Result<()> {
     // cap); the meter handed to the HTTP layer is the one they bill to.
     let judge = JudgeConfig::load()?;
     tracing::info!("{}", judge.summary());
+    // Every door names who runs it: no JUDGE_OPERATOR_EMAIL, no server.
+    let operator = judge.network_operator()?;
+    tracing::info!(email = %operator.email(), "operator contact");
     let models = judge.models()?;
     // A cloud door with no credentials fails here, not on the first question.
     judge.probe_auth().await?;
@@ -117,6 +120,7 @@ async fn main() -> Result<()> {
             models.meter().clone(),
             &cfg,
             judge.source_offer().clone(),
+            operator.clone(),
         )
         .with_probe(Arc::new(pool.clone())),
     );
@@ -145,6 +149,7 @@ async fn main() -> Result<()> {
                 }),
                 history_len: cfg.history_len,
                 offer: judge.source_offer().clone(),
+                operator: operator.operator().clone(),
             },
         );
         let service = judge_agent::mcp::http_service(Arc::new(toolbox), cfg.mcp_hosts.clone());

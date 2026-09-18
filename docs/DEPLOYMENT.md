@@ -103,7 +103,8 @@ Copy the connector token into `.env.deploy` as `TUNNEL_TOKEN`.
 Configuration lives in two separate files:
 
 ```sh
-cp .env.example .env               # app config: API keys, DISCORD_TOKEN, GUILD_ID
+cp .env.example .env               # app config: API keys, DISCORD_TOKEN, GUILD_ID,
+                                   # JUDGE_OPERATOR_DISCORD and JUDGE_OPERATOR_EMAIL (both required here)
 cp .env.deploy.example .env.deploy # deploy credentials: TUNNEL_TOKEN, R2_*
 ```
 
@@ -587,6 +588,11 @@ before but does **not** mount `/mcp`. A deployment with an `MCP_TOKEN` keeps sta
 and logs a warning. Set `API_INTERFACES=--api --web --mcp` in `.env` and run
 `docker compose up -d api` to get the endpoint back.
 
+When upgrading past the release that added the operator contact, set
+`JUDGE_OPERATOR_DISCORD` (your Discord username) and `JUDGE_OPERATOR_EMAIL` (a support
+address) in `.env` *before* `docker compose up -d`. `bot` exits without the first and
+`api` without the second, and with `restart: unless-stopped` that is a restart loop.
+
 `docker compose up -d --build` still works on a machine with the CPU and RAM for it.
 `build: .` is retained for local development.
 
@@ -691,6 +697,7 @@ own if the connector restarts.
 | The page 404s but `/api/health` is fine | `--web` is not in `API_INTERFACES`; the startup log line lists what is on and what is off |
 | Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the tunnel — every request looks like the cloudflared container |
 | Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied |
+| `bot` or `api` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact that surface must show is unset or malformed in `.env`; set it and `docker compose up -d` |
 | `judge-api` exits citing `API_TRUST_FORWARDED` | that variable was removed as unsafe; use `API_CLIENT_IP` |
 | Bot online, web page dead | expected if only `api` failed — the gateway is a separate outbound connection |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |

@@ -50,15 +50,18 @@ the text is restored.
 
 ## `/help`
 
-What the bot does, how to ask, what it stores, and where the source is (the same notice
-as `/license`). The reply is ephemeral, so only you see it.
+Two replies: what the bot does, how to ask and what it stores, then the same notice as
+`/license` (where the source is and who runs this instance). Both are ephemeral, so only
+you see them.
 
 ## `/license`
 
 The source offer: the repository holding this instance's source code, the commit it was
 built from (linked into the repository), the licence (AGPL-3.0-or-later) and the
 copyright. An operator running a modified version points it at their fork with
-`JUDGE_SOURCE_URL`. An unmodified build names the upstream repository. The reply is
+`JUDGE_SOURCE_URL`. An unmodified build names the upstream repository. The reply ends
+with the Discord username of whoever runs this instance (`JUDGE_OPERATOR_DISCORD`, which
+the bot does not start without) and their support address if they set one. The reply is
 ephemeral.
 
 ## `/forget`

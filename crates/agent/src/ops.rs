@@ -680,7 +680,7 @@ impl Toolbox {
     /// under which licence. Needs nothing from the database.
     #[must_use]
     pub fn about(&self) -> About {
-        self.offer().about()
+        self.offer().about(self.operator())
     }
 
     /// Glossary lookup.

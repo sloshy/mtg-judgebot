@@ -7,7 +7,19 @@ unless `JUDGE_AUTO_MIGRATE=false`.
 
 ## [Unreleased]
 
+### Changed
+- **The bot and `judge-api` now refuse to start without an operator contact.** Set
+  `JUDGE_OPERATOR_DISCORD` (your Discord username) for the bot and
+  `JUDGE_OPERATOR_EMAIL` (a support address) for `judge-api`, in `.env`. Add them before
+  pulling this version. A value that is set and malformed is refused by every binary.
+
 ### Added
+- Every remote interface names who runs the instance, beside the source offer. `/help`
+  and `/license` show the operator's Discord username. `GET /api/about` (new
+  `operator_email` and `operator_discord` fields), the page footer, the MCP
+  initialization instructions and `about` tool show the support address. Each shows the
+  other contact too when it is set. `judge-cli about` shows whichever are set and
+  requires neither.
 - The AGPL source offer on every remote interface. The web page's footer (from the new
   `GET /api/about`, served whatever doors are off), Discord `/help` and a new `/license`
   command, the MCP server's initialization instructions and a new `about` tool, and

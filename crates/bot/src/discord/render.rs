@@ -9,8 +9,8 @@
 use std::fmt::Write as _;
 
 use judge_core::{
-    Ambiguous, CardId, Citation, Confidence, Context, JudgeError, RuleId, Score, SourceOffer,
-    Validated, Verdict, source,
+    Ambiguous, CardId, Citation, Confidence, Context, DiscordOperator, JudgeError, RuleId, Score,
+    SourceOffer, Validated, Verdict, source,
 };
 use nonempty::NonEmpty;
 
@@ -83,20 +83,39 @@ rate. Nothing else is read: the bot sees only its slash commands. `/forget` dele
 Answers are AI-generated; verify anything important with a human judge. Unofficial Fan Content under the \
 Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.\n\n";
 
-/// `/help`: [`HELP_BODY`] followed by the source offer — where this
-/// instance's code is, at which commit, under which licence — so the
-/// AGPL's network clause is met on the bot's own surface. Ephemeral, so it
-/// never clutters a channel; under [`CONTENT_LIMIT`] by a wide margin.
+/// `/help`, as the two messages it is sent in: [`HELP_BODY`], then what
+/// `/license` says — where this instance's code is, at which commit, under
+/// which licence, so the AGPL's network clause is met on the bot's own
+/// surface, and who runs it. Two because the body and the longest offer and
+/// contact together pass [`CONTENT_LIMIT`]; each is under it by a wide
+/// margin. Ephemeral, so neither clutters a channel.
 #[must_use]
-pub fn help(offer: &SourceOffer) -> String {
-    format!("{HELP_BODY}{}", license(offer))
+pub fn help(offer: &SourceOffer, operator: &DiscordOperator) -> [String; 2] {
+    [HELP_BODY.trim_end().to_owned(), license(offer, operator)]
+}
+
+/// Who runs this instance. The username is in a code span: `_` is legal in
+/// one and would otherwise italicise. The support address follows when the
+/// operator set one too.
+#[must_use]
+pub fn contact(operator: &DiscordOperator) -> String {
+    let email = operator
+        .operator()
+        .email()
+        .map(|e| format!(" or `{e}`"))
+        .unwrap_or_default();
+    format!(
+        "**Who runs this bot.** `@{}` on Discord{email}. Tell them about problems with this \
+instance.",
+        operator.username()
+    )
 }
 
 /// `/license`: the source offer alone. Links are wrapped in `<…>` so Discord
 /// does not unfurl them into embeds; the commit links into the repository
-/// when the build knew it.
+/// when the build knew it. [`contact`] follows it.
 #[must_use]
-pub fn license(offer: &SourceOffer) -> String {
+pub fn license(offer: &SourceOffer, operator: &DiscordOperator) -> String {
     let revision = match offer.commit_url() {
         Some(url) => format!("[{}](<{url}>)", offer.revision()),
         None => offer.revision(),
@@ -104,12 +123,13 @@ pub fn license(offer: &SourceOffer) -> String {
     format!(
         "**Source and licence.** {} — {}. Free software under the [{}](<{}>): you may run, study, \
 share and modify it, and anyone offering a modified version over a network must offer its source under \
-the same licence. The source code of this instance is at <{}> ({revision}).",
+the same licence. The source code of this instance is at <{}> ({revision}).\n\n{}",
         source::PROGRAM,
         source::COPYRIGHT,
         source::LICENSE_NAME,
         source::LICENSE_URL,
         offer.repository(),
+        contact(operator),
     )
 }
 
@@ -1112,7 +1132,7 @@ mod info_tests {
     use super::*;
 
     #[test]
-    fn help_fits_one_message_and_names_the_other_commands() -> anyhow::Result<()> {
+    fn help_parts_each_fit_a_message_and_name_the_other_commands() -> anyhow::Result<()> {
         // The longest offer: a long repository URL, a dirty build.
         let offer = SourceOffer::new(
             judge_core::RepositoryUrl::try_new(
@@ -1123,12 +1143,25 @@ mod info_tests {
                 dirty: true,
             },
         );
-        let help = help(&offer);
-        assert!(
-            help.chars().count() <= CONTENT_LIMIT,
-            "{}",
-            help.chars().count()
-        );
+        // …and the longest contact: a 32-character username and an address.
+        let operator = judge_core::Operator::new(
+            Some(judge_core::DiscordUsername::try_new(
+                "a_judge.with_the_longest_name_32",
+            )?),
+            Some(judge_core::SupportEmail::try_new(
+                "judgebot-support@some-organisation.example-hosting-company.com",
+            )?),
+        )
+        .for_discord()?;
+        let parts = help(&offer, &operator);
+        for part in &parts {
+            assert!(
+                !part.is_empty() && part.chars().count() <= CONTENT_LIMIT,
+                "{}",
+                part.chars().count()
+            );
+        }
+        let help = parts.join("\n\n");
         for needle in [
             "/judge",
             "/forget",
@@ -1138,12 +1171,25 @@ mod info_tests {
             source::COPYRIGHT,
             "<https://gitlab.example-hosting-company.com/some-organisation/some-team/mtg-judgebot-fork>",
             "[commit a37d495, built with uncommitted changes](<https://gitlab.example-hosting-company.com/some-organisation/some-team/mtg-judgebot-fork/commit/a37d495c937819de39a30ba0624f9bffbfc494d2>)",
+            "`@a_judge.with_the_longest_name_32` on Discord",
+            "`judgebot-support@some-organisation.example-hosting-company.com`",
         ] {
             assert!(help.contains(needle), "{needle}\n{help}");
         }
-        assert!(help.ends_with(&license(&offer)));
+        assert_eq!(parts.last(), Some(&license(&offer, &operator)));
+        // Without a support address the username stands alone.
+        let alone = judge_core::Operator::new(
+            Some(judge_core::DiscordUsername::try_new("somejudge")?),
+            None,
+        )
+        .for_discord()?;
+        assert!(
+            contact(&alone).contains("`@somejudge` on Discord. "),
+            "{}",
+            contact(&alone)
+        );
         // An unstamped build says so and links nothing for the commit.
-        let unknown = license(&SourceOffer::upstream(judge_core::Commit::Unknown));
+        let unknown = license(&SourceOffer::upstream(judge_core::Commit::Unknown), &alone);
         assert!(unknown.contains("(commit unknown)"), "{unknown}");
         assert!(!unknown.contains("/commit/"), "{unknown}");
         Ok(())
