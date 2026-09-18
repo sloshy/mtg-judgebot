@@ -15,7 +15,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.98"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/sloshy/mtg-judgebot"
 publish = false
@@ -36,7 +36,7 @@ async-trait = "0.1"
 futures = "0.3"
 nonempty = { version = "0.12", features = ["serialize"] }
 nutype = { version = "0.7", features = ["serde", "regex"] }
-sha2 = "0.10"
+sha2 = "0.11"
 schemars = { version = "1.2", features = ["uuid1"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -46,14 +46,14 @@ uuid = { version = "1", features = ["serde", "v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rmcp = { version = "3.2", default-features = false, features = [
+rmcp = { version = "3.4", default-features = false, features = [
   "server",
   "macros",
   "schemars",
   "transport-io",
   "transport-streamable-http-server",
 ] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 url = "2"
 # Cloud doors for the Anthropic backend (optional features of judge-anthropic).
 aws-config = "1"

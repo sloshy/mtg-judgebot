@@ -59,24 +59,34 @@ struct Datum {
 impl VoyageEmbedder {
     /// With an explicit key, model and width. `dimensions` is sent on every
     /// request, so the vectors are that wide whatever the model's default.
-    #[must_use]
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>, dimensions: usize) -> Self {
-        Self {
-            http: reqwest::Client::new(),
+    ///
+    /// # Errors
+    /// If the underlying HTTP client cannot be built (no system CA certificates).
+    pub fn new(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        dimensions: usize,
+    ) -> Result<Self, JudgeError> {
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(anyhow::Error::from)?;
+        Ok(Self {
+            http,
             api_key: api_key.into(),
             space: Space {
                 provider: Provider::Voyage,
                 model: model.into(),
                 dimensions,
             },
-        }
+        })
     }
 
     /// Reads `VOYAGE_API_KEY`, optional `VOYAGE_MODEL` (default `voyage-3.5`) and
     /// optional `VOYAGE_DIMENSIONS` (default 1024).
     ///
     /// # Errors
-    /// If the key is unset or `VOYAGE_DIMENSIONS` is not a positive integer.
+    /// If the key is unset, `VOYAGE_DIMENSIONS` is not a positive integer or the
+    /// HTTP client cannot be built.
     pub fn from_env() -> anyhow::Result<Self> {
         // An empty value (e.g. `VOYAGE_API_KEY=` in .env) counts as unset.
         let api_key = std::env::var("VOYAGE_API_KEY")
@@ -90,7 +100,7 @@ impl VoyageEmbedder {
             })?,
             Err(_) => DEFAULT_DIMENSIONS,
         };
-        Ok(Self::new(api_key, model, dimensions))
+        Ok(Self::new(api_key, model, dimensions)?)
     }
 }
 
@@ -170,8 +180,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn debug_redacts_api_key() {
-        let e = VoyageEmbedder::new("pa-secret", DEFAULT_MODEL, 1024);
+    fn debug_redacts_api_key() -> Result<(), JudgeError> {
+        let e = VoyageEmbedder::new("pa-secret", DEFAULT_MODEL, 1024)?;
         let s = format!("{e:?}");
         assert!(!s.contains("pa-secret") && s.contains("<redacted>"), "{s}");
         assert_eq!(
@@ -182,6 +192,7 @@ mod tests {
                 dimensions: 1024
             }
         );
+        Ok(())
     }
 
     #[test]

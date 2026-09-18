@@ -54,7 +54,7 @@ through it and explains how the judge works inside.
 Requirements:
 
 - Docker with the compose plugin.
-- Rust 1.97 (`rust-toolchain.toml` installs it through rustup).
+- Rust 1.98 (`rust-toolchain.toml` installs it through rustup).
 - A model provider: an Anthropic API key out of the box, or a `judge.toml` naming
   another provider (below).
 

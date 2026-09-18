@@ -17,9 +17,10 @@ touch Discord. The bot is the last thing to add.
 - A host that stays on, with Docker and the compose plugin. Running takes about 200 MB of
   RAM across the three containers. **Building** the image takes ~4 GB and a lot of CPU. A
   low-powered host pulls the CI-built image instead (`docker compose pull`).
-- Rust 1.97 on the machine where you run the data loads. Or run them inside the image
+- Rust 1.98 on the machine where you run the data loads. Or run them inside the image
   (`docker compose run --rm refresh cards`, and so on). `refresh` is the `judge-ingest`
-  binary.
+  binary. A binary run on the host verifies HTTPS against the system's CA certificates
+  (`ca-certificates` on Debian and Ubuntu), and without them it refuses to start.
 - A model provider. With `.env` alone that is Anthropic's API (`ANTHROPIC_API_KEY`).
   A [`judge.toml`](../../self-hosting/models/) chooses anything else.
 - Optionally a Voyage AI key for the semantic-search leg, or an embedding model on an

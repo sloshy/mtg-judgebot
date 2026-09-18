@@ -298,13 +298,16 @@ struct PeerAddr(Option<SocketAddr>);
 impl<S: Send + Sync> FromRequestParts<S> for PeerAddr {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(Self(
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(Ok(Self(
             parts
                 .extensions
                 .get::<ConnectInfo<SocketAddr>>()
                 .map(|c| c.0),
-        ))
+        )))
     }
 }
 

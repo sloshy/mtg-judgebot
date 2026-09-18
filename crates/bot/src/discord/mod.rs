@@ -1,5 +1,5 @@
 //! The Discord adapter (build-order step 6): the `/judge` slash command,
-//! rating buttons and the "did you mean…?" flow, on poise 0.6 / serenity 0.12.
+//! rating buttons and the "did you mean…?" flow, on poise 0.7 / serenity 0.12.
 //!
 //! Everything that does not need the gateway lives in a pure submodule:
 //! [`render`] (verdict / error → text), [`mana`] (card symbols → the bot's
@@ -616,11 +616,10 @@ async fn forget_command(ctx: Ctx<'_>) -> Result<(), Error> {
 }
 
 async fn event_handler(
-    ctx: &serenity::Context,
+    framework: poise::FrameworkContext<'_, Data, Error>,
     event: &FullEvent,
-    _framework: poise::FrameworkContext<'_, Data, Error>,
-    data: &Data,
 ) -> Result<(), Error> {
+    let (ctx, data) = (framework.serenity_context, framework.user_data);
     match event {
         FullEvent::Ready { data_about_bot } => {
             tracing::info!(user = %data_about_bot.user.name, guilds = data_about_bot.guilds.len(), "connected to Discord");
@@ -637,7 +636,7 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
     match error {
         poise::FrameworkError::Command { error, ctx, .. } => {
             tracing::error!(
-                command = ctx.command().name,
+                command = &*ctx.command().name,
                 error = format_args!("{error:#}"),
                 "command failed"
             );
@@ -706,9 +705,7 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
             license_command(),
             forget_command(),
         ],
-        event_handler: |ctx, event, framework, data| {
-            Box::pin(event_handler(ctx, event, framework, data))
-        },
+        event_handler: |framework, event| Box::pin(event_handler(framework, event)),
         on_error: |e| Box::pin(on_error(e)),
         ..Default::default()
     };

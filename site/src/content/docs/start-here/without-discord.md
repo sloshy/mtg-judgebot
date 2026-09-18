@@ -9,7 +9,7 @@ Nothing in the pipeline depends on Discord. The quickest way to see the judge wo
 web page on your own machine, and the cheapest is the command line. Both need the database
 and the data. The model provider is the only paid part.
 
-You need Docker with the compose plugin, Rust 1.97 (`rust-toolchain.toml` makes rustup
+You need Docker with the compose plugin, Rust 1.98 (`rust-toolchain.toml` makes rustup
 install it), and an Anthropic API key. A Voyage AI key adds the semantic-search leg.
 Without it the bot runs on the other two.
 

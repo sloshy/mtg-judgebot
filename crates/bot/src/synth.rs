@@ -1917,10 +1917,13 @@ mod harness_tests {
     #[test]
     fn the_anthropic_prompt_rendering_is_pinned() {
         use sha2::{Digest as _, Sha256};
-        let digest = format!(
-            "{:x}",
-            Sha256::digest(system_prompt(Harness::Tool).as_bytes())
-        );
+        use std::fmt::Write as _;
+        let digest = Sha256::digest(system_prompt(Harness::Tool).as_bytes())
+            .iter()
+            .fold(String::new(), |mut hex, b| {
+                let _ = write!(hex, "{b:02x}");
+                hex
+            });
         assert_eq!(
             digest, "8811f7b631bc3d825114f48fa496c552b74273e4a96d2b554f68ac076016a13d",
             "the Anthropic synthesis prompt changed"

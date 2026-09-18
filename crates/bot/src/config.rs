@@ -1090,11 +1090,10 @@ impl Embed {
     /// Build the embedder.
     fn embedder(&self) -> Result<Arc<dyn WithSpace>, ConfigError> {
         Ok(match &self.backend {
-            EmbedProvider::Voyage { api_key } => Arc::new(VoyageEmbedder::new(
-                api_key.expose(),
-                &self.model,
-                self.dimensions,
-            )),
+            EmbedProvider::Voyage { api_key } => Arc::new(
+                VoyageEmbedder::new(api_key.expose(), &self.model, self.dimensions)
+                    .map_err(ConfigError::Embedder)?,
+            ),
             EmbedProvider::OpenAi {
                 base_url,
                 auth,

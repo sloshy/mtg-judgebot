@@ -82,6 +82,14 @@ unless `JUDGE_AUTO_MIGRATE=false`.
   width, and its search box no longer shifts between the landing page and the docs.
 - `docs/DEPLOYMENT.md` uses placeholder hostnames and paths instead of the upstream
   operator's.
+- Outbound HTTPS (the model providers, the embedders, Scryfall, Wizards' rules page)
+  verifies certificates against the system's trust store instead of a bundled root
+  list. The image ships `ca-certificates`. A binary run outside the image needs the
+  host's CA bundle, and a CA the host trusts (a corporate proxy) is now trusted too.
+  Discord traffic still uses the bundled roots.
+- Dependencies updated: Rust 1.98, reqwest 0.13, poise 0.7, tower-http 0.7, rmcp 3.4,
+  Vite 8, TypeScript 6, Node 24 for the web build, and cloudflared 2026.9.1 in the
+  compose file.
 
 ### Fixed
 - Documentation site: a table wider than the text column scrolls inside itself again

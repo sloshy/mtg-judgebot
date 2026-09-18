@@ -56,14 +56,14 @@ jobs:
       # rust-toolchain.toml pins the version; the action installs exactly that.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.97"
+          toolchain: "1.98"
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
 
       # sqlx-cli has no prebuilt release, so it is compiled once and cached by
       # version.
-      - uses: taiki-e/cache-cargo-install-action@v2
+      - uses: taiki-e/cache-cargo-install-action@v3
         with:
           tool: sqlx-cli@0.9
           locked: true
@@ -87,9 +87,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm --prefix web ci
@@ -108,9 +108,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: site/package-lock.json
       - run: npm --prefix site ci
@@ -132,7 +132,7 @@ jobs:
       # rather than left to rustup's auto-install from rust-toolchain.toml.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.97"
+          toolchain: "1.98"
       - uses: actions/cache@v6
         with:
           path: .tools

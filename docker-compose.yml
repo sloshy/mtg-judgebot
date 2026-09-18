@@ -171,7 +171,7 @@ services:
   # open inbound port, no public IPv4 and no dynamic DNS. Off by default;
   # deployments opt in with COMPOSE_PROFILES=tunnel in .env.
   cloudflared:
-    image: cloudflare/cloudflared:2026.8.3
+    image: cloudflare/cloudflared:2026.9.1
     container_name: judgebot-tunnel
     restart: unless-stopped
     profiles: ["tunnel"]
