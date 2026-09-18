@@ -1,12 +1,12 @@
-# How the MTG Judge Bot works, and why
+# MTG Judge Bot explainer
 
 An explainer for a programmer who is comfortable with web services and SQL but new to
 language models in production, embeddings, and vector search. It describes what the
-application does, walks one question through it, explains each technique it uses, lists
-the things that go wrong in a system like this and how this one handles them, and closes
-with the technology choices and the reasons behind them.
+application does and walks one question through it. It then explains each technique, lists
+what goes wrong in a system like this and how this one handles it, and closes with the
+technology choices and the reasons behind them.
 
-`docs/ARCHITECTURE.md` is the terse, kept-current reference; this document is the tour.
+`docs/ARCHITECTURE.md` is the terse, kept-current reference. This document is the tour.
 Where the two disagree, the code wins, then ARCHITECTURE.md.
 
 ---
@@ -28,14 +28,14 @@ four kinds of source:
 - a **prior call** the bot itself made earlier that users rated well.
 
 Discord users rate each answer 1 to 3. Ratings never make the bot "learn" in the model
-sense. They only decide which old answers get shown to the model later as examples.
+sense. They decide which old answers the model sees later as examples, and nothing else.
 
-The whole thing is one Postgres database, a handful of Rust binaries, two paid APIs
+The system is one Postgres database, a handful of Rust binaries, two paid APIs
 (a chat model for reasoning, an embedding model for search), and a nightly refresh job.
 
 ---
 
-## 2. Why not just ask the model?
+## 2. Limits of asking the model directly
 
 A large language model already "knows" a lot about Magic. Asking it directly fails in
 three ways that matter for a judge bot:
@@ -44,34 +44,35 @@ three ways that matter for a judge bot:
    current, and a plausible paragraph looks the same as a correct one.
 2. **Its knowledge is frozen.** New sets, keywords and errata arrive monthly. The CR is
    renumbered a few times a year.
-3. **Nobody can check it.** An answer without a pointer into the actual rules text cannot be
+3. **Nobody can check it.** An answer without a pointer into the rules text cannot be
    verified by the asker or by a human judge.
 
-The standard remedy is **retrieval-augmented generation** (RAG): before asking the model,
-look up the relevant source material yourself, hand it to the model, and tell the model
-to answer *only* from that material. This bot is a RAG system with two additions that most
+The standard remedy is **retrieval-augmented generation** (RAG). Before asking the model,
+look up the relevant source material yourself and hand it to the model. Tell the model to
+answer *only* from that material. This bot is a RAG system with two additions that most
 RAG systems skip:
 
 - **Citation validation.** The model must quote its sources, and the program checks that
-  every quote really is a substring of the source it names. A failed check rejects the
-  whole answer. This turns "the model was told to cite" into "the answer is grounded".
+  every quote is a substring of the source it names. A failed check rejects the answer.
+  This turns "the model was told to cite" into "the answer is grounded".
 - **Entity resolution before search.** Card names are looked up in a table, not searched for
-  semantically. "bob" must become exactly *Dark Confidant*, or the user must be asked.
+  semantically. "bob" must become one card, *Dark Confidant*, or the user must be asked.
 
-The rest of this document is mostly about how those two ideas play out.
+Most of this document is about how those two ideas play out.
 
 ---
 
 ## 3. One question, end to end
 
-Take the question above. Here is what happens, in order. The pipeline lives in
-`crates/core/src/judge.rs`; each step is a "port" (a trait) that core defines and an adapter
+Take the question above. The steps below happen in order. The pipeline lives in
+`crates/core/src/judge.rs`. Each step is a "port" (a trait) that core defines and an adapter
 in `crates/bot` implements.
 
-### Step 1: Extraction and classification (one cheap model call)
+### Step 1: Extraction and classification
 
-The bot sends the question, plus the last five Q&A pairs in the same thread, to the chat
-model with a small system prompt and a **JSON schema** for the reply. The model returns:
+This step is one cheap model call. The bot sends the question, plus the last five Q&A pairs
+in the same thread, to the chat model with a small system prompt and a **JSON schema** for
+the reply. The model returns:
 
 ```json
 {
@@ -83,12 +84,12 @@ model with a small system prompt and a **JSON schema** for the reply. The model 
 }
 ```
 
-Three things happen in this one call:
+Three things happen in this call:
 
-- **Card spans** are cut out of the sentence. Fuzzy name matching later only sees `bob`,
-  never "trigger" or "response", which would otherwise fuzzy-match real cards.
+- **Card spans** are cut out of the sentence. Fuzzy name matching later sees `bob` alone. It
+  never sees "trigger" or "response", which would otherwise fuzzy-match real cards.
 - The question is **classified** into a fixed taxonomy of 25 categories that mirror the
-  CR's structure (`data/categories.yaml`). `primary` is required; up to two `secondary`
+  CR's structure (`data/categories.yaml`). `primary` is required. Up to two `secondary`
   guesses are kept. The categories drive the first retrieval leg.
 - The **source** says whether this is a rules question (`cr`), a Commander-format question,
   tournament policy, or off-topic. The last two stop here with a polite decline.
@@ -97,10 +98,10 @@ Three things happen in this one call:
 The schema is generated from the Rust struct the reply is decoded into, so the two cannot
 drift apart.
 
-### Step 2: Card resolution (no model, just SQL)
+### Step 2: Card resolution
 
-Each span goes down a ladder of increasingly loose lookups, stopping at the first rung that
-answers:
+This step uses SQL and no model. Each span goes down a ladder of increasingly loose
+lookups and stops at the first rung that answers:
 
 1. hand-curated alias table (`bob` → Dark Confidant),
 2. the same after stripping a possessive (`bob's`), also retrying the exact and short-name rungs,
@@ -111,26 +112,26 @@ answers:
 7. trigram fuzzy match, for typos.
 
 A span written in brackets, `[[Full Card Name]]`, skips that ladder. The brackets say "this
-exact name", so it is tried only against current and printed names. Anything else is offered, never
-resolved: `[[bolt]]` asks "did you mean Lightning Bolt?" (and asks nothing when the extractor
-already named Lightning Bolt from the same question), a near miss like `[[Dark Confidnt]]`
-offers the closest spellings. Answers name the cards they resolved to
+exact name", so it is tried only against current and printed names. Anything else is
+offered, never resolved. `[[bolt]]` asks "did you mean Lightning Bolt?", and asks nothing
+when the extractor already named Lightning Bolt from the same question. A near miss like
+`[[Dark Confidnt]]` offers the closest spellings. Answers name the cards they resolved to
 ("Cards: …"), so the reader can see what a nickname was taken to mean.
 
 The important property: **it never guesses.** If two or more cards remain, the result is
-`Ambiguous` and Discord shows "Did you mean…?" buttons. If nothing matches, `NotFound`. The
-type system forces every consumer to handle all three outcomes.
+`Ambiguous` and Discord shows "Did you mean…?" buttons. If nothing matches, the result is
+`NotFound`. The type system forces every consumer to handle all three outcomes.
 
-Fuzzy matching uses Postgres's `pg_trgm` extension. A trigram is a three-letter window;
+Fuzzy matching uses Postgres's `pg_trgm` extension. A trigram is a three-letter window.
 "bolt" is `{" b","bo","ol","lt","t "}`. Two strings are similar when they share many
-trigrams, which tolerates typos without any model. The fuzzy rung accepts a candidate only
-when it is alone with a strong score (0.7 or more) or leads the runner-up by a clear
-margin (0.15).
+trigrams, which tolerates typos without any model. The fuzzy rung accepts a candidate in
+two cases: it is alone with a strong score (0.7 or more), or it leads the runner-up by a
+clear margin (0.15).
 
-### Step 3: Retrieval (building the "material")
+### Step 3: Retrieval
 
-Now the bot assembles everything the model will be allowed to read. It runs seven queries
-concurrently and unions the results into a `Context`:
+Now the bot assembles the "material": everything the model will be allowed to read. It runs
+seven queries concurrently and unions the results into a `Context`:
 
 - **CR rules**, from three "legs" (explained in §5): the curated subsections for the
   categories, a full-text keyword search, and a vector similarity search.
@@ -144,15 +145,20 @@ concurrently and unions the results into a `Context`:
 The thread history is added to the context as well, so "what if it also had flying?" makes
 sense.
 
-### Step 4: Synthesis (one expensive model call, one optional tool round)
+### Step 4: Synthesis
 
-The context is rendered into a long user turn under a character budget (25 rule chunks,
-30,000 characters of rules text, 20 rulings per card, 4 history pairs with each earlier
-answer cut to 600 characters). It is sent with the judge system prompt in
-`crates/bot/src/prompts/synth_system.md`, which is worth reading: it is the contract
-between program and model.
+This step is one expensive model call with one optional tool round. The context is rendered
+into a long user turn under a character budget:
 
-The model may make **exactly one** `lookup_rules` tool call to fetch rules the retrieval
+- 25 rule chunks,
+- 30,000 characters of rules text,
+- 20 rulings per card,
+- 4 history pairs, with each earlier answer cut to 600 characters.
+
+It is sent with the judge system prompt in `crates/bot/src/prompts/synth_system.md`. That
+file is worth reading, because it is the contract between program and model.
+
+The model may make **at most one** `lookup_rules` tool call to fetch rules the retrieval
 missed ("I need 603.10"). Then it must answer with a JSON verdict:
 
 ```json
@@ -172,9 +178,9 @@ The other two citation kinds are `scryfall_ruling` (`card`, `ruling`, `quote`) a
 
 ### Step 5: Validation
 
-For every citation the program checks that the id names something that was actually in the
-context, and that the quote is a substring of that source's text. If anything fails, or the
-verdict has no citations at all, the model gets **one retry** with the rejection rendered
+For every citation the program checks two things. The id must name something that was in
+the context, and the quote must be a substring of that source's text. If anything fails, or
+the verdict has no citations, the model gets **one retry** with the rejection rendered
 into the prompt ("your quote `...` was not found in 603.10"). A second failure is an error
 reply.
 
@@ -197,7 +203,7 @@ columns and indexes) and `pg_trgm` (trigram similarity). Migrations are in
 
 | Table | Source | Refreshed | Notes |
 |---|---|---|---|
-| `cards`, `card_faces` | Scryfall bulk `oracle_cards` | nightly | one row per Oracle identity; faces hold the Oracle text |
+| `cards`, `card_faces` | Scryfall bulk `oracle_cards` | nightly | one row per Oracle identity, and faces hold the Oracle text |
 | `printed_names` | Scryfall bulk `default_cards` | nightly | every name ever printed, for old or errata'd names |
 | `rulings` | Scryfall bulk `rulings` | nightly | keyed by a hash of the content, so a re-import is the same ruling |
 | `rules`, `glossary` | the CR `.txt` from Wizards | on release, detected nightly | see chunking below |
@@ -209,7 +215,7 @@ columns and indexes) and `pg_trgm` (trigram similarity). Migrations are in
 | `agent_sessions` | the agent surface | continuous | state for the step-by-step agent mode |
 
 Scale is small: ~30k cards, ~2k rule chunks, well under 10k calls. This matters for
-technology choices; nothing here needs a dedicated vector database.
+technology choices. Nothing here needs a dedicated vector database.
 
 ### How the CR is chunked
 
@@ -221,49 +227,52 @@ The CR is a numbered hierarchy: section `702` (Keyword Abilities) → rule `702.
 (Trample) → sub-rules `702.19a`, `702.19b`. The parser emits rows at **two granularities**:
 
 - **Rule-level rows** (`702.19`): the body is the rule's own sentence plus every lettered
-  sub-rule and every `Example:` paragraph beneath it. These are the search unit: they get
+  sub-rule and every `Example:` paragraph beneath it. These are the search unit. They get
   embeddings and appear in retrieval results. A rule plus its sub-rules is usually one
-  coherent idea of a few hundred words, the right size for a model to read whole.
+  coherent idea of a few hundred words, the right size for a model to read in one piece.
 - **Leaf rows** (`702.19b`): one line each, with `parent_id = 702.19`. These are the
-  citation unit. A model that quotes sub-rule b should cite `702.19b`, not the whole rule.
+  citation unit. A model that quotes sub-rule b should cite `702.19b`, not the rule above it.
 
 Scoring and lookups treat a leaf and its parent as covering each other. No rows exist for
-three-digit sections; asking for `702` expands to every rule in it.
+three-digit sections. Asking for `702` expands to every rule in it.
 
 ---
 
-## 5. Retrieval: three ways to find the right rules
+## 5. Retrieval
 
-This section is the heart of the vector-database material. The bot combines three search
+This section holds most of the vector-database material. The bot combines three search
 techniques because each fails differently.
 
-### Leg A: the category map (structured, always on)
+### Leg A: category map
 
-The classifier put the question in `triggered_abilities`; the YAML says that category maps
-to CR sections 603 and 113.3. Every rule in those sections goes into the context.
+This leg is structured and always on. The classifier put the question in
+`triggered_abilities`. The YAML says that category maps to CR sections 603 and 113.3. Every
+rule in those sections goes into the context.
 
-This is dumb and reliable. It costs nothing, never misses when the classifier is right, and
-gives the model the surrounding rules it needs even when the "obvious" rule alone is not
+This is dumb and reliable. It costs nothing and never misses when the classifier is right.
+It gives the model the surrounding rules it needs even when the "obvious" rule alone is not
 enough. It fails when the classifier is wrong or when the answer lives in a section nobody
 would file the question under.
 
-### Leg B: full-text search (keywords)
+### Leg B: full-text search
 
-Postgres has a built-in full-text engine. Each rule row has a generated `tsvector` column:
-the text tokenised, lower-cased, stemmed ("triggers" → "trigger") and stop-words removed.
-The query is turned into the same lexemes, OR-ed together, and rows are ranked with
-`ts_rank_cd`, a relevance score in the same family as BM25 (frequency of matching terms,
-weighted by how rare they are, discounted by document length). Concept phrases from the
-extraction count double against the raw question. The top 12 rows are taken.
+This leg matches keywords. Postgres has a built-in full-text engine. Each rule row has a
+generated `tsvector` column: the text tokenised, lower-cased, stemmed ("triggers" →
+"trigger") and stop-words removed. The query is turned into the same lexemes, OR-ed
+together. Rows are ranked with `ts_rank_cd`, a relevance score in the same family as BM25
+(frequency of matching terms, weighted by how rare they are, discounted by document
+length). Concept phrases from the extraction count double against the raw question. The
+top 12 rows are taken.
 
 This finds rules that share **vocabulary** with the question: "leaves the battlefield",
 "in response", "upkeep". It is exact, cheap, and needs no external service. It fails when
 the user and the CR use different words for the same idea ("dies" versus "is put into a
-graveyard from the battlefield"), and it is easily distracted by common words.
+graveyard from the battlefield"). Common words also distract it.
 
-### Leg C: vector similarity (meaning)
+### Leg C: vector similarity
 
-This is the piece most people are new to, so here is the full picture.
+This leg matches meaning. It is the piece most people are new to, so it gets the most
+detail.
 
 **Embeddings.** An embedding model is a neural network that turns a piece of text into a
 list of numbers, a vector, typically 512 to 3072 floats long. This bot uses Voyage AI's
@@ -287,65 +296,69 @@ LIMIT 12
 (The real query also restricts `id` to the `NNN.N` rule pattern.)
 
 **Indexing.** Comparing the question against 2,000 rule vectors by brute force would be
-fine at this scale, but pgvector also provides an **HNSW** index (Hierarchical Navigable
+fine at this scale. pgvector also provides an **HNSW** index (Hierarchical Navigable
 Small World), a graph structure that finds approximate nearest neighbours quickly. It is
-approximate: it can occasionally miss the true nearest row. That is acceptable here
-because the union with the other two legs covers for it. The index is *partial*, over only
-rule-level rows (`WHERE parent_id IS NULL`), so every candidate it yields is usable and a
-post-filter cannot shrink the result below the limit.
+approximate, so it can occasionally miss the true nearest row. That is acceptable here
+because the union with the other two legs covers for it. Because the index is *partial*,
+over rule-level rows only (`WHERE parent_id IS NULL`), every candidate it yields is usable.
+A post-filter cannot shrink the result below the limit.
 
 **Query versus document.** Voyage's API takes an `input_type` of `document` or `query`.
 The model embeds a short question differently from a long passage so that the two match
-up better. The ingest job embeds rules as documents; the retriever embeds the user's
+up better. The ingest job embeds rules as documents. The retriever embeds the user's
 question as a query.
 
 **Cost and storage.** Embedding is paid per token, once per rule, at ingest time. A new CR
-release only re-embeds the rules whose text changed: the loader nulls those embeddings and
+release re-embeds only the rules whose text changed. The loader nulls those embeddings and
 the nightly `ingest embed` fills them. Each question costs one small embedding call.
 
-What the vector leg fails at is instructive too. It is fuzzy by design, so it happily
-returns rules that are *about* the same theme without being the one that decides the
-question, and it cannot tell `702.19` from `702.20` if their wording is similar. It also
-has a whole class of operational problems that get their own section (§7).
+The vector leg's failures are instructive too. It is fuzzy by design, so it returns rules
+that are *about* the same theme without being the one that decides the question. It cannot
+tell `702.19` from `702.20` if their wording is similar. It also has a class of operational
+problems that get their own section (§7).
 
-### Why all three, and in that order
+### Leg order
 
-The legs are unioned in priority order, deduplicated by rule id: category map first, then
-full-text, then vector. When the budget cuts, chunks are kept in that order, so the
+The legs are unioned in priority order and deduplicated by rule id: category map first,
+then full-text, then vector. When the budget cuts, chunks are kept in that order, so the
 structured leg survives and the fuzziest leg is trimmed first. The retrieval gate in the
 eval suite (`judge-eval recall`) requires that at least 90% of the gold set's expected rule
 ids appear in the context.
 
-The safety net for whatever all three miss is the single `lookup_rules` tool round in
-synthesis: the model, having read the material, can ask for rules by number once.
+The safety net for whatever all three miss is the one `lookup_rules` tool round in
+synthesis. Having read the material, the model can ask for rules by number once.
 
 ### Prior calls
 
 The prior-call query is the feedback loop. Earlier answers are stored with their own
 embedding (of the question). The leg picks calls in the same categories, about at least one
-of the same cards, not retired, not down-voted, ordered by vector distance to the new
-question. The rating is a **Bayesian-smoothed mean**: `(2.0 × 3 + Σ scores) / (3 + n)`.
-That is "pretend there were three votes of 2.0 before anyone voted", so a single 3 does not
-make a call look perfect and a single 1 does not bury it. The latest rating from someone
-with the Judge role overrides the crowd entirely. Calls scoring under 1.5 with five or more
-votes are excluded.
+of the same cards, not retired and not down-voted. It orders them by vector distance to the
+new question. The rating is a **Bayesian-smoothed mean**: `(2.0 × 3 + Σ scores) / (3 + n)`.
+That is "pretend there were three votes of 2.0 before anyone voted". One 3 does not make a
+call look perfect, and one 1 does not bury it. The latest rating from someone with the
+Judge role overrides the crowd. Calls scoring under 1.5 with five or more votes are
+excluded.
 
 Prior calls are rendered *after* all CR material, and the prompt says they never outrank
 it. They are examples of how a question was answered, not authorities.
 
 ---
 
-## 6. Synthesis guardrails: what stops a bad answer
+## 6. Synthesis guardrails
 
 ### Structured output and one tool round
 
-The model does not write free text that the program then parses hopefully. It fills a JSON
-schema derived from the `Verdict` struct. The `lookup_rules` tool round is bounded to one
-by a **typestate**: `Synth<Fresh>` can send and become `Synth<ToolRequested>`; that can
-fulfil the request and become `Synth<Final>`; `Synth<Final>` has no method that requests
-tools. A runaway loop is not a bug that a test catches; it is code that does not compile.
+The model does not write free text for the program to parse. It fills a JSON schema derived
+from the `Verdict` struct. The `lookup_rules` tool round is bounded to one by a
+**typestate**:
 
-### Citation validation, in detail
+- `Synth<Fresh>` can send and become `Synth<ToolRequested>`.
+- `Synth<ToolRequested>` can fulfil the request and become `Synth<Final>`.
+- `Synth<Final>` has no method that requests tools.
+
+A runaway loop is not a bug for a test to catch. It is code that does not compile.
+
+### Citation validation
 
 The validator (`crates/core/src/verdict.rs`) checks each citation against the context:
 
@@ -353,18 +366,18 @@ The validator (`crates/core/src/verdict.rs`) checks each citation against the co
   rendered under that card, the prior-call id was in the list, the Oracle face exists.
 - The **quote must be a contiguous substring** of that source's text.
 
-The single most common rejection in practice was punctuation. The CR is typeset with curly
-apostrophes (`doesn’t`) and em dashes; models reliably retype them as ASCII (`doesn't`)
+The most common rejection in practice was punctuation. The CR is typeset with curly
+apostrophes (`doesn’t`) and em dashes. Models reliably retype them as ASCII (`doesn't`)
 even when told not to. Rejecting a correct citation over one character wastes the only
-retry. So the comparison (`crates/core/src/quote.rs`) canonicalises each character (curly
-to straight, every dash to a hyphen, non-breaking space to space), one char to one char,
-and then stores the **source's** span, not the model's. The leniency is at match time only;
-what lands in the database is byte-exact, so later strict checks stay strict. Case, word
-order and line breaks are still exact: a paraphrase is still rejected.
+retry. So the comparison (`crates/core/src/quote.rs`) canonicalises each character, one
+char to one char: curly to straight, every dash to a hyphen, non-breaking space to space.
+It then stores the **source's** span, not the model's. The leniency applies at match time
+only. What lands in the database is byte-exact, so later strict checks stay strict. Case,
+word order and line breaks must still match, so a paraphrase is still rejected.
 
 A verdict with no citations, or an answer under 40 characters, is rejected as empty. Two
 fields the model might be tempted to lie about, `source` and `cr_version`, are not in the
-model's schema at all; the program stamps them from the extraction and the retrieved chunks.
+model's schema. The program stamps them from the extraction and the retrieved chunks.
 
 ### The validated type
 
@@ -376,25 +389,25 @@ error, not a silent regression.
 
 ### The retry
 
-One retry, with a "Previous attempt rejected" notice showing the failing citation and why.
-The retry starts with the tool disabled, so the model cannot spend another round, and any
-rules the first attempt fetched are rendered regardless of budget. The first rejection is
-logged at INFO so that when the second attempt also fails, the operator can read both.
+There is one retry, with a "Previous attempt rejected" notice showing the failing citation
+and why. The retry starts with the tool disabled, so the model cannot spend another round.
+Any rules the first attempt fetched are rendered regardless of budget. The first rejection
+is logged at INFO so that when the second attempt also fails, the operator can read both.
 
 ---
 
-## 7. Things that go wrong, and what handles them
+## 7. Failure catalogue
 
-A catalogue of the failure classes this kind of system has. Each row says where the
+The tables below list the failure classes this kind of system has. Each row says where the
 handling lives, so you can read further.
 
 ### Model behaviour
 
 | Problem | Handling |
 |---|---|
-| Model invents rule numbers or misquotes | citation validation; the source's own span is stored (`core/verdict.rs`, `core/quote.rs`) |
-| Model answers from memory instead of the material | system prompt ground rule 1; citations required; retry notice |
-| Model pads with placeholder citations | prompt forbids stubs; a malformed citation is a typed rejection with the parse error shown back |
+| Model invents rule numbers or misquotes | citation validation, and the source's own span is stored (`core/verdict.rs`, `core/quote.rs`) |
+| Model answers from memory instead of the material | system prompt ground rule 1, required citations, retry notice |
+| Model pads with placeholder citations | prompt forbids stubs, and a malformed citation is a typed rejection with the parse error shown back |
 | Model calls the tool repeatedly | `Synth` typestate: one round, by type |
 | Model's output is cut off at `max_tokens` | detected from the stop reason, retried once at medium effort |
 | Model claims a question is out of scope to dodge citing | `source` is stamped from extraction, not model-reported |
@@ -407,40 +420,40 @@ handling lives, so you can read further.
 | Nicknames ("bob", "goyf") | curated alias table, possessive stripping |
 | Old or errata'd names | `printed_names` from every printing |
 | Typos | trigram fuzzy with a margin rule |
-| Two cards could be meant | `Resolution::Ambiguous` → "did you mean?" buttons; never guessed |
+| Two cards could be meant | `Resolution::Ambiguous` → "did you mean?" buttons, never guessed |
 | User wrote both nickname and full name | duplicate-span detection in `core/judge.rs` |
 | Rules vocabulary mistaken for a card ("trample") | extraction runs first, so fuzzy sees only card spans |
-| Card text has changed since an answer was stored | Oracle fingerprints on each call; retirement pass (`db/retire.rs`) |
+| Card text has changed since an answer was stored | Oracle fingerprints on each call, and the retirement pass (`db/retire.rs`) |
 
 ### Retrieval
 
 | Problem | Handling |
 |---|---|
 | Right rule uses different words than the question | vector leg |
-| Vector leg returns thematically near but wrong rules | union with the exact legs; model can `lookup_rules` |
-| Classifier picks the wrong category | full-text and vector legs; `lookup_rules` |
-| Too much material for the prompt | `Budget` in `bot/synth.rs`; the structured leg survives cuts |
+| Vector leg returns thematically near but wrong rules | union with the exact legs, and the model can `lookup_rules` |
+| Classifier picks the wrong category | full-text and vector legs, `lookup_rules` |
+| Too much material for the prompt | `Budget` in `bot/synth.rs`, where the structured leg survives cuts |
 | Model cites a sub-rule shown only inside its parent | the synthesizer hydrates the leaf row so validation finds it |
-| CR renumbered; stored calls cite stale ids | `renumber_map` (ingest, §8) |
-| A cited rule was reworded or deleted | retirement pass marks the call retired; restores it if the text returns |
+| CR renumbered, so stored calls cite stale ids | `renumber_map` (ingest, §8) |
+| A cited rule was reworded or deleted | retirement pass marks the call retired, and restores it if the text returns |
 
-### Vectors specifically
+### Vectors
 
 | Problem | Handling |
 |---|---|
-| Vectors from two embedding models in one column (silently wrong results) | `embedding_space` table names the model; readers and writers check it on every use (`db/space.rs`) |
+| Vectors from two embedding models in one column (silently wrong results) | `embedding_space` table names the model, and readers and writers check it on every use (`db/space.rs`) |
 | Embedding model switched while the bot runs | vector legs go dark with an error log rather than mixing spaces |
 | Switching models is expensive (re-pays every row) | `ingest reembed --yes` is explicit, probes the new embedder first, and prints a rough cost without `--yes` |
 | A switch races an in-flight write | advisory lock: writers take the shared side, the switch takes the exclusive side |
-| No embedding key configured | vector leg off; the other legs still work |
+| No embedding key configured | vector leg off, and the other legs still work |
 | Voyage free-tier token limits | batch size knob `VOYAGE_MAX_BATCH` |
-| HNSW post-filtering shrinking results | partial index over exactly the rows that are searched |
+| HNSW post-filtering shrinking results | partial index over the rows that are searched and no others |
 
 ### Money and abuse
 
 | Problem | Handling |
 |---|---|
-| Runaway API spend | `Metered` spend cap by reservation (§9); the only `ChatModel` there is |
+| Runaway API spend | `Metered` spend cap by reservation (§9), the only `ChatModel` there is |
 | Many concurrent requests | a semaphore (`JUDGE_CONCURRENCY`) shared by web and MCP |
 | Anonymous web abuse | per-IP fixed-window rate limit, bucketed on an address the caller cannot forge |
 | Leaked MCP token | separate per-window limit on `judge` runs through `/mcp` |
@@ -452,48 +465,48 @@ handling lives, so you can read further.
 | Problem | Handling |
 |---|---|
 | New CR release | nightly scrape of Wizards' page, version compared before download |
-| Scryfall data drift | nightly bulk re-sync; content-hashed ruling keys keep identity |
-| Prompt or schema drift breaking the wire format | golden request fixtures pinned byte-for-byte; system prompt SHA pinned |
+| Scryfall data drift | nightly bulk re-sync, with content-hashed ruling keys that keep identity |
+| Prompt or schema drift breaking the wire format | golden request fixtures pinned byte-for-byte, and the system prompt SHA pinned |
 | Losing the database (re-embedding costs money) | weekly `pg_dump` to R2 with a restore drill |
 | Unknown config keys silently ignored | `deny_unknown_fields` and "this knob would be ignored" errors at load |
 
 ---
 
-## 8. The feedback loop and keeping old answers honest
+## 8. Feedback loop and stale answers
 
 Stored answers are an asset (examples for future questions) and a liability (they go
-stale). Two mechanisms keep them honest without a human curator.
+stale). Two mechanisms keep them current without a human curator.
 
 **Retirement.** Every call's citations are its declared dependencies on the world. The
 nightly pass re-runs the same substring check that admitted each citation, against today's
-rules, rulings and Oracle text. If any fails, the call is retired and leaves the prior-call
-leg; if the text comes back, it is restored. Each call also stores a fingerprint of the
-Oracle text of every card in its context, so an erratum retires calls *about* a card even
-when they only cited the CR. This replaced an earlier rule that retired every call on every
-CR release, which threw away many still-correct answers and kept wrong ones after an
-erratum.
+rules, rulings and Oracle text. If any check fails, the call is retired and leaves the
+prior-call leg. If the text comes back, the call is restored. Each call also stores a
+fingerprint of the Oracle text of every card in its context, so an erratum retires calls
+*about* a card even when they cited only the CR. This replaced an earlier rule that retired
+every call on every CR release. That rule threw away many still-correct answers and kept
+wrong ones after an erratum.
 
-**Renumbering.** When Wizards inserts a keyword at `702.20`, every later rule shifts by one,
-and their bodies change too because cross-references shift with them. Plain text comparison
-fails on exactly the release it is meant to see through. The CR loader masks every rule id
-out of every body and matches old and new rules on the masked text where it is unique on
-both sides. It then keeps only mappings that reproduce the new rule exactly when the old one
-is rewritten with the whole map (a consistency check that rejects a cross-reference that was
-merely redirected). Matched calls get their citation ids, quoted ids and answer text
-rewritten in one pass. Anything ambiguous is left alone for the retirement pass to judge.
+**Renumbering.** When Wizards inserts a keyword at `702.20`, every later rule shifts by one.
+Their bodies change too, because cross-references shift with them. Comparing the raw text fails on
+the very release it is meant to see through. The CR loader masks every rule id out of every
+body and matches old and new rules on the masked text where it is unique on both sides. It
+then rewrites each old rule with the full map and keeps only mappings that reproduce the
+new rule exactly. This consistency check rejects a cross-reference that was redirected
+rather than renumbered. Matched calls get their citation ids, quoted ids and answer text
+rewritten in one pass. Anything ambiguous is left for the retirement pass to judge.
 The principle is the same as card resolution: never guess.
 
 ---
 
-## 9. Money: the spend cap
+## 9. Spend cap
 
-Every model call in every binary goes through one `Metered` wrapper around the backend,
-sharing one `SpendMeter` per process with a cap (`JUDGE_MAX_USD`, default $5). Before a
-request is sent, its **worst-case** cost (the whole request at the input price plus
-`max_tokens` at the output price) is reserved against the counter; if that would breach the
-cap the request is refused. After the response, the reservation is replaced with the actual
-usage. So concurrent callers cannot collectively overshoot, and a response body that fails
-to decode is still billed when its usage could be read.
+Every model call in every binary goes through one `Metered` wrapper around the backend.
+The wrappers in a process share one `SpendMeter` with a cap (`JUDGE_MAX_USD`, default $5).
+Before a request is sent, its **worst-case** cost is reserved against the counter: the
+request at the input price plus `max_tokens` at the output price. If that would breach the
+cap, the request is refused. After the response, the reservation is replaced with the
+actual usage. So concurrent callers cannot collectively overshoot, and a response body that
+fails to decode is still billed when its usage could be read.
 
 The trait the pipeline calls (`ChatModel`) is sealed and `Metered` is its only implementor,
 so a backend that skips the cap cannot be handed to the pipeline. A local model priced
@@ -512,7 +525,7 @@ against a mocked HTTP server (`wiremock`), not the live API.
 
 ## 10. The three front doors
 
-All three share one composition root, `judge_bot::build_deps`, so they run the identical
+All three share one composition root, `judge_bot::build_deps`, so they run the same
 pipeline.
 
 - **Discord** (`crates/bot`): a `/judge` slash command, thread history as context, "did you
@@ -521,32 +534,33 @@ pipeline.
   thirty characters and must never be cut in half by Discord's length limit, so rendered
   text is carried as segments where only plain text is cuttable.
 - **Web** (`crates/api` + `web/`, a SolidJS page): anonymous, so no ratings. Ambiguity comes
-  back as data; the client re-asks with pins that the server rewrites to `[[Full Card Name]]`.
-  Session history keys on a client UUID. Rate-limited per IP.
+  back as data. The client re-asks with pins that the server rewrites to
+  `[[Full Card Name]]`. Session history keys on a client UUID. Rate-limited per IP.
 - **Agent** (`crates/agent`, `judge-cli` and `judge-mcp`): the judge as a tool for other AI
   agents. It has two modes. The `judge` tool runs the pipeline as above with the built-in
-  model. A **session** runs it in pull mode: the outside agent *is* the model. It receives
-  the extraction prompt, returns extraction JSON, receives the rendered synthesis prompt,
-  returns a verdict, and that verdict goes through the very same validation. State lives in
-  Postgres between calls as a `Stage` enum, with the same one-tool-round, one-retry limits.
-  This is also the cheapest way to reproduce a bad answer: Claude Code drives it directly
-  (`.claude/skills/judge/SKILL.md`), spending nothing.
+  model. A **session** runs it in pull mode, where the outside agent *is* the model. It
+  receives the extraction prompt, returns extraction JSON, receives the rendered synthesis
+  prompt, and returns a verdict. That verdict goes through the same validation. State lives
+  in Postgres between calls as a `Stage` enum, with the same one-tool-round, one-retry
+  limits. This is also the cheapest way to reproduce a bad answer: Claude Code drives it
+  directly (`.claude/skills/judge/SKILL.md`), spending nothing.
 
 ---
 
-## 11. Providers: models are configuration
+## 11. Providers
 
 Which chat model and which embedder to use is a `judge.toml` file, not code. The pipeline
-talks to a provider-neutral `ChatRequest`/`ChatResponse` in `crates/llm`; `crates/anthropic`
+talks to a provider-neutral `ChatRequest`/`ChatResponse` in `crates/llm`. `crates/anthropic`
 and `crates/openai` are backends that own their wire formats. Anthropic can be reached
 directly, through a proxy, or on AWS and GCP with the platform's own credential chains. Any
 OpenAI-compatible chat-completions server works, which covers local models. Embeddings come
 from Voyage or any OpenAI-compatible `/embeddings` endpoint.
 
 Where a backend cannot enforce the output schema server-side, the adapter appends the schema
-to the user turn, so the system prompt is byte-identical on every backend; a pinned digest
-and golden fixtures guard that. Every model on a paid provider must have a price so the cap
-can reserve for it; unknown Anthropic models fall back to a table that errs high.
+to the user turn. The system prompt is therefore byte-identical on every backend, and a
+pinned digest and golden fixtures guard that. Every model on a paid provider must have a
+price so the cap can reserve for it. Unknown Anthropic models fall back to a table that errs
+high.
 
 ---
 
@@ -557,18 +571,18 @@ cite, plus per-question lists of equivalent ids that state the same fact. Two ga
 
 - `judge-eval recall` runs only extraction, resolution and retrieval and fails below 90% of
   expected rule ids in context. No model spend for synthesis.
-- `judge-eval answer` runs the full pipeline and scores the answers; runs are stored and can
+- `judge-eval answer` runs the full pipeline and scores the answers. Runs are stored and can
   be re-scored for free after the gold set is edited.
 
-The gold set is extended whenever capability is added. This is the closest thing the system
-has to a regression suite for the parts that are probabilistic.
+The gold set is extended whenever capability is added. It is the closest thing the system
+has to a regression suite for the probabilistic parts.
 
 ---
 
-## 13. Technology choices and what they buy
+## 13. Technology choices
 
 **Rust.** Chosen for what the compiler enforces (`docs/DECISIONS.md` D1 lists nine
-invariants, D2 the languages it was weighed against). Concretely, in this codebase:
+invariants, D2 the languages it was weighed against). In this codebase that means:
 
 - Exhaustive enums: every consumer of `Resolution`, `Citation` and `JudgeError` handles
   every case, so "ambiguous" cannot be silently treated as "resolved".
@@ -578,8 +592,8 @@ invariants, D2 the languages it was weighed against). Concretely, in this codeba
   Discord" and "second tool round" compile errors.
 - `Result` everywhere and lints that deny `unwrap`, `expect`, `panic` and slice indexing, so
   every failure on the judge path is a value the Discord layer must render.
-- Compile-time checked SQL (`sqlx`): every query is checked against the real schema at
-  build time, including pgvector columns, so a renamed column is a build failure.
+- Compile-time checked SQL (`sqlx`): every query is checked against the schema at build
+  time, including pgvector columns, so a renamed column is a build failure.
 - A crate graph as an effect fence: `crates/core` has no I/O dependencies, so pure logic
   (resolution rules, context assembly, validation) cannot sneak in a network call.
 
@@ -604,7 +618,7 @@ lock-in.
 **serenity + poise** for Discord, **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite**
 for the page. All conventional, well-maintained choices for their niches.
 
-**Docker Compose behind a Cloudflare Tunnel.** Single host, no open inbound ports, a
+**Docker Compose behind a Cloudflare Tunnel.** One host, no open inbound ports, a
 CI-built image, nightly data refresh as a cron job rather than a service, weekly backups
 to R2. `docs/DEPLOYMENT.md` is the runbook.
 
@@ -619,15 +633,15 @@ to R2. `docs/DEPLOYMENT.md` is the runbook.
 - **Vector space / embedding space**: the set of vectors one specific model produces.
   Vectors from different models, or the same model at a different width, are not
   comparable. This bot records which space the database holds.
-- **Cosine similarity / distance**: how aligned two vectors are; pgvector's `<=>` is the
+- **Cosine similarity / distance**: how aligned two vectors are. pgvector's `<=>` is the
   distance (0 is identical).
-- **HNSW**: a graph index for approximate nearest-neighbour search; fast, occasionally
-  misses the true nearest.
-- **Dimensions**: the length of the vector (1024 here). More is not automatically better;
-  it costs storage and index time.
+- **HNSW**: a graph index for approximate nearest-neighbour search. It is fast and
+  occasionally misses the true nearest.
+- **Dimensions**: the length of the vector (1024 here). More is not automatically better,
+  because it costs storage and index time.
 - **Full-text search / tsvector / BM25**: keyword search with stemming and rarity
   weighting. Postgres's `ts_rank_cd` is its relevance scorer.
-- **Trigram (pg_trgm)**: similarity based on shared three-character windows; good for
+- **Trigram (pg_trgm)**: similarity based on shared three-character windows. Good for
   typos in names.
 - **Hybrid retrieval**: combining keyword, semantic and structured search because each
   fails differently.

@@ -7,22 +7,22 @@ sidebar:
 
 ## `/judge question:`
 
-Ask in plain language. Nicknames work ("bob", "goyf", "snappy", "t3feri"); the alias list
-is `data/aliases.yaml` in the repository and pull requests adding to it are welcome. Use
-brackets like `[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the
-card with exactly that name (current or printed, including one face of a split or
-double-faced card), and anything else — a nickname, a near miss — is offered back as a
-choice rather than corrected. Answers take twenty to forty-five seconds; the
-bot acknowledges at once and edits the reply in.
+Ask in plain language. Nicknames work ("bob", "goyf", "snappy", "t3feri"). The alias list
+is `data/aliases.yaml` in the repository, and pull requests adding to it are welcome. Use
+brackets like `[[Full Card Name]]` to avoid ambiguity. A bracketed name matches only the
+card with that exact name (current or printed, including one face of a split or
+double-faced card). Anything else in brackets, such as a nickname or a near miss, is
+offered back as a choice rather than corrected. Answers take twenty to forty-five seconds.
+The bot acknowledges at once and edits the reply in.
 
 The reply opens with a non-pinging `@you asked:` header, then the ruling, then a citation
-per line. Rule citations link to the Yawgatog mirror of the Comprehensive Rules at the
-exact rule; rulings and Oracle text link to the card on Scryfall. The footer names the
-cards the question was resolved to (the check that "bob" was taken to mean Dark Confidant),
-then the model's confidence and the CR version it answered from.
+per line. Rule citations link to the rule on the Yawgatog mirror of the Comprehensive
+Rules. Rulings and Oracle text link to the card on Scryfall. The footer names the cards
+the question was resolved to, which lets you check that "bob" was taken to mean Dark
+Confidant. It then gives the model's confidence and the CR version it answered from.
 
 If a name could mean several cards ("Tibalt", "Emrakul") you get a **did you mean…?** row
-of up to five buttons instead of a guess; only the person who asked can pick. If a name
+of up to five buttons instead of a guess. Only the person who asked can pick. If a name
 matches nothing, the reply says which and suggests `[[Full Card Name]]`. Tournament-policy and
 price questions are declined after the cheap classification step, before the expensive
 synthesis call.
@@ -32,34 +32,36 @@ from that channel as history, so "what if it had flash?" works.
 
 ## Rating buttons
 
-Under every answer: **Incorrect**, **Partially correct**, **Correct**. Rating again
-replaces yours. A rating changes one thing: which past answers are shown to the model as
-*examples* when a similar question comes in. Scores are smoothed (a Bayesian mean with a
-prior of "partially correct" and a weight of three votes) so one early vote cannot swing
-an answer's standing; answers rated below 1.5 with at least five votes are excluded.
+Every answer has three buttons: **Incorrect**, **Partially correct**, **Correct**. Rating
+again replaces your earlier rating. A rating changes one thing: which past answers are
+shown to the model as *examples* when a similar question comes in. Scores are smoothed (a
+Bayesian mean with a prior of "partially correct" and a weight of three votes), so one
+early vote cannot swing an answer's standing. Answers rated below 1.5 with at least five
+votes are excluded.
 
 Members holding the server's judge role (`JUDGE_ROLE`, default `Judge`) rate with an
-override: the most recent judge rating replaces the crowd's score for that answer. The
-rules always outrank examples: prior answers are rendered after the CR material, labeled
+override. The most recent judge rating replaces the crowd's score for that answer. The
+rules always outrank examples. Prior answers are rendered after the CR material and labeled
 with their rating, and the model is told they are precedent, not authority.
 
 A past answer is retired automatically when its citations stop holding against the
-current rules, rulings or Oracle text (a new CR release, an erratum), and comes back if
+current rules, rulings or Oracle text (a new CR release, an erratum). It comes back if
 the text is restored.
 
 ## `/help`
 
 What the bot does, how to ask, what it stores, and where the source is (the same notice
-as `/license`). Ephemeral: only you see it.
+as `/license`). The reply is ephemeral, so only you see it.
 
 ## `/license`
 
 The source offer: the repository holding this instance's source code, the commit it was
 built from (linked into the repository), the licence (AGPL-3.0-or-later) and the
 copyright. An operator running a modified version points it at their fork with
-`JUDGE_SOURCE_URL`; an unmodified build names the upstream repository. Ephemeral.
+`JUDGE_SOURCE_URL`. An unmodified build names the upstream repository. The reply is
+ephemeral.
 
 ## `/forget`
 
 Deletes every rating you have recorded and tells you how many there were. Ratings are the
-only data tied to your user id; questions are stored against the channel, not the asker.
+only data tied to your user id. Questions are stored against the channel, not the asker.

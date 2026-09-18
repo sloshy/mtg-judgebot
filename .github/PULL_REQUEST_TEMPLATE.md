@@ -1,4 +1,4 @@
-<!-- One change per pull request. Say what it does and why; link the issue if there is one. -->
+<!-- One change per pull request. Say what it does and why. Link the issue if there is one. -->
 
 ## Checklist
 

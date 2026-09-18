@@ -22,27 +22,28 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid stagger>
   <Card title="Never guesses" icon="approve-check">
-    Nicknames like "bob" and "goyf" resolve through a typed ladder. Genuine ambiguity becomes
-    a "did you mean…?" prompt, not a best effort.
+    Nicknames like "bob" and "goyf" resolve through a typed ladder. An ambiguous name becomes
+    a "did you mean…?" prompt, never a guess.
   </Card>
   <Card title="Citations are validated" icon="magnifier">
     A quote has to appear verbatim in the rule, ruling or Oracle text it names. A citation
-    that fails is rejected and the model is asked again; an answer with none never ships.
+    that fails is rejected and the model is asked again. An answer with no citation never
+    ships.
   </Card>
   <Card title="Spend is capped" icon="seti:lock">
-    Every model call is metered against a hard per-process cap that reserves the worst case
+    Every model call is metered against a per-process cap that reserves the worst case
     before sending. The anonymous web page is rate limited per IP on top.
   </Card>
   <Card title="Models are configuration" icon="setting">
     Anthropic direct, through a proxy, on AWS or Vertex, or any OpenAI-compatible server
-    including a local Ollama: one `judge.toml`, no code.
+    including a local Ollama. All of it is set in `judge.toml`, with no code changes.
   </Card>
 </CardGrid>
 
-## Yours to run
+## Self-hosting
 
-There is no bot to invite. A judgebot is meant to be run by the community that uses it, so
-that the spend cap, the judge role and the Discord application are yours — and nothing in
-the pipeline depends on Discord, so the web page and the command line work before you have
-a bot token. Read [what the judge is](./start-here/what-it-is/), or go straight to
+There is no bot to invite. The community that uses a judgebot runs it, so the spend cap,
+the judge role and the Discord application are yours. Nothing in the pipeline depends on
+Discord, so the web page and the command line work before you have a bot token. Read
+[what the judge is](./start-here/what-it-is/), or go straight to
 [requirements and first run](./self-hosting/first-run/).

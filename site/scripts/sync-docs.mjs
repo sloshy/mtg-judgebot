@@ -29,7 +29,7 @@ const manifest = [
   {
     src: "docs/EXPLAINER.md", dest: "how-it-works/explainer-2-data-and-retrieval.md",
     title: "Explainer 2: Data and retrieval", order: 2, sections: [4, 6],
-    description: "Where the rules, cards and rulings come from; the three retrieval legs; the synthesis guardrails.",
+    description: "Data sources for rules, cards and rulings, the three retrieval legs, and the synthesis guardrails.",
     lead: "Part two of the explainer. Part one covered the pipeline end to end.",
   },
   {
@@ -52,12 +52,12 @@ const manifest = [
   {
     src: "docs/DECISIONS.md", dest: "how-it-works/decisions.md",
     title: "Design decisions", order: 6,
-    description: "Every load-bearing decision, why it was made, and the alternative it rejected.",
+    description: "Each main design decision, why it was made, and the alternative it rejected.",
   },
   {
     src: "docs/PROVIDERS.md", dest: "how-it-works/providers.md",
     title: "Model providers", order: 7,
-    description: "The judge.toml provider model: the seam, the backends and their doors, dialect knobs, pricing and the embedding space.",
+    description: "The judge.toml provider model, covering the seam, the backends and their doors, dialect knobs, pricing and the embedding space.",
   },
   {
     src: "README.md", dest: "how-it-works/evaluation.md",
@@ -67,7 +67,7 @@ const manifest = [
   // Self-hosting
   {
     src: "README.md", dest: "self-hosting/models.md",
-    title: "Choosing a model (judge.toml)", order: 4, between: ["### Choosing a model", "### The web page"],
+    title: "Model choice (judge.toml)", order: 4, between: ["### Choosing a model", "### The web page"],
     description: "Providers, models per stage, pricing for the spend cap, and embeddings.",
   },
   {
@@ -79,7 +79,7 @@ const manifest = [
   {
     src: "README.md", dest: "using/web.md",
     title: "The web page", order: 2, between: ["### The web page", "### Hosting"],
-    description: "The anonymous front door: same pipeline, no ratings, rate limited per IP.",
+    description: "The anonymous front door, with the same pipeline, no ratings, and a rate limit per IP.",
   },
   // Contributing
   {

@@ -1,23 +1,23 @@
-# judge.toml — which models the judge runs on, and through which providers.
+# judge.toml: which models the judge runs on, and through which providers.
 #
 # Copy to ./judge.toml (gitignored: per host, not secret) or point JUDGE_CONFIG
-# at it. Under Docker always set JUDGE_CONFIG=./judge.toml in .env: the
+# at it. Under Docker always set JUDGE_CONFIG=./judge.toml in .env. The
 # containers see only the file compose mounts, never the repo root, so a
 # ./judge.toml with JUDGE_CONFIG blank is read by `cargo run` and by nothing
 # in `docker compose up`. With no file at all, the binaries build today's
 # setup from .env: Anthropic direct with ANTHROPIC_API_KEY, claude-opus-5 for
-# both stages, Voyage if VOYAGE_API_KEY is set. The pipeline, the prompts, the citation validation
-# and the spend cap do not change with this file; only who is on the other end
-# of the HTTP connection.
+# both stages, Voyage if VOYAGE_API_KEY is set. This file does not change the
+# pipeline, the prompts, the citation validation or the spend cap. It changes only
+# who is on the other end of the HTTP connection.
 #
 # Rules the loader enforces (docs/PROVIDERS.md §5):
 #   - Secrets are named by environment variable (api_key_env), never written
 #     here. For every provider a stage names, the variable must be set and
-#     non-blank when the file loads — in every binary that loads it, `ingest
-#     refresh` included, since each resolves all three stages. A provider
-#     table no stage names is parsed but its key is never read (this file
-#     loads with only ANTHROPIC_API_KEY and VOYAGE_API_KEY set; LITELLM_KEY
-#     below is not needed until a stage names `litellm`).
+#     non-blank when the file loads. That holds in every binary that loads it,
+#     `ingest refresh` included, since each resolves all three stages. A
+#     provider table no stage names is parsed but its key is never read. This
+#     file loads with only ANTHROPIC_API_KEY and VOYAGE_API_KEY set, and
+#     LITELLM_KEY below is not needed until a stage names `litellm`.
 #   - Unknown keys are errors naming the key, so a typo cannot be ignored.
 #   - A knob that would be silently ignored is an error naming both keys
 #     (`auth` without api_key_env, `effort` on an openai provider with
@@ -25,7 +25,7 @@
 #     a cloud-door key on a keyed door and vice versa).
 #   - A model the spend cap cannot price is a startup error (see [models.synth]).
 #
-# `judge-cli config` prints the resolved result with secrets redacted; every
+# `judge-cli config` prints the resolved result with secrets redacted. Every
 # binary logs the same one-line summary at startup.
 
 # ---------------------------------------------------------------------------
@@ -35,14 +35,14 @@
 [providers.anthropic]
 kind = "anthropic"                 # anthropic | openai | voyage
 endpoint = "direct"                # direct | proxy | claude-platform-on-aws | bedrock | vertex   (default: direct)
-api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only; required there
-# base_url = "https://api.anthropic.com"   # default for direct; required for proxy;
+api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only, required there
+# base_url = "https://api.anthropic.com"   # default for direct, required for proxy,
                                            # an origin override on the cloud doors
 # pricing = "free"                 # skip the spend reservation for this provider
-                                   # (a flat-rate gateway); calls are still counted
+                                   # (a flat-rate gateway). Calls are still counted.
 
 # The Messages API through a gateway (LiteLLM's /v1/messages, a corporate
-# proxy). Same body; the key in whichever header the proxy wants. Server-side
+# proxy). Same body, with the key in whichever header the proxy wants. Server-side
 # refusal fallbacks are a first-party beta a proxy will not know, so they are
 # masked off here with a warning.
 # [providers.claude-proxy]
@@ -56,13 +56,13 @@ api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only; required there
 # platform's own chain (AWS: environment, profile, SSO, instance or container
 # role; GCP: Application Default Credentials), resolved lazily and probed once
 # at startup, so an empty chain fails there naming the provider and the door.
-# Each door needs the Cargo feature it was built with (`aws`, `gcp`; both on by
-# default and in the published image).
+# Each door needs the Cargo feature it was built with (`aws`, `gcp`). Both are
+# on by default and in the published image.
 # [providers.claude-aws]
 # kind = "anthropic"
 # endpoint = "claude-platform-on-aws"       # Anthropic's own platform, first-party parity
-# region = "us-west-2"                      # required; the workspace is bound to one region
-# workspace_id = "wrkspc_..."               # required; AWS Console > Claude Platform on AWS > Workspaces
+# region = "us-west-2"                      # required: the workspace is bound to one region
+# workspace_id = "wrkspc_..."               # required: AWS Console > Claude Platform on AWS > Workspaces
 #
 # [providers.bedrock]
 # kind = "anthropic"
@@ -70,8 +70,8 @@ api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only; required there
 # region = "us-east-1"                      # required. Model ids are `anthropic.<model>` or an
 #                                           # inference profile `<prefix>.anthropic.<model>` (checked at load).
 #                                           # Bedrock does not support structured outputs, strict tools or
-#                                           # fallbacks: the schema goes in the prompt, validation is
-#                                           # client-side as always.
+#                                           # fallbacks. The schema goes in the prompt, and validation
+#                                           # is client-side as always.
 #
 # [providers.vertex]
 # kind = "anthropic"
@@ -81,7 +81,7 @@ api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only; required there
 
 # Any OpenAI-compatible chat completions server: LiteLLM, OpenRouter, Ollama,
 # vLLM, llama.cpp, Azure OpenAI, Bedrock's and Vertex's OpenAI-compatible
-# endpoints, OpenAI itself. The dialect knobs are all optional; the defaults
+# endpoints, OpenAI itself. The dialect knobs are all optional. The defaults
 # are right for OpenAI and LiteLLM.
 [providers.litellm]
 kind = "openai"
@@ -91,14 +91,14 @@ api_key_env = "LITELLM_KEY"            # absent = no auth header (a local server
 # auth = "bearer"                      # bearer | api-key (Azure's header)   (default: bearer)
 structured_output = "json_schema"      # json_schema | json_object | prompt   (default: json_schema)
                                        #   json_schema: response_format with the schema, strict
-                                       #   json_object: JSON mode; the schema is appended to the prompt
-                                       #   prompt:      no server-side enforcement at all
-                                       # Weaker modes mean more citation retries, not weaker guarantees:
-                                       # decoding and citation validation are client-side.
+                                       #   json_object: JSON mode, with the schema appended to the prompt
+                                       #   prompt:      no server-side enforcement
+                                       # Weaker modes mean more citation retries, not weaker guarantees.
+                                       # Decoding and citation validation are client-side.
 strict_tools = true                    # `strict: true` on the lookup_rules function   (default: true)
 reasoning_effort = false               # send reasoning_effort from the stage's `effort`   (default: false)
-                                       # (xhigh/max map to high); with false, `effort` on a stage
-                                       # naming this provider is a load error
+                                       # (xhigh/max map to high). With false, `effort` on a stage
+                                       # naming this provider is a load error.
 max_tokens_param = "max_tokens"        # max_tokens | max_completion_tokens (OpenAI)   (default: max_tokens)
 cache_hints = false                    # forward cache_control on the system blocks   (default: false)
                                        # (LiteLLM honours it for Anthropic upstreams)
@@ -120,8 +120,8 @@ pricing = "free"                       # local: the spend cap never reserves for
 # api_key_env = "VOYAGE_API_KEY"       # (default: VOYAGE_API_KEY)
 
 # ---------------------------------------------------------------------------
-# Models: one per stage. Both chat stages are required; embed is optional
-# (absent = the vector retrieval leg is off; the bot still works).
+# Models: one per stage. Both chat stages are required. Embed is optional
+# (absent = the vector retrieval leg is off, and the bot still works).
 # ---------------------------------------------------------------------------
 
 [models.extract]                       # entity extraction + classification: cheap, low effort
@@ -133,17 +133,17 @@ max_tokens = 2000                      # (default: 2000)
 [models.synth]                         # synthesis: the judge's answer, one lookup_rules round
 provider = "anthropic"
 model = "claude-opus-5"
-effort = "high"                        # (default: high; a truncated answer retries once at medium)
-max_tokens = 16000                     # (default: 16000; reasoning tokens count against it)
+effort = "high"                        # (default: high) A truncated answer retries once at medium.
+max_tokens = 16000                     # (default: 16000) Reasoning tokens count against it.
 
 # USD per million tokens. The built-in table knows Anthropic's first-party
 # models and prices an unknown Anthropic model as Opus 5 (erring high is safe
-# there). A model on an `openai` provider has no such fallback: it must have
+# there). A model on an `openai` provider has no such fallback. It must have
 # this table or the provider must be pricing = "free", or startup fails naming
-# the stage. An explicit price here beats the table and is what the cap
-# settles at, so a proxy priced above or below the list bills as you said.
-# cache_read defaults to `input`, cache_write to 1.25 × input (Anthropic's
-# write premium, the dearest the judge knows) — both err high.
+# the stage. A price here beats the table and is what the cap settles at, so a
+# proxy priced above or below the list bills as you said. cache_read defaults
+# to `input`, cache_write to 1.25 × input (Anthropic's write premium, the
+# dearest the judge knows). Both err high.
 # [models.synth.pricing]
 # input = 5.0
 # output = 25.0
@@ -153,7 +153,7 @@ max_tokens = 16000                     # (default: 16000; reasoning tokens count
 [models.embed]
 provider = "voyage"                    # a kind = "voyage" or kind = "openai" provider   (default: voyage)
 model = "voyage-3.5"
-dimensions = 1024                      # the columns' vector(N); 1..=2000 (pgvector's HNSW limit).
-                                       # Default 1024 on voyage; required on an openai provider
+dimensions = 1024                      # the columns' vector(N), 1..=2000 (pgvector's HNSW limit).
+                                       # Default 1024 on voyage, required on an openai provider
                                        # (text-embedding-3-small: 1536, nomic-embed-text: 768).
                                        # Changing model or width means `ingest reembed --yes`.

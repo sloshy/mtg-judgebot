@@ -1,8 +1,8 @@
 # Contributing
 
-This page covers getting a development environment up, the gates a change has to pass,
-and the design rules that are not obvious from the code. `docs/EXPLAINER.md` explains
-how the bot works end to end; `docs/ARCHITECTURE.md` is the design reference.
+This page covers the development environment, the gates a change has to pass, and the
+design rules that are not obvious from the code. `docs/EXPLAINER.md` explains how the bot
+works end to end. `docs/ARCHITECTURE.md` is the design reference.
 
 ## Development setup
 
@@ -18,18 +18,18 @@ cargo test --workspace          # the #[sqlx::test] suites create throwaway data
 ```
 
 The database publishes on loopback port **5432**. If something on your machine already
-has it, set `DB_PORT` in `.env` and change the port in `DATABASE_URL` to match; the
+has it, set `DB_PORT` in `.env` and change the port in `DATABASE_URL` to match. The
 compose file reads the same variable.
 
-Nothing in the test suite calls a paid API. HTTP backends are tested against
-`wiremock`; develop against it too, and keep `ANTHROPIC_API_KEY` blank unless you are
-deliberately spending. Loading real card and rules data (`README.md`, "Running it") is
-only needed to run the pipeline for real, not to build or test.
+Nothing in the test suite calls a paid API. HTTP backends are tested against `wiremock`.
+Develop against it too, and keep `ANTHROPIC_API_KEY` blank unless you mean to spend.
+Card and rules data (`README.md`, "Running it") is needed to run the pipeline, not to
+build or test.
 
 ## The gates
 
-CI (`.github/workflows/ci.yml`) runs these on every pull request, and the image is only
-published from a tree that passes them. Run them locally first:
+CI (`.github/workflows/ci.yml`) runs these on every pull request, and the image is
+published only from a tree that passes them. Run them locally first:
 
 ```sh
 cargo fmt --all --check
@@ -40,11 +40,11 @@ npm --prefix web ci && npm --prefix web run build
 
 Workspace lints deny `unwrap`, `expect`, indexing and `panic!` in every crate, and warn
 on missing docs and the pedantic group. Reach for a type or a `Result` instead of an
-`#[allow]`; when an allow is right, keep it on the one item and say why in a comment.
+`#[allow]`. When an allow is right, keep it on the one item and say why in a comment.
 
 **SQL changes.** Queries are checked at compile time against the schema. After editing
 any `sqlx::query!` or migration, regenerate the committed offline data and include it
-in the same commit; CI fails when it is stale:
+in the same commit. CI fails when it is stale.
 
 ```sh
 cargo sqlx prepare --workspace -- --all-targets   # needs the database up and migrated
@@ -54,9 +54,9 @@ SQLX_OFFLINE=true cargo build --workspace          # must pass without a databas
 Install the tool with `cargo install sqlx-cli --no-default-features --features
 postgres,rustls` if you do not have it.
 
-**Prompt and schema changes.** Two tests pin the exact bytes the bot sends. If you
-edited a prompt template under `crates/bot/src/prompts/` or a struct that feeds the
-model's output schema, both will fail on purpose:
+**Prompt and schema changes.** Two tests pin the bytes the bot sends. If you edit a
+prompt template under `crates/bot/src/prompts/` or a struct that feeds the model's output
+schema, both fail on purpose:
 
 - `crates/bot/tests/anthropic_golden.rs` compares four request bodies to fixtures. Run
   it with `UPDATE_GOLDEN=1` to re-capture them, then read the diff of the fixtures as
@@ -70,47 +70,47 @@ enum has to be updated. `data/aliases.yaml` and `data/notes.yaml` are loaded int
 database by `judge-ingest`, not compiled in.
 
 **Gold set changes.** `eval/gold.yaml` quotes every rule id (unquoted `702.10` is a
-float and is rejected). `cargo run -p judge-eval -- recall` is the free retrieval gate;
+float and is rejected). `cargo run -p judge-eval -- recall` is the free retrieval gate.
 `rescore` re-grades stored runs after a gold edit without spending anything.
 
 ## Design rules
 
-The full statement is `docs/DECISIONS.md` D1; these are the ones a change is
-most likely to bump into.
+The full statement is `docs/DECISIONS.md` D1. These are the ones a change is most
+likely to bump into.
 
 - **Make the bad state unrepresentable.** Invariants live in types: closed enums,
   validated newtypes, `NonEmpty`, and typestates such as `Verdict<Unvalidated>` →
   `Verdict<Validated>` and the synthesis loop's single tool round. Prefer that over a
   runtime check, and a runtime check over a test.
 - **`crates/core` has no I/O.** No reqwest, sqlx, tokio-net or provider SDK may be added
-  to it. That dependency fence is what stands in for effect tracking.
+  to it. That dependency fence stands in for effect tracking.
 - **Every model call is metered.** The only way to send a request is through
   `judge_llm::Metered`, which reserves the worst-case cost against `JUDGE_MAX_USD`
   first. Do not add a second path to a provider.
-- **Citations are validated, never trusted.** A quote must be a substring of its source
-  in the retrieved context; only a `Verdict<Validated>` can be persisted or shown.
-- **The resolver never guesses.** Genuine ambiguity in a card name becomes a "did you
-  mean" prompt, not a best effort.
+- **Citations are validated, never trusted.** A quote must be a substring of its source in the
+  retrieved context. Only a `Verdict<Validated>` can be persisted or shown.
+- **The resolver never guesses.** Ambiguity in a card name becomes a "did you mean"
+  prompt, not a best effort.
 - **Secrets are `ApiKey`.** Anything that authenticates (provider keys, the Discord
   token, the MCP bearer token) is wrapped so a `Debug` of any config prints
-  `<redacted>`. A user's question text does not go to logs above `debug`; the card
+  `<redacted>`. A user's question text does not go to logs above `debug`. The card
   names extracted from it do.
 
 ## Debugging a wrong answer
 
-The cheapest way to reproduce a bad ruling is the agent session, which runs the real
-extraction, retrieval and citation validation with *you* as the model and spends
-nothing: build `judge-cli` (`cargo build --release -p judge-agent`), bring up the
+The cheapest way to reproduce a bad ruling is the agent session. It runs the bot's
+extraction, retrieval and citation validation with *you* as the model, and it spends
+nothing. Build `judge-cli` (`cargo build --release -p judge-agent`), bring up the
 database, and step through `judge-cli begin | extract | rules | verdict` as
 `.claude/skills/judge/SKILL.md` describes. `judge-cli card`, `search`, `get-rules` and
-`glossary` query the database directly. Only reach for `judge-cli judge` or a live bot
-when the deployed surface itself is in question; those calls cost money.
+`glossary` query the database directly. Reach for `judge-cli judge` or a live bot only
+when the deployed surface is in question. Those calls cost money.
 
 ## Pull requests
 
 - Keep a pull request to one change, with the reason in the description. Tests and
   the `.sqlx` or golden fixtures it needs go in the same commit as the code.
-- The changelog is `CHANGELOG.md`, Keep-a-Changelog style; add a line under
+- The changelog is `CHANGELOG.md`, Keep-a-Changelog style. Add a line under
   *Unreleased* for anything an operator or user would notice.
 - Card names, rules text and rulings in tests should be short excerpts. Do not commit
   data dumps, `.env` files, `judge.toml` or anything under `eval/runs/`.
@@ -121,7 +121,7 @@ A release is a GitHub release whose tag is `vX.Y.Z` on a commit of `main`. Move 
 *Unreleased* changelog section under that version first, then create the release
 (`gh release create vX.Y.Z --generate-notes`, or the web form). Publishing it runs
 `publish-image.yml`, which tags the image already built for that commit as `X.Y.Z`,
-`X.Y` and, from 1.0 on, `X`, without rebuilding — the release is the image that has
+`X.Y` and, from 1.0 on, `X`, without rebuilding. The release is the image that has
 been running as `latest`, down to the platform digests. Wait for the push's *Publish
 image* run to finish before publishing the release, or the two build in parallel. A
 commit with no image of its own (a docs-only commit, or a build a later push
@@ -132,5 +132,5 @@ cancelled) is built first, through CI. Pre-release tags such as
 
 The repository carries a `.mcp.json` and a `judge` skill under `.claude/skills/`. If
 you use Claude Code, they let it drive the judge pipeline as the model through
-`judge-mcp`; they are inert otherwise. `CLAUDE.md` is Claude's working notes for this
-codebase and is kept in sync with the docs, but the docs are the source of truth.
+`judge-mcp`. They are inert otherwise. `CLAUDE.md` is Claude's working notes for this
+codebase. It is kept in sync with the docs, but the docs are the source of truth.
