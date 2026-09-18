@@ -311,4 +311,6 @@ rulings are © Wizards of the Coast. Card data and rulings come from
 The bot fetches both at run time, and the repository carries only a short CR excerpt as
 a parser test fixture. Rule links go to the independent
 [Yawgatog](https://yawgatog.com/resources/magic-rules/) CR mirror. `NOTICE` has the
-full statement.
+full statement. The web page and every page of the documentation site repeat this
+disclaimer and the data sources in their footers, and the bot's `/help` gives a short
+form of it.

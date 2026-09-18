@@ -32,7 +32,12 @@ export default defineConfig({
       customCss: ["./src/styles/custom.css"],
       // Starlight has no top navigation, so a header link into the docs goes in
       // through the one header component that is overridable (see the file).
-      components: { SocialIcons: "./src/components/HeaderLinks.astro" },
+      // The footer adds the Fan Content Policy statement and the data sources to
+      // Starlight's own, on every page including the splash ones.
+      components: {
+        SocialIcons: "./src/components/HeaderLinks.astro",
+        Footer: "./src/components/Footer.astro",
+      },
       // Every page carries `sidebar.order` in its frontmatter (the synced ones
       // get it from scripts/sync-docs.mjs), so each group autogenerates in a
       // fixed order and adding a page is a frontmatter line, not a config edit.

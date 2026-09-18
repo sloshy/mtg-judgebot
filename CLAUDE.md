@@ -81,6 +81,11 @@ menu button.
   below 50rem, where Starlight hides the header's right-hand group. A third takes it back
   out of the printed page.
 
+`components.Footer` is overridden by `site/src/components/Footer.astro`: Starlight's own
+footer, then the Fan Content Policy statement and the data sources (Wizards, Scryfall,
+Yawgatog). Starlight renders the footer on splash pages too, so it is on every page. The
+web page's footer (`web/src/App.tsx`) carries the same text; change them together.
+
 Check site changes in a browser with the `playwright-cli` skill. Run it against
 `npm --prefix site run dev` (port 4321, base `/`) or a preview of the build (base
 `/mtg-judgebot`, which is what Pages serves). Take the page at 1920, 1440, 820 and 390

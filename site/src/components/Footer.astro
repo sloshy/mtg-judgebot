@@ -1,0 +1,46 @@
+---
+// Starlight's footer (edit link, pagination), then the Fan Content Policy
+// statement and where the data comes from. Starlight renders the footer on the
+// splash pages too, so this puts the statement on every page of the site. The
+// web page's footer (web/src/App.tsx) says the same; keep the two in step.
+import Default from "@astrojs/starlight/components/Footer.astro";
+
+// This renders on pages at every depth, so the href cannot be relative the way
+// the ones in the Markdown are; BASE_URL is where SITE_BASE ends up.
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+---
+
+<Default />
+<div class="legal">
+  <p>
+    MTG Judgebot is unofficial Fan Content permitted under the{" "}
+    <a href="https://company.wizards.com/en/legal/fancontentpolicy">Fan Content Policy</a>. Not
+    approved or endorsed by Wizards of the Coast. Portions of the materials used are property of
+    Wizards of the Coast. ©Wizards of the Coast LLC.
+  </p>
+  <p>
+    The Comprehensive Rules come from Wizards of the Coast. Card data, rulings and card symbols
+    come from <a href="https://scryfall.com">Scryfall</a>, which is not affiliated with this
+    project. Rule links go to the <a href="https://yawgatog.com/resources/magic-rules/">Yawgatog</a>{" "}
+    mirror. <a href={`${base}/reference/attribution/`}>License and attribution</a>.
+  </p>
+</div>
+
+<style>
+  .legal {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--sl-color-hairline);
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-gray-3);
+  }
+  .legal p + p {
+    margin-top: 0.5rem;
+  }
+  .legal a {
+    color: var(--sl-color-gray-2);
+  }
+  .legal a:hover {
+    color: var(--sl-color-white);
+  }
+</style>

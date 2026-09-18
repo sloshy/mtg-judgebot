@@ -112,10 +112,16 @@ export default function App() {
           verify anything important with a human judge.
         </p>
         <p>
-          Unofficial Fan Content under the{" "}
-          <a href="https://company.wizards.com/en/legal/fancontentpolicy">Fan Content Policy</a>;
-          not endorsed by Wizards of the Coast. Card data and rulings from{" "}
-          <a href="https://scryfall.com">Scryfall</a>.
+          MTG Judgebot is unofficial Fan Content permitted under the{" "}
+          <a href="https://company.wizards.com/en/legal/fancontentpolicy">Fan Content Policy</a>.
+          Not approved or endorsed by Wizards of the Coast. Portions of the materials used are
+          property of Wizards of the Coast. ©Wizards of the Coast LLC.
+        </p>
+        <p>
+          The Comprehensive Rules come from Wizards of the Coast. Card data, rulings and card
+          symbols come from <a href="https://scryfall.com">Scryfall</a>, which is not affiliated
+          with this project. Rule links go to the{" "}
+          <a href="https://yawgatog.com/resources/magic-rules/">Yawgatog</a> mirror.
         </p>
         <SourceOffer about={about() ?? null} />
       </footer>
