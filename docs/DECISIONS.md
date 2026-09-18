@@ -373,7 +373,7 @@ judge roles, an admin command) was sketched and rejected:
 What follows for the code and the docs:
 
 - The setup experience is organised around creating your own Discord application and
-  instance (the README's "Running it" and the site's "Make your own judgebot" section).
+  instance (the README's "Running it" and the site's "Run your own judgebot" section).
 - `GUILD_ID` keeps its meaning as a registration shortcut rather than an allowlist.
 - An instance's anonymous web page is a second front door to the instance its operator
   runs. It is public in the sense that it needs no login. It is not a shared service

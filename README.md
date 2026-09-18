@@ -106,7 +106,7 @@ covers the portal. Then:
 Members holding a role named `JUDGE_ROLE` (default `Judge`) rate as judges: their rating
 overrides the crowd's. `cargo run --release -p judge-ingest -- emoji` uploads the mana
 symbols as application emoji once, so answers show pictures instead of `{W}`. The
-documentation site's [Make your own judgebot](https://sloshy.github.io/mtg-judgebot/self-hosting/first-run/)
+documentation site's [Run your own judgebot](https://sloshy.github.io/mtg-judgebot/self-hosting/first-run/)
 section has the long form with links into Discord's documentation.
 `docker compose up -d --build bot api` redeploys after code changes.
 

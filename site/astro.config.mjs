@@ -38,7 +38,7 @@ export default defineConfig({
       // fixed order and adding a page is a frontmatter line, not a config edit.
       sidebar: [
         { label: "Start here", items: [{ autogenerate: { directory: "start-here" } }] },
-        { label: "Make your own judgebot", items: [{ autogenerate: { directory: "self-hosting" } }] },
+        { label: "Run your own judgebot", items: [{ autogenerate: { directory: "self-hosting" } }] },
         { label: "Using the judge", items: [{ autogenerate: { directory: "using" } }] },
         { label: "How it works", items: [{ autogenerate: { directory: "how-it-works" } }] },
         { label: "Contributing", items: [{ autogenerate: { directory: "contributing" } }] },
