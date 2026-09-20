@@ -310,8 +310,7 @@ the forged header rides in over the tunnel like any other.
 
 Cloudflare sets `CF-Connecting-IP` on every request and the client cannot forge it, so
 that is what `API_CLIENT_IP=cloudflare` buckets on. `crates/api/src/http.rs`
-never consults `X-Forwarded-For`. `API_TRUST_FORWARDED` did, and is now
-rejected at startup rather than silently ignored.
+never consults `X-Forwarded-For`.
 
 Leave `API_CLIENT_IP=peer` for any deployment where Cloudflare is not the sole ingress.
 `CF-Connecting-IP` is trustworthy only when nothing can reach the origin directly.
@@ -466,7 +465,7 @@ rules stay unembedded and the next night's run picks them up, since `embed` alwa
 fills every NULL.
 
 Run it once by hand after installing, and expect the log to end with
-`refresh step ok` five times. A one-off manual load still works the old way from a
+`refresh step ok` five times. A one-off manual load also works from a
 workstation (`cargo run --release -p judge-ingest -- rules <url>`). That is also how
 to force a re-parse of an already-loaded version: delete the cached txt first.
 
@@ -571,7 +570,7 @@ release is the image that has been running as `latest`, down to the platform
 digests. A host that prefers to move on releases rather than on every push pins one:
 
 ```ini
-JUDGE_IMAGE_TAG=0.3    # in .env: follows 0.3.x patch releases; 0.3.1 pins one exactly
+JUDGE_IMAGE_TAG=1.0    # in .env: follows 1.0.x patch releases; 1.0.0 pins one exactly
 ```
 
 `CONTRIBUTING.md` says how a release is cut. The ordinary deploy:
@@ -651,7 +650,7 @@ Every build leaves an immutable tag, so a bad deploy is a one-line revert. Take 
 `sha-<short>` from the workflow run summary, or the version of the last good release:
 
 ```ini
-JUDGE_IMAGE_TAG=sha-abc1234    # in .env; or a release, e.g. 0.3.1
+JUDGE_IMAGE_TAG=sha-abc1234    # in .env; or a release, e.g. 1.0.0
 ```
 
 ```sh
@@ -687,7 +686,6 @@ own if the connector restarts.
 | Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the tunnel — every request looks like the cloudflared container |
 | Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied |
 | `bot` or `api` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact that surface must show is unset or malformed in `.env`; set it and `docker compose up -d` |
-| `judge-api` exits citing `API_TRUST_FORWARDED` | that variable was removed as unsafe; use `API_CLIENT_IP` |
 | Bot online, web page dead | expected if only `api` failed — the gateway is a separate outbound connection |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |

@@ -313,7 +313,7 @@ mod tests {
             .and_then(|l| l.strip_suffix('}'));
         assert!(
             default.is_some(),
-            "the api service no longer defaults API_INTERFACES in docker-compose.yml"
+            "the api service does not default API_INTERFACES in docker-compose.yml"
         );
         let args = default
             .unwrap_or_default()

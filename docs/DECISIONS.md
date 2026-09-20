@@ -4,9 +4,7 @@ The decisions that shaped this codebase, and why each was made. A new reader or 
 maintainer can use it to tell a deliberate choice from an accident.
 `docs/ARCHITECTURE.md` describes *what* exists and is kept current with the code.
 `docs/EXPLAINER.md` is the narrative tour. This file records *why*. Each entry names the
-alternative that was rejected. Dates are when the decision was made. The longer design
-documents that preceded some of them were retired in September 2026 and live in git
-history (`docs/proposals/`, `docs/LANGUAGE_EVALUATION.md` before that date).
+alternative that was rejected. Dates are when the decision was made.
 
 ## D1. Compiler-enforced correctness
 
@@ -161,9 +159,9 @@ becoming a naming scheme of its own.
 
 So there is `judge.toml`: typed structs, `deny_unknown_fields`, `nutype` validators, and
 secrets named by environment variable and never written in the file. With no file, the
-binaries build the original setup from `.env` (Anthropic direct, `claude-opus-5` for both
-stages, Voyage if keyed). Upgrading therefore never changes an existing deployment, the
-eval numbers or the pinned prompt digest. A knob that would be silently ignored is a load
+binaries build the default setup from `.env` (Anthropic direct, `claude-opus-5` for both
+stages, Voyage if keyed), which is the one the eval numbers and the pinned prompt digest
+were produced on. A knob that would be silently ignored is a load
 error naming both keys. `docs/PROVIDERS.md` is the reference.
 
 ## D7. Spend cap by type

@@ -467,7 +467,7 @@ Key cross-file facts that aren't obvious from any one file:
   - The web page does the same job with Scryfall's SVGs (`web/src/Symbols.tsx`).
 - **Providers are configuration, not code.** `judge_bot::config` loads `judge.toml` into
   typed structs.
-  - The file is `JUDGE_CONFIG`, else `./judge.toml` if present, else today's setup from
+  - The file is `JUDGE_CONFIG`, else `./judge.toml` if present, else the default setup from
     `.env`: Anthropic direct, `claude-opus-5` both stages, Voyage if keyed.
   - `judge.example.toml` documents every knob with its default and must keep loading.
     `config::tests::the_example_file_loads_as_shipped` and
@@ -564,9 +564,8 @@ re-ingesting, which re-pays the embedder per row, so take a backup before
 `peer` (socket address) or `cloudflare` (`CF-Connecting-IP`). `client_ip` never reads
 `X-Forwarded-For`, because Cloudflare *appends* to a caller-supplied header instead of
 replacing it. Its first hop is attacker-chosen, which would hand every request a fresh
-allowance against a paid endpoint. The old `API_TRUST_FORWARDED` did that and is now
-rejected at startup rather than ignored. `cloudflare` is only sound when nothing can
-reach the origin except Cloudflare.
+allowance against a paid endpoint. `cloudflare` is only sound when nothing can reach the
+origin except Cloudflare.
 
 **Data refresh is a nightly cron on the deploy host**, not a service.
 `scripts/refresh-data.sh` runs the `refresh` compose service (profile `refresh`, third

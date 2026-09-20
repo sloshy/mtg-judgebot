@@ -3,12 +3,12 @@
 //! and the validation do not change with it; only who is on the other end
 //! of the HTTP connection.
 //!
-//! **Zero config keeps working.** [`Config::load`] reads the file named by
-//! `JUDGE_CONFIG`, else `./judge.toml` if it exists, else builds today's
-//! setup from the environment exactly as before: Anthropic's first-party API
-//! with `ANTHROPIC_API_KEY`, `claude-opus-5` for both stages, Voyage if
-//! `VOYAGE_API_KEY` is set. So an existing deployment, the eval numbers and
-//! the pinned prompt digest are untouched by upgrading.
+//! **Zero config works.** [`Config::load`] reads the file named by
+//! `JUDGE_CONFIG`, else `./judge.toml` if it exists, else builds the default
+//! setup from the environment: Anthropic's first-party API with
+//! `ANTHROPIC_API_KEY`, `claude-opus-5` for both stages, Voyage if
+//! `VOYAGE_API_KEY` is set. The eval numbers and the pinned prompt digest
+//! were produced on that setup.
 //!
 //! The file is typed on the way in: unknown keys are rejected
 //! (`deny_unknown_fields`, so a typo is an error naming the key), model ids

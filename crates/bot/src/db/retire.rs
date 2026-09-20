@@ -7,10 +7,10 @@
 //! admitted it, asked again against today's rules, rulings and Oracle text —
 //! [`judge_core::citation_supported`] per citation.
 //!
-//! This replaces the old rule that a prior call was retrievable only while its
-//! `cr_version` was the newest loaded. That retired every call on every CR
+//! The alternative, keeping a prior call retrievable only while its
+//! `cr_version` is the newest loaded, would retire every call on every CR
 //! release, including the many whose cited rules had not changed a character,
-//! and retired nothing when Scryfall corrected a card's Oracle text or a
+//! and retire nothing when Scryfall corrects a card's Oracle text or a
 //! ruling — the one case where an old answer can be flatly wrong.
 //!
 //! One dependency is checked beyond the citations: the Oracle text of every

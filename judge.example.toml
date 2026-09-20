@@ -4,7 +4,7 @@
 # at it. Under Docker always set JUDGE_CONFIG=./judge.toml in .env. The
 # containers see only the file compose mounts, never the repo root, so a
 # ./judge.toml with JUDGE_CONFIG blank is read by `cargo run` and by nothing
-# in `docker compose up`. With no file at all, the binaries build today's
+# in `docker compose up`. With no file at all, the binaries build the default
 # setup from .env: Anthropic direct with ANTHROPIC_API_KEY, claude-opus-5 for
 # both stages, Voyage if VOYAGE_API_KEY is set. This file does not change the
 # pipeline, the prompts, the citation validation or the spend cap. It changes only

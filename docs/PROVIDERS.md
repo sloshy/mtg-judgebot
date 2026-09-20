@@ -3,8 +3,7 @@
 The reference for how the judge reaches its models. It covers the provider-neutral seam
 (`crates/llm`), the two chat backends (`crates/anthropic`, `crates/openai`), the two
 embedding backends (`crates/embed`), and the `judge.toml` file that chooses among them.
-It was implemented 2026-09-02 from a proposal. `docs/DECISIONS.md` (D6–D9) records the
-reasoning, and this file describes what exists. The pipeline, the prompts, the validation
+`docs/DECISIONS.md` (D6–D9) records the reasoning, and this file describes what exists. The pipeline, the prompts, the validation
 and the typestates do not know which provider is on the other end of the HTTP connection.
 That is the purpose of the seam.
 
@@ -277,10 +276,10 @@ provider *kind* (`voyage | openai`, not the operator's table name), model and di
 
 ## 5. Configuration
 
-**Zero config keeps working.** With no `judge.toml`, the binaries build today's setup
+**Zero config works.** With no `judge.toml`, the binaries build the default setup
 from `.env`: Anthropic direct with `ANTHROPIC_API_KEY`, `claude-opus-5` for both stages,
 Voyage if `VOYAGE_API_KEY` is set. The eval numbers and the pinned prompt digest were
-produced on that setup, and upgrading never changes it.
+produced on that setup.
 
 A `judge.toml` (path from `JUDGE_CONFIG`, else `./judge.toml` if present) selects
 providers and models. `judge.example.toml` documents every knob with its default. Two

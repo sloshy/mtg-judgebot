@@ -29,7 +29,11 @@ use serenity::http::Http;
 /// Every card symbol Magic uses, with a link to its SVG.
 const SYMBOLOGY_URL: &str = "https://api.scryfall.com/symbology";
 /// Scryfall asks every client to identify itself.
-const USER_AGENT: &str = "mtg-judgebot-ingest/0.1 (https://github.com/sloshy/mtg-judgebot)";
+const USER_AGENT: &str = concat!(
+    "mtg-judgebot-ingest/",
+    env!("CARGO_PKG_VERSION"),
+    " (https://github.com/sloshy/mtg-judgebot)"
+);
 /// resvg is built without its text, font and raster-image features: none of
 /// Scryfall's 84 symbols uses `<text>`, `<image>`, `<use>` or a `<style>`
 /// block, so there is nothing to lose by leaving them out. `svgz` goes too,

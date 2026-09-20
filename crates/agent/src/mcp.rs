@@ -311,7 +311,7 @@ impl JudgeMcp {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for JudgeMcp {
     fn get_info(&self) -> ServerConfig {
-        // The version carries the commit as build metadata (`0.1.0+a37d495`)
+        // The version carries the commit as build metadata (`1.0.0+a37d495`)
         // so a client's server listing already identifies the build.
         let version = match self.toolbox.offer().commit().hash() {
             Some(h) => format!("{}+{}", env!("CARGO_PKG_VERSION"), h.short()),

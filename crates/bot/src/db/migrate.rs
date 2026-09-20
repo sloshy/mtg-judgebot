@@ -8,7 +8,7 @@
 //!   pool, so `docker compose pull && docker compose up -d` is a complete
 //!   deploy. A failure exits the process, which under `restart:
 //!   unless-stopped` is a crash-loop with the reason in the log — loud, where
-//!   the old quiet failure was a bot that answered but could not persist.
+//!   the quiet alternative is a bot that answers but cannot persist.
 //!   `JUDGE_AUTO_MIGRATE=false` opts out for an operator who moves the schema
 //!   by hand. Only the long-lived services do this: the nightly `refresh`
 //!   container runs whatever image `docker compose pull` last fetched, which

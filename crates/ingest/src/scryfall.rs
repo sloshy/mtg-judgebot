@@ -41,7 +41,11 @@ use uuid::Uuid;
 /// Scryfall bulk-data index endpoint.
 const BULK_INDEX_URL: &str = "https://api.scryfall.com/bulk-data";
 /// Scryfall asks every client to identify itself.
-const USER_AGENT: &str = "mtg-judgebot-ingest/0.1 (https://github.com/sloshy/mtg-judgebot)";
+const USER_AGENT: &str = concat!(
+    "mtg-judgebot-ingest/",
+    env!("CARGO_PKG_VERSION"),
+    " (https://github.com/sloshy/mtg-judgebot)"
+);
 /// Rows per multi-row INSERT (500 rows × ≤9 columns stays far below the 65535 bind limit).
 const BATCH: usize = 500;
 

@@ -48,7 +48,11 @@ const MAX_HEADING_CHARS: usize = 60;
 /// format. Only the `.txt` is parsed here.
 pub const RULES_PAGE_URL: &str = "https://magic.wizards.com/en/rules";
 /// Scryfall-style polite identification; Wizards' CDN does not require it but it costs nothing.
-const USER_AGENT: &str = "mtg-judgebot-ingest/0.1 (+https://github.com/sloshy/mtg-judgebot)";
+const USER_AGENT: &str = concat!(
+    "mtg-judgebot-ingest/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/sloshy/mtg-judgebot)"
+);
 
 /// Parse and load the CR from `source` (path or `http(s)://` URL, cached under `cache_dir`).
 ///

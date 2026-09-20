@@ -117,8 +117,7 @@ section has the long form with links into Discord's documentation.
 
 With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5`
 for both LLM stages, and Voyage `voyage-3.5` for embeddings if `VOYAGE_API_KEY` is set.
-The eval numbers and the pinned prompt digest were produced on that setup, and upgrading
-never changes it.
+The eval numbers and the pinned prompt digest were produced on that setup.
 
 A `judge.toml` (named by `JUDGE_CONFIG`, else `./judge.toml` if present) picks something
 else, such as a different model per stage on different providers. Under Docker the
