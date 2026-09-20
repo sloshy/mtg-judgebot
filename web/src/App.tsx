@@ -13,6 +13,18 @@ import Symbols from "./Symbols";
 
 const MAX_QUESTION_CHARS = 1000;
 
+/** Shown before the first question. Each is a common ruling with a short,
+ * unambiguous answer, and between them they exercise a nickname ("bob",
+ * "goyf"), bracketed names and the Commander rules. Choosing one fills the
+ * box rather than asking: an answer costs the operator money and the visitor
+ * one of their rate-limited questions, so sending it stays their decision. */
+const EXAMPLES = [
+  "I attack with a 5/5 that has trample and deathtouch and they block with a 4/4. How much damage can I trample over?",
+  "My opponent has bob and flips a goyf off the top. How much life does he lose?",
+  "I control [[Blood Artist]] and my opponent casts [[Wrath of God]]. Does Blood Artist trigger for the other creatures that die with it?",
+  "My commander is [[Kenrith, the Returned King]]. Can I run Nicol Bolas, the Ravager in the deck?",
+] as const;
+
 interface Entry {
   question: string;
   pins: Pin[];
@@ -27,6 +39,7 @@ export default function App() {
   const [entries, setEntries] = createStore<Entry[]>([]);
   const [draft, setDraft] = createSignal("");
   const [waiting, setWaiting] = createSignal(false);
+  let box: HTMLTextAreaElement | undefined;
   const session = sessionId();
   // `null` while GET /api/about is pending or after it failed; the footer
   // then says so rather than naming a repository this instance may not be.
@@ -54,6 +67,13 @@ export default function App() {
     if (!question || waiting()) return;
     setDraft("");
     void ask(question, []);
+  }
+
+  function tryExample(question: string) {
+    // Never over something the visitor typed; one example may replace another.
+    const typed = draft().trim();
+    if (!typed || EXAMPLES.some((e) => e === typed)) setDraft(question);
+    box?.focus();
   }
 
   /** A "did you mean…?" pick: re-ask the same entry with the span pinned. */
@@ -93,8 +113,26 @@ export default function App() {
         )}
       </For>
 
+      <Show when={entries.length === 0}>
+        <section class="examples" aria-labelledby="examples-title">
+          <h2 id="examples-title">Try one</h2>
+          <ul>
+            <For each={EXAMPLES}>
+              {(question) => (
+                <li>
+                  <button type="button" onClick={() => tryExample(question)}>
+                    <Symbols text={question} />
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
+        </section>
+      </Show>
+
       <form class="ask" onSubmit={submit}>
         <textarea
+          ref={box}
           value={draft()}
           onInput={(e) => setDraft(e.currentTarget.value)}
           onKeyDown={(e) => {
