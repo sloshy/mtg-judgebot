@@ -891,6 +891,56 @@ impl fmt::Display for EmptyVerdict {
     }
 }
 
+/// Rule numbers an answer's prose names without citing them: never empty.
+///
+/// A rule number in the text reads as a reference the reader can check, and
+/// the only ones that have been checked are the citations. So the prose may
+/// name a rule only if a citation quotes it (or its parent rule, or one of its
+/// sub-rules: the same covering the retrieval scoring uses).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UncitedRules(#[schemars(with = "Vec<RuleId>")] NonEmpty<RuleId>);
+
+impl UncitedRules {
+    /// The ids, in the order the prose names them.
+    #[must_use]
+    pub fn new(ids: NonEmpty<RuleId>) -> Self {
+        Self(ids)
+    }
+
+    /// The ids, in the order the prose names them.
+    #[must_use]
+    pub fn ids(&self) -> &NonEmpty<RuleId> {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+mod uncited_tests {
+    use super::*;
+
+    /// `Rejection` is stored by the agent session store, so the tag and the
+    /// shape are pinned, and an empty list is an error rather than a value.
+    #[test]
+    fn an_uncited_rejection_round_trips_and_is_never_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let r = Rejection::Uncited(UncitedRules::new(NonEmpty::new(RuleId::try_new(
+            "605.3b".to_owned(),
+        )?)));
+        let json = serde_json::to_string(&r)?;
+        assert_eq!(json, r#"{"kind":"uncited","detail":["605.3b"]}"#);
+        assert_eq!(serde_json::from_str::<Rejection>(&json)?, r);
+        assert!(serde_json::from_str::<Rejection>(r#"{"kind":"uncited","detail":[]}"#).is_err());
+        Ok(())
+    }
+}
+
+impl fmt::Display for UncitedRules {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ids: Vec<&str> = self.0.iter().map(AsRef::as_ref).collect();
+        write!(f, "the answer names {} without citing it", ids.join(", "))
+    }
+}
+
 /// What a previous synthesis attempt was rejected for; the synthesizer shows
 /// this to the model on the retry. Exhaustive, so a new rejection reason must
 /// be rendered before it compiles.
@@ -908,6 +958,8 @@ pub enum Rejection {
     Malformed(MalformedCitation),
     /// The verdict was empty (no citations, or no real answer).
     Empty(EmptyVerdict),
+    /// The prose names rules that no citation quotes.
+    Uncited(UncitedRules),
     /// The answer text exceeded [`crate::verdict::MAX_ANSWER_CHARS`]. Only an
     /// agent-driven session produces this: the Anthropic path is bounded by
     /// `max_tokens` and the Discord renderer cuts to fit, but an outside
@@ -954,6 +1006,7 @@ impl RejectedAttempt {
         let worth_showing = match rejection {
             Rejection::BadCitation(_)
             | Rejection::Malformed(_)
+            | Rejection::Uncited(_)
             | Rejection::Empty(EmptyVerdict::NoCitations) => {
                 answer.trim().chars().count() >= crate::MIN_ANSWER_CHARS
             }
@@ -995,6 +1048,7 @@ impl fmt::Display for Rejection {
             Rejection::BadCitation(c) => write!(f, "bad citation {c}"),
             Rejection::Malformed(m) => write!(f, "{m}"),
             Rejection::Empty(e) => write!(f, "{e}"),
+            Rejection::Uncited(u) => write!(f, "{u}"),
             Rejection::Oversized { chars } => {
                 write!(f, "answer is {chars} characters, over the limit")
             }

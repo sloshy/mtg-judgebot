@@ -55,6 +55,7 @@ pub async fn judge(
         Err(JudgeError::BadCitation(c)) => Rejection::BadCitation(c),
         Err(JudgeError::MalformedCitation(m)) => Rejection::Malformed(m),
         Err(JudgeError::EmptyVerdict(e)) => Rejection::Empty(e),
+        Err(JudgeError::UncitedRules(u)) => Rejection::Uncited(u),
         done => return done,
     };
     let rejected = RejectedAttempt::new(rejection, &answer);

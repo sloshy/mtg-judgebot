@@ -58,7 +58,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D19),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D20),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -391,6 +391,11 @@ Key cross-file facts that aren't obvious from any one file:
     Models retype the CR's `’` as `'`, and that was the most common rejection.
   - What is stored is the *source's* span, not the model's string. A persisted quote
     stays byte-exact and the retirement pass's `citation_supported` stays a strict check.
+  - The prose is held to the citations too (D20): a rule number written in the answer
+    (`verdict::uncited_rules`, a regex plus `RuleId`) must be covered by a rule citation,
+    the id itself, its rule or one of its sub-rules. Otherwise `JudgeError::UncitedRules`
+    / `Rejection::Uncited`, checked last so a bad citation is reported first. Rulings and
+    Oracle text have no id in prose, so this is rules only.
   - A failed check, or an empty/citation-less verdict on an answerable source, becomes a
     retry with the rejection rendered into the prompt. The rejection is logged at INFO,
     so a second failure can be read against the first. The retry is a fresh conversation,

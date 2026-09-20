@@ -21,14 +21,17 @@
 //!   validated verdict without having checked. Deleting the check is a type
 //!   error, not a silent regression.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::LazyLock};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use nonempty::NonEmpty;
+use regex::Regex;
+
 use crate::{
     AnswerableSource, CardRef, Category, Citation, Confidence, Context, CrVersion, EmptyVerdict,
-    JudgeError, MalformedCitation, Quote, Source, quote,
+    JudgeError, MalformedCitation, Quote, RuleId, Source, UncitedRules, quote,
 };
 
 /// An answer shorter than this (in characters, trimmed) is not an answer:
@@ -334,6 +337,11 @@ impl Verdict<Unvalidated> {
             return Err(JudgeError::EmptyVerdict(e));
         }
         let citations = requote(citations, ctx).map_err(JudgeError::BadCitation)?;
+        // Check (c), last: only once every citation is known good is "the
+        // prose names a rule nothing cites" the thing worth telling the model.
+        if let Some(uncited) = uncited_rules(&self.data.answer, &citations) {
+            return Err(JudgeError::UncitedRules(uncited));
+        }
         let cr_version = ctx.cr_version().cloned().ok_or_else(|| {
             anyhow::anyhow!("context holds no CR chunks; cannot stamp cr_version")
         })?;
@@ -352,6 +360,55 @@ impl Verdict<Unvalidated> {
             },
         })
     }
+}
+
+/// A rule number as prose writes it: three digits, a dot, digits, and up to
+/// two letters. The regex crate has no lookaround, so what stands before the
+/// match is checked by hand in [`uncited_rules`].
+static PROSE_RULE_ID: LazyLock<Regex> = LazyLock::new(|| {
+    #[expect(
+        clippy::expect_used,
+        reason = "the pattern is a constant: an invalid one panics in every test that uses it"
+    )]
+    Regex::new(r"\b[1-9][0-9]{2}\.[0-9]+[a-z]{0,2}\b").expect("PROSE_RULE_ID is a valid regex")
+});
+
+/// `702.19b` → `702.19`; a rule-level id is its own rule.
+fn rule_of(id: &str) -> &str {
+    id.trim_end_matches(|c: char| c.is_ascii_lowercase())
+}
+
+/// The rule numbers `answer` names that no rule citation covers, if any.
+/// A citation covers a number when it cites that id, its rule, or one of its
+/// sub-rules. A number that is part of a longer figure (`$100.50`, `1.702.19`)
+/// or that is not a well-formed rule id is not a rule number.
+fn uncited_rules(answer: &str, citations: &[Citation]) -> Option<UncitedRules> {
+    let cited: Vec<&str> = citations
+        .iter()
+        .filter_map(|c| match c {
+            Citation::Rule { id, .. } => Some(id.as_ref()),
+            Citation::ScryfallRuling { .. }
+            | Citation::PriorCall { .. }
+            | Citation::OracleText { .. } => None,
+        })
+        .collect();
+    let mut missing: Vec<RuleId> = Vec::new();
+    for m in PROSE_RULE_ID.find_iter(answer) {
+        let before = answer.get(..m.start()).and_then(|s| s.chars().next_back());
+        if before.is_some_and(|c| c == '$' || c == '.') {
+            continue;
+        }
+        let Ok(id) = RuleId::try_new(m.as_str().to_owned()) else {
+            continue;
+        };
+        let covered = cited
+            .iter()
+            .any(|c| *c == id.as_ref() || rule_of(c) == id.as_ref() || *c == rule_of(id.as_ref()));
+        if !covered && !missing.contains(&id) {
+            missing.push(id);
+        }
+    }
+    NonEmpty::from_vec(missing).map(UncitedRules::new)
 }
 
 /// Quotes a model writes when it has nothing to quote. Compared after
@@ -1051,6 +1108,75 @@ mod tests {
             .validate(&ctx()?, CR)
             .err();
         assert!(matches!(err, Some(JudgeError::BadCitation(_))), "{err:?}");
+        Ok(())
+    }
+
+    fn answering(text: &str, citations: Vec<Citation>) -> Verdict<Unvalidated> {
+        Verdict::new(
+            text.into(),
+            Confidence::High,
+            citations,
+            Category::KeywordAbilities,
+        )
+    }
+
+    /// Every rule number a reader sees has been quoted and checked, or the
+    /// answer is sent back. The Lion's Eye Diamond answer of the 2026-09-20
+    /// gold run named `605.3b` and cited only `605.1a`.
+    #[test]
+    fn a_rule_number_in_the_prose_must_be_among_the_citations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let c = ctx()?;
+        let uncited = |text: &str| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+            Ok(
+                match answering(text, vec![good_citation()?]).validate(&c, CR) {
+                    Err(JudgeError::UncitedRules(u)) => {
+                        u.ids().iter().map(ToString::to_string).collect()
+                    }
+                    Ok(_) => vec![],
+                    Err(e) => return Err(e.into()),
+                },
+            )
+        };
+        let pad = "Lifelink means its controller gains that much life, every time. ";
+        // Cited, at the sub-rule, at its rule, and from a rule-level citation's sub-rule.
+        assert!(uncited(&format!("{pad}See `702.15b`."))?.is_empty());
+        assert!(uncited(&format!("{pad}See 702.15 for the keyword."))?.is_empty());
+        // Named and not cited, once each, in order.
+        assert_eq!(
+            uncited(&format!(
+                "{pad}Per `605.3b` and 117.1d (and 605.3b again), and `702.15b`."
+            ))?,
+            ["605.3b", "117.1d"]
+        );
+        // A sibling sub-rule is a different rule.
+        assert_eq!(uncited(&format!("{pad}But see 702.15a."))?, ["702.15a"]);
+        // Not rule numbers: money, a longer figure, a bare section, a date, a version.
+        assert!(
+            uncited(&format!(
+                "{pad}It costs $100.50, or 1.702.15 in some notation; section 702 covers it, as of 2026.08, v1.0.0."
+            ))?
+            .is_empty()
+        );
+        Ok(())
+    }
+
+    /// A bad citation is reported before an uncited number: the citation may
+    /// be the very one that would have covered it.
+    #[test]
+    fn citations_are_judged_before_the_prose() -> Result<(), Box<dyn std::error::Error>> {
+        let bad = Citation::Rule {
+            id: RuleId::try_new("605.3b".to_owned())?,
+            quote: Quote::try_new("not in the material")?,
+        };
+        let v = answering(
+            "Per `605.3b`, a mana ability resolves at once, without using the stack at all.",
+            vec![bad],
+        );
+        assert!(matches!(
+            v.validate(&ctx()?, CR),
+            Err(JudgeError::BadCitation(_))
+        ));
         Ok(())
     }
 

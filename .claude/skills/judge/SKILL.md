@@ -116,6 +116,8 @@ the JSON only. Do it promptly, because the session clock is running.
   `[oracle <uuid>#<face>]` label on the face in the Cards section.
 - Prior calls: `{"kind":"prior_call","id":"<uuid>","quote":...}` from `[call <uuid>]`.
 - Never emit a placeholder or empty citation. Every answer must cite at least one thing.
+- Every rule number you write in the answer text must be one of your rule citations (the
+  id, its rule, or one of its sub-rules). Cite it or do not name it.
 
 ## Lookups without a session
 

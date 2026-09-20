@@ -773,6 +773,7 @@ fn judge_error(e: &JudgeError) -> JudgeReply {
         JudgeError::BadCitation(_)
         | JudgeError::MalformedCitation(_)
         | JudgeError::EmptyVerdict(_)
+        | JudgeError::UncitedRules(_)
         | JudgeError::LlmRefused
         | JudgeError::Upstream(_) => JudgeReply::Error {
             message: render::error(e),

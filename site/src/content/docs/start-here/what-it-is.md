@@ -50,8 +50,9 @@ channel messages. `/forget` deletes a user's ratings, which is the only data tie
 
 ## AI-generated answers
 
-Every citation is checked against its source before it is shown. That rules out invented
-rule numbers and misquoted text. It does not rule out a wrong conclusion drawn from correct
+Every citation is checked against its source before it is shown, and every rule number the
+answer's text names must be one of those citations. That rules out invented rule numbers
+and misquoted text. It does not rule out a wrong conclusion drawn from correct
 quotes. Verify anything that matters at a tournament with a human judge. The bot declines
 tournament-policy questions (the Magic Tournament Rules and Infraction Procedure Guide)
 rather than answering them badly.

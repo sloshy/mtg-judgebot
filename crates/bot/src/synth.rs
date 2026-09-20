@@ -590,6 +590,20 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
                 m.raw, m.error
             );
         }
+        // The answer itself is usually fine, and is quoted back below. Two ways
+        // out, both honest: cite the rule, or stop naming it.
+        Rejection::Uncited(u) => {
+            let ids: Vec<String> = u.ids().iter().map(|id| format!("`{id}`")).collect();
+            let _ = writeln!(
+                s,
+                "Your earlier answer names {} in its text without citing {}. Every rule number a reader sees must \
+                 be one of your citations, with a verbatim quote from that rule in the material (citing the rule \
+                 or one of its sub-rules covers it). Either add that citation, or, if the rule is not in the \
+                 material to quote, take the number out of the answer. Keep the rest.",
+                ids.join(", "),
+                if ids.len() == 1 { "it" } else { "them" }
+            );
+        }
         Rejection::Empty(EmptyVerdict::NoCitations) => {
             s.push_str(
                 "Your earlier answer had no citations, so it was rejected. Every answer must cite the rule(s) \
@@ -921,6 +935,51 @@ mod tests {
     /// The retry is a fresh conversation. The Room failure (2026-09-10) told
     /// the model to keep a ruling it could not see and got a seven-character
     /// answer back; the notice now quotes the rejected answer.
+    /// An answer that names a rule it did not cite is quoted back with both
+    /// ways out: cite it, or stop naming it.
+    #[test]
+    fn an_uncited_rule_number_is_named_with_both_ways_out() -> R {
+        let ids = NonEmpty::from((rid("605.3b")?, vec![rid("117.1d")?]));
+        let answer =
+            "Per `605.3b` it is a mana ability, and `117.1d` lets you activate it while paying.";
+        let rejected = RejectedAttempt::new(
+            Rejection::Uncited(judge_core::UncitedRules::new(ids)),
+            answer,
+        );
+        let s = render_user_turn(
+            &q(),
+            &Context::default(),
+            Some(&rejected),
+            &[],
+            &Budget::default(),
+        );
+        assert!(
+            s.contains("names `605.3b`, `117.1d` in its text without citing them."),
+            "{s}"
+        );
+        assert!(s.contains("Either add that citation, or, if the rule is not in the material to quote, take the number out"), "{s}");
+        assert!(
+            s.contains("> Per `605.3b` it is a mana ability"),
+            "the answer is shown back: {s}"
+        );
+        let one = RejectedAttempt::new(
+            Rejection::Uncited(judge_core::UncitedRules::new(NonEmpty::new(rid("605.3b")?))),
+            answer,
+        );
+        let s = render_user_turn(
+            &q(),
+            &Context::default(),
+            Some(&one),
+            &[],
+            &Budget::default(),
+        );
+        assert!(
+            s.contains("names `605.3b` in its text without citing it."),
+            "{s}"
+        );
+        Ok(())
+    }
+
     /// The Waylay failure of the 2026-09-20 gold run: no rulings in the
     /// material, so the model filed the card's Oracle text as a ruling under
     /// an invented key. "No such ruling, drop it" got a placeholder back. The

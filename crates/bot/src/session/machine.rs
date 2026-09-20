@@ -518,6 +518,7 @@ impl Session {
                 Err(JudgeError::BadCitation(c)) => Rejection::BadCitation(c),
                 Err(JudgeError::MalformedCitation(m)) => Rejection::Malformed(m),
                 Err(JudgeError::EmptyVerdict(e)) => Rejection::Empty(e),
+                Err(JudgeError::UncitedRules(u)) => Rejection::Uncited(u),
                 Err(other) => return Err(other.into()),
             }
         };

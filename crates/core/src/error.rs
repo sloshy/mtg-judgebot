@@ -2,7 +2,7 @@
 
 use nonempty::NonEmpty;
 
-use crate::{Ambiguous, Citation, EmptyVerdict, MalformedCitation, Source};
+use crate::{Ambiguous, Citation, EmptyVerdict, MalformedCitation, Source, UncitedRules};
 
 /// Every way `judge()` can fail. Discord rendering matches on this exhaustively.
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +29,10 @@ pub enum JudgeError {
     /// answer text. `judge()` retries synthesis once, exactly as for `BadCitation`.
     #[error("empty verdict: {0}")]
     EmptyVerdict(EmptyVerdict),
+    /// The answer's prose names a rule number that none of its citations
+    /// quotes. `judge()` retries synthesis once, as for `BadCitation`.
+    #[error("uncited rule: {0}")]
+    UncitedRules(UncitedRules),
     /// The model declined to answer (`stop_reason == "refusal"`).
     #[error("the model refused to answer")]
     LlmRefused,
@@ -54,6 +58,7 @@ impl JudgeError {
             JudgeError::BadCitation(_)
             | JudgeError::MalformedCitation(_)
             | JudgeError::EmptyVerdict(_)
+            | JudgeError::UncitedRules(_)
             | JudgeError::LlmRefused
             | JudgeError::Upstream(_) => true,
         }

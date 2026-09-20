@@ -408,6 +408,7 @@ handling lives, so you can read further.
 | Model invents rule numbers or misquotes | citation validation, and the source's own span is stored (`core/verdict.rs`, `core/quote.rs`) |
 | Model answers from memory instead of the material | system prompt ground rule 1, required citations, retry notice |
 | Model pads with placeholder citations | prompt forbids stubs, and a malformed citation is a typed rejection with the parse error shown back; a quote that parses but is a stock word (`"placeholder"`) or a character or two is rejected the same way |
+| Answer names a rule number it never cited ("per `605.3b`…") | every rule number in the prose must be covered by a rule citation (the id, its rule, or a sub-rule); otherwise the attempt is rejected and the retry is told to cite it or remove it |
 | Model files a card's Oracle text as a ruling (the card has no rulings to cite) | still rejected, never relabelled; the retry notice names the kind it meant (`oracle_text`, with the card and face) instead of telling it to drop a good quote |
 | Model calls the tool repeatedly | `Synth` typestate: one round, by type |
 | Model's output is cut off at `max_tokens` | detected from the stop reason, retried once at medium effort |

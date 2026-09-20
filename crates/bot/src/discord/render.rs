@@ -405,6 +405,7 @@ pub fn error(e: &JudgeError) -> String {
         JudgeError::BadCitation(_)
         | JudgeError::MalformedCitation(_)
         | JudgeError::EmptyVerdict(_)
+        | JudgeError::UncitedRules(_)
         | JudgeError::LlmRefused
         | JudgeError::Upstream(_) => FAILED.to_owned(),
     }

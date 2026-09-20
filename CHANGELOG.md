@@ -27,7 +27,8 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
   and classification, card resolution, retrieval and synthesis. Every answer cites the
   Comprehensive Rules, Scryfall rulings, Oracle text or a rated prior call, and every
   citation's quote is checked verbatim against its source before the answer is shown or
-  stored. A failed check gets one retry that is told what was rejected.
+  stored, and every rule number the answer's text names must be one of those citations.
+  A failed check gets one retry that is told what was rejected.
 - **Card resolution that never guesses.** Aliases, printed names, short names and fuzzy
   matches resolve in a fixed order, `[[bracketed]]` names are taken exactly, and an
   ambiguous name becomes a "did you mean?" choice.

@@ -447,3 +447,41 @@ The same task tells the operator when the cap trips (`JUDGE_ALERT_WEBHOOK`), onc
 period. A capped judgebot is otherwise silent until someone reads the log, and the people
 who notice first are the members being refused.
 
+## D20. The prose answers to the citations
+
+*Decided 2026-09-20.*
+
+Validation checked every citation and nothing tied the prose to them. An answer could
+write "per `605.3b`" with no citation of 605.3b and pass, as long as the citations it did
+carry were good. A reader cannot tell a checked rule number from an unchecked one, so the
+guarantee the project states ("every claim is backed by a validated citation") was
+stronger than what the code enforced.
+
+Now every rule number in the answer text must be covered by a rule citation: that id, its
+rule, or one of its sub-rules, the same covering the retrieval scoring uses. It is a regex
+and a `RuleId` parse, checked after the citations themselves, and a miss is a typed
+rejection (`UncitedRules`) with one retry, like the others. On the 17 published answers
+of the 2026-09-20 gold run the prose named 57 rule numbers and 55 were covered. The two
+misses were in two different answers (`605.3b`, and `903.9a` beside a cited `903.9b`), so
+about one answer in eight would have been retried, at about ten cents a retry.
+
+It covers rule numbers only, and only rule citations cover them. A ruling or a card's
+Oracle text has no identifier in prose, so "a ruling says…" with no ruling cited still
+passes, and a rule number is not covered by citing a prior call that mentions it.
+
+**Rejected:**
+
+- *A second model call that judges whether the prose follows from the citations.* It is
+  the check one actually wants, and it costs a quarter to three-quarters of an answer
+  again, adds seconds, and is itself a model that can be wrong. A probabilistic opinion
+  does not belong among gates that are otherwise exact. If it is ever wanted, it belongs
+  in `judge-eval` as a score, not in the path of every answer.
+- *Accepting a number that is in the material but not cited.* Looser, and it would let the
+  prose lean on text no quote was checked against.
+- *Telling the model up front in the system prompt*, for now. The prompt asks for rule
+  numbers inline and for "usually one to four citations", which pulls against this check,
+  and one sentence there would save most of the retries. It would also change the pinned
+  prompt the published eval numbers were produced on. The check went in first so its
+  cost could be measured on the unchanged prompt. The prompt edit is the follow-up if the
+  retry rate stays near one in eight.
+
