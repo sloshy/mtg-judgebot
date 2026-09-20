@@ -44,7 +44,12 @@ Hostnames, paths and the image name below are placeholders (`judge.example.com`,
 
 ## 2. Data migration
 
-Do this before anything else. Restore a dump rather than re-ingesting. A cold rebuild
+**A new instance has nothing to migrate.** Skip to §3, and load the data in §4 with
+`docker compose run --rm refresh init` (the documentation site's "Requirements and first
+run" page is the walkthrough). This section is
+for moving an instance that already has data to another host.
+
+When moving, do this before anything else. Restore a dump rather than re-ingesting. A cold rebuild
 re-parses the CR and the Scryfall bulk file and re-embeds every rule through the
 embedding provider, which costs money.
 
@@ -322,6 +327,49 @@ never consults `X-Forwarded-For`.
 
 Leave `API_CLIENT_IP=peer` for any deployment where Cloudflare is not the sole ingress.
 `CF-Connecting-IP` is trustworthy only when nothing can reach the origin directly.
+
+### Behind another reverse proxy
+
+The tunnel is a choice, not a requirement. `api` publishes on `127.0.0.1:8787`, and any
+reverse proxy on the host can terminate TLS in front of it. Two things need care.
+
+**Answers take up to a minute**, so the proxy's read timeout must be longer than that.
+Caddy's default is unlimited. nginx's is 60 seconds.
+
+**Every request now arrives from the proxy**, so `API_CLIENT_IP=peer` puts all visitors in
+one rate-limit bucket. The per-address limit works again if the proxy tells `judge-api`
+the client's address in the one header it reads, overwriting whatever the client sent,
+with `API_CLIENT_IP=cloudflare`. That is sound for the same reason as behind Cloudflare:
+the header is set by something you control, and the origin listens on loopback only, so
+nothing off the host can reach it. It holds only while that proxy is the public edge:
+put Cloudflare in front of it as well and `{remote_host}` is Cloudflare's address, so use
+the tunnel setup instead.
+
+```caddyfile
+judge.example.com {
+    reverse_proxy 127.0.0.1:8787 {
+        header_up CF-Connecting-IP {remote_host}
+    }
+}
+```
+
+```nginx
+server {
+    server_name judge.example.com;          # plus your TLS configuration
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header Host $host;
+        proxy_set_header CF-Connecting-IP $remote_addr;
+        proxy_read_timeout 120s;
+    }
+}
+```
+
+If the proxy does not set that header, leave `API_CLIENT_IP=peer` and rate limit at the
+proxy instead (nginx's `limit_req`), because the in-process limit then counts everyone
+together. With `--mcp`, add the public hostname to `MCP_ALLOWED_HOSTS` as in the tunnel
+setup. §5's edge rules are Cloudflare's, so the in-process limit, the concurrency slots
+and the spend budget are what stand between an anonymous page and the model bill.
 
 ## 5. Edge spend protection
 

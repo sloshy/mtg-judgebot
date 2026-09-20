@@ -142,7 +142,9 @@ services:
   # embeddings, new card-symbol emoji. Not a long-running service — the host's
   # scheduler runs `scripts/refresh-data.sh`, which is `docker compose run --rm
   # refresh`; `run` enables the profile by itself, so `up -d` never starts it.
-  # Same image as bot/api, third entrypoint.
+  # Same image as bot/api, third entrypoint. It is also how every other
+  # judge-ingest command runs without Rust on the host, the first load included:
+  # `docker compose run --rm refresh init`.
   refresh:
     build: *build
     image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}

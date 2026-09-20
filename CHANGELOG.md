@@ -7,6 +7,14 @@ configuration, the HTTP and MCP interfaces or the schema in a way that needs an
 operator's attention, and its entry says what to do. Migrations apply automatically
 unless `JUDGE_AUTO_MIGRATE=false`.
 
+**Your data carries forward.** Stored calls, ratings, sessions, the spend ledger and the
+loaded cards and rules survive every upgrade, major versions included: schema changes ship
+as forward migrations, and a migration that has been released is never edited. Embeddings
+do too, unless a release's notes ask for a `reembed`, which pays the embedder again and
+never touches calls. A release that needs more than `docker compose pull && docker compose up -d`
+(a re-embed, a new required variable) says so under its own heading. Downgrading across a
+migration is not supported; restore the backup taken before the upgrade instead.
+
 ## [Unreleased]
 
 ## [1.0.0] - 2026-09-19
@@ -58,6 +66,9 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
 - **Embedding-space tracking.** The database records which embedder's vectors it holds.
   A mismatch turns the vector legs off instead of mixing spaces, and
   `judge-ingest reembed` switches space.
+- **A one-command first load.** `docker compose run --rm refresh init` creates the schema
+  and loads the cards, the rules, the alias and note lists (built into the binary) and
+  the embeddings, with no Rust toolchain on the host.
 - **Data ingest and nightly refresh** (`judge-ingest`): Scryfall cards and rulings, the
   Comprehensive Rules (a new release is detected from Wizards' rules page), aliases,
   notes, embeddings and Discord emoji. A renumbered rule keeps the calls that cite it,
@@ -68,7 +79,7 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
   the instance. `JUDGE_SOURCE_URL` points the offer at a fork. The bot requires
   `JUDGE_OPERATOR_DISCORD` and `judge-api` requires `JUDGE_OPERATOR_EMAIL`.
 - **Deployment.** A `docker compose` setup (Postgres with pgvector, `bot`, `api`, an
-  optional Cloudflare Tunnel, a `refresh` job) with a database-backed healthcheck,
+  optional Cloudflare Tunnel or any reverse proxy, a `refresh` job) with a database-backed healthcheck,
   migrations applied at startup and a backup script for Cloudflare R2. The published
   image is a manifest list for `linux/amd64` and `linux/arm64`. A GitHub release
   `vX.Y.Z` tags the image built for that commit as `X.Y.Z`, `X.Y` and `X`, and

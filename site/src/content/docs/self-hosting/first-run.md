@@ -17,11 +17,10 @@ touch Discord. The bot is the last thing to add.
 - A host that stays on, with Docker and the compose plugin. Running takes about 200 MB of
   RAM across the three containers. **Building** the image takes ~4 GB and a lot of CPU. A
   low-powered host pulls the CI-built image instead (`docker compose pull`).
-- Rust 1.98 on the machine where you run the data loads, or no Rust at all: the image
-  carries the same `judge-ingest` binary as its `refresh` service
-  ([Loading the data without Rust](#loading-the-data-without-rust) below). A binary run
-  on the host verifies HTTPS against the system's CA certificates
-  (`ca-certificates` on Debian and Ubuntu), and without them it refuses to start.
+- No Rust. The image carries `judge-ingest` as its `refresh` service, so the data loads
+  run in a container. (Working from source is [Development setup](../../contributing/development/).
+  A binary run on the host verifies HTTPS against the system's CA certificates,
+  `ca-certificates` on Debian and Ubuntu, and without them it refuses to start.)
 - A model provider. With `.env` alone that is Anthropic's API (`ANTHROPIC_API_KEY`).
   A [`judge.toml`](../../self-hosting/models/) chooses anything else.
 - Optionally a Voyage AI key for the semantic-search leg, or an embedding model on an
@@ -40,45 +39,50 @@ touch Discord. The bot is the last thing to add.
 2. `docker compose up -d db`. Postgres publishes on **localhost:5432** (loopback only). If
    something on the host already has that port, set `DB_PORT` in `.env` and change the
    port in `DATABASE_URL` to match.
-3. Load the data: `migrate`, `cards`, `rules latest`, `aliases`, `notes`, and `embed` if you
-   have an embedder, as on the [Try it without Discord](../../start-here/without-discord/)
-   page. The first embed pays the embedder once for every rule and glossary entry, a few
-   cents on Voyage. Afterwards only changed rules are re-embedded.
+3. `docker compose run --rm refresh init` loads everything: the schema, the cards, the
+   current rules, the alias and note lists, embeddings if you have an embedder, and the
+   emoji if `DISCORD_TOKEN` is already set. The first embed pays the embedder once for every
+   rule and glossary entry, a few cents on Voyage. Afterwards only changed rules are
+   re-embedded. `init` is safe to run again.
 4. `docker compose up -d api`. Open <http://localhost:8787> and ask a question. This runs
    the full pipeline, so it is a good place to check the model setup before Discord is
    involved.
    `api` and `bot` both apply pending migrations at startup unless
    `JUDGE_AUTO_MIGRATE=false`.
 5. [Create the Discord app](../../self-hosting/discord-app/), then `docker compose up -d
-   bot`. Then run `cargo run --release -p judge-ingest -- emoji` once (or
-   `docker compose run --rm refresh emoji`), so answers show mana symbols as pictures
-   instead of `{W}`.
+   bot`. Then run `docker compose run --rm refresh emoji` once, so answers show mana
+   symbols as pictures instead of `{W}`.
 6. Schedule `scripts/refresh-data.sh` nightly and `scripts/backup-db.sh` weekly. The
    [deployment runbook](../../self-hosting/deployment/) has the cron lines.
 
-## Loading the data without Rust
+## One step at a time
 
-`docker compose run --rm refresh <command>` runs `judge-ingest` from the image, against
-the `db` container. The image holds the binaries, not the repository's `data/` directory,
-so the two commands that read a file from it need that directory mounted. Run these from
-the repository root, where `./data` is:
+`init` is these, in this order, and each can be run by itself:
 
 ```sh
-docker compose pull                                  # the CI-built image, so nothing compiles
 docker compose run --rm refresh migrate
 docker compose run --rm refresh cards
 docker compose run --rm refresh rules latest
+docker compose run --rm refresh aliases        # the list built into the binary
+docker compose run --rm refresh notes
+docker compose run --rm refresh embed          # with an embedder configured
+docker compose run --rm refresh emoji          # once the Discord app exists
+```
+
+`aliases` and `notes` take a file instead when you keep your own list: mount it and name
+it, from the repository root. Each replaces its table, and so does `init` with the
+built-in lists, so load your own after any `init`.
+
+```sh
 docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml
-docker compose run --rm -v ./data:/data:ro refresh notes /data/notes.yaml
-docker compose run --rm refresh embed                # optional, with an embedder configured
-docker compose run --rm refresh emoji                # once the Discord app exists
 ```
 
 ## Embedding width
 
 The schema is created with `vector(1024)` columns, Voyage's width. If your embedder
-produces another width (OpenAI's `text-embedding-3-small` is 1536), run
-`judge-ingest reembed --yes` instead of `embed` the first time. It retypes the columns and
+produces another width (OpenAI's `text-embedding-3-small` is 1536), `init` handles it: on
+a database that holds no vectors yet it takes the configured embedder's width. Loading
+step by step, run `judge-ingest reembed --yes` instead of `embed` the first time. It retypes the columns and
 records the embedding space before filling them. The bot refuses to mix two spaces. On a
 mismatch it logs an error naming both and runs with the vector leg dark.
 

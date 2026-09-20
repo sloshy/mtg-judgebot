@@ -124,7 +124,7 @@ server does not conflict with yours.
 Run this once:
 
 ```sh
-cargo run --release -p judge-ingest -- emoji
+docker compose run --rm refresh emoji      # or: cargo run --release -p judge-ingest -- emoji
 ```
 
 It uploads Scryfall's mana and card symbols as **application emoji**. These belong to the

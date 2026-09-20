@@ -9,35 +9,39 @@ Nothing in the pipeline depends on Discord. The quickest way to see the judge wo
 web page on your own machine, and the cheapest is the command line. Both need the database
 and the data. The model provider is the only paid part.
 
-You need Docker with the compose plugin, Rust 1.98 (`rust-toolchain.toml` makes rustup
-install it), and an Anthropic API key. A Voyage AI key adds the semantic-search leg.
-Without it the bot runs on the other two.
+You need Docker with the compose plugin and an Anthropic API key. A Voyage AI key adds
+the semantic-search leg. Without it the judge runs on the other two. Nothing is compiled:
+the image is published for amd64 and arm64.
 
 ```sh
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
-cp .env.example .env                                   # set ANTHROPIC_API_KEY (and VOYAGE_API_KEY if you have one)
-                                                       # and JUDGE_OPERATOR_EMAIL, which judge-api requires
-docker compose up -d db                                # pgvector Postgres on localhost:5432
-cargo run --release -p judge-ingest -- migrate         # create the schema
-cargo run --release -p judge-ingest -- cards           # Scryfall bulk data (~110 MB, cached in .cache/)
-cargo run --release -p judge-ingest -- rules latest    # the current Comprehensive Rules
-cargo run --release -p judge-ingest -- aliases data/aliases.yaml
-cargo run --release -p judge-ingest -- notes data/notes.yaml
-cargo run --release -p judge-ingest -- embed           # optional; a few cents on Voyage
+cp .env.example .env                    # set ANTHROPIC_API_KEY (and VOYAGE_API_KEY if you have one)
+                                        # and JUDGE_OPERATOR_EMAIL, which judge-api requires
+docker compose pull                     # the published image
+docker compose up -d db                 # pgvector Postgres on localhost:5432
+docker compose run --rm refresh init    # the whole first load, in one command
 ```
 
-The card sync takes a few minutes the first time. The rules parse takes seconds. If port
-5432 is already taken on your machine, set `DB_PORT` in `.env` and change the port in
-`DATABASE_URL` to match before starting the database.
+`init` runs seven steps and logs each with its time: `migrate` (the schema), `cards`
+(Scryfall's bulk data, about 110 MB), `rules latest` (the current Comprehensive Rules),
+`aliases` and `notes` (the nickname and difficult-card lists built into the binary),
+`embed` (skipped with a warning when no embedder is configured, a few cents on Voyage
+otherwise) and `emoji` (skipped until there is a `DISCORD_TOKEN`). Without embeddings it
+takes about a minute on a fast connection, nearly all of it the Scryfall download. It stops at the first failure, every step is idempotent, and
+the fix for a failed `init` is to run it again.
+
+If port 5432 is already taken on your machine, set `DB_PORT` in `.env` and change the port
+in `DATABASE_URL` to match before starting the database.
 
 ## The web page
 
 ```sh
-docker compose pull            # the CI-built image of upstream main, not of your checkout;
-                               # skip it and `up` builds what you cloned on first run
-                               # instead (minutes, ~4 GB RAM)
 docker compose up -d api
 ```
+
+The image you pulled is CI's build of upstream `main`, not of your checkout. To run what
+you cloned or changed, use `docker compose up -d --build api` instead (minutes, about
+4 GB of RAM).
 
 Open <http://localhost:8787>. The anonymous API allows each address 4 questions per 5
 minutes by default, which suits a public page and will stop you within minutes of testing
@@ -57,11 +61,11 @@ Vite with `/api` proxied to it.
 `judge-cli` runs the same pipeline from a shell and prints JSON:
 
 ```sh
-cargo build --release -p judge-agent
-target/release/judge-cli judge "does bob's trigger count goyf's mana value as 0?"
-target/release/judge-cli card goyf                     # resolve a name, no model call
-target/release/judge-cli get-rules 702.19 202.3         # rules text by id
-target/release/judge-cli search "mana value of a card with X in its cost"
+alias judge-cli='docker compose run --rm --entrypoint judge-cli api'   # from the repository directory
+judge-cli judge "does bob's trigger count goyf's mana value as 0?"
+judge-cli card goyf                                    # resolve a name, no model call
+judge-cli get-rules 702.19 202.3         # rules text by id
+judge-cli search "mana value of a card with X in its cost"
 ```
 
 `judge` spends model budget under its own `JUDGE_MAX_USD`. The lookup commands are free.

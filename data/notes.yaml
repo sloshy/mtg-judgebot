@@ -1,5 +1,5 @@
 # Hand-written notes for "nightmare" cards (ARCHITECTURE.md §3 step 3 / §4 `card_notes`).
-# Loaded by `ingest notes data/notes.yaml`. Flat mapping: `Card Name: note` (markdown).
+# Loaded by `ingest notes [data/notes.yaml]` (no file = the copy compiled into the binary). Flat mapping: `Card Name: note` (markdown).
 # Names must be a current or printed name that identifies exactly one card. Notes are
 # injected into Context whenever the card resolves; they are hints, the CR still governs.
 Blood Moon: |

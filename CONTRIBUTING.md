@@ -23,8 +23,10 @@ compose file reads the same variable.
 
 Nothing in the test suite calls a paid API. HTTP backends are tested against `wiremock`.
 Develop against it too, and keep `ANTHROPIC_API_KEY` blank unless you mean to spend.
-Card and rules data (`README.md`, "Running it") is needed to run the pipeline, not to
-build or test.
+Card and rules data is needed to run the pipeline, not to build or test.
+`cargo run --release -p judge-ingest -- init` loads all of it from source (the README's
+"Running it" does the same in a container), and every `docker compose run --rm refresh
+<command>` in the docs is `cargo run --release -p judge-ingest -- <command>` here.
 
 ## The gates
 

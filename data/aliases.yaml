@@ -1,5 +1,7 @@
 # Hand-curated card nicknames -> canonical Scryfall card name.
-# Loaded by `ingest aliases data/aliases.yaml` into `card_aliases` (aliases are lowercased).
+# Loaded by `ingest aliases [data/aliases.yaml]` into `card_aliases` (aliases are lowercased).
+# Also compiled into the binary, which is the copy `ingest init` and `ingest aliases` with
+# no file load.
 # Flat mapping only: `alias: Card Name`. Names must match `cards.name` (or a face name)
 # case-insensitively. Nicknames that could mean several cards (tron lands, karn, emrakul,
 # sheoldred, omnath, ...) are deliberately left out — ambiguity goes to the user, not a guess.

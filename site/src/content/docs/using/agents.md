@@ -2,7 +2,7 @@
 title: MCP and judge-cli for agents
 description: The judge as a tool surface for other agents, over MCP or a shell, including the session mode in which the agent is the model.
 sidebar:
-  order: 3
+  order: 4
 ---
 
 `crates/agent` exposes the pipeline to other programs in two transports over one set of

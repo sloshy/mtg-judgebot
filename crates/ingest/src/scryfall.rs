@@ -754,7 +754,7 @@ async fn remove_stale(pool: &PgPool, known: &HashSet<Uuid>, ruled: &HashSet<Uuid
 ///
 /// # Errors
 /// If the text is not a YAML mapping of string to string.
-fn parse_alias_yaml(text: &str) -> Result<Vec<(String, String)>> {
+pub(crate) fn parse_alias_yaml(text: &str) -> Result<Vec<(String, String)>> {
     let map: BTreeMap<String, String> = serde_yaml_ng::from_str(text)
         .context("aliases: expected a flat `alias: Card Name` mapping")?;
     Ok(map
@@ -776,10 +776,8 @@ fn parse_alias_yaml(text: &str) -> Result<Vec<(String, String)>> {
 ///
 /// # Errors
 /// On read, parse or database failure.
-pub async fn load_aliases(pool: &PgPool, path: &Path) -> Result<()> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let pairs = parse_alias_yaml(&text)?;
+pub async fn load_aliases(pool: &PgPool, text: &str) -> Result<()> {
+    let pairs = parse_alias_yaml(text)?;
     let wanted: Vec<String> = pairs
         .iter()
         .map(|(_, n)| n.to_lowercase())

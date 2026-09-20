@@ -53,8 +53,9 @@ const DEFAULT_CACHE_DIR: &str = ".cache";
 enum Command {
     Cards,
     Rules { source: String },
-    Aliases { path: PathBuf },
-    Notes { path: PathBuf },
+    Aliases { yaml: Yaml },
+    Notes { yaml: Yaml },
+    Init,
     Embed,
     Reembed { yes: bool, clear: bool },
     Emoji,
@@ -63,10 +64,35 @@ enum Command {
     Refresh,
 }
 
+/// Where a curated list comes from: the copy of `data/*.yaml` this binary was
+/// built with, or a file the operator edited.
+#[derive(Debug, PartialEq, Eq)]
+enum Yaml {
+    Builtin,
+    File(PathBuf),
+}
+
+impl Yaml {
+    fn from_arg(arg: Option<String>) -> Self {
+        arg.map_or(Self::Builtin, |p| Self::File(PathBuf::from(p)))
+    }
+
+    fn text(&self, builtin: &'static str) -> Result<std::borrow::Cow<'static, str>> {
+        match self {
+            Self::Builtin => Ok(builtin.into()),
+            Self::File(path) => std::fs::read_to_string(path)
+                .map(Into::into)
+                .with_context(|| format!("reading {}", path.display())),
+        }
+    }
+}
+
 /// The `rules` argument that means "whatever Wizards currently publishes".
 const LATEST: &str = "latest";
 
-const USAGE: &str = "usage: ingest <cards | rules <path-or-url | latest> | aliases <yaml> | notes <yaml> | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh>";
+const USAGE: &str = "usage: ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh>\n\
+init: the whole first load (migrate, cards, rules latest, aliases, notes, embed, emoji); safe to run again.\n\
+aliases, notes: with no file, the lists this binary was built with (data/*.yaml).";
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     match args.next().as_deref() {
@@ -77,17 +103,12 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
                 .ok_or_else(|| anyhow::anyhow!("usage: ingest rules <path-or-url | latest>"))?,
         }),
         Some("aliases") => Ok(Command::Aliases {
-            path: args
-                .next()
-                .map(PathBuf::from)
-                .ok_or_else(|| anyhow::anyhow!("usage: ingest aliases <aliases.yaml>"))?,
+            yaml: Yaml::from_arg(args.next()),
         }),
         Some("notes") => Ok(Command::Notes {
-            path: args
-                .next()
-                .map(PathBuf::from)
-                .ok_or_else(|| anyhow::anyhow!("usage: ingest notes <notes.yaml>"))?,
+            yaml: Yaml::from_arg(args.next()),
         }),
+        Some("init") => Ok(Command::Init),
         Some("embed") => Ok(Command::Embed),
         Some("reembed") => {
             let (mut yes, mut clear) = (false, false);
@@ -168,8 +189,11 @@ async fn main() -> Result<()> {
                 .map(drop)
         }
         Command::Rules { source } => cr::run(&connect().await?, &source, &cache_dir).await,
-        Command::Aliases { path } => aliases::run(&connect().await?, &path).await,
-        Command::Notes { path } => notes::run(&connect().await?, &path).await,
+        Command::Aliases { yaml } => {
+            aliases::run(&connect().await?, &yaml.text(aliases::BUILTIN)?).await
+        }
+        Command::Notes { yaml } => notes::run(&connect().await?, &yaml.text(notes::BUILTIN)?).await,
+        Command::Init => init(&connect().await?, &cache_dir).await,
         Command::Embed => embed::run(&connect().await?, embedder_from_config()?.as_deref())
             .await
             .map(drop),
@@ -190,6 +214,89 @@ async fn main() -> Result<()> {
         Command::Migrate => migrate::command(&connect().await?).await.map(drop),
         Command::Refresh => refresh(&connect().await?, &cache_dir).await,
     }
+}
+
+/// The whole first load, in dependency order: the schema, the cards the
+/// curated lists name, the rules, then the vectors over both and the emoji.
+///
+/// Unlike [`refresh`] it stops at the first failure, because each step needs
+/// the one before it (aliases resolve against cards, embeddings read rules).
+/// Every step is idempotent, so the fix for a failed `init` is to run it
+/// again. It loads the built-in alias and note lists, replacing the tables,
+/// so an operator who keeps their own list loads that afterwards. With no embedder configured `embed` skips itself with a warning,
+/// and with no `DISCORD_TOKEN` the emoji step is skipped the same way.
+async fn init(pool: &PgPool, cache_dir: &Path) -> Result<()> {
+    let started = std::time::Instant::now();
+    let mut n = 0u8;
+    let mut begin = |name: &'static str| {
+        n = n.saturating_add(1);
+        tracing::info!(step = name, "init step {n} of 7");
+        std::time::Instant::now()
+    };
+    let done = |name: &'static str, t: std::time::Instant| {
+        tracing::info!(step = name, secs = t.elapsed().as_secs(), "init step ok");
+    };
+
+    // Before the download: a judge.toml that does not load should fail in a
+    // second, not at step 6.
+    let embedder = embedder_from_config().context("init: the model configuration")?;
+
+    let t = begin("migrate");
+    migrate::command(pool).await.context("init: migrate")?;
+    done("migrate", t);
+    let t = begin("cards");
+    scryfall::run(pool, cache_dir)
+        .await
+        .context("init: cards")?;
+    done("cards", t);
+    let t = begin("rules");
+    cr::run_latest(pool, cache_dir)
+        .await
+        .context("init: rules latest")?;
+    done("rules", t);
+    let t = begin("aliases");
+    aliases::run(pool, aliases::BUILTIN)
+        .await
+        .context("init: aliases")?;
+    done("aliases", t);
+    let t = begin("notes");
+    notes::run(pool, notes::BUILTIN)
+        .await
+        .context("init: notes")?;
+    done("notes", t);
+    let t = begin("embed");
+    // A database that holds no vectors has nothing to lose, so it takes the
+    // configured embedder's space whatever that is: `reembed` retypes the
+    // columns for a width other than the schema's 1024, where `embed` would
+    // refuse. One that already holds vectors is only ever filled, and a
+    // mismatch there is refused with the way out (`reembed --yes`, which
+    // pays for every row and is therefore never implied).
+    let holds_vectors = judge_bot::db::space::stored_counts(pool)
+        .await?
+        .iter()
+        .any(|(_, n)| *n > 0);
+    match (embedder.as_deref(), holds_vectors) {
+        (Some(e), false) => reembed::run(pool, Some(e), true, false)
+            .await
+            .context("init: embed")?,
+        (e, _) => embed::run(pool, e).await.map(drop).context("init: embed")?,
+    }
+    done("embed", t);
+    let t = begin("emoji");
+    if std::env::var("DISCORD_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
+        emoji::run(cache_dir).await.context("init: emoji")?;
+        done("emoji", t);
+    } else {
+        tracing::warn!(
+            step = "emoji",
+            "init step skipped: DISCORD_TOKEN is not set; run `judge-ingest emoji` once the Discord app exists"
+        );
+    }
+    tracing::info!(
+        secs = started.elapsed().as_secs(),
+        "init done: start the api (`docker compose up -d api`) and ask a question"
+    );
+    Ok(())
 }
 
 /// Every scheduled step, in dependency order: cards and rules first, then the
@@ -239,5 +346,49 @@ async fn refresh(pool: &PgPool, cache_dir: &Path) -> Result<()> {
             failed.len(),
             failed.join(", ")
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Command> {
+        parse_args(args.iter().map(|a| (*a).to_owned()))
+    }
+
+    #[test]
+    fn the_curated_lists_default_to_the_built_in_copy() -> Result<()> {
+        assert!(matches!(parse(&["init"])?, Command::Init));
+        assert!(matches!(
+            parse(&["aliases"])?,
+            Command::Aliases {
+                yaml: Yaml::Builtin
+            }
+        ));
+        assert!(matches!(
+            parse(&["notes", "/data/notes.yaml"])?,
+            Command::Notes { yaml: Yaml::File(p) } if p == Path::new("/data/notes.yaml")
+        ));
+        assert!(parse(&["nonsense"]).is_err());
+        Ok(())
+    }
+
+    /// `init` loads these with no file to fall back on, so a list that stopped
+    /// parsing must fail here rather than on an operator's first run.
+    #[test]
+    fn the_built_in_lists_parse() -> Result<()> {
+        assert!(!scryfall::parse_alias_yaml(aliases::BUILTIN)?.is_empty());
+        assert!(!notes::parse_notes_yaml(notes::BUILTIN)?.is_empty());
+        assert_eq!(
+            Yaml::Builtin.text(aliases::BUILTIN)?.as_ref(),
+            aliases::BUILTIN
+        );
+        assert!(
+            Yaml::File("/nonexistent/aliases.yaml".into())
+                .text("")
+                .is_err()
+        );
+        Ok(())
     }
 }

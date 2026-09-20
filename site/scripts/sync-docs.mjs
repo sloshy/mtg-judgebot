@@ -92,30 +92,12 @@ const manifest = [
   },
   // Self-hosting
   {
-    src: "README.md",
-    dest: "self-hosting/models.md",
-    title: "Model choice (judge.toml)",
-    order: 4,
-    between: ["### Choosing a model", "### The web page"],
-    description: "Providers, models per stage, pricing for the spend cap, and embeddings.",
-  },
-  {
     src: "docs/DEPLOYMENT.md",
     dest: "self-hosting/deployment.md",
     title: "Production deployment",
     order: 5,
     description:
       "The runbook: Cloudflare Tunnel, backups to R2, the nightly refresh, redeploying and rolling back.",
-  },
-  // Using
-  {
-    src: "README.md",
-    dest: "using/web.md",
-    title: "The web page",
-    order: 2,
-    between: ["### The web page", "### Hosting"],
-    description:
-      "The anonymous front door, with the same pipeline, no ratings, and a rate limit per IP.",
   },
   // Contributing
   {

@@ -48,8 +48,9 @@ the one list, and the sync script deletes copies whose manifest entry is gone.
 
 Pages with no canonical file are authored directly under `site/src/content/docs/`: what
 the judge is, trying it without Discord, requirements and first run, Discord app setup,
-configuration reference, Discord commands, agents, command reference, data files,
-attribution, schema.
+configuration reference, model choice (`judge.toml`), Discord commands, the web page, the
+HTTP API, agents, command reference, data files, attribution, schema. The README carries
+short versions of the model, web and API material and links to those pages.
 
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
@@ -229,10 +230,14 @@ cargo sqlx prepare --workspace -- --all-targets
 cargo run --release -p judge-ingest -- migrate          # apply pending migrations explicitly (judge_bot::MIGRATOR);
                                                         # bot/api do this at startup unless JUDGE_AUTO_MIGRATE=false
 ~/.cargo/bin/sqlx migrate run --source crates/bot/migrations   # the same thing with sqlx-cli
+cargo run --release -p judge-ingest -- init             # the whole first load: migrate, cards, rules latest,
+                                                        # aliases, notes, embed, emoji; fail-fast, idempotent
+                                                        # (in the image: docker compose run --rm refresh init)
 cargo run --release -p judge-ingest -- cards            # Scryfall bulk sync (cached in .cache/)
 cargo run --release -p judge-ingest -- rules <url|path> # CR parse from a given file or URL
-cargo run --release -p judge-ingest -- aliases data/aliases.yaml
-cargo run --release -p judge-ingest -- notes data/notes.yaml
+cargo run --release -p judge-ingest -- aliases [yaml]   # no file = the data/aliases.yaml built into the binary
+cargo run --release -p judge-ingest -- notes [yaml]     # likewise data/notes.yaml (include_str!, so the image
+                                                        # needs no data/ directory)
 cargo run --release -p judge-ingest -- embed            # only rows with NULL embedding; the configured
                                                         # embedder ([models.embed] or VOYAGE_API_KEY); refuses
                                                         # if embedding_space or the columns' width differ
@@ -599,4 +604,5 @@ itself, so `up -d` never starts it. CR release detection scrapes Wizards' rules 
 the `MagicCompRules <date>.txt` link and compares the date to the stored `cr_version`.
 The CR loader nulls embeddings only for rules whose text changed, so a new CR costs the
 embedder a few hundred rules. `aliases` and `notes` are not part of refresh. They are repo
-data, loaded when they change.
+data, compiled into `judge-ingest` (`include_str!`) and loaded by `init`, or by `aliases` /
+`notes` with no argument after an upgrade that changed them.

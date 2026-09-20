@@ -5,7 +5,6 @@
 //! replaced wholesale, mirroring the alias loader.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use anyhow::{Context as _, Result};
 use sqlx::{PgPool, Postgres, QueryBuilder};
@@ -15,7 +14,7 @@ use uuid::Uuid;
 ///
 /// # Errors
 /// If the text is not a YAML mapping of string to string.
-fn parse_notes_yaml(text: &str) -> Result<Vec<(String, String)>> {
+pub(crate) fn parse_notes_yaml(text: &str) -> Result<Vec<(String, String)>> {
     let map: BTreeMap<String, String> = serde_yaml_ng::from_str(text)
         .context("notes: expected a flat `Card Name: note` mapping")?;
     Ok(map
@@ -31,14 +30,15 @@ fn parse_notes_yaml(text: &str) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
-/// Load notes from `path`, replacing the `card_notes` table contents.
+/// `data/notes.yaml` as of this build (see [`crate::aliases::BUILTIN`]).
+pub const BUILTIN: &str = include_str!("../../../data/notes.yaml");
+
+/// Load notes from YAML `text`, replacing the `card_notes` table contents.
 ///
 /// # Errors
-/// On read, parse or database failure.
-pub async fn run(pool: &PgPool, path: &Path) -> Result<()> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let pairs = parse_notes_yaml(&text)?;
+/// On parse or database failure.
+pub async fn run(pool: &PgPool, text: &str) -> Result<()> {
+    let pairs = parse_notes_yaml(text)?;
     let wanted: Vec<String> = pairs.iter().map(|(n, _)| n.to_lowercase()).collect();
     let rows = sqlx::query!(
         r#"

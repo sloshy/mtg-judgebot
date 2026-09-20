@@ -16,7 +16,9 @@ A flat mapping of nickname to canonical card name: `bob: Dark Confidant`,
 must match a current card name or face name case-insensitively. Nicknames that could mean
 several cards (the Tron lands, "karn", "emrakul", "sheoldred") are left out on purpose.
 Ambiguity goes to the user as a "did you mean…?" prompt, never to a guess. Load with
-`judge-ingest aliases data/aliases.yaml`. The resolver also tries an alias with a trailing
+`judge-ingest aliases data/aliases.yaml`. With no file, `aliases` loads the copy compiled
+into the binary, which is what `init` and a container use, so an edit reaches an image
+only through a rebuild (or by mounting the file and naming it). The resolver also tries an alias with a trailing
 possessive stripped ("bob's") and as a suffix.
 
 ## `data/notes.yaml`: nightmare cards
@@ -25,7 +27,8 @@ Hand-written Markdown notes keyed by card name, for cards whose interactions the
 text alone explains badly: Blood Moon, Urborg, Humility, and their kind. A note is
 injected into the model's context whenever its card resolves. Notes are hints. The
 Comprehensive Rules still govern, and a note should cite rule numbers so the model can
-quote the rules rather than the note. Load with `judge-ingest notes data/notes.yaml`.
+quote the rules rather than the note. Load with `judge-ingest notes data/notes.yaml`, or `judge-ingest notes` for the built-in
+copy.
 
 ## `data/categories.yaml`: the taxonomy
 
