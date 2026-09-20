@@ -58,11 +58,6 @@ variables for its secrets and never holds one.
 | --- | --- | --- |
 | `INGEST_CACHE_DIR` | `.cache` (image: `/var/cache/judgebot`) | Where Scryfall bulk files and the CR text are cached. |
 | `RUST_LOG` | `info` in compose | Tracing filter. The containers use `info,sqlx=warn` (`serenity=warn` for the bot). |
-| `JUDGE_IMAGE`, `JUDGE_IMAGE_TAG` | upstream package, `latest` | Which image `bot`/`api`/`refresh` run (amd64 and arm64). A fork sets its own package. A release version (`0.3`, `0.3.1`) or a `sha-<short>` tag pins or rolls back. |
+| `JUDGE_IMAGE`, `JUDGE_IMAGE_TAG` | upstream package, `latest` | Which image `bot`/`api`/`refresh` run (amd64 and arm64). A fork sets its own package. A release version (`1`, `1.0`, `1.0.0`) or a `sha-<short>` tag pins or rolls back. |
 | `COMPOSE_PROFILES` | | `tunnel` on a deploy host starts `cloudflared` with `up -d`. |
 | `TUNNEL_TOKEN`, `R2_*` | | In `.env.deploy`, read only by `cloudflared` and the backup script, never by the internet-facing containers. |
-
-## Removed
-
-`API_TRUST_FORWARDED` is rejected at startup with a message naming `API_CLIENT_IP`.
-Trusting a forwarded header gave every caller a fresh rate-limit allowance.

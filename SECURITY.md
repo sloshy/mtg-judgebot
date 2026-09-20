@@ -24,8 +24,7 @@ Operators should know these properties. The reasoning behind each is in
   is `peer` or `cloudflare` (`CF-Connecting-IP`). `X-Forwarded-For` is never read,
   because Cloudflare appends to a caller-supplied header instead of replacing it,
   which would give every request a fresh allowance. `cloudflare` is only sound when
-  nothing but Cloudflare can reach the origin. The old `API_TRUST_FORWARDED` knob is
-  rejected at startup for this reason.
+  nothing but Cloudflare can reach the origin.
 - **The MCP endpoint is bearer-token only and off by default.** It mounts only when
   `judge-api` is launched with `--mcp` *and* `MCP_TOKEN` (at least 24 bytes) is set.
   The flag alone is refused at startup, and the token alone serves nothing. It compares

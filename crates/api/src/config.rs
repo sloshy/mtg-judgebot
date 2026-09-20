@@ -95,8 +95,7 @@ impl ApiConfig {
     ///
     /// # Errors
     /// A malformed `API_ADDR`, `JUDGE_CONCURRENCY`, `API_RATE_LIMIT`,
-    /// `API_RATE_WINDOW_SECS` or `API_CLIENT_IP`, a short `MCP_TOKEN`, or
-    /// the presence of the removed `API_TRUST_FORWARDED`.
+    /// `API_RATE_WINDOW_SECS` or `API_CLIENT_IP`, or a short `MCP_TOKEN`.
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let var = |k: &str| {
             get(k)
@@ -115,16 +114,6 @@ impl ApiConfig {
             .unwrap_or(Self::DEFAULT_RATE_LIMIT);
         let rate_window = parse_min(var("API_RATE_WINDOW_SECS"), "API_RATE_WINDOW_SECS", 1u64)?
             .map_or(Self::DEFAULT_RATE_WINDOW, Duration::from_secs);
-        // Refuse to start rather than silently ignore the removed variable: a
-        // deployment carrying API_TRUST_FORWARDED=true was trusting a header
-        // clients control, and quietly falling back would hide that.
-        anyhow::ensure!(
-            var("API_TRUST_FORWARDED").is_none(),
-            "API_TRUST_FORWARDED was removed because Cloudflare appends to \
-             X-Forwarded-For rather than overwriting it, so its first hop is \
-             client-controlled. Use API_CLIENT_IP=cloudflare (reads \
-             CF-Connecting-IP) behind a Cloudflare tunnel, or drop the variable."
-        );
         let client_ip = match var("API_CLIENT_IP").as_deref() {
             None | Some("peer") => ClientIpSource::PeerAddr,
             Some("cloudflare") => ClientIpSource::CloudflareConnectingIp,
@@ -181,9 +170,7 @@ impl ApiConfig {
     /// operator named that has no credential or nothing to serve. The mirror
     /// cases (an `MCP_TOKEN` with no `--mcp`) are startup warnings in the
     /// binary instead: refusing there would take a working web page down over
-    /// a variable that exposes nothing, which is not the bargain
-    /// `API_TRUST_FORWARDED` struck — that variable had been *removed*, so any
-    /// value meant a live unsafe configuration.
+    /// a variable that exposes nothing.
     ///
     /// # Errors
     /// `--mcp` without `MCP_TOKEN`, or `--web` pointed at a directory holding
@@ -329,20 +316,6 @@ mod tests {
                 .is_err_and(|e| format!("{e:#}").contains("MCP_JUDGE_LIMIT")),
             "{r:?}"
         );
-    }
-
-    #[test]
-    fn the_removed_trust_forwarded_variable_is_refused() {
-        // Silently ignoring it would leave an operator believing a header they
-        // no longer trust is still being honoured.
-        for value in ["true", "false"] {
-            let r = ApiConfig::from_vars(vars(&[("API_TRUST_FORWARDED", value)]));
-            assert!(
-                r.as_ref()
-                    .is_err_and(|e| format!("{e:#}").contains("API_CLIENT_IP")),
-                "{value}: {r:?}"
-            );
-        }
     }
 
     #[test]
