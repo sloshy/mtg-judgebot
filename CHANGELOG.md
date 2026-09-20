@@ -85,7 +85,9 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
   `vX.Y.Z` tags the image built for that commit as `X.Y.Z`, `X.Y` and `X`, and
   `JUDGE_IMAGE_TAG` accepts those alongside `sha-<short>`.
 - **An evaluation harness** (`judge-eval`): a retrieval gate that needs no API key and a
-  21-question gold set for live runs.
+  21-question gold set for live runs. Two graded runs are published under
+  `eval/published/` with the results in the README: on the default configuration 17 of 18
+  in-scope questions answered, 16 agreeing with the reference and none contradicting it.
 - **The documentation site**, organised around running your own judgebot, from the
   canonical files in `docs/`.
 

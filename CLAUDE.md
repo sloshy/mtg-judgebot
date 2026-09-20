@@ -24,7 +24,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   worst-case cost before sending, so caps under ~$0.45 refuse synthesis outright. Develop
   against wiremock, not the live API. A full 21-question gold run costs ~$2.50.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
-  Never commit `.env`, `.cache/`, or `eval/runs/`.
+  Never commit `.env`, `.cache/`, or `eval/runs/`. A run worth publishing is copied to
+  `eval/published/` on purpose, and the README's Results table and the site's Sample
+  answers page (`start-here/sample-answers.md`, verbatim from that file) are updated with
+  it.
 - **Every stage boundary gets an adversarial subagent review.** At the end of each phase
   of a multi-step build, and before each commit, hand the change to a subagent briefed to
   *try to break it*:

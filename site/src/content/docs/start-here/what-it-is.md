@@ -45,6 +45,9 @@ from. When someone presses a rating button, it stores their Discord user id and 
 It stores nothing else. The bot receives only its own slash commands and button presses, never
 channel messages. `/forget` deletes a user's ratings, which is the only data tied to them.
 
+[Sample answers](../../start-here/sample-answers/) shows what comes back, and
+[Evaluation](../../how-it-works/evaluation/#results) how it scored on a hard question set.
+
 ## AI-generated answers
 
 Every citation is checked against its source before it is shown. That rules out invented

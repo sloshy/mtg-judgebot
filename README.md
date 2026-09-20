@@ -19,6 +19,14 @@ You'll lose 2 life, not 0. Tarmogoyf's mana value is 0 anywhere its {X}… [702.
   Confidence: High · CR 2026-08-19        [Incorrect] [Partially correct] [Correct]
 ```
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="site/src/assets/screenshots/web-answer-dark.png">
+  <img src="site/src/assets/screenshots/web-answer-light.png" width="720" alt="The web page answering a question about Dark Confidant and Tarmogoyf: the ruling, six linked citations, the cards the question was resolved to, and the confidence.">
+</picture>
+
+More answers, copied verbatim from a published evaluation run, are on the site's
+[Sample answers](https://sloshy.github.io/mtg-judgebot/start-here/sample-answers/) page.
+
 ## Answer pipeline
 
 1. **Extract & classify** (LLM, structured output). The model separates card-name spans
@@ -124,7 +132,7 @@ section has the long form with links into Discord's documentation.
 
 With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5`
 for both LLM stages, and Voyage `voyage-3.5` for embeddings if `VOYAGE_API_KEY` is set.
-The eval numbers and the pinned prompt digest were produced on that setup.
+The prompts are tuned on that setup, and the [results below](#results) were measured on it.
 
 A `judge.toml` picks something else per stage: Anthropic direct, through a proxy, on
 Claude Platform on AWS, Bedrock or Vertex, or any OpenAI-compatible server (OpenAI,
@@ -168,6 +176,54 @@ cargo run -p judge-eval -- show eval/runs/x.json                     # bot vs. g
 Scoring accepts per-question *equivalence lists* of alternate rule ids that state the
 same fact, so the metric tracks correctness rather than one author's citation taste.
 
+### Results
+
+Two full runs of the 21 questions, 2026-09-20, CR 2026-08-19, Voyage `voyage-3.5`
+embeddings. The run files are committed under `eval/published/` with every question,
+answer, citation, time and cost, so none of this has to be taken on trust:
+`judge-eval show eval/published/v1-opus-5.json` prints each answer beside its reference.
+
+| | `claude-opus-5`, both stages (the default) | `claude-sonnet-5`, both stages |
+| --- | --- | --- |
+| Out-of-scope questions declined (of 3) | 3 | 3 |
+| In-scope questions answered (of 18) | 17 | 7 |
+| …agreeing with the reference ruling | 16 | 5 |
+| …partly (right on the main point, a sub-question off or the answer cut short) | 1 | 2 |
+| …contradicting the reference | 0 | 0 |
+| Not answered | 1 | 11 |
+| Expected rule ids cited | 42 of 67 (63%) | 12 of 67 (18%) |
+| Cost per in-scope question (median) | $0.12 | $0.11 |
+| Cost per question *answered* | $0.14 | $0.29 |
+| Time per in-scope question (median / longest) | 22 s / 61 s | 40 s / 398 s |
+| Whole run | $2.36 | $2.04 |
+
+What these measure, and what they do not:
+
+- **Answered** means a verdict that passed validation: every citation names a source the
+  model was shown and quotes it verbatim. "Not answered" is the pipeline refusing to show
+  an answer, not a wrong answer shown. Opus's one miss was a placeholder ruling citation,
+  rejected on both attempts. Sonnet's eleven were five answers with no citations, three
+  empty ones, two placeholder citations and one quote that was not verbatim.
+- **Agreement with the reference** was judged by Claude reading each answer against the
+  gold set's reference answer under a strict rubric, not by a human judge. The run files
+  are there to check it against.
+- **Expected rule ids cited** tracks how closely the citations match the gold set's list.
+  An answer can be right while citing a different, equally valid rule, so this is a
+  regression signal between runs, not an accuracy score.
+- Twenty-one questions chosen to be hard is a small, adversarial sample. It says the
+  pipeline holds up on layers, multi-faced cards, old wordings and Commander. It does not
+  say how often an answer in your server will be right.
+
+- **The Sonnet dollars err high.** That run's configuration
+  (`eval/published/v1-sonnet-5.judge.toml`) prices input and output at list and leaves
+  cache reads at the input price, which is how an unlisted price defaults. The counts of
+  questions answered do not depend on it.
+
+The prompts are tuned on the default, and the second column is what that costs a smaller
+model: Sonnet 5 runs at 40% of the token price, fails validation on most hard questions
+and pays for the retries anyway. There is no cheaper configuration to recommend on this
+evidence. The documentation site's Model choice page covers what does save money.
+
 ## Design
 
 Rust was chosen for compiler-enforced correctness. `docs/DECISIONS.md` records that
@@ -197,7 +253,7 @@ crates/
 web/         SolidJS + TypeScript single page (Vite)
 site/        the documentation site (Astro + Starlight); docs/ is its source
 data/        categories.yaml (generates the Category enum), aliases.yaml, notes.yaml
-eval/        gold.yaml + stored runs
+eval/        gold.yaml, published/ (graded runs), runs/ (yours, gitignored)
 docs/        EXPLAINER.md (the tour), ARCHITECTURE.md (the reference), DECISIONS.md (why),
              PROVIDERS.md (the model-provider reference), DEPLOYMENT.md (the runbook)
 ```

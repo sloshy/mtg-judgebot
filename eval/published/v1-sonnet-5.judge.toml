@@ -1,0 +1,32 @@
+# The budget configuration: Claude Sonnet 5 on both stages, at Anthropic's
+# first-party list price (USD per million tokens). The built-in table prices an
+# unknown Anthropic model as Opus 5, which would make the cap reserve and settle
+# 2.5 times too much, so the prices are written here.
+[providers.anthropic]
+kind = "anthropic"
+endpoint = "direct"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.voyage]
+kind = "voyage"
+
+[models.extract]
+provider = "anthropic"
+model = "claude-sonnet-5"
+
+[models.extract.pricing]
+input = 2.0
+output = 10.0
+
+[models.synth]
+provider = "anthropic"
+model = "claude-sonnet-5"
+effort = "high"
+
+[models.synth.pricing]
+input = 2.0
+output = 10.0
+
+[models.embed]
+provider = "voyage"
+model = "voyage-3.5"

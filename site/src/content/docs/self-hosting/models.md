@@ -85,3 +85,39 @@ columns, clears every vector and re-embeds them. That is paid per row, which is 
 asks first. Run again with the switch already made, it only fills rows still empty
 (`--clear` clears and re-pays on purpose). `judge-cli config` prints what resolved,
 secrets redacted, and every binary logs the same summary line at startup.
+
+## What a cheaper model costs
+
+The default is the expensive one, so the obvious question is what happens on a cheaper
+model. It was measured on the 21-question gold set on 2026-09-20
+([Evaluation](../../how-it-works/evaluation/#results) has the table, and the run files are
+in `eval/published/`):
+
+| | Answered (of 18 in scope) | Agree with the reference | Per question answered |
+| --- | --- | --- | --- |
+| `claude-opus-5` on both stages | 17 | 16 | $0.14 |
+| `claude-sonnet-5` on both stages | 7 | 5 | $0.29, erring high |
+
+Sonnet 5 is 40% of the price per token and came out no cheaper per answer (its dollars
+here err high, because that run metered cache reads at the input price). The prompts are
+tuned on Opus. On the hard questions Sonnet mostly returned answers with no citations or
+with placeholder citations, validation rejected them, and a rejected attempt is paid for
+twice, once for the attempt and once for the retry. Nothing it did answer contradicted the
+reference, though one answer was cut short and one accepted a false premise Opus
+corrected. So this is not a verdict on the model. It says that moving the synthesis stage means re-tuning
+`crates/bot/src/prompts/synth_system.md` against the gold set for the model you move to,
+and running `judge-eval answer --config <your file>` before you trust it.
+
+What does lower the bill without that work:
+
+- **The extraction stage** is a small share of an answer's cost (about half a cent of
+  twelve on the default). A local model there (`pricing = "free"`) removes it. Both
+  models above separated the 3 out-of-scope questions from the 18 in scope, which is the
+  part of extraction the gold set measures, so it is the safer stage to move.
+- **`JUDGE_USER_LIMIT`, `API_RATE_LIMIT` and `JUDGE_BUDGET_PERIOD`** bound how many
+  questions are asked, which is what the bill is proportional to.
+- **`/card` and `/rule`** answer the look-something-up questions without a model.
+- **An embedder** costs a few cents once and improves what the model is shown.
+
+`claude-haiku-4-5` cannot be used on either stage as the pipeline stands: every request
+sets a reasoning effort, which that model is documented to reject.
