@@ -224,7 +224,12 @@ group_test() {
     failed+=("test (no database)")
     return
   fi
-  step "cargo test" cargo test --workspace --quiet
+  # Offline, like clippy: the queries compile against the committed .sqlx data
+  # (which the sqlx group proves current), not against whatever schema
+  # DATABASE_URL happens to hold. CI's database is empty, and compiling online
+  # there fails every query. The tests still need the server: #[sqlx::test]
+  # creates and migrates its own throwaway databases off DATABASE_URL.
+  step "cargo test" env SQLX_OFFLINE=true cargo test --workspace --quiet
 }
 
 group_web() {
