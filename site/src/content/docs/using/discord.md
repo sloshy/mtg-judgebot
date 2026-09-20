@@ -15,6 +15,8 @@ double-faced card). Anything else in brackets, such as a nickname or a near miss
 offered back as a choice rather than corrected. Answers take twenty to forty-five seconds.
 The bot acknowledges at once and edits the reply in.
 
+![A Discord reply to /judge asking when a player first gets priority. The answer runs to two paragraphs with rule numbers inline, five rule quotations follow in an embed with the confidence and CR version, and three rating buttons sit beneath.](../../../assets/screenshots/discord-answer-rules.png)
+
 The reply opens with a non-pinging `@you asked:` header, then the ruling, then a citation
 per line. Rule citations link to the rule on the Yawgatog mirror of the Comprehensive
 Rules. Rulings and Oracle text link to the card on Scryfall. The footer names the cards

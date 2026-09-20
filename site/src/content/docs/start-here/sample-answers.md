@@ -14,8 +14,10 @@ A nickname that could mean several cards gets a question back instead of a guess
 
 ![The web page asking which Tibalt was meant, with three cards to choose from.](../../../assets/screenshots/web-did-you-mean.png)
 
-On Discord the same answer arrives as a message with the citations in an embed, rating
-buttons beneath it, and the "did you mean…?" choices as buttons.
+On Discord the answer arrives as a message, with the citations in an embed and the rating
+buttons beneath it. The "did you mean…?" choices are buttons too.
+
+![A Discord reply to /judge. It restates the question about revealing an X-cost spell to Dark Confidant, answers that X counts as 0, and cites the card's Oracle text, rule 202.3e and a Dark Confidant ruling in an embed that ends with the confidence and CR version. Three buttons follow: Incorrect, Partially correct, Correct.](../../../assets/screenshots/discord-answer-citations.png)
 
 ## Where these come from
 
