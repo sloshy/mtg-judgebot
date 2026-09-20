@@ -8,7 +8,9 @@ sidebar:
 The web page is a single SolidJS page, built into the image and served by `judge-api` at
 <http://localhost:8787>. It runs the same pipeline as the Discord bot and shows the same
 answer: the ruling, a citation per line linked to its source, the cards the question was
-resolved to, the confidence and the CR version. A name that could mean several cards
+resolved to, the confidence and the CR version. Answers are written in the light
+Markdown Discord renders (bold card names, rule numbers in backticks), and the page renders
+the same three marks and nothing else. A name that could mean several cards
 gets a "did you mean…?" choice. Questions asked in one browser session share history, so
 a follow-up works. Before the first question the page offers four examples. Choosing one
 fills the box and leaves sending it to the visitor, because an answer spends the

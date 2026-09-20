@@ -269,3 +269,12 @@ footer {
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+.answer-text code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.25em;
+}

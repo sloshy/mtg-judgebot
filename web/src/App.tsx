@@ -9,6 +9,7 @@ import {
   type Pin,
   sessionId,
 } from "./api";
+import Markdown from "./Markdown";
 import Symbols from "./Symbols";
 
 const MAX_QUESTION_CHARS = 1000;
@@ -248,7 +249,7 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
         {(r) => (
           <div class="answer">
             <p class="answer-text">
-              <Symbols text={r().answer} />
+              <Markdown text={r().answer} />
             </p>
             <Show when={r().citations.length > 0}>
               <ul class="citations">
