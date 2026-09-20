@@ -17,9 +17,10 @@ touch Discord. The bot is the last thing to add.
 - A host that stays on, with Docker and the compose plugin. Running takes about 200 MB of
   RAM across the three containers. **Building** the image takes ~4 GB and a lot of CPU. A
   low-powered host pulls the CI-built image instead (`docker compose pull`).
-- Rust 1.98 on the machine where you run the data loads. Or run them inside the image
-  (`docker compose run --rm refresh cards`, and so on). `refresh` is the `judge-ingest`
-  binary. A binary run on the host verifies HTTPS against the system's CA certificates
+- Rust 1.98 on the machine where you run the data loads, or no Rust at all: the image
+  carries the same `judge-ingest` binary as its `refresh` service
+  ([Loading the data without Rust](#loading-the-data-without-rust) below). A binary run
+  on the host verifies HTTPS against the system's CA certificates
   (`ca-certificates` on Debian and Ubuntu), and without them it refuses to start.
 - A model provider. With `.env` alone that is Anthropic's API (`ANTHROPIC_API_KEY`).
   A [`judge.toml`](../../self-hosting/models/) chooses anything else.
@@ -49,10 +50,29 @@ touch Discord. The bot is the last thing to add.
    `api` and `bot` both apply pending migrations at startup unless
    `JUDGE_AUTO_MIGRATE=false`.
 5. [Create the Discord app](../../self-hosting/discord-app/), then `docker compose up -d
-   bot`. Then run `cargo run --release -p judge-ingest -- emoji` once, so answers show mana
-   symbols as pictures instead of `{W}`.
+   bot`. Then run `cargo run --release -p judge-ingest -- emoji` once (or
+   `docker compose run --rm refresh emoji`), so answers show mana symbols as pictures
+   instead of `{W}`.
 6. Schedule `scripts/refresh-data.sh` nightly and `scripts/backup-db.sh` weekly. The
    [deployment runbook](../../self-hosting/deployment/) has the cron lines.
+
+## Loading the data without Rust
+
+`docker compose run --rm refresh <command>` runs `judge-ingest` from the image, against
+the `db` container. The image holds the binaries, not the repository's `data/` directory,
+so the two commands that read a file from it need that directory mounted. Run these from
+the repository root, where `./data` is:
+
+```sh
+docker compose pull                                  # the CI-built image, so nothing compiles
+docker compose run --rm refresh migrate
+docker compose run --rm refresh cards
+docker compose run --rm refresh rules latest
+docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml
+docker compose run --rm -v ./data:/data:ro refresh notes /data/notes.yaml
+docker compose run --rm refresh embed                # optional, with an embedder configured
+docker compose run --rm refresh emoji                # once the Discord app exists
+```
 
 ## Embedding width
 

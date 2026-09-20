@@ -91,8 +91,8 @@ services:
     # Every front door judge-api can open is opt-in: with no arguments it
     # serves POST /api/judge and nothing else. This default adds the web page;
     # drop `--web` for an API-only deployment, and add `--mcp` when MCP_TOKEN
-    # is set — a token with no `--mcp` is refused at startup rather than
-    # leaving an operator thinking /mcp is live. Override the whole list with
+    # is set. `--mcp` with no token is refused at startup; a token with no
+    # `--mcp` serves no /mcp and logs a warning naming the fix. Override the whole list with
     # API_INTERFACES in .env so nothing here has to be edited on a deploy host.
     # GET /api/health is served either way, so the healthcheck below is
     # unaffected by what is switched off.

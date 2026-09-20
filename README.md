@@ -78,13 +78,20 @@ cargo run --release -p judge-ingest -- notes data/notes.yaml
 cargo run --release -p judge-ingest -- embed                # optional: every rule and glossary entry through the
                                                             # embedder once; a few cents on Voyage
 
-docker compose up -d api           # first run builds the image (minutes, ~4 GB RAM), then serves the web page
+docker compose pull                # the CI-built image of upstream main (amd64 and arm64), not of your
+                                   # checkout. Skip it to build what you cloned or changed: `up` then
+                                   # builds on first run (minutes, ~4 GB RAM)
+docker compose up -d api           # serves the web page
 ```
 
-Open <http://localhost:8787> and ask a question. If port 5432 is taken on your machine,
+Open <http://localhost:8787> and ask a question. The page allows each address 4 questions
+per 5 minutes by default (`API_RATE_LIMIT` in `.env`). If port 5432 is taken on your machine,
 set `DB_PORT` in `.env` and change `DATABASE_URL` to match. A typical answer costs
 $0.08–0.25 in model calls. Every call is metered and hard-capped per process
-(`JUDGE_MAX_USD`, default $5).
+(`JUDGE_MAX_USD`, default $5). That is a total for the life of each process (`bot` and
+`api` have one each), not a monthly budget. Once the headroom left is smaller than a
+call's worst case (about $0.45 for synthesis) the process refuses questions until it is
+restarted, and a restart counts from zero.
 
 ### Your own Discord bot
 
@@ -109,10 +116,11 @@ covers the portal. Then:
    /forget` confirms it, and `/help` in the server confirms it end to end.
 
 Members holding a role named `JUDGE_ROLE` (default `Judge`) rate as judges: their rating
-overrides the crowd's. `cargo run --release -p judge-ingest -- emoji` uploads the mana
-symbols as application emoji once, so answers show pictures instead of `{W}`. The
-documentation site's [Run your own judgebot](https://sloshy.github.io/mtg-judgebot/self-hosting/first-run/)
-section has the long form with links into Discord's documentation.
+overrides the crowd's. `cargo run --release -p judge-ingest -- emoji` (or `docker compose
+run --rm refresh emoji`) uploads the mana symbols as application emoji once, so answers show
+pictures instead of `{W}`. The documentation site's [Run your own
+judgebot](https://sloshy.github.io/mtg-judgebot/self-hosting/first-run/) section has the
+long form with links into Discord's documentation.
 `docker compose up -d --build bot api` redeploys after code changes.
 
 ### Choosing a model

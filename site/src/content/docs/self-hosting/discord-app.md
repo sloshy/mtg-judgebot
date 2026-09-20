@@ -87,8 +87,26 @@ For a bot in one or two servers, register in the server:
 Leave `GUILD_ID` unset to register globally. Avoid switching back and forth. The bot
 registers the set it is configured for and does not remove the other, so members would see
 two identical `/judge` entries from the same bot until the stale set is cleared. The
-portal does not clear it. Delete the guild set with any tool that speaks the API, or wait
-for the global set and remove the guild one the same way.
+portal does not clear it. Overwriting a set with an empty list does
+([Bulk Overwrite Guild Application Commands](https://docs.discord.com/developers/interactions/application-commands#bulk-overwrite-guild-application-commands)).
+It needs the bot token, the *Application ID* from step 1 and, for a server's set, the
+server id that `GUILD_ID` held before you blanked it:
+
+```sh
+DISCORD_TOKEN=...      # as in .env
+APPLICATION_ID=...     # General Information → Application ID
+GUILD_ID=...           # the server the stale set was registered in
+
+# clear the server's set (after moving to global registration)
+curl -X PUT -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -d '[]' \
+  "https://discord.com/api/v10/applications/$APPLICATION_ID/guilds/$GUILD_ID/commands"
+# clear the global set (after moving to GUILD_ID)
+curl -X PUT -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -d '[]' \
+  "https://discord.com/api/v10/applications/$APPLICATION_ID/commands"
+```
+
+Clear only the set the bot is no longer configured for. The bot registers its own set
+again at every start.
 
 ## 5. Start it
 

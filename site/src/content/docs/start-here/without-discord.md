@@ -33,15 +33,19 @@ The card sync takes a few minutes the first time. The rules parse takes seconds.
 ## The web page
 
 ```sh
-docker compose up -d api       # builds the image on first run (minutes, ~4 GB RAM)
+docker compose pull            # the CI-built image of upstream main, not of your checkout;
+                               # skip it and `up` builds what you cloned on first run
+                               # instead (minutes, ~4 GB RAM)
+docker compose up -d api
 ```
 
-Open <http://localhost:8787>. The page is the same pipeline the bot runs, minus rating
-buttons. Every front door `judge-api` has is a launch option. The compose file passes
-`--api --web`, and `API_INTERFACES` in `.env` changes that list. `--api` alone runs the
-question route with no public page. `API_RATE_LIMIT` and `API_RATE_WINDOW_SECS` in `.env`
-govern how many questions an IP can ask. The defaults suit a public instance, so raise
-them for yourself.
+Open <http://localhost:8787>. The anonymous API allows each address 4 questions per 5
+minutes by default, which suits a public page and will stop you within minutes of testing
+your own. Raise `API_RATE_LIMIT` (or shorten `API_RATE_WINDOW_SECS`) in `.env` first if you
+plan to ask more. The page is the same pipeline the bot runs, minus rating buttons. Every
+front door `judge-api` has is a launch option. The compose file passes `--api --web`, and
+`API_INTERFACES` in `.env` changes that list. `--api` alone runs the question route with no
+public page.
 
 To develop the API without Docker, run `cargo run --release -p judge-api -- --api --web`.
 It serves the built page from `web/dist` (run
@@ -69,3 +73,12 @@ agent (or you) does the model's job and the pipeline only validates.
 A typical answer costs $0.08 to $0.25 in model calls. Every call is metered against
 `JUDGE_MAX_USD` (default $5 per process). The cap reserves the worst case before
 sending, so a process cannot overshoot it.
+
+The cap is a lifetime total for one process, not a budget per day or month. `bot` and `api` are
+separate processes with a cap each, so a compose deployment can spend twice
+`JUDGE_MAX_USD`. The total is held in memory: a restart starts again from zero. A call is
+refused once the headroom left is smaller than its worst case, so synthesis stops about
+$0.45 short of the cap, and from there the process answers nothing (Discord members are
+told the bot has hit its spending cap) until it is restarted, with a higher cap or the
+same one. A model priced `free` is never refused. Nothing notifies the operator. The log shows `judge failed` with `spend cap exceeded: spent $… of $… cap`.
+At that cost per answer, $5 is roughly 20 to 55 answers.
