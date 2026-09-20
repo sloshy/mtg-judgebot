@@ -29,7 +29,9 @@ and replies through the interaction. You never grant it the ability to read mess
 Open the [Developer Portal](https://discord.com/developers/applications) and choose **New
 Application**. The name is what members see beside `/judge` in the command picker and on
 the bot's profile, so name it for your server ("Rules Judge", "Club Judge").
-Nothing else on the *General Information* page matters to the bot. The install link in
+The *App Icon* is the bot's avatar. The project's icon is
+[a 512×512 PNG](../../icon.png) (`assets/icon.png` in the repository) if you want it, and
+any image works. Nothing else on the *General Information* page matters to the bot. The install link in
 step 3 carries the *Application ID* shown there.
 
 ## 2. Bot user and token

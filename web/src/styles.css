@@ -48,6 +48,14 @@ header h1 {
   margin: 0;
   font-size: 1.6rem;
   letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* 32x32 pixel art: keep the pixels hard on a display that scales it. */
+header h1 img {
+  image-rendering: pixelated;
 }
 
 .tagline {

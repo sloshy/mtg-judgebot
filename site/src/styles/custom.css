@@ -60,3 +60,12 @@
     display: none;
   }
 }
+
+/* The header logo is 32x32 pixel art. Show it at that size, not Starlight's 40px,
+   which is 1.25 device pixels per art pixel and draws them unevenly. A display
+   that scales it (2x, 3x) keeps the pixels hard. */
+.site-title img {
+  width: 2rem;
+  height: 2rem;
+  image-rendering: pixelated;
+}

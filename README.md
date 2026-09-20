@@ -1,5 +1,7 @@
 # mtg-judgebot
 
+<img src="assets/icon.png" alt="" width="96" align="right">
+
 A Discord bot and anonymous web page that answers Magic: The Gathering rules questions
 like a judge. Ask in plain language. Nicknames such as "bob", "goyf" and "snappy" work.
 The reply is a concise ruling in which **every claim is backed by a validated, clickable

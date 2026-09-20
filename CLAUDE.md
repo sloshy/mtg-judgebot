@@ -86,6 +86,14 @@ footer, then the Fan Content Policy statement and the data sources (Wizards, Scr
 Yawgatog). Starlight renders the footer on splash pages too, so it is on every page. The
 web page's footer (`web/src/App.tsx`) carries the same text; change them together.
 
+**The icon** is 32x32 pixel art and must stay pixelated, so it is a PNG, never an SVG or a
+smoothed resize. `assets/icon.png` is the 512px original (the README, a Discord app's
+avatar). Copies: `site/src/assets/icon.png` (header logo) and `site/public/icon.png`
+(`og:image`). `favicon.png` (the native 32px grid) and `apple-touch-icon.png` (192px,
+nearest-neighbour, on `#1f2933`) sit in both `site/public/` and `web/public/`. Regenerate
+every copy from the original when it changes, and scale only by whole multiples of 32.
+Wherever it is displayed scaled, the CSS sets `image-rendering: pixelated`.
+
 Check site changes in a browser with the `playwright-cli` skill. Run it against
 `npm --prefix site run dev` (port 4321, base `/`) or a preview of the build (base
 `/mtg-judgebot`, which is what Pages serves). Take the page at 1920, 1440, 820 and 390

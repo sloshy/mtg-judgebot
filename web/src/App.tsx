@@ -66,7 +66,10 @@ export default function App() {
   return (
     <main class="app">
       <header>
-        <h1>MTG Judgebot</h1>
+        <h1>
+          <img src="/favicon.png" alt="" width="32" height="32" />
+          MTG Judgebot
+        </h1>
         <p class="tagline">
           Ask a Magic: The Gathering rules question; the answer cites the Comprehensive Rules.
         </p>

@@ -13,17 +13,34 @@ import { defineConfig, passthroughImageService } from "astro/config";
 // pages at all — so the dev/build distinction is read from argv instead.)
 const site = process.env.SITE_URL ?? "https://sloshy.github.io";
 const isDev = process.argv.includes("dev");
+const base = process.env.SITE_BASE ?? (isDev ? "/" : "/mtg-judgebot");
+// A path under the base, whether SITE_BASE came with its slashes or not.
+const inBase = (/** @type {string} */ path) =>
+  `/${base.replace(/^\/|\/$/g, "")}${path}`.replace(/^\/\//, "/");
 
 export default defineConfig({
   site,
-  base: process.env.SITE_BASE ?? (isDev ? "/" : "/mtg-judgebot"),
-  // No images to optimise, so no sharp: the site builds anywhere Node runs.
+  base,
+  // The one image is pixel art served as is, so no sharp: the site builds
+  // anywhere Node runs.
   image: { service: passthroughImageService() },
   integrations: [
     starlight({
       title: "MTG Judgebot",
       description:
         "A Discord bot and web page that answers Magic: The Gathering rules questions with validated citations.",
+      // The icon is 32x32 pixel art (assets/icon.png at the repository root is the
+      // 512px original). The favicon is that grid at native size, so a tab never
+      // smooths it, and custom.css keeps the header logo's pixels hard.
+      logo: { src: "./src/assets/icon.png", alt: "" },
+      favicon: "/favicon.png",
+      head: [
+        { tag: "link", attrs: { rel: "apple-touch-icon", href: inBase("/apple-touch-icon.png") } },
+        {
+          tag: "meta",
+          attrs: { property: "og:image", content: new URL(inBase("/icon.png"), site).href },
+        },
+      ],
       social: [{ icon: "github", label: "GitHub", href: "https://github.com/sloshy/mtg-judgebot" }],
       editLink: {
         baseUrl: "https://github.com/sloshy/mtg-judgebot/edit/main/site/",
