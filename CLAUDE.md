@@ -379,7 +379,13 @@ Key cross-file facts that aren't obvious from any one file:
   `Context`.
   - `Quote` cannot be blank. A blank one fails to parse, so a placeholder citation is a
     `MalformedCitation` with the stub notice, not a bad citation. Its schema is plain
-    `String`.
+    `String`. `validate` treats a quote that parsed but quotes nothing the same way
+    (`verdict::placeholder`: a stock word such as "placeholder", or under
+    `verdict::MIN_QUOTE_CHARS`), judged on the quote alone.
+  - A ruling citation with no such ruling whose quote is the *card's own Oracle text* is
+    the commonest wrong citation (a card with no rulings in the material). It is still a
+    `BadCitation`, never repaired, but `judge_core::misfiled_oracle_text` lets the retry
+    notice say "cite it as `oracle_text`" instead of "drop it".
   - The check folds typographic punctuation (`judge_core::quote`): curly quotes, the dash
     block, non-breaking spaces. It maps one `char` to one `char`, never case or words.
     Models retype the CR's `’` as `'`, and that was the most common rejection.

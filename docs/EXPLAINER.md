@@ -407,7 +407,8 @@ handling lives, so you can read further.
 |---|---|
 | Model invents rule numbers or misquotes | citation validation, and the source's own span is stored (`core/verdict.rs`, `core/quote.rs`) |
 | Model answers from memory instead of the material | system prompt ground rule 1, required citations, retry notice |
-| Model pads with placeholder citations | prompt forbids stubs, and a malformed citation is a typed rejection with the parse error shown back |
+| Model pads with placeholder citations | prompt forbids stubs, and a malformed citation is a typed rejection with the parse error shown back; a quote that parses but is a stock word (`"placeholder"`) or a character or two is rejected the same way |
+| Model files a card's Oracle text as a ruling (the card has no rulings to cite) | still rejected, never relabelled; the retry notice names the kind it meant (`oracle_text`, with the card and face) instead of telling it to drop a good quote |
 | Model calls the tool repeatedly | `Synth` typestate: one round, by type |
 | Model's output is cut off at `max_tokens` | detected from the stop reason, retried once at medium effort |
 | Model claims a question is out of scope to dodge citing | `source` is stamped from extraction, not model-reported |

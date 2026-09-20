@@ -324,6 +324,12 @@ impl Verdict<Unvalidated> {
             .citations
             .into_clean()
             .map_err(JudgeError::MalformedCitation)?;
+        // Check (0b): a citation that parsed but quotes nothing. It is the
+        // same habit as the unreadable stub, so it gets the same rejection and
+        // with it the notice that says to leave the point uncited.
+        if let Some(stub) = citations.iter().find_map(placeholder) {
+            return Err(JudgeError::MalformedCitation(stub));
+        }
         if let Some(e) = emptiness(&self.data.answer, &citations) {
             return Err(JudgeError::EmptyVerdict(e));
         }
@@ -346,6 +352,76 @@ impl Verdict<Unvalidated> {
             },
         })
     }
+}
+
+/// Quotes a model writes when it has nothing to quote. Compared after
+/// trimming, lowercasing and dropping surrounding punctuation.
+const STUB_QUOTES: &[&str] = &[
+    "placeholder",
+    "quote",
+    "text",
+    "citation",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "tbd",
+    "todo",
+    "unknown",
+];
+
+/// Shortest quote that can name a span of anything. Real citations run to a
+/// clause at least; `x` and `...` are what a model emits to fill a required
+/// field.
+pub const MIN_QUOTE_CHARS: usize = 4;
+
+/// `c` as a [`MalformedCitation`] if its quote is a placeholder rather than a
+/// quotation: a stock word, or too short to quote anything. Judged on the
+/// quote alone. A real quote under a wrong id is a bad citation, which has a
+/// more useful notice (see [`misfiled_oracle_text`]).
+fn placeholder(c: &Citation) -> Option<MalformedCitation> {
+    let quote = c.quote().trim();
+    let bare = quote
+        .trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '/')
+        .to_lowercase();
+    let why = if STUB_QUOTES.contains(&bare.as_str()) {
+        "the quote is a placeholder, not text from a source"
+    } else if quote.chars().count() < MIN_QUOTE_CHARS {
+        "the quote is too short to be text from a source"
+    } else {
+        return None;
+    };
+    Some(MalformedCitation::new(&c.to_string(), why))
+}
+
+/// The face of its own card whose Oracle text a *ruling* citation actually
+/// quotes, when `ctx` holds no such ruling.
+///
+/// A card with no rulings in the material still has Oracle text, and a model
+/// that wants to cite "what the card says now" sometimes files that under
+/// `scryfall_ruling` with an invented key. The quote is genuine, so the useful
+/// thing to tell it is which kind it meant, not that the ruling is missing.
+/// Never used to repair a citation: a verdict is admitted as written or not
+/// at all.
+#[must_use]
+pub fn misfiled_oracle_text(c: &Citation, ctx: &Context) -> Option<u32> {
+    let Citation::ScryfallRuling {
+        card,
+        ruling,
+        quote,
+    } = c
+    else {
+        return None;
+    };
+    if ctx.ruling(*card, ruling).is_some() {
+        return None;
+    }
+    let q = quote.as_ref().trim();
+    ctx.card(*card)?
+        .faces
+        .iter()
+        .position(|f| f.locate_quote(q).is_some())
+        .and_then(|i| u32::try_from(i).ok())
 }
 
 /// Why a verdict counts as empty, if it does (check (1) of `validate`).
@@ -641,7 +717,7 @@ mod tests {
 
         let bad_prior = Citation::PriorCall {
             id: CallId::new(Uuid::from_u128(1)),
-            quote: Quote::try_new("x")?,
+            quote: Quote::try_new("lifelink stacks")?,
         };
         assert!(matches!(
             verdict(vec![bad_prior]).validate(&c, CR),
@@ -921,6 +997,114 @@ mod tests {
         // The schema the model sees is unchanged: a quote is a plain string.
         let schema = serde_json::to_value(schemars::schema_for!(Verdict<Unvalidated>))?;
         assert!(!schema.to_string().contains("Quote"), "{schema}");
+        Ok(())
+    }
+
+    /// The 2026-09-20 gold runs: a ruling quoted as `"placeholder"` and one
+    /// quoted as `"x"`. Both parsed, both were reported as bad citations, and
+    /// the notice for those says the quote is not verbatim, which is no help
+    /// to a model that had nothing to quote. They are stubs and are told so.
+    #[test]
+    fn a_placeholder_quote_is_rejected_as_a_stub_not_as_a_bad_quote()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let ruling = |quote: &str| -> Result<Citation, Box<dyn std::error::Error>> {
+            Ok(Citation::ScryfallRuling {
+                card: CardId::new(Uuid::from_u128(7)),
+                ruling: ruling_key("2020-01-01", "Lifelink is not a triggered ability."),
+                quote: Quote::try_new(quote)?,
+            })
+        };
+        for stub in [
+            "placeholder",
+            "\"Placeholder.\"",
+            "x",
+            "...",
+            "N/A",
+            " todo ",
+        ] {
+            let err = verdict(vec![good_citation()?, ruling(stub)?])
+                .validate(&ctx()?, CR)
+                .err();
+            assert!(
+                matches!(err, Some(JudgeError::MalformedCitation(ref m))
+                    if m.error.contains("quote") && m.raw.contains("ruling")),
+                "{stub}: {err:?}"
+            );
+        }
+        for stub in ["None.", "[TBD]"] {
+            let err = verdict(vec![ruling(stub)?]).validate(&ctx()?, CR).err();
+            assert!(
+                matches!(err, Some(JudgeError::MalformedCitation(_))),
+                "{stub}: {err:?}"
+            );
+        }
+        // Four characters is a quote: judged against its source, not as a stub.
+        let err = verdict(vec![ruling("Fear")?]).validate(&ctx()?, CR).err();
+        assert!(matches!(err, Some(JudgeError::BadCitation(_))), "{err:?}");
+        // A real quote, however short, is judged as a quote.
+        assert!(
+            verdict(vec![ruling("Lifelink is not")?])
+                .validate(&ctx()?, CR)
+                .is_ok()
+        );
+        let err = verdict(vec![ruling("Lifelink is a triggered ability")?])
+            .validate(&ctx()?, CR)
+            .err();
+        assert!(matches!(err, Some(JudgeError::BadCitation(_))), "{err:?}");
+        Ok(())
+    }
+
+    /// The Waylay failure behind those stubs: the card had no rulings in the
+    /// material, and the model filed its Oracle text under an invented ruling
+    /// key. That is detected, for the notice, and never repaired.
+    #[test]
+    fn oracle_text_filed_as_a_ruling_is_recognised_and_still_rejected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let c = ctx()?;
+        let misfiled =
+            |card: CardId, quote: &str| -> Result<Citation, Box<dyn std::error::Error>> {
+                Ok(Citation::ScryfallRuling {
+                    card,
+                    ruling: "0000000000000000".parse()?,
+                    quote: Quote::try_new(quote)?,
+                })
+            };
+        let cleanup = "Exile them at the beginning of the next cleanup step.";
+        assert_eq!(
+            misfiled_oracle_text(&misfiled(waylay_id(), cleanup)?, &c),
+            Some(0)
+        );
+        assert_eq!(
+            misfiled_oracle_text(&misfiled(waylay_id(), "Nothing here.")?, &c),
+            Some(1)
+        );
+        // Oracle text only: the type line is not something a face quotes.
+        assert_eq!(
+            misfiled_oracle_text(&misfiled(waylay_id(), "Instant")?, &c),
+            None
+        );
+        // Not this card's text, not a card in the material, not a ruling at all.
+        assert_eq!(
+            misfiled_oracle_text(&misfiled(waylay_id(), "Draw a card now.")?, &c),
+            None
+        );
+        assert_eq!(
+            misfiled_oracle_text(&misfiled(CardId::new(Uuid::from_u128(99)), cleanup)?, &c),
+            None
+        );
+        assert_eq!(misfiled_oracle_text(&good_citation()?, &c), None);
+        // A ruling that exists is not second-guessed, whatever it quotes.
+        let real = Citation::ScryfallRuling {
+            card: CardId::new(Uuid::from_u128(7)),
+            ruling: ruling_key("2020-01-01", "Lifelink is not a triggered ability."),
+            quote: Quote::try_new(cleanup)?,
+        };
+        assert_eq!(misfiled_oracle_text(&real, &c), None);
+        // Recognised is not admitted.
+        let err = verdict(vec![misfiled(waylay_id(), cleanup)?])
+            .validate(&c, CR)
+            .err();
+        assert!(matches!(err, Some(JudgeError::BadCitation(_))), "{err:?}");
         Ok(())
     }
 

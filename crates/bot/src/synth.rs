@@ -431,8 +431,15 @@ fn render_rules(s: &mut String, ctx: &Context, pinned: &[RuleId], budget: &Budge
     }
 }
 
+/// What a card with no rulings says where its rulings would be. Absence is
+/// stated rather than left to be inferred: a model that remembers a famous
+/// ruling for the card (Waylay's end-of-turn erratum) and finds no heading for
+/// it otherwise invents a `scryfall_ruling` entry to hang the memory on.
+const NO_RULINGS: &str = "(no rulings: Scryfall has none for this card, so nothing about it can be cited as \
+                          scryfall_ruling; what the card says is its Oracle text above, cited as oracle_text)";
+
 fn render_rulings(s: &mut String, ctx: &Context, budget: &Budget) {
-    if ctx.rulings.is_empty() {
+    if ctx.rulings.is_empty() && ctx.cards.is_empty() {
         return;
     }
     s.push_str("\n## Scryfall rulings (cite as scryfall_ruling with the card uuid from the heading and the ruling key from its label)\n");
@@ -451,6 +458,9 @@ fn render_rulings(s: &mut String, ctx: &Context, budget: &Budget) {
         }
         if total > shown {
             let _ = writeln!(s, "({} more rulings omitted)", total - shown);
+        }
+        if total == 0 {
+            let _ = writeln!(s, "### {} — card {}\n{NO_RULINGS}", c.name, c.id);
         }
     }
     // Rulings for cards not in `ctx.cards` (a retriever quirk) are still citable.
@@ -527,6 +537,18 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
             let why = match c {
                 Citation::Rule { id, .. } if ctx.rule(id).is_none() => {
                     format!("rule {id} is not among the excerpts; cite an id exactly as shown in the excerpts.{INVENTED}")
+                }
+                // The commonest wrong ruling: the card's own Oracle text, filed
+                // as a ruling under an invented key because the card has no
+                // rulings to cite. The quote is good, so name the kind it meant
+                // instead of telling the model to drop it.
+                Citation::ScryfallRuling { card, .. } if judge_core::misfiled_oracle_text(c, ctx).is_some() => {
+                    let face = judge_core::misfiled_oracle_text(c, ctx).unwrap_or_default();
+                    format!(
+                        "that is not a ruling: the text you quoted is the Oracle text of the card itself, shown under \
+                         [oracle {card}#{face}]. Cite it as {{\"kind\": \"oracle_text\", \"card\": \"{card}\", \"face\": {face}, \
+                         \"quote\": ...}} with the same quote, and keep the rest of the answer"
+                    )
                 }
                 Citation::ScryfallRuling { card, ruling, .. } if ctx.ruling(*card, ruling).is_none() => {
                     format!("there is no ruling [ruling {ruling}] under a card heading with uuid {card} in the material.{INVENTED}")
@@ -899,6 +921,80 @@ mod tests {
     /// The retry is a fresh conversation. The Room failure (2026-09-10) told
     /// the model to keep a ruling it could not see and got a seven-character
     /// answer back; the notice now quotes the rejected answer.
+    /// The Waylay failure of the 2026-09-20 gold run: no rulings in the
+    /// material, so the model filed the card's Oracle text as a ruling under
+    /// an invented key. "No such ruling, drop it" got a placeholder back. The
+    /// quote was good, so the notice says which kind it was.
+    #[test]
+    fn oracle_text_filed_as_a_ruling_is_told_the_kind_it_meant() -> R {
+        let id = CardId::new(Uuid::from_u128(9));
+        let ctx = Context {
+            cards: vec![judge_core::Card {
+                id,
+                name: "Waylay".into(),
+                layout: judge_core::Layout::Normal,
+                faces: NonEmpty::new(judge_core::Face {
+                    name: "Waylay".into(),
+                    oracle_text: "Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step.".into(),
+                    mana_cost: "{2}{W}".into(),
+                    type_line: "Instant".into(),
+                }),
+            }],
+            ..Context::default()
+        };
+        let filed = |quote: &str| -> Result<RejectedAttempt, Box<dyn std::error::Error>> {
+            Ok(attempt(Rejection::BadCitation(Citation::ScryfallRuling {
+                card: id,
+                ruling: "0000000000000000".parse()?,
+                quote: judge_core::Quote::try_new(quote)?,
+            })))
+        };
+        let s = render_user_turn(
+            &q(),
+            &ctx,
+            Some(&filed(
+                "Exile them at the beginning of the next cleanup step.",
+            )?),
+            &[],
+            &Budget::default(),
+        );
+        assert!(
+            s.contains(
+                "that is not a ruling: the text you quoted is the Oracle text of the card itself"
+            ),
+            "{s}"
+        );
+        assert!(
+            s.contains(&format!(
+                "{{\"kind\": \"oracle_text\", \"card\": \"{id}\", \"face\": 0,"
+            )),
+            "{s}"
+        );
+        assert!(
+            !s.contains("drop it"),
+            "a good quote is not to be dropped: {s}"
+        );
+        // The material said so up front: the card's place among the rulings
+        // states that it has none.
+        assert!(
+            s.contains(&format!("## Scryfall rulings (cite as scryfall_ruling with the card uuid from the heading and the ruling key from its label)\n### Waylay — card {id}\n(no rulings: Scryfall has none for this card")),
+            "{s}"
+        );
+        // A ruling that quotes nothing of the card is still an invented one.
+        let s = render_user_turn(
+            &q(),
+            &ctx,
+            Some(&filed("Waylay's tokens are exiled at cleanup.")?),
+            &[],
+            &Budget::default(),
+        );
+        assert!(
+            s.contains("there is no ruling [ruling 0000000000000000]") && s.contains("drop it"),
+            "{s}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn the_retry_notice_quotes_the_rejected_answer_and_names_invented_references() -> R {
         let ctx = Context {
