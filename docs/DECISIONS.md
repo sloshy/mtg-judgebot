@@ -478,10 +478,51 @@ passes, and a rule number is not covered by citing a prior call that mentions it
   in `judge-eval` as a score, not in the path of every answer.
 - *Accepting a number that is in the material but not cited.* Looser, and it would let the
   prose lean on text no quote was checked against.
-- *Telling the model up front in the system prompt*, for now. The prompt asks for rule
-  numbers inline and for "usually one to four citations", which pulls against this check,
-  and one sentence there would save most of the retries. It would also change the pinned
-  prompt the published eval numbers were produced on. The check went in first so its
-  cost could be measured on the unchanged prompt. The prompt edit is the follow-up if the
-  retry rate stays near one in eight.
+- *Leaving the model to find out from the retry.* The prompt asks for rule numbers inline
+  and for "usually one to four citations", which pulls against this check, so it was
+  measured first on the unchanged prompt: about one answer in eight retried. The answer
+  style section now says it in one sentence (every rule number written must be one of the
+  rule citations), the pinned digest and the golden fixtures were updated on purpose, and
+  the published runs were redone on the new prompt.
+
+## D21. A citation that quotes nothing is dropped, not held against the answer
+
+*Decided 2026-09-20.*
+
+The model sometimes pads its citations with a stub: `{"quote":"","ruling":""}`, a quote of
+`"x"` or `"placeholder"`. It happens most on a card with no Scryfall rulings, where the
+model opens a `scryfall_ruling` entry from memory and has no key to put in it. The output
+is schema-constrained, so an entry once begun cannot be abandoned, only filled. Saying in
+the material that the card has no rulings did not stop it, and neither did the prompt's
+paragraph against stubs. Every stub rejected the whole answer and cost a retry, and the
+retry sometimes stubbed again: in the 2026-09-20 gold runs, stubs were the only thing that
+lost an in-scope answer on the default model.
+
+A stub quotes nothing, so it supports nothing, and dropping it takes no checked support
+away from the answer. So `validate` sets stubs aside (an entry whose `quote` is present
+and is blank, a stock word or fewer than four characters, whether or not the rest of the
+entry parses) and validates what is left exactly as before.
+What keeps this honest:
+
+- Every citation that is shown was still checked verbatim against its source.
+- At least one real citation is still required. An answer with nothing but stubs is
+  rejected for them, with the notice that names the habit.
+- D20 catches an answer whose prose leaned on a dropped rule by number.
+- An unreadable entry that *does* quote something is a citation the model meant, and is
+  still a rejection. So is one with no `quote` key or a `quote` that is not a string (a
+  misspelt key, from a backend that does not constrain the output). So is a real quote
+  under a wrong id.
+
+What it does not catch: prose that still says "a ruling on this card says…" after the
+ruling stub behind it was dropped. D20 ties rule numbers to citations; rulings and Oracle
+text have no identifier in prose to tie. The same sentence could be written today with no
+stub at all. The prompt keeps its stern paragraph against stubs on purpose: it is still
+true when nothing else is cited, and it costs nothing as a deterrent.
+
+**Rejected:**
+
+- *Repairing the entry*, such as relabelling Oracle text filed as a ruling. The quote may
+  be genuine, but the verdict would then carry a citation the model did not write.
+- *Dropping any citation that fails*, not only stubs. A failed citation with a real quote
+  is a claim about a source, and the answer may rest on it.
 

@@ -2080,7 +2080,7 @@ mod harness_tests {
                 hex
             });
         assert_eq!(
-            digest, "8811f7b631bc3d825114f48fa496c552b74273e4a96d2b554f68ac076016a13d",
+            digest, "fc454637ebc5d9e7785949d610518be3904b9e50399d4ccec90ffef895ea8c9d",
             "the Anthropic synthesis prompt changed"
         );
     }

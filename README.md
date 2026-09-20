@@ -186,43 +186,51 @@ answer, citation, time and cost, so none of this has to be taken on trust:
 | | `claude-opus-5`, both stages (the default) | `claude-sonnet-5`, both stages |
 | --- | --- | --- |
 | Out-of-scope questions declined (of 3) | 3 | 3 |
-| In-scope questions answered (of 18) | 17 | 7 |
-| …agreeing with the reference ruling | 16 | 5 |
-| …partly (right on the main point, a sub-question off or the answer cut short) | 1 | 2 |
+| In-scope questions answered (of 18) | 17 | 6 |
+| …agreeing with the reference ruling | 17 | 5 |
+| …partly (right on the main point, a sub-question missed) | 0 | 1 |
 | …contradicting the reference | 0 | 0 |
-| Not answered | 1 | 11 |
-| Expected rule ids cited | 42 of 67 (63%) | 12 of 67 (18%) |
-| Cost per in-scope question (median) | $0.12 | $0.11 |
-| Cost per question *answered* | $0.14 | $0.29 |
-| Time per in-scope question (median / longest) | 22 s / 61 s | 40 s / 398 s |
-| Whole run | $2.36 | $2.04 |
+| Asked "did you mean?" instead | 1 | 1 |
+| Not answered | 0 | 11 |
+| Expected rule ids cited | 45 of 67 (67%) | 12 of 67 (18%) |
+| Cost per in-scope question (median) | $0.13 | $0.10 |
+| Cost per question *answered* | $0.14 | $0.30 |
+| Time per in-scope question (median / longest) | 22 s / 43 s | 26 s / 589 s |
+| Whole run | $2.39 | $1.83 |
 
 What these measure, and what they do not:
 
 - **Answered** means a verdict that passed validation: every citation names a source the
-  model was shown and quotes it verbatim. "Not answered" is the pipeline refusing to show
-  an answer, not a wrong answer shown. Opus's one miss was a placeholder ruling citation,
-  rejected on both attempts. Sonnet's eleven were five answers with no citations, three
-  empty ones, two placeholder citations and one quote that was not verbatim.
+  model was shown and quotes it verbatim, and every rule number in the text is one of
+  those citations. "Not answered" is the pipeline refusing to show an answer, not a wrong
+  answer shown. Sonnet's eleven were five answers with no citations or no text, four
+  errors in the tool round (a second `lookup_rules` request, a malformed rule id, a
+  request the API refused), a bad quote, and one answer naming rules it did not cite.
+- **"Did you mean?"** is the pipeline working as designed and an eval question unanswered.
+  On Opus the extractor passed `[[bob]]` through in brackets, and a bracketed name only
+  ever matches exactly. On Sonnet it offered "Bruna" and "Gisela" as written, each of
+  which is several cards.
 - **Agreement with the reference** was judged by Claude reading each answer against the
-  gold set's reference answer under a strict rubric, not by a human judge. The run files
-  are there to check it against.
-- **Expected rule ids cited** tracks how closely the citations match the gold set's list.
-  An answer can be right while citing a different, equally valid rule, so this is a
-  regression signal between runs, not an accuracy score.
+  gold set's reference answer under a strict rubric. The references were written and
+  checked by models, then audited against Oracle text, rulings and CR text (which found
+  three to correct). No human judge has reviewed either side, so read this column as "no
+  contradiction found", not as a measured accuracy.
+- **Expected rule ids cited** tracks how closely the citations match the gold set's
+  lists, which include background rules a good answer may leave out. It is a floor on
+  citation overlap and a regression signal between runs, not an accuracy score.
 - Twenty-one questions chosen to be hard is a small, adversarial sample. It says the
   pipeline holds up on layers, multi-faced cards, old wordings and Commander. It does not
   say how often an answer in your server will be right.
-
 - **The Sonnet dollars err high.** That run's configuration
   (`eval/published/v1-sonnet-5.judge.toml`) prices input and output at list and leaves
   cache reads at the input price, which is how an unlisted price defaults. The counts of
   questions answered do not depend on it.
 
 The prompts are tuned on the default, and the second column is what that costs a smaller
-model: Sonnet 5 runs at 40% of the token price, fails validation on most hard questions
-and pays for the retries anyway. There is no cheaper configuration to recommend on this
-evidence. The documentation site's Model choice page covers what does save money.
+model: Sonnet 5 runs at 40% of the token price, fails validation or the tool round on most
+hard questions and pays for the retries anyway. There is no cheaper configuration to
+recommend on this evidence. The documentation site's Model choice page covers what does
+save money.
 
 ## Design
 

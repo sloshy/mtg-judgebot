@@ -58,7 +58,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D20),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D21),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -378,10 +378,14 @@ Key cross-file facts that aren't obvious from any one file:
   PriorCall}` each carry a verbatim `quote` checked as a substring of the source in
   `Context`.
   - `Quote` cannot be blank. A blank one fails to parse, so a placeholder citation is a
-    `MalformedCitation` with the stub notice, not a bad citation. Its schema is plain
-    `String`. `validate` treats a quote that parsed but quotes nothing the same way
-    (`verdict::placeholder`: a stock word such as "placeholder", or under
-    `verdict::MIN_QUOTE_CHARS`), judged on the quote alone.
+    stub, not a bad citation (dropped, or a `MalformedCitation` with the stub notice when
+    nothing else is cited: next bullet but one). Its schema is plain
+    `String`. A quote that parsed but quotes nothing is a stub too (`verdict::stub_reason`:
+    blank, a stock word such as "placeholder", or under `verdict::MIN_QUOTE_CHARS`), judged
+    on the quote alone.
+  - Stubs are **dropped, not rejected** (D21): `validate` sets them aside, parsed or not,
+    and validates the rest as before. An answer with nothing but stubs is a
+    `MalformedCitation`. An unreadable entry with a real quote still rejects.
   - A ruling citation with no such ruling whose quote is the *card's own Oracle text* is
     the commonest wrong citation (a card with no rulings in the material). It is still a
     `BadCitation`, never repaired, but `judge_core::misfiled_oracle_text` lets the retry

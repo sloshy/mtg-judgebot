@@ -88,7 +88,8 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
 - **An evaluation harness** (`judge-eval`): a retrieval gate that needs no API key and a
   21-question gold set for live runs. Two graded runs are published under
   `eval/published/` with the results in the README: on the default configuration 17 of 18
-  in-scope questions answered, 16 agreeing with the reference and none contradicting it.
+  in-scope questions answered, all 17 agreeing with the reference, and the eighteenth
+  asked which card was meant.
 - **The documentation site**, organised around running your own judgebot, from the
   canonical files in `docs/`.
 

@@ -1,17 +1,20 @@
 # Spell check (`typos`), run in CI over the tracked tree.
 
 [files]
-extend-exclude = [".sqlx/", "Cargo.lock", "**/package-lock.json"]
+# eval/published/ is recorded model output: its citation quotes are cut
+# mid-word at a length limit, and none of it is ours to correct.
+extend-exclude = [".sqlx/", "Cargo.lock", "**/package-lock.json", "eval/published/"]
 
 [default]
 # Text misspelled on purpose, matched as the exact strings it appears in so the
 # same letters are still caught anywhere else: test inputs for the fuzzy card
 # matcher, the config loader's unknown-key error and the MCP token compare,
-# Spanish test text, and a Unicode class name.
+# a citation's misspelt `quote` key, Spanish test text, and a Unicode class name.
 extend-ignore-re = [
   '"Blak Lotus"', # crates/core/src/error.rs
   '"lood"',       # crates/core/src/judge.rs
   'api_key_evn',  # crates/bot/src/config.rs
+  '"qoute"',      # crates/core/src/verdict.rs
   'b"abd"',       # crates/api/src/mcp.rs
   '¿Qué hace',    # crates/bot/src/discord/question.rs
   '`Nd` digit',   # crates/core/src/domain.rs

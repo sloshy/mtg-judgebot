@@ -95,16 +95,15 @@ in `eval/published/`):
 
 | | Answered (of 18 in scope) | Agree with the reference | Per question answered |
 | --- | --- | --- | --- |
-| `claude-opus-5` on both stages | 17 | 16 | $0.14 |
-| `claude-sonnet-5` on both stages | 7 | 5 | $0.29, erring high |
+| `claude-opus-5` on both stages | 17 | 17 | $0.14 |
+| `claude-sonnet-5` on both stages | 6 | 5 | $0.30, erring high |
 
 Sonnet 5 is 40% of the price per token and came out no cheaper per answer (its dollars
 here err high, because that run metered cache reads at the input price). The prompts are
-tuned on Opus. On the hard questions Sonnet mostly returned answers with no citations or
-with placeholder citations, validation rejected them, and a rejected attempt is paid for
-twice, once for the attempt and once for the retry. Nothing it did answer contradicted the
-reference, though one answer was cut short and one accepted a false premise Opus
-corrected. So this is not a verdict on the model. It says that moving the synthesis stage means re-tuning
+tuned on Opus. On the hard questions Sonnet mostly returned answers with no citations, or
+broke the tool round (asking for a second `lookup_rules` call, which the pipeline allows
+once by design), and a rejected attempt is paid for twice, once for the attempt and once
+for the retry. Nothing it did answer contradicted the reference. So this is not a verdict on the model. It says that moving the synthesis stage means re-tuning
 `crates/bot/src/prompts/synth_system.md` against the gold set for the model you move to,
 and running `judge-eval answer --config <your file>` before you trust it.
 

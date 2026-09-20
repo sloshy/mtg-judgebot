@@ -118,10 +118,13 @@ Discord message (+ last N Q&A in the same thread)
       (a) reference exists in Context, (b) span is a substring of that chunk,
       comparing curly/ASCII punctuation as equal (judge_core::quote) and
       storing the chunk's own text for the span, so a stored quote is exact.
+    Before that, citations that quote nothing (blank, a stock word, under 4
+    chars) are dropped (D21); an answer with nothing else is a MalformedCitation.
     Also (c) every verdict must cite something and the answer must be
-    ≥ 40 chars, else JudgeError.EmptyVerdict.
-    Failure ⇒ BadCitation / EmptyVerdict → retry once (the notice says which),
-    then reply with error.
+    ≥ 40 chars, else JudgeError.EmptyVerdict, and (d) every rule number in the
+    answer text must be covered by a rule citation, else UncitedRules (D20).
+    Failure ⇒ BadCitation / MalformedCitation / EmptyVerdict / UncitedRules →
+    retry once (the notice says which), then reply with error.
     Always quotes CURRENT Oracle text (errata note if the printed text differs).
   │
   ▼
@@ -317,10 +320,12 @@ Citation      Rule(id, quote) | ScryfallRuling(card, rulingKey, quote)
 Context       { cards, rules, rulings, glossary, prior, notes, history }
 Verdict<S>    { answer, confidence, citations, category, source, crVersion, cards }
               S = Unvalidated | Validated; only Verdict<Validated> can be stored or shown
-Rejection     BadCitation(citation) | Malformed(what) | Empty(why) | Oversized { chars }
+Rejection     BadCitation(citation) | Malformed(what) | Empty(why) | Uncited(rule ids)
+              | Oversized { chars }
 RejectedAttempt  { answer, rejection }   — quoted back to the retry as a blockquote
 JudgeError    AmbiguousCards(...) | CardsNotFound(...) | OutOfScope(source)
-              | BadCitation | MalformedCitation | EmptyVerdict | LlmRefused | Upstream(err)
+              | BadCitation | MalformedCitation | EmptyVerdict | UncitedRules
+              | LlmRefused | Upstream(err)
 
 Ports:  Extractor, Resolver, Retriever, Synthesizer, Embedder, CallStore
 judge : Question -> IO[Either[JudgeError, Verdict]]

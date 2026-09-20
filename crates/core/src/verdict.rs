@@ -153,6 +153,9 @@ impl CitationList for Vec<Citation> {
 pub struct Citations {
     ok: Vec<Citation>,
     malformed: Vec<MalformedCitation>,
+    /// Unreadable elements that quote nothing (see [`stub_reason`]). They are
+    /// set aside rather than rejected: [`Verdict::validate`] drops them (D21).
+    stubs: Vec<MalformedCitation>,
 }
 
 impl Citations {
@@ -165,12 +168,14 @@ impl Citations {
     /// `as_slice().to_vec()` — but omission is the failure mode that actually
     /// happens, and omission is now a type error.
     ///
+    /// Returns the readable citations and the stubs that were set aside.
+    ///
     /// # Errors
-    /// The first unreadable element, if any.
-    fn into_clean(self) -> Result<Vec<Citation>, MalformedCitation> {
+    /// The first unreadable element that is not a stub, if any.
+    fn into_clean(self) -> Result<(Vec<Citation>, Vec<MalformedCitation>), MalformedCitation> {
         match self.malformed.into_iter().next() {
             Some(m) => Err(m),
-            None => Ok(self.ok),
+            None => Ok((self.ok, self.stubs)),
         }
     }
 }
@@ -183,9 +188,24 @@ impl<'de> Deserialize<'de> for Citations {
             // without cloning it; `v` stays intact for the error message.
             match Citation::deserialize(&v) {
                 Ok(c) => out.ok.push(c),
-                Err(e) => out
-                    .malformed
-                    .push(MalformedCitation::new(&v.to_string(), &e.to_string())),
+                Err(e) => {
+                    let m = MalformedCitation::new(&v.to_string(), &e.to_string());
+                    // An element whose quote is there and quotes nothing is
+                    // a stub whatever else is wrong with it. Anything else
+                    // that cannot be read may be a citation the model meant:
+                    // a real quote, or one under a misspelt or mistyped
+                    // `quote` key, which an unconstrained backend or an
+                    // outside agent can produce.
+                    let quotes_nothing = v
+                        .get("quote")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|q| stub_reason(q).is_some());
+                    if quotes_nothing {
+                        out.stubs.push(m);
+                    } else {
+                        out.malformed.push(m);
+                    }
+                }
             }
         }
         Ok(out)
@@ -278,6 +298,7 @@ impl Verdict<Unvalidated> {
         let citations = Citations {
             ok: citations,
             malformed: vec![],
+            stubs: vec![],
         };
         Self {
             data: VerdictData {
@@ -322,16 +343,26 @@ impl Verdict<Unvalidated> {
         // Check (0). Not a courtesy ordering: `Validated`'s citation list is a
         // `Vec<Citation>`, and this is the only way to get one, so the check
         // cannot be skipped or reordered away without failing to compile.
-        let citations = self
+        let (citations, mut stubs) = self
             .data
             .citations
             .into_clean()
             .map_err(JudgeError::MalformedCitation)?;
-        // Check (0b): a citation that parsed but quotes nothing. It is the
-        // same habit as the unreadable stub, so it gets the same rejection and
-        // with it the notice that says to leave the point uncited.
-        if let Some(stub) = citations.iter().find_map(placeholder) {
-            return Err(JudgeError::MalformedCitation(stub));
+        // Check (0b), D21: a citation that quotes nothing asserts nothing, so
+        // it is dropped rather than held against the answer. Everything that
+        // is left is checked as strictly as ever, at least one real citation
+        // is still required, and check (c) catches prose that leaned on a
+        // dropped rule by number. Only an answer with nothing *but* stubs is
+        // rejected for them, so the retry is told what it did.
+        let (placeholders, citations): (Vec<_>, Vec<_>) = citations
+            .into_iter()
+            .partition(|c| placeholder(c).is_some());
+        stubs.extend(placeholders.iter().filter_map(placeholder));
+        if let Some(first) = stubs.first() {
+            if citations.is_empty() {
+                return Err(JudgeError::MalformedCitation(first.clone()));
+            }
+            tracing::info!(dropped = stubs.len(), first = %first, "stub citations dropped");
         }
         if let Some(e) = emptiness(&self.data.answer, &citations) {
             return Err(JudgeError::EmptyVerdict(e));
@@ -437,18 +468,24 @@ pub const MIN_QUOTE_CHARS: usize = 4;
 /// quote alone. A real quote under a wrong id is a bad citation, which has a
 /// more useful notice (see [`misfiled_oracle_text`]).
 fn placeholder(c: &Citation) -> Option<MalformedCitation> {
-    let quote = c.quote().trim();
+    stub_reason(c.quote()).map(|why| MalformedCitation::new(&c.to_string(), why))
+}
+
+/// Why `quote` quotes nothing, if it does: blank, a stock word, or too short.
+fn stub_reason(quote: &str) -> Option<&'static str> {
+    let quote = quote.trim();
     let bare = quote
         .trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '/')
         .to_lowercase();
-    let why = if STUB_QUOTES.contains(&bare.as_str()) {
-        "the quote is a placeholder, not text from a source"
+    if quote.is_empty() {
+        Some("the quote is empty")
+    } else if STUB_QUOTES.contains(&bare.as_str()) {
+        Some("the quote is a placeholder, not text from a source")
     } else if quote.chars().count() < MIN_QUOTE_CHARS {
-        "the quote is too short to be text from a source"
+        Some("the quote is too short to be text from a source")
     } else {
-        return None;
-    };
-    Some(MalformedCitation::new(&c.to_string(), why))
+        None
+    }
 }
 
 /// The face of its own card whose Oracle text a *ruling* citation actually
@@ -999,7 +1036,8 @@ mod tests {
     /// them `{"id":"","kind":"rule","quote":""}`. As a `Vec<Citation>` the
     /// empty `RuleId` failed the whole payload at the serde boundary, which
     /// `judge()` surfaces as an un-retryable `Upstream`. Per element the good
-    /// four survive and the stub becomes a retryable rejection.
+    /// four survive. Since D21 the stubs, which quote nothing, are dropped and
+    /// the answer stands on the citations that are real.
     #[test]
     fn one_unreadable_citation_does_not_cost_the_verdict() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1015,14 +1053,48 @@ mod tests {
         assert!(
             matches!(v.citations().first(), Some(Citation::Rule { id, .. }) if id.as_ref() == "702.15b")
         );
-        // The first unreadable one is reported as itself, not as a parse
-        // failure of the whole verdict, and not as the `NoCitations` it would look like.
-        let err = v.validate(&ctx()?, CR).err();
+        // The stubs are dropped, not held against the answer.
+        let validated = v.validate(&ctx()?, CR)?;
+        assert_eq!(validated.citations().len(), 1);
+        // With nothing but stubs there is no answer to stand, and the first
+        // one is reported as itself, not as the `NoCitations` it would look like.
+        let only_stubs = json.replace("gain that much life", "x");
+        let err = serde_json::from_str::<Verdict<Unvalidated>>(&only_stubs)?
+            .validate(&ctx()?, CR)
+            .err();
         assert!(
             matches!(err, Some(JudgeError::MalformedCitation(ref m))
                 if m.error.contains("quote is empty") && m.raw.contains(r#""kind":"scryfall_ruling""#)),
             "{err:?}"
         );
+        // An unreadable element that does quote something is a citation the
+        // model meant, and is still rejected.
+        let meant = json.replace(
+            r#"{"id":"","kind":"rule","quote":""}"#,
+            r#"{"id":"","kind":"rule","quote":"gain that much life"}"#,
+        );
+        let err = serde_json::from_str::<Verdict<Unvalidated>>(&meant)?
+            .validate(&ctx()?, CR)
+            .err();
+        assert!(
+            matches!(err, Some(JudgeError::MalformedCitation(ref m)) if m.raw.contains(r#""kind":"rule""#)),
+            "{err:?}"
+        );
+        // So is one whose quote is under a misspelt key or is not a string:
+        // only a quote that is present and quotes nothing makes a stub.
+        for hidden in [
+            r#"{"id":"702.15b","kind":"rule","qoute":"gain that much life"}"#,
+            r#"{"id":"702.15b","kind":"rule","quote":["gain that much life"]}"#,
+        ] {
+            let meant = json.replace(r#"{"id":"","kind":"rule","quote":""}"#, hidden);
+            let err = serde_json::from_str::<Verdict<Unvalidated>>(&meant)?
+                .validate(&ctx()?, CR)
+                .err();
+            assert!(
+                matches!(err, Some(JudgeError::MalformedCitation(_))),
+                "{hidden}: {err:?}"
+            );
+        }
         Ok(())
     }
 
@@ -1030,8 +1102,9 @@ mod tests {
     /// `oracle 00000000-0000-0000-0000-000000000000#0: ""` — no card in the
     /// material, nothing quoted. That parsed, reached validation as a bad
     /// citation, and the retry notice could only say the card face was not in
-    /// the material. A blank quote is now unreadable, so the notice is the one
-    /// that names placeholder citations.
+    /// the material. A blank quote is unreadable, so it is a stub: dropped
+    /// beside a real citation (D21), and when it is all there is, rejected
+    /// with the notice that names placeholder citations.
     #[test]
     fn a_blank_quote_is_unreadable() -> Result<(), Box<dyn std::error::Error>> {
         let body = |quote: &str| {
@@ -1045,7 +1118,11 @@ mod tests {
         for blank in [r#""""#, r#""   ""#, r#""\n\t""#] {
             let v: Verdict<Unvalidated> = serde_json::from_str(&body(blank))?;
             assert_eq!(v.citations().len(), 1, "{blank}");
-            let err = v.validate(&ctx()?, CR).err();
+            assert_eq!(v.validate(&ctx()?, CR)?.citations().len(), 1, "{blank}");
+            let alone = body(blank).replace("gain that much life", "  ");
+            let err = serde_json::from_str::<Verdict<Unvalidated>>(&alone)?
+                .validate(&ctx()?, CR)
+                .err();
             assert!(
                 matches!(err, Some(JudgeError::MalformedCitation(ref m)) if m.error.contains("quote is empty")),
                 "{blank}: {err:?}"
@@ -1060,10 +1137,10 @@ mod tests {
     /// The 2026-09-20 gold runs: a ruling quoted as `"placeholder"` and one
     /// quoted as `"x"`. Both parsed, both were reported as bad citations, and
     /// the notice for those says the quote is not verbatim, which is no help
-    /// to a model that had nothing to quote. They are stubs and are told so.
+    /// to a model that had nothing to quote. They are stubs: dropped beside a
+    /// real citation (D21), and named as stubs when they are all there is.
     #[test]
-    fn a_placeholder_quote_is_rejected_as_a_stub_not_as_a_bad_quote()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn a_placeholder_quote_is_a_stub_not_a_bad_quote() -> Result<(), Box<dyn std::error::Error>> {
         let ruling = |quote: &str| -> Result<Citation, Box<dyn std::error::Error>> {
             Ok(Citation::ScryfallRuling {
                 card: CardId::new(Uuid::from_u128(7)),
@@ -1079,9 +1156,9 @@ mod tests {
             "N/A",
             " todo ",
         ] {
-            let err = verdict(vec![good_citation()?, ruling(stub)?])
-                .validate(&ctx()?, CR)
-                .err();
+            let kept = verdict(vec![good_citation()?, ruling(stub)?]).validate(&ctx()?, CR)?;
+            assert_eq!(kept.citations(), [good_citation()?], "{stub}");
+            let err = verdict(vec![ruling(stub)?]).validate(&ctx()?, CR).err();
             assert!(
                 matches!(err, Some(JudgeError::MalformedCitation(ref m))
                     if m.error.contains("quote") && m.raw.contains("ruling")),
@@ -1158,6 +1235,33 @@ mod tests {
             ))?
             .is_empty()
         );
+        Ok(())
+    }
+
+    /// Dropping a stub cannot launder a reference: if the prose leans on the
+    /// dropped rule by number, the prose check rejects it.
+    #[test]
+    fn a_dropped_stub_does_not_cover_the_rule_it_named() -> Result<(), Box<dyn std::error::Error>> {
+        let stub = Citation::Rule {
+            id: RuleId::try_new("605.3b".to_owned())?,
+            quote: Quote::try_new("x")?,
+        };
+        let text =
+            "Lifelink means its controller gains that much life, and per `605.3b` it is instant.";
+        let err = answering(text, vec![good_citation()?, stub.clone()])
+            .validate(&ctx()?, CR)
+            .err();
+        assert!(
+            matches!(err, Some(JudgeError::UncitedRules(ref u)) if u.ids().first().as_ref() == "605.3b"),
+            "{err:?}"
+        );
+        // Without the reference in the prose, the stub is simply gone.
+        let ok = answering(
+            "Lifelink means its controller gains that much life, every single time it deals damage.",
+            vec![good_citation()?, stub],
+        )
+        .validate(&ctx()?, CR)?;
+        assert_eq!(ok.citations(), [good_citation()?]);
         Ok(())
     }
 
