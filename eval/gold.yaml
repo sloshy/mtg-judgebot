@@ -3,7 +3,7 @@ _meta:
   count: 21
   generated: '2026-08-29'
   note: |-
-    Authored and adversarially verified by judge-persona agents against the current Comprehensive Rules and Oracle text. Rule IDs must be re-verified on each CR release.
+    Authored and adversarially verified by judge-persona agents against the current Comprehensive Rules and Oracle text, and audited against Oracle text, rulings and CR text on 2026-09-20. No human judge has reviewed it. Rule IDs must be re-verified on each CR release. expected_rule_ids include background rules a correct answer may leave out, so recall over them is a floor on citation overlap, not an accuracy score.
 questions:
 - id: layers-ballista-scales-season-replacement
   question: |-
@@ -127,11 +127,11 @@ questions:
   - '613.7'
   - 613.8a
   expected_answer: |-
-    Walk the layers. Opalescence reads 'each OTHER non-Aura enchantment', so it never affects itself: Opalescence stays a noncreature enchantment and keeps its ability in every scenario. Layer 4 (613.1d): Opalescence makes Humility a 'creature' enchantment. Layer 6 (613.1f): Humility removes all abilities from every creature, including itself; per 613.6 an effect that has started applying keeps applying in later layers even though its source ability is gone. Layer 7b (613.4b): Humility's 'base P/T 1/1' and Opalescence's 'base P/T equal to mana value' both set Humility's P/T. Neither depends on the other under 613.8a (applying one doesn't change the text, existence, or targets of the other), so timestamp order decides (613.7). If Opalescence has the later timestamp: Humility is a 4/4 creature with no abilities. If Humility has the later timestamp: Humility is a 1/1 creature with no abilities. Either way every other creature is a 1/1 with no abilities, and Opalescence is an unaffected noncreature enchantment.
+    Walk the layers. Opalescence reads 'each OTHER non-Aura enchantment', so it never affects itself: Opalescence stays a noncreature enchantment and keeps its ability in every scenario. Layer 4 (613.1d): Opalescence makes Humility a 'creature' enchantment. Layer 6 (613.1f): Humility removes all abilities from every creature, including itself; per 613.6 an effect that has started applying keeps applying in later layers even though its source ability is gone. Layer 7b (613.4b): Humility's 'base P/T 1/1' and Opalescence's 'base P/T equal to mana value' both set Humility's P/T. Neither depends on the other under 613.8a (applying one doesn't change the text, existence, or targets of the other), so timestamp order decides (613.7). If Opalescence has the later timestamp: Humility is a 4/4 creature with no abilities. If Humility has the later timestamp: Humility is a 1/1 creature with no abilities. Either way every ordinary creature is a 1/1 with no abilities, and Opalescence is an unaffected noncreature enchantment. Any other non-Aura enchantment Opalescence animates follows Humility itself: its base power and toughness are its mana value when Opalescence is later, and 1/1 when Humility is.
   rationale: |-
     Canonical nightmare interaction. Exercises layer ordering, 613.6 persistence after ability removal, the timestamp-vs-dependency distinction within sublayer 7b, and the current 'each other' Oracle wording of Opalescence.
   verifier_note: |-
-    Current Oracle text of Opalescence is 'Each OTHER non-Aura enchantment is a creature...'; it never makes itself a creature. The expected answer wrongly says Opalescence animates itself, that Humility strips Opalescence's abilities, and that Opalescence is 4/4 or 1/1. Opalescence is a noncreature enchantment with its ability intact in both orders. Rule IDs all verified and correct.
+    Current Oracle text of Opalescence is 'Each OTHER non-Aura enchantment is a creature...'; it never makes itself a creature, which an earlier version of the expected answer got wrong. Opalescence is a noncreature enchantment with its ability intact in both orders. Corrected again 2026-09-20: "every other creature is a 1/1" was true of ordinary creatures only. Rule IDs all verified and correct.
 - id: faces-001
   question: |-
     quick one: if I have [[Valki, God of Lies]] in hand can I just cast the Tibalt side for 7? and while it's in my library/graveyard does it count as a planeswalker card for stuff like Vraska's Contempt / Kaya's Ghostform?
@@ -209,8 +209,10 @@ questions:
     (700.4). Exile is not dying. If Brisela instead died (say, to a Wrath of God), Blood Artist
     would trigger exactly once: one permanent left the battlefield, even though the melded
     permanent is a single object represented by two cards (712.21, 701.42a). A trigger reading
-    "whenever a card is put into a graveyard" would see two cards (712.21e). Either way, Path's
-    controller gets the search-for-a-Plains effect once, and Bruna and Gisela both go to exile.
+    "whenever a card is put into a graveyard" would see two cards (712.21e). Either way, the
+    search happens once and Bruna and Gisela both go to exile. It is Brisela's controller who
+    searches, not the player who cast Path to Exile ("Its controller may search their library
+    for a basic land card"), and any basic land will do, not only a Plains.
   rationale: |-
     Tests the one-object/two-cards rule for melded permanents leaving the battlefield, and distinguishes object-counting triggers from card-counting triggers.
   verifier_note: expected_answer corrected 2026-08-31 after adversarial review; the earlier
@@ -335,7 +337,7 @@ questions:
   - 510.1c
   - '510.2'
   expected_answer: |-
-    You only need to assign 1 damage to the 4/4 and can trample 4 over to the player. Trample requires lethal damage to be assigned to all blockers before excess goes to the player (702.19b), but any nonzero damage from a deathtouch source counts as lethal for that purpose (702.2c). Damage assignment for a blocked creature follows 510.1c, then all combat damage is dealt simultaneously with no chance to respond in between (510.2). The 4/4 is then destroyed by deathtouch as an SBA.
+    The premise is off: Questing Beast is a 4/4 with vigilance, deathtouch and haste, and it does not have trample, so blocked by one creature it assigns all its combat damage to that blocker and nothing goes to the player (510.1c). A good answer says so. For the creature the asker describes, a 5/5 with trample and deathtouch, you only need to assign 1 damage to the 4/4 and can trample 4 over to the player. Trample requires lethal damage to be assigned to all blockers before excess goes to the player (702.19b), but any nonzero damage from a deathtouch source counts as lethal for that purpose (702.2c). Damage assignment for a blocked creature follows 510.1c, then all combat damage is dealt simultaneously with no chance to respond in between (510.2). The 4/4 is then destroyed by deathtouch as an SBA.
   rationale: |-
     Classic trample + deathtouch interaction; a correct answer must cite 702.2c specifically, not just 702.19b. Damage is dealt simultaneously per 510.2.
 - id: stack-05
@@ -407,7 +409,7 @@ questions:
   expected_answer: |-
     1) No. Each player's mana pool empties at the end of each step and phase, so mana added during your upkeep is lost before your main phase (106.4). Tap the lands in your main phase instead. 2) Yes. Casting a spell includes a step where, if the total cost includes mana, you get a chance to activate mana abilities such as tapping lands (601.2g), and only then do you pay the total cost (601.2h). You do not need to float mana before announcing the spell.
   rationale: |-
-    Covers mana pool emptying (106.4) and the mana-ability window inside the casting process (601.2g/601.2h), with two nicknames that need resolution. All three rule texts verified verbatim on the mirror (CR effective August 7, 2026).
+    Covers mana pool emptying (106.4) and the mana-ability window inside the casting process (601.2g/601.2h), with two nicknames that need resolution. All three rule texts verified verbatim on the mirror (CR effective 2026-08-19).
 - id: edge-nick-bob-mv
   question: |-
     my opp has [[bob]] and flipped a tim off the top, then next turn he flipped a goyf. how much life does he lose each time? goyf is like a 5/6 rn so is it 5?
