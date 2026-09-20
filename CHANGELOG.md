@@ -46,7 +46,10 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
   model's work step by step, under the same citation validation and limits as the
   built-in pipeline, alongside card, rule, ruling and glossary lookups.
 - **A spend cap on every model call** (`JUDGE_MAX_USD`), which reserves the worst-case
-  cost before a request is sent.
+  cost before a request is sent. `JUDGE_BUDGET_PERIOD=day|month` makes it one budget for
+  the period, shared by `bot` and `api` and kept across restarts.
+  `JUDGE_ALERT_WEBHOOK` is told when the cap trips and when the nightly refresh or the
+  backup fails. `judge-cli stats` shows questions, spend and ratings per day.
 - **Providers as configuration.** With only `.env`, the judge runs on Anthropic's API
   with Voyage embeddings if keyed. A `judge.toml` chooses a provider and model per
   stage: Anthropic direct, through a proxy, Claude Platform on AWS, Bedrock or Vertex,

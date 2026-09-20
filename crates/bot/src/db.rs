@@ -19,6 +19,7 @@ mod retrieve;
 mod rules;
 mod sessions;
 pub mod space;
+pub mod stats;
 #[cfg(test)]
 pub(crate) mod tests;
 

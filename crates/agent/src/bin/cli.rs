@@ -34,7 +34,7 @@ use judge_agent::{
     Toolbox,
     ops::{
         BeginInput, CardInput, ExtractionInput, IdsInput, JudgeInput, LookupInput, NameInput, Pin,
-        SearchInput, SessionInput, TermInput, VerdictInput,
+        SearchInput, SessionInput, StatsInput, TermInput, VerdictInput,
     },
 };
 use judge_bot::{
@@ -48,7 +48,7 @@ const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span
 | begin <question> [--thread T] | prompt <session> | status <session> \
 | extract <session> <file|-> | rules <session> <id>... | verdict <session> <file|-> [--persist] \
 | persist <session> | card <name> | card-info <uuid> | get-rules <id>... | search <query> [--limit N] \
-| glossary <term> | config | about>";
+| glossary <term> | stats [--days N] | config | about>";
 
 #[derive(Debug)]
 enum Command {
@@ -81,6 +81,8 @@ enum Command {
     GetRules(IdsInput),
     Search(SearchInput),
     Glossary(TermInput),
+    /// Usage, spend and the worst-rated calls.
+    Stats(StatsInput),
     /// The resolved `judge.toml` (or environment) setup; needs no database.
     Config,
     /// The source offer; needs no database.
@@ -93,6 +95,7 @@ enum Command {
 const FLAGS: &[(&str, bool)] = &[
     ("--thread", true),
     ("--limit", true),
+    ("--days", true),
     ("--pin", true),
     ("--persist", false),
 ];
@@ -103,6 +106,7 @@ struct Args {
     positional: Vec<String>,
     thread: Option<String>,
     limit: Option<String>,
+    days: Option<String>,
     pins: Vec<String>,
     persist: bool,
 }
@@ -136,6 +140,7 @@ fn split_args(tokens: Vec<String>) -> Result<Args> {
         match (*name, value) {
             ("--thread", Some(v)) => out.thread = Some(v),
             ("--limit", Some(v)) => out.limit = Some(v),
+            ("--days", Some(v)) => out.days = Some(v),
             ("--pin", Some(v)) => out.pins.push(v),
             ("--persist", None) => out.persist = true,
             _ => anyhow::bail!("{USAGE}"),
@@ -313,6 +318,16 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
                 term: positional(0)?.clone(),
             })
         }
+        "stats" => {
+            no_extra(0)?;
+            Command::Stats(StatsInput {
+                days: a
+                    .days
+                    .as_deref()
+                    .map(|d| d.parse::<u32>().context("--days must be an integer"))
+                    .transpose()?,
+            })
+        }
         "about" => {
             no_extra(0)?;
             Command::About
@@ -411,6 +426,7 @@ async fn run(cmd: Command) -> Result<()> {
         Command::GetRules(i) => print(&toolbox.get_rules(i).await?),
         Command::Search(i) => print(&toolbox.search_rules(i).await?),
         Command::Glossary(i) => print(&toolbox.glossary(i).await?),
+        Command::Stats(i) => print(&toolbox.stats(i).await?),
         Command::Config | Command::About => anyhow::bail!("unreachable: handled above"),
     }
 }
@@ -518,6 +534,15 @@ mod tests {
     fn config_takes_nothing() -> Result<()> {
         assert!(matches!(parse(&["config"])?, Command::Config));
         assert!(matches!(parse(&["about"])?, Command::About));
+        assert!(matches!(
+            parse(&["stats", "--days", "7"])?,
+            Command::Stats(StatsInput { days: Some(7) })
+        ));
+        assert!(matches!(
+            parse(&["stats"])?,
+            Command::Stats(StatsInput { days: None })
+        ));
+        assert!(parse(&["stats", "--days", "week"]).is_err());
         assert!(parse(&["about", "extra"]).is_err());
         assert!(parse(&["config", "extra"]).is_err());
         assert!(parse(&["config", "--thread", "agent:x"]).is_err());

@@ -134,6 +134,10 @@ one seam (`docs/PROVIDERS.md`).
 - `crates/llm` holds the provider-neutral request and response, the spend cap and the
   one-tool-round typestate. `ChatRequest` has system blocks, turns, tools, an output
   schema and an effort. `ChatResponse` has text, tool calls, a stop reason and usage.
+  - The cap is a process total plus one *adjustment*. `judge_bot::budget` sets it from
+    the `spend_days` ledger when `JUDGE_BUDGET_PERIOD` is `day` or `month`, which makes
+    the cap a shared budget that survives restarts (D19). It also tells
+    `JUDGE_ALERT_WEBHOOK` when the cap trips. `judge-cli stats` reads the same ledger.
 - `crates/anthropic` and `crates/openai` are backends of it. Each owns its wire types and
   its schema-subset transform.
 - The model's own previous turn is replayed as an opaque blob that only the backend that

@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FILTER (WHERE score = 1) AS \"incorrect!\",\n               count(*) FILTER (WHERE score = 2) AS \"partial!\",\n               count(*) FILTER (WHERE score = 3) AS \"correct!\"\n        FROM ratings\n        WHERE (ts AT TIME ZONE 'utc')::date >= (now() AT TIME ZONE 'utc')::date - $1::int\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "incorrect!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "partial!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "correct!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "a9606f795aecb8ad62e40c0379313aee92b1c7ec19959a538b49bec4ec56bb9b"
+}

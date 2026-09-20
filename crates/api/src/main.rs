@@ -110,6 +110,15 @@ async fn main() -> Result<()> {
     }
     let store: Arc<dyn CallStore> = Arc::new(store);
     let deps = build_deps_with(pool.clone(), &models, vectors.clone(), &judge.deps_config());
+    // The period's spend so far is loaded before the listener binds. MCP's
+    // `judge` bills to the same meter, so it is under the same budget.
+    judge_bot::budget::start(
+        pool.clone(),
+        models.meter().clone(),
+        judge.budget().clone(),
+        "api",
+    )
+    .await;
     // /api/health answers 503 when Postgres does not: the compose healthcheck
     // and the tunnel's readiness key off it.
     tracing::info!(source = %judge.source_offer(), "source offer");

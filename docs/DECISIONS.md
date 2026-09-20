@@ -190,7 +190,8 @@ be anything.
 
 Dollars stay per process rather than per user or per server. The meter settles after the
 call, so a finer-grained dollar cap would either over-reserve or overshoot. Question-count
-limits are the tool for finer grain, and the MCP transport and the web page have them.
+limits are the tool for finer grain, and the MCP transport, the web page and the Discord
+bot have them. D19 makes the cap a budget over time without changing any of this.
 
 ## D8. Native cloud auth for Anthropic
 
@@ -410,3 +411,39 @@ pulls the same tag. **Rejected:** emulating arm64 under QEMU (a Rust release bui
 hours there) and cross-compiling inside the Dockerfile (a second toolchain and linker to
 keep working for `aws-lc-sys` and `ring`, on a build that would then run twice on one
 runner).
+
+## D19. A budget period beside the cap, not inside it
+
+*Decided 2026-09-19.*
+
+`JUDGE_MAX_USD` capped one process for its lifetime. That is simple and safe, but it is
+not what an operator means by a budget: `bot` and `api` each had the whole cap, and a
+restart handed it out again. `JUDGE_BUDGET_PERIOD=day|month` makes the cap cover the
+current UTC day or month, across the processes and across restarts.
+
+The meter stays the enforcement point: in memory, atomic, reserving before it sends
+(D7). The period is one number added to what the cap sees, the meter's *adjustment*:
+other processes' spend this period in, this process's earlier periods out.
+`judge_bot::budget` computes it from a `spend_days` table that each process adds its own
+share to every ten seconds, and the period boundary is Postgres's clock, so two processes
+cannot disagree about which day it is. `judge-llm` still knows nothing of storage or time.
+
+The cost is a bounded overshoot: two processes can together pass the cap by what they
+spend between two syncs. A crash loses at most that much of the record. With no period
+set nothing is summed, but the ledger is still written, because `judge-cli stats` is
+where an operator sees what a day cost.
+
+**Rejected:**
+
+- *Reserving in the database*, one row lock per model call. It closes the overshoot and
+  puts a Postgres round trip and a contended row in front of every request, to protect
+  against a few cents.
+- *Persisting the meter on shutdown.* A crash loop, the case that spends the most, never
+  shuts down cleanly.
+- *A rolling window.* "The last 30 days" needs per-call rows and tells an operator
+  nothing a calendar month does not.
+
+The same task tells the operator when the cap trips (`JUDGE_ALERT_WEBHOOK`), once per
+period. A capped judgebot is otherwise silent until someone reads the log, and the people
+who notice first are the members being refused.
+

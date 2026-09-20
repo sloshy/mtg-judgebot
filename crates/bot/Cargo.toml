@@ -42,6 +42,7 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 nutype.workspace = true
+reqwest.workspace = true
 toml.workspace = true
 url.workspace = true
 sqlx = { version = "0.9", default-features = false, features = [

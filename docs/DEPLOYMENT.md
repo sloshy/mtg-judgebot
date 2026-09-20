@@ -15,7 +15,8 @@ This keeps two properties that a serverless split would lose:
 
 - The Discord gateway stays a long-lived connection, with no HTTP-interactions rewrite.
 - The spend cap, concurrency semaphore and rate limiter stay in-memory values in one
-  process rather than becoming distributed state.
+  process rather than becoming distributed state. A budget period adds one small table
+  beside the cap, not a service.
 
 See `docs/ARCHITECTURE.md` for the pipeline itself.
 
@@ -123,7 +124,14 @@ In `.env`, set:
 COMPOSE_PROFILES=tunnel     # `docker compose up -d` now includes cloudflared
 API_CLIENT_IP=cloudflare    # rate-limit on CF-Connecting-IP
 JUDGE_MAX_USD=...           # the backstop for anonymous traffic
+JUDGE_BUDGET_PERIOD=month   # one budget for bot and api, kept across restarts
+JUDGE_ALERT_WEBHOOK=...     # told when the cap trips, or a refresh or backup fails
 ```
+
+Without `JUDGE_BUDGET_PERIOD` the cap is per process and per lifetime: `bot` and `api`
+can each spend `JUDGE_MAX_USD`, and every restart (a redeploy, a crash loop) starts them
+again from zero. On a host that runs unattended, set a period. `judge-cli stats` shows
+what each day cost.
 
 If `COMPOSE_PROFILES` in `.env` doesn't take effect on an older Compose, pass
 `--profile tunnel` instead.
@@ -331,6 +339,10 @@ backstop, and the edge is the front line.
 Full Turnstile with server-side `siteverify` is stronger, but needs a token in the
 POST body and a verification call inside `judge_route` before any spending. It is
 worth it only if the edge rules prove insufficient.
+
+With a budget period set, a capped instance comes back by itself when the period turns.
+To resume sooner, raise `JUDGE_MAX_USD` and `docker compose up -d`. The period's spend is
+in the database, so the restart does not reset it.
 
 ## 6. Weekly backups to R2
 
@@ -688,6 +700,8 @@ own if the connector restarts.
 | `bot` or `api` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact that surface must show is unset or malformed in `.env`; set it and `docker compose up -d` |
 | Bot online, web page dead | expected if only `api` failed — the gateway is a separate outbound connection |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
+| Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and `docker compose up -d`, or wait for the period to turn |
+| A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`; both scripts post there on a non-zero exit |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |
 | Refresh exits `another refresh is running` with nothing running | a previous run was killed before removing `.refresh.lock` in the repo root; `rmdir` it |
 | Refresh loads the CR every night | `rules.cr_version` disagrees with the file name on Wizards' page — check the `current comprehensive rules release` log line for `published` vs `stored` |

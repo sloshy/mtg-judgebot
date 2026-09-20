@@ -51,6 +51,7 @@ at least five votes is excluded too.
 | Table | Contents |
 | --- | --- |
 | `agent_sessions` | In-flight agent sessions (stage, question, context, rejection). Expired rows are swept when the next session is created. |
+| `spend_days` | Estimated model spend and model calls of `bot` and `api` per UTC day. Each process adds its own share every ten seconds. `JUDGE_BUDGET_PERIOD=day\|month` sums the current period from it, and `judge-cli stats` reads it. No per-user or per-question data. |
 | `embedding_space` | One row naming the embedder whose vectors the database holds (provider kind, model, dimensions). `ingest embed` writes it on first use and refuses to mix. `ingest reembed --yes` is the only thing that changes it. |
 | `_sqlx_migrations` | The migration ledger. |
 

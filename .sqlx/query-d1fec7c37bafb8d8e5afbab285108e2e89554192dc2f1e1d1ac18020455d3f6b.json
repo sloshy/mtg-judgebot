@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO spend_days (day, micro_usd, calls)\n            VALUES ((now() AT TIME ZONE 'utc')::date, $1, $2)\n            ON CONFLICT (day) DO UPDATE\n               SET micro_usd = spend_days.micro_usd + EXCLUDED.micro_usd,\n                   calls = spend_days.calls + EXCLUDED.calls\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d1fec7c37bafb8d8e5afbab285108e2e89554192dc2f1e1d1ac18020455d3f6b"
+}

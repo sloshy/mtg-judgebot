@@ -66,7 +66,11 @@ use nutype::nutype;
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use crate::{DepsConfig, Models, db::Vectors};
+use crate::{
+    DepsConfig, Models,
+    budget::{self, AlertWebhook, Budget, Period},
+    db::Vectors,
+};
 
 /// The environment variable naming the config file.
 pub const CONFIG_ENV: &str = "JUDGE_CONFIG";
@@ -758,6 +762,16 @@ pub enum ConfigError {
     /// A surface was started without the contact it must name.
     #[error(transparent)]
     MissingContact(#[from] MissingContact),
+    /// A budget setting is set but is not one of its values.
+    #[error("{var}={value:?}: not {expected}")]
+    BadBudget {
+        /// The variable.
+        var: &'static str,
+        /// The value as set (never the webhook URL, which is a credential).
+        value: String,
+        /// What the variable holds when it is right.
+        expected: &'static str,
+    },
     /// A key that does not apply to the provider as configured.
     #[error("providers.{provider}: {key} {reason}")]
     Misplaced {
@@ -1159,6 +1173,37 @@ pub struct Config {
     /// *needs* is its surface's business ([`Config::discord_operator`],
     /// [`Config::network_operator`]).
     operator: Operator,
+    /// What the cap covers and where a tripped cap is reported
+    /// (`JUDGE_BUDGET_PERIOD`, `JUDGE_ALERT_WEBHOOK`).
+    budget: Budget,
+}
+
+/// The budget settings from `env`, blank meaning unset.
+///
+/// # Errors
+/// [`ConfigError::BadBudget`] for a period that is not `process`, `day` or
+/// `month`, or a webhook that is not an `https` URL. The webhook's value is
+/// not echoed: it is a credential.
+pub fn budget(env: impl Fn(&str) -> Option<String>) -> Result<Budget, ConfigError> {
+    let period = Period::parse(env(budget::PERIOD_ENV).as_deref()).map_err(|value| {
+        ConfigError::BadBudget {
+            var: budget::PERIOD_ENV,
+            value,
+            expected: "process, day or month",
+        }
+    })?;
+    let alert = env(budget::ALERT_WEBHOOK_ENV)
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .map(|v| {
+            AlertWebhook::parse(&v).map_err(|_| ConfigError::BadBudget {
+                var: budget::ALERT_WEBHOOK_ENV,
+                value: "<redacted>".to_owned(),
+                expected: "an https:// webhook URL",
+            })
+        })
+        .transpose()?;
+    Ok(Budget { period, alert })
 }
 
 /// The commit stamped into this binary by `build.rs`.
@@ -1300,6 +1345,7 @@ impl Config {
             meter,
             offer,
             operator,
+            budget: budget(&env)?,
         })
     }
 
@@ -1391,6 +1437,7 @@ impl Config {
             meter: SpendMeter::from_var(set(MAX_SPEND_ENV).as_deref())?,
             offer: source_offer(&env)?,
             operator: operator(&env)?,
+            budget: budget(&env)?,
         })
     }
 
@@ -1404,6 +1451,13 @@ impl Config {
     #[must_use]
     pub fn source_offer(&self) -> &SourceOffer {
         &self.offer
+    }
+
+    /// What the spend cap covers and where a tripped cap is reported. The
+    /// long-running services hand this to [`budget::start`].
+    #[must_use]
+    pub fn budget(&self) -> &Budget {
+        &self.budget
     }
 
     /// Who runs this instance, as far as they said. Either contact may be
@@ -1550,6 +1604,8 @@ impl Config {
 
     /// The one-line summary every binary logs at startup:
     /// `config=judge.toml extract=ollama/qwen3:8b synth=anthropic/claude-opus-5 embed=voyage/voyage-3.5 cap=$5.00`.
+    /// What the cap covers is not in it: only `bot` and `api` run a budget
+    /// period, and they log it themselves (`budget::start`).
     #[must_use]
     pub fn summary(&self) -> String {
         let stage = |s: Option<&Stage>| s.map_or_else(|| "none".to_owned(), Stage::label);
@@ -2349,6 +2405,30 @@ model = "qwen3:8b"
             _ => None,
         })?;
         assert!(filed.network_operator().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn the_budget_defaults_to_the_process_and_refuses_a_bad_value_without_echoing_the_webhook() -> R
+    {
+        let default = Config::from_vars(|_| None)?;
+        assert_eq!(default.budget(), &Budget::default());
+        let set = Config::from_vars(|k| match k {
+            budget::PERIOD_ENV => Some("month".to_owned()),
+            budget::ALERT_WEBHOOK_ENV => Some("https://discord.com/api/webhooks/1/tok".to_owned()),
+            _ => None,
+        })?;
+        assert_eq!(set.budget().period, Period::Month);
+        assert!(set.budget().alert.is_some());
+        let bad = Config::from_vars(|k| (k == budget::PERIOD_ENV).then(|| "weekly".to_owned()));
+        assert!(bad.is_err_and(|e| e.to_string().contains("JUDGE_BUDGET_PERIOD=\"weekly\"")));
+        let bad = Config::from_vars(|k| {
+            (k == budget::ALERT_WEBHOOK_ENV).then(|| "http://hooks.example/secret-token".to_owned())
+        });
+        assert!(bad.is_err_and(|e| {
+            let m = e.to_string();
+            m.contains("JUDGE_ALERT_WEBHOOK") && !m.contains("secret-token")
+        }));
         Ok(())
     }
 

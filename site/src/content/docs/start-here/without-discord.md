@@ -74,11 +74,17 @@ A typical answer costs $0.08 to $0.25 in model calls. Every call is metered agai
 `JUDGE_MAX_USD` (default $5 per process). The cap reserves the worst case before
 sending, so a process cannot overshoot it.
 
-The cap is a lifetime total for one process, not a budget per day or month. `bot` and `api` are
-separate processes with a cap each, so a compose deployment can spend twice
-`JUDGE_MAX_USD`. The total is held in memory: a restart starts again from zero. A call is
-refused once the headroom left is smaller than its worst case, so synthesis stops about
-$0.45 short of the cap, and from there the process answers nothing (Discord members are
-told the bot has hit its spending cap) until it is restarted, with a higher cap or the
-same one. A model priced `free` is never refused. Nothing notifies the operator. The log shows `judge failed` with `spend cap exceeded: spent $… of $… cap`.
+By default the cap is a lifetime total for one process, not a budget per day or month.
+`bot` and `api` are separate processes with a cap each, so a compose deployment can spend
+twice `JUDGE_MAX_USD`, and a restart starts again from zero. `JUDGE_BUDGET_PERIOD=day` or
+`month` makes it a budget instead: one cap for the current UTC day or month, shared by
+`bot` and `api` through the database, kept across restarts, and lifted by itself when the
+next period starts.
+
+A call is refused once the headroom left is smaller than its worst case, so synthesis
+stops about $0.45 short of the cap, and from there nothing is answered (Discord members
+are told the bot has hit its spending cap). A model priced `free` is never refused. The
+log shows `judge failed` with `spend cap exceeded: spent $… of $… cap`, then `spend cap
+reached`. Set `JUDGE_ALERT_WEBHOOK` to be told in a Discord or Slack channel, and run
+`judge-cli stats` for spend and questions per day.
 At that cost per answer, $5 is roughly 20 to 55 answers.

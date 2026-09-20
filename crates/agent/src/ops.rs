@@ -345,6 +345,13 @@ pub struct SearchInput {
     pub limit: Option<usize>,
 }
 
+/// How far back `stats` looks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StatsInput {
+    /// UTC days, ending today. Default 30, at most 366.
+    pub days: Option<u32>,
+}
+
 /// A glossary term.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TermInput {
@@ -681,6 +688,16 @@ impl Toolbox {
     #[must_use]
     pub fn about(&self) -> About {
         self.offer().about(self.operator())
+    }
+
+    /// Usage, spend and the worst-rated calls: the operator's view. On the
+    /// CLI only. It is the one operation about the instance rather than about
+    /// Magic, and an MCP client has no use for it.
+    ///
+    /// # Errors
+    /// The store.
+    pub async fn stats(&self, input: StatsInput) -> Result<judge_bot::db::stats::Usage, OpError> {
+        Ok(self.library.usage(input.days.unwrap_or(30)).await?)
     }
 
     /// Glossary lookup.

@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.id, c.question, r.effective_score AS \"effective_score!\", r.n AS \"n!\",\n               c.retired_at IS NOT NULL AS \"retired!\"\n        FROM calls c JOIN calls_rated r ON r.call_id = c.id\n        WHERE r.n > 0\n        ORDER BY r.effective_score ASC, r.n DESC, c.created_at DESC\n        LIMIT $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "question",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "question"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "effective_score!",
+        "type_info": "Float4",
+        "origin": {
+          "Table": {
+            "table": "calls_rated",
+            "name": "effective_score"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "n!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "calls_rated",
+            "name": "n"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "retired!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "52af0716732a45957ac4a8069a9891ef9934d6e317b8e9f3e6d8dfd2f9501aba"
+}

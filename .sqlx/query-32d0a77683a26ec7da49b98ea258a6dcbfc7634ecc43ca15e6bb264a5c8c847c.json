@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT date_trunc($1, now() AT TIME ZONE 'utc')::date::text AS \"start!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "start!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "32d0a77683a26ec7da49b98ea258a6dcbfc7634ecc43ca15e6bb264a5c8c847c"
+}

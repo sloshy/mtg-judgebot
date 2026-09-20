@@ -57,6 +57,7 @@ JSON goes to stdout and logs to stderr.
 | `persist <session>` | Persist an admitted verdict (idempotent). |
 | `card <name>` / `card-info <uuid>` | Resolve a name / a card by id. |
 | `get-rules <id>...` / `search <query> [--limit N]` / `glossary <term>` | Rules text, full-text search, glossary. |
+| `stats [--days N]` | The operator's view, over the last N UTC days (default 30): stored questions per day by front door, estimated model spend and model calls per day (from the `spend_days` ledger `bot` and `api` keep), ratings by score, retired calls, and the ten worst-rated calls. A Discord question asked with `private: True` is in the spend and not in the questions. CLI only. |
 | `config` | The resolved provider setup, secrets redacted. |
 | `about` | The source offer: the repository holding this instance's source, the commit it was built from, the licence and copyright. No database needed. |
 
@@ -67,5 +68,6 @@ JSON goes to stdout and logs to stderr.
 | `docker compose up -d` | `db`, `bot` and `api`, plus `cloudflared` with `COMPOSE_PROFILES=tunnel`. |
 | `docker compose up -d --build bot api` | Rebuild and redeploy after code changes. |
 | `docker compose pull && docker compose up -d` | Deploy host: pull the CI-built image, never build. |
-| `scripts/refresh-data.sh` | Nightly cron: `docker compose run --rm refresh` under a lock. |
-| `scripts/backup-db.sh [list\|fetch]` | Weekly `pg_dump` to Cloudflare R2. `list` and `fetch` serve the restore drill. |
+| `scripts/refresh-data.sh` | Nightly cron: `docker compose run --rm refresh` under a lock. A failed run posts to `JUDGE_ALERT_WEBHOOK` when that is set. |
+| `scripts/backup-db.sh [list\|fetch]` | Weekly `pg_dump` to Cloudflare R2. `list` and `fetch` serve the restore drill. A failed backup posts to `JUDGE_ALERT_WEBHOOK` (from `.env.deploy`, else `.env`). |
+| `scripts/alert.sh` | Sourced by the two above: posts one line to the webhook, passing the URL on stdin so it never shows in `ps`. |

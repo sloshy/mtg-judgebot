@@ -88,10 +88,11 @@ Open <http://localhost:8787> and ask a question. The page allows each address 4 
 per 5 minutes by default (`API_RATE_LIMIT` in `.env`). If port 5432 is taken on your machine,
 set `DB_PORT` in `.env` and change `DATABASE_URL` to match. A typical answer costs
 $0.08–0.25 in model calls. Every call is metered and hard-capped per process
-(`JUDGE_MAX_USD`, default $5). That is a total for the life of each process (`bot` and
-`api` have one each), not a monthly budget. Once the headroom left is smaller than a
-call's worst case (about $0.45 for synthesis) the process refuses questions until it is
-restarted, and a restart counts from zero.
+(`JUDGE_MAX_USD`, default $5). By default that is a total for the life of each process
+(`bot` and `api` have one each), and a restart counts from zero.
+`JUDGE_BUDGET_PERIOD=day` or `month` makes it one budget for the period, shared by both
+and kept across restarts. Once the headroom left is smaller than a call's worst case
+(about $0.45 for synthesis), questions are refused, and `JUDGE_ALERT_WEBHOOK` tells you.
 
 ### Your own Discord bot
 

@@ -109,6 +109,14 @@ impl PgLibrary {
         retrieve::load_rulings(&self.pool, &[card.into_inner()]).await
     }
 
+    /// How much the instance is used and what it costs (`judge-cli stats`).
+    ///
+    /// # Errors
+    /// `Upstream` from sqlx.
+    pub async fn usage(&self, days: u32) -> Result<super::stats::Usage, JudgeError> {
+        super::stats::usage(&self.pool, days).await
+    }
+
     /// The nightmare-card notes for a card.
     ///
     /// # Errors

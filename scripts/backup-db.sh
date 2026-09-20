@@ -24,6 +24,22 @@ cd "$root"
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
 
+mode="${1:-backup}"
+tmp=""
+# shellcheck source=scripts/alert.sh
+source "$root/scripts/alert.sh"
+# Installed before the first check below, so a cron run that dies on a missing
+# .env.deploy is reported too.
+finish() {
+  local status=$?
+  [ -z "$tmp" ] || rm -rf "$tmp" || true
+  # Only the scheduled form: a failed `list` or `fetch` has someone watching.
+  if [ "$status" -ne 0 ] && [ "$mode" = backup ]; then
+    alert "judgebot database backup failed on $(hostname 2>/dev/null || echo this host) (exit $status). The last good dump is still in R2."
+  fi
+}
+trap finish EXIT
+
 [ -f .env.deploy ] || die "no .env.deploy at $root (copy .env.deploy.example)"
 set -a
 # shellcheck disable=SC1091
@@ -40,7 +56,6 @@ prefix="${BACKUP_PREFIX:-db}"
 keep_local="${BACKUP_KEEP_LOCAL:-}"
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
 
 # rclone runs in a container so the host needs nothing but Docker. Credentials
 # are passed by NAME only: `-e VAR` inherits the already-exported value instead
@@ -63,7 +78,7 @@ rclone() {
     rclone/rclone:1.71 "$@"
 }
 
-case "${1:-backup}" in
+case "$mode" in
   list)
     rclone lsf "r2:$R2_BUCKET/$prefix" | sort
     ;;

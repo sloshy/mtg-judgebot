@@ -15,7 +15,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   effect tracking, the one thing Rust doesn't give us. Never add reqwest/sqlx/tokio-net
   to core.
 - **The user is cost-sensitive on API spend.** Every model call goes through the
-  spend-capped `judge_llm::Metered` (`JUDGE_MAX_USD`, default $5). The cap *reserves*
+  spend-capped `judge_llm::Metered` (`JUDGE_MAX_USD`, default $5). `JUDGE_BUDGET_PERIOD`
+  (`process` | `day` | `month`) says what the cap covers (D19): `judge_bot::budget` keeps
+  the `spend_days` ledger every 10 s and sets the meter's *adjustment*, so `bot` and `api`
+  share one period total that survives restarts. The meter itself stays storage-free.
+  `JUDGE_ALERT_WEBHOOK` is told when the cap trips and when a cron script fails
+  (`scripts/alert.sh`). `judge-cli stats` reads the ledger. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.45 refuse synthesis outright. Develop
   against wiremock, not the live API. A full 21-question gold run costs ~$2.50.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
@@ -49,7 +54,7 @@ attribution, schema.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D18),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D19),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 

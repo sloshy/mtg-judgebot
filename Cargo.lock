@@ -1913,6 +1913,7 @@ dependencies = [
  "nutype",
  "pgvector",
  "poise",
+ "reqwest 0.13.5",
  "schemars",
  "serde",
  "serde_json",

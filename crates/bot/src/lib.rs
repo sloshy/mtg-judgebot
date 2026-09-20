@@ -4,6 +4,7 @@
 //! [`build_deps`], the one composition shared by the `bot`, `api`, `eval`
 //! and `agent` binaries.
 
+pub mod budget;
 pub mod config;
 pub mod db;
 pub mod discord;

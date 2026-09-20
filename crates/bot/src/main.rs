@@ -74,6 +74,8 @@ async fn main() -> Result<()> {
     }
     let store: Arc<dyn CallStore> = Arc::new(store);
     let meter = models.meter().clone();
+    // The period's spend so far is loaded before the first question can arrive.
+    judge_bot::budget::start(pool.clone(), meter.clone(), judge.budget().clone(), "bot").await;
     // `/card` reads rulings by card id only, so its library needs no vectors.
     let library = PgLibrary::new(pool.clone());
     let deps = build_deps_with(pool, &models, vectors, &judge.deps_config());

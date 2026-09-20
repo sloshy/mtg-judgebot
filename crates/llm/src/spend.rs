@@ -14,6 +14,13 @@
 //! same meter shares one total and one cap (one cap per process, as the
 //! front doors expect), and the meter is what they read `spent_usd()` from.
 //!
+//! The total is this process's, for its lifetime. A *budget period* is built
+//! on one extra number, the [`SpendMeter::set_adjustment_micro`] adjustment:
+//! what to add to the process total to get "spent this period" (other
+//! processes' spend in, this process's earlier periods out). The cap is
+//! checked against total plus adjustment. Whoever owns the ledger computes
+//! it (`judge_bot::budget`); this crate stays free of storage and clocks.
+//!
 //! `Metered` is the only [`ChatModel`] there is (the trait is sealed), so
 //! the pipeline cannot be handed a backend that skips this. A model that
 //! costs nothing ([`Price::Free`], a local server) skips the reservation and
@@ -28,7 +35,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
     },
 };
 
@@ -129,17 +136,25 @@ struct Spend {
     calls: AtomicU64,
     /// Cap in micro-dollars; shared, so a change through any handle applies to all.
     cap_micro_usd: AtomicU64,
+    /// Added to `micro_usd` before it is compared with the cap (see the
+    /// module docs). Zero unless a budget period is configured.
+    adjustment_micro_usd: AtomicI64,
+    /// Requests refused by the cap, so a watcher can tell the operator.
+    refusals: AtomicU64,
 }
 
 impl Spend {
     /// Reserve `estimate` micro-dollars atomically, or report the cap.
     fn reserve(&self, estimate: u64) -> Result<(), LlmError> {
         let cap = self.cap_micro_usd.load(Ordering::Relaxed);
+        let adjustment = self.adjustment_micro_usd.load(Ordering::Relaxed);
         let mut spent = self.micro_usd.load(Ordering::Relaxed);
         loop {
-            if spent >= cap || spent.saturating_add(estimate) > cap {
+            let counted = counted(spent, adjustment);
+            if counted >= cap || counted.saturating_add(estimate) > cap {
+                self.refusals.fetch_add(1, Ordering::Relaxed);
                 return Err(LlmError::SpendCapExceeded {
-                    spent: from_micro(spent),
+                    spent: from_micro(counted),
                     cap: from_micro(cap),
                 });
             }
@@ -166,6 +181,15 @@ impl Spend {
                 .fetch_sub(reserved - actual, Ordering::Relaxed)
                 - (reserved - actual)
         }
+    }
+}
+
+/// `spent` as the cap sees it: with the period adjustment, never below zero.
+fn counted(spent: u64, adjustment: i64) -> u64 {
+    if adjustment >= 0 {
+        spent.saturating_add(adjustment.unsigned_abs())
+    } else {
+        spent.saturating_sub(adjustment.unsigned_abs())
     }
 }
 
@@ -198,6 +222,8 @@ impl SpendMeter {
             micro_usd: AtomicU64::new(0),
             calls: AtomicU64::new(0),
             cap_micro_usd: AtomicU64::new(to_micro(DEFAULT_MAX_SPEND_USD)),
+            adjustment_micro_usd: AtomicI64::new(0),
+            refusals: AtomicU64::new(0),
         }))
     }
 
@@ -266,6 +292,46 @@ impl SpendMeter {
     #[must_use]
     pub fn calls(&self) -> u64 {
         self.0.calls.load(Ordering::Relaxed)
+    }
+
+    /// [`Self::spent_usd`] in whole micro-dollars, in-flight reservations
+    /// included: the exact figure a ledger does its arithmetic in.
+    #[must_use]
+    pub fn spent_micro(&self) -> u64 {
+        self.0.micro_usd.load(Ordering::Relaxed)
+    }
+
+    /// What the cap is compared with: the process total plus the adjustment.
+    #[must_use]
+    pub fn counted_usd(&self) -> f64 {
+        from_micro(counted(
+            self.0.micro_usd.load(Ordering::Relaxed),
+            self.0.adjustment_micro_usd.load(Ordering::Relaxed),
+        ))
+    }
+
+    /// Set what is added to the process total before the cap is checked, in
+    /// micro-dollars. Positive counts spend this meter never saw (another
+    /// process in the same budget period); negative discounts spend it did
+    /// see (an earlier period). Shared with every clone.
+    pub fn set_adjustment_micro(&self, adjustment: i64) {
+        self.0
+            .adjustment_micro_usd
+            .store(adjustment, Ordering::Relaxed);
+    }
+
+    /// Add `micro` micro-dollars to the process total with no call behind it
+    /// and no cap check. For a ledger's tests, which need a total to move and
+    /// have no backend to send through; nothing in the pipeline calls it.
+    #[doc(hidden)]
+    pub fn record_micro(&self, micro: u64) {
+        self.0.micro_usd.fetch_add(micro, Ordering::Relaxed);
+    }
+
+    /// Requests the cap has refused since the process started.
+    #[must_use]
+    pub fn refusals(&self) -> u64 {
+        self.0.refusals.load(Ordering::Relaxed)
     }
 }
 
@@ -730,6 +796,35 @@ mod tests {
                 "{bad}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn the_adjustment_moves_what_the_cap_sees_and_refusals_are_counted() -> Result<(), LlmError> {
+        let meter = SpendMeter::new().with_max_spend_usd(1.0)?;
+        let clone = meter.clone();
+        // Nothing spent here, $0.90 spent by another process this period.
+        meter.set_adjustment_micro(900_000);
+        assert!((clone.counted_usd() - 0.9).abs() < 1e-9, "clones share it");
+        assert!(meter.0.reserve(50_000).is_ok());
+        assert!(matches!(
+            meter.0.reserve(100_000),
+            Err(LlmError::SpendCapExceeded { spent, cap })
+                if (spent - 0.95).abs() < 1e-9 && (cap - 1.0).abs() < 1e-9
+        ));
+        assert_eq!(meter.refusals(), 1);
+        // A new period: what this process spent before it no longer counts.
+        meter.set_adjustment_micro(-50_000);
+        assert!(meter.counted_usd().abs() < 1e-9);
+        assert_eq!(
+            meter.spent_micro(),
+            50_000,
+            "the process total never moves back"
+        );
+        assert!(meter.0.reserve(1_000_000).is_ok());
+        // A reservation settled below the discount cannot go negative.
+        meter.set_adjustment_micro(i64::MIN);
+        assert!(meter.counted_usd().abs() < 1e-9);
         Ok(())
     }
 

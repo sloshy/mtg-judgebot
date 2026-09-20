@@ -1390,3 +1390,53 @@ async fn forget_user_deletes_only_that_users_ratings(pool: PgPool) -> anyhow::Re
     assert_eq!(calls, 1, "the call is not the user's data");
     Ok(())
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn usage_counts_calls_by_door_joins_the_ledger_and_lists_the_worst_rated(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    let mut ids = Vec::new();
+    for thread in ["123456789", "web:0b0e", "agent:77aa", "987654321"] {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO calls (thread_id, question, answer, category, source, confidence, citations,              context_ids, cr_version) VALUES ($1, 'does  it\nwork?', 'yes', 'combat', 'cr', 'high',              '[]', '{}', '20260819') RETURNING id",
+        )
+        .bind(thread)
+        .fetch_one(&pool)
+        .await?;
+        ids.push(id);
+    }
+    let first = ids.first().copied().unwrap_or_default();
+    sqlx::query("INSERT INTO ratings (call_id, user_id, score, is_judge) VALUES ($1, 'u1', 1, false), ($1, 'u2', 1, false)")
+        .bind(first)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO spend_days (day, micro_usd, calls) VALUES          ((now() AT TIME ZONE 'utc')::date, 1250000, 9),          ((now() AT TIME ZONE 'utc')::date - 400, 9000000, 1)",
+    )
+    .execute(&pool)
+    .await?;
+
+    let u = crate::db::stats::usage(&pool, 30).await?;
+    assert_eq!(u.days, 30);
+    assert_eq!(
+        u.by_day.len(),
+        1,
+        "the row 400 days back is outside the window"
+    );
+    let today = u.by_day.first().ok_or_else(|| anyhow::anyhow!("no day"))?;
+    assert_eq!((today.discord, today.web, today.agent), (2, 1, 1));
+    assert_eq!(today.llm_calls, 9);
+    assert!((u.usd - 1.25).abs() < 1e-9);
+    assert_eq!(u.questions, 4);
+    assert_eq!(u.ratings, [2, 0, 0]);
+    assert_eq!(u.retired_calls, 0);
+    assert_eq!(u.lowest_rated.len(), 1, "unrated calls are not listed");
+    let worst = u
+        .lowest_rated
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("no worst"))?;
+    assert_eq!((worst.call, worst.ratings), (first, 2));
+    assert_eq!(worst.question, "does it work?");
+    assert!(worst.effective_score < 2.0);
+    Ok(())
+}

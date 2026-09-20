@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH bounds AS (\n            SELECT (now() AT TIME ZONE 'utc')::date - $1::int AS since\n        ), asked AS (\n            SELECT (created_at AT TIME ZONE 'utc')::date AS day,\n                   count(*) FILTER (WHERE thread_id LIKE 'web:%') AS web,\n                   count(*) FILTER (WHERE thread_id LIKE 'agent:%') AS agent,\n                   count(*) FILTER (WHERE thread_id NOT LIKE 'web:%'\n                                      AND thread_id NOT LIKE 'agent:%') AS discord\n            FROM calls, bounds\n            WHERE (created_at AT TIME ZONE 'utc')::date >= since\n            GROUP BY 1\n        ), spent AS (\n            SELECT day, micro_usd, calls FROM spend_days, bounds WHERE day >= since\n        )\n        SELECT COALESCE(a.day, s.day)::text AS \"day!\",\n               COALESCE(a.discord, 0) AS \"discord!\",\n               COALESCE(a.web, 0) AS \"web!\",\n               COALESCE(a.agent, 0) AS \"agent!\",\n               COALESCE(s.micro_usd, 0) AS \"micro_usd!\",\n               COALESCE(s.calls, 0) AS \"llm_calls!\"\n        FROM asked a FULL JOIN spent s ON s.day = a.day\n        ORDER BY 1 DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "discord!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "web!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "agent!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "micro_usd!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "llm_calls!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "e2134b6b8bebd944fdb6735651fbce6acf4ca87cf5aa44c8b33eb2982b35e642"
+}
