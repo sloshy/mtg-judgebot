@@ -27,8 +27,11 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
   vector search (optional, on when an embedder is configured), plus rulings, glossary
   entries, notes on notoriously difficult cards and rated prior calls.
 - **The Discord bot.** `/judge` (guild-only) with rating buttons and "did you mean?"
-  buttons, `/help`, `/license`, and `/forget`, which deletes the caller's ratings, the
-  only per-user data kept. Ratings shape which prior calls are retrieved, with a judge
+  buttons, `/card` and `/rule` lookups that call no model, `/help`, `/license`, and
+  `/forget`, which deletes the caller's ratings, the only per-user data kept.
+  `/judge private: True` answers the asker alone and stores nothing. Each member gets
+  `JUDGE_USER_LIMIT` questions per window (default 6 per 10 minutes). An *Incorrect*
+  rating says where to report a wrong ruling. Ratings shape which prior calls are retrieved, with a judge
   role whose rating overrides the crowd's. Mana and card symbols render as application
   emoji.
 - **`judge-api`**, with one flag per front door: `--api` (`POST /api/judge`), `--web`

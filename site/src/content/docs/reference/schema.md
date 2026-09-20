@@ -39,7 +39,7 @@ the stored calls' citations for rules that moved, only where the match is unambi
 
 | Table | Contents |
 | --- | --- |
-| `calls` | Every answered question: thread id, question, answer, category, source, confidence, the citations, the ids of the context it was answered from, `cr_version`, an embedding, and `retired_at`/`retired_reason` when its citations stopped holding. The context ids include a fingerprint of each context card's Oracle text, computed at persist time, so an erratum retires calls *about* a card even when they cited only the CR. `session_id` is set for calls persisted through an agent session. |
+| `calls` | Every answered question (except a Discord question asked with `private: True`): thread id, question, answer, category, source, confidence, the citations, the ids of the context it was answered from, `cr_version`, an embedding, and `retired_at`/`retired_reason` when its citations stopped holding. The context ids include a fingerprint of each context card's Oracle text, computed at persist time, so an erratum retires calls *about* a card even when they cited only the CR. `session_id` is set for calls persisted through an agent session. |
 | `ratings` | One row per (call, user id): score 1 to 3, whether the rater held the judge role, timestamp. The only per-user data. `/forget` deletes a user's rows. |
 | `calls_rated` (view) | Per call: the Bayesian-smoothed mean (prior 2.0, weight 3), the vote count, the latest judge rating, and the effective score the retriever uses. |
 

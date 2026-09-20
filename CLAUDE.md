@@ -125,8 +125,20 @@ working tree cannot mask a failure. The `sqlx` group migrates a throwaway
 The hooks run on Claude's commits too. Don't bypass them with `--no-verify`. Fix the
 failure instead.
 
-Discord registers four commands: `/judge` (guild-only), `/help`, `/license` and `/forget`,
-which deletes the caller's ratings through `CallStore::forget_user`.
+Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`,
+`/license` and `/forget`, which deletes the caller's ratings through
+`CallStore::forget_user`.
+
+- `/judge private:True` is `discord::Audience::Private`: ephemeral, no thread history
+  read, never persisted, so no rating buttons and no prior call. `Data::answer` reaches the
+  store only through `Audience::record`, which is `None` for it. The audience is carried
+  in `Pending` through a "did you mean?" pick.
+- `discord/cooldown.rs` is the per-user `/judge` window (`JUDGE_USER_LIMIT` per
+  `JUDGE_USER_WINDOW_SECS`, default 6 per 600 s, `0` = off), charged after the concurrency
+  permit so a "busy" is free. Picks are free.
+- `/card` and `/rule` are model-free lookups, rendered by pure `render::card` / `rules`.
+- An *Incorrect* rating's ephemeral reply names the operator and, when the source offer
+  is a GitHub repository, links its `wrong_answer.yml` issue form (`render::report_url`).
 
 **The source offer** (`judge_core::source`, AGPL §13). Every remote interface names the
 repository the instance's source is in, the commit it was built from and the

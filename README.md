@@ -112,8 +112,8 @@ covers the portal. Then:
    (*User Settings → Advanced → Developer Mode*, then right-click the server → *Copy
    Server ID*). Without it the commands register globally. That can take up to an hour
    to appear but works in every server the bot joins.
-4. `docker compose up -d bot`. The log line `registered /judge, /help, /license and
-   /forget` confirms it, and `/help` in the server confirms it end to end.
+4. `docker compose up -d bot`. The log line `registered /judge, /card, /rule, /help,
+   /license and /forget` confirms it, and `/help` in the server confirms it end to end.
 
 Members holding a role named `JUDGE_ROLE` (default `Judge`) rate as judges: their rating
 overrides the crowd's. `cargo run --release -p judge-ingest -- emoji` (or `docker compose

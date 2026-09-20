@@ -157,6 +157,13 @@ Three front doors share this pipeline through the same composition root
 
 - **Discord adapter** (`crates/bot`): `/judge` slash command, rating buttons,
   stateful "did you mean…?" buttons (pending store), thread history.
+  - `/judge private:True` is `Audience::Private`: acknowledged ephemerally, no history
+    read, never persisted, so no rating buttons. The audience rides in the pending entry
+    through a card pick.
+  - A per-user fixed window (`discord/cooldown.rs`, `JUDGE_USER_LIMIT`) is charged once a
+    judge slot is held, so a "busy" is free. A card pick is not counted again.
+  - `/card` and `/rule` are lookups over the resolver, the retriever's `lookup_rules` and
+    `PgLibrary::rulings`. They call no model and touch no meter.
 - **HTTP adapter** (`crates/api` + `web/`): anonymous `POST /api/judge` behind
   a per-IP fixed-window rate limit, and a SolidJS single page.
   - Which front doors a process opens is a launch option, not a result of starting it. `judge-api` alone is

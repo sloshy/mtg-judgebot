@@ -15,6 +15,8 @@ use judge_core::Ambiguous;
 use nonempty::NonEmpty;
 use uuid::Uuid;
 
+use super::Audience;
+
 /// Random handle of a pending question; what a `pick` button carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PendingId(Uuid);
@@ -68,6 +70,8 @@ pub struct Pending {
     pub text: String,
     /// Ambiguous spans, first one first.
     pub spans: NonEmpty<PendingSpan>,
+    /// Who the answer is for; a pick re-runs the question for the same audience.
+    pub audience: Audience,
 }
 
 /// Default lifetime of a pending question.
@@ -208,6 +212,7 @@ mod tests {
             thread_id: "t".into(),
             user_id: user.into(),
             text: "what does urza do?".into(),
+            audience: Audience::Channel,
             spans: NonEmpty::new(PendingSpan {
                 query: "urza".into(),
                 candidates: NonEmpty::from((

@@ -16,7 +16,7 @@ use anyhow::{Context as _, Result};
 use judge_bot::{
     build_deps_with,
     config::Config as JudgeConfig,
-    db::PgCallStore,
+    db::{PgCallStore, PgLibrary},
     discord::{Config, Data, run},
 };
 use judge_core::CallStore;
@@ -74,6 +74,8 @@ async fn main() -> Result<()> {
     }
     let store: Arc<dyn CallStore> = Arc::new(store);
     let meter = models.meter().clone();
+    // `/card` reads rulings by card id only, so its library needs no vectors.
+    let library = PgLibrary::new(pool.clone());
     let deps = build_deps_with(pool, &models, vectors, &judge.deps_config());
     tracing::info!(source = %judge.source_offer(), "source offer");
     let data = Data::new(
@@ -83,11 +85,13 @@ async fn main() -> Result<()> {
         &cfg,
         judge.source_offer().clone(),
         operator,
+        library,
     );
     tracing::info!(
         guild = ?cfg.guild_id,
         judge_role = %cfg.judge_role,
         concurrency = cfg.max_concurrent,
+        user_limit = ?cfg.user_limit,
         "starting Discord adapter"
     );
     run(cfg, data).await

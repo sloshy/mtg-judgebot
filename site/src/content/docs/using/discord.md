@@ -1,6 +1,6 @@
 ---
 title: Discord commands and ratings
-description: The four slash commands, how to phrase a question, what the buttons do, and what a rating changes.
+description: The six slash commands, how to phrase a question, what the buttons do, and what a rating changes.
 sidebar:
   order: 1
 ---
@@ -30,6 +30,41 @@ synthesis call.
 Ask a follow-up in the same channel and the bot sees the recent question-and-answer pairs
 from that channel as history, so "what if it had flash?" works.
 
+Each member can ask a limited number of questions per window (six per ten minutes unless
+the operator changed `JUDGE_USER_LIMIT`). Past it, the bot says how long is left, and only
+the asker sees that. A "busy" reply does not count, and anything after it does,
+answered or not. Picking a card from a "did you mean…?" row does not count again, and
+`/card` and `/rule` are never limited.
+
+### `private: True`
+
+`/judge question: … private: True` shows the answer to you alone, as Discord's "Only you
+can see this" message. A private answer stands by itself:
+
+- It reads no channel history, so it cannot be a follow-up, and nothing can follow it up.
+- It is not saved to the database, so it has no rating buttons and never becomes an
+  example for a later question. It is still sent to the model provider and leaves the
+  same log lines as any question.
+- "Did you mean…?" still works, privately.
+
+Discord fixes who sees a reply when the bot acknowledges the command, so a private answer
+cannot be made public afterwards. Ask again without the option.
+
+## `/card name:` and `/rule id:`
+
+Lookups from the bot's database. They call no model, cost nothing and answer at once.
+
+- `/card` takes a name or nickname, resolved as `/judge` resolves it, and shows every
+  face's mana cost, type line and current Oracle text, then the card's rulings, newest
+  first. The title links to the card on Scryfall. A name that could mean several cards
+  lists them instead of guessing.
+- `/rule` takes a rule number: `702.19` (the rule with its sub-rules and examples),
+  `702.19b` (one sub-rule) or `702` (the section, as many whole rules as fit). The title
+  links to the rule on the Yawgatog mirror, and the footer is the CR version. A rule
+  longer than an embed is cut, with a note to ask for one sub-rule.
+
+Both post in the channel. Add `private: True` to see the result alone.
+
 ## Rating buttons
 
 Every answer has three buttons: **Incorrect**, **Partially correct**, **Correct**. Rating
@@ -38,6 +73,10 @@ shown to the model as *examples* when a similar question comes in. Scores are sm
 Bayesian mean with a prior of "partially correct" and a weight of three votes), so one
 early vote cannot swing an answer's standing. Answers rated below 1.5 with at least five
 votes are excluded.
+
+After an **Incorrect** rating, the confirmation (which only you see) names the operator
+to tell about a wrong ruling. When the instance's source is on GitHub, it also links that
+repository's *Wrong or unhelpful ruling* issue form.
 
 Members holding the server's judge role (`JUDGE_ROLE`, default `Judge`) rate with an
 override. The most recent judge rating replaces the crowd's score for that answer. The

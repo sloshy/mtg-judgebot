@@ -8,12 +8,15 @@
 
 use std::fmt::Write as _;
 
+use std::time::Duration;
+
 use judge_core::{
-    Ambiguous, CardId, Citation, Confidence, Context, DiscordOperator, JudgeError, RuleId, Score,
-    SourceOffer, Validated, Verdict, source,
+    Ambiguous, Card, CardId, Citation, Confidence, Context, DiscordOperator, JudgeError, RuleChunk,
+    RuleId, Ruling, Score, SourceOffer, Validated, Verdict, source,
 };
 use nonempty::NonEmpty;
 
+use super::cooldown::UserLimit;
 use super::mana::{Rendered, SymbolTable};
 
 /// Discord's limit on message `content`, in characters.
@@ -74,7 +77,11 @@ citation is only shown after it has been checked against the source.\n\n\
 **Asking.** `/judge question: <your question>`. Nicknames work (\"bob\", \"goyf\"). Use brackets like \
 `[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the card with exactly that name. If a \
 name could mean several cards you get a \"did you mean…?\" row instead of a guess, and every answer lists \
-the cards it took your question to be about. Tournament policy and card prices are out of scope.\n\n\
+the cards it took your question to be about. Tournament policy and card prices are out of scope. Add \
+`private: True` and only you see the answer: it stands alone, with no follow-ups and no ratings, and is \
+not saved.\n\n\
+**Looking things up.** `/card` shows a card's Oracle text and rulings and `/rule` shows rules text by \
+number. Both are free and instant.\n\n\
 **Rating.** The buttons under an answer record how right it was; rating again replaces yours. Ratings decide \
 which past answers are shown as examples later — the rules themselves always outrank them. Members with the \
 server's judge role rate with an override.\n\n\
@@ -418,14 +425,226 @@ pub const fn rating_label(score: Score) -> &'static str {
     }
 }
 
-/// Ephemeral acknowledgement of a rating.
+/// Ephemeral acknowledgement of a rating. An *Incorrect* one also says where
+/// a wrong ruling can be reported: to the operator, and, when the instance's
+/// source is on GitHub, through that repository's wrong-ruling issue form.
 #[must_use]
-pub fn rated(score: Score, is_judge: bool) -> String {
+pub fn rated(
+    score: Score,
+    is_judge: bool,
+    offer: &SourceOffer,
+    operator: &DiscordOperator,
+) -> String {
     let who = if is_judge { " as a judge ruling" } else { "" };
-    format!(
+    let mut out = format!(
         "Recorded your rating{who}: {}. Rating again replaces it.",
         rating_label(score)
+    );
+    if matches!(score, Score::Incorrect) {
+        let _ = write!(
+            out,
+            "\n\nIf the ruling is wrong, tell `@{}`, who runs this bot, what you asked and what \
+the right answer is.",
+            operator.username()
+        );
+        if let Some(url) = report_url(offer) {
+            let _ = write!(out, " Or [report it to the project](<{url}>).");
+        }
+    }
+    out
+}
+
+/// The wrong-ruling issue form of the repository this instance's source is
+/// in, when that is a GitHub repository (the form is a GitHub feature, and a
+/// fork carries the template with the rest of the tree).
+#[must_use]
+pub fn report_url(offer: &SourceOffer) -> Option<String> {
+    let repo = offer.repository().to_string();
+    let repo = repo.trim_end_matches('/');
+    let path = repo.strip_prefix("https://github.com/")?;
+    // `owner/name` and nothing else: not a file, a tree or a query.
+    let mut parts = path.split('/');
+    let (Some(owner), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
+        return None;
+    };
+    let name = name.strip_suffix(".git").unwrap_or(name);
+    // GitHub's own alphabet for both, which also keeps the masked link whole.
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if !plain(owner) || !plain(name) {
+        return None;
+    }
+    Some(format!(
+        "https://github.com/{owner}/{name}/issues/new?template=wrong_answer.yml"
+    ))
+}
+
+/// Refusal of a `/judge` past the per-user allowance.
+#[must_use]
+pub fn cooling_down(limit: UserLimit, wait: Duration) -> String {
+    format!(
+        "You've asked {} questions in the last {}, which is this bot's limit per person. Try \
+again in {}. `/card` and `/rule` lookups are not limited.",
+        limit.max,
+        span(limit.window),
+        span(wait)
     )
+}
+
+/// A duration as a reader says it: `45 seconds`, `1 minute`, `10 minutes`.
+/// Rounded up, so "try again in" never sends someone back too early.
+fn span(d: Duration) -> String {
+    let secs = d
+        .as_secs()
+        .saturating_add(u64::from(d.subsec_nanos() > 0))
+        .max(1);
+    let (n, unit) = if secs < 60 {
+        (secs, "second")
+    } else {
+        (secs.div_ceil(60), "minute")
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// Longest `/card` name accepted, in characters: a bound on what reaches the
+/// resolver's trigram query, far above any real card name.
+pub const LOOKUP_INPUT_LIMIT: usize = 200;
+/// Discord's limit on an embed title, in characters.
+pub const EMBED_TITLE_LIMIT: usize = 256;
+/// `/card` with a blank or over-long name.
+pub const LOOKUP_BAD_NAME: &str = "Give me a card name or nickname (at most 200 characters).";
+/// `/rule` with something that is not a rule number.
+pub const LOOKUP_BAD_RULE: &str =
+    "That doesn't look like a rule number. Try `702.19`, `702.19b`, or `702` for a whole section.";
+/// A lookup the database could not serve.
+pub const LOOKUP_FAILED: &str = "Sorry, I couldn't look that up just now. Please try again.";
+
+/// An embed for a lookup: a linked title over a description.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lookup {
+    /// Embed title, at most [`EMBED_TITLE_LIMIT`].
+    pub title: String,
+    /// Where the title links.
+    pub url: String,
+    /// Embed description, at most [`EMBED_DESCRIPTION_LIMIT`].
+    pub description: String,
+    /// Embed footer, if any.
+    pub footer: Option<String>,
+}
+
+/// `/card`: every face's cost, type line and Oracle text, then the rulings,
+/// newest first, as many whole ones as fit.
+#[must_use]
+pub fn card(card: &Card, rulings: &[Ruling], symbols: &SymbolTable) -> Lookup {
+    let mut lines: Vec<Rendered> = Vec::new();
+    let many = card.faces.len() > 1;
+    for face in &card.faces {
+        let mut head = Rendered::default();
+        if many {
+            head.push_str(&format!("**{}**", face.name));
+        }
+        if !face.mana_cost.is_empty() {
+            if many {
+                head.push_str("  ");
+            }
+            head.append(Rendered::substitute(&face.mana_cost, symbols));
+        }
+        if !head.is_empty() {
+            lines.push(head);
+        }
+        lines.push(Rendered::plain(format!("*{}*", face.type_line)));
+        if !face.oracle_text.is_empty() {
+            lines.push(Rendered::substitute(&face.oracle_text, symbols));
+        }
+        lines.push(Rendered::default());
+    }
+    if rulings.is_empty() {
+        lines.push(Rendered::plain("No rulings."));
+    } else {
+        lines.push(Rendered::plain(format!("**Rulings ({})**", rulings.len())));
+        for r in rulings {
+            let mut line = Rendered::plain(format!("`{}` ", r.published_at));
+            line.append(Rendered::substitute(&collapse_whitespace(&r.text), symbols));
+            lines.push(line);
+        }
+    }
+    Lookup {
+        title: fit(&card.name, EMBED_TITLE_LIMIT),
+        url: scryfall_url(card.id),
+        description: fit_lines(&lines, EMBED_DESCRIPTION_LIMIT),
+        footer: None,
+    }
+}
+
+/// `/card` when the name could mean several cards.
+#[must_use]
+pub fn card_ambiguous(name: &str, candidates: &[&str]) -> String {
+    let mut out = format!("\"{}\" could be several cards:", fit(name, QUESTION_LIMIT));
+    for c in candidates.iter().take(MAX_CHOICES * 2) {
+        let _ = write!(out, "\n- {c}");
+    }
+    out.push_str("\nAsk again with the full name.");
+    fit(&out, CONTENT_LIMIT)
+}
+
+/// `/card` when nothing matched.
+#[must_use]
+pub fn card_not_found(name: &str) -> String {
+    fit(
+        &format!(
+            "I couldn't find a card called \"{}\". Check the spelling, or use the full name.",
+            fit(name, QUESTION_LIMIT)
+        ),
+        CONTENT_LIMIT,
+    )
+}
+
+/// `/rule`: the chunks a rule number names, each with its examples, as many
+/// whole ones as fit. `None` when the number names nothing in the loaded CR.
+#[must_use]
+pub fn rules(asked: &RuleId, chunks: &[RuleChunk], symbols: &SymbolTable) -> Option<Lookup> {
+    let first = chunks.first()?;
+    let mut lines: Vec<Rendered> = Vec::new();
+    for c in chunks {
+        let mut line = Rendered::substitute(c.body.trim(), symbols);
+        for e in &c.examples {
+            line.push_str("\n> ");
+            line.append(Rendered::substitute(&collapse_whitespace(e), symbols));
+        }
+        lines.push(line);
+    }
+    let heading = if first.heading.is_empty() {
+        format!("CR {asked}")
+    } else {
+        format!("CR {asked} — {}", first.heading)
+    };
+    // A few rules (205.3, 608.2) are longer than an embed on their own. Cut,
+    // they would stop mid-sentence with nothing to say why, so say where the
+    // rest is.
+    let budget = EMBED_DESCRIPTION_LIMIT - LONG_RULE_NOTE.chars().count();
+    let cut = lines.first().is_some_and(|l| l.len() > budget);
+    let mut description = fit_lines(&lines, budget);
+    if cut {
+        description.push_str(LONG_RULE_NOTE);
+    }
+    Some(Lookup {
+        title: fit(&heading, EMBED_TITLE_LIMIT),
+        url: rule_url(asked),
+        description,
+        footer: Some(format!("CR {}", cr_date(first.cr_version.as_ref()))),
+    })
+}
+
+/// Appended when even the first rule had to be cut.
+const LONG_RULE_NOTE: &str = "\n\nThis rule is longer than Discord shows. Ask for one sub-rule (add its letter), or follow the title link.";
+
+/// `/rule` when the number names nothing.
+#[must_use]
+pub fn rule_not_found(id: &RuleId) -> String {
+    format!("There is no rule {id} in the Comprehensive Rules I have loaded.")
 }
 
 /// Shown on the "did you mean…?" message while the pick is being judged.
@@ -1115,8 +1334,6 @@ mod tests {
         let l = button_label(&long);
         assert_eq!(l.chars().count(), BUTTON_LABEL_LIMIT);
         assert!(l.ends_with('…'));
-        assert!(rated(Score::Correct, true).contains("judge"));
-        assert!(!rated(Score::Correct, false).contains("judge"));
         assert!(working("Bob").contains("**Bob**"));
     }
 
@@ -1200,5 +1417,254 @@ mod info_tests {
         assert!(forgotten(0).starts_with("You had no ratings"));
         assert!(forgotten(1).starts_with("Deleted your 1 rating."));
         assert!(forgotten(7).starts_with("Deleted your 7 ratings."));
+    }
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use std::num::NonZeroU32;
+
+    use judge_core::{CrVersion, Face, Layout, ruling_key};
+    use uuid::Uuid;
+
+    use super::*;
+
+    type Res = Result<(), Box<dyn std::error::Error>>;
+
+    fn offer(url: &str) -> Result<SourceOffer, Box<dyn std::error::Error>> {
+        Ok(SourceOffer::new(
+            judge_core::RepositoryUrl::try_new(url)?,
+            judge_core::Commit::Unknown,
+        ))
+    }
+
+    fn operator() -> Result<DiscordOperator, Box<dyn std::error::Error>> {
+        Ok(
+            judge_core::Operator::new(Some(judge_core::DiscordUsername::try_new("a_judge")?), None)
+                .for_discord()?,
+        )
+    }
+
+    #[test]
+    fn only_an_incorrect_rating_says_where_to_report_it() -> Res {
+        let (offer, op) = (offer("https://github.com/someone/fork")?, operator()?);
+        assert!(rated(Score::Correct, true, &offer, &op).contains("judge"));
+        assert!(!rated(Score::Correct, false, &offer, &op).contains("judge"));
+        for score in [Score::Correct, Score::Partial] {
+            assert!(!rated(score, false, &offer, &op).contains("a_judge"));
+        }
+        let wrong = rated(Score::Incorrect, false, &offer, &op);
+        assert!(wrong.contains("`@a_judge`"), "{wrong}");
+        assert!(
+            wrong
+                .contains("<https://github.com/someone/fork/issues/new?template=wrong_answer.yml>"),
+            "{wrong}"
+        );
+        assert!(wrong.chars().count() <= CONTENT_LIMIT);
+        Ok(())
+    }
+
+    #[test]
+    fn the_issue_form_is_offered_for_a_github_repository_and_nothing_else() -> Res {
+        let form = |url: &str| offer(url).map(|o| report_url(&o));
+        assert_eq!(
+            form("https://github.com/sloshy/mtg-judgebot")?.as_deref(),
+            Some("https://github.com/sloshy/mtg-judgebot/issues/new?template=wrong_answer.yml")
+        );
+        assert_eq!(
+            form("https://github.com/sloshy/mtg-judgebot.git/")?.as_deref(),
+            Some("https://github.com/sloshy/mtg-judgebot/issues/new?template=wrong_answer.yml")
+        );
+        for other in [
+            "https://gitlab.com/someone/fork",
+            "https://github.com.evil.example/someone/fork",
+            "https://github.com/someone",
+            "https://github.com/someone/fork/tree/main",
+            "http://github.com/someone/fork",
+            "https://GitHub.com/someone/fork",
+            "https://github.com/some?one/fork",
+            "https://github.com/someone/fo>rk",
+            "https://github.com/someone/.git",
+        ] {
+            assert_eq!(form(other)?, None, "{other}");
+        }
+        // Without the form the operator is still named.
+        let wrong = rated(
+            Score::Incorrect,
+            false,
+            &offer("https://gitlab.com/someone/fork")?,
+            &operator()?,
+        );
+        assert!(wrong.contains("`@a_judge`") && !wrong.contains("issues/new"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_cooldown_notice_rounds_the_wait_up_and_names_the_free_commands() {
+        let limit = UserLimit {
+            max: NonZeroU32::new(6).unwrap_or(NonZeroU32::MIN),
+            window: Duration::from_mins(10),
+        };
+        let text = cooling_down(limit, Duration::from_millis(61_500));
+        assert!(
+            text.contains("6 questions in the last 10 minutes"),
+            "{text}"
+        );
+        assert!(text.contains("again in 2 minutes"), "{text}");
+        assert!(text.contains("`/card`"));
+        assert!(cooling_down(limit, Duration::from_millis(200)).contains("in 1 second."));
+        assert!(cooling_down(limit, Duration::from_secs(60)).contains("in 1 minute."));
+    }
+
+    fn bolt() -> Card {
+        Card {
+            id: CardId::new(Uuid::from_u128(7)),
+            name: "Fire // Ice".into(),
+            layout: Layout::Split,
+            faces: NonEmpty::from((
+                Face {
+                    name: "Fire".into(),
+                    oracle_text: "Fire deals 2 damage divided as you choose.".into(),
+                    mana_cost: "{1}{R}".into(),
+                    type_line: "Instant".into(),
+                },
+                vec![Face {
+                    name: "Ice".into(),
+                    oracle_text: "Tap target permanent.\nDraw a card.".into(),
+                    mana_cost: "{1}{U}".into(),
+                    type_line: "Instant".into(),
+                }],
+            )),
+        }
+    }
+
+    fn ruling(text: &str) -> Ruling {
+        Ruling {
+            card: CardId::new(Uuid::from_u128(7)),
+            key: ruling_key("2026-01-02", text),
+            published_at: "2026-01-02".into(),
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn a_card_shows_every_face_and_whole_rulings_within_the_embed() {
+        let symbols = SymbolTable::new([("mana_r".to_owned(), 1_234_567_890_123_456_789)]);
+        let few = card(
+            &bolt(),
+            &[ruling("You divide the damage\nas you cast it.")],
+            &symbols,
+        );
+        assert_eq!(few.title, "Fire // Ice");
+        assert_eq!(few.url, scryfall_url(CardId::new(Uuid::from_u128(7))));
+        let d = &few.description;
+        assert!(d.contains("**Fire**") && d.contains("**Ice**"), "{d}");
+        assert!(d.contains("<:mana_r:1234567890123456789>"), "{d}");
+        assert!(d.contains("{U}"), "an unknown symbol stays literal: {d}");
+        assert!(d.contains("**Rulings (1)**"));
+        assert!(
+            d.contains("`2026-01-02` You divide the damage as you cast it."),
+            "{d}"
+        );
+
+        let many: Vec<Ruling> = (0..200)
+            .map(|n| {
+                ruling(&format!(
+                    "Ruling {n}. {}",
+                    "A long ruling sentence. ".repeat(8)
+                ))
+            })
+            .collect();
+        let full = card(&bolt(), &many, &symbols);
+        assert!(full.description.chars().count() <= EMBED_DESCRIPTION_LIMIT);
+        assert!(full.description.contains("**Rulings (200)**"));
+        assert!(
+            full.description.contains("more"),
+            "dropped rulings are counted"
+        );
+
+        assert!(
+            card(&bolt(), &[], &symbols)
+                .description
+                .ends_with("No rulings.")
+        );
+    }
+
+    #[test]
+    fn card_misses_echo_a_bounded_name_and_ping_nobody_by_construction() {
+        let long = "x".repeat(5000);
+        assert!(card_not_found(&long).chars().count() <= CONTENT_LIMIT);
+        let names: Vec<String> = (0..50).map(|n| format!("Urza's Thing {n}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let text = card_ambiguous("urza", &refs);
+        assert!(text.chars().count() <= CONTENT_LIMIT);
+        assert_eq!(text.matches("\n- ").count(), MAX_CHOICES * 2);
+    }
+
+    fn chunk(
+        id: &str,
+        body: &str,
+        examples: &[&str],
+    ) -> Result<RuleChunk, Box<dyn std::error::Error>> {
+        Ok(RuleChunk {
+            id: RuleId::try_new(id.to_owned())?,
+            parent_id: None,
+            subsection: RuleId::try_new("702".to_owned())?,
+            heading: "Trample".into(),
+            body: body.into(),
+            examples: examples.iter().map(|e| (*e).to_owned()).collect(),
+            cr_version: CrVersion::try_new("20260819".to_owned())?,
+        })
+    }
+
+    #[test]
+    fn a_rule_shows_its_text_examples_and_cr_date_and_links_to_the_mirror() -> Res {
+        let asked = RuleId::try_new("702.19b".to_owned())?;
+        let chunks = [chunk(
+            "702.19b",
+            "702.19b The controller assigns damage.",
+            &["Example: A 2/2."],
+        )?];
+        let Some(view) = rules(&asked, &chunks, &SymbolTable::empty()) else {
+            return Err("a rule with a chunk renders".into());
+        };
+        assert_eq!(view.title, "CR 702.19b — Trample");
+        assert_eq!(view.url, rule_url(&asked));
+        assert!(
+            view.description
+                .contains("702.19b The controller assigns damage.\n> Example: A 2/2.")
+        );
+        assert_eq!(view.footer.as_deref(), Some("CR 2026-08-19"));
+        assert!(rules(&asked, &[], &SymbolTable::empty()).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_whole_section_is_cut_at_a_rule_boundary_under_the_embed_limit() -> Res {
+        let asked = RuleId::try_new("702".to_owned())?;
+        let body = "A rule sentence that goes on for a while. ".repeat(20);
+        let chunks: Vec<RuleChunk> = (1..=60)
+            .map(|n| chunk(&format!("702.{n}"), &format!("702.{n}. {body}"), &[]))
+            .collect::<Result<_, _>>()?;
+        let Some(view) = rules(&asked, &chunks, &SymbolTable::empty()) else {
+            return Err("a section renders".into());
+        };
+        assert!(view.description.chars().count() <= EMBED_DESCRIPTION_LIMIT);
+        assert!(view.description.contains("more"));
+        assert!(!view.description.contains("longer than Discord shows"));
+
+        // One rule longer than the embed: cut, and told where the rest is.
+        let asked = RuleId::try_new("205.3".to_owned())?;
+        let long = [chunk("205.3", &"A very long rule. ".repeat(500), &[])?];
+        let Some(view) = rules(&asked, &long, &SymbolTable::empty()) else {
+            return Err("a long rule renders".into());
+        };
+        assert!(view.description.chars().count() <= EMBED_DESCRIPTION_LIMIT);
+        assert!(
+            view.description.ends_with("follow the title link."),
+            "{}",
+            view.description
+        );
+        Ok(())
     }
 }

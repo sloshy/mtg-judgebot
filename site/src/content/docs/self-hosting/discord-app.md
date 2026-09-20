@@ -114,7 +114,7 @@ again at every start.
 docker compose up -d bot           # or: cargo run --release -p judge-bot
 ```
 
-The log line `registered /judge, /help, /license and /forget in one guild` (or `… globally`)
+The log line `registered /judge, /card, /rule, /help, /license and /forget in one guild` (or `… globally`)
 confirms registration. `/help` in the server confirms it end to end. Discord's command
 picker shows your bot's icon beside its commands, so another bot's `/judge` in the same
 server does not conflict with yours.
@@ -132,6 +132,23 @@ application rather than to any server and need no emoji permission to use
 ([Application-owned emoji](https://docs.discord.com/developers/resources/emoji#emoji-object-applicationowned-emoji)).
 Without them answers render the literal `{W}`. The command is idempotent, reads
 `DISCORD_TOKEN` and needs no database.
+
+## Keeping it to one channel
+
+The bot answers wherever its commands can be used, and that is Discord's setting, not the
+bot's. In *Server Settings → Integrations*, open your application and restrict `/judge`
+(or every command) to the channels, roles or members you choose
+([application command permissions](https://docs.discord.com/developers/interactions/application-commands#permissions)).
+A rules-questions channel keeps follow-ups together, because history is per channel.
+
+Two limits are the bot's own: `JUDGE_USER_LIMIT` questions per member per
+`JUDGE_USER_WINDOW_SECS` (six per ten minutes by default, `0` turns it off), and
+`JUDGE_CONCURRENCY` runs in flight at once. Neither applies to `/card` and `/rule`.
+
+An *Incorrect* rating tells the rater to contact you, and links the *Wrong or unhelpful
+ruling* issue form of the repository `JUDGE_SOURCE_URL` names when that is on GitHub. A
+fork has Issues off until you enable them under the repository's *Settings → General →
+Features*.
 
 ## The judge role
 

@@ -22,8 +22,15 @@
 //!   A pick (by the asker only) rewrites that span as `[[Full Name]]` and
 //!   re-runs `judge()`, editing the same message; another ambiguous span
 //!   simply starts the loop again.
+//! * `/judge … private:True` → the same, shown to the asker alone
+//!   ([`Audience::Private`]): no thread history read, nothing persisted, so
+//!   no rating buttons and no trace in the channel's follow-ups.
+//! * Each user gets [`Config::user_limit`] questions per window, charged once
+//!   ([`cooldown`]); a pick re-runs a question already counted and is free.
+//! * `/card` and `/rule` read the database and call no model.
 
 pub mod capture;
+pub mod cooldown;
 pub mod ids;
 pub mod mana;
 pub mod pending;
@@ -31,15 +38,15 @@ pub mod question;
 pub mod render;
 
 use std::{
-    num::NonZeroU64,
+    num::{NonZeroU32, NonZeroU64},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use anyhow::Context as _;
 use judge_core::{
-    CallId, CallStore, Deps, DiscordOperator, JudgeError, Question, Retriever, Score, SourceOffer,
-    Validated, Verdict, judge,
+    CallId, CallStore, Deps, DiscordOperator, JudgeError, Question, Resolution, Retriever, RuleId,
+    Score, SourceOffer, Validated, Verdict, judge,
 };
 use judge_llm::{ApiKey, SpendMeter};
 use poise::serenity_prelude as serenity;
@@ -51,7 +58,9 @@ use serenity::{
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 
+use crate::db::PgLibrary;
 use capture::CapturingRetriever;
+use cooldown::{Cooldowns, UserLimit};
 use ids::ButtonAction;
 use mana::SymbolTable;
 use pending::{Pending, PendingId, PendingSpan, PendingStore, TakeError};
@@ -78,6 +87,45 @@ pub struct Config {
     pub history_len: usize,
     /// How long a "did you mean…?" stays answerable.
     pub pending_ttl: Duration,
+    /// `/judge` questions one user may ask per window (`JUDGE_USER_LIMIT` per
+    /// `JUDGE_USER_WINDOW_SECS`); `None` is no per-user limit.
+    pub user_limit: Option<UserLimit>,
+}
+
+/// Who sees a `/judge` reply.
+///
+/// Discord fixes this when the command is acknowledged, so it is chosen up
+/// front and carried through a "did you mean…?" pick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audience {
+    /// The channel: thread history in, the call persisted, rating buttons.
+    Channel,
+    /// The asker alone. The question stands by itself: it reads no thread
+    /// history and is never persisted, so it cannot be rated, cannot become a
+    /// prior call and cannot surface in anyone's follow-up.
+    Private,
+}
+
+impl Audience {
+    const fn from_option(private: Option<bool>) -> Self {
+        match private {
+            Some(true) => Self::Private,
+            Some(false) | None => Self::Channel,
+        }
+    }
+
+    const fn is_private(self) -> bool {
+        matches!(self, Self::Private)
+    }
+
+    /// The call store as this audience may use it: not at all, for a private
+    /// question.
+    fn record(self, store: &dyn CallStore) -> Option<&dyn CallStore> {
+        match self {
+            Self::Channel => Some(store),
+            Self::Private => None,
+        }
+    }
 }
 
 impl Config {
@@ -87,6 +135,10 @@ impl Config {
     pub const DEFAULT_CONCURRENCY: usize = 2;
     /// Thread history length.
     pub const DEFAULT_HISTORY: usize = 5;
+    /// `JUDGE_USER_LIMIT` default.
+    pub const DEFAULT_USER_LIMIT: u32 = 6;
+    /// `JUDGE_USER_WINDOW_SECS` default.
+    pub const DEFAULT_USER_WINDOW: Duration = Duration::from_mins(10);
 
     /// Read the process environment. See [`Self::from_vars`].
     ///
@@ -99,10 +151,14 @@ impl Config {
     /// Build from a variable lookup: `DISCORD_TOKEN` (required, non-blank),
     /// `GUILD_ID` (optional, non-zero integer), `JUDGE_ROLE` (default
     /// [`Self::DEFAULT_JUDGE_ROLE`]), `JUDGE_CONCURRENCY` (default
-    /// [`Self::DEFAULT_CONCURRENCY`], at least 1). Blank values count as unset.
+    /// [`Self::DEFAULT_CONCURRENCY`], at least 1), `JUDGE_USER_LIMIT`
+    /// (default [`Self::DEFAULT_USER_LIMIT`]; `0` turns the per-user limit
+    /// off) and `JUDGE_USER_WINDOW_SECS` (default
+    /// [`Self::DEFAULT_USER_WINDOW`], at least 1). Blank values count as unset.
     ///
     /// # Errors
-    /// A missing token, or a malformed `GUILD_ID` / `JUDGE_CONCURRENCY`.
+    /// A missing token, or a malformed `GUILD_ID`, `JUDGE_CONCURRENCY`,
+    /// `JUDGE_USER_LIMIT` or `JUDGE_USER_WINDOW_SECS`.
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let var = |k: &str| {
             get(k)
@@ -133,6 +189,30 @@ impl Config {
             })
             .transpose()?
             .unwrap_or(Self::DEFAULT_CONCURRENCY);
+        let user_max = var("JUDGE_USER_LIMIT")
+            .map(|n| {
+                n.parse::<u32>().with_context(|| {
+                    format!("JUDGE_USER_LIMIT must be an integer >= 0 (0 = no limit), got {n:?}")
+                })
+            })
+            .transpose()?
+            .unwrap_or(Self::DEFAULT_USER_LIMIT);
+        let user_window = var("JUDGE_USER_WINDOW_SECS")
+            .map(|n| {
+                n.parse::<u64>()
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .map(Duration::from_secs)
+                    .with_context(|| {
+                        format!("JUDGE_USER_WINDOW_SECS must be an integer >= 1, got {n:?}")
+                    })
+            })
+            .transpose()?
+            .unwrap_or(Self::DEFAULT_USER_WINDOW);
+        let user_limit = NonZeroU32::new(user_max).map(|max| UserLimit {
+            max,
+            window: user_window,
+        });
         Ok(Self {
             token,
             guild_id,
@@ -140,6 +220,7 @@ impl Config {
             max_concurrent,
             history_len: Self::DEFAULT_HISTORY,
             pending_ttl: pending::DEFAULT_TTL,
+            user_limit,
         })
     }
 }
@@ -161,6 +242,11 @@ pub struct Data {
     offer: SourceOffer,
     /// Whom `/help` and `/license` tell users to contact.
     operator: DiscordOperator,
+    /// Per-user `/judge` windows; `None` when the operator turned the limit off.
+    cooldowns: Option<Cooldowns>,
+    /// Rulings for `/card`. The resolver and retriever in `deps` serve the
+    /// rest of the lookups.
+    library: PgLibrary,
 }
 
 impl std::fmt::Debug for Data {
@@ -188,6 +274,7 @@ impl Data {
         cfg: &Config,
         offer: SourceOffer,
         operator: DiscordOperator,
+        library: PgLibrary,
     ) -> Self {
         let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
         deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
@@ -203,6 +290,8 @@ impl Data {
             symbols: SymbolTable::empty(),
             offer,
             operator,
+            cooldowns: cfg.user_limit.map(Cooldowns::new),
+            library,
         }
     }
 
@@ -218,16 +307,22 @@ impl Data {
 
     /// Run the pipeline for `q` and build the reply: answer with rating
     /// buttons, "did you mean…?" with pick buttons, or an error message.
-    async fn answer(&self, q: &Question, asker: UserId) -> Outgoing {
-        let history = match self.store.history(&q.thread_id, self.history_len).await {
-            Ok(h) => h,
-            Err(e) => {
-                tracing::warn!(
-                    error = format_args!("{e:#}"),
-                    "thread history unavailable; judging without it"
-                );
-                vec![]
-            }
+    async fn answer(&self, q: &Question, asker: UserId, audience: Audience) -> Outgoing {
+        // The only route to the store in here: `None` for a private question,
+        // so it reads no history and cannot be persisted.
+        let record = audience.record(&*self.store);
+        let history = match record {
+            None => vec![],
+            Some(store) => match store.history(&q.thread_id, self.history_len).await {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!(
+                        error = format_args!("{e:#}"),
+                        "thread history unavailable; judging without it"
+                    );
+                    vec![]
+                }
+            },
         };
         let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
         let result = judge(&self.deps, q, &history).await;
@@ -239,12 +334,15 @@ impl Data {
             usd = format_args!("{:.4}", self.meter.spent_usd() - usd0),
             llm_calls = self.meter.calls() - calls0,
             outcome = outcome(&result),
+            private = audience.is_private(),
             "/judge"
         );
         match result {
             Ok(v) => {
-                let call = if let Some(ctx) = captured.as_ref() {
-                    self.store
+                // No record, no call id, and so no rating buttons.
+                let call = match (record, captured.as_ref()) {
+                    (None, _) => None,
+                    (Some(store), Some(ctx)) => store
                         .persist(q, &v, ctx)
                         .await
                         .map_err(|e| {
@@ -253,10 +351,11 @@ impl Data {
                                 "persist failed; answering without rating buttons"
                             );
                         })
-                        .ok()
-                } else {
-                    tracing::warn!("no captured context for the question; call not persisted");
-                    None
+                        .ok(),
+                    (Some(_), None) => {
+                        tracing::warn!("no captured context for the question; call not persisted");
+                        None
+                    }
                 };
                 Outgoing::answer(&v, captured.as_ref(), call, asker, &q.text, &self.symbols)
             }
@@ -267,6 +366,7 @@ impl Data {
                     user_id: asker.to_string(),
                     text: q.text.clone(),
                     spans: spans.map(PendingSpan::from),
+                    audience,
                 });
                 Outgoing {
                     content: render::with_header(asker.get(), &q.text, &dym.content, &self.symbols),
@@ -340,7 +440,7 @@ impl Data {
         let text = match self.store.rate(call, &user_id, score, is_judge).await {
             Ok(()) => {
                 tracing::info!(%call, user = %user_id, score = score as u8, is_judge, "rated");
-                render::rated(score, is_judge)
+                render::rated(score, is_judge, &self.offer, &self.operator)
             }
             Err(e) => {
                 tracing::error!(%call, error = format_args!("{e:#}"), "rate failed");
@@ -387,7 +487,7 @@ impl Data {
             thread_id: pending.thread_id.clone(),
             text: question::pin_card(&pending.text, &span.query, name),
         };
-        let out = self.answer(&q, c.user.id).await;
+        let out = self.answer(&q, c.user.id, pending.audience).await;
         if let Err(e) = c.edit_response(&ctx.http, out.into_edit()).await {
             // The pending entry is gone and the message shows "Working on it…"
             // with no buttons: tell the asker (ephemerally) to ask again rather
@@ -555,8 +655,11 @@ async fn judge_command(
     ctx: Ctx<'_>,
     #[description = "Your rules question. Use brackets like [[Full Card Name]] to avoid ambiguity."]
     question: String,
+    #[description = "Show the answer only to you. A private answer stands alone: no follow-ups, no ratings, not saved."]
+    private: Option<bool>,
 ) -> Result<(), Error> {
     let data = ctx.data();
+    let audience = Audience::from_option(private);
     let Some(_permit) = data.acquire().await else {
         ctx.send(
             poise::CreateReply::default()
@@ -566,14 +669,153 @@ async fn judge_command(
         .await?;
         return Ok(());
     };
-    // Answers take 20–45 s; Discord wants an acknowledgement within 3 s.
-    ctx.defer().await?;
+    // After the slot, so a "busy" costs the asker none of their allowance.
+    // Everything past here counts, answered or not: an ambiguous or unknown
+    // card has already paid for an extraction call.
+    if let Some(cooldowns) = &data.cooldowns
+        && let Err(wait) = cooldowns.take(ctx.author().id.get(), Instant::now())
+    {
+        ctx.send(
+            poise::CreateReply::default()
+                .content(render::cooling_down(cooldowns.limit(), wait))
+                .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    }
+    // Answers take 20–45 s; Discord wants an acknowledgement within 3 s. The
+    // acknowledgement is also where Discord fixes who sees the reply.
+    match audience {
+        Audience::Channel => ctx.defer().await?,
+        Audience::Private => ctx.defer_ephemeral().await?,
+    }
     let q = Question {
         thread_id: ctx.channel_id().to_string(),
         text: question,
     };
-    let out = data.answer(&q, ctx.author().id).await;
-    ctx.send(out.into_reply()).await?;
+    let out = data.answer(&q, ctx.author().id, audience).await;
+    ctx.send(out.into_reply().ephemeral(audience.is_private()))
+        .await?;
+    Ok(())
+}
+
+/// Look up a card: Oracle text and rulings. Free: no model is called.
+#[poise::command(slash_command, rename = "card")]
+async fn card_command(
+    ctx: Ctx<'_>,
+    #[description = "A card name or nickname."] name: String,
+    #[description = "Show the card only to you."] private: Option<bool>,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    let private = Audience::from_option(private).is_private();
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > render::LOOKUP_INPUT_LIMIT {
+        return say(ctx, render::LOOKUP_BAD_NAME, true).await;
+    }
+    // The resolver's fuzzy rung and a cold pool can outlast Discord's 3 s.
+    defer(ctx, private).await?;
+    let resolution = match data.deps.resolver.resolve(name).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = format_args!("{e:#}"), "/card resolve failed");
+            return say(ctx, render::LOOKUP_FAILED, true).await;
+        }
+    };
+    match resolution {
+        Resolution::Resolved { card, .. } => {
+            let rulings = data.library.rulings(card.id).await.unwrap_or_else(|e| {
+                tracing::warn!(error = format_args!("{e:#}"), "/card rulings unavailable");
+                vec![]
+            });
+            let view = render::card(&card, &rulings, &data.symbols);
+            let embed = lookup_embed(view);
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(embed)
+                    .ephemeral(private)
+                    .allowed_mentions(no_pings()),
+            )
+            .await?;
+            Ok(())
+        }
+        Resolution::Ambiguous { candidates, .. } => {
+            let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+            say(ctx, &render::card_ambiguous(name, &names), true).await
+        }
+        Resolution::NotFound { .. } => say(ctx, &render::card_not_found(name), true).await,
+    }
+}
+
+/// Look up Comprehensive Rules text by number. Free: no model is called.
+#[poise::command(slash_command, rename = "rule")]
+async fn rule_command(
+    ctx: Ctx<'_>,
+    #[description = "A rule number such as 702.19, 702.19b or 702."] id: String,
+    #[description = "Show the rule only to you."] private: Option<bool>,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    let private = Audience::from_option(private).is_private();
+    let Ok(rule) = RuleId::try_new(id.trim().trim_end_matches('.')) else {
+        return say(ctx, render::LOOKUP_BAD_RULE, true).await;
+    };
+    defer(ctx, private).await?;
+    let chunks = match data
+        .deps
+        .retriever
+        .lookup_rules(std::slice::from_ref(&rule))
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = format_args!("{e:#}"), "/rule lookup failed");
+            return say(ctx, render::LOOKUP_FAILED, true).await;
+        }
+    };
+    let Some(view) = render::rules(&rule, &chunks, &data.symbols) else {
+        return say(ctx, &render::rule_not_found(&rule), true).await;
+    };
+    let embed = lookup_embed(view);
+    ctx.send(
+        poise::CreateReply::default()
+            .embed(embed)
+            .ephemeral(private)
+            .allowed_mentions(no_pings()),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Acknowledge a lookup. Discord fixes the reply's visibility here, so what
+/// follows (the result, or "not found") is seen by whoever `private` says.
+async fn defer(ctx: Ctx<'_>, private: bool) -> Result<(), Error> {
+    if private {
+        ctx.defer_ephemeral().await?;
+    } else {
+        ctx.defer().await?;
+    }
+    Ok(())
+}
+
+fn lookup_embed(view: render::Lookup) -> CreateEmbed {
+    let embed = CreateEmbed::new()
+        .title(view.title)
+        .url(view.url)
+        .description(view.description);
+    match view.footer {
+        Some(f) => embed.footer(CreateEmbedFooter::new(f)),
+        None => embed,
+    }
+}
+
+/// A plain text reply, pinging nobody.
+async fn say(ctx: Ctx<'_>, text: &str, ephemeral: bool) -> Result<(), Error> {
+    ctx.send(
+        poise::CreateReply::default()
+            .content(text)
+            .ephemeral(ephemeral)
+            .allowed_mentions(no_pings()),
+    )
+    .await?;
     Ok(())
 }
 
@@ -701,6 +943,8 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
     let options = poise::FrameworkOptions {
         commands: vec![
             judge_command(),
+            card_command(),
+            rule_command(),
             help_command(),
             license_command(),
             forget_command(),
@@ -717,11 +961,11 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
                 let commands = &framework.options().commands;
                 if let Some(g) = guild {
                     poise::builtins::register_in_guild(ctx, commands, g).await?;
-                    tracing::info!(guild = %g, "registered /judge, /help, /license and /forget in one guild");
+                    tracing::info!(guild = %g, "registered /judge, /card, /rule, /help, /license and /forget in one guild");
                 } else {
                     poise::builtins::register_globally(ctx, commands).await?;
                     tracing::info!(
-                        "registered /judge, /help, /license and /forget globally (propagation can take up to an hour)"
+                        "registered /judge, /card, /rule, /help, /license and /forget globally (propagation can take up to an hour)"
                     );
                 }
                 // The application id arrives with `Ready`, which is what got us
@@ -751,6 +995,74 @@ mod tests {
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect();
         move |k| map.get(k).cloned()
+    }
+
+    #[test]
+    fn the_per_user_limit_defaults_on_and_zero_turns_it_off() -> anyhow::Result<()> {
+        let cfg = Config::from_vars(vars(&[("DISCORD_TOKEN", "t")]))?;
+        assert_eq!(
+            cfg.user_limit.map(|l| (l.max.get(), l.window)),
+            Some((Config::DEFAULT_USER_LIMIT, Config::DEFAULT_USER_WINDOW))
+        );
+        let cfg = Config::from_vars(vars(&[
+            ("DISCORD_TOKEN", "t"),
+            ("JUDGE_USER_LIMIT", "2"),
+            ("JUDGE_USER_WINDOW_SECS", "60"),
+        ]))?;
+        assert_eq!(
+            cfg.user_limit.map(|l| (l.max.get(), l.window)),
+            Some((2, Duration::from_mins(1)))
+        );
+        let off = Config::from_vars(vars(&[("DISCORD_TOKEN", "t"), ("JUDGE_USER_LIMIT", "0")]))?;
+        assert_eq!(off.user_limit, None);
+        for (k, v) in [
+            ("JUDGE_USER_LIMIT", "-1"),
+            ("JUDGE_USER_LIMIT", "many"),
+            ("JUDGE_USER_WINDOW_SECS", "0"),
+        ] {
+            let r = Config::from_vars(vars(&[("DISCORD_TOKEN", "t"), (k, v)]));
+            assert!(r.is_err_and(|e| e.to_string().contains(k)), "{k}={v}");
+        }
+        Ok(())
+    }
+
+    /// A store that must never be reached.
+    struct Untouchable;
+
+    #[async_trait::async_trait]
+    impl CallStore for Untouchable {
+        async fn persist(
+            &self,
+            _: &Question,
+            _: &Verdict<Validated>,
+            _: &judge_core::Context,
+        ) -> Result<CallId, JudgeError> {
+            Err(JudgeError::Upstream(anyhow::anyhow!("persist reached")))
+        }
+        async fn rate(&self, _: CallId, _: &str, _: Score, _: bool) -> Result<(), JudgeError> {
+            Err(JudgeError::Upstream(anyhow::anyhow!("rate reached")))
+        }
+        async fn history(&self, _: &str, _: usize) -> Result<Vec<judge_core::Qa>, JudgeError> {
+            Err(JudgeError::Upstream(anyhow::anyhow!("history reached")))
+        }
+        async fn forget_user(&self, _: &str) -> Result<u64, JudgeError> {
+            Err(JudgeError::Upstream(anyhow::anyhow!("forget reached")))
+        }
+    }
+
+    /// `Data::answer` reaches the store only through this, so a private
+    /// question has no store to read history from or persist to.
+    #[test]
+    fn a_private_question_is_handed_no_store() {
+        assert!(Audience::Private.record(&Untouchable).is_none());
+        assert!(Audience::Channel.record(&Untouchable).is_some());
+    }
+
+    #[test]
+    fn only_an_explicit_true_makes_an_answer_private() {
+        assert_eq!(Audience::from_option(None), Audience::Channel);
+        assert_eq!(Audience::from_option(Some(false)), Audience::Channel);
+        assert_eq!(Audience::from_option(Some(true)), Audience::Private);
     }
 
     #[test]

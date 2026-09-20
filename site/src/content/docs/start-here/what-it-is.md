@@ -38,7 +38,8 @@ command line. Once yours is in a server, `/help` explains the commands. The
 
 ## What an instance stores
 
-For every question answered, an instance stores the question text, the answer, the channel
+For every question answered (except a Discord question asked with `private: True`, which
+is not saved), an instance stores the question text, the answer, the channel
 or web session it was asked in, and the ids of the rules, rulings and cards it was answered
 from. When someone presses a rating button, it stores their Discord user id and the score.
 It stores nothing else. The bot receives only its own slash commands and button presses, never
