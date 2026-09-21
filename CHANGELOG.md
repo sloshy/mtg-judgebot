@@ -17,7 +17,7 @@ migration is not supported; restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-09-19
+## [1.0.0] - 2026-09-20
 
 The first release. `docs/ARCHITECTURE.md` describes everything below as it stands, and
 `docs/DECISIONS.md` records why.

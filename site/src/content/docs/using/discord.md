@@ -15,7 +15,7 @@ double-faced card). Anything else in brackets, such as a nickname or a near miss
 offered back as a choice rather than corrected. Answers take twenty to forty-five seconds.
 The bot acknowledges at once and edits the reply in.
 
-![A Discord reply to /judge asking when a player first gets priority. The answer runs to two paragraphs with rule numbers inline, five rule quotations follow in an embed with the confidence and CR version, and three rating buttons sit beneath.](../../../assets/screenshots/discord-answer-rules.png)
+![A Discord reply to /judge asking when a player first gets priority. The answer runs to two paragraphs with rule numbers inline, six rule quotations follow in an embed with the confidence and CR version, and three rating buttons sit beneath.](../../../assets/screenshots/discord-answer-rules.png)
 
 The reply opens with a non-pinging `@you asked:` header, then the ruling, then a citation
 per line. Rule citations link to the rule on the Yawgatog mirror of the Comprehensive
@@ -28,6 +28,8 @@ of up to five buttons instead of a guess. Only the person who asked can pick. If
 matches nothing, the reply says which and suggests `[[Full Card Name]]`. Tournament-policy and
 price questions are declined after the cheap classification step, before the expensive
 synthesis call.
+
+![A Discord reply asking which Tibalt was meant: a numbered list of three cards, and a button for each.](../../../assets/screenshots/discord-did-you-mean.png)
 
 Ask a follow-up in the same channel and the bot sees the recent question-and-answer pairs
 from that channel as history, so "what if it had flash?" works.
@@ -66,6 +68,8 @@ Lookups from the bot's database. They call no model, cost nothing and answer at 
   longer than an embed is cut, with a note to ask for one sub-rule.
 
 Both post in the channel. Add `private: True` to see the result alone.
+
+![The /card reply for Dark Confidant: the name as a link, the mana cost drawn as symbols, the type line, the Oracle text, and two rulings, each with its date.](../../../assets/screenshots/discord-card-lookup.png)
 
 ## Rating buttons
 

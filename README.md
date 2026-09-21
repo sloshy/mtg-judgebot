@@ -10,14 +10,9 @@ current Oracle text, or a prior rated call. On Discord, buttons rate an answer 1
 (incorrect / partially correct / correct), and ratings feed back into how future answers
 are grounded.
 
-```
-/judge question: does bob's trigger count goyf's mana value as 0?
+<img src="site/src/assets/screenshots/discord-answer-citations.png" width="720" alt="A Discord reply to /judge about an X-cost spell and Dark Confidant: a two-paragraph ruling with rule numbers inline and mana symbols drawn as pictures, an embed quoting three rules, the card's Oracle text and a dated ruling, the cards the question resolved to, the confidence and CR version, and three rating buttons.">
 
-@you asked: does bob's trigger count goyf's mana value as 0?
-You'll lose 2 life, not 0. Tarmogoyf's mana value is 0 anywhere its {X}… [702.19b] …
-  Citations: [202.3](…CR link…) · [Ruling (2021-02-05) — Tarmogoyf](…scryfall…) · [Oracle text — Dark Confidant](…)
-  Confidence: High · CR 2026-08-19        [Incorrect] [Partially correct] [Correct]
-```
+The same pipeline behind the web page:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="site/src/assets/screenshots/web-answer-dark.png">
