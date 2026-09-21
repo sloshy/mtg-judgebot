@@ -17,7 +17,7 @@ A nickname that could mean several cards gets a question back instead of a guess
 On Discord the answer arrives as a message, with the citations in an embed and the rating
 buttons beneath it. The "did you mean…?" choices are buttons too.
 
-![A Discord reply to /judge. It restates the question about an X-cost spell and Dark Confidant, answers in two paragraphs with rule numbers inline and mana symbols drawn as pictures, and cites three rules, the card's Oracle text and a dated Dark Confidant ruling in an embed that ends with "Cards: Dark Confidant", the confidence and the CR version. Three buttons follow: Incorrect, Partially correct, Correct.](../../../assets/screenshots/discord-answer-citations.png)
+![A Discord reply to /judge. It restates the question about revealing an X-cost spell to Dark Confidant and answers in two paragraphs that X counts as 0, with a rule number inline and mana symbols drawn as pictures. An embed quotes a dated Dark Confidant ruling, the card's Oracle text and rule 107.3g, and ends with "Cards: Dark Confidant", the confidence and the CR version. Three buttons follow: Incorrect, Partially correct, Correct.](../../../assets/screenshots/discord-answer-citations.png)
 
 ![A Discord reply asking which Tibalt was meant: a numbered list of three cards, and a button for each.](../../../assets/screenshots/discord-did-you-mean.png)
 

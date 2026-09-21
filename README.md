@@ -10,7 +10,7 @@ current Oracle text, or a prior rated call. On Discord, buttons rate an answer 1
 (incorrect / partially correct / correct), and ratings feed back into how future answers
 are grounded.
 
-<img src="site/src/assets/screenshots/discord-answer-citations.png" width="720" alt="A Discord reply to /judge about an X-cost spell and Dark Confidant: a two-paragraph ruling with rule numbers inline and mana symbols drawn as pictures, an embed quoting three rules, the card's Oracle text and a dated ruling, the cards the question resolved to, the confidence and CR version, and three rating buttons.">
+<img src="site/src/assets/screenshots/discord-answer-citations.png" width="720" alt="A Discord reply to /judge about revealing an X-cost spell to Dark Confidant: a two-paragraph ruling with a rule number inline and mana symbols drawn as pictures, an embed quoting a dated ruling, the card's Oracle text and rule 107.3g, the card the question resolved to, the confidence and CR version, and three rating buttons.">
 
 The same pipeline behind the web page:
 
