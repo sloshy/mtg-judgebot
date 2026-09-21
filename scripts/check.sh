@@ -5,9 +5,13 @@
 #   scripts/check.sh [group...]              the working tree as it stands
 #   scripts/check.sh --at <rev> [group...]   exactly <rev> (a commit or a tree)
 #   scripts/check.sh --at <rev> --staged     the groups the index touches
+#   scripts/check.sh --at <rev> --since <base>
+#                                            the groups <base>..<rev> touches,
+#                                            with sqlx and test beside rust
 #
 # With no groups, every group runs. The hooks use --at: pre-commit checks the
-# staged tree (`git write-tree`), pre-push each commit being pushed. That runs
+# staged tree (`git write-tree`), pre-push the tip of each ref being pushed,
+# against what the remote already has (--since). That runs
 # in a scratch worktree under .git/, so what is checked is exactly what is
 # committed or pushed: no unstaged edit, untracked file or other branch's state
 # can make it pass. The worktree shares target/ and .tools with this clone,
@@ -124,7 +128,7 @@ run_at() {
 
 if [ "${1:-}" = "--at" ]; then
   if [ -z "${2:-}" ]; then
-    echo "usage: scripts/check.sh --at <rev> [--staged | group...]" >&2
+    echo "usage: scripts/check.sh --at <rev> [--staged | --since <base> | group...]" >&2
     exit 2
   fi
   rev="$2"
@@ -139,6 +143,38 @@ if [ "${1:-}" = "--at" ]; then
     set -- "${groups[@]}"
     # A commit is checked offline where it can be; pre-push fetches.
     export CHECK_OFFLINE=1
+  elif [ "${1:-}" = "--since" ]; then
+    if [ -z "${2:-}" ]; then
+      echo "usage: scripts/check.sh --at <rev> --since <base>" >&2
+      exit 2
+    fi
+    # A push: <base> passed these gates already, so only what changed since
+    # needs them. Changed Rust also gets the migrations, the .sqlx check and
+    # the tests, which the staged check leaves to this.
+    groups=()
+    changed="$(git diff --name-only --no-renames "$2" "$rev")" || exit 1
+    tests=0
+    all=0
+    while IFS= read -r path; do
+      case "$path" in
+        # Read by tests at run time, not compiled in: gold.rs loads the gold
+        # set, interfaces.rs parses the api service's command line.
+        eval/* | docker-compose.yml) tests=1 ;;
+        # The gates themselves, the tool versions they run (lychee is site's)
+        # and CI's calls to them.
+        scripts/check.sh | scripts/tools.sh | .github/workflows/*) all=1 ;;
+      esac
+    done <<< "$changed"
+    if [ $tests = 1 ]; then changed="$changed"$'\n'"crates/"; fi
+    if [ $all = 1 ]; then
+      groups=("${ALL_GROUPS[@]}")
+    else
+      while IFS= read -r g; do
+        groups+=("$g")
+        if [ "$g" = rust ]; then groups+=(sqlx test); fi
+      done < <(groups_for <<< "$changed")
+    fi
+    set -- "${groups[@]}"
   fi
   run_at "$rev" "$@"
   exit $?

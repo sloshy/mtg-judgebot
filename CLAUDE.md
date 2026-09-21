@@ -129,7 +129,10 @@ working tree cannot mask a failure. The `sqlx` group migrates a throwaway
 `judgebot_check` database, never the development one.
 - pre-commit checks the staged tree: the groups the staged paths touch, deletions
   included, plus `lint`.
-- pre-push checks every pushed commit with every group, so Postgres must be up.
+- pre-push checks the tip of each pushed ref with the groups changed since the
+  remote's sha (`--since`); changed Rust, `eval/` or `docker-compose.yml` adds `sqlx`
+  and `test`, so Postgres must be up. A change to the gates (`check.sh`, `tools.sh`,
+  workflows), a new branch or an unfetched remote sha gets every group.
 
 The hooks run on Claude's commits too. Don't bypass them with `--no-verify`. Fix the
 failure instead.

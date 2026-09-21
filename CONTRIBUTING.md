@@ -51,10 +51,13 @@ them pass.
   `cargo deny` (against the advisory database already fetched, so it works offline),
   `cargo machete`, `taplo`, `typos`, `shellcheck`, `actionlint`, `hadolint` and the
   compose file. It takes seconds unless clippy has a lot to recompile.
-- **pre-push** checks each commit being pushed with every group, including
-  `cargo test`, the migrations and the `.sqlx` freshness check. It needs the database
-  up (`docker compose up -d db`) and `sqlx-cli`. CI runs the same script, so a push
-  that gets past it passes CI.
+- **pre-push** checks the tip of each ref being pushed, with the groups the push
+  changes since the remote's commit. Changed Rust, compiled-in data, `eval/` or the
+  compose file also runs `cargo test`, the migrations and the `.sqlx` freshness check,
+  which need the database up (`docker compose up -d db`) and `sqlx-cli`. A change to
+  `scripts/check.sh`, `scripts/tools.sh` or a workflow, a new branch, or a remote
+  commit your clone has not fetched gets every group. CI runs the same script, so a
+  push that gets past it on top of a commit that passed CI passes CI too.
 
 `scripts/check.sh rust test` (any of `rust sqlx test web site lint`) runs chosen
 groups on the working tree, and `scripts/check.sh --at <rev>` on a commit. `git commit --no-verify` / `git push --no-verify` skip a hook once. The
