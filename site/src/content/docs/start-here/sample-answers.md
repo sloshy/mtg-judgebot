@@ -5,8 +5,7 @@ sidebar:
   order: 3
 ---
 
-No judgebot is offered to try, so this page is the look before you run one: the web page
-as it renders, then five answers exactly as the pipeline gave them.
+The following are sample answers given by the bot so you can see how it works without running it yourself.
 
 ![The web page answering a question about Dark Confidant and Tarmogoyf: the ruling, six linked citations, the cards the question was resolved to, and the confidence.](../../../assets/screenshots/web-answer-light.png)
 
