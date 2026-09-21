@@ -3,17 +3,11 @@
 import starlight from "@astrojs/starlight";
 import { defineConfig, passthroughImageService } from "astro/config";
 
-// GitHub Pages serves the site under the repository name; a custom domain
-// (Cloudflare Pages, or Pages with a CNAME) sets SITE_URL and SITE_BASE=/ in the
-// build environment instead. publish-docs.yml leaves both at the defaults.
-// `astro dev` defaults to base "/" instead, so the local dev server's root and
-// links work at http://localhost:4321/ without SITE_BASE having to be set by hand.
-// (Passing a function to defineConfig instead of a plain object, to read Astro's
-// `command`, breaks Starlight's own integration setup — it ends up injecting no
-// pages at all — so the dev/build distinction is read from argv instead.)
-const site = process.env.SITE_URL ?? "https://sloshy.github.io";
-const isDev = process.argv.includes("dev");
-const base = process.env.SITE_BASE ?? (isDev ? "/" : "/mtg-judgebot");
+// The site is served at the root of its own domain (GitHub Pages with a custom
+// domain). A build for somewhere else sets SITE_URL, and SITE_BASE when it is
+// served under a path (a fork's <owner>.github.io/<repo> needs SITE_BASE=/<repo>).
+const site = process.env.SITE_URL ?? "https://mtg-judgebot.rpeters.dev";
+const base = process.env.SITE_BASE ?? "/";
 // A path under the base, whether SITE_BASE came with its slashes or not.
 const inBase = (/** @type {string} */ path) =>
   `/${base.replace(/^\/|\/$/g, "")}${path}`.replace(/^\/\//, "/");

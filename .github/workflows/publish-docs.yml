@@ -40,8 +40,8 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
       - run: npm --prefix site ci
-      # SITE_URL / SITE_BASE default to <owner>.github.io/<repo>; a custom
-      # domain sets them here (SITE_BASE=/).
+      # SITE_URL / SITE_BASE default to the custom domain at its root; a
+      # fork publishing to <owner>.github.io/<repo> sets them here.
       - run: npm --prefix site run build
       - uses: actions/upload-pages-artifact@v5
         with:

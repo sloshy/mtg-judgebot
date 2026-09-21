@@ -20,7 +20,7 @@ The same pipeline behind the web page:
 </picture>
 
 More answers, copied verbatim from a published evaluation run, are on the site's
-[Sample answers](https://sloshy.github.io/mtg-judgebot/start-here/sample-answers/) page.
+[Sample answers](https://mtg-judgebot.rpeters.dev/start-here/sample-answers/) page.
 
 ## Answer pipeline
 
@@ -59,7 +59,7 @@ a model API key, and a Discord application you create in a few minutes.
 | **Setup** | Six commands. The first data load downloads about 110 MB from Scryfall and takes about a minute on a fast connection. |
 
 Nothing in the pipeline needs Discord, so the web page and the command line work before
-you have a bot token. The documentation site, <https://sloshy.github.io/mtg-judgebot/>,
+you have a bot token. The documentation site, <https://mtg-judgebot.rpeters.dev/>,
 has the long form of everything below and explains how the judge works inside.
 
 ## Running it
@@ -119,7 +119,7 @@ covers the portal. Then:
 Members holding a role named `JUDGE_ROLE` (default `Judge`) rate as judges: their rating
 overrides the crowd's. `docker compose run --rm refresh emoji` uploads the mana symbols as
 application emoji once, so answers show pictures instead of `{W}`. The documentation site's
-[Run your own judgebot](https://sloshy.github.io/mtg-judgebot/self-hosting/first-run/)
+[Run your own judgebot](https://mtg-judgebot.rpeters.dev/self-hosting/first-run/)
 section has the long form with links into Discord's documentation.
 `docker compose up -d --build bot api` redeploys after code changes.
 
@@ -133,7 +133,7 @@ A `judge.toml` picks something else per stage: Anthropic direct, through a proxy
 Claude Platform on AWS, Bedrock or Vertex, or any OpenAI-compatible server (OpenAI,
 LiteLLM, OpenRouter, vLLM, a local Ollama priced `free`), and Voyage or OpenAI-compatible
 embeddings. `judge.example.toml` documents every knob, and
-[Model choice](https://sloshy.github.io/mtg-judgebot/self-hosting/models/) is the guide.
+[Model choice](https://mtg-judgebot.rpeters.dev/self-hosting/models/) is the guide.
 Under Docker, set `JUDGE_CONFIG=./judge.toml` in `.env`: the containers see only the file
 compose mounts.
 
@@ -143,8 +143,8 @@ compose mounts.
 same pipeline, citations and "did you mean…?" flow, and no rating buttons because nobody
 is logged in. Each of `judge-api`'s front doors is a launch option (`--api`, `--web`,
 `--mcp`), and `API_INTERFACES` in `.env` is what the container passes.
-[The web page](https://sloshy.github.io/mtg-judgebot/using/web/) and
-[The HTTP API](https://sloshy.github.io/mtg-judgebot/using/api/) have the details, with a
+[The web page](https://mtg-judgebot.rpeters.dev/using/web/) and
+[The HTTP API](https://mtg-judgebot.rpeters.dev/using/api/) have the details, with a
 `curl` example and every reply shape.
 
 ### Hosting

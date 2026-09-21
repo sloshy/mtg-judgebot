@@ -104,8 +104,8 @@ every copy from the original when it changes, and scale only by whole multiples 
 Wherever it is displayed scaled, the CSS sets `image-rendering: pixelated`.
 
 Check site changes in a browser with the `playwright-cli` skill. Run it against
-`npm --prefix site run dev` (port 4321, base `/`) or a preview of the build (base
-`/mtg-judgebot`, which is what Pages serves). Take the page at 1920, 1440, 820 and 390
+`npm --prefix site run dev` (port 4321) or a preview of the build (what Pages serves at
+`https://mtg-judgebot.rpeters.dev`). Both use base `/`. Take the page at 1920, 1440, 820 and 390
 wide, on a splash page *and* a docs page. Read positions out of
 `getBoundingClientRect()` rather than by eye.
 

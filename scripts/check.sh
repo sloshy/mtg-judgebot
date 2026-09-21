@@ -250,9 +250,9 @@ group_site() {
   step "site: astro check" npm --prefix site run --silent check
   step "site: build" npm --prefix site run --silent build -- --silent
   # The pages link to <base>/…, so lychee's root holds dist under the base's
-  # name (the one the build used: SITE_BASE, else /mtg-judgebot).
+  # name (the one the build used: SITE_BASE, else the root).
   local base links
-  base="${SITE_BASE:-/mtg-judgebot}"
+  base="${SITE_BASE:-/}"
   base="/${base#/}"
   base="${base%/}"
   links="$(mktemp -d)"
