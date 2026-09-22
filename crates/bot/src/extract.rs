@@ -691,7 +691,7 @@ mod tests {
         let reqs = server.received_requests().await.unwrap_or_default();
         let sent: Value =
             serde_json::from_slice(&reqs.first().map(|r| r.body.clone()).unwrap_or_default())?;
-        assert_eq!(at(&sent, "/model"), "claude-opus-5");
+        assert_eq!(at(&sent, "/model"), "claude-opus-5-5");
         assert_eq!(at(&sent, "/output_config/effort"), "low");
         assert_eq!(at(&sent, "/output_config/format/type"), "json_schema");
         assert!(sent.get("temperature").is_none());

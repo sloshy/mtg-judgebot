@@ -53,8 +53,8 @@ a model API key, and a Discord application you create in a few minutes.
 
 | | |
 | --- | --- |
-| **Cost per answer** | $0.08–0.25 in model calls on the default setup (Claude Opus for both stages). A `judge.toml` can put a cheaper or a local model on either stage. |
-| **Cost per month** | Questions × the above: about $25–75 for ten questions a day. Everything else is free. `JUDGE_MAX_USD` is a hard cap, and `JUDGE_BUDGET_PERIOD=month` makes it a monthly budget. |
+| **Cost per answer** | $0.07–0.15 in model calls on the default setup (Claude Opus 5.5 for both stages). A `judge.toml` can put a cheaper or a local model on either stage. |
+| **Cost per month** | Questions × the above: about $20–45 for ten questions a day. Everything else is free. `JUDGE_MAX_USD` is a hard cap, and `JUDGE_BUDGET_PERIOD=month` makes it a monthly budget. |
 | **Accounts** | A model provider (Anthropic out of the box). Optional: Voyage AI for semantic search (a few cents, once), Discord for the bot. |
 | **Host** | Anything that runs Docker and stays on: about 200 MB of RAM for the three containers. The image is published for amd64 and arm64, so nothing is compiled. |
 | **Setup** | Six commands. The first data load downloads about 110 MB from Scryfall and takes about a minute on a fast connection. |
@@ -89,7 +89,7 @@ Every model call is metered against a hard cap, `JUDGE_MAX_USD` (default $5):
   each, and a restart counts from zero.
 - `JUDGE_BUDGET_PERIOD=day` or `month` makes it one budget for the period, shared by both
   and kept across restarts.
-- Once the budget left is smaller than a call's worst case (about $0.45 for synthesis),
+- Once the budget left is smaller than a call's worst case (about $0.36 for synthesis),
   questions are refused and `JUDGE_ALERT_WEBHOOK` tells you.
 
 `docker compose pull` fetches the image CI built from upstream `main`. To run your own
@@ -129,9 +129,10 @@ section has the long form, with links into Discord's documentation.
 
 ### Choosing a model
 
-With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5`
+With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5-5`
 for both LLM stages, and Voyage `voyage-3.5` for embeddings if `VOYAGE_API_KEY` is set.
-The prompts are tuned on that setup, and the [results below](#results) were measured on it.
+The [results below](#results) were measured on that setup. The prompts were tuned on its
+predecessor, Opus 5, and run on it unchanged.
 
 A `judge.toml` picks something else per stage: Anthropic direct, through a proxy, on
 Claude Platform on AWS, Bedrock or Vertex, or any OpenAI-compatible server (OpenAI,
@@ -168,7 +169,7 @@ reference answers.
 
 ```sh
 cargo run -p judge-eval -- recall            # retrieval gate: expected rules present in context? (free)
-cargo run -p judge-eval -- answer --label x --limit 21 --max-usd 6   # full live run (~$2.50)
+cargo run -p judge-eval -- answer --label x --limit 21 --max-usd 6   # full live run (~$1.70)
 cargo run -p judge-eval -- rescore eval/runs/x.json                  # re-grade a stored run (free)
 cargo run -p judge-eval -- show eval/runs/x.json                     # bot vs. gold, side by side
 ```
@@ -178,41 +179,44 @@ same fact, so the metric tracks correctness rather than one author's citation ta
 
 ### Results
 
-Two full runs of the 21 questions, 2026-09-20, CR 2026-08-19, Voyage `voyage-3.5`
-embeddings. The run files are committed under `eval/published/` with every question,
-answer, citation, time and cost, so none of this has to be taken on trust:
-`judge-eval show eval/published/v1-opus-5.json` prints each answer beside its reference.
+Two full runs of the 21 questions, CR 2026-08-19, Voyage `voyage-3.5` embeddings: Opus 5.5
+on 2026-09-22 and Sonnet 5 on 2026-09-20. The run files are committed under
+`eval/published/` with every question, answer, citation, time and cost, so none of this has
+to be taken on trust: `judge-eval show eval/published/v1-opus-5-5.json` prints each answer
+beside its reference.
 
-| | `claude-opus-5`, both stages (the default) | `claude-sonnet-5`, both stages |
+| | `claude-opus-5-5`, both stages (the default) | `claude-sonnet-5`, both stages |
 | --- | --- | --- |
 | Out-of-scope questions declined (of 3) | 3 | 3 |
-| In-scope questions answered (of 18) | 17 | 6 |
-| …agreeing with the reference ruling | 17 | 5 |
+| In-scope questions answered (of 18) | 16 | 6 |
+| …agreeing with the reference ruling | 16 | 5 |
 | …partly (right on the main point, a sub-question missed) | 0 | 1 |
 | …contradicting the reference | 0 | 0 |
 | Asked "did you mean?" instead | 1 | 1 |
-| Not answered | 0 | 11 |
-| Expected rule ids cited | 45 of 67 (67%) | 12 of 67 (18%) |
-| Cost per in-scope question (median) | $0.13 | $0.10 |
-| Cost per question *answered* | $0.14 | $0.30 |
-| Time per in-scope question (median / longest) | 22 s / 43 s | 26 s / 589 s |
-| Whole run | $2.39 | $1.83 |
+| Not answered | 1 | 11 |
+| Expected rule ids cited | 42 of 67 (63%) | 12 of 67 (18%) |
+| Cost per in-scope question (median) | $0.09 | $0.10 |
+| Cost per question *answered* | $0.11 | $0.30 |
+| Time per in-scope question (median / longest) | 16 s / 49 s | 26 s / 589 s |
+| Whole run | $1.70 | $1.83 |
 
 What these measure, and what they do not:
 
 - **Answered** means a verdict that passed validation: every citation names a source the
   model was shown and quotes it verbatim, and every rule number in the text is one of
   those citations. "Not answered" means the pipeline refused to show an answer, not that
-  it showed a wrong one. Sonnet's eleven were:
+  it showed a wrong one. Opus 5.5's one was Humility and Opalescence. The first attempt put
+  a rule's text in a citation's `id` field and one word in its `quote`, and the retry's
+  citation was a placeholder (`x` for both). Sonnet's eleven were:
   - five answers with no citations or no text
   - four errors in the tool round (a second `lookup_rules` request, a malformed rule id,
     a request the API refused)
   - one bad quote
   - one answer naming rules it did not cite
 - **"Did you mean?"** is the pipeline working as designed, but it leaves an eval question
-  unanswered. On Opus the extractor passed `[[bob]]` through in brackets, and a bracketed
-  name only ever matches exactly. On Sonnet it offered "Bruna" and "Gisela" as written, each of
-  which is several cards.
+  unanswered. On Opus 5.5 it was the Blood Moon and Tron question: the extractor took
+  "tower" as a card name of its own, and the resolver offered five cards for it. On Sonnet it offered "Bruna"
+  and "Gisela" as written, each of which is several cards.
 - **Agreement with the reference** was judged by Claude reading each answer against the
   gold set's reference answer under a strict rubric. The references were written and
   checked by models, then audited against Oracle text, rulings and CR text (which found
@@ -229,9 +233,9 @@ What these measure, and what they do not:
   cache reads at the input price, which is how an unlisted price defaults. The counts of
   questions answered do not depend on it.
 
-The prompts are tuned on the default. The second column shows what that costs a smaller
-model. Sonnet 5 runs at 40% of the token price, but fails validation or the tool round on
-most hard questions and still pays for the retries. On this evidence there is no cheaper
+The second column shows what the default's prompts cost a smaller model. Sonnet 5 runs at
+half of Opus 5.5's token price, but fails validation or the tool round on most hard
+questions and still pays for the retries. On this evidence there is no cheaper
 configuration to recommend. The documentation site's Model choice page covers what does
 save money.
 

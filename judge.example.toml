@@ -5,7 +5,7 @@
 # containers see only the file compose mounts, never the repo root, so a
 # ./judge.toml with JUDGE_CONFIG blank is read by `cargo run` and by nothing
 # in `docker compose up`. With no file at all, the binaries build the default
-# setup from .env: Anthropic direct with ANTHROPIC_API_KEY, claude-opus-5 for
+# setup from .env: Anthropic direct with ANTHROPIC_API_KEY, claude-opus-5-5 for
 # both stages, Voyage if VOYAGE_API_KEY is set. This file does not change the
 # pipeline, the prompts, the citation validation or the spend cap. It changes only
 # who is on the other end of the HTTP connection.
@@ -132,7 +132,7 @@ max_tokens = 2000                      # (default: 2000)
 
 [models.synth]                         # synthesis: the judge's answer, one lookup_rules round
 provider = "anthropic"
-model = "claude-opus-5"
+model = "claude-opus-5-5"
 effort = "high"                        # (default: high) A truncated answer retries once at medium.
 max_tokens = 16000                     # (default: 16000) Reasoning tokens count against it.
 

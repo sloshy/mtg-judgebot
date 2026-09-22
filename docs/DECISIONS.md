@@ -160,9 +160,9 @@ becoming a naming scheme of its own.
 
 So there is `judge.toml`: typed structs, `deny_unknown_fields`, `nutype` validators, and
 secrets named by environment variable and never written in the file. With no file, the
-binaries build the default setup from `.env`: Anthropic direct, `claude-opus-5` for both
-stages, Voyage if keyed. The eval numbers and the pinned prompt digest were produced on
-that setup. A knob that would be silently ignored is a load error naming both keys.
+binaries build the default setup from `.env`: Anthropic direct, `claude-opus-5-5` for both
+stages, Voyage if keyed. The eval numbers were measured on that setup. The prompts, and so
+the pinned prompt digest, were tuned on its predecessor, Opus 5. A knob that would be silently ignored is a load error naming both keys.
 `docs/PROVIDERS.md` is the reference.
 
 ## D7. Spend cap by type
@@ -176,7 +176,7 @@ private, so there is no way to construct an uncapped model or to meter one again
 foreign budget.
 
 The cap **reserves the worst case before sending** and settles on reported usage. That is
-why caps under about $0.45 refuse synthesis outright rather than overshooting.
+why caps under about $0.36 refuse synthesis outright rather than overshooting.
 
 Pricing is a closed sum:
 
@@ -301,7 +301,7 @@ The build order was chosen so retrieval was measured before any synthesis existe
 7. The prior-call leg, which needs rated data to exist.
 
 `judge-eval recall` still runs the gate for free on every retrieval change. The paid full
-run costs about $2.50 and is not part of CI. Nothing in the test suite calls a paid API:
+run costs about $1.70 and is not part of CI. Nothing in the test suite calls a paid API:
 HTTP backends are tested against wiremock.
 
 ## D14. Outside agents on the same pipeline

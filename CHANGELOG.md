@@ -17,6 +17,16 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
+### Changed
+
+- **The default model is Claude Opus 5.5** (`claude-opus-5-5`) on both stages, and the
+  built-in price table knows its rates ($4 input, $20 output per million tokens). On the
+  gold set it answered 16 of 18 in-scope questions, all agreeing with the reference, for
+  about 30% less per run than Opus 5. The README's results and the Sample answers page
+  now come from that run (`eval/published/v1-opus-5-5.json`). To stay on Opus 5, name
+  `claude-opus-5` in a `judge.toml`: it is still priced. A `judge.toml` that already names
+  a model is unaffected.
+
 ## [1.0.0] - 2026-09-20
 
 The first release. `docs/ARCHITECTURE.md` describes everything below as it stands, and

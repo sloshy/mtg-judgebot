@@ -539,7 +539,7 @@ synthesis user turn has its own breakpoint, so the tool-round continuation rerea
 the cache price. After a tool round the `tool_choice` stays `auto` rather than switching to
 `none`, because changing it would invalidate that cache.
 
-A full run of the 21-question gold evaluation set costs about $2.50. Development is done
+A full run of the 21-question gold evaluation set costs about $1.70. Development is done
 against a mocked HTTP server (`wiremock`), not the live API.
 
 ---

@@ -189,7 +189,7 @@ live docs 2026-09-02.
 
 | `Endpoint` | Auth | URL | Model id | Mask |
 |---|---|---|---|---|
-| `Direct { base_url, api_key }` | `x-api-key` | `{base}/v1/messages` | `claude-opus-5` | none |
+| `Direct { base_url, api_key }` | `x-api-key` | `{base}/v1/messages` | `claude-opus-5-5` | none |
 | `Proxy { base_url, api_key, header }` | `x-api-key` or `Authorization: Bearer` | `{base}/v1/messages` | whatever the proxy routes | `fallbacks` off |
 | `ClaudePlatformOnAws { base_url, region, workspace_id, credentials }` | SigV4, service `aws-external-anthropic`, header `anthropic-workspace-id` | `https://aws-external-anthropic.{region}.api.aws/v1/messages` | bare | none |
 | `Bedrock { base_url, region, credentials }` | SigV4, service `bedrock-mantle` | `https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages` | `anthropic.`-prefixed (a whole `anthropic` segment is required) | `fallbacks`, `output_config.format`, tool `strict` and every `anthropic-beta` off. The schema goes in the prompt. |
@@ -290,9 +290,9 @@ provider *kind* (`voyage | openai`, not the operator's table name), model and di
 ## 5. Configuration
 
 **Zero config works.** With no `judge.toml`, the binaries build the default setup
-from `.env`: Anthropic direct with `ANTHROPIC_API_KEY`, `claude-opus-5` for both stages,
-Voyage if `VOYAGE_API_KEY` is set. The eval numbers and the pinned prompt digest were
-produced on that setup.
+from `.env`: Anthropic direct with `ANTHROPIC_API_KEY`, `claude-opus-5-5` for both stages,
+Voyage if `VOYAGE_API_KEY` is set. The eval numbers were measured on that setup. The
+prompts, and so the pinned prompt digest, were tuned on its predecessor, Opus 5.
 
 A `judge.toml` (path from `JUDGE_CONFIG`, else `./judge.toml` if present) selects
 providers and models. `judge.example.toml` documents every knob with its default. Two
@@ -331,7 +331,7 @@ max_tokens = 2000
 
 [models.synth]
 provider = "anthropic"
-model = "claude-opus-5"
+model = "claude-opus-5-5"
 effort = "high"
 max_tokens = 16000
 # USD per million tokens. Required when the model is not in the built-in table,
@@ -366,7 +366,7 @@ The loader enforces these rules at load time, each with a message naming the key
 The loader is hermetic: `from_toml`/`from_vars` read `JUDGE_MAX_USD` and the keys through
 an injected environment, so its tests never touch the process environment. Every binary
 logs `Config::summary()` at startup (`config=<file or "env"> extract=ollama/qwen3:8b
-synth=anthropic/claude-opus-5 embed=voyage/voyage-3.5 cap=$5.00`). `judge-cli config`
+synth=anthropic/claude-opus-5-5 embed=voyage/voyage-3.5 cap=$5.00`). `judge-cli config`
 prints the same, secrets redacted.
 
 **Under Docker.** `JUDGE_CONFIG` in `.env` is a *host* path (`./judge.toml`, as `cargo run`

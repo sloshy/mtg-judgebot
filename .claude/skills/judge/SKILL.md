@@ -23,7 +23,7 @@ step.
 **1. Built-in pipeline.** `judge {question, thread?, pins?}` / `judge-cli judge
 "<question>" [--thread T] [--pin "span=Full Name"]...`. The server runs its own model calls
 and returns `answer` (validated and cited, plus `thread` and `call`). It spends the
-operator's model budget, about $0.12 a question on the default Anthropic setup. Other
+operator's model budget, about $0.10 a question on the default Anthropic setup. Other
 replies:
 
 - `unavailable`: the server has no API key.

@@ -82,8 +82,8 @@ agent (or you) does the model's job and the pipeline only validates.
 
 ## Cost
 
-A typical answer costs $0.08 to $0.25 in model calls. Every call is metered against
-`JUDGE_MAX_USD` (default $5 per process), which is roughly 20 to 55 answers. The cap reserves
+A typical answer costs $0.07 to $0.15 in model calls. Every call is metered against
+`JUDGE_MAX_USD` (default $5 per process), which is roughly 30 to 65 answers. The cap reserves
 the worst case before sending, so a process cannot overshoot it.
 
 By default the cap is a lifetime total for one process, not a budget per day or month.
@@ -95,7 +95,7 @@ the current UTC day or month. `bot` and `api` share it through the database, it 
 restarts, and it resets when the next period starts.
 
 A call is refused once the money left under the cap is less than its worst-case cost.
-Synthesis therefore stops about $0.45 short of the cap, and from then on nothing is
+Synthesis therefore stops about $0.36 short of the cap, and from then on nothing is
 answered. Discord members are told the bot has hit its spending cap. A model priced
 `free` is never refused.
 

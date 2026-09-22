@@ -35,7 +35,7 @@ pub use judge_llm::ApiKey;
 pub use schema::{AnthropicSubset, anthropic_schema, to_anthropic};
 pub use wire::{ModelField, VERTEX_API_VERSION};
 
-/// Default model. Opus 5 with adaptive thinking is the project baseline.
-pub const DEFAULT_MODEL: &str = "claude-opus-5";
+/// Default model. Opus 5.5 with adaptive thinking is the project baseline.
+pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
 /// Messages API version header.
 pub const API_VERSION: &str = "2023-06-01";

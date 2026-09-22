@@ -5,9 +5,10 @@ sidebar:
   order: 4
 ---
 
-With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5`
+With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5-5`
 for both LLM stages, and Voyage `voyage-3.5` for embeddings if `VOYAGE_API_KEY` is set.
-The eval numbers and the pinned prompt digest were produced on that setup.
+The eval numbers were measured on that setup. The prompts, and so the pinned prompt
+digest, were tuned on its predecessor, Opus 5.
 
 A `judge.toml` picks something else, such as a different model per stage on different
 providers. The file is the one `JUDGE_CONFIG` names, else `./judge.toml` if present.
@@ -37,7 +38,7 @@ model = "qwen3:8b"
 
 [models.synth]                       # the answer itself
 provider = "anthropic"
-model = "claude-opus-5"
+model = "claude-opus-5-5"
 effort = "high"
 ```
 
@@ -103,16 +104,16 @@ same summary line at startup.
 ## What a cheaper model costs
 
 The default is the expensive model. Both it and a cheaper one were measured on the
-21-question gold set on 2026-09-20
+21-question gold set in September 2026
 ([Evaluation](../../how-it-works/evaluation/#results) has the table, and the run files are
 in `eval/published/`):
 
 | | Answered (of 18 in scope) | Agree with the reference | Per question answered |
 | --- | --- | --- | --- |
-| `claude-opus-5` on both stages | 17 | 17 | $0.14 |
+| `claude-opus-5-5` on both stages | 16 | 16 | $0.11 |
 | `claude-sonnet-5` on both stages | 6 | 5 | $0.30, erring high |
 
-Sonnet 5 costs 40% as much per token but came out no cheaper per answer. (Its dollar
+Sonnet 5 costs half as much per token but came out no cheaper per answer. (Its dollar
 figure errs high, because that run metered cache reads at the input price.) The prompts
 are tuned on Opus. On the hard questions Sonnet mostly returned answers with no citations,
 or broke the tool round by asking for a second `lookup_rules` call, which the pipeline
@@ -125,8 +126,8 @@ running `judge-eval answer --config <your file>` before you trust it.
 
 What does lower the bill without that work:
 
-- **The extraction stage** is a small share of an answer's cost (about half a cent of
-  twelve on the default). A local model there (`pricing = "free"`) removes it. It is the
+- **The extraction stage** is a small share of an answer's cost (about a third of a cent
+  of ten on the default). A local model there (`pricing = "free"`) removes it. It is the
   safer stage to move: both models above separated the 3 out-of-scope questions from the
   18 in scope, which is the part of extraction the gold set measures.
 - **`JUDGE_USER_LIMIT`, `API_RATE_LIMIT` and `JUDGE_BUDGET_PERIOD`** limit how many

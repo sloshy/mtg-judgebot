@@ -109,11 +109,21 @@ const OPUS_5: Pricing = Pricing {
     cache_read: 0.50,
     cache_write: 6.25,
 };
+const OPUS_5_5: Pricing = Pricing {
+    input: 4.0,
+    output: 20.0,
+    cache_read: 0.20,
+    cache_write: 5.0,
+};
 
 /// Built-in price table, `(provider, model)` → USD per million tokens.
-/// Verified 2026-08-29 against the Anthropic pricing page; re-check when a
-/// model is added or a price changes.
-pub const PRICES: &[(&str, &str, Pricing)] = &[(ANTHROPIC, "claude-opus-5", OPUS_5)];
+/// Opus 5 verified 2026-08-29 against the Anthropic pricing page, Opus 5.5
+/// taken from its launch pricing 2026-09-22 (cache writes at the usual 1.25 ×
+/// input); re-check when a model is added or a price changes.
+pub const PRICES: &[(&str, &str, Pricing)] = &[
+    (ANTHROPIC, "claude-opus-5-5", OPUS_5_5),
+    (ANTHROPIC, "claude-opus-5", OPUS_5),
+];
 
 /// Pricing for `model` at `provider`. An unknown Anthropic model (including
 /// a fallback the server routed to) is priced as Opus 5 so the estimate errs
@@ -659,6 +669,10 @@ mod tests {
             .map(|p| p.usd(&u))
             .unwrap_or_default();
         assert!((usd - (5.0 + 25.0 + 0.5 + 6.25)).abs() < 1e-9, "{usd}");
+        let usd = pricing_for(ANTHROPIC, "claude-opus-5-5")
+            .map(|p| p.usd(&u))
+            .unwrap_or_default();
+        assert!((usd - (4.0 + 20.0 + 0.2 + 5.0)).abs() < 1e-9, "{usd}");
         // Unknown Anthropic models price as Opus 5 (never under-estimate); unknown providers are unpriced.
         assert_eq!(
             pricing_for(ANTHROPIC, "claude-something-new"),

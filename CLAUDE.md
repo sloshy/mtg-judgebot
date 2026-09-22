@@ -21,8 +21,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   share one period total that survives restarts. The meter itself stays storage-free.
   `JUDGE_ALERT_WEBHOOK` is told when the cap trips and when a cron script fails
   (`scripts/alert.sh`). `judge-cli stats` reads the ledger. The cap *reserves*
-  worst-case cost before sending, so caps under ~$0.45 refuse synthesis outright. Develop
-  against wiremock, not the live API. A full 21-question gold run costs ~$2.50.
+  worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop
+  against wiremock, not the live API. A full 21-question gold run costs ~$1.70.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
   Never commit `.env`, `.cache/`, or `eval/runs/`. A run worth publishing is copied to
   `eval/published/` on purpose, and the README's Results table and the site's Sample
@@ -288,7 +288,7 @@ judge-mcp                                               # the MCP server on stdi
 cargo run -p judge-eval -- recall [--vectors]           # retrieval gate, no API keys (--vectors: the configured
                                                         # embedder, ~$0.001), exit≠0 below 90% retrieved or 75%
                                                         # shown under the synthesis budget
-cargo run -p judge-eval -- answer --label L --limit 21 --max-usd 6.00   # full live gold run (~$2.50)
+cargo run -p judge-eval -- answer --label L --limit 21 --max-usd 6.00   # full live gold run (~$1.70)
                                                         # --config judge.toml runs it on other providers
 cargo run -p judge-eval -- rescore eval/runs/<run>.json # re-score a stored run, zero API cost
 cargo run -p judge-eval -- show eval/runs/<run>.json    # bot vs gold answers side by side
@@ -519,7 +519,7 @@ Key cross-file facts that aren't obvious from any one file:
 - **Providers are configuration, not code.** `judge_bot::config` loads `judge.toml` into
   typed structs.
   - The file is `JUDGE_CONFIG`, else `./judge.toml` if present, else the default setup from
-    `.env`: Anthropic direct, `claude-opus-5` both stages, Voyage if keyed.
+    `.env`: Anthropic direct, `claude-opus-5-5` both stages, Voyage if keyed.
   - `judge.example.toml` documents every knob with its default and must keep loading.
     `config::tests::the_example_file_loads_as_shipped` and
     `..._with_every_door_uncommented` pin that, so a renamed knob fails the gate.

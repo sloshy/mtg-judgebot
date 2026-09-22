@@ -1438,7 +1438,7 @@ mod door_tests {
         use crate::{gcp::StaticToken, wire::VERTEX_API_VERSION};
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/projects/my-proj/locations/global/publishers/anthropic/models/claude-opus-5:rawPredict"))
+            .and(path("/v1/projects/my-proj/locations/global/publishers/anthropic/models/claude-opus-5-5:rawPredict"))
             .and(header("authorization", "Bearer ya29.test-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
             .mount(&server)

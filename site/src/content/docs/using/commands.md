@@ -38,7 +38,7 @@ with `-v ./data:/data:ro` for `aliases`, `notes` and `rules <path>`.
 | Command | What it does |
 | --- | --- |
 | `recall [--vectors]` | The retrieval gate: are the gold set's expected rules in the retrieved context? Free. `--vectors` adds the vector leg (~$0.001). Exit ≠ 0 below 90% retrieved or 75% shown within the synthesis budget. |
-| `answer --label L [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--config judge.toml]` | A live run of the full pipeline over the gold set, scored and stored under `eval/runs/`. About $2.50 for all 21 questions. |
+| `answer --label L [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--config judge.toml]` | A live run of the full pipeline over the gold set, scored and stored under `eval/runs/`. About $1.70 for all 21 questions. |
 | `rescore <run.json>` | Re-score a stored run after a gold-set edit. Free. |
 | `show <run.json>` | Bot and gold answers side by side. |
 

@@ -283,7 +283,7 @@ The per-IP rate limit of `/api/judge` does not apply to `/mcp`, where the token 
 identity. Instead, `judge` runs through `/mcp` are capped per window
 (`MCP_JUDGE_LIMIT` per `MCP_JUDGE_WINDOW_SECS`, default 20 an hour). The shared
 `JUDGE_CONCURRENCY` slots and `JUDGE_MAX_USD` cap apply as well. This window limits
-what a leaked token can spend: about `MCP_JUDGE_LIMIT × $0.12` an hour, and no faster.
+what a leaked token can spend: about `MCP_JUDGE_LIMIT × $0.10` an hour, and no faster.
 
 Sessions and lookups make no chat-model call. They do embed the question or search
 text with the configured embedder, if there is one. That costs fractions of a cent, and

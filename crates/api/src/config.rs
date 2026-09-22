@@ -68,7 +68,7 @@ impl ApiConfig {
     /// Session history length.
     pub const DEFAULT_HISTORY: usize = 5;
     /// `API_RATE_LIMIT` default: questions per IP per window. Kept low because
-    /// every question is real Anthropic spend (~$0.12 at gold-run prices).
+    /// every question is real Anthropic spend (~$0.10 at gold-run prices).
     pub const DEFAULT_RATE_LIMIT: u32 = 4;
     /// `API_RATE_WINDOW_SECS` default.
     pub const DEFAULT_RATE_WINDOW: Duration = Duration::from_mins(5);
@@ -77,7 +77,7 @@ impl ApiConfig {
     pub const MIN_MCP_TOKEN_BYTES: usize = 24;
     /// `MCP_JUDGE_LIMIT` default: `judge` runs per window through `/mcp`.
     /// The token is one identity, so this is the blast radius of a leak in
-    /// pipeline runs (about $0.12 each), on top of `JUDGE_MAX_USD`.
+    /// pipeline runs (about $0.10 each), on top of `JUDGE_MAX_USD`.
     pub const DEFAULT_MCP_JUDGE_LIMIT: u32 = 20;
     /// `MCP_JUDGE_WINDOW_SECS` default.
     pub const DEFAULT_MCP_JUDGE_WINDOW: Duration = Duration::from_hours(1);

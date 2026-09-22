@@ -64,7 +64,7 @@ Rule ids **must be quoted** (`'614.12'`). Unquoted, YAML reads `702.10` as a flo
 drops the zero, so the loader rejects unquoted ids.
 
 - `judge-eval recall` checks retrieval against it for free.
-- `judge-eval answer` runs the full pipeline (about $2.50 for the set).
+- `judge-eval answer` runs the full pipeline (about $1.70 for the set).
 - `rescore` re-grades stored runs after an edit.
 
 Extend it when adding capability, and re-verify rule ids on each CR release.

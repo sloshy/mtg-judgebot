@@ -6,9 +6,9 @@
 //! **Zero config works.** [`Config::load`] reads the file named by
 //! `JUDGE_CONFIG`, else `./judge.toml` if it exists, else builds the default
 //! setup from the environment: Anthropic's first-party API with
-//! `ANTHROPIC_API_KEY`, `claude-opus-5` for both stages, Voyage if
-//! `VOYAGE_API_KEY` is set. The eval numbers and the pinned prompt digest
-//! were produced on that setup.
+//! `ANTHROPIC_API_KEY`, `claude-opus-5-5` for both stages, Voyage if
+//! `VOYAGE_API_KEY` is set. The eval numbers were measured on that setup;
+//! the prompts, and so the pinned prompt digest, were tuned on Opus 5.
 //!
 //! The file is typed on the way in: unknown keys are rejected
 //! (`deny_unknown_fields`, so a typo is an error naming the key), model ids
@@ -392,7 +392,7 @@ fn required<T>(
 
 /// Whether `model` is one of Bedrock's documented forms, `anthropic.<model>`
 /// or `<profile>.anthropic.<model>` (an inference profile such as
-/// `global.anthropic.claude-opus-5`) — a whole `anthropic` segment, not a
+/// `global.anthropic.claude-opus-5-5`) — a whole `anthropic` segment, not a
 /// substring, so `claude-opus-5-anthropic.x` is as wrong as a bare id.
 fn bedrock_model_id(model: &str) -> bool {
     model.starts_with("anthropic.") || model.contains(".anthropic.")
@@ -724,7 +724,7 @@ pub enum ConfigError {
     /// A stage on Bedrock names a model without Bedrock's `anthropic.`
     /// prefix; the door would answer every question with a 400.
     #[error(
-        "models.{stage}.model = {model:?}: Claude in Amazon Bedrock names models with an `anthropic.` prefix (anthropic.claude-opus-5, or an inference profile such as global.anthropic.claude-opus-4-6-v1)"
+        "models.{stage}.model = {model:?}: Claude in Amazon Bedrock names models with an `anthropic.` prefix (anthropic.claude-opus-5-5, or an inference profile such as global.anthropic.claude-opus-4-6-v1)"
     )]
     BedrockModelId {
         /// The stage.
@@ -1603,7 +1603,7 @@ impl Config {
     }
 
     /// The one-line summary every binary logs at startup:
-    /// `config=judge.toml extract=ollama/qwen3:8b synth=anthropic/claude-opus-5 embed=voyage/voyage-3.5 cap=$5.00`.
+    /// `config=judge.toml extract=ollama/qwen3:8b synth=anthropic/claude-opus-5-5 embed=voyage/voyage-3.5 cap=$5.00`.
     /// What the cap covers is not in it: only `bot` and `api` run a budget
     /// period, and they log it themselves (`budget::start`).
     #[must_use]
@@ -2239,10 +2239,10 @@ kind = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 [models.extract]
 provider = "anthropic"
-model = "claude-opus-5"
+model = "claude-opus-5-5"
 [models.synth]
 provider = "anthropic"
-model = "claude-opus-5"
+model = "claude-opus-5-5"
 "#;
 
     /// A file that resolves with no environment at all: a free, keyless
@@ -2269,10 +2269,10 @@ model = "qwen3:8b"
             let (x, s) = (c.extract().ok_or("x")?, c.synth().ok_or("s")?);
             assert_eq!((x.max_tokens, x.effort), (2000, Effort::Low));
             assert_eq!((s.max_tokens, s.effort), (16000, Effort::High));
-            assert_eq!(s.model, "claude-opus-5");
+            assert_eq!(s.model, "claude-opus-5-5");
             assert_eq!(
                 s.price,
-                Price::Table(pricing_for("anthropic", "claude-opus-5").ok_or("table")?)
+                Price::Table(pricing_for("anthropic", "claude-opus-5-5").ok_or("table")?)
             );
             let ChatProvider::Anthropic {
                 endpoint: Endpoint::Direct { base_url, .. },
@@ -2285,7 +2285,7 @@ model = "qwen3:8b"
             assert!(c.models()?.synth().capabilities().refusal_fallbacks);
         }
         assert_eq!(env.source(), &Source::Environment);
-        assert!(env.summary().starts_with("config=env extract=anthropic/claude-opus-5 synth=anthropic/claude-opus-5 embed=none cap=$"), "{}", env.summary());
+        assert!(env.summary().starts_with("config=env extract=anthropic/claude-opus-5-5 synth=anthropic/claude-opus-5-5 embed=none cap=$"), "{}", env.summary());
         Ok(())
     }
 
@@ -2511,7 +2511,7 @@ model = "qwen3:8b"
     fn validators_reject_bad_values() {
         for (from, to) in [
             (
-                "model = \"claude-opus-5\"\n[models.synth]",
+                "model = \"claude-opus-5-5\"\n[models.synth]",
                 "model = \"  \"\n[models.synth]",
             ),
             ("api_key_env = \"ANTHROPIC_API_KEY\"", "api_key_env = \"\""),
@@ -2649,8 +2649,8 @@ model = "qwen3:8b"
             load(FULL, &env).is_ok_and(|c| c.synth().is_some_and(|s| s.effort == Effort::High))
         );
         let on_anthropic = MINIMAL.replace(
-            "model = \"claude-opus-5\"\n",
-            "model = \"claude-opus-5\"\neffort = \"max\"\n",
+            "model = \"claude-opus-5-5\"\n",
+            "model = \"claude-opus-5-5\"\neffort = \"max\"\n",
         );
         assert!(
             load(&on_anthropic, &env)
@@ -2700,7 +2700,7 @@ model = "qwen3:8b"
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5",
+                "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
                 "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
                 "usage": {"input_tokens": 1_000_000, "output_tokens": 200_000}
             })))
@@ -3107,7 +3107,7 @@ model = "qwen3:8b"
         );
 
         let bedrock = anthropic_with("endpoint = \"bedrock\"\nregion = \"us-east-1\"\nbase_url = \"http://bedrock-proxy.internal/\"")
-            .replace("model = \"claude-opus-5\"", "model = \"anthropic.claude-opus-5\"");
+            .replace("model = \"claude-opus-5-5\"", "model = \"anthropic.claude-opus-5-5\"");
         let c = load(&bedrock, &[])?;
         let ChatProvider::Anthropic {
             endpoint:
@@ -3144,7 +3144,7 @@ model = "qwen3:8b"
         let caps = c.models()?.synth().capabilities();
         assert_eq!(caps.structured_output, StructuredOutput::PromptOnly);
         assert!(!caps.strict_tools && !caps.refusal_fallbacks);
-        assert_eq!(c.synth().ok_or("s")?.model, "anthropic.claude-opus-5");
+        assert_eq!(c.synth().ok_or("s")?.model, "anthropic.claude-opus-5-5");
         assert!(
             matches!(c.synth().ok_or("s")?.price, Price::Table(_)),
             "an unknown Anthropic id prices as Opus 5"
@@ -3154,14 +3154,17 @@ model = "qwen3:8b"
             Some(&serde_json::json!("bedrock"))
         );
         // An inference profile is the other documented form.
-        let profile = bedrock.replace("anthropic.claude-opus-5", "global.anthropic.claude-opus-5");
+        let profile = bedrock.replace(
+            "anthropic.claude-opus-5-5",
+            "global.anthropic.claude-opus-5-5",
+        );
         assert_eq!(
             load(&profile, &[])?.synth().map(|s| s.model.clone()),
-            Some("global.anthropic.claude-opus-5".to_owned())
+            Some("global.anthropic.claude-opus-5-5".to_owned())
         );
         // A bare id, or `anthropic.` anywhere but as a whole segment, is refused at load naming the stage.
-        for model in ["claude-opus-5", "claude-opus-5-anthropic.x"] {
-            let bare = bedrock.replace("anthropic.claude-opus-5", model);
+        for model in ["claude-opus-5-5", "claude-opus-5-anthropic.x"] {
+            let bare = bedrock.replace("anthropic.claude-opus-5-5", model);
             let err = load(&bare, &[])
                 .err()
                 .map(|e| e.to_string())
@@ -3464,7 +3467,7 @@ model = "qwen3:8b"
         })?;
         assert_eq!(
             c.summary(),
-            "config=judge.example.toml extract=ollama/qwen3:8b synth=anthropic/claude-opus-5 embed=voyage/voyage-3.5 cap=$5.00"
+            "config=judge.example.toml extract=ollama/qwen3:8b synth=anthropic/claude-opus-5-5 embed=voyage/voyage-3.5 cap=$5.00"
         );
         assert_eq!(
             c.report().pointer("/providers/anthropic/endpoint"),
@@ -3523,7 +3526,7 @@ model = "qwen3:8b"
         let c = load(&text, &env)?;
         assert!(
             c.summary().contains(
-                "extract=ollama/qwen3:8b synth=anthropic/claude-opus-5 embed=voyage/voyage-3.5"
+                "extract=ollama/qwen3:8b synth=anthropic/claude-opus-5-5 embed=voyage/voyage-3.5"
             ),
             "{}",
             c.summary()
@@ -3545,14 +3548,14 @@ model = "qwen3:8b"
             .is_err_and(|e| e.to_string().contains("reasoning_effort = false"))
         );
         let doors: &[(&str, &str, &str)] = &[
-            ("claude-proxy", "claude-opus-5", "proxy"),
+            ("claude-proxy", "claude-opus-5-5", "proxy"),
             ("litellm", "gpt-5", "openai"),
             #[cfg(feature = "aws")]
-            ("claude-aws", "claude-opus-5", "claude-platform-on-aws"),
+            ("claude-aws", "claude-opus-5-5", "claude-platform-on-aws"),
             #[cfg(feature = "aws")]
-            ("bedrock", "anthropic.claude-opus-5", "bedrock"),
+            ("bedrock", "anthropic.claude-opus-5-5", "bedrock"),
             #[cfg(feature = "gcp")]
-            ("vertex", "claude-opus-5", "vertex"),
+            ("vertex", "claude-opus-5-5", "vertex"),
         ];
         for (provider, model, door) in doors {
             let synth = text
@@ -3560,7 +3563,10 @@ model = "qwen3:8b"
                     "provider = \"anthropic\"",
                     &format!("provider = \"{provider}\""),
                 )
-                .replace("model = \"claude-opus-5\"", &format!("model = \"{model}\""))
+                .replace(
+                    "model = \"claude-opus-5-5\"",
+                    &format!("model = \"{model}\""),
+                )
                 .replace("\neffort = \"high\"", "\n# effort = \"high\"");
             let c = load(&synth, &env).map_err(|e| format!("{provider}: {e}"))?;
             assert_eq!(

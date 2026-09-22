@@ -129,7 +129,7 @@ impl Models {
 
     /// The zero-configuration setup, from the environment: Anthropic's
     /// first-party API with `ANTHROPIC_API_KEY` (and `ANTHROPIC_BASE_URL`),
-    /// `claude-opus-5` for both stages, one spend cap from `JUDGE_MAX_USD`.
+    /// `claude-opus-5-5` for both stages, one spend cap from `JUDGE_MAX_USD`.
     /// The binaries go through [`config::Config::load`], which builds this
     /// same setup when there is no `judge.toml`.
     ///
