@@ -104,21 +104,21 @@ same summary line at startup.
 ## What a cheaper model costs
 
 The default is the expensive model. Both it and a cheaper one were measured on the
-21-question gold set in September 2026
+21-question gold set on 2026-09-22
 ([Evaluation](../../how-it-works/evaluation/#results) has the table, and the run files are
 in `eval/published/`):
 
 | | Answered (of 18 in scope) | Agree with the reference | Per question answered |
 | --- | --- | --- | --- |
-| `claude-opus-5-5` on both stages | 16 | 16 | $0.11 |
-| `claude-sonnet-5` on both stages | 6 | 5 | $0.30, erring high |
+| `claude-opus-5-5` on both stages | 18 | 18 | $0.09 |
+| `claude-sonnet-5` on both stages | 13 | 12 | $0.16, erring high |
 
 Sonnet 5 costs half as much per token but came out no cheaper per answer. (Its dollar
 figure errs high, because that run metered cache reads at the input price.) The prompts
-are tuned on Opus. On the hard questions Sonnet mostly returned answers with no citations,
-or broke the tool round by asking for a second `lookup_rules` call, which the pipeline
-allows only once by design. A rejected attempt is paid for twice: once for the attempt and
-once for the retry. Nothing it did answer contradicted the reference.
+are tuned on Opus. Sonnet misquoted three citations and twice broke the tool round by
+asking for a second `lookup_rules` call, which the pipeline allows only once by design. A
+rejected attempt is paid for twice: once for the attempt and once for the retry. It was
+also several times slower. Nothing it did answer contradicted the reference.
 
 So this is not a verdict on the model. Moving the synthesis stage to another model means
 re-tuning `crates/bot/src/prompts/synth_system.md` for it against the gold set, and

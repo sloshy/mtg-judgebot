@@ -21,11 +21,24 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 - **The default model is Claude Opus 5.5** (`claude-opus-5-5`) on both stages, and the
   built-in price table knows its rates ($4 input, $20 output per million tokens). On the
-  gold set it answered 16 of 18 in-scope questions, all agreeing with the reference, for
-  about 30% less per run than Opus 5. The README's results and the Sample answers page
-  now come from that run (`eval/published/v1-opus-5-5.json`). To stay on Opus 5, name
-  `claude-opus-5` in a `judge.toml`: it is still priced. A `judge.toml` that already names
-  a model is unaffected.
+  gold set, with the fixes below, it answered all 18 in-scope questions, all agreeing with
+  the reference, for about 30% less per run than Opus 5. The README's results and the
+  Sample answers page come from that run (`eval/published/v1-opus-5-5.json`). To stay on
+  Opus 5, name `claude-opus-5` in a `judge.toml`: it is still priced. A `judge.toml` that
+  already names a model is unaffected.
+
+### Fixed
+
+- **Citations written one field over.** With structured output the model writes keys in
+  the schema's order, which was alphabetical: a citation's `id` before its `kind`, a
+  ruling's quote before its key. The schema now asks for `kind`, then the reference, then
+  `quote`, as the prompt does. The retry after an unreadable citation now says a value was
+  in the wrong field rather than assuming a placeholder. Together with the next fix, and
+  one gold run before and after, Sonnet 5 went from 6 answered questions to 13.
+- **"Did you mean?" for a shorthand the question had already made clear.** The extractor
+  sent "tower" beside "Urza's Tower". It now sends the full name alone when the message
+  makes the card clear, and still leaves an unclear one ("Teferi's" with no hint which
+  Teferi) for the user to pick.
 
 ## [1.0.0] - 2026-09-20
 

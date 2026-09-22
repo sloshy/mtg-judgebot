@@ -179,49 +179,43 @@ same fact, so the metric tracks correctness rather than one author's citation ta
 
 ### Results
 
-Two full runs of the 21 questions, CR 2026-08-19, Voyage `voyage-3.5` embeddings: Opus 5.5
-on 2026-09-22 and Sonnet 5 on 2026-09-20. The run files are committed under
-`eval/published/` with every question, answer, citation, time and cost, so none of this has
-to be taken on trust: `judge-eval show eval/published/v1-opus-5-5.json` prints each answer
-beside its reference.
+Two full runs of the 21 questions on 2026-09-22, CR 2026-08-19, Voyage `voyage-3.5`
+embeddings. The run files are committed under `eval/published/` with every question,
+answer, citation, time and cost, so none of this has to be taken on trust:
+`judge-eval show eval/published/v1-opus-5-5.json` prints each answer beside its reference.
 
 | | `claude-opus-5-5`, both stages (the default) | `claude-sonnet-5`, both stages |
 | --- | --- | --- |
 | Out-of-scope questions declined (of 3) | 3 | 3 |
-| In-scope questions answered (of 18) | 16 | 6 |
-| …agreeing with the reference ruling | 16 | 5 |
+| In-scope questions answered (of 18) | 18 | 13 |
+| …agreeing with the reference ruling | 18 | 12 |
 | …partly (right on the main point, a sub-question missed) | 0 | 1 |
 | …contradicting the reference | 0 | 0 |
-| Asked "did you mean?" instead | 1 | 1 |
-| Not answered | 1 | 11 |
-| Expected rule ids cited | 42 of 67 (63%) | 12 of 67 (18%) |
-| Cost per in-scope question (median) | $0.09 | $0.10 |
-| Cost per question *answered* | $0.11 | $0.30 |
-| Time per in-scope question (median / longest) | 16 s / 49 s | 26 s / 589 s |
-| Whole run | $1.70 | $1.83 |
+| Asked "did you mean?" instead | 0 | 0 |
+| Not answered | 0 | 5 |
+| Expected rule ids cited | 44 of 67 (66%) | 25 of 67 (37%) |
+| Cost per in-scope question (median) | $0.10 | $0.12 |
+| Cost per question *answered* | $0.09 | $0.16 |
+| Time per in-scope question (median / longest) | 14 s / 21 s | 54 s / 122 s |
+| Whole run | $1.70 | $2.14 |
 
 What these measure, and what they do not:
 
 - **Answered** means a verdict that passed validation: every citation names a source the
   model was shown and quotes it verbatim, and every rule number in the text is one of
   those citations. "Not answered" means the pipeline refused to show an answer, not that
-  it showed a wrong one. Opus 5.5's one was Humility and Opalescence. The first attempt put
-  a rule's text in a citation's `id` field and one word in its `quote`, and the retry's
-  citation was a placeholder (`x` for both). Sonnet's eleven were:
-  - five answers with no citations or no text
-  - four errors in the tool round (a second `lookup_rules` request, a malformed rule id,
-    a request the API refused)
-  - one bad quote
-  - one answer naming rules it did not cite
-- **"Did you mean?"** is the pipeline working as designed, but it leaves an eval question
-  unanswered. On Opus 5.5 it was the Blood Moon and Tron question: the extractor took
-  "tower" as a card name of its own, and the resolver offered five cards for it. On Sonnet it offered "Bruna"
-  and "Gisela" as written, each of which is several cards.
+  it showed a wrong one. Sonnet's five were three misquoted citations and two requests
+  for a second `lookup_rules` round, which the pipeline allows only once.
+- **"Did you mean?"** is the pipeline working as designed when a name could mean several
+  cards, but it leaves an eval question unanswered. Neither run asked it this time.
 - **Agreement with the reference** was judged by Claude reading each answer against the
   gold set's reference answer under a strict rubric. The references were written and
   checked by models, then audited against Oracle text, rulings and CR text (which found
   three to correct). No human judge has reviewed either side, so read this column as "no
-  contradiction found", not as a measured accuracy.
+  contradiction found", not as a measured accuracy. It grades the ruling, not every
+  aside: the same reading found two wrong side remarks in each run (Opus implied Ragavan
+  has an enter trigger; Sonnet invented an example under 707.2 and called Path to
+  Exile's search a trigger), none of which changed a ruling.
 - **Expected rule ids cited** tracks how closely the citations match the gold set's
   lists, which include background rules a good answer may leave out. It is a floor on
   citation overlap and a regression signal between runs, not an accuracy score.
@@ -234,10 +228,10 @@ What these measure, and what they do not:
   questions answered do not depend on it.
 
 The second column shows what the default's prompts cost a smaller model. Sonnet 5 runs at
-half of Opus 5.5's token price, but fails validation or the tool round on most hard
-questions and still pays for the retries. On this evidence there is no cheaper
-configuration to recommend. The documentation site's Model choice page covers what does
-save money.
+half of Opus 5.5's token price, but it answered five fewer questions, took several times
+as long, and paid for its rejected attempts. Per question answered it cost more, though its
+metered dollars err high (see above). On this evidence there is no cheaper configuration
+to recommend. The documentation site's Model choice page covers what does save money.
 
 ## Design
 
