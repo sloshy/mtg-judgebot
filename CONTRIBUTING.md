@@ -23,9 +23,10 @@ compose file reads the same variable.
 
 Nothing in the test suite calls a paid API. HTTP backends are tested against `wiremock`.
 Develop against it too, and keep `ANTHROPIC_API_KEY` blank unless you mean to spend.
+
 Card and rules data is needed to run the pipeline, not to build or test.
-`cargo run --release -p judge-ingest -- init` loads all of it from source (the README's
-"Running it" does the same in a container), and every `docker compose run --rm refresh
+`cargo run --release -p judge-ingest -- init` loads all of it from source. The README's
+"Running it" does the same in a container. Every `docker compose run --rm refresh
 <command>` in the docs is `cargo run --release -p judge-ingest -- <command>` here.
 
 ## The gates
@@ -38,12 +39,16 @@ locally, and git hooks run it for you:
 scripts/dev-setup.sh      # once per clone: the pinned linters, npm ci in web/ and site/, the hooks
 ```
 
-Both hooks check exactly what is being committed or pushed, not your working tree. They
-check it out into a scratch worktree under `.git/`, which shares `target/` and the
-linters with your clone, has its own `node_modules` (reinstalled when a lockfile
-changes) and gets `.env.example` as its `.env`, as CI does. The `.sqlx` check migrates a
-throwaway `judgebot_check` database on your server, never your development one. An unstaged fix, a file you forgot to add or another branch's state cannot make
-them pass.
+Both hooks check exactly what is being committed or pushed, not your working tree. An
+unstaged fix, a file you forgot to add or another branch's state cannot make them pass.
+They check the tree out into a scratch worktree under `.git/`:
+
+- It shares `target/` and the linters with your clone.
+- It has its own `node_modules`, reinstalled when a lockfile changes.
+- It gets `.env.example` as its `.env`, as CI does.
+
+The `.sqlx` check migrates a throwaway `judgebot_check` database on your server, never
+your development one.
 
 - **pre-commit** checks the staged tree. It runs formatting and clippy when Rust or
   compiled-in data is staged, Biome and the build for `web/`, and Biome, `astro check`,
@@ -57,14 +62,18 @@ them pass.
   which need the database up (`docker compose up -d db`) and `sqlx-cli`. A change to
   `scripts/check.sh`, `scripts/tools.sh` or a workflow, a new branch, or a remote
   commit your clone has not fetched gets every group. CI runs the same script, so a
-  push that gets past it on top of a commit that passed CI passes CI too.
+  push that passes this hook, on top of a commit that passed CI, passes CI too.
 
-`scripts/check.sh rust test` (any of `rust sqlx test web site lint`) runs chosen
-groups on the working tree, and `scripts/check.sh --at <rev>` on a commit. `git commit --no-verify` / `git push --no-verify` skip a hook once. The
-linters are prebuilt binaries at the versions in `scripts/tools.sh`, which CI installs
-too. They live in `.tools/` (gitignored), and bumping a version there is the whole
-upgrade. `npm --prefix web run fix` (or `site`) applies Biome's formatting and safe
-fixes, and `.tools/bin/taplo fmt` formats the TOML.
+Other ways to run the gates and linters:
+
+- `scripts/check.sh rust test` runs chosen groups on the working tree (any of `rust sqlx
+  test web site lint`). `scripts/check.sh --at <rev>` runs them on a commit.
+- `git commit --no-verify` / `git push --no-verify` skip a hook once.
+- `npm --prefix web run fix` (or `site`) applies Biome's formatting and safe fixes.
+  `.tools/bin/taplo fmt` formats the TOML.
+
+The linters are prebuilt binaries at the versions in `scripts/tools.sh`, which CI installs
+too. They live in `.tools/` (gitignored). Bumping a version there is the whole upgrade.
 
 Workspace lints deny `unwrap`, `expect`, indexing and `panic!` in every crate, and warn
 on missing docs and the pedantic group. Reach for a type or a `Result` instead of a
@@ -73,9 +82,9 @@ suppression. When one is right, keep it on the one item as
 that stops matching anything fails the build too, so a stale suppression cannot linger.
 
 `deny.toml` is the dependency policy. It covers RustSec advisories, the licences an
-AGPL image may carry, and crates.io as the only source. A dependency that brings a
-new licence fails CI until the licence is added there. An accepted advisory is listed
-there with its reason.
+AGPL image may carry, and crates.io as the only source. A dependency with a new licence
+fails CI until the licence is added there. An accepted advisory is listed there with its
+reason.
 
 **SQL changes.** Queries are checked at compile time against the schema. After editing
 any `sqlx::query!` or migration, regenerate the committed offline data and include it
@@ -152,20 +161,23 @@ when the deployed surface is in question. Those calls cost money.
 
 ## Releases
 
-A release is a GitHub release whose tag is `vX.Y.Z` on a commit of `main`. Move the
-*Unreleased* changelog section under that version first, then create the release
-(`gh release create vX.Y.Z --generate-notes`, or the web form). Publishing it runs
-`publish-image.yml`, which tags the image already built for that commit as `X.Y.Z`,
-`X.Y` and, from 1.0 on, `X`, without rebuilding. The release is the image that has
-been running as `latest`, down to the platform digests. Wait for the push's *Publish
-image* run to finish before publishing the release, or the two build in parallel. A
-commit with no image of its own (a docs-only commit, or a build a later push
-cancelled) is built first, through CI. Pre-release tags such as
-`v1.0.0-rc.1` get only their exact version tag. `latest` keeps following `main`.
+A release is a GitHub release whose tag is `vX.Y.Z` on a commit of `main`.
+
+1. Move the *Unreleased* changelog section under that version.
+2. Wait for the push's *Publish image* run to finish. Otherwise the release and that run
+   build in parallel.
+3. Create the release (`gh release create vX.Y.Z --generate-notes`, or the web form).
+
+Publishing it runs `publish-image.yml`. That tags the image already built for the commit
+as `X.Y.Z`, `X.Y` and, from 1.0 on, `X`, without rebuilding. So the release is the same
+image that has been running as `latest`, down to the platform digests. A commit with no
+image of its own (a docs-only commit, or a build a later push cancelled) is built first,
+through CI. Pre-release tags such as `v1.0.0-rc.1` get only their exact version tag.
+`latest` keeps following `main`.
 
 ## Claude Code
 
-The repository carries a `.mcp.json` and a `judge` skill under `.claude/skills/`. If
-you use Claude Code, they let it drive the judge pipeline as the model through
-`judge-mcp`. They are inert otherwise. `CLAUDE.md` is Claude's working notes for this
+The repository carries a `.mcp.json` and a `judge` skill under `.claude/skills/`. With
+Claude Code, they let Claude act as the model in the judge pipeline through `judge-mcp`.
+Other tools ignore them. `CLAUDE.md` is Claude's working notes for this
 codebase. It is kept in sync with the docs, but the docs are the source of truth.

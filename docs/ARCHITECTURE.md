@@ -1,7 +1,7 @@
 # MTG Judge Bot architecture
 
-The design reference, kept current with the code. It was written stack-independent before
-the language was chosen (Rust, 2026-08-29) and has been maintained since.
+The design reference, kept current with the code. It was written stack-independent, before
+the language was chosen (Rust, 2026-08-29).
 `docs/DECISIONS.md` records why each choice was made. `docs/EXPLAINER.md` is the narrative
 version for someone new to the ideas. This file is the terse one.
 
@@ -34,19 +34,20 @@ Discord message (+ last N Q&A in the same thread)
   │
   ▼
 [1] Entity extraction (LLM, low effort, structured output)
-    Splits the message into card-name spans vs. rules concepts. Runs FIRST so
-    fuzzy matching only sees candidate spans, not rules vocabulary.
-    Which model, and where: `judge_bot::config` (a `judge.toml`, else
-    Anthropic direct from the environment) picks a provider per stage.
-    A provider is Anthropic's Messages API or any OpenAI-compatible chat
-    completions server. The Messages API is reached direct, through a
-    proxy, or on a cloud account: Claude Platform on AWS and Bedrock with
-    SigV4, Vertex AI with ADC. Cloud credentials come from the platform
-    chain and are probed at startup. Every model sits behind the one
-    spend-capped `Metered` per process. The backend reports its
-    `Capabilities`. When it cannot enforce the output schema server-side the
-    adapter appends the schema to the *user turn*. The system prompt is
-    pinned by digest and stays byte-identical on every backend.
+    Splits the message into card-name spans and rules concepts. Runs FIRST so
+    fuzzy matching sees only candidate spans, not rules vocabulary.
+    Model choice: `judge_bot::config` picks a provider per stage, from a
+    `judge.toml`, else Anthropic direct from the environment. A provider is
+    either Anthropic's Messages API or any OpenAI-compatible chat completions
+    server. The Messages API is reached direct, through a proxy, or on a
+    cloud account: Claude Platform on AWS and Bedrock (SigV4), Vertex AI
+    (ADC). Cloud credentials come from the platform chain and are probed at
+    startup.
+    Every model sits behind the process's one spend-capped `Metered`.
+    A backend reports its `Capabilities`. If it cannot enforce the output
+    schema server-side, the adapter appends the schema to the *user turn*.
+    The system prompt is pinned by digest and is byte-identical on every
+    backend.
   │
   ▼
 [2] Card resolution (per span)
@@ -54,20 +55,23 @@ Discord message (+ last N Q&A in the same thread)
     alias → possessive-stripped alias ("bob's" → "bob") →
     exact name → printed-name table → short name before the comma ("Ragavan")
     → alias as a suffix → trigram fuzzy
-    A [[bracketed]] span takes a ladder of its own: exact name → printed
-    name. It is CardSpan::Exact, chosen by an exhaustive match, so no loose
-    rung can resolve it. A miss is never resolved, only offered as Ambiguous.
-    The offer is the cards the naming rungs (alias, possessive, short name,
-    alias suffix) point at, under that rung's matchedVia, so [[bolt]] offers
-    Lightning Bolt. That offer is dropped as a duplicate when the extractor
-    also named the card. With no naming-rung hit, the offer is the fuzzy
-    neighbours.
+    A [[bracketed]] span has its own ladder: exact name → printed name.
+    It is CardSpan::Exact, chosen by an exhaustive match, so no loose rung
+    can resolve it. A miss is never resolved, only offered as Ambiguous:
+      - the cards the naming rungs (alias, possessive, short name, alias
+        suffix) point at, under that rung's matchedVia, so [[bolt]] offers
+        Lightning Bolt. Dropped as a duplicate when the extractor also
+        named the card.
+      - with no naming-rung hit, the fuzzy neighbours.
     Output: Resolution = Resolved(card, matchedVia) | Ambiguous(candidates) | NotFound
-    A span is a duplicate reference (nickname + full name) and is dropped when
-    it is Ambiguous from a non-fuzzy rung and shares a candidate with a card
-    Resolved from another span, or when it is NotFound but its words appear as
-    whole words in a resolved card's (face) name. Fuzzy-ambiguous spans are
-    never dropped: trigram neighbours are not names the user could have meant.
+    Duplicate references (nickname + full name) are dropped. A span is a
+    duplicate when it is
+      - Ambiguous from a non-fuzzy rung and shares a candidate with a card
+        Resolved from another span, or
+      - NotFound, but its words appear as whole words in a resolved card's
+        (face) name.
+    Fuzzy-ambiguous spans are never dropped: trigram neighbours are not
+    names the user could have meant.
     Remaining Ambiguous ⇒ "did you mean…?" buttons and stop. Never guess.
   │
   ▼
@@ -83,21 +87,25 @@ Discord message (+ last N Q&A in the same thread)
   ▼
 [4] Retrieval → Context
     - CR: category → curated subsection IDs (always) + tsvector BM25 + pgvector
-          cosine. Union, dedupe, expand to full rule chunk. Ordered by
-          priority, because the synthesis budget (25 chunks / 30 kB) renders a
-          prefix and the legs return several times that. The order: the
-          primary category's rules sharing a word with the question (ranked by
-          text relevance, not by id), BM25, vector, the primary's remaining
-          rules, secondary categories (ranked). `eval recall` gates on what
-          that prefix shows (≥ 75%) as well as on what was retrieved (≥ 90%).
+          cosine. Union, dedupe, expand to full rule chunk.
+          Order matters: the synthesis budget (25 chunks / 30 kB) renders
+          only a prefix, and the legs return several times that. Priority:
+            1. the primary category's rules sharing a word with the
+               question (ranked by text relevance, not by id)
+            2. BM25
+            3. vector
+            4. the primary's remaining rules
+            5. secondary categories (ranked)
+          `eval recall` gates on what was retrieved (≥ 90%) and on what
+          that prefix shows (≥ 75%).
     - Scryfall rulings for each resolved card (all faces)
     - Glossary entries for terms in the oracle text
     - Prior calls: vector search filtered by (cards ∩ category), labeled with
-      rating and CR version, shown as examples AFTER the CR material. Retired
-      calls are excluded. The nightly pass retires a call when any citation's
-      source no longer contains its quote or a context card's Oracle text
-      changed, and restores it when they hold again. Renumbered rules carry
-      their calls with them.
+      rating and CR version, shown as examples AFTER the CR material.
+      Retired calls are excluded. The nightly pass retires a call when a
+      citation's source no longer contains its quote, or a context card's
+      Oracle text changed. It restores the call when both hold again.
+      Renumbered rules carry their calls with them.
     - Nightmare notes
     - Thread history (last N Q&A)
   │
@@ -109,20 +117,25 @@ Discord message (+ last N Q&A in the same thread)
     Tool: lookup_rules(ids). The model may request additional CR sections
     once before answering, closing the classifier-miss gap.
     Output: Verdict { answer, confidence: Low|Medium|High, citations[], category }
-    `source`, `crVersion` and `cards` are not model-reported. Validation stamps
-    the source from the extraction (as AnswerableSource: only Cr | Commander
-    reach this step, by type), crVersion from the retrieved chunks and the
-    resolved cards (CardRef: id + name) from Context. Every front door then
-    shows "Cards: …" from the verdict alone.
+    The model does not report `source`, `crVersion` or `cards`. Validation
+    stamps them:
+      - source from the extraction, as AnswerableSource (by type, only
+        Cr | Commander reach this step)
+      - crVersion from the retrieved chunks
+      - the resolved cards (CardRef: id + name) from Context
+    Every front door then shows "Cards: …" from the verdict alone.
     Each citation = typed reference + quoted span. Validation:
-      (a) reference exists in Context, (b) span is a substring of that chunk,
-      comparing curly/ASCII punctuation as equal (judge_core::quote) and
-      storing the chunk's own text for the span, so a stored quote is exact.
-    Before that, citations that quote nothing (blank, a stock word, under 4
-    chars) are dropped (D21); an answer with nothing else is a MalformedCitation.
-    Also (c) every verdict must cite something and the answer must be
-    ≥ 40 chars, else JudgeError.EmptyVerdict, and (d) every rule number in the
-    answer text must be covered by a rule citation, else UncitedRules (D20).
+      - first, citations that quote nothing (blank, a stock word, under 4
+        chars) are dropped (D21). An answer with nothing else is a
+        MalformedCitation.
+      (a) the reference exists in Context
+      (b) the span is a substring of that chunk. Curly and ASCII
+          punctuation compare equal (judge_core::quote). The chunk's own
+          text is stored for the span, so a stored quote is exact.
+      (c) the verdict cites something and the answer is ≥ 40 chars,
+          else JudgeError.EmptyVerdict
+      (d) every rule number in the answer text is covered by a rule
+          citation, else UncitedRules (D20)
     Failure ⇒ BadCitation / MalformedCitation / EmptyVerdict / UncitedRules →
     retry once (the notice says which), then reply with error.
     Always quotes CURRENT Oracle text (errata note if the printed text differs).
@@ -173,20 +186,21 @@ Three front doors share this pipeline through the same composition root
     `PgLibrary::rulings`. They call no model and touch no meter.
 - **HTTP adapter** (`crates/api` + `web/`): anonymous `POST /api/judge` behind
   a per-IP fixed-window rate limit, and a SolidJS single page.
-  - Which front doors a process opens is a launch option, not a result of starting it. `judge-api` alone is
-    the JSON route, `--web` adds the page, `--mcp` adds the MCP transport, and
-    an interface nobody named is not mounted (`crates/api/src/interfaces.rs`).
-    The set is a `NonEmpty`, so "serving nothing" is unrepresentable.
-  - `GET /api/health` and `GET /api/about` are outside the set. The container
-    healthcheck has to reach the first whatever is switched off. The second is
-    the source offer (`judge_core::source`): repository, built commit, licence
-    and copyright. Every remote interface owes it to its users under the AGPL,
-    and the page's footer reads it from there. Discord says the same in `/help`
-    and `/license`, and the MCP server in its initialization instructions and
-    an `about` tool. `JUDGE_SOURCE_URL` points all of them at a fork.
+  - Each front door is opted into at launch (`crates/api/src/interfaces.rs`).
+    `judge-api` alone serves the JSON route, `--web` adds the page and `--mcp`
+    adds the MCP transport. A door nobody named is not mounted. The set is a
+    `NonEmpty`, so "serving nothing" is unrepresentable.
+  - `GET /api/health` and `GET /api/about` are served whatever doors are off.
+    The container healthcheck needs the first.
+  - `/api/about` is the source offer (`judge_core::source`): repository, built
+    commit, licence and copyright. The AGPL requires every remote interface to
+    offer it. The page's footer reads it from there. Discord gives the same in
+    `/help` and `/license`, and the MCP server in its initialization
+    instructions and an `about` tool. `JUDGE_SOURCE_URL` points all of them at
+    a fork.
   - The same places name who runs the instance (`judge_core::operator`). The
-    bot takes a `DiscordOperator` and the HTTP layer a `NetworkOperator`, and
-    the only way to either is `Operator::for_discord` / `for_network`. So the
+    bot takes a `DiscordOperator` and the HTTP layer a `NetworkOperator`. The
+    only way to make either is `Operator::for_discord` / `for_network`. So the
     bot cannot start without `JUDGE_OPERATOR_DISCORD`, and `judge-api` cannot
     start without `JUDGE_OPERATOR_EMAIL`, whichever doors it opens. A local
     `judge-cli` or stdio `judge-mcp` holds a plain `Operator` and needs neither.
@@ -205,26 +219,30 @@ Three front doors share this pipeline through the same composition root
     serves nothing and warns.
   - `judge-cli` has one subcommand per operation with JSON out, for a shell
     agent (the repo's `.claude/skills/judge` skill).
-  - It offers the pipeline two ways. The `judge` tool runs it as above with the
-    built-in model calls. That is spend-capped, shares the web route's
-    concurrency semaphore, and is offered only when a model is configured
-    (`ANTHROPIC_API_KEY` or a `judge.toml`). A **session** runs it in pull
-    mode, where the calling agent *is* the model.
-  - `judge_bot::session` is that state machine. `begin` returns the extraction
-    prompt (steps 1 + 3 as text plus the JSON Schema). The agent's `Extraction`
-    JSON drives steps 2 + 4 and yields the synthesis prompt. That is the same
-    system prompt, with `Harness`-specific wording for the one `lookup_rules`
-    round and the output format, plus the rendered material. The agent's
-    `Verdict` JSON goes through the same `Verdict::validate` against the
-    session's own `Context`, with the same one retry and the same rejection
-    notice.
-  - The invariants the typestates carry on the API path (one tool round, one
-    retry, only a validated verdict is persisted) are a `Stage` enum here,
-    because the state lives in Postgres between calls (`agent_sessions`, one
-    jsonb document, optimistic version). The 2026-07-28 MCP revision removed
-    protocol sessions in favour of server-minted handles passed as tool
-    arguments, which is what the session id is. The HTTP transport is served
-    statelessly for every protocol version.
+  - It offers the pipeline two ways:
+    - The `judge` tool runs it as above, with the built-in model calls. It is
+      spend-capped, shares the web route's concurrency semaphore, and is
+      offered only when a model is configured (`ANTHROPIC_API_KEY` or a
+      `judge.toml`).
+    - A **session** runs it in pull mode, where the calling agent *is* the
+      model.
+  - `judge_bot::session` is that state machine.
+    1. `begin` returns the extraction prompt (steps 1 + 3 as text, plus the
+       JSON Schema).
+    2. The agent's `Extraction` JSON drives steps 2 + 4 and yields the
+       synthesis prompt: the same system prompt, with `Harness`-specific
+       wording for the one `lookup_rules` round and the output format, plus
+       the rendered material.
+    3. The agent's `Verdict` JSON goes through the same `Verdict::validate`
+       against the session's own `Context`, with the same one retry and the
+       same rejection notice.
+  - On the API path, typestates carry the invariants (one tool round, one
+    retry, only a validated verdict is persisted). Here they are a `Stage`
+    enum, because the state lives in Postgres between calls (`agent_sessions`,
+    one jsonb document, optimistic version). The session id is a
+    server-minted handle passed as a tool argument, which is what the
+    2026-07-28 MCP revision adopted in place of protocol sessions. The HTTP
+    transport is served statelessly for every protocol version.
   - Sessions are unauthenticated at the tool level. Their thread ids are
     therefore a type (`AgentThread`, always `agent:<uuid>`) that cannot name a
     Discord or web thread, and their inputs are bounded (question, spans,
@@ -240,29 +258,31 @@ Three front doors share this pipeline through the same composition root
 The Discord and web front doors draw Magic's card symbols (`{W}`, `{2/U}`, `{T}`) as
 pictures, from one set of names:
 
-- **Discord** substitutes *application* emoji (`<:mana_w:…>`). The bot owns them
-  rather than a server, so they work in every guild and cost no emoji slots.
-  `ingest emoji` uploads them (Scryfall's SVG → a 128 px PNG via resvg, scaled
-  to fit and centred: nine of the 84 symbols are not square). The name is
-  defined once, in `judge_core::symbol`, with no I/O. It is in core rather than
-  in either binary because the uploader and the renderer are separate programs
-  that must agree on it exactly. A test there pins the mapping as total and
-  injective over everything Scryfall publishes, so no symbol can silently
-  overwrite another's emoji. A tag is ~28 characters
-  where `{W}` is three, and Discord counts the tag. `mana::Rendered` therefore
-  keeps text as segments and lets only plain text be cut, which makes a
-  half-written tag unrepresentable rather than tested against. An application with no
-  emoji uploaded gets an empty table and the literal `{W}`, unchanged.
+- **Discord** substitutes *application* emoji (`<:mana_w:…>`). The bot owns them,
+  not a server, so they work in every guild and cost no emoji slots.
+  - `ingest emoji` uploads them: Scryfall's SVG → a 128 px PNG via resvg,
+    scaled to fit and centred (nine of the 84 symbols are not square).
+  - The emoji name is defined once, in `judge_core::symbol`, with no I/O. It is
+    in core because the uploader and the renderer are separate programs that
+    must agree on it exactly. A test pins the mapping as total and injective
+    over everything Scryfall publishes, so no symbol can silently overwrite
+    another's emoji.
+  - A tag is ~28 characters where `{W}` is three, and Discord counts the tag.
+    `mana::Rendered` keeps text as segments and lets only plain text be cut, so
+    a half-written tag is unrepresentable rather than tested against.
+  - An application with no emoji uploaded gets an empty table and the literal
+    `{W}`, unchanged.
 - **Web** renders Scryfall's SVGs inline from their CDN (`web/src/symbols.ts`
-  is the generated table, `Symbols.tsx` the component). A symbol the table does
-  not know, or an image that fails to load, falls back to the literal text.
-  `split`/`lookup` mirror the Rust scanner, so both surfaces accept the same
-  spellings (`{W/U}`, `{w/u}`, `{U/W}`, `{WU}`) and leave the same text alone.
-  Seven symbols (`{E} {P} {PW} {CHAOS} {TK} {L} {D}`) are flat black with no
-  disc and are invisible on the dark palette. They carry a `flat` flag and
-  are inverted in dark mode. The coloured ones must not be. If a
-  Content-Security-Policy is ever added to `judge-api`, `img-src` must allow
-  `https://svgs.scryfall.io`.
+  is the generated table, `Symbols.tsx` the component).
+  - A symbol the table does not know, or an image that fails to load, falls
+    back to the literal text.
+  - `split`/`lookup` mirror the Rust scanner, so both surfaces accept the same
+    spellings (`{W/U}`, `{w/u}`, `{U/W}`, `{WU}`) and leave the same text alone.
+  - Seven symbols (`{E} {P} {PW} {CHAOS} {TK} {L} {D}`) are flat black with no
+    disc, invisible on the dark palette. They carry a `flat` flag and are
+    inverted in dark mode. The coloured ones must not be.
+  - If a Content-Security-Policy is ever added to `judge-api`, `img-src` must
+    allow `https://svgs.scryfall.io`.
 
 ## 4. Data
 
@@ -276,7 +296,7 @@ pictures, from one set of names:
 | Scryfall `/symbology` (84 card symbols) | nightly (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web page (`web/src/symbols.ts`) |
 | Nicknames | hand-curated YAML | `card_aliases` (alias, oracle_id) |
 | Nightmare notes | hand-written markdown | `card_notes` (oracle_id, note) |
-| Categories → subsections | YAML (single source of truth; enum generated or validated from it) | `categories` |
+| Categories → subsections | YAML (single source of truth; the enum is generated from it) | `categories` |
 | Calls | continuous; `retired_at`/`retired_reason` recomputed nightly from citation validity | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding) |
 | Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |
 
@@ -285,9 +305,9 @@ chunks, <10k calls.
 
 Embeddings: **Voyage AI** by default (`voyage-3.5` or `voyage-4` family; `voyage-3` is
 superseded). It was chosen over local models for the zero-config setup, because local
-models are not worth it on WSL2. A local or OpenAI-compatible embedder is a `judge.toml`
-choice. `Embedder` is an interface so this can change: `judge_embed` also has an
-OpenAI-compatible `/v1/embeddings` adapter, chosen by `[models.embed]` in `judge.toml`.
+models are not worth it on WSL2. `Embedder` is an interface, so this can change:
+`judge_embed` also has an OpenAI-compatible `/v1/embeddings` adapter for local or hosted
+models, chosen by `[models.embed]` in `judge.toml`.
 
 Every embedder carries its `Space` (provider kind, model, width). The one-row
 `embedding_space` table records the space the stored vectors belong to, and

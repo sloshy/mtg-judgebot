@@ -24,14 +24,17 @@ buttons beneath it. The "did you mean…?" choices are buttons too.
 
 The five answers below are copied from `eval/published/v1-opus-5.json`, the 2026-09-20
 run of the [gold evaluation set](../../how-it-works/evaluation/) on the default
-configuration (`claude-opus-5` on both stages, Voyage embeddings). Nothing is edited, bar the one note on the last sample:
-the question is as the gold set asks it, typos and all, and the answer, the citations,
-the time and the cost are as the run recorded them. The run file cuts a long quote at
-a display limit, which is the "…" at the end of a few below; the full span was what
-validation checked. Every quote was checked verbatim
-against its source before the answer was accepted. Rule numbers link to the Yawgatog
-mirror, as they do in a real answer. The run file holds all 21, including the one where
-the pipeline asked which card was meant instead of answering.
+configuration (`claude-opus-5` on both stages, Voyage embeddings). The run file holds all
+21, including the one where the pipeline asked which card was meant instead of answering.
+
+Nothing is edited except the one note on the last sample. Each question is as the gold
+set asks it, typos and all. The answer, citations, time and cost are as the run recorded
+them.
+
+Every quote was checked verbatim against its source before the answer was accepted. The
+run file cuts long quotes at a display limit, which is the "…" at the end of a few below.
+Validation checked the full span. Rule numbers link to the Yawgatog mirror, as they do in
+a real answer.
 
 ## Layers: Humility and Opalescence
 

@@ -5,11 +5,14 @@ sidebar:
   order: 3
 ---
 
-`judge-api` serves three routes. `POST /api/judge` is on with `--api` (or with no flags at
-all). `GET /api/health` and `GET /api/about` are served whatever is switched off. There is
-no authentication: the API is the anonymous front door, bounded by a per-address rate
-limit, the concurrency slots and the spend cap. It sends no CORS headers, so call it from
-a server or from the bundled page, not from a browser page on another origin.
+`judge-api` serves three routes:
+
+- `POST /api/judge`, on with `--api` (or with no flags at all).
+- `GET /api/health` and `GET /api/about`, served whatever is switched off.
+
+There is no authentication. The API is the anonymous front door, bounded by a per-address
+rate limit, the concurrency slots and the spend cap. It sends no CORS headers, so call it
+from a server or from the bundled page, not from a browser page on another origin.
 
 ## `POST /api/judge`
 
@@ -26,9 +29,9 @@ curl -s http://localhost:8787/api/judge \
 | `pins` | array, optional | Resolved ambiguities, at most 8: `{"span": "<as the ambiguous reply gave it>", "name": "<the full name chosen>"}`, each string at most 200 characters. |
 
 An answer takes twenty to forty-five seconds. A request that parses gets JSON tagged by
-`kind`. One that does not (malformed JSON, a missing `question`, a `session_id` that is
-not a UUID, a `Content-Type` other than `application/json`) gets a 4xx with a plain-text
-body, so check the status before parsing.
+`kind`. A request that does not parse gets a 4xx with a plain-text body, so check the
+status before parsing. That covers malformed JSON, a missing `question`, a `session_id`
+that is not a UUID, and a `Content-Type` other than `application/json`.
 
 ```json
 {

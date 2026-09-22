@@ -78,13 +78,13 @@ into.
   servers, Voyage and Scryfall. They are treated as project code and pinned by golden
   fixtures. The community Anthropic crates were either framework-sized or unmaintained,
   and the wire surface is one endpoint per provider. Every call is non-streaming. Every
-  request keeps `max_tokens` ≤ 16k, inside the non-streaming guidance, and streaming
-  would buy nothing the judge needs.
-- **schemars from the serde struct** (I5), with one transform per backend that reduces the
-  schema to what that backend accepts (`additionalProperties:false`, `oneOf→anyOf`,
-  stripped constraints; strict-mode `required`/`anyOf [T, null]` for OpenAI). Stripped
-  constraints are still enforced on decode by serde and `nutype`, so the server's
-  enforcement is an optimisation, not a guarantee.
+  request keeps `max_tokens` ≤ 16k, inside the non-streaming guidance. Streaming would
+  buy nothing the judge needs.
+- **schemars from the serde struct** (I5). One transform per backend reduces the schema
+  to what that backend accepts: `additionalProperties:false`, `oneOf→anyOf` and stripped
+  constraints, plus strict-mode `required`/`anyOf [T, null]` for OpenAI. serde and
+  `nutype` still enforce the stripped constraints on decode. The server's enforcement is
+  an optimisation, not a guarantee.
 - **sqlx with compile-time checked queries** and a committed `.sqlx` offline cache (I6),
   over Diesel or a query builder. `cargo sqlx prepare --check` in CI keeps the cache
   current.
@@ -133,11 +133,12 @@ questions have the shape "card A + card B + rule concept C", so:
 Citations are validated client-side, and the answer's lifecycle is a type.
 
 - Every `Citation` carries a verbatim `quote`, checked as a substring of its source in the
-  retrieved `Context`. What is stored is the *source's* span, not the model's string, so a
-  persisted quote is byte-exact and the retirement pass (D11) stays a strict check. The
-  comparison folds typographic punctuation one character to one character (curly quotes,
-  the dash block, non-breaking spaces). Models retype the CR's `’` as `'`, and that was
-  the most common rejection. The comparison never folds case or words.
+  retrieved `Context`. The stored quote is the *source's* span, not the model's string.
+  A persisted quote is therefore byte-exact, and the retirement pass (D11) stays a strict
+  check.
+- The comparison folds typographic punctuation one character to one character: curly
+  quotes, the dash block, non-breaking spaces. It never folds case or words. Models
+  retype the CR's `’` as `'`, and that was the most common rejection.
 - Only `Verdict<Validated>` can reach `CallStore::persist` or Discord rendering (I3). Only
   `Verdict<Unvalidated>` is `Deserialize`. `Synth<Fresh | ToolRequested | Final>` makes a
   second tool round a compile error (I4).
@@ -159,10 +160,10 @@ becoming a naming scheme of its own.
 
 So there is `judge.toml`: typed structs, `deny_unknown_fields`, `nutype` validators, and
 secrets named by environment variable and never written in the file. With no file, the
-binaries build the default setup from `.env` (Anthropic direct, `claude-opus-5` for both
-stages, Voyage if keyed), which is the one the eval numbers and the pinned prompt digest
-were produced on. A knob that would be silently ignored is a load
-error naming both keys. `docs/PROVIDERS.md` is the reference.
+binaries build the default setup from `.env`: Anthropic direct, `claude-opus-5` for both
+stages, Voyage if keyed. The eval numbers and the pinned prompt digest were produced on
+that setup. A knob that would be silently ignored is a load error naming both keys.
+`docs/PROVIDERS.md` is the reference.
 
 ## D7. Spend cap by type
 
@@ -200,9 +201,9 @@ bot have them. D19 makes the cap a budget over time without changing any of this
 Bedrock and Vertex were already reachable through LiteLLM or their OpenAI-compatible
 endpoints with no new dependencies. Native SigV4 and ADC support was added anyway, for the
 operator who wants Claude on their own cloud account *without* running a proxy. The cost
-is two auth crates behind the `aws`/`gcp` Cargo features. The features are default on
-and named in the Dockerfile, so a lean build cannot name the doors and the loader says
-"not built".
+is two auth crates behind the `aws`/`gcp` Cargo features. The features are on by default
+and named in the Dockerfile. A lean build without them cannot name the doors, and the
+loader says "not built".
 
 Credentials come from the platforms' own chains, never from `judge.toml`. They are
 resolved lazily and probed once at startup, so an empty chain fails there, not on the
@@ -226,8 +227,8 @@ to `ALTER` and re-run `embed` by hand. The command is safer.
 - The adapters re-read the row on every use and go **dark, never mixed** on a mismatch
   (error log naming both spaces).
 
-Writers hold the space under the shared side of an advisory lock and the switch takes the
-exclusive side, so a switch waits for in-flight writes. `reembed` probes the new embedder
+Writers hold the space under the shared side of an advisory lock. The switch takes the
+exclusive side, so it waits for in-flight writes. `reembed` probes the new embedder
 before clearing anything, because re-embedding pays the provider per row. That is also
 why `scripts/backup-db.sh` exists.
 
@@ -342,8 +343,8 @@ one-shot container, not a service.
 **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP` is
 `peer` or `cloudflare` (`CF-Connecting-IP`), never `X-Forwarded-For`. Cloudflare *appends*
 to a caller-supplied header instead of replacing it, which would hand every request a
-fresh allowance against a paid endpoint. The earlier flag that did that is rejected at
-startup rather than ignored. Deploy credentials live in their own env file that the
+fresh allowance against a paid endpoint. Any other `API_CLIENT_IP` value fails at
+startup rather than falling back. Deploy credentials live in their own env file that the
 internet-facing processes never read.
 
 ## D16. One judgebot per community
@@ -422,11 +423,12 @@ restart handed it out again. `JUDGE_BUDGET_PERIOD=day|month` makes the cap cover
 current UTC day or month, across the processes and across restarts.
 
 The meter stays the enforcement point: in memory, atomic, reserving before it sends
-(D7). The period is one number added to what the cap sees, the meter's *adjustment*:
-other processes' spend this period in, this process's earlier periods out.
-`judge_bot::budget` computes it from a `spend_days` table that each process adds its own
-share to every ten seconds, and the period boundary is Postgres's clock, so two processes
-cannot disagree about which day it is. `judge-llm` still knows nothing of storage or time.
+(D7). The period enters as one number added to what the cap sees, the meter's
+*adjustment*. It counts other processes' spend this period in and this process's
+earlier periods out. `judge_bot::budget` computes it from a `spend_days` table, which
+each process adds its own share to every ten seconds. The period boundary is Postgres's
+clock, so two processes cannot disagree about which day it is. `judge-llm` still knows
+nothing of storage or time.
 
 The cost is a bounded overshoot: two processes can together pass the cap by what they
 spend between two syncs. A crash loses at most that much of the record. With no period
@@ -458,9 +460,9 @@ guarantee the project states ("every claim is backed by a validated citation") w
 stronger than what the code enforced.
 
 Now every rule number in the answer text must be covered by a rule citation: that id, its
-rule, or one of its sub-rules, the same covering the retrieval scoring uses. It is a regex
-and a `RuleId` parse, checked after the citations themselves, and a miss is a typed
-rejection (`UncitedRules`) with one retry, like the others. On the 17 published answers
+rule, or one of its sub-rules, the same covering the retrieval scoring uses. The check is
+a regex and a `RuleId` parse, run after the citations themselves are checked. A miss is
+a typed rejection (`UncitedRules`) with one retry, like the others. On the 17 published answers
 of the 2026-09-20 gold run the prose named 57 rule numbers and 55 were covered. The two
 misses were in two different answers (`605.3b`, and `903.9a` beside a cited `903.9b`), so
 about one answer in eight would have been retried, at about ten cents a retry.
@@ -472,17 +474,17 @@ passes, and a rule number is not covered by citing a prior call that mentions it
 **Rejected:**
 
 - *A second model call that judges whether the prose follows from the citations.* It is
-  the check one actually wants, and it costs a quarter to three-quarters of an answer
+  the check one actually wants. It also costs a quarter to three-quarters of an answer
   again, adds seconds, and is itself a model that can be wrong. A probabilistic opinion
   does not belong among gates that are otherwise exact. If it is ever wanted, it belongs
   in `judge-eval` as a score, not in the path of every answer.
 - *Accepting a number that is in the material but not cited.* Looser, and it would let the
   prose lean on text no quote was checked against.
 - *Leaving the model to find out from the retry.* The prompt asks for rule numbers inline
-  and for "usually one to four citations", which pulls against this check, so it was
+  and for "usually one to four citations", which pulls against this check. It was
   measured first on the unchanged prompt: about one answer in eight retried. The answer
-  style section now says it in one sentence (every rule number written must be one of the
-  rule citations), the pinned digest and the golden fixtures were updated on purpose, and
+  style section now says it in one sentence: every rule number written must be one of the
+  rule citations. The pinned digest and the golden fixtures were updated on purpose, and
   the published runs were redone on the new prompt.
 
 ## D21. A citation that quotes nothing is dropped, not held against the answer
@@ -499,9 +501,10 @@ retry sometimes stubbed again: in the 2026-09-20 gold runs, stubs were the only 
 lost an in-scope answer on the default model.
 
 A stub quotes nothing, so it supports nothing, and dropping it takes no checked support
-away from the answer. So `validate` sets stubs aside (an entry whose `quote` is present
-and is blank, a stock word or fewer than four characters, whether or not the rest of the
-entry parses) and validates what is left exactly as before.
+away from the answer. So `validate` sets stubs aside and validates what is left exactly
+as before. A stub is an entry whose `quote` is present and is blank, a stock word or
+fewer than four characters, whether or not the rest of the entry parses.
+
 What keeps this honest:
 
 - Every citation that is shown was still checked verbatim against its source.
@@ -514,10 +517,10 @@ What keeps this honest:
   under a wrong id.
 
 What it does not catch: prose that still says "a ruling on this card says…" after the
-ruling stub behind it was dropped. D20 ties rule numbers to citations; rulings and Oracle
-text have no identifier in prose to tie. The same sentence could be written today with no
-stub at all. The prompt keeps its stern paragraph against stubs on purpose: it is still
-true when nothing else is cited, and it costs nothing as a deterrent.
+ruling stub behind it was dropped. D20 ties rule numbers to citations, but rulings and
+Oracle text have no identifier in prose to tie. The same sentence could be written today
+with no stub at all. The prompt keeps its stern paragraph against stubs on purpose. It is
+still true when nothing else is cited, and it costs nothing as a deterrent.
 
 **Rejected:**
 

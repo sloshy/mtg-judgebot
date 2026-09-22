@@ -20,8 +20,8 @@ The bot acknowledges at once and edits the reply in.
 The reply opens with a non-pinging `@you asked:` header, then the ruling, then a citation
 per line. Rule citations link to the rule on the Yawgatog mirror of the Comprehensive
 Rules. Rulings and Oracle text link to the card on Scryfall. The footer names the cards
-the question was resolved to, which lets you check that "bob" was taken to mean Dark
-Confidant. It then gives the model's confidence and the CR version it answered from.
+the question was resolved to, so you can check that "bob" was taken to mean Dark
+Confidant. It also gives the model's confidence and the CR version it answered from.
 
 If a name could mean several cards ("Tibalt", "Emrakul") you get a **did you mean…?** row
 of up to five buttons instead of a guess. Only the person who asked can pick. If a name
@@ -35,9 +35,9 @@ Ask a follow-up in the same channel and the bot sees the recent question-and-ans
 from that channel as history, so "what if it had flash?" works.
 
 Each member can ask a limited number of questions per window (six per ten minutes unless
-the operator changed `JUDGE_USER_LIMIT`). Past it, the bot says how long is left, and only
-the asker sees that. A "busy" reply does not count, and anything after it does,
-answered or not. Picking a card from a "did you mean…?" row does not count again, and
+the operator changed `JUDGE_USER_LIMIT`). Past it, the bot tells the asker alone how long
+is left. A question turned away as "busy" or over the limit does not count. Any other
+question does, answered or not. Picking a card from a "did you mean…?" row does not count again, and
 `/card` and `/rule` are never limited.
 
 ### `private: True`
@@ -101,13 +101,17 @@ you see them.
 
 ## `/license`
 
-The source offer: the repository holding this instance's source code, the commit it was
-built from (linked into the repository), the licence (AGPL-3.0-or-later) and the
-copyright. An operator running a modified version points it at their fork with
-`JUDGE_SOURCE_URL`. An unmodified build names the upstream repository. The reply ends
-with the Discord username of whoever runs this instance (`JUDGE_OPERATOR_DISCORD`, which
-the bot does not start without) and their support address if they set one. The reply is
-ephemeral.
+The source offer, shown only to you:
+
+- the repository holding this instance's source code
+- the commit it was built from, linked into the repository
+- the licence (AGPL-3.0-or-later) and the copyright
+- the Discord username of whoever runs this instance, and their support address if they
+  set one.
+
+An unmodified build names the upstream repository. An operator running a modified version
+points it at their fork with `JUDGE_SOURCE_URL`. The username is `JUDGE_OPERATOR_DISCORD`,
+which the bot does not start without.
 
 ## `/forget`
 

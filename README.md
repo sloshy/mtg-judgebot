@@ -7,8 +7,8 @@ like a judge. Ask in plain language. Nicknames such as "bob", "goyf" and "snappy
 The reply is a concise ruling in which **every claim is backed by a validated, clickable
 citation**: a Comprehensive Rules section, an official Scryfall ruling, the card's
 current Oracle text, or a prior rated call. On Discord, buttons rate an answer 1–3
-(incorrect / partially correct / correct), and ratings feed back into how future answers
-are grounded.
+(incorrect / partially correct / correct). Ratings decide which past answers later ones
+draw on as examples.
 
 <img src="site/src/assets/screenshots/discord-answer-citations.png" width="720" alt="A Discord reply to /judge about revealing an X-cost spell to Dark Confidant: a two-paragraph ruling with a rule number inline and mana symbols drawn as pictures, an embed quoting a dated ruling, the card's Oracle text and rule 107.3g, the card the question resolved to, the confidence and CR version, and three rating buttons.">
 
@@ -26,7 +26,7 @@ More answers, copied verbatim from a published evaluation run, are on the site's
 
 1. **Extract & classify** (LLM, structured output). The model separates card-name spans
    from rules concepts, picks up to three categories from a fixed taxonomy, and checks
-   scope. Tournament-policy and price questions are politely refused without spending on
+   scope. Tournament-policy and price questions are declined before any money is spent on
    synthesis.
 2. **Resolve cards** through a typed ladder: alias table (nicknames, possessives) →
    exact name → old printed names → short names ("Ragavan") → trigram fuzzy. A
@@ -37,13 +37,14 @@ More answers, copied verbatim from a published evaluation run, are on the site's
    full-text search, and pgvector semantic search over rule embeddings. Retrieval adds
    the cards' rulings, glossary entries, hand-written notes for "nightmare" cards
    (Humility, Blood Moon…), and similar prior calls labeled with their community rating.
-4. **Synthesize** (LLM): a judge-persona prompt over that material and nothing else, with one optional
-   `lookup_rules` tool round (type-enforced to at most one). Every citation must quote
-   its source verbatim. Hallucinated citations are rejected and retried, and an answer
-   with no citations never ships.
-5. **Learn from ratings**: a Bayesian-smoothed score per call, with an override for
-   users holding a Judge role, decides which prior calls are shown, warned about, or
-   excluded. The CR always outranks precedent.
+4. **Synthesize** (LLM). The model writes the ruling from that material and nothing
+   else. It may ask for more rules once (the `lookup_rules` tool), and the types enforce
+   that limit. Every citation must quote its source verbatim. Invented citations are
+   rejected and retried, and an answer with no citations is never shown.
+5. **Learn from ratings.** Each call gets a smoothed average score (Bayesian), and a
+   rating from a member with the Judge role overrides the crowd's. The score decides
+   which prior calls are shown, shown with a warning, or left out. The CR always
+   outranks precedent.
 
 ## What it takes
 
@@ -78,15 +79,18 @@ docker compose run --rm refresh init   # the whole first load: schema, cards, ru
 docker compose up -d api           # the web page
 ```
 
-Open <http://localhost:8787> and ask a question. The page allows each address 4 questions
-per 5 minutes by default (`API_RATE_LIMIT` in `.env`). If port 5432 is taken on your
-machine, set `DB_PORT` in `.env` and change `DATABASE_URL` to match. A typical answer costs
-$0.08–0.25 in model calls. Every call is metered and hard-capped (`JUDGE_MAX_USD`,
-default $5). By default that is a total for the life of each process (`bot` and `api` have
-one each), and a restart counts from zero. `JUDGE_BUDGET_PERIOD=day` or `month` makes it
-one budget for the period, shared by both and kept across restarts. Once the headroom
-left is smaller than a call's worst case (about $0.45 for synthesis), questions are
-refused, and `JUDGE_ALERT_WEBHOOK` tells you.
+Open <http://localhost:8787> and ask a question. By default the page allows each address
+4 questions per 5 minutes (`API_RATE_LIMIT` in `.env`). If port 5432 is taken on your
+machine, set `DB_PORT` in `.env` and change `DATABASE_URL` to match.
+
+Every model call is metered against a hard cap, `JUDGE_MAX_USD` (default $5):
+
+- By default the cap is a total for the life of each process. `bot` and `api` have one
+  each, and a restart counts from zero.
+- `JUDGE_BUDGET_PERIOD=day` or `month` makes it one budget for the period, shared by both
+  and kept across restarts.
+- Once the budget left is smaller than a call's worst case (about $0.45 for synthesis),
+  questions are refused and `JUDGE_ALERT_WEBHOOK` tells you.
 
 `docker compose pull` fetches the image CI built from upstream `main`. To run your own
 checkout instead, skip it: `docker compose up -d --build` compiles the image (minutes,
@@ -116,12 +120,12 @@ covers the portal. Then:
 4. `docker compose up -d bot`. The log line `registered /judge, /card, /rule, /help,
    /license and /forget` confirms it, and `/help` in the server confirms it end to end.
 
-Members holding a role named `JUDGE_ROLE` (default `Judge`) rate as judges: their rating
-overrides the crowd's. `docker compose run --rm refresh emoji` uploads the mana symbols as
-application emoji once, so answers show pictures instead of `{W}`. The documentation site's
+Members holding the role named by `JUDGE_ROLE` (default `Judge`) rate as judges: their
+rating overrides the crowd's. Run `docker compose run --rm refresh emoji` once to upload
+the mana symbols as application emoji, so answers show pictures instead of `{W}`. After
+code changes, `docker compose up -d --build bot api` redeploys. The documentation site's
 [Run your own judgebot](https://mtg-judgebot.rpeters.dev/self-hosting/first-run/)
-section has the long form with links into Discord's documentation.
-`docker compose up -d --build bot api` redeploys after code changes.
+section has the long form, with links into Discord's documentation.
 
 ### Choosing a model
 
@@ -134,15 +138,16 @@ Claude Platform on AWS, Bedrock or Vertex, or any OpenAI-compatible server (Open
 LiteLLM, OpenRouter, vLLM, a local Ollama priced `free`), and Voyage or OpenAI-compatible
 embeddings. `judge.example.toml` documents every knob, and
 [Model choice](https://mtg-judgebot.rpeters.dev/self-hosting/models/) is the guide.
-Under Docker, set `JUDGE_CONFIG=./judge.toml` in `.env`: the containers see only the file
-compose mounts.
+Under Docker, also set `JUDGE_CONFIG=./judge.toml` in `.env`. The containers see only the
+file compose mounts from that path.
 
 ### The web page and the HTTP API
 
 `docker compose up -d api` serves an anonymous page on <http://localhost:8787> with the
 same pipeline, citations and "did you mean…?" flow, and no rating buttons because nobody
-is logged in. Each of `judge-api`'s front doors is a launch option (`--api`, `--web`,
-`--mcp`), and `API_INTERFACES` in `.env` is what the container passes.
+is logged in. With no flags `judge-api` serves the JSON API alone. The flags `--api`, `--web` and
+`--mcp` choose the set explicitly. `API_INTERFACES` in `.env` sets the flags the container
+passes.
 [The web page](https://mtg-judgebot.rpeters.dev/using/web/) and
 [The HTTP API](https://mtg-judgebot.rpeters.dev/using/api/) have the details, with a
 `curl` example and every reply shape.
@@ -197,13 +202,16 @@ What these measure, and what they do not:
 
 - **Answered** means a verdict that passed validation: every citation names a source the
   model was shown and quotes it verbatim, and every rule number in the text is one of
-  those citations. "Not answered" is the pipeline refusing to show an answer, not a wrong
-  answer shown. Sonnet's eleven were five answers with no citations or no text, four
-  errors in the tool round (a second `lookup_rules` request, a malformed rule id, a
-  request the API refused), a bad quote, and one answer naming rules it did not cite.
-- **"Did you mean?"** is the pipeline working as designed and an eval question unanswered.
-  On Opus the extractor passed `[[bob]]` through in brackets, and a bracketed name only
-  ever matches exactly. On Sonnet it offered "Bruna" and "Gisela" as written, each of
+  those citations. "Not answered" means the pipeline refused to show an answer, not that
+  it showed a wrong one. Sonnet's eleven were:
+  - five answers with no citations or no text
+  - four errors in the tool round (a second `lookup_rules` request, a malformed rule id,
+    a request the API refused)
+  - one bad quote
+  - one answer naming rules it did not cite
+- **"Did you mean?"** is the pipeline working as designed, but it leaves an eval question
+  unanswered. On Opus the extractor passed `[[bob]]` through in brackets, and a bracketed
+  name only ever matches exactly. On Sonnet it offered "Bruna" and "Gisela" as written, each of
   which is several cards.
 - **Agreement with the reference** was judged by Claude reading each answer against the
   gold set's reference answer under a strict rubric. The references were written and
@@ -213,7 +221,7 @@ What these measure, and what they do not:
 - **Expected rule ids cited** tracks how closely the citations match the gold set's
   lists, which include background rules a good answer may leave out. It is a floor on
   citation overlap and a regression signal between runs, not an accuracy score.
-- Twenty-one questions chosen to be hard is a small, adversarial sample. It says the
+- Twenty-one questions chosen to be hard is a small, adversarial sample. It shows the
   pipeline holds up on layers, multi-faced cards, old wordings and Commander. It does not
   say how often an answer in your server will be right.
 - **The Sonnet dollars err high.** That run's configuration
@@ -221,10 +229,10 @@ What these measure, and what they do not:
   cache reads at the input price, which is how an unlisted price defaults. The counts of
   questions answered do not depend on it.
 
-The prompts are tuned on the default, and the second column is what that costs a smaller
-model: Sonnet 5 runs at 40% of the token price, fails validation or the tool round on most
-hard questions and pays for the retries anyway. There is no cheaper configuration to
-recommend on this evidence. The documentation site's Model choice page covers what does
+The prompts are tuned on the default. The second column shows what that costs a smaller
+model. Sonnet 5 runs at 40% of the token price, but fails validation or the tool round on
+most hard questions and still pays for the retries. On this evidence there is no cheaper
+configuration to recommend. The documentation site's Model choice page covers what does
 save money.
 
 ## Design
@@ -294,7 +302,7 @@ Policy](https://company.wizards.com/en/legal/fancontentpolicy), not approved or
 endorsed by Wizards. Magic: The Gathering, the Comprehensive Rules, card text and
 rulings are © Wizards of the Coast. Card data and rulings come from
 [Scryfall](https://scryfall.com) under its [data guidelines](https://scryfall.com/docs/api).
-The bot fetches both at run time, and the repository carries only a short CR excerpt as
+An instance downloads both when it loads its data (`judge-ingest`), and the repository carries only a short CR excerpt as
 a parser test fixture. Rule links go to the independent
 [Yawgatog](https://yawgatog.com/resources/magic-rules/) CR mirror. `NOTICE` has the
 full statement. The web page and every page of the documentation site repeat this

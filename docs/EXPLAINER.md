@@ -54,9 +54,10 @@ RAG systems skip:
 
 - **Citation validation.** The model must quote its sources, and the program checks that
   every quote is a substring of the source it names. A failed check rejects the answer.
-  This turns "the model was told to cite" into "the answer is grounded".
-- **Entity resolution before search.** Card names are looked up in a table, not searched for
-  semantically. "bob" must become one card, *Dark Confidant*, or the user must be asked.
+  So the answer is not just told to rest on the sources: it is checked against them.
+- **Card lookup before search** (entity resolution). Card names are looked up in a table,
+  not searched for by meaning. "bob" must become one card, *Dark Confidant*, or the user
+  must be asked.
 
 Most of this document is about how those two ideas play out.
 
@@ -65,8 +66,8 @@ Most of this document is about how those two ideas play out.
 ## 3. One question, end to end
 
 Take the question above. The steps below happen in order. The pipeline lives in
-`crates/core/src/judge.rs`. Each step is a "port" (a trait) that core defines and an adapter
-in `crates/bot` implements.
+`crates/core/src/judge.rs`. Each step is a trait (a "port") defined in core and implemented
+by an adapter in `crates/bot`.
 
 ### Step 1: Extraction and classification
 
@@ -86,8 +87,9 @@ the reply. The model returns:
 
 Three things happen in this call:
 
-- **Card spans** are cut out of the sentence. Fuzzy name matching later sees `bob` alone. It
-  never sees "trigger" or "response", which would otherwise fuzzy-match real cards.
+- **Card spans**, the words that name cards, are cut out of the sentence. Fuzzy name
+  matching later sees `bob` alone. It never sees "trigger" or "response", which would
+  otherwise fuzzy-match real cards.
 - The question is **classified** into a fixed taxonomy of 25 categories that mirror the
   CR's structure (`data/categories.yaml`). `primary` is required. Up to two `secondary`
   guesses are kept. The categories drive the first retrieval leg.
@@ -112,10 +114,10 @@ lookups and stops at the first rung that answers:
 7. trigram fuzzy match, for typos.
 
 A span written in brackets, `[[Full Card Name]]`, skips that ladder. The brackets say "this
-exact name", so it is tried only against current and printed names. Anything else is
-offered, never resolved. `[[bolt]]` asks "did you mean Lightning Bolt?", and asks nothing
-when the extractor already named Lightning Bolt from the same question. A near miss like
-`[[Dark Confidnt]]` offers the closest spellings. Answers name the cards they resolved to
+exact name", so it is tried only against current and printed names. A looser match is
+offered as a question, never taken as the answer. `[[bolt]]` asks "did you mean Lightning
+Bolt?". It asks nothing when the extractor already named Lightning Bolt from the same
+question. A near miss like `[[Dark Confidnt]]` offers the closest spellings. Answers name the cards they resolved to
 ("Cards: …"), so the reader can see what a nickname was taken to mean.
 
 The important property: **it never guesses.** If two or more cards remain, the result is
@@ -219,9 +221,9 @@ technology choices. Nothing here needs a dedicated vector database.
 
 ### How the CR is chunked
 
-A text file is useless to search until it is cut into pieces. The cut is the most
-consequential decision in any RAG system, because a piece is what gets found, what gets
-shown, and what gets cited.
+A text file is useless to search until it is cut into pieces ("chunks"). Where to cut
+matters more than any other choice in a RAG system, because a piece is what gets found,
+what gets shown, and what gets cited.
 
 The CR is a numbered hierarchy: section `702` (Keyword Abilities) → rule `702.19`
 (Trample) → sub-rules `702.19a`, `702.19b`. The parser emits rows at **two granularities**:
@@ -247,22 +249,24 @@ techniques because each fails differently.
 
 This leg is structured and always on. The classifier put the question in
 `triggered_abilities`. The YAML says that category maps to CR sections 603 and 113.3. Every
-rule in those sections goes into the context.
+rule in those sections goes into the context. Rules that share a word with the question
+come first, ranked by the same relevance score as leg B. The secondary categories' rules
+are added the same way, after the other legs.
 
-This is dumb and reliable. It costs nothing and never misses when the classifier is right.
+This is simple and reliable. It costs nothing and never misses when the classifier is right.
 It gives the model the surrounding rules it needs even when the "obvious" rule alone is not
 enough. It fails when the classifier is wrong or when the answer lives in a section nobody
 would file the question under.
 
 ### Leg B: full-text search
 
-This leg matches keywords. Postgres has a built-in full-text engine. Each rule row has a
-generated `tsvector` column: the text tokenised, lower-cased, stemmed ("triggers" →
-"trigger") and stop-words removed. The query is turned into the same lexemes, OR-ed
-together. Rows are ranked with `ts_rank_cd`, a relevance score in the same family as BM25
-(frequency of matching terms, weighted by how rare they are, discounted by document
-length). Concept phrases from the extraction count double against the raw question. The
-top 12 rows are taken.
+This leg matches keywords, using Postgres's built-in full-text engine. Each rule row has a
+generated `tsvector` column: the text split into words, lower-cased, reduced to word stems
+("triggers" → "trigger"), with common words like "the" removed. The question is reduced the
+same way, and a row matches if it contains any of those stems. Rows are ranked with
+`ts_rank_cd`, a relevance score in the same family as BM25. Such scores count the matching
+words, weight rare words higher, and discount long documents. Matches on concept phrases
+from the extraction weigh double those on the raw question. The top 12 rows are taken.
 
 This finds rules that share **vocabulary** with the question: "leaves the battlefield",
 "in response", "upkeep". It is exact, cheap, and needs no external service. It fails when
@@ -299,9 +303,9 @@ LIMIT 12
 fine at this scale. pgvector also provides an **HNSW** index (Hierarchical Navigable
 Small World), a graph structure that finds approximate nearest neighbours quickly. It is
 approximate, so it can occasionally miss the true nearest row. That is acceptable here
-because the union with the other two legs covers for it. Because the index is *partial*,
-over rule-level rows only (`WHERE parent_id IS NULL`), every candidate it yields is usable.
-A post-filter cannot shrink the result below the limit.
+because the other two legs cover for it. The index is *partial*: it covers rule-level rows
+only (`WHERE parent_id IS NULL`). Every row it returns is therefore one the query wants, and
+no filter applied afterwards can shrink the result below the limit.
 
 **Query versus document.** Voyage's API takes an `input_type` of `document` or `query`.
 The model embeds a short question differently from a long passage so that the two match
@@ -319,11 +323,19 @@ problems that get their own section (§7).
 
 ### Leg order
 
-The legs are unioned in priority order and deduplicated by rule id: category map first,
-then full-text, then vector. When the budget cuts, chunks are kept in that order, so the
-structured leg survives and the fuzziest leg is trimmed first. The retrieval gate in the
-eval suite (`judge-eval recall`) requires that at least 90% of the gold set's expected rule
-ids appear in the context.
+The legs are merged in priority order, and a rule found twice is kept once:
+
+1. the primary category's rules that share a word with the question,
+2. full-text hits,
+3. vector hits,
+4. the rest of the primary category,
+5. each secondary category.
+
+The synthesis budget shows the model only the front of this list, so the order decides what
+it reads. The primary category's matching rules always survive, and the secondary
+categories are trimmed first. The retrieval gate in the eval suite (`judge-eval recall`) requires that at least
+90% of the gold set's expected rule ids appear in the context, and at least 75% in the part
+the budget shows.
 
 The safety net for whatever all three miss is the one `lookup_rules` tool round in
 synthesis. Having read the material, the model can ask for rules by number once.
@@ -369,11 +381,12 @@ The validator (`crates/core/src/verdict.rs`) checks each citation against the co
 The most common rejection in practice was punctuation. The CR is typeset with curly
 apostrophes (`doesn’t`) and em dashes. Models reliably retype them as ASCII (`doesn't`)
 even when told not to. Rejecting a correct citation over one character wastes the only
-retry. So the comparison (`crates/core/src/quote.rs`) canonicalises each character, one
-char to one char: curly to straight, every dash to a hyphen, non-breaking space to space.
-It then stores the **source's** span, not the model's. The leniency applies at match time
-only. What lands in the database is byte-exact, so later strict checks stay strict. Case,
-word order and line breaks must still match, so a paraphrase is still rejected.
+retry. So the comparison (`crates/core/src/quote.rs`) maps each character to one plain
+equivalent: curly quotes to straight, every dash to a hyphen, a non-breaking space to a
+space. What gets stored is the **source's** span, not the model's. The leniency applies
+only while matching. What lands in the database is byte-exact, so later strict checks stay
+strict. Case, word order and line breaks must still match, so a paraphrase is still
+rejected.
 
 A verdict with no citations, or an answer under 40 characters, is rejected as empty. Two
 fields the model might be tempted to lie about, `source` and `cr_version`, are not in the
@@ -407,9 +420,9 @@ handling lives, so you can read further.
 |---|---|
 | Model invents rule numbers or misquotes | citation validation, and the source's own span is stored (`core/verdict.rs`, `core/quote.rs`) |
 | Model answers from memory instead of the material | system prompt ground rule 1, required citations, retry notice |
-| Model pads with placeholder citations | prompt forbids stubs; an entry that quotes nothing (blank, `"placeholder"`, a character or two) is dropped and the rest of the answer validated as usual, and an answer with nothing but stubs is rejected with the parse error shown back. A malformed entry that does quote something is still a typed rejection |
-| Answer names a rule number it never cited ("per `605.3b`…") | every rule number in the prose must be covered by a rule citation (the id, its rule, or a sub-rule); otherwise the attempt is rejected and the retry is told to cite it or remove it |
-| Model files a card's Oracle text as a ruling (the card has no rulings to cite) | still rejected, never relabelled; the retry notice names the kind it meant (`oracle_text`, with the card and face) instead of telling it to drop a good quote |
+| Model pads with placeholder citations | the prompt forbids stubs. An entry that quotes nothing (blank, `"placeholder"`, a character or two) is dropped, and the rest of the answer is validated as usual. An answer with nothing but stubs is rejected, with the parse error shown back. A malformed entry that does quote something is still a typed rejection |
+| Answer names a rule number it never cited ("per `605.3b`…") | every rule number in the prose must be covered by a rule citation: the id, its rule, or a sub-rule. Otherwise the attempt is rejected, and the retry is told to cite it or remove it |
+| Model files a card's Oracle text as a ruling (the card has no rulings to cite) | still rejected, never relabelled. The retry notice names the kind it meant (`oracle_text`, with the card and face) instead of telling it to drop a good quote |
 | Model calls the tool repeatedly | `Synth` typestate: one round, by type |
 | Model's output is cut off at `max_tokens` | detected from the stop reason, retried once at medium effort |
 | Model claims a question is out of scope to dodge citing | `source` is stamped from extraction, not model-reported |
@@ -489,14 +502,20 @@ every call on every CR release. That rule threw away many still-correct answers 
 wrong ones after an erratum.
 
 **Renumbering.** When Wizards inserts a keyword at `702.20`, every later rule shifts by one.
-Their bodies change too, because cross-references shift with them. Comparing the raw text fails on
-the very release it is meant to see through. The CR loader masks every rule id out of every
-body and matches old and new rules on the masked text where it is unique on both sides. It
-then rewrites each old rule with the full map and keeps only mappings that reproduce the
-new rule exactly. This consistency check rejects a cross-reference that was redirected
-rather than renumbered. Matched calls get their citation ids, quoted ids and answer text
-rewritten in one pass. Anything ambiguous is left for the retirement pass to judge.
-The principle is the same as card resolution: never guess.
+Their bodies change too, because the cross-references inside them shift as well. So
+comparing the raw text fails on exactly the release it is meant to handle. Instead, the CR
+loader:
+
+1. masks every rule id out of every rule's text,
+2. matches old and new rules on the masked text, only where that text is unique on both
+   sides,
+3. rewrites each old rule with the full old-to-new map, and keeps only matches that then
+   reproduce the new rule exactly.
+
+Step 3 rejects a cross-reference that was pointed at a different rule rather than
+renumbered. Matched calls get their citation ids, quoted ids and answer text rewritten in
+one pass. Anything ambiguous is left for the retirement pass to judge. The principle is the
+same as card resolution: never guess.
 
 ---
 
@@ -571,8 +590,9 @@ high.
 `eval/gold.yaml` holds 21 adversarially verified questions with the rule ids an answer must
 cite, plus per-question lists of equivalent ids that state the same fact. Two gates:
 
-- `judge-eval recall` runs only extraction, resolution and retrieval and fails below 90% of
-  expected rule ids in context. No model spend for synthesis.
+- `judge-eval recall` runs card resolution and retrieval, taking the extraction from the
+  gold file instead of a model call. It fails below 90% of expected rule ids in context,
+  or below 75% in the part the budget shows. It makes no chat-model calls.
 - `judge-eval answer` runs the full pipeline and scores the answers. Runs are stored and can
   be re-scored for free after the gold set is edited.
 

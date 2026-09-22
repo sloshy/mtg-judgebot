@@ -5,11 +5,14 @@ sidebar:
   order: 4
 ---
 
-`crates/agent` exposes the pipeline to other programs in two transports over one set of
-operations. **`judge-mcp`** is an MCP server on stdio. **`judge-cli`** has one subcommand
-per operation and prints JSON. `judge-api --mcp` also serves the same MCP tools over HTTP
-at `/mcp`, for agents that are not on the host. It needs an `MCP_TOKEN` too, and the flag
-without a token is refused at startup.
+`crates/agent` exposes the pipeline to other programs. The same set of operations is
+available three ways:
+
+- **`judge-mcp`**: an MCP server on stdio.
+- **`judge-cli`**: one subcommand per operation, printing JSON.
+- **`judge-api --mcp`**: the same MCP tools over HTTP at `/mcp`, for agents that are not
+  on the host. It needs an `MCP_TOKEN`, and the flag without a token is refused at
+  startup.
 
 ## Pipeline and sessions
 
@@ -17,14 +20,17 @@ without a token is refused at startup.
 citation validation, one retry. It spends model budget under the process's `JUDGE_MAX_USD`
 and, over `/mcp`, counts against `MCP_JUDGE_LIMIT`.
 
-**Sessions** turn the pipeline inside out. The agent asks for a session, receives the
-extraction prompt and answers it itself. It then receives the synthesis prompt, rendered
-from the same retrieved context the bot would use. It may ask for one round of extra
-rules. Then it submits a verdict, which is admitted only through the same citation
-validation, with the same rejection notice and one retry. The judge makes no model call,
-because the agent is the model. This is how Claude Code answers rules questions in this
-repository (the `judge` skill under `.claude/skills/`), and how a reported bad answer is
-reproduced for free.
+**Sessions** turn the pipeline inside out: the agent is the model, and the judge makes
+no model call.
+
+1. The agent asks for a session, receives the extraction prompt and answers it itself.
+2. It receives the synthesis prompt, rendered from the same retrieved context the bot
+   would use. It may ask for one round of extra rules.
+3. It submits a verdict. The verdict is admitted only if it passes the same citation
+   validation as the bot's, with the same rejection notice and one retry.
+
+This is how Claude Code answers rules questions in this repository (the `judge` skill
+under `.claude/skills/`), and how a reported bad answer is reproduced for free.
 
 ```sh
 judge-cli begin "does bob's trigger count goyf's mana value as 0?"   # → session id + extraction prompt

@@ -2,18 +2,18 @@
 
 Notable changes an operator or user would notice. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions follow
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html): a major version may change
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). A major version may change
 configuration, the HTTP and MCP interfaces or the schema in a way that needs an
-operator's attention, and its entry says what to do. Migrations apply automatically
+operator's attention. Its entry says what to do. Migrations apply automatically
 unless `JUDGE_AUTO_MIGRATE=false`.
 
 **Your data carries forward.** Stored calls, ratings, sessions, the spend ledger and the
-loaded cards and rules survive every upgrade, major versions included: schema changes ship
-as forward migrations, and a migration that has been released is never edited. Embeddings
-do too, unless a release's notes ask for a `reembed`, which pays the embedder again and
-never touches calls. A release that needs more than `docker compose pull && docker compose up -d`
+loaded cards and rules survive every upgrade, major versions included. Schema changes ship
+as forward migrations, and a released migration is never edited. Embeddings survive too,
+unless a release's notes ask for a `reembed`. That pays the embedder again and never
+touches calls. A release that needs more than `docker compose pull && docker compose up -d`
 (a re-embed, a new required variable) says so under its own heading. Downgrading across a
-migration is not supported; restore the backup taken before the upgrade instead.
+migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
@@ -25,10 +25,10 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
 ### Added
 - **The judge pipeline.** A Magic: The Gathering rules question goes through extraction
   and classification, card resolution, retrieval and synthesis. Every answer cites the
-  Comprehensive Rules, Scryfall rulings, Oracle text or a rated prior call, and every
-  citation's quote is checked verbatim against its source before the answer is shown or
-  stored, and every rule number the answer's text names must be one of those citations.
-  A failed check gets one retry that is told what was rejected.
+  Comprehensive Rules, Scryfall rulings, Oracle text or a rated prior call. Before the
+  answer is shown or stored, every citation's quote is checked verbatim against its
+  source, and every rule number in the answer's text must be one of those citations. A
+  failed check gets one retry that is told what was rejected.
 - **Card resolution that never guesses.** Aliases, printed names, short names and fuzzy
   matches resolve in a fixed order, `[[bracketed]]` names are taken exactly, and an
   ambiguous name becomes a "did you mean?" choice.
@@ -37,11 +37,11 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
   entries, notes on notoriously difficult cards and rated prior calls.
 - **The Discord bot.** `/judge` (guild-only) with rating buttons and "did you mean?"
   buttons, `/card` and `/rule` lookups that call no model, `/help`, `/license`, and
-  `/forget`, which deletes the caller's ratings, the only per-user data kept.
+  `/forget`, which deletes the caller's ratings (the only per-user data kept).
   `/judge private: True` answers the asker alone and stores nothing. Each member gets
   `JUDGE_USER_LIMIT` questions per window (default 6 per 10 minutes). An *Incorrect*
-  rating says where to report a wrong ruling. Ratings shape which prior calls are retrieved, with a judge
-  role whose rating overrides the crowd's. Mana and card symbols render as application
+  rating says where to report a wrong ruling. Ratings shape which prior calls are
+  retrieved, and a rating from a member with the judge role overrides the crowd's. Mana and card symbols render as application
   emoji.
 - **`judge-api`**, with one flag per front door: `--api` (`POST /api/judge`), `--web`
   (the SolidJS page) and `--mcp` (the MCP transport at `/mcp`, which also needs
@@ -72,16 +72,16 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
   the embeddings, with no Rust toolchain on the host.
 - **Data ingest and nightly refresh** (`judge-ingest`): Scryfall cards and rulings, the
   Comprehensive Rules (a new release is detected from Wizards' rules page), aliases,
-  notes, embeddings and Discord emoji. A renumbered rule keeps the calls that cite it,
-  and a call is retired when its citations or its cards' Oracle text stop holding, and
+  notes, embeddings and Discord emoji. A renumbered rule keeps the calls that cite it.
+  A call is retired when its citations or its cards' Oracle text stop holding, and
   restored when they hold again.
 - **The source offer and operator contact on every remote interface** (AGPL-3.0-or-later
   §13): the repository, the commit the binary was built from, the licence and who runs
   the instance. `JUDGE_SOURCE_URL` points the offer at a fork. The bot requires
   `JUDGE_OPERATOR_DISCORD` and `judge-api` requires `JUDGE_OPERATOR_EMAIL`.
 - **Deployment.** A `docker compose` setup (Postgres with pgvector, `bot`, `api`, an
-  optional Cloudflare Tunnel or any reverse proxy, a `refresh` job) with a database-backed healthcheck,
-  migrations applied at startup and a backup script for Cloudflare R2. The published
+  optional Cloudflare Tunnel or any reverse proxy, a `refresh` job) with a
+  database-backed healthcheck, migrations applied at startup and a backup script for Cloudflare R2. The published
   image is a manifest list for `linux/amd64` and `linux/arm64`. A GitHub release
   `vX.Y.Z` tags the image built for that commit as `X.Y.Z`, `X.Y` and `X`, and
   `JUDGE_IMAGE_TAG` accepts those alongside `sha-<short>`.

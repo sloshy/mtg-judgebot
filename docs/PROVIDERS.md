@@ -3,17 +3,17 @@
 The reference for how the judge reaches its models. It covers the provider-neutral seam
 (`crates/llm`), the two chat backends (`crates/anthropic`, `crates/openai`), the two
 embedding backends (`crates/embed`), and the `judge.toml` file that chooses among them.
-`docs/DECISIONS.md` (D6–D9) records the reasoning, and this file describes what exists. The pipeline, the prompts, the validation
-and the typestates do not know which provider is on the other end of the HTTP connection.
-That is the purpose of the seam.
+The seam exists so that the pipeline, the prompts, the validation and the typestates
+never know which provider is on the other end of the HTTP connection.
+`docs/DECISIONS.md` (D6–D9) records the reasoning. This file describes what exists.
 
 ## 1. Goal and non-goals
 
 **Goal.** An operator who is not the author can run the judge with:
 
-- Anthropic models through the first-party API, through Claude Platform on AWS, Amazon
-  Bedrock or Google Vertex AI (Anthropic's Messages API shape, different auth and
-  hostnames), or through a proxy that speaks the Messages API (LiteLLM's `/v1/messages`).
+- Anthropic models through the first-party API, a proxy that speaks the Messages API
+  (LiteLLM's `/v1/messages`), or a cloud: Claude Platform on AWS, Amazon Bedrock or Google
+  Vertex AI. The clouds use the Messages API shape with their own auth and hostnames.
 - Any model behind an **OpenAI-compatible chat completions** endpoint: LiteLLM, OpenRouter,
   Ollama, vLLM, llama.cpp, Azure OpenAI, Bedrock's and Vertex's OpenAI-compatible
   endpoints, OpenAI itself.
@@ -135,8 +135,8 @@ pub struct ChatResponse {
 - **`AssistantTurn` is opaque.** The neutral layer never inspects it. It exists so the
   continuation request can replay it. A backend receiving an `AssistantTurn` tagged with
   another backend's name returns `LlmError::ForeignTurn` rather than guessing.
-- **`CacheHint` is a hint.** Anthropic emits `cache_control`. OpenAI ignores it. It
-  caches by prefix automatically. LiteLLM forwards `cache_control` when the upstream is
+- **`CacheHint` is a hint.** Anthropic emits `cache_control`. OpenAI ignores it and
+  caches by prefix on its own. LiteLLM forwards `cache_control` when the upstream is
   Anthropic. Placement rules (stable content first) are the adapters' business.
 - **`OutputSchema` carries the schemars schema untransformed.** Each backend applies *its*
   subset transform. Anthropic's sets `additionalProperties:false`, rewrites `oneOf→anyOf`
@@ -149,10 +149,11 @@ pub struct ChatResponse {
   `reasoning_effort = true`. Asking for effort on a provider that cannot send it is a
   *load error*, not a silent drop.
 - **`Capabilities`** = `{ structured_output: Enforced | JsonMode | PromptOnly, strict_tools,
-  effort, cache_hints, refusal_fallbacks }`. The adapters use it for two things. When
-  enforcement is `PromptOnly`/`JsonMode` they append the schema to the **user turn**
-  (`judge_llm::schema_block`), so the pinned system-prompt digest holds on every backend.
-  They also log what they are relying on.
+  effort, cache_hints, refusal_fallbacks }`. The adapters use it for two things:
+  - When enforcement is `PromptOnly`/`JsonMode`, they append the schema to the **user
+    turn** (`judge_llm::schema_block`), so the pinned system-prompt digest holds on every
+    backend.
+  - They log what they are relying on.
 
 ### 3.2 Spend cap
 
@@ -163,15 +164,19 @@ usage the response reports. The reservation is sized from the serialized *neutra
 - `Table`: the built-in table (`judge_llm::PRICES`, Anthropic first-party models). It is
   re-read for the model the *response* names, because an Anthropic fallback may route
   elsewhere.
-- `PerToken`: the operator's rate from `[models.<stage>.pricing]`, settled at that rate, whatever model the response names.
+- `PerToken`: the operator's rate from `[models.<stage>.pricing]`, settled at that rate
+  whatever model the response names.
 - `Free`: never reserves, still counts calls (`pricing = "free"` on a provider).
 
-Each process has one `SpendMeter`, shared by both stages and by every clone.
-`JUDGE_MAX_USD` is the cap. A 2xx body that fails to decode is still billed, because each
-backend exposes a lenient `usage_of(body)`. The per-call log line is `llm call` with a
-`provider` field. `Models::{single, pair, priced}` take the meter and bare backends and
-meter them themselves. The fields are private, so there is no uncapped model and no
-foreign meter.
+Around the meter:
+
+- Each process has one `SpendMeter`, shared by both stages and by every clone.
+  `JUDGE_MAX_USD` is the cap.
+- A 2xx body that fails to decode is still billed: each backend exposes a lenient
+  `usage_of(body)`.
+- Each call logs an `llm call` line with a `provider` field.
+- `Models::{single, pair, priced}` take the meter and bare backends and meter them
+  themselves. The fields are private, so there is no uncapped model and no foreign meter.
 
 ## 4. Backends
 
@@ -194,19 +199,24 @@ Every door's `base_url` is derived from the region (or project) and can be overr
 the provider table, so a changed platform hostname is a config edit, not a release.
 
 Structured outputs, strict tools, adaptive thinking/effort and prompt caching are GA on
-Bedrock's and Vertex's *native* Anthropic endpoints. Server-side `fallbacks` is
-first-party (and Claude Platform on AWS) only. The masked doors therefore turn
-`SynthConfig::fallbacks` off with a warning rather than sending a beta the door rejects.
+Vertex. The Bedrock door uses Bedrock's Messages-shaped endpoint (`bedrock-mantle`), where
+Bedrock documents structured outputs as unsupported, hence the mask in the table.
+Server-side `fallbacks` is first-party (and Claude Platform on AWS) only. The masked doors
+therefore turn `SynthConfig::fallbacks` off with a warning rather than sending a beta the
+door rejects.
 
-The cloud doors sit behind `judge-anthropic`'s `aws` (aws-config + aws-sigv4) and `gcp`
-(gcp_auth) Cargo features. Both are on by default, forwarded from `judge-bot`'s own
-features and named in the Dockerfile. A lean build cannot name the doors, and the loader
-says "not built". Credentials come from the platforms' standard chains (env, profile,
-instance role / ADC), never from `judge.toml`. API-key auth for the cloud doors is not
-supported. The chains are lazy, so loading never touches the network.
-`Config::probe_auth` resolves each door once at startup, so an empty chain fails there,
-naming the provider and the door, rather than per question. Each provider table resolves
-to one `Endpoint`, shared by the stages that name it.
+Each provider table resolves to one `Endpoint`, shared by the stages that name it. For the
+cloud doors:
+
+- They sit behind `judge-anthropic`'s `aws` (aws-config + aws-sigv4) and `gcp` (gcp_auth)
+  Cargo features. Both are on by default, forwarded from `judge-bot`'s own features and
+  named in the Dockerfile. A lean build cannot name the doors, and the loader says "not
+  built".
+- Credentials come from the platforms' standard chains (env, profile, instance role /
+  ADC), never from `judge.toml`. The cloud doors do not accept API keys.
+- The chains are lazy, so loading never touches the network. `Config::probe_auth`
+  resolves each door once at startup. An empty chain fails there, naming the provider and
+  the door, not on every question.
 
 ### 4.2 OpenAI-compatible chat completions
 
@@ -263,14 +273,17 @@ provider *kind* (`voyage | openai`, not the operator's table name), model and di
   loader and the retirement pass do. A switch therefore waits for in-flight writes, and a
   write after it sees the new row.
 - `ingest reembed --yes` (`switch_space`) is the only thing that changes the row and the
-  column width. In one transaction it retypes the vector columns, drops and recreates the
-  HNSW indexes (definitions in `VECTOR_TABLES`, verbatim from the migrations), NULLs every
-  vector and rewrites `embedding_space`. Then it runs the normal embed loop. It probes the
-  embedder with one short text first, so a wrong key, URL, model or width fails with the
-  old vectors intact. When the database already holds the configured space it only fills
-  NULL rows. That is idempotent, and it is how an interrupted refill resumes. `--clear`
-  re-pays every row in the same space. Without `--yes` it prints the row counts and a
-  rough cost, exits non-zero and changes nothing.
+  column width.
+  - It first probes the embedder with one short text, so a wrong key, URL, model or width
+    fails with the old vectors intact.
+  - In one transaction it retypes the vector columns, drops and recreates the HNSW
+    indexes (definitions in `VECTOR_TABLES`, verbatim from the migrations), NULLs every
+    vector and rewrites `embedding_space`. Then it runs the normal embed loop.
+  - When the database already holds the configured space, it only fills NULL rows. That
+    is idempotent, and it is how an interrupted refill resumes.
+  - `--clear` re-pays every row in the same space.
+  - Without `--yes` it prints the row counts and a rough cost, exits non-zero and changes
+    nothing.
 - `config::Dimensions` is `1..=2000` (HNSW's limit) at load, and `VOYAGE_DIMENSIONS` has
   the same bound. The migrations create `vector(1024)`, and `reembed` is how it changes.
 
@@ -373,8 +386,6 @@ the documented home for cloud-credential mounts. `refresh` resolves all three st
 the file as the others do, so every named provider's key must be in `.env` for it as well.
 
 ## 6. Provider-independent parts
-
-These do not depend on the provider:
 
 - `crates/core`: `Deps`, `judge()`, `Verdict::validate`, `Citation`. No provider type
   reaches it.

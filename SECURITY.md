@@ -27,10 +27,10 @@ Operators should know these properties. The reasoning behind each is in
   nothing but Cloudflare can reach the origin.
 - **The MCP endpoint is bearer-token only and off by default.** It mounts only when
   `judge-api` is launched with `--mcp` *and* `MCP_TOKEN` (at least 24 bytes) is set.
-  The flag alone is refused at startup, and the token alone serves nothing. It compares
-  the token in constant time and applies its own `judge` quota (`MCP_JUDGE_LIMIT`) as
-  the blast radius of a leak. `MCP_ALLOWED_HOSTS` must name the public hostname. Rotate the token by changing the
-  variable and restarting `api`.
+  The flag alone is refused at startup, and the token alone serves nothing. The token is
+  compared in constant time. Its own `judge` quota (`MCP_JUDGE_LIMIT`) bounds what a
+  leaked token can spend. `MCP_ALLOWED_HOSTS` must name the public hostname. To rotate
+  the token, change the variable and restart `api`.
 - **Secrets never live in tracked files.** `judge.toml` names environment variables.
   `.env` holds the keys the bot and API read. `.env.deploy` holds the tunnel and backup
   credentials that only `cloudflared` and the backup script read. Every credential type
@@ -39,9 +39,12 @@ Operators should know these properties. The reasoning behind each is in
   database uses a default password (`judgebot`), which is fine only while that binding
   holds. Change it if you publish the port.
 - **The image runs as `nobody`** and is rebuilt by CI from the committed lockfiles.
-- **User data stored:** the question and answer text of every call, the Discord
-  thread or web session id it was asked in, and the Discord user id of anyone who
-  presses a rating button (`/forget` deletes those). The bot never receives
-  message content beyond the slash-command input. It requests no gateway intents. Process
-  logs at `info` record each rating with the user id. The compose file rotates them at
-  30 MB per container, and they are the operator's to ship or drop.
+- **User data stored:**
+  - the question and answer text of every call
+  - the Discord thread or web session id it was asked in
+  - the Discord user id of anyone who presses a rating button (`/forget` deletes those)
+
+  The bot requests no gateway intents, so it never receives message content beyond the
+  slash-command input. Process logs at `info` record each rating with the user id. The
+  compose file rotates them at 30 MB per container. Shipping or dropping them is up to the
+  operator.

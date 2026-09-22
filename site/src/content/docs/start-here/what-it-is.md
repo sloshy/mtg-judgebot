@@ -14,15 +14,14 @@ brackets like `[[Full Card Name]]` when a nickname could mean several things.
 
 ## One bot per community
 
-Every judgebot is its own Discord application, run by the
-community that uses it. One process is one spend cap, one judge role and one bot token,
-so the person who chose the model pays for the questions and nobody shares a budget with
-strangers. The
+Every judgebot is its own Discord application, run by the community that uses it. Each
+has its own spend cap, judge role and bot token. The person who chose the model pays for
+the questions, and nobody shares a budget with strangers. The
 [design decisions](../../how-it-works/decisions/#d16-one-judgebot-per-community)
 page has the reasoning.
 
-Setting one up takes a compose file, a Discord application you create in the developer
-portal in a few minutes, and a model API key:
+Setting one up takes a compose file, a model API key, and a Discord application you
+create in the developer portal in a few minutes:
 
 1. [Requirements and first run](../../self-hosting/first-run/): the database, the data
    loads, and the web page on your own machine.
@@ -31,28 +30,31 @@ portal in a few minutes, and a model API key:
 3. [Production deployment](../../self-hosting/deployment/), when it should stay up without
    your laptop.
 
-Nothing in the pipeline depends on Discord, so you can see the judge work before you have
-a bot token. [Try it without Discord](../without-discord/) brings up the web page and the
-command line. Once yours is in a server, `/help` explains the commands. The
+You can see the judge work before you have a bot token:
+[Try it without Discord](../without-discord/) brings up the web page and the command
+line. Once your bot is in a server, `/help` explains the commands, and the
 [Discord commands](../../using/discord/) page has the details.
 
 ## What an instance stores
 
-For every question answered (except a Discord question asked with `private: True`, which
-is not saved), an instance stores the question text, the answer, the channel
-or web session it was asked in, and the ids of the rules, rulings and cards it was answered
-from. When someone presses a rating button, it stores their Discord user id and the score.
-It stores nothing else. The bot receives only its own slash commands and button presses, never
-channel messages. `/forget` deletes a user's ratings, which is the only data tied to them.
+For every question answered, an instance stores:
+
+- the question text and the answer
+- the channel or web session it was asked in
+- the ids of the rules, rulings and cards it was answered from.
+
+A Discord question asked with `private: True` is not saved. When someone presses a rating
+button, the instance stores their Discord user id and the score. It stores nothing else.
+The bot receives only its own slash commands and button presses, never channel messages.
+Ratings are the only data tied to a user, and `/forget` deletes them.
 
 [Sample answers](../../start-here/sample-answers/) shows what comes back, and
 [Evaluation](../../how-it-works/evaluation/#results) how it scored on a hard question set.
 
 ## AI-generated answers
 
-Every citation is checked against its source before it is shown, and every rule number the
-answer's text names must be one of those citations. That rules out invented rule numbers
-and misquoted text. It does not rule out a wrong conclusion drawn from correct
-quotes. Verify anything that matters at a tournament with a human judge. The bot declines
+Every citation is checked against its source before it is shown. Every rule number named
+in the answer's text must also be cited. That rules out invented rule numbers and
+misquoted text. It does not rule out a wrong conclusion drawn from correct quotes. Verify anything that matters at a tournament with a human judge. The bot declines
 tournament-policy questions (the Magic Tournament Rules and Infraction Procedure Guide)
 rather than answering them badly.
