@@ -380,6 +380,11 @@ Key cross-file facts that aren't obvious from any one file:
 - **Citations are typed and validated.** `Citation::{Rule, ScryfallRuling, OracleText,
   PriorCall}` each carry a verbatim `quote` checked as a substring of the source in
   `Context`.
+  - Key order in the schema is the order the model writes. With structured output enforced,
+    the model emits keys in the schema's property order, so schemars runs with
+    `preserve_order` (declaration order) and `Citation`'s `kind_first` transform moves the
+    tag, which schemars appends, to the front, matching the prompt's
+    `{"kind", "id", "quote"}`. Alphabetical order made Opus 5.5 write values one key over.
   - `Quote` cannot be blank. A blank one fails to parse, so a placeholder citation is a
     stub, not a bad citation (dropped, or a `MalformedCitation` with the stub notice when
     nothing else is cited: next bullet but one). Its schema is plain

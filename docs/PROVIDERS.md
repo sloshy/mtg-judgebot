@@ -144,6 +144,11 @@ pub struct ChatResponse {
   property in `required`, turns optional fields into `anyOf [T, null]`, and drops `format`
   and `default`. Both are pure functions with walk-and-assert tests. Decoding is
   unchanged, so a stripped constraint is still enforced client-side.
+- **Property order is the order the model writes.** A backend that enforces the schema
+  makes the model emit keys in the schema's order. schemars therefore keeps declaration
+  order (`preserve_order`), and `Citation` moves its `kind` tag, which schemars appends, to
+  the front, so the schema asks for `kind`, then the reference, then `quote`, as the prompt
+  does. With alphabetical keys, Opus 5.5 wrote a citation's values one key over.
 - **`Effort` maps per backend.** Anthropic gets `output_config.effort`. OpenAI gets
   `reasoning_effort` (`low|medium|high`, `xhigh|max → high`), and only when the provider's
   `reasoning_effort = true`. Asking for effort on a provider that cannot send it is a

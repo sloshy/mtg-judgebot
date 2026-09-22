@@ -108,10 +108,10 @@ pub fn system_prompt() -> String {
          nicknames and abbreviations (e.g. \"Bob\", \"Tabernacle\", \"Rhystic\"). When a span is a nickname \
          for a specific card or for a fixed group of cards (\"the tron lands\", \"the Urza's lands\", \
          \"the Titans\"), ALSO add the full Oracle name of each card it stands for as extra spans (e.g. \
-         \"Urza's Tower\", \"Urza's Mine\", \"Urza's Power Plant\"); exact copying matters only for spans \
-         taken from the message. Do not include rules vocabulary, keyword abilities, card types, token \
+         \"Urza's Tower\", \"Urza's Mine\", \"Urza's Power Plant\"), except as the rules below say; exact \
+         copying matters only for spans taken from the message. Do not include rules vocabulary, keyword abilities, card types, token \
          names or generic words like \"creature\" or \"token\". If nothing looks like a card name, return \
-         an empty array. Three further rules:\n\
+         an empty array. Four further rules:\n\
          - Drop set, printing, frame and finish qualifiers from a span; the qualifier is not part of the \
          name. \"mirage LED\" -> \"LED\"; \"Urza's Saga Waylay\" -> \"Waylay\"; \"my foil Bolt\" -> \"Bolt\"; \
          \"alpha Lotus\" -> \"Lotus\"; \"the promo one\", \"the borderless version\", \"the old frame\" add \
@@ -120,6 +120,12 @@ pub fn system_prompt() -> String {
          Titans\", \"the swords\") as a span. When the message uses one and you know which cards it \
          stands for, emit the members' full Oracle names instead; when you do not know the members, \
          leave it to the concepts list. A collective is never itself a card name.\n\
+         - When a span is only a word or a bare possessive taken from a full Oracle name you add for it, \
+         emit the full name in its place, not both, provided the message makes clear which card it \
+         means: \"Saga\" in a question about its Construct tokens -> \"Urza's Saga\"; \"Mine\" in a \
+         question about the tron lands -> \"Urza's Mine\". A full name the user wrote never makes it \
+         clear: \"Teferi's static\" beside \"Teferi's Protection\" means some other Teferi. When it is \
+         not clear, emit the span as written and add no full name: a later stage asks the user.\n\
          - Do not emit generic basic land words (\"is it just a Mountain now\", \"tap a Forest\", \"my \
          Islands\") unless the question is about that basic land itself (\"does Plains have a mana \
          ability?\").\n\n\
@@ -444,6 +450,12 @@ mod tests {
         );
         assert!(
             sys.contains("Do not emit generic basic land words"),
+            "{sys}"
+        );
+        assert!(
+            sys.contains("Four further rules")
+                && sys.contains("emit the full name in its place, not both")
+                && sys.contains("\"Teferi's static\" beside \"Teferi's Protection\""),
             "{sys}"
         );
         let user = at(&v, "/turns/0/User/0/text").as_str().unwrap_or_default();

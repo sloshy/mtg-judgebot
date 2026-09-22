@@ -583,10 +583,14 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
             let _ = writeln!(
                 s,
                 "Your earlier answer included a citation that could not be read at all: {} — {}. \
-                 Do not emit placeholder or empty citations: every entry needs a real id copied from \
-                 the material above (rule ids look like 118.7b) and a non-empty quote taken verbatim \
-                 from that source. If you have nothing to cite for a point, leave it uncited rather \
-                 than inventing an entry. Re-send the full answer with only real citations.",
+                 Each field must hold its own value, in the order shown in the citation rules: \
+                 `kind`, then the reference (a rule's `id` is its number as printed, such as 118.7b; \
+                 a ruling's `card` and `ruling`, an Oracle text's `card` and `face` and a prior \
+                 call's `id` come from their labels), then `quote`, text copied \
+                 verbatim from that source. A value in the wrong field, a placeholder or an empty \
+                 entry all fail the same way. Rebuild that citation from the material above, or \
+                 leave the point uncited rather than inventing an entry, and re-send the full \
+                 answer with only real citations.",
                 m.raw, m.error
             );
         }
@@ -910,7 +914,8 @@ mod tests {
             "{s}"
         );
         assert!(
-            s.contains("Do not emit placeholder or empty citations"),
+            s.contains("Each field must hold its own value")
+                && s.contains("a placeholder or an empty"),
             "{s}"
         );
         // The echo is model-controlled text; it must not be able to forge a

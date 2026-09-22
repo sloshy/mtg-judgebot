@@ -6,6 +6,7 @@ use nutype::nutype;
 use regex::Regex;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{borrow::Cow, fmt, sync::LazyLock};
 use uuid::Uuid;
 
@@ -517,6 +518,7 @@ impl JsonSchema for Quote {
 /// A typed reference plus the exact span quoted from it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(transform = kind_first)]
 pub enum Citation {
     /// A Comprehensive Rules chunk.
     Rule {
@@ -553,6 +555,30 @@ pub enum Citation {
         /// Verbatim span of that face's Oracle text.
         quote: Quote,
     },
+}
+
+/// Moves `kind` to the front of every variant's `properties`.
+///
+/// Schemas are emitted in declaration order (schemars `preserve_order`), but
+/// an internally tagged enum's tag is appended last. A backend that enforces
+/// the schema makes the model write keys in that order, so without this it
+/// writes a citation's id and quote before saying what kind of citation it
+/// is, against the prompt's `{"kind": …, "id": …, "quote": …}`. Opus 5.5 did
+/// that with the values one key over: `{"id":"rule","kind":"rule","quote":"613.8"}`.
+fn kind_first(schema: &mut Schema) {
+    for combinator in ["oneOf", "anyOf"] {
+        let Some(variants) = schema.get_mut(combinator).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for variant in variants {
+            let Some(props) = variant.get_mut("properties").and_then(Value::as_object_mut) else {
+                continue;
+            };
+            let rest = std::mem::take(props);
+            let (kind, others): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(k, _)| k == "kind");
+            props.extend(kind.into_iter().chain(others));
+        }
+    }
 }
 
 impl Citation {
@@ -1237,6 +1263,27 @@ mod tests {
         assert_eq!(v.get("kind").and_then(|k| k.as_str()), Some("oracle_text"));
         assert_eq!(v.get("face").and_then(serde_json::Value::as_u64), Some(1));
         Ok(())
+    }
+
+    #[test]
+    fn every_citation_variant_asks_for_its_kind_first() {
+        let schema = schemars::schema_for!(Citation);
+        let variants: Vec<Vec<&str>> = ["oneOf", "anyOf"]
+            .iter()
+            .filter_map(|c| schema.get(*c).and_then(Value::as_array))
+            .flatten()
+            .filter_map(|v| v.get("properties").and_then(Value::as_object))
+            .map(|p| p.keys().map(String::as_str).collect())
+            .collect();
+        assert_eq!(
+            variants,
+            [
+                vec!["kind", "id", "quote"],
+                vec!["kind", "card", "ruling", "quote"],
+                vec!["kind", "id", "quote"],
+                vec!["kind", "card", "face", "quote"],
+            ]
+        );
     }
 
     fn guess(category: Category) -> CategoryGuess {

@@ -37,7 +37,7 @@ futures = "0.3"
 nonempty = { version = "0.12", features = ["serialize"] }
 nutype = { version = "0.7", features = ["serde", "regex"] }
 sha2 = "0.11"
-schemars = { version = "1.2", features = ["uuid1"] }
+schemars = { version = "1.2", features = ["uuid1", "preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

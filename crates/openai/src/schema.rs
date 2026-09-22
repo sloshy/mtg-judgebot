@@ -251,8 +251,8 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(
             required,
-            ["count", "list", "maybe", "name", "tags"],
-            "every property, in the map's (sorted) order"
+            ["maybe", "list", "count", "tags", "name"],
+            "every property, in declaration order"
         );
         // $defs are transformed too.
         let inner = schema.pointer("/$defs/Inner").cloned().unwrap_or_default();
