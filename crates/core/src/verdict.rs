@@ -471,6 +471,14 @@ fn placeholder(c: &Citation) -> Option<MalformedCitation> {
     stub_reason(c.quote()).map(|why| MalformedCitation::new(&c.to_string(), why))
 }
 
+/// Whether `c` is a stub that `validate` will drop (D21): its quote is blank,
+/// a stock word or too short to quote anything. Lets a caller skip work for a
+/// citation that will never be checked against its source.
+#[must_use]
+pub fn quotes_nothing(c: &Citation) -> bool {
+    stub_reason(c.quote()).is_some()
+}
+
 /// Why `quote` quotes nothing, if it does: blank, a stock word, or too short.
 fn stub_reason(quote: &str) -> Option<&'static str> {
     let quote = quote.trim();

@@ -301,9 +301,10 @@ Pipeline (`docs/ARCHITECTURE.md` §3 is kept current):
 1. **Extraction + classification.** One low-effort LLM call with structured output.
 2. **Card resolution.** A typed ladder: alias → possessive-stripped alias → exact →
    printed name → short-name-before-comma → alias-suffix → trigram fuzzy.
-   - A `[[bracketed]]` span is `CardSpan::Exact` and takes only exact → printed name. A
-     miss is offered only as `Ambiguous`: the alias / short-name hits under their own rung
-     (so a duplicate is dropped), else fuzzy neighbours.
+   - A `[[bracketed]]` span is `CardSpan::Exact` and takes only exact → printed name →
+     whole-span alias (`[[bob]]` resolves: an alias names one card). A miss is offered
+     only as `Ambiguous`: the possessive / short-name / alias-suffix hits under their own
+     rung (so a duplicate is dropped), else fuzzy neighbours.
    - The resolved cards are stamped onto `Verdict<Validated>` (`cards()`) and every front
      door shows them.
    - Resolution **never guesses**. Ambiguity becomes `Resolution::Ambiguous` and a Discord

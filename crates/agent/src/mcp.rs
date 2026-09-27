@@ -222,7 +222,7 @@ impl JudgeMcp {
 
     #[tool(
         name = "resolve_card",
-        description = "Resolve a card name or nickname the way the pipeline does (aliases, printed names, fuzzy; a name in [[brackets]] matches only that exact card name, offering near spellings as `ambiguous`). Returns the card with its faces and Oracle text, or `ambiguous` with candidates, or `not_found`. Never guesses."
+        description = "Resolve a card name or nickname the way the pipeline does (aliases, printed names, fuzzy; a name in [[brackets]] matches only that exact card name or a listed nickname, offering near spellings as `ambiguous`). Returns the card with its faces and Oracle text, or `ambiguous` with candidates, or `not_found`. Never guesses."
     )]
     async fn resolve_card(
         &self,

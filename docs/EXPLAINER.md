@@ -114,11 +114,13 @@ lookups and stops at the first rung that answers:
 7. trigram fuzzy match, for typos.
 
 A span written in brackets, `[[Full Card Name]]`, skips that ladder. The brackets say "this
-exact name", so it is tried only against current and printed names. A looser match is
-offered as a question, never taken as the answer. `[[bolt]]` asks "did you mean Lightning
-Bolt?". It asks nothing when the extractor already named Lightning Bolt from the same
-question. A near miss like `[[Dark Confidnt]]` offers the closest spellings. Answers name the cards they resolved to
-("Cards: …"), so the reader can see what a nickname was taken to mean.
+exact name", so it is tried only against current and printed names, then the alias table.
+An alias names one card for that exact spelling, so `[[bob]]` is Dark Confidant, as `bob`
+is. A looser match is offered as a question, never taken as the answer. `[[bob's]]` asks
+"did you mean Dark Confidant?". It asks nothing when the extractor already named Dark
+Confidant from the same question. A near miss like `[[Dark Confidnt]]` offers the closest
+spellings. Answers name the cards they resolved to ("Cards: …"), so the reader can see
+what a nickname was taken to mean.
 
 The important property: **it never guesses.** If two or more cards remain, the result is
 `Ambiguous` and Discord shows "Did you mean…?" buttons. If nothing matches, the result is
@@ -369,6 +371,11 @@ from the `Verdict` struct. The `lookup_rules` tool round is bounded to one by a
 - `Synth<Final>` has no method that requests tools.
 
 A runaway loop is not a bug for a test to catch. It is code that does not compile.
+
+The model can still *ask* for a second round, or send ids that are not rule ids. Neither
+is fetched. Each is a typed rejection (`ToolMisuse`) and gets the one retry, with a notice
+saying what the call allows. The retry may make the call itself only when the first one
+could not be read, because then nothing was fetched.
 
 ### Citation validation
 

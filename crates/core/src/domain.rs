@@ -958,12 +958,94 @@ mod uncited_tests {
         assert!(serde_json::from_str::<Rejection>(r#"{"kind":"uncited","detail":[]}"#).is_err());
         Ok(())
     }
+
+    /// Stored like the others, so its shape is pinned too.
+    #[test]
+    fn a_tool_misuse_rejection_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let r = Rejection::Tool(ToolMisuse::SecondRound {
+            ids: vec![RuleId::try_new("613.8".to_owned())?],
+        });
+        let json = serde_json::to_string(&r)?;
+        assert_eq!(
+            json,
+            r#"{"kind":"tool","detail":{"kind":"second_round","ids":["613.8"]}}"#
+        );
+        assert_eq!(serde_json::from_str::<Rejection>(&json)?, r);
+        let long = "x".repeat(MALFORMED_RAW_CHARS + 50);
+        let r = Rejection::Tool(ToolMisuse::unreadable(&long, "bad RuleId"));
+        let json = serde_json::to_string(&r)?;
+        assert_eq!(serde_json::from_str::<Rejection>(&json)?, r);
+        let Rejection::Tool(ToolMisuse::Unreadable { raw, .. }) = r else {
+            return Err("not unreadable".into());
+        };
+        assert_eq!(
+            raw.chars().count(),
+            MALFORMED_RAW_CHARS + 1,
+            "cut, with a …"
+        );
+        Ok(())
+    }
 }
 
 impl fmt::Display for UncitedRules {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ids: Vec<&str> = self.0.iter().map(AsRef::as_ref).collect();
         write!(f, "the answer names {} without citing it", ids.join(", "))
+    }
+}
+
+/// A synthesis attempt that broke the `lookup_rules` contract instead of
+/// answering. Like a bad citation, it is the model misspeaking rather than a
+/// broken adapter, so `judge()` retries it once with a notice saying which
+/// rule it broke.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolMisuse {
+    /// The model called `lookup_rules` again after its one call was answered
+    /// (or tried to call it when no call was allowed). The ids are those of
+    /// the refused call, empty when it could not be read.
+    SecondRound {
+        /// The rule ids the refused call asked for.
+        ids: Vec<RuleId>,
+    },
+    /// The model's one `lookup_rules` call could not be read: an id that is
+    /// not a rule id (`CR 702.19b`, `702.19b-d`), a missing field. No rules
+    /// were fetched, so the retry may still make its one call.
+    Unreadable {
+        /// The call's input as compact JSON: at most [`MALFORMED_RAW_CHARS`]
+        /// characters, plus a trailing `…` if it was cut.
+        raw: String,
+        /// The deserialization error.
+        error: String,
+    },
+}
+
+impl ToolMisuse {
+    /// An unreadable call. `raw` is truncated as a [`MalformedCitation`]'s
+    /// is, and so is `error`: serde's message can repeat the offending value.
+    #[must_use]
+    pub fn unreadable(raw: &str, error: &str) -> Self {
+        let raw = MalformedCitation::new(raw, "").raw;
+        let error = MalformedCitation::new(error, "").raw;
+        Self::Unreadable { raw, error }
+    }
+}
+
+impl fmt::Display for ToolMisuse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ToolMisuse::SecondRound { ids } => {
+                let ids: Vec<&str> = ids.iter().map(AsRef::as_ref).collect();
+                write!(
+                    f,
+                    "a second lookup_rules call (ids: {}), after the one allowed",
+                    ids.join(", ")
+                )
+            }
+            ToolMisuse::Unreadable { raw, error } => {
+                write!(f, "an unreadable lookup_rules call {raw}: {error}")
+            }
+        }
     }
 }
 
@@ -986,6 +1068,10 @@ pub enum Rejection {
     Empty(EmptyVerdict),
     /// The prose names rules that no citation quotes.
     Uncited(UncitedRules),
+    /// The attempt misused `lookup_rules` and produced no answer. Only the
+    /// model-driven synthesizer produces this; an agent session counts its
+    /// lookups itself.
+    Tool(ToolMisuse),
     /// The answer text exceeded [`crate::verdict::MAX_ANSWER_CHARS`]. Only an
     /// agent-driven session produces this: the Anthropic path is bounded by
     /// `max_tokens` and the Discord renderer cuts to fit, but an outside
@@ -1036,9 +1122,10 @@ impl RejectedAttempt {
             | Rejection::Empty(EmptyVerdict::NoCitations) => {
                 answer.trim().chars().count() >= crate::MIN_ANSWER_CHARS
             }
-            Rejection::Empty(EmptyVerdict::ShortAnswer { .. }) | Rejection::Oversized { .. } => {
-                false
-            }
+            // A tool misuse has no answer to show.
+            Rejection::Empty(EmptyVerdict::ShortAnswer { .. })
+            | Rejection::Oversized { .. }
+            | Rejection::Tool(_) => false,
         };
         let answer = if worth_showing {
             answer.to_owned()
@@ -1075,6 +1162,7 @@ impl fmt::Display for Rejection {
             Rejection::Malformed(m) => write!(f, "{m}"),
             Rejection::Empty(e) => write!(f, "{e}"),
             Rejection::Uncited(u) => write!(f, "{u}"),
+            Rejection::Tool(t) => write!(f, "{t}"),
             Rejection::Oversized { chars } => {
                 write!(f, "answer is {chars} characters, over the limit")
             }

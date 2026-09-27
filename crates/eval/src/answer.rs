@@ -393,6 +393,7 @@ fn score_row(
                 JudgeError::MalformedCitation(_) => "MalformedCitation",
                 JudgeError::EmptyVerdict(_) => "EmptyVerdict",
                 JudgeError::UncitedRules(_) => "UncitedRules",
+                JudgeError::ToolMisuse(_) => "ToolMisuse",
                 JudgeError::LlmRefused => "LlmRefused",
                 JudgeError::Upstream(_) => "Upstream",
             };

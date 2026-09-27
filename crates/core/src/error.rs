@@ -2,7 +2,9 @@
 
 use nonempty::NonEmpty;
 
-use crate::{Ambiguous, Citation, EmptyVerdict, MalformedCitation, Source, UncitedRules};
+use crate::{
+    Ambiguous, Citation, EmptyVerdict, MalformedCitation, Source, ToolMisuse, UncitedRules,
+};
 
 /// Every way `judge()` can fail. Discord rendering matches on this exhaustively.
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +35,11 @@ pub enum JudgeError {
     /// quotes. `judge()` retries synthesis once, as for `BadCitation`.
     #[error("uncited rule: {0}")]
     UncitedRules(UncitedRules),
+    /// The model misused `lookup_rules` (a second call, or one that could
+    /// not be read) instead of answering. `judge()` retries synthesis once,
+    /// as for `BadCitation`.
+    #[error("lookup_rules misused: {0}")]
+    ToolMisuse(ToolMisuse),
     /// The model declined to answer (`stop_reason == "refusal"`).
     #[error("the model refused to answer")]
     LlmRefused,
@@ -59,6 +66,7 @@ impl JudgeError {
             | JudgeError::MalformedCitation(_)
             | JudgeError::EmptyVerdict(_)
             | JudgeError::UncitedRules(_)
+            | JudgeError::ToolMisuse(_)
             | JudgeError::LlmRefused
             | JudgeError::Upstream(_) => true,
         }
@@ -112,6 +120,7 @@ mod tests {
             }),
             JudgeError::MalformedCitation(MalformedCitation::new(r#"{"id":""}"#, "bad RuleId")),
             JudgeError::EmptyVerdict(EmptyVerdict::NoCitations),
+            JudgeError::ToolMisuse(crate::ToolMisuse::SecondRound { ids: vec![] }),
             JudgeError::LlmRefused,
             JudgeError::Upstream(anyhow::anyhow!("db is on fire")),
         ];

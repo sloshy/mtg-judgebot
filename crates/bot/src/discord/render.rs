@@ -75,7 +75,8 @@ const HELP_BODY: &str = "**MTG Judgebot** answers Magic: The Gathering rules que
 claim carries a citation to the Comprehensive Rules, an official ruling, or a card's Oracle text, and a \
 citation is only shown after it has been checked against the source.\n\n\
 **Asking.** `/judge question: <your question>`. Nicknames work (\"bob\", \"goyf\"). Use brackets like \
-`[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the card with exactly that name. If a \
+`[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the card with exactly that name, or the \
+one card a listed nickname stands for. If a \
 name could mean several cards you get a \"did you mean…?\" row instead of a guess, and every answer lists \
 the cards it took your question to be about. Tournament policy and card prices are out of scope. Add \
 `private: True` and only you see the answer: it stands alone, with no follow-ups and no ratings, and is \
@@ -406,6 +407,7 @@ pub fn error(e: &JudgeError) -> String {
         | JudgeError::MalformedCitation(_)
         | JudgeError::EmptyVerdict(_)
         | JudgeError::UncitedRules(_)
+        | JudgeError::ToolMisuse(_)
         | JudgeError::LlmRefused
         | JudgeError::Upstream(_) => FAILED.to_owned(),
     }

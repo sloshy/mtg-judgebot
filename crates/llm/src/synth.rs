@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use judge_core::{JudgeError, RuleChunk, RuleId, Unvalidated, Verdict};
+use judge_core::{JudgeError, RuleChunk, RuleId, ToolMisuse, Unvalidated, Verdict};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -324,14 +324,25 @@ impl Synth<Final> {
     }
 
     /// # Errors
-    /// `LlmRefused`, or `Upstream` if the model tries to call a tool again or returns bad JSON.
+    /// `LlmRefused`; `ToolMisuse::SecondRound` if the model calls the tool
+    /// again, readable or not; `Upstream` for bad JSON.
     pub async fn finish(self) -> Result<Verdict<Unvalidated>, JudgeError> {
         let resp = self.round_trip().await?;
-        match classify(resp)? {
-            Step::Verdict(v) => Ok(v),
-            Step::Tool { .. } => {
-                Err(anyhow::anyhow!("model requested a second tool round; not allowed").into())
+        match classify(resp) {
+            Ok(Step::Verdict(v)) => Ok(v),
+            Ok(Step::Tool { requested, .. }) => {
+                Err(JudgeError::ToolMisuse(ToolMisuse::SecondRound {
+                    ids: requested,
+                }))
             }
+            // Any call here is one too many, whatever it asked for; only a
+            // first call that could not be read leaves the round unspent.
+            Err(JudgeError::ToolMisuse(ToolMisuse::Unreadable { .. })) => {
+                Err(JudgeError::ToolMisuse(ToolMisuse::SecondRound {
+                    ids: vec![],
+                }))
+            }
+            Err(e) => Err(e),
         }
     }
 }
@@ -357,7 +368,8 @@ pub enum Step {
 /// [`Stop`] variant is a compile error here rather than a silent fall-through.
 ///
 /// # Errors
-/// `LlmRefused` for a refusal; `Upstream` for truncation, unknown tools,
+/// `LlmRefused` for a refusal; `ToolMisuse::Unreadable` for a `lookup_rules`
+/// call whose input does not parse; `Upstream` for truncation, unknown tools,
 /// unexpected stop reasons and JSON that does not match the schema.
 pub fn classify(resp: ChatResponse) -> Result<Step, JudgeError> {
     match resp.stop {
@@ -378,8 +390,15 @@ pub fn classify(resp: ChatResponse) -> Result<Step, JudgeError> {
                         anyhow::anyhow!("model requested an unknown tool: {}", call.name).into(),
                     );
                 }
-                let parsed: LookupRulesInput = serde_json::from_value(call.input.clone())
-                    .context("lookup_rules input did not match schema")?;
+                // The model misspeaking, like an unreadable citation: a typed
+                // rejection `judge()` retries, not an adapter failure.
+                let parsed: LookupRulesInput =
+                    serde_json::from_value(call.input.clone()).map_err(|e| {
+                        JudgeError::ToolMisuse(ToolMisuse::unreadable(
+                            &call.input.to_string(),
+                            &e.to_string(),
+                        ))
+                    })?;
                 call_ids.push(call.id.clone());
                 for r in parsed.ids {
                     if !requested.contains(&r) {
@@ -701,7 +720,9 @@ mod tests {
             &[],
             vec![call("t", "lookup_rules", json!({"ids": ["abc"]}))],
         );
-        assert!(matches!(classify(bad_input), Err(JudgeError::Upstream(_))));
+        assert!(
+            matches!(classify(bad_input), Err(JudgeError::ToolMisuse(ToolMisuse::Unreadable { raw, .. })) if raw.contains("abc"))
+        );
 
         let no_call = resp(Stop::ToolUse, &["x"], vec![]);
         assert!(matches!(classify(no_call), Err(JudgeError::Upstream(_))));
@@ -726,6 +747,71 @@ mod tests {
 
         let no_text = resp(Stop::EndTurn, &[], vec![]);
         assert!(matches!(classify(no_text), Err(JudgeError::Upstream(_))));
+    }
+
+    /// Answers every request with one scripted response.
+    struct Replies(std::sync::Mutex<Vec<ChatResponse>>);
+
+    #[async_trait]
+    impl Backend for Replies {
+        async fn complete(&self, _req: &ChatRequest) -> Result<ChatResponse, LlmError> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop()
+                .ok_or_else(|| LlmError::Request("no reply scripted".into()))
+        }
+        fn capabilities(&self) -> Capabilities {
+            Unreachable.capabilities()
+        }
+        fn provider(&self) -> &'static str {
+            "test"
+        }
+        fn model(&self) -> &'static str {
+            "m"
+        }
+    }
+
+    fn final_replying(r: ChatResponse) -> Synth<Final> {
+        let model: Arc<dyn ChatModel> = Arc::new(Metered::priced(
+            Replies(std::sync::Mutex::new(vec![r])),
+            SpendMeter::new(),
+            Price::Free,
+        ));
+        Synth::new_final(
+            model,
+            &SynthConfig::default(),
+            "system",
+            vec![TextBlock::plain("user")],
+        )
+    }
+
+    /// Any tool call once the round is spent is a second round, typed so
+    /// `judge()` retries it; an unreadable one is no exception.
+    #[tokio::test]
+    async fn a_call_after_the_round_is_a_second_round() {
+        let again = resp(
+            Stop::ToolUse,
+            &[],
+            vec![call("t", "lookup_rules", json!({"ids": ["613.8"]}))],
+        );
+        let r = final_replying(again).finish().await;
+        assert!(
+            matches!(&r, Err(JudgeError::ToolMisuse(ToolMisuse::SecondRound { ids })) if ids.len() == 1 && ids.first().is_some_and(|i| i.as_ref() == "613.8")),
+            "{r:?}"
+        );
+        let unreadable = resp(
+            Stop::ToolUse,
+            &[],
+            vec![call("t", "lookup_rules", json!({"ids": ["CR 613.8"]}))],
+        );
+        let r = final_replying(unreadable).finish().await;
+        assert!(
+            matches!(&r, Err(JudgeError::ToolMisuse(ToolMisuse::SecondRound { ids })) if ids.is_empty()),
+            "{r:?}"
+        );
+        let answered = resp(Stop::EndTurn, &[VERDICT], vec![]);
+        assert!(final_replying(answered).finish().await.is_ok());
     }
 
     /// The parse-failure context ends up in the `Upstream` chain, which the

@@ -1,13 +1,15 @@
 //! [`PgResolver`]: the card resolution ladder (ARCHITECTURE.md §3 step 2).
 //!
 //! A bracketed span (`[[Card Name]]`) is the user naming a card exactly, and
-//! takes its own short ladder: exact current or face name → `printed_names`.
-//! When neither matches, nothing is resolved; the span is *offered* back as a
-//! "did you mean…?": the cards the loose ladder's naming rungs (alias,
-//! possessive, short name, alias suffix) point at when there are any — so
-//! `[[bolt]]`, typed out of card-fetcher habit, offers Lightning Bolt and is
-//! dropped as a duplicate when the extractor also named the card — else the
-//! fuzzy neighbours.
+//! takes its own short ladder: exact current or face name → `printed_names` →
+//! the alias table, whole span only. An exact alias is the curated table's one
+//! card for that spelling, not a looser match, so `[[bob]]`, typed out of
+//! card-fetcher habit, is Dark Confidant as surely as `bob` is. When none of
+//! those match, nothing is resolved; the span is *offered* back as a "did you
+//! mean…?": the cards the loose ladder's other naming rungs (possessive, short
+//! name, alias suffix) point at when there are any — so `[[bob's]]` offers
+//! Dark Confidant and is dropped as a duplicate when the extractor also named
+//! the card — else the fuzzy neighbours.
 //!
 //! Anything else takes the full ladder: `card_aliases` → exact current name →
 //! `printed_names` → name-before-the-comma → alias suffix → `pg_trgm` fuzzy.
@@ -287,10 +289,11 @@ impl PgResolver {
         })
     }
 
-    /// The bracketed ladder: the exact name, then an old printed name. On a
-    /// miss something is offered but never picked, even a single strong
-    /// match: the brackets say "this spelling", and a different spelling is
-    /// the user's call. The offer is the naming rungs' cards
+    /// The bracketed ladder: the exact name, then an old printed name, then an
+    /// exact alias (the table maps that spelling to one card, so taking it is
+    /// not a guess). On a miss something is offered but never picked, even a
+    /// single strong match: the brackets say "this spelling", and a different
+    /// spelling is the user's call. The offer is the naming rungs' cards
     /// ([`Self::named_offer`], reported under their own rung so `judge()`
     /// drops the offer when another span resolved one of them), else the fuzzy
     /// neighbours (reported `Fuzzy`, never dropped that way).
@@ -310,6 +313,9 @@ impl PgResolver {
         {
             return Ok(r);
         }
+        if let Some(id) = self.alias(&lowered).await? {
+            return self.resolved(query, id, MatchedVia::Alias).await;
+        }
         if let Some((ids, via)) = self.named_offer(&lowered).await? {
             return self.ambiguous(query, &ids, via).await;
         }
@@ -324,17 +330,15 @@ impl PgResolver {
         self.ambiguous(query, &ids, MatchedVia::Fuzzy).await
     }
 
-    /// The cards the loose ladder's naming rungs would pick for `lowered`, and
-    /// the first rung that named any: alias, the possessive-stripped alias /
-    /// exact / short name, short name, alias suffix. Offers only; the fuzzy
-    /// rung is not a naming rung and is left to the caller.
+    /// The cards the loose ladder's other naming rungs would pick for
+    /// `lowered`, and the first rung that named any: the possessive-stripped
+    /// alias / exact / short name, short name, alias suffix. (The whole-span
+    /// alias is not an offer: the bracketed ladder takes it.) Offers only; the
+    /// fuzzy rung is not a naming rung and is left to the caller.
     async fn named_offer(
         &self,
         lowered: &str,
     ) -> Result<Option<(Vec<Uuid>, MatchedVia)>, JudgeError> {
-        if let Some(id) = self.alias(lowered).await? {
-            return Ok(Some((vec![id], MatchedVia::Alias)));
-        }
         if let Some(stripped) = strip_possessive(lowered) {
             if let Some(id) = self.alias(&stripped).await? {
                 return Ok(Some((vec![id], MatchedVia::Alias)));
@@ -598,8 +602,9 @@ fn strip_possessive(lowered: &str) -> Option<String> {
 }
 
 /// How a span asks to be matched. The two ladders are separate methods
-/// selected by an exhaustive match, so no rung of the loose ladder (alias,
-/// short name, alias suffix, a confident fuzzy pick) can reach a bracketed span.
+/// selected by an exhaustive match, so no looser rung of the loose ladder
+/// (possessive, short name, alias suffix, a confident fuzzy pick) can resolve
+/// a bracketed span. The bracketed ladder shares only the whole-span alias.
 #[derive(Debug, PartialEq, Eq)]
 enum CardSpan<'a> {
     /// `[[Card Name]]`: the inner name, trimmed.
@@ -846,8 +851,14 @@ mod pg {
             resolved(&resolver.resolve("[[ dark confidant ]]").await?),
             Some(("Dark Confidant", MatchedVia::Bracket))
         );
-        // A nickname in brackets is not resolved, only offered, under the rung
-        // that named it (so another span resolving the card drops the offer).
+        // An exact alias in brackets is that alias: the table names one card
+        // for the spelling, so taking it is not a guess.
+        assert_eq!(
+            resolved(&resolver.resolve("[[Bob]]").await?),
+            Some(("Dark Confidant", MatchedVia::Alias))
+        );
+        // Any looser naming in brackets is not resolved, only offered, under the
+        // rung that named it (so another span resolving the card drops the offer).
         let offered = |r: Resolution| match r {
             Resolution::Ambiguous {
                 candidates, via, ..
@@ -860,10 +871,6 @@ mod pg {
             )),
             _ => None,
         };
-        assert_eq!(
-            offered(resolver.resolve("[[Bob]]").await?),
-            Some((vec!["Dark Confidant".to_owned()], MatchedVia::Alias))
-        );
         assert_eq!(
             offered(resolver.resolve("[[bob's]]").await?),
             Some((vec!["Dark Confidant".to_owned()], MatchedVia::Alias))

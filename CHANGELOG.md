@@ -39,6 +39,15 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   sent "tower" beside "Urza's Tower". It now sends the full name alone when the message
   makes the card clear, and still leaves an unclear one ("Teferi's" with no hint which
   Teferi) for the user to pick.
+- **A nickname in brackets asked "did you mean?".** `[[bob]]` offered Dark Confidant as a
+  choice instead of answering. A bracketed span that is exactly an alias now resolves to
+  that alias's card: the alias table names one card for that spelling, so it is not a
+  guess. Looser matches in brackets (`[[bob's]]`, a near spelling) are still offered.
+- **A second `lookup_rules` call ended the question.** Asking for the tool again after its
+  one call, or sending well-formed JSON whose ids are not rule ids, failed as an upstream
+  error with no retry. Both are now a rejection that gets the one retry, with a notice saying what the
+  call allows. Two of Sonnet 5's five unanswered gold questions failed this way. The
+  rerun of an answer cut off at the token limit can no longer fetch rules a second time.
 
 ## [1.0.0] - 2026-09-20
 

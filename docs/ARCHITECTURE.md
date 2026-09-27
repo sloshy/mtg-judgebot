@@ -55,12 +55,14 @@ Discord message (+ last N Q&A in the same thread)
     alias → possessive-stripped alias ("bob's" → "bob") →
     exact name → printed-name table → short name before the comma ("Ragavan")
     → alias as a suffix → trigram fuzzy
-    A [[bracketed]] span has its own ladder: exact name → printed name.
-    It is CardSpan::Exact, chosen by an exhaustive match, so no loose rung
-    can resolve it. A miss is never resolved, only offered as Ambiguous:
-      - the cards the naming rungs (alias, possessive, short name, alias
-        suffix) point at, under that rung's matchedVia, so [[bolt]] offers
-        Lightning Bolt. Dropped as a duplicate when the extractor also
+    A [[bracketed]] span has its own ladder: exact name → printed name →
+    alias (whole span). It is CardSpan::Exact, chosen by an exhaustive
+    match, so no looser rung can resolve it. An alias maps one spelling to
+    one card, so [[bob]] resolves. A miss is never resolved, only offered
+    as Ambiguous:
+      - the cards the other naming rungs (possessive, short name, alias
+        suffix) point at, under that rung's matchedVia, so [[bob's]] offers
+        Dark Confidant. Dropped as a duplicate when the extractor also
         named the card.
       - with no naming-rung hit, the fuzzy neighbours.
     Output: Resolution = Resolved(card, matchedVia) | Ambiguous(candidates) | NotFound
@@ -138,6 +140,10 @@ Discord message (+ last N Q&A in the same thread)
           citation, else UncitedRules (D20)
     Failure ⇒ BadCitation / MalformedCitation / EmptyVerdict / UncitedRules →
     retry once (the notice says which), then reply with error.
+    A misused tool round (ToolMisuse: a second lookup_rules call, or one
+    whose ids cannot be read) produces no verdict and is retried the same
+    way. The retry may make the one call only if the first could not be
+    read, since nothing was fetched.
     Always quotes CURRENT Oracle text (errata note if the printed text differs).
   │
   ▼
@@ -341,11 +347,11 @@ Context       { cards, rules, rulings, glossary, prior, notes, history }
 Verdict<S>    { answer, confidence, citations, category, source, crVersion, cards }
               S = Unvalidated | Validated; only Verdict<Validated> can be stored or shown
 Rejection     BadCitation(citation) | Malformed(what) | Empty(why) | Uncited(rule ids)
-              | Oversized { chars }
+              | Tool(SecondRound(ids) | Unreadable(what)) | Oversized { chars }
 RejectedAttempt  { answer, rejection }   — quoted back to the retry as a blockquote
 JudgeError    AmbiguousCards(...) | CardsNotFound(...) | OutOfScope(source)
               | BadCitation | MalformedCitation | EmptyVerdict | UncitedRules
-              | LlmRefused | Upstream(err)
+              | ToolMisuse | LlmRefused | Upstream(err)
 
 Ports:  Extractor, Resolver, Retriever, Synthesizer, Embedder, CallStore
 judge : Question -> IO[Either[JudgeError, Verdict]]

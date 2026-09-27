@@ -44,19 +44,25 @@ pub async fn judge(
     let mut ctx = deps.retriever.retrieve(q, &cards, &e).await?;
     ctx.history = history.to_vec();
 
-    // ARCHITECTURE §3 step 5: BadCitation (or an empty verdict) ⇒ retry once,
-    // telling the model what was wrong, then error. Retries live here, not in
-    // the Discord layer.
-    let first = deps.synthesizer.answer(q, &mut ctx, None).await?;
-    // Kept before `validate` consumes the verdict: the retry is a fresh
-    // conversation, and it is shown what it is asked to correct.
-    let answer = first.answer().to_owned();
-    let rejection = match first.validate(&ctx, source) {
-        Err(JudgeError::BadCitation(c)) => Rejection::BadCitation(c),
-        Err(JudgeError::MalformedCitation(m)) => Rejection::Malformed(m),
-        Err(JudgeError::EmptyVerdict(e)) => Rejection::Empty(e),
-        Err(JudgeError::UncitedRules(u)) => Rejection::Uncited(u),
-        done => return done,
+    // ARCHITECTURE §3 step 5: BadCitation (or an empty verdict, or a misused
+    // tool round) ⇒ retry once, telling the model what was wrong, then error.
+    // Retries live here, not in the Discord layer.
+    let (rejection, answer) = match deps.synthesizer.answer(q, &mut ctx, None).await {
+        Ok(first) => {
+            // Kept before `validate` consumes the verdict: the retry is a fresh
+            // conversation, and it is shown what it is asked to correct.
+            let answer = first.answer().to_owned();
+            let rejection = match first.validate(&ctx, source) {
+                Err(JudgeError::BadCitation(c)) => Rejection::BadCitation(c),
+                Err(JudgeError::MalformedCitation(m)) => Rejection::Malformed(m),
+                Err(JudgeError::EmptyVerdict(e)) => Rejection::Empty(e),
+                Err(JudgeError::UncitedRules(u)) => Rejection::Uncited(u),
+                done => return done,
+            };
+            (rejection, answer)
+        }
+        Err(JudgeError::ToolMisuse(t)) => (Rejection::Tool(t), String::new()),
+        Err(e) => return Err(e),
     };
     let rejected = RejectedAttempt::new(rejection, &answer);
     // At INFO, not DEBUG: when the retry also fails, the *first* rejection is
@@ -476,6 +482,9 @@ mod tests {
     /// citation is not constructible by hand, which is the point.
     const MALFORMED: &str = "!malformed";
 
+    /// Scripts a second `lookup_rules` call instead of an answer.
+    const SECOND_ROUND: &str = "!second round";
+
     /// Returns one scripted verdict per call and records what it was told.
     /// A quote of `""` scripts a verdict with no citations at all;
     /// [`MALFORMED`] scripts one whose only citation is unreadable.
@@ -523,6 +532,11 @@ mod tests {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push((ctx.history.len(), rejected.cloned()));
+            if quote == SECOND_ROUND {
+                return Err(JudgeError::ToolMisuse(crate::ToolMisuse::SecondRound {
+                    ids: vec![RuleId::try_new("613.8".to_owned()).map_err(anyhow::Error::from)?],
+                }));
+            }
             if quote == MALFORMED {
                 let json = format!(
                     r#"{{"answer":"{ANSWER}","confidence":"high","category":"keyword_abilities",
@@ -680,5 +694,27 @@ mod tests {
             matches!(r, Err(JudgeError::BadCitation(Citation::Rule { quote, .. })) if quote.as_ref() == "bad two")
         );
         assert_eq!(synth.seen().len(), 2);
+    }
+
+    /// A misused tool round is the model misspeaking, not a broken adapter:
+    /// one retry that names the misuse, with no answer to quote back.
+    #[test]
+    fn tool_misuse_retries_once_like_a_bad_citation() -> Result<(), JudgeError> {
+        let (d, synth) = deps(vec![SECOND_ROUND, "gain that much life"]);
+        let v = futures::executor::block_on(judge(&d, &q(), &[]))?;
+        assert_eq!(v.citations().len(), 1);
+        let seen = synth.seen();
+        assert!(
+            matches!(&seen.get(1), Some((0, Some(Rejection::Tool(crate::ToolMisuse::SecondRound { ids }))))
+                if ids.len() == 1),
+            "{seen:?}"
+        );
+        assert!(synth.retry_answers().is_empty(), "nothing to quote back");
+
+        let (d, synth) = deps(vec![SECOND_ROUND, SECOND_ROUND]);
+        let r = futures::executor::block_on(judge(&d, &q(), &[]));
+        assert!(matches!(r, Err(JudgeError::ToolMisuse(_))), "{r:?}");
+        assert_eq!(synth.seen().len(), 2, "capped at one retry");
+        Ok(())
     }
 }

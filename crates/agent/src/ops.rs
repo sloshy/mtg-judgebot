@@ -774,6 +774,7 @@ fn judge_error(e: &JudgeError) -> JudgeReply {
         | JudgeError::MalformedCitation(_)
         | JudgeError::EmptyVerdict(_)
         | JudgeError::UncitedRules(_)
+        | JudgeError::ToolMisuse(_)
         | JudgeError::LlmRefused
         | JudgeError::Upstream(_) => JudgeReply::Error {
             message: render::error(e),

@@ -30,8 +30,8 @@ More answers, copied verbatim from a published evaluation run, are on the site's
    synthesis.
 2. **Resolve cards** through a typed ladder: alias table (nicknames, possessives) →
    exact name → old printed names → short names ("Ragavan") → trigram fuzzy. A
-   `[[Full Card Name]]` in brackets matches that exact name only. Answers list the cards
-   they resolved to. The bot **never guesses**: ambiguity ("Tibalt") becomes a
+   `[[Full Card Name]]` in brackets matches that exact name (or a listed nickname) only.
+   Answers list the cards they resolved to. The bot **never guesses**: ambiguity ("Tibalt") becomes a
    "Did you mean…?" button row.
 3. **Retrieve** from Postgres through three legs: a curated category→CR-section map,
    full-text search, and pgvector semantic search over rule embeddings. Retrieval adds

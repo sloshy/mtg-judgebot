@@ -106,9 +106,10 @@ questions have the shape "card A + card B + rule concept C", so:
 - **Card names are entities.** A cheap structured-output call extracts them and SQL
   resolves them through a typed ladder: alias → possessive-stripped alias → exact →
   printed name → short name before the comma → alias suffix → trigram fuzzy. A
-  `[[bracketed]]` span is exact or printed name only, with near misses offered as
-  choices. Embeddings are never used for this: a nickname like "bob" has no semantic
-  relation to *Dark Confidant*.
+  `[[bracketed]]` span is exact name, printed name or exact alias only, with near misses
+  offered as choices. An alias is not a near miss: the table maps that spelling to one
+  card, so `[[bob]]` is Dark Confidant. Embeddings are never used for this: a nickname
+  like "bob" has no semantic relation to *Dark Confidant*.
 - **The resolver never guesses.** Ambiguity is `Resolution::Ambiguous` and becomes a "did
   you mean?" button row (I1). A wrong card silently resolved would produce a confidently
   wrong ruling with valid-looking citations, which is the worst failure the bot can have.

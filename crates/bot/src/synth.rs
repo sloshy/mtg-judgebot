@@ -29,7 +29,7 @@ use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 use async_trait::async_trait;
 use judge_core::{
     Card, CardId, Citation, Context, EmptyVerdict, JudgeError, Question, RejectedAttempt,
-    Rejection, Retriever, RuleChunk, RuleId, Synthesizer, Unvalidated, Verdict,
+    Rejection, Retriever, RuleChunk, RuleId, Synthesizer, ToolMisuse, Unvalidated, Verdict,
 };
 use judge_llm::{
     ChatModel, Effort, OutputSchema, SendOutcome, Synth, SynthConfig, TextBlock, Truncated,
@@ -182,9 +182,11 @@ impl LlmSynthesizer {
         self
     }
 
-    /// One synthesis conversation at `effort`. The first attempt may run the
-    /// tool round; the retry after a rejected citation (which already has that
-    /// round's chunks in `ctx`) may not.
+    /// One synthesis conversation at `effort`. It may run the tool round only
+    /// while the round is unspent ([`round_unspent`]): the first attempt, or
+    /// the retry after a first call that could not be read. The retry after a
+    /// rejected citation, and the medium-effort rerun of an attempt truncated
+    /// after its tool round, already have that round's chunks in `ctx`.
     async fn converse(
         &self,
         q: &Question,
@@ -207,7 +209,7 @@ impl LlmSynthesizer {
         if needs_schema_in_prompt(caps) {
             user.push(schema_block(&OutputSchema::of::<Verdict>()));
         }
-        if rejected.is_some() {
+        if !round_unspent(ctx, rejected) {
             return Synth::new_final(
                 Arc::clone(&self.model),
                 &cfg,
@@ -275,6 +277,22 @@ impl Synthesizer for LlmSynthesizer {
     }
 }
 
+/// Whether a conversation may still make the one `lookup_rules` call: no
+/// round has fetched rules into `ctx`, and there is no rejection, or it is a
+/// first call that could not be read. (`Synth::finish` reports any call after
+/// an answered round as `SecondRound`, so an `Unreadable` call is a first
+/// one.) A round that fetched no chunks leaves `tool_round` empty and counts
+/// as unspent: it added nothing to `ctx`.
+fn round_unspent(ctx: &Context, rejected: Option<&RejectedAttempt>) -> bool {
+    ctx.tool_round.is_empty()
+        && rejected.is_none_or(|r| {
+            matches!(
+                r.rejection(),
+                Rejection::Tool(ToolMisuse::Unreadable { .. })
+            )
+        })
+}
+
 /// Fetch cited sub-rules (`702.19b`) whose rule-level parent (`702.19`) is
 /// in Context, so `validate` can check the quote against the leaf's own
 /// row. Leaves whose parent was never shown are left alone: the model
@@ -292,7 +310,9 @@ pub async fn hydrate_leaf_citations(
 ) -> Result<(), JudgeError> {
     let mut wanted: Vec<RuleId> = Vec::new();
     for c in v.citations() {
+        // A stub is dropped by `validate` unread, so its leaf is not fetched.
         if let Citation::Rule { id, .. } = c
+            && !judge_core::quotes_nothing(c)
             && ctx.rule(id).is_none()
             && !wanted.contains(id)
             && parent_of(id).is_some_and(|p| ctx.rule(&p).is_some())
@@ -542,8 +562,7 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
                 // as a ruling under an invented key because the card has no
                 // rulings to cite. The quote is good, so name the kind it meant
                 // instead of telling the model to drop it.
-                Citation::ScryfallRuling { card, .. } if judge_core::misfiled_oracle_text(c, ctx).is_some() => {
-                    let face = judge_core::misfiled_oracle_text(c, ctx).unwrap_or_default();
+                Citation::ScryfallRuling { card, .. } if let Some(face) = judge_core::misfiled_oracle_text(c, ctx) => {
                     format!(
                         "that is not a ruling: the text you quoted is the Oracle text of the card itself, shown under \
                          [oracle {card}#{face}]. Cite it as {{\"kind\": \"oracle_text\", \"card\": \"{card}\", \"face\": {face}, \
@@ -606,6 +625,40 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
                  material to quote, take the number out of the answer. Keep the rest.",
                 ids.join(", "),
                 if ids.len() == 1 { "it" } else { "them" }
+            );
+        }
+        // No answer came back, so there is nothing to keep; the notice says
+        // what the one call allows and what this attempt may still do.
+        Rejection::Tool(ToolMisuse::SecondRound { ids }) => {
+            let asked = if ids.is_empty() {
+                String::new()
+            } else {
+                let ids: Vec<String> = ids.iter().map(|id| format!("`{id}`")).collect();
+                format!(" (asking for {})", ids.join(", "))
+            };
+            let _ = writeln!(
+                s,
+                "Your earlier attempt called `lookup_rules` a second time{asked}, after its one call had been \
+                 answered, so it was rejected without an answer. The rules that call returned are in the \
+                 material above. You cannot call the tool on this attempt: answer now from the material. If a \
+                 rule you need is not in it, answer with `low` confidence and say which rule you would need, \
+                 without citing it."
+            );
+        }
+        Rejection::Tool(ToolMisuse::Unreadable { raw, error }) => {
+            // Said only when this attempt really has the call (see `round_unspent`).
+            let next = if round_unspent(ctx, Some(rejected)) {
+                "You may make your one call on this attempt with corrected ids, or answer from the material \
+                 if it is enough."
+            } else {
+                "The rules an earlier call fetched are in the material above. You cannot call the tool on \
+                 this attempt: answer now from the material."
+            };
+            let _ = writeln!(
+                s,
+                "Your earlier attempt called `lookup_rules` with input that could not be read: {raw} — {error}. \
+                 `ids` is a list of rule ids exactly as the rules print them, such as `702.19b`, `613.7`, or a \
+                 whole subsection such as `613`: no \"CR\" prefix, range or description. {next}"
             );
         }
         Rejection::Empty(EmptyVerdict::NoCitations) => {
@@ -1964,6 +2017,213 @@ mod tests {
         // The hydrated leaf folds back into its parent when rendered again.
         let s = render_user_turn(&q(), &ctx, None, &[], &Budget::default());
         assert_eq!(s.matches("702.19b The controller").count(), 1, "{s}");
+        Ok(())
+    }
+
+    /// A stub is dropped by `validate` unread, so hydrating its leaf would be
+    /// a wasted read: only the real citation's leaf is fetched.
+    /// The round is spent once rules are in `ctx`, whatever the rejection:
+    /// the medium-effort rerun of a truncated attempt and the retry after an
+    /// unreadable call both see it, so neither can fetch a second time.
+    #[test]
+    fn the_round_is_unspent_only_before_any_rules_are_fetched() -> R {
+        let unreadable = attempt(Rejection::Tool(ToolMisuse::unreadable("{}", "missing ids")));
+        let second = attempt(Rejection::Tool(ToolMisuse::SecondRound { ids: vec![] }));
+        let bad = attempt(Rejection::Empty(EmptyVerdict::NoCitations));
+        let fresh = Context::default();
+        assert!(round_unspent(&fresh, None));
+        assert!(round_unspent(&fresh, Some(&unreadable)));
+        assert!(!round_unspent(&fresh, Some(&second)));
+        assert!(!round_unspent(&fresh, Some(&bad)));
+        let spent = Context {
+            tool_round: vec![rid("613.7")?],
+            ..Context::default()
+        };
+        assert!(!round_unspent(&spent, None));
+        assert!(!round_unspent(&spent, Some(&unreadable)));
+        // And the notice then does not offer the call.
+        let s = render_user_turn(&q(), &spent, Some(&unreadable), &[], &Budget::default());
+        assert!(
+            s.contains("You cannot call the tool on this attempt") && !s.contains("You may make"),
+            "{s}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_stub_citation_is_not_hydrated() -> R {
+        let server = MockServer::start().await;
+        let leaf_line = "702.19b The controller of an attacking creature with trample first assigns damage to the creature(s) blocking it.";
+        let body = json!({
+            "answer": "Trample assigns lethal damage to blockers first, then the rest to the player.",
+            "confidence": "high",
+            "citations": [
+                {"kind": "rule", "id": "702.19c", "quote": "x"},
+                {"kind": "rule", "id": "702.19b", "quote": "first assigns damage to the creature(s) blocking it"}
+            ],
+            "category": "keyword_abilities"
+        })
+        .to_string();
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(message(
+                "end_turn",
+                &json!([{"type": "text", "text": body}]),
+            )))
+            .mount(&server)
+            .await;
+        let parent = chunk("702.19", None, &format!("702.19. Trample\n{leaf_line}"))?;
+        let leaf = chunk("702.19b", Some("702.19"), leaf_line)?;
+        let (synth, retriever) = synth_against(&server, vec![parent.clone(), leaf])?;
+        let mut ctx = Context {
+            rules: vec![parent],
+            ..Context::default()
+        };
+        let v = synth.answer(&q(), &mut ctx, None).await?;
+        assert_eq!(
+            retriever
+                .calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+            vec![vec![rid("702.19b")?]]
+        );
+        assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
+        Ok(())
+    }
+
+    /// A second `lookup_rules` call is a typed misuse, not an upstream
+    /// failure; its retry forbids the tool and names what was asked for.
+    #[tokio::test]
+    async fn a_second_tool_call_is_a_misuse_and_its_retry_forbids_the_tool() -> R {
+        let server = MockServer::start().await;
+        // After the tool result the model asks again.
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_string_contains(r#""type":"tool_result""#))
+            .respond_with(ResponseTemplate::new(200).set_body_json(message(
+                "tool_use",
+                &json!([{"type": "tool_use", "id": "tu_2", "name": "lookup_rules", "input": {"ids": ["613.8"]}}]),
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(message(
+                "tool_use",
+                &json!([{"type": "tool_use", "id": "tu_1", "name": "lookup_rules", "input": {"ids": ["613.7"]}}]),
+            )))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(message(
+                "end_turn",
+                &json!([{"type": "text", "text": verdict_json("613.7", "usually done using a timestamp system")}]),
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (synth, retriever) =
+            synth_against(&server, vec![chunk("613.7", None, TIMESTAMP_RULE)?])?;
+        let mut ctx = Context::default();
+
+        let Err(JudgeError::ToolMisuse(misuse)) = synth.answer(&q(), &mut ctx, None).await else {
+            return Err("a second call must be a ToolMisuse".into());
+        };
+        assert_eq!(
+            misuse,
+            ToolMisuse::SecondRound {
+                ids: vec![rid("613.8")?]
+            }
+        );
+        assert!(
+            ctx.rule(&rid("613.7")?).is_some(),
+            "the first round's rules stay"
+        );
+
+        let rejected = attempt(Rejection::Tool(misuse));
+        let v = synth.answer(&q(), &mut ctx, Some(&rejected)).await?;
+        assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
+        assert_eq!(
+            retriever
+                .calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+            vec![vec![rid("613.7")?]],
+            "the refused call fetched nothing"
+        );
+        let reqs = bodies(&server).await?;
+        let retry = reqs.get(2).ok_or("no retry request")?;
+        assert_eq!(at(retry, "/tool_choice/type").as_str(), Some("none"));
+        let text = user_text(retry, 0);
+        assert!(
+            text.contains("called `lookup_rules` a second time (asking for `613.8`)")
+                && text.contains("You cannot call the tool on this attempt"),
+            "{text}"
+        );
+        Ok(())
+    }
+
+    /// A first call whose ids cannot be read fetched nothing, so the retry
+    /// may still make the one call.
+    #[tokio::test]
+    async fn an_unreadable_first_call_leaves_the_round_to_the_retry() -> R {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(message(
+                "tool_use",
+                &json!([{"type": "tool_use", "id": "tu_1", "name": "lookup_rules", "input": {"ids": ["CR 613.7"]}}]),
+            )))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(message(
+                "end_turn",
+                &json!([{"type": "text", "text": verdict_json("613.7", "usually done using a timestamp system")}]),
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (synth, retriever) =
+            synth_against(&server, vec![chunk("613.7", None, TIMESTAMP_RULE)?])?;
+        let mut ctx = Context {
+            rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
+            ..Context::default()
+        };
+
+        let Err(JudgeError::ToolMisuse(misuse @ ToolMisuse::Unreadable { .. })) =
+            synth.answer(&q(), &mut ctx, None).await
+        else {
+            return Err("an unreadable call must be a ToolMisuse".into());
+        };
+        assert!(
+            retriever
+                .calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
+        );
+        let rejected = attempt(Rejection::Tool(misuse));
+        synth.answer(&q(), &mut ctx, Some(&rejected)).await?;
+        let reqs = bodies(&server).await?;
+        let retry = reqs.get(1).ok_or("no retry request")?;
+        assert_eq!(at(retry, "/tool_choice/type").as_str(), Some("auto"));
+        assert_eq!(at(retry, "/tools/0/name").as_str(), Some("lookup_rules"));
+        let text = user_text(retry, 0);
+        assert!(
+            text.contains(r#"with input that could not be read: {"ids":["CR 613.7"]}"#)
+                && text.contains("You may make your one call on this attempt"),
+            "{text}"
+        );
         Ok(())
     }
 

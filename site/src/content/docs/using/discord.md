@@ -11,9 +11,10 @@ Ask in plain language. Nicknames work ("bob", "goyf", "snappy", "t3feri"). The a
 is `data/aliases.yaml` in the repository, and pull requests adding to it are welcome. Use
 brackets like `[[Full Card Name]]` to avoid ambiguity. A bracketed name matches only the
 card with that exact name (current or printed, including one face of a split or
-double-faced card). Anything else in brackets, such as a nickname or a near miss, is
-offered back as a choice rather than corrected. Answers take twenty to forty-five seconds.
-The bot acknowledges at once and edits the reply in.
+double-faced card), or the one card a listed nickname stands for (`[[bob]]`). Anything
+else in brackets, such as a near miss, is offered back as a choice rather than corrected.
+Answers take twenty to forty-five seconds. The bot acknowledges at once and edits the
+reply in.
 
 ![A Discord reply to /judge asking when a player first gets priority. The answer runs to two paragraphs with rule numbers inline, six rule quotations follow in an embed with the confidence and CR version, and three rating buttons sit beneath.](../../../assets/screenshots/discord-answer-rules.png)
 
