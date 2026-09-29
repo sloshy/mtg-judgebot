@@ -23,9 +23,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   built-in price table knows its rates ($4 input, $20 output per million tokens). On the
   gold set, with the fixes below, it answered all 18 in-scope questions, all agreeing with
   the reference, for about 30% less per run than Opus 5. The README's results and the
-  Sample answers page come from that run (`eval/published/v1-opus-5-5.json`). To stay on
-  Opus 5, name `claude-opus-5` in a `judge.toml`: it is still priced. A `judge.toml` that
-  already names a model is unaffected.
+  Sample answers page come from that run (`eval/published/v1-opus-5-5.json`). The price
+  table lists current models only, so it no longer knows `claude-opus-5`, and an unknown
+  Anthropic model now prices at Opus 5.5's rate. A `judge.toml` that still names
+  `claude-opus-5` should give it a `[models.<stage>.pricing]` table ($5 input, $25 output),
+  or the cap under-counts it.
 - **Claude Sonnet 5.5 is the measured budget option.** The built-in price table knows
   `claude-sonnet-5-5` ($2 input, $10 output, $0.20 cache reads per million tokens), so a
   `judge.toml` naming it needs no `pricing` table and the spend cap no longer prices it as
@@ -40,7 +42,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   the schema's order, which was alphabetical: a citation's `id` before its `kind`, a
   ruling's quote before its key. The schema now asks for `kind`, then the reference, then
   `quote`, as the prompt does. The retry after an unreadable citation now says a value was
-  in the wrong field rather than assuming a placeholder.
+  in the wrong field rather than assuming a placeholder. Together with the next fix, and
+  one gold run before and after, Sonnet 5 went from 6 answered questions to 13.
 - **"Did you mean?" for a shorthand the question had already made clear.** The extractor
   sent "tower" beside "Urza's Tower". It now sends the full name alone when the message
   makes the card clear, and still leaves an unclear one ("Teferi's" with no hint which
@@ -52,8 +55,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **A second `lookup_rules` call ended the question.** Asking for the tool again after its
   one call, or sending well-formed JSON whose ids are not rule ids, failed as an upstream
   error with no retry. Both are now a rejection that gets the one retry, with a notice
-  saying what the call allows. The rerun of an answer cut off at the token limit can no
-  longer fetch rules a second time.
+  saying what the call allows. Two of Sonnet 5's five unanswered gold questions failed
+  this way. The rerun of an answer cut off at the token limit can no longer fetch rules a
+  second time.
 
 ## [1.0.0] - 2026-09-20
 

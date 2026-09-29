@@ -551,7 +551,8 @@ Key cross-file facts that aren't obvious from any one file:
     `cache_hints`. Its embeddings side has `send_dimensions`.
   - A model on an `openai` provider must be priced (`[models.X.pricing]`, cache prices
     defaulting high from `input`) or the provider `pricing = "free"`. The built-in table
-    (`judge_llm::PRICES`) errs high for unknown Anthropic models only.
+    (`judge_llm::PRICES`) lists current Anthropic models only and prices an unknown
+    Anthropic one as the default (Opus 5.5), so a dearer one is under-counted.
   - When a backend cannot enforce the output schema, the adapters append it to the *user
     turn* (`judge_llm::schema_block`), so the pinned system prompt digest and the
     Anthropic golden fixtures never change.

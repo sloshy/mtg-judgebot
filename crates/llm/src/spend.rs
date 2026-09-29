@@ -91,8 +91,8 @@ pub enum Price {
     /// still logged. For a local server or a flat-rate proxy.
     Free,
     /// The built-in table's rate for the configured model. Reserves at this
-    /// rate; settles at the table's rate for the response's model, or this
-    /// one when the table does not know it.
+    /// rate; settles at [`pricing_for`] the response's model, which prices an
+    /// Anthropic model the table does not list as the default.
     Table(Pricing),
     /// An operator-supplied rate (`[models.<stage>.pricing]`): reserves and
     /// settles at exactly this, whatever model the response names. The table
@@ -103,12 +103,6 @@ pub enum Price {
 
 /// The Anthropic provider key in [`PRICES`].
 pub const ANTHROPIC: &str = "anthropic";
-const OPUS_5: Pricing = Pricing {
-    input: 5.0,
-    output: 25.0,
-    cache_read: 0.50,
-    cache_write: 6.25,
-};
 const OPUS_5_5: Pricing = Pricing {
     input: 4.0,
     output: 20.0,
@@ -123,27 +117,27 @@ const SONNET_5_5: Pricing = Pricing {
 };
 
 /// Built-in price table, `(provider, model)` → USD per million tokens.
-/// Opus 5 verified 2026-08-29 against the Anthropic pricing page, Opus 5.5
-/// taken from its launch pricing 2026-09-22, Sonnet 5.5 from its launch pricing
-/// 2026-09-28 (cache writes at the usual 1.25 × input);
-/// re-check when a model is added or a price changes.
+/// Opus 5.5 taken from its launch pricing 2026-09-22, Sonnet 5.5 from its
+/// launch pricing 2026-09-28 (cache writes at the usual 1.25 × input). Only
+/// current models are listed: an upgrade replaces its predecessor's row.
+/// Re-check when a model is added or a price changes.
 pub const PRICES: &[(&str, &str, Pricing)] = &[
     (ANTHROPIC, "claude-opus-5-5", OPUS_5_5),
-    (ANTHROPIC, "claude-opus-5", OPUS_5),
     (ANTHROPIC, "claude-sonnet-5-5", SONNET_5_5),
 ];
 
 /// Pricing for `model` at `provider`. An unknown Anthropic model (including
-/// a fallback the server routed to) is priced as Opus 5 so the estimate errs
-/// high rather than low; an unknown model elsewhere is `None`, because it
-/// could be anything and the operator must say.
+/// a fallback the server routed to) is priced as the default model, Opus 5.5,
+/// the dearest in the table; a dearer one needs an operator's rate. An unknown
+/// model elsewhere is `None`, because it could be anything and the operator
+/// must say.
 #[must_use]
 pub fn pricing_for(provider: &str, model: &str) -> Option<Pricing> {
     PRICES
         .iter()
         .find(|(p, m, _)| *p == provider && *m == model)
         .map(|(_, _, pricing)| *pricing)
-        .or_else(|| (provider == ANTHROPIC).then_some(OPUS_5))
+        .or_else(|| (provider == ANTHROPIC).then_some(OPUS_5_5))
 }
 
 /// Spend counters and cap shared by everything built over one meter.
@@ -607,7 +601,7 @@ mod tests {
                 cache_read,
                 cache_write,
             },
-            model: "claude-opus-5".into(),
+            model: "claude-opus-5-5".into(),
             assistant: AssistantTurn {
                 backend: "stub",
                 raw: serde_json::Value::Null,
@@ -647,7 +641,7 @@ mod tests {
             self.provider
         }
         fn model(&self) -> &'static str {
-            "claude-opus-5"
+            "claude-opus-5-5"
         }
     }
 
@@ -666,17 +660,13 @@ mod tests {
     }
 
     #[test]
-    fn opus_5_pricing_matches_table() {
+    fn anthropic_pricing_matches_table() {
         let u = Usage {
             input: 1_000_000,
             output: 1_000_000,
             cache_read: 1_000_000,
             cache_write: 1_000_000,
         };
-        let usd = pricing_for(ANTHROPIC, "claude-opus-5")
-            .map(|p| p.usd(&u))
-            .unwrap_or_default();
-        assert!((usd - (5.0 + 25.0 + 0.5 + 6.25)).abs() < 1e-9, "{usd}");
         let usd = pricing_for(ANTHROPIC, "claude-opus-5-5")
             .map(|p| p.usd(&u))
             .unwrap_or_default();
@@ -685,17 +675,17 @@ mod tests {
             .map(|p| p.usd(&u))
             .unwrap_or_default();
         assert!((usd - (2.0 + 10.0 + 0.2 + 2.5)).abs() < 1e-9, "{usd}");
-        // Unknown Anthropic models price as Opus 5 (never under-estimate); unknown providers are unpriced.
+        // Unknown Anthropic models price as the default, Opus 5.5; unknown providers are unpriced.
         assert_eq!(
             pricing_for(ANTHROPIC, "claude-something-new"),
-            pricing_for(ANTHROPIC, "claude-opus-5")
+            pricing_for(ANTHROPIC, "claude-opus-5-5")
         );
-        assert_eq!(pricing_for("somewhere-else", "claude-opus-5"), None);
+        assert_eq!(pricing_for("somewhere-else", "claude-opus-5-5"), None);
     }
 
     #[tokio::test]
     async fn usage_accumulates_and_cap_blocks_without_sending() -> Result<(), LlmError> {
-        // 1M input + 200k output = $5 + $5 = $10 per call.
+        // 1M input + 200k output = $4 + $4 = $8 per call.
         let replies = (0..3)
             .map(|_| Ok(reply(1_000_000, 200_000, 0, 0)))
             .collect();
@@ -703,20 +693,20 @@ mod tests {
         let m = Metered::new(stub(replies), meter.clone())?;
         m.complete(&req(64)).await?;
         assert!(
-            (meter.spent_usd() - 10.0).abs() < 1e-6,
+            (meter.spent_usd() - 8.0).abs() < 1e-6,
             "{}",
             meter.spent_usd()
         );
         m.complete(&req(64)).await?;
         assert!(
-            (m.meter().spent_usd() - 20.0).abs() < 1e-6,
+            (m.meter().spent_usd() - 16.0).abs() < 1e-6,
             "{}",
             meter.spent_usd()
         );
         assert_eq!(meter.calls(), 2);
         let third = m.complete(&req(64)).await;
         assert!(
-            matches!(third, Err(LlmError::SpendCapExceeded { spent, cap }) if (spent - 20.0).abs() < 1e-6 && (cap - 15.0).abs() < 1e-6),
+            matches!(third, Err(LlmError::SpendCapExceeded { spent, cap }) if (spent - 16.0).abs() < 1e-6 && (cap - 15.0).abs() < 1e-6),
             "{third:?}"
         );
         assert_eq!(
@@ -774,7 +764,7 @@ mod tests {
             })
         ));
         assert!(
-            (m.meter().spent_usd() - 5.0).abs() < 1e-6,
+            (m.meter().spent_usd() - 4.0).abs() < 1e-6,
             "{}",
             m.meter().spent_usd()
         );
@@ -882,7 +872,7 @@ mod tests {
             Metered::new(stub(vec![]), SpendMeter::new())
                 .map(|m| m.price())
                 .ok(),
-            Some(Price::Table(OPUS_5)),
+            Some(Price::Table(OPUS_5_5)),
             "the table's price is marked as such"
         );
     }
@@ -890,8 +880,8 @@ mod tests {
     #[tokio::test]
     async fn an_operator_price_settles_at_that_price_even_on_a_tabled_provider()
     -> Result<(), LlmError> {
-        // An Anthropic-kind provider (a proxy, say) whose reply names claude-opus-5, which the
-        // table prices at $5/$25: the operator said $1/$5, so 1M input + 200k output is $2, not $10.
+        // An Anthropic-kind provider (a proxy, say) whose reply names claude-opus-5-5, which the
+        // table prices at $4/$20: the operator said $1/$5, so 1M input + 200k output is $2, not $8.
         let rate = Pricing {
             input: 1.0,
             output: 5.0,
@@ -938,7 +928,7 @@ mod tests {
         );
         m.complete(&req(64)).await?;
         assert!(
-            (meter.spent_usd() - 10.0).abs() < 1e-6,
+            (meter.spent_usd() - 8.0).abs() < 1e-6,
             "{}",
             meter.spent_usd()
         );
@@ -947,8 +937,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_free_model_is_counted_but_never_capped() -> Result<(), LlmError> {
-        // A paid sibling exhausts the shared cap ($10 of a $8 cap)...
-        let meter = SpendMeter::new().with_max_spend_usd(8.0)?;
+        // A paid sibling exhausts the shared cap ($8 of a $6 cap)...
+        let meter = SpendMeter::new().with_max_spend_usd(6.0)?;
         let paid = Metered::new(
             stub(vec![Ok(reply(1_000_000, 200_000, 0, 0))]),
             meter.clone(),
@@ -969,7 +959,7 @@ mod tests {
         );
         free.complete(&req(16_000)).await?;
         assert!(
-            (meter.spent_usd() - 10.0).abs() < 1e-6,
+            (meter.spent_usd() - 8.0).abs() < 1e-6,
             "{}",
             meter.spent_usd()
         );
@@ -988,7 +978,7 @@ mod tests {
             Err(LlmError::Request(_))
         ));
         assert_eq!(meter.calls(), 2);
-        assert!((meter.spent_usd() - 10.0).abs() < 1e-6);
+        assert!((meter.spent_usd() - 8.0).abs() < 1e-6);
         Ok(())
     }
 

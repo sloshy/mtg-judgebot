@@ -7,8 +7,7 @@ sidebar:
 
 With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5-5`
 for both LLM stages, and Voyage `voyage-3.5` for embeddings if `VOYAGE_API_KEY` is set.
-The eval numbers were measured on that setup. The prompts, and so the pinned prompt
-digest, were tuned on its predecessor, Opus 5.
+The eval numbers were measured on that setup.
 
 A `judge.toml` picks something else, such as a different model per stage on different
 providers. The file is the one `JUDGE_CONFIG` names, else `./judge.toml` if present.
@@ -70,8 +69,9 @@ citations itself.
 **The spend cap must be able to price every model.** `JUDGE_MAX_USD` reserves each call's
 worst case before sending, so it needs a price per token.
 
-- The built-in table knows Anthropic's first-party models. It prices an unknown Anthropic
-  model as Opus 5, erring high.
+- The built-in table knows Anthropic's current first-party models. It prices any other
+  Anthropic model as the default, `claude-opus-5-5`, so a model that costs more needs a
+  price of its own (below).
 - An `openai` provider has no safe guess. A model there needs a `[models.<stage>.pricing]`
   table (USD per million tokens), or the provider must say `pricing = "free"`. Otherwise
   startup fails with an error naming the stage.

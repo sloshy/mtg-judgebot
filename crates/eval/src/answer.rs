@@ -750,13 +750,13 @@ mod tests {
         let with_models = Run {
             models: Some(RunModels {
                 extract: "ollama/qwen3:8b".into(),
-                synth: "anthropic/claude-opus-5".into(),
+                synth: "anthropic/claude-opus-5-5".into(),
             }),
             ..run
         };
         assert!(
             table(&with_models)
-                .contains("(cap $1.00); extract=ollama/qwen3:8b synth=anthropic/claude-opus-5"),
+                .contains("(cap $1.00); extract=ollama/qwen3:8b synth=anthropic/claude-opus-5-5"),
             "{}",
             table(&with_models)
         );

@@ -296,8 +296,7 @@ provider *kind* (`voyage | openai`, not the operator's table name), model and di
 
 **Zero config works.** With no `judge.toml`, the binaries build the default setup
 from `.env`: Anthropic direct with `ANTHROPIC_API_KEY`, `claude-opus-5-5` for both stages,
-Voyage if `VOYAGE_API_KEY` is set. The eval numbers were measured on that setup. The
-prompts, and so the pinned prompt digest, were tuned on its predecessor, Opus 5.
+Voyage if `VOYAGE_API_KEY` is set. The eval numbers were measured on that setup.
 
 A `judge.toml` (path from `JUDGE_CONFIG`, else `./judge.toml` if present) selects
 providers and models. `judge.example.toml` documents every knob with its default. Two
@@ -343,10 +342,10 @@ max_tokens = 16000
 # unless the provider is `pricing = "free"`. A model the cap cannot price is a
 # startup error, not a silent under-estimate.
 [models.synth.pricing]
-input = 5.0
-output = 25.0
-cache_read = 0.5                   # defaults to `input`
-cache_write = 6.25                 # defaults to 1.25 × `input`, Anthropic's write premium
+input = 4.0
+output = 20.0
+cache_read = 0.2                   # defaults to `input`
+cache_write = 5.0                  # defaults to 1.25 × `input`, Anthropic's write premium
 
 [models.embed]
 provider = "voyage"                # kind = "voyage" provider, implied when absent
@@ -365,8 +364,9 @@ The loader enforces these rules at load time, each with a message naming the key
   `api_key_env`, `effort` on an `openai` provider with `reasoning_effort = false`, a stage
   price on a `pricing = "free"` provider, a cloud-door key on a keyed door.
 - A model on an `openai` provider must be priced or its provider `pricing = "free"`. The
-  built-in table errs high for unknown *Anthropic* models only. Erring high is safe
-  there, but an unknown OpenAI-compatible model could be anything.
+  built-in table prices unknown *Anthropic* models only, as the default model, so a dearer
+  one is under-counted unless it has a price of its own. An unknown OpenAI-compatible model
+  could be anything.
 
 The loader is hermetic: `from_toml`/`from_vars` read `JUDGE_MAX_USD` and the keys through
 an injected environment, so its tests never touch the process environment. Every binary

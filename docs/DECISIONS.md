@@ -162,8 +162,8 @@ becoming a naming scheme of its own.
 So there is `judge.toml`: typed structs, `deny_unknown_fields`, `nutype` validators, and
 secrets named by environment variable and never written in the file. With no file, the
 binaries build the default setup from `.env`: Anthropic direct, `claude-opus-5-5` for both
-stages, Voyage if keyed. The eval numbers were measured on that setup. The prompts, and so
-the pinned prompt digest, were tuned on its predecessor, Opus 5. A knob that would be silently ignored is a load error naming both keys.
+stages, Voyage if keyed. The eval numbers were measured on that setup. A knob that would
+be silently ignored is a load error naming both keys.
 `docs/PROVIDERS.md` is the reference.
 
 ## D7. Spend cap by type
@@ -186,7 +186,11 @@ Pricing is a closed sum:
 - an operator's per-token rate,
 - `free`.
 
-An unknown Anthropic model prices as the most expensive one, because erring high is safe.
+The table lists only current models: an upgrade replaces its predecessor's row. An
+unknown Anthropic model, a refusal fallback's included, prices as the default, the dearest
+in the table. A dearer one (Fable, say) is therefore under-counted: a stage that names one
+needs an operator's rate, and a fallback that lands on one settles low. That is accepted,
+because a fallback happens only on a safety refusal.
 An unpriced model on an OpenAI-compatible provider is a startup error, because it could
 be anything.
 

@@ -313,7 +313,7 @@ mod tests {
 
     fn body_with(stop: &str, content: &Value, stop_details: &Value) -> Value {
         json!({
-            "id": "msg_1", "model": "claude-opus-5", "role": "assistant",
+            "id": "msg_1", "model": "claude-opus-5-5", "role": "assistant",
             "content": content, "stop_reason": stop, "stop_details": stop_details,
             "usage": {"input_tokens": 10, "output_tokens": 5}
         })
@@ -392,7 +392,7 @@ mod tests {
             tool_calls: vec![],
             stop,
             usage: Usage::default(),
-            model: "claude-opus-5".into(),
+            model: "claude-opus-5-5".into(),
             assistant: AssistantTurn {
                 backend: "test",
                 raw: Value::Null,

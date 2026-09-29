@@ -48,7 +48,7 @@ pub struct MessagesRequest {
 pub enum ModelField {
     /// `"model": "<id>"`.
     InBody {
-        /// Model id, e.g. `claude-opus-5` (`anthropic.claude-opus-5` on Bedrock).
+        /// Model id, e.g. `claude-opus-5-5` (`anthropic.claude-opus-5-5` on Bedrock).
         model: String,
     },
     /// `"anthropic_version": "vertex-2023-10-16"`; the model is in the URL.
@@ -349,7 +349,7 @@ impl ToolChoice {
     }
 }
 
-/// Adaptive thinking is the only mode used by this project (Opus 5 rejects `budget_tokens`).
+/// Adaptive thinking is the only mode used by this project (Opus 5.5 rejects `budget_tokens`).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Thinking {
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn request_serializes_expected_shape() -> Result<(), serde_json::Error> {
         let req = MessagesRequest {
-            model: "claude-opus-5".into(),
+            model: "claude-opus-5-5".into(),
             max_tokens: 16000,
             system: vec![SystemBlock::cached("sys")],
             messages: vec![Message::user_text("hi")],
@@ -578,12 +578,12 @@ mod tests {
         );
         assert_eq!(at(&v, "/fallbacks"), "default");
         assert!(v.get("tools").is_none());
-        assert_eq!(at(&v, "/model"), "claude-opus-5");
+        assert_eq!(at(&v, "/model"), "claude-opus-5-5");
         assert!(v.get("anthropic_version").is_none());
         // The model field comes first, as the first-party body has it.
         assert!(
             serde_json::to_string(&req)?
-                .starts_with(r#"{"model":"claude-opus-5","max_tokens":16000,"#)
+                .starts_with(r#"{"model":"claude-opus-5-5","max_tokens":16000,"#)
         );
 
         let vertex = MessagesRequest {
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn response_parses_refusal_and_unknown_stop() -> Result<(), serde_json::Error> {
-        let raw = r#"{"id":"m","model":"claude-opus-5","role":"assistant","content":[{"type":"text","text":"t"}],
+        let raw = r#"{"id":"m","model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"t"}],
             "stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber"},
             "usage":{"input_tokens":1,"output_tokens":0}}"#;
         let r: MessagesResponse = serde_json::from_str(raw)?;

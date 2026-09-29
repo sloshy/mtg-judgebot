@@ -262,7 +262,7 @@ mod tests {
             .post("http://127.0.0.1:1/anthropic/v1/messages")
             .header("content-type", "application/json")
             .header("anthropic-version", "2023-06-01")
-            .body(br#"{"model":"anthropic.claude-opus-5"}"#.to_vec())
+            .body(br#"{"model":"anthropic.claude-opus-5-5"}"#.to_vec())
             .build()?;
         let creds = StaticCredentials::new("AKIDTEST", "secret", Some("tok".into())).0;
         sign_request(

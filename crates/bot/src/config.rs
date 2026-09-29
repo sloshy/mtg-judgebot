@@ -7,8 +7,7 @@
 //! `JUDGE_CONFIG`, else `./judge.toml` if it exists, else builds the default
 //! setup from the environment: Anthropic's first-party API with
 //! `ANTHROPIC_API_KEY`, `claude-opus-5-5` for both stages, Voyage if
-//! `VOYAGE_API_KEY` is set. The eval numbers were measured on that setup;
-//! the prompts, and so the pinned prompt digest, were tuned on Opus 5.
+//! `VOYAGE_API_KEY` is set. The eval numbers were measured on that setup.
 //!
 //! The file is typed on the way in: unknown keys are rejected
 //! (`deny_unknown_fields`, so a typo is an error naming the key), model ids
@@ -20,7 +19,7 @@
 //! express in types it checks by hand, naming the key: a stage naming a
 //! provider that is not there or of the wrong kind, a model on an
 //! `openai` provider with no price (the cap cannot estimate it: the built-in
-//! table knows Anthropic's models and errs high for unknown ones there, but
+//! table knows Anthropic's models and prices unknown ones there as the default, but
 //! an unknown model on an OpenAI-compatible server could be anything, so the
 //! operator must say, or mark the provider `pricing = "free"`), an Anthropic
 //! door that is not built into this binary, and a key that contradicts
@@ -1746,8 +1745,8 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
         let model = entry.model.to_string();
         // A free provider and a stage price contradict each other; an
         // explicit price beats the table (and is settled at, not merely
-        // reserved at); the table errs high for Anthropic and knows nothing
-        // else.
+        // reserved at); the table prices any Anthropic model (an unknown one
+        // as the default) and knows nothing else.
         let price = match (free, &entry.pricing) {
             (true, Some(_)) => {
                 return Err(ConfigError::PricedFree {
@@ -2695,7 +2694,7 @@ model = "qwen3:8b"
             Mock, MockServer, ResponseTemplate,
             matchers::{method, path},
         };
-        // A proxy routing a model the table would price as Opus 5 ($5/$25); the operator says $1/$5.
+        // A proxy routing a model the table would price as Opus 5.5 ($4/$20); the operator says $1/$5.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
@@ -2728,7 +2727,7 @@ model = "qwen3:8b"
         models.synth().complete(&req).await?;
         assert!(
             (c.meter().spent_usd() - 2.0).abs() < 1e-6,
-            "billed at the operator's rate, not the table's $10: {}",
+            "billed at the operator's rate, not the table's $8: {}",
             c.meter().spent_usd()
         );
         Ok(())
@@ -2787,7 +2786,7 @@ model = "qwen3:8b"
             err,
             "models.synth: no price for litellm/gpt-5; add [models.synth.pricing] (input, output per million tokens) or pricing = \"free\" on [providers.litellm]"
         );
-        // The same model on the free provider needs no price (ollama sends no effort, so that key goes too); on Anthropic the table errs high.
+        // The same model on the free provider needs no price (ollama sends no effort, so that key goes too); on Anthropic the table prices it.
         let on_ollama = unpriced
             .replace("provider = \"litellm\"", "provider = \"ollama\"")
             .replace("effort = \"high\"\n", "");
@@ -2811,7 +2810,7 @@ model = "qwen3:8b"
         .ok();
         assert_eq!(
             c.as_ref().and_then(|c| c.synth()).map(|s| s.price),
-            pricing_for("anthropic", "claude-opus-5").map(Price::Table)
+            pricing_for("anthropic", "claude-opus-5-5").map(Price::Table)
         );
     }
 
@@ -3147,7 +3146,7 @@ model = "qwen3:8b"
         assert_eq!(c.synth().ok_or("s")?.model, "anthropic.claude-opus-5-5");
         assert!(
             matches!(c.synth().ok_or("s")?.price, Price::Table(_)),
-            "an unknown Anthropic id prices as Opus 5"
+            "an unknown Anthropic id prices as the default, Opus 5.5"
         );
         assert_eq!(
             c.report().pointer("/providers/anthropic/endpoint"),

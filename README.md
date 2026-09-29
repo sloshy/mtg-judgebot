@@ -131,8 +131,7 @@ section has the long form, with links into Discord's documentation.
 
 With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5-5`
 for both LLM stages, and Voyage `voyage-3.5` for embeddings if `VOYAGE_API_KEY` is set.
-The [results below](#results) were measured on that setup. The prompts were tuned on its
-predecessor, Opus 5, and run on it unchanged.
+The [results below](#results) were measured on that setup.
 
 A `judge.toml` picks something else per stage: Anthropic direct, through a proxy, on
 Claude Platform on AWS, Bedrock or Vertex, or any OpenAI-compatible server (OpenAI,

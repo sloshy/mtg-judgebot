@@ -86,7 +86,7 @@ fn read(name: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 
 fn message(stop: &str, content: &Value) -> Value {
     json!({
-        "id": "msg_1", "model": "claude-opus-5", "role": "assistant",
+        "id": "msg_1", "model": "claude-opus-5-5", "role": "assistant",
         "content": content, "stop_reason": stop,
         "usage": {"input_tokens": 10, "output_tokens": 5}
     })

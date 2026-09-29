@@ -262,11 +262,11 @@ mod tests {
 
     #[test]
     fn a_bare_request_sends_only_what_it_has() -> Result<(), Box<dyn std::error::Error>> {
-        let v = serde_json::to_value(to_wire("claude-opus-5", &req())?)?;
+        let v = serde_json::to_value(to_wire("claude-opus-5-5", &req())?)?;
         assert_eq!(
             v,
             json!({
-                "model": "claude-opus-5", "max_tokens": 64,
+                "model": "claude-opus-5-5", "max_tokens": 64,
                 "system": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}],
                 "messages": [{"role": "user", "content": [
                     {"type": "text", "text": "material", "cache_control": {"type": "ephemeral"}},
@@ -414,7 +414,7 @@ mod tests {
 
     fn resp(stop: &str, content: &Value) -> Result<MessagesResponse, serde_json::Error> {
         serde_json::from_value(json!({
-            "id": "m", "model": "claude-opus-5", "role": "assistant",
+            "id": "m", "model": "claude-opus-5-5", "role": "assistant",
             "content": content, "stop_reason": stop,
             "stop_details": if stop == "refusal" { json!({"type": "refusal", "category": "cyber"}) } else { Value::Null },
             "usage": {"input_tokens": 1, "output_tokens": 2, "cache_read_input_tokens": 3}
@@ -449,7 +449,7 @@ mod tests {
                 cache_write: 0
             }
         );
-        assert_eq!(c.model, "claude-opus-5");
+        assert_eq!(c.model, "claude-opus-5-5");
         assert_eq!(c.assistant.backend, BACKEND);
         assert_eq!(
             c.assistant.raw, content,

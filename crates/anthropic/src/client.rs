@@ -105,7 +105,7 @@ pub enum Endpoint {
     /// Claude in Amazon Bedrock through its Messages-shaped endpoint: `SigV4`
     /// with service `bedrock-mantle` against
     /// `https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages`,
-    /// `anthropic.`-prefixed model ids (`anthropic.claude-opus-5`, or an
+    /// `anthropic.`-prefixed model ids (`anthropic.claude-opus-5-5`, or an
     /// inference profile such as `global.anthropic.…`). Bedrock documents
     /// structured outputs and server-side fallbacks as unsupported, so
     /// `output_config.format`, `strict` tools and `fallbacks` are masked
@@ -737,7 +737,7 @@ mod tests {
 
     fn ok_body(input: u64, output: u64, cache_read: u64, cache_write: u64) -> serde_json::Value {
         serde_json::json!({
-            "id": "msg_1", "model": "claude-opus-5", "role": "assistant",
+            "id": "msg_1", "model": "claude-opus-5-5", "role": "assistant",
             "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
             "usage": {
                 "input_tokens": input, "output_tokens": output,
@@ -774,7 +774,7 @@ mod tests {
             .and(path("/v1/messages"))
             .and(header("x-api-key", "k"))
             .and(header("anthropic-version", API_VERSION))
-            // 1M input + 200k output = $5 + $5 = $10 per call.
+            // 1M input + 200k output = $4 + $4 = $8 per call.
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(ok_body(1_000_000, 200_000, 0, 0)),
             )
@@ -787,13 +787,13 @@ mod tests {
         let clone = client.clone();
         client.complete(&req()).await?;
         assert!(
-            (client.meter().spent_usd() - 10.0).abs() < 1e-6,
+            (client.meter().spent_usd() - 8.0).abs() < 1e-6,
             "{}",
             client.meter().spent_usd()
         );
         clone.complete(&req()).await?;
         assert!(
-            (client.meter().spent_usd() - 20.0).abs() < 1e-6,
+            (client.meter().spent_usd() - 16.0).abs() < 1e-6,
             "{}",
             client.meter().spent_usd()
         );
@@ -801,7 +801,7 @@ mod tests {
         assert_eq!(clone.meter().calls(), 2);
         let third = client.complete(&req()).await;
         assert!(
-            matches!(third, Err(LlmError::SpendCapExceeded { spent, cap }) if (spent - 20.0).abs() < 1e-6 && (cap - 15.0).abs() < 1e-6),
+            matches!(third, Err(LlmError::SpendCapExceeded { spent, cap }) if (spent - 16.0).abs() < 1e-6 && (cap - 15.0).abs() < 1e-6),
             "{third:?}"
         );
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 2);
@@ -837,7 +837,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "msg_1", "model": "claude-opus-5",
+                "id": "msg_1", "model": "claude-opus-5-5",
                 "usage": {"input_tokens": 1_000_000, "output_tokens": 0}
             })))
             .mount(&server)
@@ -851,7 +851,7 @@ mod tests {
             })
         ));
         assert!(
-            (client.meter().spent_usd() - 5.0).abs() < 1e-6,
+            (client.meter().spent_usd() - 4.0).abs() < 1e-6,
             "{}",
             client.meter().spent_usd()
         );
@@ -1115,7 +1115,7 @@ mod door_tests {
 
     fn ok_body() -> serde_json::Value {
         serde_json::json!({
-            "id": "msg_1", "model": "claude-opus-5", "role": "assistant",
+            "id": "msg_1", "model": "claude-opus-5-5", "role": "assistant",
             "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
             "usage": {"input_tokens": 1, "output_tokens": 1}
         })
@@ -1304,7 +1304,7 @@ mod door_tests {
         assert_eq!(caps.structured_output, StructuredOutput::PromptOnly);
         assert!(!caps.strict_tools && !caps.refusal_fallbacks && caps.effort && caps.cache_hints);
         let client = Anthropic::new(endpoint)?
-            .with_model("anthropic.claude-opus-5")
+            .with_model("anthropic.claude-opus-5-5")
             .with_beta("context-1m-2025-08-07");
         client.complete(&full_req()).await?;
         let r = only_request(&server).await;
@@ -1317,7 +1317,7 @@ mod door_tests {
         let b = body(&r);
         assert_eq!(
             b.get("model"),
-            Some(&serde_json::json!("anthropic.claude-opus-5"))
+            Some(&serde_json::json!("anthropic.claude-opus-5-5"))
         );
         assert!(b.get("fallbacks").is_none(), "{b}");
         assert_eq!(
@@ -1406,7 +1406,7 @@ mod door_tests {
     fn aws_constructors_derive_the_documented_urls() {
         let cpa = Endpoint::claude_platform_on_aws("us-west-2", "wrkspc_01X");
         assert_eq!(
-            cpa.url("claude-opus-5"),
+            cpa.url("claude-opus-5-5"),
             "https://aws-external-anthropic.us-west-2.api.aws/v1/messages"
         );
         assert_eq!(
@@ -1419,7 +1419,7 @@ mod door_tests {
         );
         let bedrock = Endpoint::bedrock("us-east-1");
         assert_eq!(
-            bedrock.url("anthropic.claude-opus-5"),
+            bedrock.url("anthropic.claude-opus-5-5"),
             "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages"
         );
         assert!(bedrock.door_headers().is_empty());

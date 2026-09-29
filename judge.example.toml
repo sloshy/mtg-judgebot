@@ -136,19 +136,19 @@ model = "claude-opus-5-5"               # claude-sonnet-5-5: the measured budget
 effort = "high"                        # (default: high) A truncated answer retries once at medium.
 max_tokens = 16000                     # (default: 16000) Reasoning tokens count against it.
 
-# USD per million tokens. The built-in table knows Anthropic's first-party
-# models and prices an unknown Anthropic model as Opus 5 (erring high is safe
-# there). A model on an `openai` provider has no such fallback. It must have
-# this table or the provider must be pricing = "free", or startup fails naming
-# the stage. A price here beats the table and is what the cap settles at, so a
+# USD per million tokens. The built-in table knows Anthropic's current
+# first-party models and prices any other Anthropic model as the default,
+# claude-opus-5-5, so a dearer one needs this table. A model on an `openai`
+# provider has no such fallback. It must have this table or the provider must be
+# pricing = "free", or startup fails naming the stage. A price here beats the table and is what the cap settles at, so a
 # proxy priced above or below the list bills as you said. cache_read defaults
 # to `input`, cache_write to 1.25 × input (Anthropic's write premium, the
 # dearest the judge knows). Both err high.
 # [models.synth.pricing]
-# input = 5.0
-# output = 25.0
-# cache_read = 0.5
-# cache_write = 6.25
+# input = 4.0
+# output = 20.0
+# cache_read = 0.2
+# cache_write = 5.0
 
 [models.embed]
 provider = "voyage"                    # a kind = "voyage" or kind = "openai" provider   (default: voyage)
