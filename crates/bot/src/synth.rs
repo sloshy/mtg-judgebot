@@ -555,6 +555,23 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
     match rejected.rejection() {
         Rejection::BadCitation(c) => {
             let why = match c {
+                // A rule-level excerpt prints its examples after all its
+                // sub-rules, so an example is cited under the last sub-rule.
+                // The quote is real; say whose text it is.
+                Citation::Rule { id, .. } if let Some(holder) = judge_core::quote_from_another_rule(c, ctx) => {
+                    // Citing `holder` must not leave `id` in the prose uncovered
+                    // (D20), or the retry fails on the number with none left.
+                    let prose = if judge_core::covers(holder.as_ref(), id.as_ref()) {
+                        "keep the rest of the answer".to_owned()
+                    } else {
+                        format!("wherever the answer names rule {id} for that text, name rule {holder} instead")
+                    };
+                    format!(
+                        "that text is not in rule {id}. It is in the excerpt for rule {holder} (its text or one of its \
+                         Example: lines; a rule's examples are printed after all of its sub-rules). Cite it as \
+                         {{\"kind\": \"rule\", \"id\": \"{holder}\", \"quote\": ...}} with the same quote, and {prose}"
+                    )
+                }
                 Citation::Rule { id, .. } if ctx.rule(id).is_none() => {
                     format!("rule {id} is not among the excerpts; cite an id exactly as shown in the excerpts.{INVENTED}")
                 }
@@ -906,6 +923,43 @@ mod tests {
         });
         let s = render_user_turn(&q(), &ctx, Some(&attempt(missing)), &[], &Budget::default());
         assert!(s.contains("rule 999.1 is not among the excerpts"), "{s}");
+        // The stack-06 failure of the 2026-09-28 Opus 5.5 run: an example of a
+        // rule, printed after its last sub-rule, cited under that sub-rule.
+        let elsewhere = Rejection::BadCitation(Citation::Rule {
+            id: rid("702.15b")?,
+            quote: judge_core::Quote::try_new("Damage dealt by a source with lifelink")?,
+        });
+        let s = render_user_turn(
+            &q(),
+            &ctx,
+            Some(&attempt(elsewhere)),
+            &[],
+            &Budget::default(),
+        );
+        assert!(s.contains("which failed validation: that text is not in rule 702.15b. It is in the excerpt for rule 702.15"), "{s}");
+        assert!(
+            s.contains(
+                r#"Cite it as {"kind": "rule", "id": "702.15", "quote": ...} with the same quote"#
+            ),
+            "{s}"
+        );
+        // 702.15 covers 702.15b, so the answer's number can stay.
+        assert!(
+            s.contains("with the same quote, and keep the rest of the answer"),
+            "{s}"
+        );
+        // Cited under an unrelated id whose number the prose would still name.
+        let sibling = Rejection::BadCitation(Citation::Rule {
+            id: rid("702.16")?,
+            quote: judge_core::Quote::try_new("Damage dealt by a source with lifelink")?,
+        });
+        let s = render_user_turn(&q(), &ctx, Some(&attempt(sibling)), &[], &Budget::default());
+        assert!(
+            s.contains(
+                "wherever the answer names rule 702.16 for that text, name rule 702.15 instead"
+            ),
+            "{s}"
+        );
         let no_face = Rejection::BadCitation(Citation::OracleText {
             card: CardId::new(Uuid::from_u128(7)),
             face: 3,
@@ -2375,7 +2429,7 @@ mod harness_tests {
                 hex
             });
         assert_eq!(
-            digest, "fc454637ebc5d9e7785949d610518be3904b9e50399d4ccec90ffef895ea8c9d",
+            digest, "1be2ab6ef0ccf2f63b16c3d12665bddade8a7f0d55d1af2284d25631bd0be1ec",
             "the Anthropic synthesis prompt changed"
         );
     }

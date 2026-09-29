@@ -27,5 +27,6 @@ pub use ports::{CallStore, Embedder, Extractor, InputKind, Resolver, Retriever, 
 pub use source::{About, Commit, CommitHash, RepositoryUrl, SourceOffer};
 pub use verdict::{
     LabelPart, MAX_ANSWER_CHARS, MIN_ANSWER_CHARS, State, Unvalidated, Validated, Verdict,
-    citation_supported, misfiled_oracle_text, quotes_face_label, quotes_nothing,
+    citation_supported, covers, misfiled_oracle_text, quote_from_another_rule, quotes_face_label,
+    quotes_nothing,
 };

@@ -72,8 +72,9 @@ by an adapter in `crates/bot`.
 ### Step 1: Extraction and classification
 
 This step is one cheap model call. The bot sends the question, plus the last five Q&A pairs
-in the same thread, to the chat model with a small system prompt and a **JSON schema** for
-the reply. The model returns:
+in the same thread, to the chat model with a small system prompt
+(`crates/bot/src/prompts/extract_system.md`, the taxonomy filled in from
+`data/categories.yaml`) and a **JSON schema** for the reply. The model returns:
 
 ```json
 {
@@ -690,7 +691,8 @@ to R2. `docs/DEPLOYMENT.md` is the runbook.
 - Retrieval SQL: `crates/bot/src/db/retrieve.rs` and `rules.rs`.
 - The resolution ladder: `crates/bot/src/db/resolve.rs` (its module comment is thorough).
 - Vector-space bookkeeping: `crates/bot/src/db/space.rs`, `crates/embed/src/space.rs`.
-- The model contract: `crates/bot/src/prompts/synth_system.md`.
+- The model contract: `crates/bot/src/prompts/synth_system.md`, and
+  `extract_system.md` beside it for the extraction stage.
 - The spend cap: `crates/llm/src/spend.rs`.
 - The reference and the reasoning: `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`,
   `docs/PROVIDERS.md`.

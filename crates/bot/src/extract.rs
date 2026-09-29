@@ -93,68 +93,21 @@ impl Extractor for LlmExtractor {
     }
 }
 
+/// The extraction system prompt, with the taxonomy filled in at
+/// `{{TAXONOMY}}` from `data/categories.yaml` (via [`Category::ALL`]).
+const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("prompts/extract_system.md");
+
 /// The stable part of the prompt: task, taxonomy and source definitions.
 /// Harness-neutral: the extraction answer is JSON whoever produces it.
 #[must_use]
 pub fn system_prompt() -> String {
-    let mut s = String::from(
-        "You are the entity-extraction and classification stage of a Magic: The Gathering rules \
-         assistant. You do NOT answer the question. You read the user's message (and any earlier \
-         Q&A from the same thread, for context only) and return a JSON object with five fields.\n\n\
-         1. card_spans: every substring of the user's message that looks like a Magic card name or a \
-         nickname for one, including anything written in [[double brackets]]. Copy each span EXACTLY as \
-         written, character for character, keeping the brackets, capitalisation, typos and spacing; a \
-         later stage matches the spans against the card database and strips brackets itself. Include \
-         nicknames and abbreviations (e.g. \"Bob\", \"Tabernacle\", \"Rhystic\"). When a span is a nickname \
-         for a specific card or for a fixed group of cards (\"the tron lands\", \"the Urza's lands\", \
-         \"the Titans\"), ALSO add the full Oracle name of each card it stands for as extra spans (e.g. \
-         \"Urza's Tower\", \"Urza's Mine\", \"Urza's Power Plant\"), except as the rules below say; exact \
-         copying matters only for spans taken from the message. Do not include rules vocabulary, keyword abilities, card types, token \
-         names or generic words like \"creature\" or \"token\". If nothing looks like a card name, return \
-         an empty array. Four further rules:\n\
-         - Drop set, printing, frame and finish qualifiers from a span; the qualifier is not part of the \
-         name. \"mirage LED\" -> \"LED\"; \"Urza's Saga Waylay\" -> \"Waylay\"; \"my foil Bolt\" -> \"Bolt\"; \
-         \"alpha Lotus\" -> \"Lotus\"; \"the promo one\", \"the borderless version\", \"the old frame\" add \
-         nothing (this is the one case where a span is a trimmed substring rather than a full copy).\n\
-         - Never emit a collective nickname (\"the tron lands\", \"the fetches\", \"my wraths\", \"the \
-         Titans\", \"the swords\") as a span. When the message uses one and you know which cards it \
-         stands for, emit the members' full Oracle names instead; when you do not know the members, \
-         leave it to the concepts list. A collective is never itself a card name.\n\
-         - When a span is only a word or a bare possessive taken from a full Oracle name you add for it, \
-         emit the full name in its place, not both, provided the message makes clear which card it \
-         means: \"Saga\" in a question about its Construct tokens -> \"Urza's Saga\"; \"Mine\" in a \
-         question about the tron lands -> \"Urza's Mine\". A full name the user wrote never makes it \
-         clear: \"Teferi's static\" beside \"Teferi's Protection\" means some other Teferi. When it is \
-         not clear, emit the span as written and add no full name: a later stage asks the user.\n\
-         - Do not emit generic basic land words (\"is it just a Mountain now\", \"tap a Forest\", \"my \
-         Islands\") unless the question is about that basic land itself (\"does Plains have a mana \
-         ability?\").\n\n\
-         2. concepts: short rules-vocabulary phrases a keyword search over the Comprehensive Rules should \
-         see: keyword abilities, keyword actions, zone names, game actions, rule concepts (e.g. \
-         \"lifelink\", \"state-based actions\", \"copy\", \"leaves-the-battlefield trigger\", \"layer 7b\"). \
-         Normalise to the rules' own terminology. Do not include card names.\n\n\
-         3. primary: the single category from the taxonomy below that best fits the question, as an \
-         object with the category id and a confidence of low, medium or high. This field is required: \
-         always give a best guess, and use \"other\" only when nothing else fits at all, never when a \
-         low-confidence guess is possible.\n\n\
-         4. secondary: up to two further categories that also apply, best first, in the same shape. \
-         Do not repeat the primary category. An empty array is fine.\n\n\
-         The taxonomy is the complete list; use the category id exactly as listed.\n\n\
-         5. source: which rules body the question falls under:\n\
-         - cr: a question about how the game works, answered by the Comprehensive Rules.\n\
-         - commander: a question about Commander format rules (command zone, commander damage, commander \
-         tax, colour identity, the Commander banned list or Rules Committee policy).\n\
-         - tournament: tournament policy (Magic Tournament Rules, Infraction Procedure Guide, penalties, \
-         judge calls at events, deck registration, time extensions).\n\
-         - out_of_scope: not a Magic rules question at all (deck-building advice, card prices, lore, \
-         digital-client bugs, chit-chat). A vague or ill-formed rules question is still cr, not out of scope.\n\n\
-         Taxonomy (id: description):\n",
-    );
+    let mut taxonomy = String::new();
     for c in Category::ALL {
-        let _ = writeln!(s, "- {}: {}", c.id(), c.label());
+        let _ = writeln!(taxonomy, "- {}: {}", c.id(), c.label());
     }
-    s.push_str("\nRespond with the JSON object only; it must conform to the provided schema.");
-    s
+    SYSTEM_PROMPT_TEMPLATE
+        .trim_end()
+        .replacen("{{TAXONOMY}}\n", &taxonomy, 1)
 }
 
 /// The user turn: a compact history block (most recent last) and the question.
@@ -433,31 +386,36 @@ mod tests {
             assert!(sys.contains(src), "missing {src}");
         }
         assert!(
-            sys.contains("3. primary:")
-                && sys.contains("4. secondary:")
-                && sys.contains("5. source:"),
+            sys.contains("# 3. primary")
+                && sys.contains("# 4. secondary")
+                && sys.contains("# 5. source"),
             "{sys}"
         );
-        // Nickname-artefact rules: printing qualifiers, collectives beside their members, generic basics.
+        // The template is filled: no token left, and the taxonomy precedes the closing line.
+        assert!(!sys.contains("{{"), "{sys}");
         assert!(
-            sys.contains("\"mirage LED\" -> \"LED\"")
-                && sys.contains("\"Urza's Saga Waylay\" -> \"Waylay\""),
+            sys.ends_with(
+                "\n\nRespond with the JSON object only; it must conform to the provided schema."
+            ),
             "{sys}"
         );
-        assert!(
-            sys.contains("Never emit a collective nickname") && sys.contains("\"the tron lands\""),
-            "{sys}"
-        );
-        assert!(
-            sys.contains("Do not emit generic basic land words"),
-            "{sys}"
-        );
-        assert!(
-            sys.contains("Four further rules")
-                && sys.contains("emit the full name in its place, not both")
-                && sys.contains("\"Teferi's static\" beside \"Teferi's Protection\""),
-            "{sys}"
-        );
+        // Nickname-artefact rules: printing qualifiers, group nicknames replaced by their
+        // members, shorthand beside its full name (including one added for a group),
+        // the Teferi case that must still ask, generic basics.
+        for pinned in [
+            "\"mirage LED\" -> \"LED\"",
+            "\"Urza's Saga Waylay\" -> \"Waylay\"",
+            "Never emit a group nickname",
+            "\"the tron lands\"",
+            "Emit the full name only, never the shorthand as well",
+            "or for a group nickname",
+            "\"Teferi's static\" beside \"Teferi's Protection\"",
+            "basic land words used generically",
+            "add that card's full Oracle name as a span",
+            "not from which card of that name is best known",
+        ] {
+            assert!(sys.contains(pinned), "missing {pinned:?}: {sys}");
+        }
         let user = at(&v, "/turns/0/User/0/text").as_str().unwrap_or_default();
         assert!(at(&v, "/turns/0/User/0/cache").is_null());
         // Only the last `history_turns` Q&As, oldest first, then the question.

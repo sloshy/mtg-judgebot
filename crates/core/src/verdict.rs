@@ -409,6 +409,13 @@ fn rule_of(id: &str) -> &str {
     id.trim_end_matches(|c: char| c.is_ascii_lowercase())
 }
 
+/// Whether a citation of rule `cited` covers the rule number `named` written
+/// in an answer: the same id, its rule, or one of its sub-rules (D20).
+#[must_use]
+pub fn covers(cited: &str, named: &str) -> bool {
+    cited == named || rule_of(cited) == named || cited == rule_of(named)
+}
+
 /// The rule numbers `answer` names that no rule citation covers, if any.
 /// A citation covers a number when it cites that id, its rule, or one of its
 /// sub-rules. A number that is part of a longer figure (`$100.50`, `1.702.19`)
@@ -432,9 +439,7 @@ fn uncited_rules(answer: &str, citations: &[Citation]) -> Option<UncitedRules> {
         let Ok(id) = RuleId::try_new(m.as_str().to_owned()) else {
             continue;
         };
-        let covered = cited
-            .iter()
-            .any(|c| *c == id.as_ref() || rule_of(c) == id.as_ref() || *c == rule_of(id.as_ref()));
+        let covered = cited.iter().any(|c| covers(c, id.as_ref()));
         if !covered && !missing.contains(&id) {
             missing.push(id);
         }
@@ -583,6 +588,48 @@ pub fn quotes_face_label(c: &Citation, ctx: &Context) -> Option<LabelPart> {
     .into_iter()
     .find(|(_, text)| quote::locate(text, q).is_some())
     .map(|(part, _)| part)
+}
+
+/// The rule shown in `ctx` whose text holds a *rule* citation's quote, when
+/// the cited rule does not.
+///
+/// A rule-level excerpt prints its examples after all of its sub-rules, so an
+/// example of `903.3` sits under the `903.3e` line and is cited as `903.3e`
+/// (Opus 5.5 on `stack-06`, on the attempt and again on the retry). The quote is
+/// verbatim, so "copy the text exactly" misleads; the useful thing to say is
+/// whose text it is. Rows of the cited rule's own family come first, then a
+/// sub-rule before its rule. A quote held only by unrelated rules of more
+/// than one family names none of them: a short phrase in many rules is not
+/// evidence of which one was meant. Never used to repair a citation.
+#[must_use]
+pub fn quote_from_another_rule<'a>(c: &Citation, ctx: &'a Context) -> Option<&'a RuleId> {
+    let Citation::Rule { id, quote } = c else {
+        return None;
+    };
+    let q = quote.as_ref().trim();
+    if ctx.rule(id).is_some_and(|r| r.locate_quote(q).is_some()) {
+        return None;
+    }
+    let holders: Vec<&crate::RuleChunk> = ctx
+        .rules
+        .iter()
+        .filter(|r| &r.id != id && r.locate_quote(q).is_some())
+        .collect();
+    let family = |r: &&crate::RuleChunk| rule_of(r.id.as_ref()) == rule_of(id.as_ref());
+    let pool: Vec<&crate::RuleChunk> = if holders.iter().any(family) {
+        holders.into_iter().filter(family).collect()
+    } else if holders
+        .windows(2)
+        .all(|w| matches!(w, [a, b] if rule_of(a.id.as_ref()) == rule_of(b.id.as_ref())))
+    {
+        holders
+    } else {
+        return None;
+    };
+    pool.iter()
+        .find(|r| r.parent_id.is_some())
+        .or_else(|| pool.first())
+        .map(|r| &r.id)
 }
 
 /// Why a verdict counts as empty, if it does (check (1) of `validate`).
@@ -1348,6 +1395,84 @@ mod tests {
             v.validate(&ctx()?, CR),
             Err(JudgeError::BadCitation(_))
         ));
+        Ok(())
+    }
+
+    /// Opus 5.5 on `stack-06` cited an example of `903.3` as `903.3e`: the
+    /// rule-level excerpt prints its examples after its last sub-rule. The
+    /// rule that holds the quote is named, a shown sub-rule first; still
+    /// rejected.
+    #[test]
+    fn a_quote_from_another_shown_rule_names_that_rule() -> Result<(), Box<dyn std::error::Error>> {
+        let mut c = ctx()?;
+        let mut leaf = rule("702.15c", "702.15c Lifelink applies to all damage.")?;
+        leaf.parent_id = Some(RuleId::try_new("702.15".to_owned())?);
+        leaf.examples.clear();
+        let mut parent = rule(
+            "702.15",
+            "702.15. Lifelink\n702.15c Lifelink applies to all damage.",
+        )?;
+        parent.examples = vec!["Example: a creature with lifelink deals 3.".into()];
+        c.rules.extend([parent, leaf]);
+        let cite = |id: &str, quote: &str| -> Result<Citation, Box<dyn std::error::Error>> {
+            Ok(Citation::Rule {
+                id: RuleId::try_new(id.to_owned())?,
+                quote: Quote::try_new(quote)?,
+            })
+        };
+        let id = |s: &str| RuleId::try_new(s.to_owned());
+        // The parent's example, cited under its sub-rule.
+        assert_eq!(
+            quote_from_another_rule(&cite("702.15c", "a creature with lifelink deals 3")?, &c),
+            Some(&id("702.15")?)
+        );
+        // A sub-rule's line, cited under a sibling: the shown sub-rule is named, not its parent.
+        assert_eq!(
+            quote_from_another_rule(&cite("702.15b", "Lifelink applies to all damage")?, &c),
+            Some(&id("702.15c")?)
+        );
+        // An id the material lacks, with a quote it holds.
+        assert_eq!(
+            quote_from_another_rule(&cite("999.1", "Lifelink applies to all damage")?, &c),
+            Some(&id("702.15c")?)
+        );
+        // A phrase in rules of two families: the cited rule's own family wins,
+        // and with no family of its own nothing is named rather than a guess.
+        c.rules.push(rule(
+            "510.2",
+            "510.2 Combat damage is all damage dealt at once.",
+        )?);
+        assert_eq!(
+            quote_from_another_rule(&cite("702.15b", "all damage")?, &c),
+            Some(&id("702.15c")?)
+        );
+        assert_eq!(
+            quote_from_another_rule(&cite("999.1", "all damage")?, &c),
+            None
+        );
+        // Covering, as the prose check reads it: the notice keeps the answer's
+        // number only when the named rule covers it.
+        assert!(covers("702.15", "702.15c") && covers("702.15c", "702.15"));
+        assert!(!covers("702.15c", "702.15b"));
+        // The cited rule holds it, nothing holds it, or not a rule citation.
+        assert_eq!(
+            quote_from_another_rule(&cite("702.15c", "Lifelink applies to all damage")?, &c),
+            None
+        );
+        assert_eq!(
+            quote_from_another_rule(&cite("702.15c", "not in any rule")?, &c),
+            None
+        );
+        let ruling = Citation::ScryfallRuling {
+            card: CardId::new(Uuid::from_u128(7)),
+            ruling: ruling_key("2020-01-01", "Lifelink is not a triggered ability."),
+            quote: Quote::try_new("Lifelink applies to all damage")?,
+        };
+        assert_eq!(quote_from_another_rule(&ruling, &c), None);
+        let err = verdict(vec![cite("702.15c", "a creature with lifelink deals 3")?])
+            .validate(&c, CR)
+            .err();
+        assert!(matches!(err, Some(JudgeError::BadCitation(_))), "{err:?}");
         Ok(())
     }
 

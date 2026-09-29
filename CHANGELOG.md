@@ -40,6 +40,13 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   the `fallbacks` beta for the Claude API only, so Claude Platform on AWS no longer sends
   it, as the proxy, Bedrock and Vertex doors already did not. A provider table's new
   `refusal_fallbacks = true | false` overrides the door's default either way.
+- **The extraction and synthesis prompts were reworded.** Both were written for earlier
+  models. The extraction prompt now lives in `crates/bot/src/prompts/extract_system.md`
+  beside the synthesis one. Its card-span rules are one list, it says what makes a
+  shortened name clear, and a shortened name is replaced by a full name added for a group
+  nickname too, which Sonnet 5.5 did not do ("tower" beside "Urza's Tower"). The
+  synthesis prompt keeps every rule, with the capitals gone, the face label named as not
+  citable, and the retry instructions left to each rejection's own notice.
 
 ### Fixed
 
@@ -69,6 +76,10 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   quote, so the model sent the same quote again and the question went unanswered (Sonnet
   5.5, Valki // Tibalt). The notice now names the part of the label that was quoted and
   says to drop the citation, and the Cards heading says the label is not citable.
+- **An example cited under the wrong rule failed twice.** A rule's examples are printed
+  after all of its sub-rules, so an example of 903.3 sits under the 903.3e line and was
+  cited as 903.3e. The retry notice said the quote was mistyped, and the model sent it
+  again. The notice now names the rule the text belongs to.
 
 ## [1.0.0] - 2026-09-20
 
