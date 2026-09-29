@@ -36,6 +36,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   (`eval/published/v1-sonnet-5-5.json`). The README's results and the Model choice page
   compare it with the default.
 
+- **Server-side refusal fallbacks are sent on the direct API only.** Anthropic documents
+  the `fallbacks` beta for the Claude API only, so Claude Platform on AWS no longer sends
+  it, as the proxy, Bedrock and Vertex doors already did not. A provider table's new
+  `refusal_fallbacks = true | false` overrides the door's default either way.
+
 ### Fixed
 
 - **Citations written one field over.** With structured output the model writes keys in

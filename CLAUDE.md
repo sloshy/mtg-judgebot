@@ -544,8 +544,10 @@ Key cross-file facts that aren't obvious from any one file:
       header, or `bedrock-mantle`) and ADC via gcp_auth. They are resolved lazily and
       probed once at startup by `Config::probe_auth`, so an empty chain fails there, not
       per question.
-    - Proxy/Vertex mask the `fallbacks` beta. Bedrock also masks `output_config.format`,
-      tool `strict` and every `anthropic-beta`. Verified against the live docs 2026-09-02.
+    - Only `direct` sends the `fallbacks` beta, which Anthropic documents for the Claude API
+      only (re-checked 2026-09-28); a provider's `refusal_fallbacks` overrides that either
+      way. Bedrock also masks `output_config.format`, tool `strict` and every
+      `anthropic-beta`. Verified against the live docs 2026-09-02.
   - The chat backend `judge-openai` is chat completions with `Dialect` knobs:
     `structured_output`, `strict_tools`, `reasoning_effort`, `max_tokens_param`,
     `cache_hints`. Its embeddings side has `send_dimensions`.

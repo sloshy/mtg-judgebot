@@ -196,7 +196,7 @@ live docs 2026-09-02.
 |---|---|---|---|---|
 | `Direct { base_url, api_key }` | `x-api-key` | `{base}/v1/messages` | `claude-opus-5-5` | none |
 | `Proxy { base_url, api_key, header }` | `x-api-key` or `Authorization: Bearer` | `{base}/v1/messages` | whatever the proxy routes | `fallbacks` off |
-| `ClaudePlatformOnAws { base_url, region, workspace_id, credentials }` | SigV4, service `aws-external-anthropic`, header `anthropic-workspace-id` | `https://aws-external-anthropic.{region}.api.aws/v1/messages` | bare | none |
+| `ClaudePlatformOnAws { base_url, region, workspace_id, credentials }` | SigV4, service `aws-external-anthropic`, header `anthropic-workspace-id` | `https://aws-external-anthropic.{region}.api.aws/v1/messages` | bare | `fallbacks` off |
 | `Bedrock { base_url, region, credentials }` | SigV4, service `bedrock-mantle` | `https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages` | `anthropic.`-prefixed (a whole `anthropic` segment is required) | `fallbacks`, `output_config.format`, tool `strict` and every `anthropic-beta` off. The schema goes in the prompt. |
 | `Vertex { base_url, project, region, token }` | GCP ADC bearer token | model in the URL, `anthropic_version` in the body (`wire::ModelField`). The origin depends on `global`, a multi-region or a specific region | bare | `fallbacks` off |
 
@@ -206,9 +206,14 @@ the provider table, so a changed platform hostname is a config edit, not a relea
 Structured outputs, strict tools, adaptive thinking/effort and prompt caching are GA on
 Vertex. The Bedrock door uses Bedrock's Messages-shaped endpoint (`bedrock-mantle`), where
 Bedrock documents structured outputs as unsupported, hence the mask in the table.
-Server-side `fallbacks` is first-party (and Claude Platform on AWS) only. The masked doors
-therefore turn `SynthConfig::fallbacks` off with a warning rather than sending a beta the
-door rejects.
+Anthropic documents server-side `fallbacks` for the Claude API only (Claude Sonnet 5.5's
+migration guide says "Claude API only"; the refusals page names Bedrock, Google Cloud and
+Foundry as unsupported). Every door but `direct` therefore turns `SynthConfig::fallbacks`
+off with a warning rather than sending a beta the door may reject. A provider table's
+`refusal_fallbacks = true | false` overrides the door's default either way: `true` for a
+proxy that passes the beta through, or for Claude Platform on AWS once it is known to take
+it; `false` to never send it. `true` on `bedrock` is a load error, because that door drops
+every `anthropic-beta` header and the field cannot travel without its beta.
 
 Each provider table resolves to one `Endpoint`, shared by the stages that name it. For the
 cloud doors:
@@ -310,6 +315,7 @@ operator.
 kind = "anthropic"                 # anthropic | openai
 endpoint = "direct"                # direct | proxy | claude-platform-on-aws | bedrock | vertex
 api_key_env = "ANTHROPIC_API_KEY"
+# refusal_fallbacks = true         # default: true on direct only
 
 [providers.litellm]
 kind = "openai"

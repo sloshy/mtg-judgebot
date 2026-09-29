@@ -213,8 +213,10 @@ loader says "not built".
 Credentials come from the platforms' own chains, never from `judge.toml`. They are
 resolved lazily and probed once at startup, so an empty chain fails there, not on the
 first question. Each door's feature mask (what it cannot accept: server-side fallbacks,
-strict tools, betas) was verified against the live docs. It is an exhaustive `match`, not
-a flag.
+strict tools, betas) was verified against the live docs. The mask is an exhaustive
+`match`, not a flag. The one flag over it is a provider's `refusal_fallbacks`, because
+Anthropic documents that beta for its own API only and a proxy or Claude Platform on AWS
+may take it anyway. It cannot turn fallbacks on for a door that takes no beta header.
 
 ## D9. Embedding space tracking
 

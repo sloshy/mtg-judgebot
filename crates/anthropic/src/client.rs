@@ -88,9 +88,12 @@ pub enum Endpoint {
     /// AWS account. `SigV4` with service `aws-external-anthropic` against
     /// `https://aws-external-anthropic.{region}.api.aws/v1/messages`, the
     /// workspace in the required [`WORKSPACE_HEADER`], bare model ids, and
-    /// first-party feature parity (`anthropic-beta` passes through, the
-    /// fallbacks beta included). Workspaces are bound to one region; the
-    /// signing region and the host must agree.
+    /// first-party feature parity (`anthropic-beta` passes through), except
+    /// server-side refusal fallbacks: Anthropic documents them for the Claude
+    /// API only (Claude Sonnet 5.5's guide, 2026-09-28), so `fallbacks` is
+    /// masked off unless [`Anthropic::with_refusal_fallbacks`] says otherwise.
+    /// Workspaces are bound to one region; the signing region and the host
+    /// must agree.
     #[cfg(feature = "aws")]
     ClaudePlatformOnAws {
         /// `https://aws-external-anthropic.{region}.api.aws` from [`Endpoint::claude_platform_on_aws`].
@@ -425,7 +428,10 @@ impl Endpoint {
                 ..first_party
             },
             #[cfg(feature = "aws")]
-            Endpoint::ClaudePlatformOnAws { .. } => first_party,
+            Endpoint::ClaudePlatformOnAws { .. } => Capabilities {
+                refusal_fallbacks: false,
+                ..first_party
+            },
             #[cfg(feature = "aws")]
             Endpoint::Bedrock { .. } => Capabilities {
                 structured_output: StructuredOutput::PromptOnly,
@@ -531,6 +537,8 @@ pub struct Anthropic {
     /// a door that cannot honour something says so once per backend (each
     /// stage builds its own, so at most once per stage), not per request.
     warned_mask: Arc<AtomicBool>,
+    /// Overrides the door's [`Capabilities::refusal_fallbacks`] when set.
+    refusal_fallbacks: Option<bool>,
 }
 
 impl Anthropic {
@@ -548,6 +556,7 @@ impl Anthropic {
             model: DEFAULT_MODEL.to_owned(),
             betas: Vec::new(),
             warned_mask: Arc::new(AtomicBool::new(false)),
+            refusal_fallbacks: None,
         })
     }
 
@@ -564,6 +573,28 @@ impl Anthropic {
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
+    }
+
+    /// Whether server-side refusal fallbacks are sent, overriding the door's
+    /// default (only [`Endpoint::Direct`] sends them): `Some(true)` for a
+    /// proxy that passes the beta through, `Some(false)` to never send them,
+    /// `None` for the door's default.
+    #[must_use]
+    pub const fn with_refusal_fallbacks(mut self, send: Option<bool>) -> Self {
+        self.refusal_fallbacks = send;
+        self
+    }
+
+    /// The door's capabilities with the fallbacks override applied. A door
+    /// that takes no `anthropic-beta` header (Bedrock) cannot carry the
+    /// fallbacks beta, whatever the override says.
+    fn caps(&self) -> Capabilities {
+        let caps = self.endpoint.capabilities();
+        Capabilities {
+            refusal_fallbacks: self.endpoint.accepts_betas()
+                && self.refusal_fallbacks.unwrap_or(caps.refusal_fallbacks),
+            ..caps
+        }
     }
 
     /// Add a beta flag sent as `anthropic-beta` on every request (on top of
@@ -601,7 +632,7 @@ impl Anthropic {
     /// too ([`Endpoint::accepts_betas`]), and this is where that is said.
     /// Warns the first time.
     fn mask<'a>(&self, req: &'a ChatRequest) -> Cow<'a, ChatRequest> {
-        let caps = self.endpoint.capabilities();
+        let caps = self.caps();
         let fallbacks = req.fallbacks.is_some() && !caps.refusal_fallbacks;
         let output = req.output.is_some() && caps.structured_output != StructuredOutput::Enforced;
         let strict = !caps.strict_tools && req.tools.iter().any(|t| t.strict);
@@ -712,7 +743,7 @@ impl Backend for Anthropic {
     }
 
     fn capabilities(&self) -> Capabilities {
-        self.endpoint.capabilities()
+        self.caps()
     }
 
     fn provider(&self) -> &'static str {
@@ -971,6 +1002,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_fallbacks_override_beats_the_door() -> Result<(), LlmError> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(1, 1, 0, 0)))
+            .mount(&server)
+            .await;
+        let with_fallbacks = ChatRequest {
+            fallbacks: Some(RefusalFallback::Default),
+            ..req()
+        };
+        // A proxy that passes the beta through, told so.
+        let proxy = Anthropic::new(Endpoint::Proxy {
+            base_url: server.uri(),
+            api_key: "sk-proxy".into(),
+            header: ProxyAuth::XApiKey,
+        })?
+        .with_refusal_fallbacks(Some(true));
+        assert!(proxy.capabilities().refusal_fallbacks);
+        proxy.complete(&with_fallbacks).await?;
+        // The direct door, told not to.
+        let direct = Anthropic::new(Endpoint::Direct {
+            base_url: server.uri(),
+            api_key: "k".into(),
+        })?
+        .with_refusal_fallbacks(Some(false));
+        assert!(!direct.capabilities().refusal_fallbacks);
+        direct.complete(&with_fallbacks).await?;
+        let reqs = server.received_requests().await.unwrap_or_default();
+        let sent: Vec<_> = reqs
+            .iter()
+            .map(|r| {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap_or_default();
+                (
+                    body.get("fallbacks").cloned(),
+                    r.headers
+                        .get("anthropic-beta")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_owned),
+                )
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            vec![
+                (
+                    Some(serde_json::json!("default")),
+                    Some(crate::wire::Fallbacks::BETA.to_owned())
+                ),
+                (None, None),
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn a_proxy_uses_its_header_and_masks_the_fallbacks_beta() -> Result<(), LlmError> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1216,10 +1303,15 @@ mod door_tests {
         };
         assert_eq!(
             endpoint.capabilities(),
-            Endpoint::direct("k").capabilities(),
-            "first-party parity"
+            Capabilities {
+                refusal_fallbacks: false,
+                ..Endpoint::direct("k").capabilities()
+            },
+            "first-party parity but for server-side fallbacks (Claude API only)"
         );
-        let client = Anthropic::new(endpoint)?;
+        // The operator's override turns them on, so the fallbacks beta is signed too.
+        let client = Anthropic::new(endpoint)?.with_refusal_fallbacks(Some(true));
+        assert!(client.capabilities().refusal_fallbacks);
         client.complete(&full_req()).await?;
         let r = only_request(&server).await;
         let signed = assert_sigv4(&r, "AKIDTEST", "us-west-2", "aws-external-anthropic");
@@ -1244,7 +1336,7 @@ mod door_tests {
         assert_eq!(
             hdr(&r, "anthropic-beta").as_deref(),
             Some(crate::wire::Fallbacks::BETA),
-            "no mask on this door"
+            "not masked under the override"
         );
         let b = body(&r);
         assert_eq!(

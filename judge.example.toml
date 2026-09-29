@@ -38,13 +38,16 @@ endpoint = "direct"                # direct | proxy | claude-platform-on-aws | b
 api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only, required there
 # base_url = "https://api.anthropic.com"   # default for direct, required for proxy,
                                            # an origin override on the cloud doors
+# refusal_fallbacks = true         # send server-side refusal fallbacks (a beta Anthropic
+                                   # documents for its own API only). Default: true on
+                                   # direct, false on every other door; set it to say otherwise.
 # pricing = "free"                 # skip the spend reservation for this provider
                                    # (a flat-rate gateway). Calls are still counted.
 
 # The Messages API through a gateway (LiteLLM's /v1/messages, a corporate
 # proxy). Same body, with the key in whichever header the proxy wants. Server-side
 # refusal fallbacks are a first-party beta a proxy will not know, so they are
-# masked off here with a warning.
+# masked off here with a warning, unless the table says refusal_fallbacks = true.
 # [providers.claude-proxy]
 # kind = "anthropic"
 # endpoint = "proxy"
@@ -61,6 +64,7 @@ api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only, required there
 # [providers.claude-aws]
 # kind = "anthropic"
 # endpoint = "claude-platform-on-aws"       # Anthropic's own platform, first-party parity
+                                            # but for refusal fallbacks (off unless refusal_fallbacks = true)
 # region = "us-west-2"                      # required: the workspace is bound to one region
 # workspace_id = "wrkspc_..."               # required: AWS Console > Claude Platform on AWS > Workspaces
 #

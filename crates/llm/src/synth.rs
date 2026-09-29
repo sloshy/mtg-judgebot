@@ -369,7 +369,9 @@ pub enum Step {
 ///
 /// # Errors
 /// `LlmRefused` for a refusal; `ToolMisuse::Unreadable` for a `lookup_rules`
-/// call whose input does not parse; `Upstream` for truncation, unknown tools,
+/// call whose input does not parse; `Upstream` for truncation, unknown tools
+/// (a name that is `lookup_rules` but for letter case is the tool: Claude
+/// Sonnet 5.5 is documented to write one now and then, and there is only one),
 /// unexpected stop reasons and JSON that does not match the schema.
 pub fn classify(resp: ChatResponse) -> Result<Step, JudgeError> {
     match resp.stop {
@@ -385,7 +387,7 @@ pub fn classify(resp: ChatResponse) -> Result<Step, JudgeError> {
             let mut call_ids = Vec::new();
             let mut requested: Vec<RuleId> = Vec::new();
             for call in &resp.tool_calls {
-                if call.name != LOOKUP_RULES {
+                if !call.name.eq_ignore_ascii_case(LOOKUP_RULES) {
                     return Err(
                         anyhow::anyhow!("model requested an unknown tool: {}", call.name).into(),
                     );
@@ -674,7 +676,8 @@ mod tests {
             &[],
             vec![
                 call("tu_1", "lookup_rules", json!({"ids": ["613", "614"]})),
-                call("tu_2", "lookup_rules", json!({"ids": ["614", "702.19b"]})),
+                // A name off by letter case only is still the one tool.
+                call("tu_2", "Lookup_Rules", json!({"ids": ["614", "702.19b"]})),
             ],
         );
         let Step::Tool {

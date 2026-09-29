@@ -298,6 +298,10 @@ enum ProviderEntry {
         /// `vertex` only.
         #[serde(default)]
         project: Option<Project>,
+        /// Whether server-side refusal fallbacks are sent. Absent means the
+        /// door's default: only `direct` sends them.
+        #[serde(default)]
+        refusal_fallbacks: Option<bool>,
         #[serde(default)]
         pricing: Option<FreePricing>,
     },
@@ -860,6 +864,8 @@ pub enum ChatProvider {
     Anthropic {
         /// The door.
         endpoint: Endpoint,
+        /// `refusal_fallbacks`: overrides the door's default when set.
+        refusal_fallbacks: Option<bool>,
     },
     /// An OpenAI-compatible server.
     OpenAi {
@@ -888,54 +894,51 @@ impl ChatProvider {
     fn describe(&self) -> serde_json::Value {
         match self {
             ChatProvider::Anthropic {
-                endpoint: Endpoint::Direct { base_url, .. },
+                endpoint,
+                refusal_fallbacks,
             } => {
-                serde_json::json!({"kind": "anthropic", "endpoint": "direct", "base_url": base_url})
-            }
-            ChatProvider::Anthropic {
-                endpoint:
+                let mut door = match endpoint {
+                    Endpoint::Direct { base_url, .. } => {
+                        serde_json::json!({"kind": "anthropic", "endpoint": "direct", "base_url": base_url})
+                    }
                     Endpoint::Proxy {
                         base_url, header, ..
-                    },
-            } => {
-                let auth = match header {
-                    ProxyAuth::XApiKey => "x-api-key",
-                    ProxyAuth::Bearer => "bearer",
-                };
-                serde_json::json!({"kind": "anthropic", "endpoint": "proxy", "base_url": base_url, "auth": auth})
-            }
-            #[cfg(feature = "aws")]
-            ChatProvider::Anthropic {
-                endpoint:
+                    } => {
+                        let auth = match header {
+                            ProxyAuth::XApiKey => "x-api-key",
+                            ProxyAuth::Bearer => "bearer",
+                        };
+                        serde_json::json!({"kind": "anthropic", "endpoint": "proxy", "base_url": base_url, "auth": auth})
+                    }
+                    #[cfg(feature = "aws")]
                     Endpoint::ClaudePlatformOnAws {
                         base_url,
                         region,
                         workspace_id,
                         ..
-                    },
-            } => {
-                serde_json::json!({"kind": "anthropic", "endpoint": "claude-platform-on-aws", "region": region, "workspace_id": workspace_id, "base_url": base_url})
-            }
-            #[cfg(feature = "aws")]
-            ChatProvider::Anthropic {
-                endpoint:
+                    } => {
+                        serde_json::json!({"kind": "anthropic", "endpoint": "claude-platform-on-aws", "region": region, "workspace_id": workspace_id, "base_url": base_url})
+                    }
+                    #[cfg(feature = "aws")]
                     Endpoint::Bedrock {
                         base_url, region, ..
-                    },
-            } => {
-                serde_json::json!({"kind": "anthropic", "endpoint": "bedrock", "region": region, "base_url": base_url})
-            }
-            #[cfg(feature = "gcp")]
-            ChatProvider::Anthropic {
-                endpoint:
+                    } => {
+                        serde_json::json!({"kind": "anthropic", "endpoint": "bedrock", "region": region, "base_url": base_url})
+                    }
+                    #[cfg(feature = "gcp")]
                     Endpoint::Vertex {
                         base_url,
                         project,
                         region,
                         ..
-                    },
-            } => {
-                serde_json::json!({"kind": "anthropic", "endpoint": "vertex", "project": project, "region": region, "base_url": base_url})
+                    } => {
+                        serde_json::json!({"kind": "anthropic", "endpoint": "vertex", "project": project, "region": region, "base_url": base_url})
+                    }
+                };
+                if let (Some(send), Some(map)) = (refusal_fallbacks, door.as_object_mut()) {
+                    map.insert("refusal_fallbacks".into(), (*send).into());
+                }
+                door
             }
             ChatProvider::OpenAi {
                 base_url,
@@ -991,9 +994,14 @@ impl Stage {
     /// Build the backend.
     fn backend(&self) -> Result<ChatBackend, LlmError> {
         Ok(match &self.backend {
-            ChatProvider::Anthropic { endpoint } => {
-                ChatBackend::Anthropic(Anthropic::new(endpoint.clone())?.with_model(&self.model))
-            }
+            ChatProvider::Anthropic {
+                endpoint,
+                refusal_fallbacks,
+            } => ChatBackend::Anthropic(
+                Anthropic::new(endpoint.clone())?
+                    .with_model(&self.model)
+                    .with_refusal_fallbacks(*refusal_fallbacks),
+            ),
             ChatProvider::OpenAi {
                 base_url,
                 auth,
@@ -1384,6 +1392,7 @@ impl Config {
                         provider: ANTHROPIC_PROVIDER.to_owned(),
                         backend: ChatProvider::Anthropic {
                             endpoint: endpoint.clone(),
+                            refusal_fallbacks: None,
                         },
                         model: model.to_owned(),
                         max_tokens,
@@ -1548,7 +1557,7 @@ impl Config {
     pub async fn probe_auth(&self) -> Result<(), ConfigError> {
         let mut probed = std::collections::BTreeSet::new();
         for stage in [self.extract(), self.synth()].into_iter().flatten() {
-            let ChatProvider::Anthropic { endpoint } = &stage.backend else {
+            let ChatProvider::Anthropic { endpoint, .. } = &stage.backend else {
                 continue;
             };
             if !endpoint.lazy_credentials() || !probed.insert(stage.provider.as_str()) {
@@ -1804,6 +1813,7 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                 region,
                 workspace_id,
                 project,
+                refusal_fallbacks,
                 pricing,
             } => {
                 let door = *endpoint;
@@ -1833,6 +1843,12 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                     return Err(misplaced(
                         "workspace_id",
                         "applies only to endpoint = \"claude-platform-on-aws\"",
+                    ));
+                }
+                if *refusal_fallbacks == Some(true) && door == Door::Bedrock {
+                    return Err(misplaced(
+                        "refusal_fallbacks",
+                        "cannot be true on endpoint = \"bedrock\": it takes no anthropic-beta header, so the fallbacks beta cannot be sent",
                     ));
                 }
                 if project.is_some() && door != Door::Vertex {
@@ -1882,7 +1898,13 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                         base_url.as_ref(),
                     )?,
                 };
-                (ChatProvider::Anthropic { endpoint }, pricing.is_some())
+                (
+                    ChatProvider::Anthropic {
+                        endpoint,
+                        refusal_fallbacks: *refusal_fallbacks,
+                    },
+                    pricing.is_some(),
+                )
             }
             ProviderEntry::Openai {
                 base_url,
@@ -2275,6 +2297,7 @@ model = "qwen3:8b"
             );
             let ChatProvider::Anthropic {
                 endpoint: Endpoint::Direct { base_url, .. },
+                ..
             } = &s.backend
             else {
                 return Err("direct".into());
@@ -2329,6 +2352,7 @@ model = "qwen3:8b"
         })?;
         let ChatProvider::Anthropic {
             endpoint: Endpoint::Direct { base_url, .. },
+            ..
         } = &base.synth().ok_or("s")?.backend
         else {
             return Err("direct".into());
@@ -2994,6 +3018,7 @@ model = "qwen3:8b"
             endpoint: Endpoint::Proxy {
                 base_url, header, ..
             },
+            ..
         } = &c.synth().ok_or("s")?.backend
         else {
             return Err("proxy".into());
@@ -3062,6 +3087,47 @@ model = "qwen3:8b"
         )
     }
 
+    #[test]
+    fn refusal_fallbacks_follow_the_door_unless_overridden() -> R {
+        let direct = load(MINIMAL, &[("ANTHROPIC_API_KEY", "k")])?;
+        assert!(direct.models()?.synth().capabilities().refusal_fallbacks);
+        assert_eq!(
+            direct
+                .report()
+                .pointer("/providers/anthropic/refusal_fallbacks"),
+            None,
+            "no override, no key in the report"
+        );
+        let off = load(
+            &anthropic_with("api_key_env = \"ANTHROPIC_API_KEY\"\nrefusal_fallbacks = false"),
+            &[("ANTHROPIC_API_KEY", "k")],
+        )?;
+        assert!(!off.models()?.synth().capabilities().refusal_fallbacks);
+        Ok(())
+    }
+
+    /// Bedrock takes no `anthropic-beta` header, so the fallbacks beta could
+    /// never go with the field: turning them on there is refused by name.
+    #[cfg(feature = "aws")]
+    #[test]
+    fn refusal_fallbacks_cannot_be_forced_on_bedrock() {
+        let err = |extra: &str| {
+            load(&anthropic_with(extra), &[])
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        };
+        let e = err("endpoint = \"bedrock\"\nregion = \"us-east-1\"\nrefusal_fallbacks = true");
+        assert!(
+            e.contains("refusal_fallbacks") && e.contains("anthropic-beta"),
+            "{e}"
+        );
+        // `false` only says what the door already does. (The file then fails on
+        // its bare model id, which Bedrock would 400; not on this key.)
+        let e = err("endpoint = \"bedrock\"\nregion = \"us-east-1\"\nrefusal_fallbacks = false");
+        assert!(!e.contains("refusal_fallbacks"), "{e}");
+    }
+
     #[cfg(feature = "aws")]
     #[test]
     fn aws_doors_resolve_from_their_keys() -> R {
@@ -3080,6 +3146,7 @@ model = "qwen3:8b"
                     workspace_id,
                     ..
                 },
+            ..
         } = &c.synth().ok_or("s")?.backend
         else {
             return Err("claude-platform-on-aws".into());
@@ -3093,12 +3160,24 @@ model = "qwen3:8b"
             )
         );
         assert!(
-            c.models()?.synth().capabilities().refusal_fallbacks,
-            "first-party parity"
+            !c.models()?.synth().capabilities().refusal_fallbacks,
+            "server-side fallbacks are documented for the Claude API only"
         );
         assert_eq!(
             c.report().pointer("/providers/anthropic/endpoint"),
             Some(&serde_json::json!("claude-platform-on-aws"))
+        );
+        // The operator can say the door takes them after all; the report shows the override.
+        let c = load(
+            &anthropic_with(
+                "endpoint = \"claude-platform-on-aws\"\nregion = \"us-west-2\"\nworkspace_id = \"wrkspc_01AbC\"\nrefusal_fallbacks = true",
+            ),
+            &[],
+        )?;
+        assert!(c.models()?.synth().capabilities().refusal_fallbacks);
+        assert_eq!(
+            c.report().pointer("/providers/anthropic/refusal_fallbacks"),
+            Some(&serde_json::json!(true))
         );
         assert_eq!(
             c.report().pointer("/providers/anthropic/workspace_id"),
@@ -3116,6 +3195,7 @@ model = "qwen3:8b"
                     credentials,
                     ..
                 },
+            ..
         } = &c.synth().ok_or("s")?.backend
         else {
             return Err("bedrock".into());
@@ -3132,6 +3212,7 @@ model = "qwen3:8b"
                     credentials: extract_credentials,
                     ..
                 },
+            ..
         } = &c.extract().ok_or("x")?.backend
         else {
             return Err("bedrock".into());
@@ -3194,6 +3275,7 @@ model = "qwen3:8b"
                     token,
                     ..
                 },
+            ..
         } = &c.synth().ok_or("s")?.backend
         else {
             return Err("vertex".into());
@@ -3208,6 +3290,7 @@ model = "qwen3:8b"
                     token: extract_token,
                     ..
                 },
+            ..
         } = &c.extract().ok_or("x")?.backend
         else {
             return Err("vertex".into());
