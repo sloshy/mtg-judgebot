@@ -22,7 +22,7 @@ buttons beneath it. The "did you mean…?" choices are buttons too.
 
 ## Where these come from
 
-The five answers below are copied from `eval/published/v1-opus-5-5.json`, the 2026-09-22
+The five answers below are copied from `eval/published/v1-opus-5-5.json`, the 2026-09-29
 run of the [gold evaluation set](../../how-it-works/evaluation/) on the default
 configuration (`claude-opus-5-5` on both stages, Voyage embeddings). The run file holds all
 21.
@@ -44,27 +44,26 @@ a real answer.
 
 **Answered**
 
-> Your other creatures are still 1/1 with no abilities either way. **Opalescence** is never a creature, because it "Each other non-Aura enchantment" leaves Opalescence itself out. **Humility**'s size is the only thing that depends on timestamps.
+> Your other creatures stay 1/1 with no abilities either way. **Opalescence** says "Each other non-Aura enchantment", so it never becomes a creature itself and keeps its ability. What changes with the order is **Humility**. If Humility came first (your case), it ends up a 4/4 creature with no abilities. If Opalescence came first, Humility ends up a 1/1 creature with no abilities.
 >
-> **Humility out first, Opalescence enters later (your case):**
-> - Layer 4: Opalescence turns Humility into an enchantment creature.
-> - Layer 6: Humility is now a creature, so it loses all abilities, including its own. Per `613.6`, an effect that has started applying keeps applying in its other layers "even if the ability generating the effect is removed during this process." So Humility's effect still applies in layer 7b.
-> - Layer 7b: Both effects set base P/T, so they apply in timestamp order (`613.4b`, `613.7`). A permanent gets its timestamp when it enters (`613.7d`). Humility makes every creature 1/1 first. Then Opalescence makes Humility 4/4, because its mana value is 4.
+> Here's how the layers go with Humility first:
+> - Layer 4 (type changes, `613.1d`): Opalescence makes Humility a creature.
+> - Layer 6 (abilities, `613.1f`): Humility removes all abilities from all creatures, including itself. Per `613.6`, an effect that has started applying "will continue to be applied to the same set of objects in each other applicable layer and/or sublayer, even if the ability generating the effect is removed." So Humility's 1/1 effect still happens in layer 7b.
+> - Layer 7b (`613.4b`): both effects set base P/T, so they apply in timestamp order (`613.7`). Humility's 1/1 applies first, then Opalescence's later effect sets Humility to its mana value, 4/4.
 >
-> Result: Humility is a 4/4 enchantment creature with no abilities. Your other creatures are 1/1 with no abilities. Opalescence is a normal enchantment and keeps its ability.
+> If Opalescence came first, layer 7b runs the other way round. Opalescence sets Humility to 4/4, then Humility's later effect sets it back to 1/1. The Scryfall ruling on these two cards goes through exactly this order-by-order breakdown.
 >
-> **Opalescence out first:** The layers work the same way, but in 7b Opalescence makes Humility 4/4 first. Then Humility's later effect makes it 1/1. So Humility is 1/1 with no abilities, and everything else is still 1/1. The official Scryfall ruling on these two cards walks through both orders the same way.
->
-> Any other non-Aura enchantments on the battlefield also become creatures, and they lose their abilities too. Their size follows the same timestamp logic. If Humility was there first, they get P/T equal to their mana value. If Opalescence was there first, they're 1/1.
+> One more thing: any other non-Aura enchantments on the battlefield also become creatures and lose their abilities. They follow the same pattern as Humility, so they're 1/1 if Opalescence came first and equal to their mana value if Humility came first.
 
-- [**613.6**](https://yawgatog.com/resources/magic-rules/#R6136) “If an effect starts to apply in one layer and/or sublayer, it will continue to be applied to the same set of objects in each other applicable layer and/or sublayer, even if the ability generating the …”
+- **Oracle text — Opalescence** “Each other non-Aura enchantment is a creature in addition to its other types”
+- [**613.6**](https://yawgatog.com/resources/magic-rules/#R6136) “it will continue to be applied to the same set of objects in each other applicable layer and/or sublayer, even if the ability generating the effect is removed during this process.”
 - [**613.4b**](https://yawgatog.com/resources/magic-rules/#R6134b) “Layer 7b: Effects that set power and/or toughness to a specific number or value are applied. Effects that refer to the base power and/or toughness of a creature apply in this layer.”
 - [**613.7**](https://yawgatog.com/resources/magic-rules/#R6137) “An effect with an earlier timestamp is applied before an effect with a later timestamp.”
-- [**613.7d**](https://yawgatog.com/resources/magic-rules/#R6137d) “An object receives a timestamp at the time it enters a zone.”
+- [**613.1d**](https://yawgatog.com/resources/magic-rules/#R6131d) “Layer 4: Type-changing effects are applied.”
+- [**613.1f**](https://yawgatog.com/resources/magic-rules/#R6131f) “Layer 6: Ability-adding effects, keyword counters, ability-removing effects, and effects that say an object can’t have an ability are applied.”
 - **Ruling — Humility** “Layer 7b: Humility becomes 1/1 and Worship becomes 1/1 (Humility). Humility becomes 4/4 and Worship becomes 4/4 (Opalescence).”
-- **Oracle text — Opalescence** “Each other non-Aura enchantment is a creature in addition to its other types and has base power and base toughness each equal to its mana value.”
 
-Confidence: High · CR 2026-08-19 · 20 s · 2 model calls · $0.10
+Confidence: High · CR 2026-08-19 · 23 s · 2 model calls · $0.11
 
 ## Trample and deathtouch, and a misremembered card
 
@@ -74,18 +73,21 @@ Confidence: High · CR 2026-08-19 · 20 s · 2 model calls · $0.10
 
 **Answered**
 
-> You can assign just 1 to the 4/4 and trample 4 over, so your opponent is wrong. One thing first: **Questing Beast** doesn't have trample on its own. Its current Oracle text is "Vigilance, deathtouch, haste" plus its other abilities, and its base size is 4/4. So this answer assumes something is making it 5/5 and giving it trample.
+> You can trample over **4**. Assign just 1 damage to the 4/4 and 4 to the player. Your opponent is wrong here: deathtouch changes what counts as lethal damage.
 >
-> With trample, you have to assign lethal damage to the blockers before any excess can go to the player, per `702.19b`. Deathtouch changes what counts as lethal: per `702.2c`, "any nonzero amount of combat damage assigned to a creature by a source with deathtouch is considered to be lethal damage". So 1 damage is lethal to the 4/4, and the other 4 can go to the defending player (or the planeswalker or battle it's attacking). You can also put more on the blocker if you want. Damage already marked on the blocker doesn't change this.
+> Per `702.19b`, a trampler has to assign lethal damage to its blockers before any excess can go to the player. But per `702.2c`, "Any nonzero amount of combat damage assigned to a creature by a source with deathtouch is considered to be lethal damage" for that check. So 1 damage covers the 4/4's lethal requirement and the other 4 is excess. That 1 damage still destroys the blocker as a state-based action (`702.2b`).
 >
-> If the 4 trample damage hits an opponent, Questing Beast's last ability also triggers, dealing 4 damage to target planeswalker that player controls.
+> One thing to check: **Questing Beast**'s Oracle text doesn't give it trample ("Vigilance, deathtouch, haste"). It needs trample from some other effect. Without trample, a blocked creature assigns all its damage to its blocker (`510.1c`).
+>
+> As a bonus, the 4 damage to your opponent triggers "it deals that much damage to target planeswalker that player controls," if they control one.
 
 - [**702.19b**](https://yawgatog.com/resources/magic-rules/#R70219b) “Once all those blocking creatures are assigned lethal damage, any excess damage is assigned as its controller chooses among those blocking creatures and the player, planeswalker, or battle the creatur…”
 - [**702.2c**](https://yawgatog.com/resources/magic-rules/#R7022c) “Any nonzero amount of combat damage assigned to a creature by a source with deathtouch is considered to be lethal damage for the purposes of determining if excess damage is being dealt.”
+- [**702.2b**](https://yawgatog.com/resources/magic-rules/#R7022b) “A creature with toughness greater than 0 that’s been dealt damage by a source with deathtouch since the last time state-based actions were checked is destroyed as a state-based action.”
 - **Oracle text — Questing Beast** “Vigilance, deathtouch, haste”
-- **Oracle text — Questing Beast** “Whenever Questing Beast deals combat damage to an opponent, it deals that much damage to target planeswalker that player controls.”
+- [**510.1c**](https://yawgatog.com/resources/magic-rules/#R5101c) “If exactly one creature is blocking it, it assigns all its combat damage to that creature.”
 
-Confidence: High · CR 2026-08-19 · 13 s · 3 model calls · $0.10
+Confidence: High · CR 2026-08-19 · 18 s · 3 model calls · $0.10
 
 ## An old printing against the current Oracle text
 
@@ -95,18 +97,21 @@ Confidence: High · CR 2026-08-19 · 13 s · 3 model calls · $0.10
 
 **Answered**
 
-> No, that trick doesn't work anymore. **Waylay** has Oracle errata. Its current text reads "Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step." Cards printed with "at end of turn" got updated Oracle wording (`513.1a`), and Waylay's exile was moved to the cleanup step specifically to shut down this play.
+> No, that trick doesn't work anymore. **Waylay** has been errata'd. Its current Oracle text reads "Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step." The old "at end of turn" wording is gone.
 >
-> If you cast it during your opponent's end step, the next cleanup step is the very next step of that same turn: "The ending phase consists of two steps: end and cleanup" (`512.1`). When that cleanup step starts, the game checks for any triggered abilities waiting to go on the stack, "including those that trigger “at the beginning of the next cleanup step”". The exile trigger goes on the stack, players get priority, it resolves and the Knights are exiled. Then another cleanup step begins (`514.3a`).
+> When Waylay resolves, it creates a delayed triggered ability (`603.7`) that waits for the next cleanup step. That's the very next step of the same turn, because "The ending phase consists of two steps: end and cleanup" (`512.1`). Starting in the end step doesn't help you: `513.2`'s "the step doesn't back up" rule only covers end-step triggers, and this one is waiting for cleanup.
 >
-> So the Knights only last for the rest of your opponent's end step. They can still work as surprise blockers if you cast Waylay earlier in combat, or as sacrifice fodder, but they never make it to your turn.
+> In that cleanup step, the game checks for triggered abilities waiting to go on the stack, "including those that trigger “at the beginning of the next cleanup step”" (`514.3a`). The trigger goes on the stack and resolves, and the Knights are exiled. Then another cleanup step begins.
+>
+> So the Knights last only for the rest of your opponent's end step. They're fine as sacrifice fodder, or as surprise blockers if you cast Waylay earlier in the turn, but they never make it to your turn.
 
 - **Oracle text — Waylay** “Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step.”
-- [**513.1a**](https://yawgatog.com/resources/magic-rules/#R5131a) “Cards that were printed with that text have received errata in the Oracle card reference to say “at the beginning of the end step” or “at the beginning of the next end step.””
+- [**603.7**](https://yawgatog.com/resources/magic-rules/#R6037) “An effect may create a delayed triggered ability that can do something at a later time.”
 - [**512.1**](https://yawgatog.com/resources/magic-rules/#R5121) “The ending phase consists of two steps: end and cleanup.”
-- [**514.3a**](https://yawgatog.com/resources/magic-rules/#R5143a) “At this point, the game checks to see if any state-based actions would be performed and/or any triggered abilities are waiting to be put onto the stack (including those that trigger “at the beginning …”
+- [**514.3a**](https://yawgatog.com/resources/magic-rules/#R5143a) “including those that trigger “at the beginning of the next cleanup step””
+- [**513.2**](https://yawgatog.com/resources/magic-rules/#R5132) “Likewise, if a delayed triggered ability that triggers “at the beginning of the next end step” is created during this step, that ability won’t trigger until the next turn’s end step.”
 
-Confidence: High · CR 2026-08-19 · 12 s · 2 model calls · $0.08
+Confidence: High · CR 2026-08-19 · 28 s · 3 model calls · $0.09
 
 ## Commander: colour identity and the command zone
 
@@ -116,21 +121,21 @@ Confidence: High · CR 2026-08-19 · 12 s · 2 model calls · $0.08
 
 **Answered**
 
-> 1) Yes. 2) Your choice: you can put **Kenrith** into the command zone instead of your hand, or leave him in your hand. The command zone option isn't only for the graveyard or exile.
+> 1) **Yes.** **Kenrith, the Returned King**'s color identity is all five colors, so **Nicol Bolas, the Ravager** is legal in the deck. 2) **Yes, you may put Kenrith into the command zone instead of your hand.** This replacement works for hand and library as well as graveyard and exile.
 >
-> **1)** Per `903.4`, color identity counts the mana symbols in a card's mana cost *and* its rules text. Kenrith costs {4}{W}, and his abilities use {R}, {G}, {W}, {U} and {B} (for example "{4}{B}: Put target creature card from a graveyard onto the battlefield under its owner's control."). So his color identity is all five colors. **Nicol Bolas, the Ravager** is blue, black and red. His back face counts too, per `903.4d`, but it's also blue, black and red. Every color in Bolas's identity is in Kenrith's, so `903.5c` lets you run him.
+> **1:** Per `903.4`, color identity counts the mana symbols in a card's mana cost *and* its rules text. Kenrith costs {4}{W}, and his abilities include {R}, {G}, {U} and {B} (for example "{4}{B}: Put target creature card from a graveyard onto the battlefield"). That makes his identity W/U/B/R/G. Nicol Bolas is blue, black and red. His back face also counts (`903.4d`), but the Arisen's color indicator only adds those same three colors. Per `903.5c`, a card can be in the deck if every color in its identity is also in your commander's identity, and that's true here.
 >
-> **2)** **Unsummon** says "Return target creature to its owner's hand." Per `903.9b`, if your commander would go to your hand or library from anywhere, you may put it into the command zone instead. This is a replacement effect, so Kenrith never touches your hand. It's optional. If you keep him in hand, you just cast him from your hand like a normal card, and commander tax won't apply, because per `903.8` the tax only applies when you cast him from the command zone.
+> **2:** **Unsummon** says "Return target creature to its owner's hand." Per `903.9b`, if a commander would be put into its owner's hand or library from anywhere, the owner may put it into the command zone instead. This is a replacement, so Kenrith never reaches your hand. You can also let him go to your hand and cast him from there with no commander tax, since tax only applies to casting from the command zone. The separate check for graveyard/exile (`903.9a`) is a state-based action; hand and library use the replacement.
 
 - [**903.4**](https://yawgatog.com/resources/magic-rules/#R9034) “The color identity of a card is the color or colors of any mana symbols in that card’s mana cost or rules text”
 - [**903.4d**](https://yawgatog.com/resources/magic-rules/#R9034d) “The back face of a double-faced card (see rule 712) is included when determining a card’s color identity.”
 - [**903.5c**](https://yawgatog.com/resources/magic-rules/#R9035c) “A card can be included in a Commander deck only if every color in its color identity is also found in the color identity of the deck’s commander.”
 - [**903.9b**](https://yawgatog.com/resources/magic-rules/#R9039b) “If a commander would be put into its owner’s hand or library from anywhere, its owner may put it into the command zone instead.”
-- [**903.8**](https://yawgatog.com/resources/magic-rules/#R9038) “A commander cast from the command zone costs an additional {2} for each previous time the player casting it has cast it from the command zone that game.”
+- [**903.9a**](https://yawgatog.com/resources/magic-rules/#R9039a) “If a commander is in a graveyard or in exile and that object was put into that zone since the last time state-based actions were checked, its owner may put it into the command zone.”
 - **Oracle text — Kenrith, the Returned King** “{4}{B}: Put target creature card from a graveyard onto the battlefield under its owner's control.”
 - **Oracle text — Unsummon** “Return target creature to its owner's hand.”
 
-Confidence: High · CR 2026-08-19 · 14 s · 2 model calls · $0.10
+Confidence: High · CR 2026-08-19 · 16 s · 2 model calls · $0.10
 
 ## Out of scope: a price question
 

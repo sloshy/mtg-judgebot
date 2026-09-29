@@ -104,20 +104,22 @@ same summary line at startup.
 ## What a cheaper model costs
 
 The default is the expensive model. It and a cheaper one were measured on the 21-question
-gold set, on 2026-09-22 and 2026-09-28
+gold set, both on 2026-09-29
 ([Evaluation](../../how-it-works/evaluation/#results) has the table, and the run files are
 in `eval/published/`):
 
 | | Answered (of 18 in scope) | Agree with the reference | Per question answered |
 | --- | --- | --- | --- |
 | `claude-opus-5-5` on both stages | 18 | 18 | $0.09 |
-| `claude-sonnet-5-5` on both stages | 16 | 16 | $0.06 |
+| `claude-sonnet-5-5` on both stages | 18 | 18 | $0.05 |
 
 Sonnet 5.5 is the budget option. Its input and output tokens cost half as much, and an
-answer about two thirds as much, at about the same speed, with prompts tuned on Opus. It answered two
-fewer questions. One was a citation it quoted wrongly on both the attempt and the retry,
-and the other a "did you mean?", because it read "urza's" and "tower" as two card names.
-Nothing it answered contradicted the reference. To run it, name it for both stages:
+answer a little over half as much, at about the same speed. It answered every question,
+all agreeing with the reference. It cited fewer of the expected rules, needed a retry more
+often, and made more small mistakes in its asides, such as a wrong toughness for a card
+the question did not turn on. It also asks "did you mean?" more often for a shortened
+name (such as "Bruna" when the melded pair makes the card clear). To run it, name it for
+both stages:
 
 ```toml
 [providers.anthropic]
@@ -147,7 +149,7 @@ price table knows the model, so it needs no `pricing` table.
 
 Twenty-one questions is a small sample. Any other model means running
 `judge-eval answer --config <your file>` before you trust it. A model that fails often
-there may need `crates/bot/src/prompts/synth_system.md` re-tuned for it against the gold
+there may need the prompts in `crates/bot/src/prompts/` re-tuned for it against the gold
 set.
 
 Other ways to lower the bill, on any model:

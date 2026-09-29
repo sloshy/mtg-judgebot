@@ -31,8 +31,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **Claude Sonnet 5.5 is the measured budget option.** The built-in price table knows
   `claude-sonnet-5-5` ($2 input, $10 output, $0.20 cache reads per million tokens), so a
   `judge.toml` naming it needs no `pricing` table and the spend cap no longer prices it as
-  Opus 5. On the gold set it answered 16 of 18 in-scope questions, all agreeing with the
-  reference, for about two thirds of the default's cost per answer
+  Opus 5. On the gold set, with the reworded prompts below, it answered all 18 in-scope
+  questions, all agreeing with the reference, for a little over half the default's cost
+  per answer
   (`eval/published/v1-sonnet-5-5.json`). The README's results and the Model choice page
   compare it with the default.
 
