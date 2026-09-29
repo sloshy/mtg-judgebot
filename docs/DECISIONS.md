@@ -536,3 +536,34 @@ still true when nothing else is cited, and it costs nothing as a deterrent.
 - *Dropping any citation that fails*, not only stubs. A failed citation with a real quote
   is a claim about a source, and the answer may rest on it.
 
+## D22. Stray escapes in the answer are decoded, not rejected
+
+*Decided 2026-09-29.*
+
+With structured output the answer is a JSON string, and Sonnet 5.5 sometimes escapes one
+level too many: it writes `\\n` for a line break, which reads back as a backslash and an
+`n`. Five answers across four Sonnet runs had it, and no Opus answer. Nothing caught it,
+because a stray escape in a citation fails the verbatim check but the prose is only
+checked for its length and its rule numbers. Discord and the web page showed the
+backslashes, and a stored call carried them into later prompts as a prior example.
+
+The answer is now an `Answer` newtype whose construction decodes a literal `\n`, `\t` or
+`\"` into the character it stands for. A doubled backslash is read as one unit, as JSON
+reads it, and kept as written, so decoding twice changes nothing. Every path that makes a
+verdict goes through it, and every check on the answer runs on the decoded text. That can
+add a rejection: a rule number the stray `\n` ran into (`see\n702.19b`) is now seen by
+the prose check (D20). Its schema is `String`'s, so the request fixtures do not move.
+
+This edits model output, which D21 declined to do for citations. The difference is what
+the edit can change. A repaired citation makes a claim about a source that the model did
+not make. A decoded `\n` changes layout and nothing a reader could take as a ruling, and
+no rules answer means those two characters.
+
+**Rejected:**
+
+- *A rejection with its own retry notice.* It keeps "admitted as written" intact, but it
+  costs a retry per occurrence for a habit the retry can repeat, losing an answer that was
+  right.
+- *Decoding at display time.* Each front door would need it, and the stored call would
+  still carry the escapes into later prompts.
+

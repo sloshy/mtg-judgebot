@@ -218,7 +218,8 @@ What these measure, and what they do not:
   aside: the same reading found no wrong side remarks in the Opus run, and three in the
   Sonnet run (it gave Dark Confidant toughness 2, opened one answer "Yes to both parts"
   before answering the second part no, and said Tarmogoyf's power "isn't 5" with nothing
-  to go on). None changed a ruling. One Sonnet answer also carries literal `\n` escapes.
+  to go on). None changed a ruling. One Sonnet answer also carries literal `\n` escapes,
+  which the pipeline now decodes (D22).
 - **Expected rule ids cited** tracks how closely the citations match the gold set's
   lists, which include background rules a good answer may leave out. It is a floor on
   citation overlap and a regression signal between runs, not an accuracy score.

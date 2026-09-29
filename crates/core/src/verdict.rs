@@ -27,6 +27,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use nonempty::NonEmpty;
+use nutype::nutype;
 use regex::Regex;
 
 use crate::{
@@ -235,6 +236,74 @@ impl JsonSchema for Citations {
     }
 }
 
+/// A verdict's answer text, with stray JSON escapes decoded (D22).
+///
+/// With structured output the answer is a JSON string, and a model sometimes
+/// escapes one level too many: it writes `\\n` where it meant a line break,
+/// which decodes to a backslash and an `n` that Discord and the web page then
+/// show (Sonnet 5.5, about one answer in twenty, never Opus 5.5). Construction
+/// turns a literal `\n`, `\t` or `\"` into the character it stands for, so every
+/// path that makes a verdict (the bot's adapters, an agent session, a test)
+/// gets the same text. It changes layout, not content: a rules answer never
+/// means those two characters, and every check on the answer runs on the
+/// decoded text. Citations are not touched; a quote with a stray escape fails
+/// its verbatim check and is retried as before.
+///
+/// The model-facing schema is exactly `String`'s, as for [`Quote`], so the
+/// pinned request fixtures do not move.
+#[nutype(
+    sanitize(with = decode_stray_escapes),
+    derive(Clone, Debug, Display, Serialize, Deserialize, PartialEq, Eq, AsRef)
+)]
+pub struct Answer(String);
+
+/// `\n`, `\t` and `\"` written as two characters, as the one character each
+/// stands for. A doubled backslash is read as one unit and kept, as JSON reads
+/// it, and any other backslash is left alone. Idempotent: a kept backslash can
+/// never meet a decoded character to form a new escape.
+fn decode_stray_escapes(s: String) -> String {
+    if !s.contains('\\') {
+        return s;
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('"') => out.push('"'),
+            // An escaped backslash is one unit, kept as written, so the
+            // second backslash cannot start an escape of its own.
+            Some('\\') => out.push_str("\\\\"),
+            _ => {
+                out.push(c);
+                continue;
+            }
+        }
+        chars.next();
+    }
+    out
+}
+
+impl JsonSchema for Answer {
+    fn schema_name() -> Cow<'static, str> {
+        String::schema_name()
+    }
+    fn schema_id() -> Cow<'static, str> {
+        String::schema_id()
+    }
+    fn json_schema(g: &mut SchemaGenerator) -> Schema {
+        String::json_schema(g)
+    }
+    fn inline_schema() -> bool {
+        String::inline_schema()
+    }
+}
+
 /// The model-facing shape: what the synthesizer's structured output must match.
 /// Private so that `Deserialize` can only be reached through `Verdict<Unvalidated>`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -242,7 +311,7 @@ impl JsonSchema for Citations {
 #[schemars(rename = "Verdict")]
 struct VerdictData<C> {
     /// The answer, in plain prose, quoting current Oracle text where relevant.
-    answer: String,
+    answer: Answer,
     /// Self-assessed confidence.
     confidence: Confidence,
     /// Each citation quotes a span verbatim from a rule, ruling or prior call in Context.
@@ -265,7 +334,7 @@ impl<S: State> Verdict<S> {
     /// The answer text.
     #[must_use]
     pub fn answer(&self) -> &str {
-        &self.data.answer
+        self.data.answer.as_ref()
     }
     /// Self-reported confidence.
     #[must_use]
@@ -302,7 +371,7 @@ impl Verdict<Unvalidated> {
         };
         Self {
             data: VerdictData {
-                answer,
+                answer: Answer::new(answer),
                 confidence,
                 citations,
                 category,
@@ -364,13 +433,13 @@ impl Verdict<Unvalidated> {
             }
             tracing::info!(dropped = stubs.len(), first = %first, "stub citations dropped");
         }
-        if let Some(e) = emptiness(&self.data.answer, &citations) {
+        if let Some(e) = emptiness(self.data.answer.as_ref(), &citations) {
             return Err(JudgeError::EmptyVerdict(e));
         }
         let citations = requote(citations, ctx).map_err(JudgeError::BadCitation)?;
         // Check (c), last: only once every citation is known good is "the
         // prose names a rule nothing cites" the thing worth telling the model.
-        if let Some(uncited) = uncited_rules(&self.data.answer, &citations) {
+        if let Some(uncited) = uncited_rules(self.data.answer.as_ref(), &citations) {
             return Err(JudgeError::UncitedRules(uncited));
         }
         let cr_version = ctx.cr_version().cloned().ok_or_else(|| {
@@ -1395,6 +1464,34 @@ mod tests {
             v.validate(&ctx()?, CR),
             Err(JudgeError::BadCitation(_))
         ));
+        Ok(())
+    }
+
+    /// Sonnet 5.5 on the ballista gold question (2026-09-29): the answer
+    /// string held `\n\n` and `\"` as two characters each. They are decoded
+    /// where the verdict is made, through the JSON path the adapters use.
+    #[test]
+    fn stray_escapes_in_the_answer_are_decoded() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"answer":"Pick Scales first for 6.\\n\\n**Walking Ballista** says \"This creature enters with X +1/+1 counters on it.\\\"","confidence":"high","citations":[{"kind":"rule","id":"702.15b","quote":"gain that much life"}],"category":"layers"}"#;
+        let v: Verdict = serde_json::from_str(json)?;
+        assert_eq!(
+            v.answer(),
+            "Pick Scales first for 6.\n\n**Walking Ballista** says \"This creature enters with X +1/+1 counters on it.\""
+        );
+        // Every construction path, not only deserialization.
+        let made = Verdict::new(
+            "a\\tb \\\"c\\\" \\\\n".to_owned(),
+            Confidence::High,
+            vec![],
+            Category::Other,
+        );
+        assert_eq!(made.answer(), "a\tb \"c\" \\\\n");
+        // Real line breaks and other backslashes are left alone, and decoding
+        // twice changes nothing.
+        let plain = "Line one.\nLine two, a path C:\\x and a lone \\.";
+        assert_eq!(decode_stray_escapes(plain.to_owned()), plain);
+        let once = decode_stray_escapes("a\\\\n\\n\\\\\\\"b".to_owned());
+        assert_eq!(decode_stray_escapes(once.clone()), once);
         Ok(())
     }
 

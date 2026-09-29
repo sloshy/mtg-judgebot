@@ -81,6 +81,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   after all of its sub-rules, so an example of 903.3 sits under the 903.3e line and was
   cited as 903.3e. The retry notice said the quote was mistyped, and the model sent it
   again. The notice now names the rule the text belongs to.
+- **Backslashes in answers.** Sonnet 5.5 sometimes wrote line breaks as a literal `\n`
+  (and quotes as `\"`), which Discord and the web page showed as written. The answer's
+  stray escapes are now decoded when the verdict is made (D22). Calls stored before this keep them.
 
 ## [1.0.0] - 2026-09-20
 

@@ -58,7 +58,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D21),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D22),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -418,6 +418,9 @@ Key cross-file facts that aren't obvious from any one file:
     so a second failure can be read against the first. The retry is a fresh conversation,
     so the rejected answer is quoted back as a blockquote (`RejectedAttempt`), except for
     a placeholder or over-long answer.
+  - The answer is an `Answer` newtype that decodes a stray `\n`, `\t` or `\"` written as
+    two characters (Sonnet 5.5's habit) when the verdict is made (D22). Citations are not
+    touched: a stray escape there fails the verbatim check.
   - Only `Verdict<Validated>` can reach `CallStore::persist` or Discord rendering.
 - **CR chunking is two-granularity.** `rules` rows exist at rule level (`702.19`). That
   body includes all lettered sub-rules + examples, gets an embedding and feeds retrieval.

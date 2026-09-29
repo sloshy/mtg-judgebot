@@ -138,6 +138,8 @@ Discord message (+ last N Q&A in the same thread)
           else JudgeError.EmptyVerdict
       (d) every rule number in the answer text is covered by a rule
           citation, else UncitedRules (D20)
+    The answer text is an Answer newtype: a stray `\n`, `\t` or `\"` the
+    model wrote as two characters is decoded when the verdict is made (D22).
     Failure ⇒ BadCitation / MalformedCitation / EmptyVerdict / UncitedRules →
     retry once (the notice says which), then reply with error.
     A misused tool round (ToolMisuse: a second lookup_rules call, or one
