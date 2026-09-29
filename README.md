@@ -233,10 +233,8 @@ model at half of Opus 5.5's input and output price
 (`eval/published/v1-sonnet-5-5.judge.toml`). It answered two fewer questions and cited
 fewer of the expected rules, at about two thirds of the cost per answer and about the same
 speed. Everything it answered agreed with the
-reference. Its predecessor, Sonnet 5, answered 13 on the same set
-(`eval/published/v1-sonnet-5.json`, whose dollars err high: that run metered cache reads
-at the input price). The documentation site's Model choice page covers switching and what
-else saves money.
+reference. The documentation site's Model choice page covers switching and what else
+saves money.
 
 ## Design
 
