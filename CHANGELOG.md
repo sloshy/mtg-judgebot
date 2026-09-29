@@ -63,6 +63,12 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   saying what the call allows. Two of Sonnet 5's five unanswered gold questions failed
   this way. The rerun of an answer cut off at the token limit can no longer fetch rules a
   second time.
+- **A card's type line cited as Oracle text failed twice.** The material prints a face's
+  name, mana cost and type line on its `[oracle …]` label line, and only the Oracle text
+  under it is citable. A citation quoting the label got the retry notice for a mistyped
+  quote, so the model sent the same quote again and the question went unanswered (Sonnet
+  5.5, Valki // Tibalt). The notice now names the part of the label that was quoted and
+  says to drop the citation, and the Cards heading says the label is not citable.
 
 ## [1.0.0] - 2026-09-20
 

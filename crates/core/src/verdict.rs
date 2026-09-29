@@ -526,6 +526,65 @@ pub fn misfiled_oracle_text(c: &Citation, ctx: &Context) -> Option<u32> {
         .and_then(|i| u32::try_from(i).ok())
 }
 
+/// The part of a face's label a quote comes from: the material shows the name,
+/// mana cost and type line on the `[oracle <uuid>#<face>]` line itself, and
+/// only the Oracle text under it is citable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelPart {
+    /// The face's name.
+    Name,
+    /// The face's mana cost.
+    ManaCost,
+    /// The face's type line.
+    TypeLine,
+    /// More than one of them: a quote running across the label line.
+    Line,
+}
+
+impl LabelPart {
+    /// How a notice names it.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::ManaCost => "mana cost",
+            Self::TypeLine => "type line",
+            Self::Line => "label text",
+        }
+    }
+}
+
+/// The label part an *Oracle text* citation actually quotes, when its quote is
+/// not in the face's Oracle text but is in that face's label.
+///
+/// A model that wants to cite "this face is a planeswalker" quotes the type
+/// line printed beside the label (Sonnet 5.5 on Valki // Tibalt, twice). The
+/// quote is verbatim, so the generic "copy the text exactly" notice misleads;
+/// the useful thing to say is that the label is not citable. Never used to
+/// repair a citation.
+#[must_use]
+pub fn quotes_face_label(c: &Citation, ctx: &Context) -> Option<LabelPart> {
+    let Citation::OracleText { card, face, quote } = c else {
+        return None;
+    };
+    let f = ctx.card(*card)?.face(*face)?;
+    let q = quote.as_ref().trim();
+    if f.locate_quote(q).is_some() {
+        return None;
+    }
+    // The label as the material prints it, less the bold around the name.
+    let line = format!("{} {} — {}", f.name, f.mana_cost, f.type_line);
+    [
+        (LabelPart::TypeLine, f.type_line.as_str()),
+        (LabelPart::ManaCost, f.mana_cost.as_str()),
+        (LabelPart::Name, f.name.as_str()),
+        (LabelPart::Line, line.as_str()),
+    ]
+    .into_iter()
+    .find(|(_, text)| quote::locate(text, q).is_some())
+    .map(|(part, _)| part)
+}
+
 /// Why a verdict counts as empty, if it does (check (1) of `validate`).
 fn emptiness(answer: &str, citations: &[Citation]) -> Option<EmptyVerdict> {
     let chars = answer.trim().chars().count();
@@ -1289,6 +1348,53 @@ mod tests {
             v.validate(&ctx()?, CR),
             Err(JudgeError::BadCitation(_))
         ));
+        Ok(())
+    }
+
+    /// Sonnet 5.5 on Valki // Tibalt quoted the face's type line, which the
+    /// material prints on the label line, as Oracle text. Recognised for the
+    /// notice, still rejected.
+    #[test]
+    fn a_quote_from_the_face_label_is_recognised_and_still_rejected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let c = ctx()?;
+        let cite = |face: u32, quote: &str| -> Result<Citation, Box<dyn std::error::Error>> {
+            Ok(Citation::OracleText {
+                card: waylay_id(),
+                face,
+                quote: Quote::try_new(quote)?,
+            })
+        };
+        assert_eq!(
+            quotes_face_label(&cite(0, "Instant")?, &c),
+            Some(LabelPart::TypeLine)
+        );
+        assert_eq!(
+            quotes_face_label(&cite(1, "{2}{W}")?, &c),
+            Some(LabelPart::ManaCost)
+        );
+        assert_eq!(
+            quotes_face_label(&cite(1, "Back")?, &c),
+            Some(LabelPart::Name)
+        );
+        assert_eq!(
+            quotes_face_label(&cite(0, "{2}{W} — Instant")?, &c),
+            Some(LabelPart::Line)
+        );
+        // Real Oracle text, text from nowhere, a face that does not exist, a
+        // card not in the material, another kind of citation: none of these.
+        assert_eq!(quotes_face_label(&cite(1, "Nothing here.")?, &c), None);
+        assert_eq!(quotes_face_label(&cite(0, "Sorcery")?, &c), None);
+        assert_eq!(quotes_face_label(&cite(2, "Instant")?, &c), None);
+        let elsewhere = Citation::OracleText {
+            card: CardId::new(Uuid::from_u128(99)),
+            face: 0,
+            quote: Quote::try_new("Instant")?,
+        };
+        assert_eq!(quotes_face_label(&elsewhere, &c), None);
+        assert_eq!(quotes_face_label(&good_citation()?, &c), None);
+        let err = verdict(vec![cite(0, "Instant")?]).validate(&c, CR).err();
+        assert!(matches!(err, Some(JudgeError::BadCitation(_))), "{err:?}");
         Ok(())
     }
 

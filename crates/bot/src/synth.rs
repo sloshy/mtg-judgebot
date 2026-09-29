@@ -417,7 +417,7 @@ fn render_cards(s: &mut String, cards: &[Card]) {
     if cards.is_empty() {
         return;
     }
-    s.push_str("## Cards (current Oracle text; cite as oracle_text with the card uuid and face index from the face label)\n");
+    s.push_str("## Cards (current Oracle text; cite as oracle_text with the card uuid and face index from the face label; only the text under a label is citable, not the name, mana cost or type line on it)\n");
     for c in cards {
         let _ = writeln!(s, "### {} — card {} — layout {:?}", c.name, c.id, c.layout);
         for (i, f) in c.faces.iter().enumerate() {
@@ -580,6 +580,18 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
                 }
                 Citation::OracleText { card, face, .. } if ctx.card(*card).and_then(|c| c.face(*face)).is_none() => {
                     format!("there is no card face labelled [oracle {card}#{face}] in the material.{INVENTED}")
+                }
+                // A face's type line (or cost, or name) sits on its label line,
+                // so a model quotes it verbatim and the generic "copy the text
+                // exactly" notice sends it back to the same quote.
+                Citation::OracleText { card, face, .. } if let Some(part) = judge_core::quotes_face_label(c, ctx) => {
+                    format!(
+                        "that is not Oracle text: the text you quoted is the face's {}, printed on the \
+                         [oracle {card}#{face}] label line itself, and only the Oracle text under a label can be \
+                         cited. Drop that citation: back the point with a rule or the face's Oracle text if the \
+                         material has one that makes it, or leave it uncited, and keep the rest of the answer",
+                        part.describe()
+                    )
                 }
                 // Listed rather than `_`: a new citation kind must say here how
                 // it can be missing from the material, not fall through to this.
@@ -868,7 +880,7 @@ mod tests {
             quote: judge_core::Quote::try_new("nope")?,
         });
         let s = render_user_turn(&q(), &ctx, Some(&attempt(bad)), &[], &Budget::default());
-        assert!(s.starts_with("# Material\n## Cards (current Oracle text; cite as oracle_text with the card uuid and face index from the face label)\n### Dark Confidant — card 00000000-0000-0000-0000-000000000007"), "{s}");
+        assert!(s.starts_with("# Material\n## Cards (current Oracle text; cite as oracle_text with the card uuid and face index from the face label; only the text under a label is citable, not the name, mana cost or type line on it)\n### Dark Confidant — card 00000000-0000-0000-0000-000000000007"), "{s}");
         assert!(s.contains("[oracle 00000000-0000-0000-0000-000000000007#0] **Dark Confidant** {1}{B} — Creature — Human Wizard\nAt the beginning"), "{s}");
         assert!(s.contains("## Comprehensive Rules (effective 20250801)\n### [702.15] Heading\n702.15. Lifelink\n702.15b"), "{s}");
         let key = ruling_key("2020-01-01", "Bob is sad.");
@@ -919,6 +931,24 @@ mod tests {
             &Budget::default(),
         );
         assert!(s.contains("oracle 00000000-0000-0000-0000-000000000007#0: \"x\", which failed validation: the quote is not a verbatim substring"), "{s}");
+
+        // The Valki // Tibalt failure of the 2026-09-28 Sonnet 5.5 run: the
+        // type line quoted verbatim from the label, twice. "Copy the text
+        // exactly" sent it back to the same quote; the notice now says why.
+        let type_line = Rejection::BadCitation(Citation::OracleText {
+            card: CardId::new(Uuid::from_u128(7)),
+            face: 0,
+            quote: judge_core::Quote::try_new("Creature — Human Wizard")?,
+        });
+        let s = render_user_turn(
+            &q(),
+            &ctx,
+            Some(&attempt(type_line)),
+            &[],
+            &Budget::default(),
+        );
+        assert!(s.contains("which failed validation: that is not Oracle text: the text you quoted is the face's type line, printed on the [oracle 00000000-0000-0000-0000-000000000007#0] label line itself"), "{s}");
+        assert!(!s.contains("verbatim substring"), "{s}");
 
         // Empty verdicts get their own notice, explaining what "empty" meant.
         let s = render_user_turn(
