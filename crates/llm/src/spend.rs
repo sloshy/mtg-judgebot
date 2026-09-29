@@ -115,14 +115,23 @@ const OPUS_5_5: Pricing = Pricing {
     cache_read: 0.20,
     cache_write: 5.0,
 };
+const SONNET_5: Pricing = Pricing {
+    input: 2.0,
+    output: 10.0,
+    cache_read: 0.20,
+    cache_write: 2.50,
+};
 
 /// Built-in price table, `(provider, model)` → USD per million tokens.
 /// Opus 5 verified 2026-08-29 against the Anthropic pricing page, Opus 5.5
-/// taken from its launch pricing 2026-09-22 (cache writes at the usual 1.25 ×
-/// input); re-check when a model is added or a price changes.
+/// taken from its launch pricing 2026-09-22, Sonnet 5.5 (same rates as Sonnet 5)
+/// from its launch pricing 2026-09-28 (cache writes at the usual 1.25 × input);
+/// re-check when a model is added or a price changes.
 pub const PRICES: &[(&str, &str, Pricing)] = &[
     (ANTHROPIC, "claude-opus-5-5", OPUS_5_5),
     (ANTHROPIC, "claude-opus-5", OPUS_5),
+    (ANTHROPIC, "claude-sonnet-5-5", SONNET_5),
+    (ANTHROPIC, "claude-sonnet-5", SONNET_5),
 ];
 
 /// Pricing for `model` at `provider`. An unknown Anthropic model (including
@@ -673,6 +682,15 @@ mod tests {
             .map(|p| p.usd(&u))
             .unwrap_or_default();
         assert!((usd - (4.0 + 20.0 + 0.2 + 5.0)).abs() < 1e-9, "{usd}");
+        for sonnet in ["claude-sonnet-5-5", "claude-sonnet-5"] {
+            let usd = pricing_for(ANTHROPIC, sonnet)
+                .map(|p| p.usd(&u))
+                .unwrap_or_default();
+            assert!(
+                (usd - (2.0 + 10.0 + 0.2 + 2.5)).abs() < 1e-9,
+                "{sonnet}: {usd}"
+            );
+        }
         // Unknown Anthropic models price as Opus 5 (never under-estimate); unknown providers are unpriced.
         assert_eq!(
             pricing_for(ANTHROPIC, "claude-something-new"),

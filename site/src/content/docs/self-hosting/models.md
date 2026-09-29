@@ -103,28 +103,54 @@ same summary line at startup.
 
 ## What a cheaper model costs
 
-The default is the expensive model. Both it and a cheaper one were measured on the
-21-question gold set on 2026-09-22
+The default is the expensive model. It and a cheaper one were measured on the 21-question
+gold set, on 2026-09-22 and 2026-09-28
 ([Evaluation](../../how-it-works/evaluation/#results) has the table, and the run files are
 in `eval/published/`):
 
 | | Answered (of 18 in scope) | Agree with the reference | Per question answered |
 | --- | --- | --- | --- |
 | `claude-opus-5-5` on both stages | 18 | 18 | $0.09 |
-| `claude-sonnet-5` on both stages | 13 | 12 | $0.16, erring high |
+| `claude-sonnet-5-5` on both stages | 16 | 16 | $0.06 |
 
-Sonnet 5 costs half as much per token but came out no cheaper per answer. (Its dollar
-figure errs high, because that run metered cache reads at the input price.) The prompts
-are tuned on Opus. Sonnet misquoted three citations and twice broke the tool round by
-asking for a second `lookup_rules` call, which the pipeline allows only once by design. A
-rejected attempt is paid for twice: once for the attempt and once for the retry. It was
-also several times slower. Nothing it did answer contradicted the reference.
+Sonnet 5.5 is the budget option. Its input and output tokens cost half as much, and an
+answer about two thirds as much, at about the same speed, with prompts tuned on Opus. It answered two
+fewer questions. One was a citation it quoted wrongly on both the attempt and the retry,
+and the other a "did you mean?", because it read "urza's" and "tower" as two card names.
+Nothing it answered contradicted the reference. To run it, name it for both stages:
 
-So this is not a verdict on the model. Moving the synthesis stage to another model means
-re-tuning `crates/bot/src/prompts/synth_system.md` for it against the gold set, and
-running `judge-eval answer --config <your file>` before you trust it.
+```toml
+[providers.anthropic]
+kind = "anthropic"
+endpoint = "direct"
+api_key_env = "ANTHROPIC_API_KEY"
 
-What does lower the bill without that work:
+[providers.voyage]
+kind = "voyage"
+
+[models.extract]
+provider = "anthropic"
+model = "claude-sonnet-5-5"
+
+[models.synth]
+provider = "anthropic"
+model = "claude-sonnet-5-5"
+effort = "high"
+
+[models.embed]                       # a judge.toml without it runs with no vector search
+provider = "voyage"
+model = "voyage-3.5"
+```
+
+This is the file the run used (`eval/published/v1-sonnet-5-5.judge.toml`). The built-in
+price table knows the model, so it needs no `pricing` table.
+
+Twenty-one questions is a small sample. Any other model means running
+`judge-eval answer --config <your file>` before you trust it. A model that fails often
+there may need `crates/bot/src/prompts/synth_system.md` re-tuned for it against the gold
+set.
+
+Other ways to lower the bill, on any model:
 
 - **The extraction stage** is a small share of an answer's cost (about a third of a cent
   of ten on the default). A local model there (`pricing = "free"`) removes it. It is the

@@ -26,6 +26,13 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   Sample answers page come from that run (`eval/published/v1-opus-5-5.json`). To stay on
   Opus 5, name `claude-opus-5` in a `judge.toml`: it is still priced. A `judge.toml` that
   already names a model is unaffected.
+- **Claude Sonnet 5.5 is the measured budget option.** The built-in price table knows
+  `claude-sonnet-5-5` and `claude-sonnet-5` ($2 input, $10 output, $0.20 cache reads per
+  million tokens), so a `judge.toml` naming either needs no `pricing` table and the spend
+  cap no longer prices them as Opus 5. On the gold set Sonnet 5.5 answered 16 of 18
+  in-scope questions, all agreeing with the reference, for about two thirds of the
+  default's cost per answer (`eval/published/v1-sonnet-5-5.json`). The README's results
+  and the Model choice page now compare it with the default instead of Sonnet 5.
 
 ### Fixed
 
