@@ -3,7 +3,7 @@
 //!
 //! `eval recall [--vectors] [path/to/gold.yaml]`: for every CR/Commander
 //! question, resolves its card names and nicknames, runs the retriever with the
-//! gold categories and reports which `expected_rule_ids` the synthesis prompt
+//! gold categories and reports which expected rule ids (decisive and supporting) the synthesis prompt
 //! shows under the production budget (and which were retrieved but cut). No
 //! embedder unless `--vectors`, which embeds each question with the configured
 //! one (a fraction of a cent for the gold set). Exits non-zero if aggregate
@@ -15,7 +15,8 @@
 //! (default 2) gold questions and writes `eval/runs/L.json`, recording which
 //! model answered each stage.
 //!
-//! `eval show <run.json>`: expected vs. bot answers side by side.
+//! `eval show <run.json>`: expected vs. bot answers side by side, graded
+//! against the current gold file as `rescore` grades it.
 
 mod answer;
 mod categories;
@@ -110,7 +111,10 @@ async fn run() -> anyhow::Result<bool> {
         }
         "show" => {
             let path = args.next().ok_or_else(usage)?;
-            print!("{}", answer::show(std::path::Path::new(&path))?);
+            print!(
+                "{}",
+                answer::show(std::path::Path::new(&path), &gold::default_path())?
+            );
             Ok(true)
         }
         "rescore" => {

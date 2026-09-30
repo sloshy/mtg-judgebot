@@ -3,7 +3,7 @@ _meta:
   count: 21
   generated: '2026-08-29'
   note: |-
-    Authored and adversarially verified by judge-persona agents against the current Comprehensive Rules and Oracle text, and audited against Oracle text, rulings and CR text on 2026-09-20. No human judge has reviewed it. Rule IDs must be re-verified on each CR release. expected_rule_ids include background rules a correct answer may leave out, so recall over them is a floor on citation overlap, not an accuracy score.
+    Authored and adversarially verified by judge-persona agents against the current Comprehensive Rules and Oracle text, and audited against Oracle text, rulings and CR text on 2026-09-20. No human judge has reviewed it. Rule IDs must be re-verified on each CR release. decisive_rule_ids are the rules a correct answer must cite, and recall is scored on them; supporting_rule_ids are background rules a good answer may leave out, reported when cited and never counted as a miss. Both feed the retrieval gate.
 questions:
 - id: layers-ballista-scales-season-replacement
   question: |-
@@ -21,12 +21,13 @@ questions:
   - counters
   - enters-the-battlefield
   source: CR
-  expected_rule_ids:
-  - 614.1c
-  - '614.12'
+  decisive_rule_ids:
   - '616.1'
   - 616.1e
   - '614.5'
+  supporting_rule_ids:
+  - 614.1c
+  - '614.12'
   expected_answer: |-
     You choose the order and the best answer is 6. Walking Ballista's 'enters with X +1/+1 counters' is a replacement effect (614.1c, 614.12), and Hardened Scales and Doubling Season are further replacement effects modifying the same event. When multiple replacement effects apply to the same event, the affected permanent's controller picks which applies first (616.1), and since none of the special priorities in 616.1a-d apply, any may be chosen (616.1e). Each effect applies only once to the event (614.5). Apply Scales first (2 -> 3), then Season doubles (3 -> 6). Timestamps are irrelevant for replacement effects; that is the layer system for continuous effects.
   rationale: |-
@@ -46,9 +47,10 @@ questions:
   - type-changing
   - lands
   source: CR
-  expected_rule_ids:
-  - 613.1d
+  decisive_rule_ids:
   - '305.7'
+  supporting_rule_ids:
+  - 613.1d
   - '305.8'
   expected_answer: |-
     Tron is off. Blood Moon is a type-changing effect (layer 4, 613.1d) that sets each nonbasic land's subtype to Mountain. Per 305.7, a land whose subtype is set to a basic land type loses its old land types (so it is no longer an Urza's land), loses all abilities from its rules text (the colorless mana ability), and gains only '{T}: Add {R}'. Each Urza's land is a plain Mountain that taps for one red mana; Tower does not produce three because it no longer has that ability and the others no longer have the Urza's subtype. They are still nonbasic (305.8), so Blood Moon keeps affecting them.
@@ -69,9 +71,10 @@ questions:
   - timestamps
   - type-changing
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
   - '613.8'
   - 613.8a
+  supporting_rule_ids:
   - 613.8b
   - 613.1d
   - '305.7'
@@ -93,9 +96,10 @@ questions:
   - layers
   - characteristic-defining-abilities
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
   - '707.2'
   - 707.2a
+  supporting_rule_ids:
   - 613.2a
   - 613.4a
   - 613.4c
@@ -119,12 +123,13 @@ questions:
   - dependency
   - timestamps
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
+  - '613.6'
+  - 613.4b
+  - '613.7'
+  supporting_rule_ids:
   - 613.1d
   - 613.1f
-  - 613.4b
-  - '613.6'
-  - '613.7'
   - 613.8a
   expected_answer: |-
     Walk the layers. Opalescence reads 'each OTHER non-Aura enchantment', so it never affects itself: Opalescence stays a noncreature enchantment and keeps its ability in every scenario. Layer 4 (613.1d): Opalescence makes Humility a 'creature' enchantment. Layer 6 (613.1f): Humility removes all abilities from every creature, including itself; per 613.6 an effect that has started applying keeps applying in later layers even though its source ability is gone. Layer 7b (613.4b): Humility's 'base P/T 1/1' and Opalescence's 'base P/T equal to mana value' both set Humility's P/T. Neither depends on the other under 613.8a (applying one doesn't change the text, existence, or targets of the other), so timestamp order decides (613.7). If Opalescence has the later timestamp: Humility is a 4/4 creature with no abilities. If Humility has the later timestamp: Humility is a 1/1 creature with no abilities. Either way every ordinary creature is a 1/1 with no abilities, and Opalescence is an unaffected noncreature enchantment. Any other non-Aura enchantment Opalescence animates follows Humility itself: its base power and toughness are its mana value when Opalescence is later, and 1/1 when Humility is.
@@ -145,10 +150,11 @@ questions:
   - casting-spells
   - characteristics
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
   - 712.11b
-  - 712.11c
   - 712.8a
+  supporting_rule_ids:
+  - 712.11c
   - 712.8f
   expected_answer: |-
     Yes. Valki // Tibalt is a modal double-faced card: when you cast it you choose which face you're casting before it goes on the stack, and only that face is evaluated (712.11b, 712.11c), so you can cast Tibalt, Cosmic Impostor for {5}{B}{R} straight from your hand. Once chosen, the spell/permanent has only that face's characteristics (712.8f). But anywhere other than the stack or battlefield (hand, library, graveyard, exile) an MDFC has only its front face's characteristics (712.8a), so it is a legendary creature card named Valki, God of Lies there — never a planeswalker card.
@@ -166,11 +172,12 @@ questions:
   - casting-spells
   - exile
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
   - 715.3d
   - 715.3b
-  - '715.4'
+  supporting_rule_ids:
   - 715.3a
+  - '715.4'
   expected_answer: |-
     Your opponent is right. When an Adventure spell resolves it is exiled instead of going to the graveyard, and you may cast the card from exile — but only as the creature (Bonecrusher Giant), not as Stomp again (715.3d). And no, Stomp can't be hit by 'counter target creature spell': while on the stack as an Adventure the spell has only its alternative characteristics (715.3a, 715.3b), so it is a red instant, not a creature spell. Everywhere else, including exile, the card is just the creature card Bonecrusher Giant (715.4).
   rationale: |-
@@ -194,12 +201,13 @@ questions:
   - zone-changes
   - triggered-abilities
   source: CR
-  expected_rule_ids:
-  - '712.21'
+  decisive_rule_ids:
+  - '700.4'
   - 712.21e
+  supporting_rule_ids:
+  - '712.21'
   - 701.42a
   - 712.4a
-  - '700.4'
   equivalent_rule_ids:
     '712.4a':
     - 701.42a
@@ -229,9 +237,10 @@ questions:
   - turn-structure
   - triggered-abilities
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
   - '108.1'
   - 514.3a
+  supporting_rule_ids: []
   expected_answer: |-
     No — that trick was closed by errata. The printed text is not what the card does; you always use the current Oracle wording (108.1), which is 'Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step.' If you cast Waylay in your opponent's end step, the Knights are exiled at that same turn's cleanup step: the game checks for triggered abilities waiting during cleanup, puts the 'beginning of the next cleanup step' trigger on the stack, and then players get priority and another cleanup step follows (514.3a). You never get to attack with them. (Casting it during your opponent's declare-attackers step to get surprise blockers still works.)
   rationale: |-
@@ -249,10 +258,11 @@ questions:
   - mana-abilities
   - casting-spells
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
   - '108.1'
-  - '605.1'
   - 602.5e
+  supporting_rule_ids:
+  - '605.1'
   - 605.3a
   equivalent_rule_ids:
     '605.3a':
@@ -272,9 +282,10 @@ questions:
   - triggered-abilities
   - zones
   source: CR
-  expected_rule_ids:
-  - 603.6c
+  decisive_rule_ids:
   - '603.10'
+  supporting_rule_ids:
+  - 603.6c
   - '603.3'
   expected_answer: |-
     Yes, you drain for every creature that died, including Blood Artist itself. Leaves-the-battlefield abilities 'look back in time' (603.10, 603.6c): the game checks the state immediately before the event, when Blood Artist was still on the battlefield, so it sees every creature that died simultaneously, including itself. All those triggers go on the stack the next time a player would receive priority (603.3), and you choose a target player for each one.
@@ -292,9 +303,10 @@ questions:
   - stack-and-priority
   - timing
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
   - 117.3c
   - '117.4'
+  supporting_rule_ids:
   - 117.3b
   expected_answer: |-
     Your buddy is half right. After you cast a spell you receive priority again (117.3c), so you may cast the second Bolt immediately, before he can respond to the first. He only gets priority when you pass. Nothing resolves until all players pass in succession with the stack non-empty (117.4); then only the top object resolves, and the active player gets priority again after it resolves (117.3b). So he can still respond to either Bolt once you pass, but you are entitled to stack both first.
@@ -312,10 +324,11 @@ questions:
   - state-based-actions
   - legend-rule
   source: CR
-  expected_rule_ids:
-  - '704.4'
+  decisive_rule_ids:
   - '704.3'
   - 704.5j
+  supporting_rule_ids:
+  - '704.4'
   - 704.5f
   expected_answer: |-
     1) It doesn't die. State-based actions are only checked when a player would receive priority, not in the middle of a spell resolving (704.3, 704.4 - the CR's own Maro example). The creature only dies if it still has toughness 0 or less when SBAs are next checked (704.5f). 2) The legend rule (704.5j) is also a state-based action: the moment a player would get priority with two Ragavans you control, you choose one and the other goes to the graveyard. It doesn't use the stack and there is no window to respond between the second Ragavan entering and the legend rule applying; you can only respond before the second one enters/resolves.
@@ -331,10 +344,11 @@ questions:
   - combat-damage
   - keywords
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
+  - 510.1c
   - 702.19b
   - 702.2c
-  - 510.1c
+  supporting_rule_ids:
   - '510.2'
   expected_answer: |-
     The premise is off: Questing Beast is a 4/4 with vigilance, deathtouch and haste, and it does not have trample, so blocked by one creature it assigns all its combat damage to that blocker and nothing goes to the player (510.1c). A good answer says so. For the creature the asker describes, a 5/5 with trample and deathtouch, you only need to assign 1 damage to the 4/4 and can trample 4 over to the player. Trample requires lethal damage to be assigned to all blockers before excess goes to the player (702.19b), but any nonzero damage from a deathtouch source counts as lethal for that purpose (702.2c). Damage assignment for a blocked creature follows 510.1c, then all combat damage is dealt simultaneously with no chance to respond in between (510.2). The 4/4 is then destroyed by deathtouch as an SBA.
@@ -353,10 +367,11 @@ questions:
   - color-identity
   - command-zone
   source: Commander
-  expected_rule_ids:
+  decisive_rule_ids:
   - '903.4'
-  - 903.5c
   - 903.9b
+  supporting_rule_ids:
+  - 903.5c
   - 903.9a
   expected_answer: |-
     1) Yes. Color identity includes mana symbols in the mana cost AND in the rules text (903.4), so Kenrith's identity is WUBRG even though his mana cost is only {4}{W}. Nicol Bolas, the Ravager (UBR) is legal because every color in its identity is in Kenrith's (903.5c). 2) Yes, Kenrith can go to the command zone. If a commander would be put into its owner's hand or library from anywhere, its owner may put it into the command zone instead - a replacement effect (903.9b). Graveyard/exile use a separate state-based action (903.9a). Either way it's optional.
@@ -375,8 +390,9 @@ questions:
   - commander-damage
   - state-based-actions
   source: Commander
-  expected_rule_ids:
+  decisive_rule_ids:
   - 903.10a
+  supporting_rule_ids:
   - 704.6c
   equivalent_rule_ids:
     '704.6c':
@@ -399,9 +415,10 @@ questions:
   - casting spells
   - mana abilities
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
   - '106.4'
   - 601.2g
+  supporting_rule_ids:
   - 601.2h
   equivalent_rule_ids:
     '601.2g':
@@ -426,8 +443,9 @@ questions:
   - triggered abilities
   - card characteristics
   source: CR
-  expected_rule_ids:
+  decisive_rule_ids:
   - '202.3'
+  supporting_rule_ids: []
   expected_answer: |-
     Dark Confidant makes you lose life equal to the revealed card's mana value, which is the total mana in its mana cost regardless of color (202.3). Prodigal Sorcerer costs {2}{U}, so he loses 3 life. Tarmogoyf costs {1}{G}, so he loses 2 life. Tarmogoyf's power/toughness is irrelevant; mana value is based only on the mana cost.
   rationale: |-
@@ -441,7 +459,8 @@ questions:
   categories:
   - not a rules question
   source: OutOfScope
-  expected_rule_ids: []
+  decisive_rule_ids: []
+  supporting_rule_ids: []
   expected_answer: |-
     I only answer Magic rules questions, so I can't help with card prices. Check a price aggregator such as Scryfall's price listings, TCGplayer, or Cardmarket for current Snapcaster Mage prices.
   rationale: |-
@@ -454,7 +473,8 @@ questions:
   categories:
   - tournament policy
   source: Tournament
-  expected_rule_ids: []
+  decisive_rule_ids: []
+  supporting_rule_ids: []
   expected_answer: |-
     That is a tournament-policy question (MTR/IPG: deck checks and marked cards/sleeves), not a Comprehensive Rules question, so I don't cover it. Ask the head judge at the event or consult the Magic Tournament Rules and Infraction Procedure Guide.
   rationale: |-
@@ -469,7 +489,8 @@ questions:
   categories:
   - tournament policy
   source: Tournament
-  expected_rule_ids: []
+  decisive_rule_ids: []
+  supporting_rule_ids: []
   expected_answer: |-
     That is a tournament-policy question (IPG Missed Trigger), not a Comprehensive Rules question, so I don't cover it. Ask a judge at the event or consult the Infraction Procedure Guide at the current Magic tournament rules/IPG documents.
   rationale: |-

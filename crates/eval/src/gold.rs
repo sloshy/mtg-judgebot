@@ -1,4 +1,5 @@
-//! `eval/gold.yaml` schema (only the fields the evaluators use).
+//! `eval/gold.yaml` schema. An unknown key is an error, so a misspelled list
+//! is never read as an empty one.
 
 use std::path::{Path, PathBuf};
 
@@ -10,52 +11,191 @@ use crate::categories;
 
 /// The gold file.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Gold {
+    /// Provenance notes; not read.
+    #[serde(default, rename = "_meta")]
+    _meta: serde_yaml_ng::Value,
     /// All questions, in file order.
     pub questions: Vec<GoldQuestion>,
 }
 
-/// One gold question.
+/// How much an expected rule id counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Weight {
+    /// A correct answer must cite it; recall is scored on these.
+    Decisive,
+    /// Background a good answer may leave out: reported when cited, never a miss.
+    Supporting,
+}
+
+/// One rule id a gold question expects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Expected {
+    /// The id (rule or leaf granularity).
+    pub id: RuleId,
+    /// Decisive or supporting.
+    pub weight: Weight,
+    /// Other ids stating the same fact, any of which satisfies this one.
+    pub equivalents: Vec<RuleId>,
+}
+
+/// One gold question, validated: made only from [`RawQuestion`], so every
+/// id parses, no id is both decisive and supporting, and every equivalent
+/// hangs off an expected id.
 #[derive(Debug, Deserialize)]
+#[serde(try_from = "RawQuestion")]
 pub struct GoldQuestion {
     /// Stable id, e.g. `layers-blood-moon-tron`.
     pub id: String,
     /// The question as a user would write it.
     pub question: String,
     /// Full card names involved.
-    #[serde(default)]
     pub cards: Vec<String>,
     /// Nicknames / partial names the question uses.
-    #[serde(default)]
     pub nicknames_used: Vec<String>,
     /// Free-form category labels (mapped onto `judge_core::Category` best-effort).
-    #[serde(default)]
     pub categories: Vec<String>,
     /// `CR`, `Commander`, `Tournament` or `OutOfScope`.
     pub source: String,
-    /// Rule ids a correct answer must cite (rule or leaf granularity).
-    #[serde(default)]
-    pub expected_rule_ids: Vec<YamlScalar>,
+    /// Expected rule ids, decisive first, each in file order.
+    pub expected: Vec<Expected>,
     /// The reference answer, for side-by-side human review.
-    #[serde(default)]
     pub expected_answer: String,
-    /// Alternate rule ids that also satisfy an expected id: the same fact
-    /// stated elsewhere in the CR (e.g. `"707.2": ["613.1a"]`). Keys must be
-    /// quoted and must appear in `expected_rule_ids`.
+}
+
+/// A gold question as written in YAML.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawQuestion {
+    id: String,
+    question: String,
     #[serde(default)]
-    pub equivalent_rule_ids: std::collections::BTreeMap<String, Vec<YamlScalar>>,
+    cards: Vec<String>,
+    #[serde(default)]
+    nicknames_used: Vec<String>,
+    #[serde(default)]
+    categories: Vec<String>,
+    source: String,
+    /// Rule ids a correct answer must cite.
+    #[serde(default)]
+    decisive_rule_ids: Vec<YamlScalar>,
+    /// Rule ids a good answer may leave out.
+    #[serde(default)]
+    supporting_rule_ids: Vec<YamlScalar>,
+    #[serde(default)]
+    expected_answer: String,
+    /// Alternate rule ids that also satisfy an expected id: the same fact
+    /// stated elsewhere in the CR (e.g. `"707.2": ["613.2c"]`). Keys must be
+    /// quoted and name a decisive or supporting id.
+    #[serde(default)]
+    equivalent_rule_ids: std::collections::BTreeMap<String, Vec<YamlScalar>>,
+    /// Why the question is in the set; not read.
+    #[serde(default, rename = "rationale")]
+    _rationale: Option<String>,
+    /// The verifier's audit note; not read.
+    #[serde(default, rename = "verifier_note")]
+    _verifier_note: Option<String>,
+}
+
+/// A quoted (or letter-suffixed) scalar that is a valid `RuleId`. A float
+/// cannot round-trip a trailing zero (`613.10` would silently become
+/// `613.1`), so an unquoted id is rejected.
+fn rule_id(q: &str, what: &str, s: &YamlScalar) -> anyhow::Result<RuleId> {
+    if let YamlScalar::Number(n) = s {
+        anyhow::bail!(
+            "question {q}: {what} {n} is unquoted; write it as '{n}' (a float drops trailing zeros)"
+        );
+    }
+    RuleId::try_new(s.as_text())
+        .with_context(|| format!("question {q}: bad {what} {:?}", s.as_text()))
+}
+
+impl TryFrom<RawQuestion> for GoldQuestion {
+    type Error = anyhow::Error;
+
+    fn try_from(raw: RawQuestion) -> anyhow::Result<Self> {
+        let q = raw.id.as_str();
+        let mut expected: Vec<Expected> = Vec::new();
+        for (list, weight, what) in [
+            (&raw.decisive_rule_ids, Weight::Decisive, "decisive rule id"),
+            (
+                &raw.supporting_rule_ids,
+                Weight::Supporting,
+                "supporting rule id",
+            ),
+        ] {
+            for s in list {
+                let id = rule_id(q, what, s)?;
+                anyhow::ensure!(
+                    !expected.iter().any(|e| e.id == id),
+                    "question {q}: rule id {id} is listed twice (an id is in one list, once)"
+                );
+                expected.push(Expected {
+                    id,
+                    weight,
+                    equivalents: Vec::new(),
+                });
+            }
+        }
+        for (k, alts) in &raw.equivalent_rule_ids {
+            let key = RuleId::try_new(k.trim().to_owned())
+                .with_context(|| format!("question {q}: bad equivalent_rule_ids key {k:?}"))?;
+            let alts = alts
+                .iter()
+                .map(|a| rule_id(q, &format!("equivalent id under {key}"), a))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let Some(e) = expected.iter_mut().find(|e| e.id == key) else {
+                anyhow::bail!(
+                    "question {q}: equivalent_rule_ids key {key} is not a decisive or supporting rule id"
+                );
+            };
+            anyhow::ensure!(
+                e.equivalents.is_empty(),
+                "question {q}: equivalent_rule_ids key {key} is listed twice"
+            );
+            e.equivalents = alts;
+        }
+        Ok(Self {
+            id: raw.id,
+            question: raw.question,
+            cards: raw.cards,
+            nicknames_used: raw.nicknames_used,
+            categories: raw.categories,
+            source: raw.source,
+            expected,
+            expected_answer: raw.expected_answer,
+        })
+    }
 }
 
 impl GoldQuestion {
-    /// `equivalent_rule_ids` as plain text, for scoring.
+    /// Expected ids of one weight, as text, in file order.
     #[must_use]
-    pub fn equivalents(&self) -> std::collections::BTreeMap<String, Vec<String>> {
-        self.equivalent_rule_ids
+    pub fn ids(&self, weight: Weight) -> Vec<String> {
+        self.expected
             .iter()
-            .map(|(k, v)| {
+            .filter(|e| e.weight == weight)
+            .map(|e| e.id.to_string())
+            .collect()
+    }
+
+    /// Every expected id, decisive first, as text.
+    #[must_use]
+    pub fn all_ids(&self) -> Vec<String> {
+        self.expected.iter().map(|e| e.id.to_string()).collect()
+    }
+
+    /// Equivalent ids per expected id, as text, for scoring.
+    #[must_use]
+    pub fn equivalents(&self) -> crate::score::Equivalents {
+        self.expected
+            .iter()
+            .filter(|e| !e.equivalents.is_empty())
+            .map(|e| {
                 (
-                    k.trim().to_owned(),
-                    v.iter().map(YamlScalar::as_text).collect(),
+                    e.id.to_string(),
+                    e.equivalents.iter().map(ToString::to_string).collect(),
                 )
             })
             .collect()
@@ -117,14 +257,11 @@ impl GoldQuestion {
     }
 }
 
-/// A YAML scalar that may have been written unquoted (`613.8` parses as a float).
-///
-/// An unquoted id is rejected by [`load`]: a float cannot round-trip a trailing
-/// zero (`613.10` would silently become `613.1`), so ids must be quoted or
-/// carry a letter suffix.
+/// A YAML scalar that may have been written unquoted (`613.8` parses as a
+/// float). Only [`rule_id`] reads one, and it rejects the unquoted form.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum YamlScalar {
+enum YamlScalar {
     /// Quoted or letter-suffixed ids.
     Text(String),
     /// Unquoted `613.8`-style ids (rejected on load).
@@ -133,62 +270,12 @@ pub enum YamlScalar {
 
 impl YamlScalar {
     /// The id as text.
-    #[must_use]
-    pub fn as_text(&self) -> String {
+    fn as_text(&self) -> String {
         match self {
             YamlScalar::Text(s) => s.trim().to_owned(),
             YamlScalar::Number(n) => n.to_string(),
         }
     }
-}
-
-/// Every expected id must be a quoted (or letter-suffixed) scalar that is a valid `RuleId`.
-fn validate(gold: &Gold) -> anyhow::Result<()> {
-    for q in &gold.questions {
-        for id in &q.expected_rule_ids {
-            if let YamlScalar::Number(n) = id {
-                anyhow::bail!(
-                    "question {}: expected_rule_id {n} is unquoted; write it as '{n}' (a float drops trailing zeros)",
-                    q.id
-                );
-            }
-            RuleId::try_new(id.as_text()).with_context(|| {
-                format!("question {}: bad expected_rule_id {:?}", q.id, id.as_text())
-            })?;
-        }
-        let expected: Vec<String> = q
-            .expected_rule_ids
-            .iter()
-            .map(YamlScalar::as_text)
-            .collect();
-        for (k, alts) in &q.equivalent_rule_ids {
-            let key = k.trim();
-            RuleId::try_new(key.to_owned()).with_context(|| {
-                format!("question {}: bad equivalent_rule_ids key {key:?}", q.id)
-            })?;
-            anyhow::ensure!(
-                expected.iter().any(|e| e == key),
-                "question {}: equivalent_rule_ids key {key:?} is not in expected_rule_ids",
-                q.id
-            );
-            for a in alts {
-                if let YamlScalar::Number(n) = a {
-                    anyhow::bail!(
-                        "question {}: equivalent id {n} is unquoted; write it as '{n}'",
-                        q.id
-                    );
-                }
-                RuleId::try_new(a.as_text()).with_context(|| {
-                    format!(
-                        "question {}: bad equivalent id {:?} under {key:?}",
-                        q.id,
-                        a.as_text()
-                    )
-                })?;
-            }
-        }
-    }
-    Ok(())
 }
 
 /// `eval/gold.yaml` relative to the working directory, else relative to the workspace.
@@ -208,36 +295,87 @@ pub fn default_path() -> PathBuf {
 pub fn load(path: &Path) -> anyhow::Result<Gold> {
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let gold: Gold =
-        serde_yaml_ng::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-    validate(&gold)?;
-    Ok(gold)
+    serde_yaml_ng::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn gold(ids: &str) -> anyhow::Result<Gold> {
+    fn question(fields: &str) -> anyhow::Result<GoldQuestion> {
         Ok(serde_yaml_ng::from_str(&format!(
-            "questions:\n- id: a\n  question: q\n  source: CR\n  expected_rule_ids: {ids}\n"
+            "id: a\nquestion: q\nsource: CR\n{fields}"
         ))?)
+    }
+
+    fn err(fields: &str) -> String {
+        question(fields)
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default()
     }
 
     #[test]
     fn unquoted_and_malformed_ids_are_rejected() -> anyhow::Result<()> {
-        assert!(validate(&gold("['613.10', 614.1c, '704.5aa']")?).is_ok());
-        let err = validate(&gold("[613.10]")?)
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
-        assert!(err.contains("unquoted"), "{err}");
-        assert!(validate(&gold("['61.1']")?).is_err());
+        let q =
+            question("decisive_rule_ids: ['613.10', 614.1c]\nsupporting_rule_ids: ['704.5aa']\n")?;
+        assert_eq!(q.ids(Weight::Decisive), vec!["613.10", "614.1c"]);
+        assert_eq!(q.ids(Weight::Supporting), vec!["704.5aa"]);
+        assert!(err("decisive_rule_ids: [613.10]\n").contains("unquoted"));
+        assert!(err("supporting_rule_ids: [613.10]\n").contains("unquoted"));
+        assert!(!err("decisive_rule_ids: ['61.1']\n").is_empty());
         Ok(())
     }
 
     #[test]
-    fn shipped_gold_file_loads() {
-        assert!(load(&default_path()).is_ok());
+    fn the_lists_are_disjoint_and_equivalents_hang_off_either() -> anyhow::Result<()> {
+        assert!(
+            err("decisive_rule_ids: ['702.19']\nsupporting_rule_ids: ['702.19']\n")
+                .contains("listed twice")
+        );
+        let q = question(
+            "decisive_rule_ids: ['707.2']\nsupporting_rule_ids: [704.6c]\n\
+             equivalent_rule_ids:\n  '707.2': [613.2c]\n  704.6c: [903.10a]\n",
+        )?;
+        assert_eq!(q.equivalents().len(), 2);
+        assert!(
+            err("decisive_rule_ids: ['707.2']\nequivalent_rule_ids:\n  '702.19': [702.19b]\n")
+                .contains("is not a decisive or supporting")
+        );
+        assert!(
+            err("decisive_rule_ids: ['707.2']\nequivalent_rule_ids:\n  '707.2': [613.20]\n")
+                .contains("unquoted")
+        );
+        // Two keys naming one id would silently drop one list of alternates.
+        assert!(
+            err("decisive_rule_ids: ['707.2']\nequivalent_rule_ids:\n  '707.2': [613.2c]\n  ' 707.2': [613.2a]\n")
+                .contains("is listed twice")
+        );
+        Ok(())
+    }
+
+    /// The old single list, or a misspelled key, is an error rather than
+    /// silently expecting nothing.
+    #[test]
+    fn unknown_keys_are_rejected() {
+        assert!(err("expected_rule_ids: ['702.19']\n").contains("unknown field"));
+        assert!(err("decisive_rule_id: ['702.19']\n").contains("unknown field"));
+    }
+
+    #[test]
+    fn shipped_gold_file_loads() -> anyhow::Result<()> {
+        let gold = load(&default_path())?;
+        let decisive: usize = gold
+            .questions
+            .iter()
+            .map(|q| q.ids(Weight::Decisive).len())
+            .sum();
+        let supporting: usize = gold
+            .questions
+            .iter()
+            .map(|q| q.ids(Weight::Supporting).len())
+            .sum();
+        assert_eq!((decisive, supporting), (35, 32));
+        Ok(())
     }
 }

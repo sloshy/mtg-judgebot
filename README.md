@@ -193,7 +193,8 @@ has to be taken on trust:
 | …contradicting the reference | 0 | 0 |
 | Asked "did you mean?" instead | 0 | 0 |
 | Not answered | 0 | 0 |
-| Expected rule ids cited | 47 of 67 (70%) | 43 of 67 (64%) |
+| Decisive rule ids cited | 30 of 35 (86%) | 32 of 35 (91%) |
+| Supporting rule ids also cited | 17 of 32 | 11 of 32 |
 | Cost per in-scope question (median) | $0.09 | $0.05 |
 | Cost per question *answered* | $0.09 | $0.05 |
 | Time per in-scope question (median / longest) | 16 s / 28 s | 12 s / 32 s |
@@ -220,9 +221,12 @@ What these measure, and what they do not:
   before answering the second part no, and said Tarmogoyf's power "isn't 5" with nothing
   to go on). None changed a ruling. One Sonnet answer also carries literal `\n` escapes,
   which the pipeline now decodes (D22).
-- **Expected rule ids cited** tracks how closely the citations match the gold set's
-  lists, which include background rules a good answer may leave out. It is a floor on
-  citation overlap and a regression signal between runs, not an accuracy score.
+- **Decisive rule ids** are the rules each reference answer rests on, which a correct
+  answer should cite. **Supporting** ids are background a good answer may leave out, so
+  citing one is reported and missing one is not a miss. The split is a judgment per
+  question, drafted by a model and accepted by the maintainer, not a judge. It is a regression signal between runs,
+  not an accuracy score: Opus's Blood Moon answer is right but cites only 613.1d (layer
+  4) rather than 305.7, the rule it rests on.
 - Twenty-one questions chosen to be hard is a small, adversarial sample. It shows the
   pipeline holds up on layers, multi-faced cards, old wordings and Commander. It does not
   say how often an answer in your server will be right.
@@ -232,8 +236,8 @@ What these measure, and what they do not:
 The second column is the budget option: the same prompts on a model at half of Opus 5.5's
 input and output price (`eval/published/v1-sonnet-5-5.judge.toml`). It answered every
 question too, all agreeing with the reference, at a little over half the cost per answer
-and about the same speed. It cited fewer of the expected rules, needed more retries and made
-more mistakes in its asides. The documentation site's Model choice page covers switching and what else
+and about the same speed. It cited more of the decisive rules (32 of 35 against 30) but fewer of
+the supporting ones, needed more retries and made more mistakes in its asides. The documentation site's Model choice page covers switching and what else
 saves money.
 
 ## Design

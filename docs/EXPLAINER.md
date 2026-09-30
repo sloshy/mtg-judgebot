@@ -596,14 +596,17 @@ high.
 
 ## 12. Evaluation
 
-`eval/gold.yaml` holds 21 adversarially verified questions with the rule ids an answer must
-cite, plus per-question lists of equivalent ids that state the same fact. Two gates:
+`eval/gold.yaml` holds 21 adversarially verified questions. Each lists the rule ids a
+correct answer must cite (decisive) and background rule ids it may leave out
+(supporting), plus equivalent ids that state the same fact. Two gates:
 
 - `judge-eval recall` runs card resolution and retrieval, taking the extraction from the
-  gold file instead of a model call. It fails below 90% of expected rule ids in context,
-  or below 75% in the part the budget shows. It makes no chat-model calls.
-- `judge-eval answer` runs the full pipeline and scores the answers. Each row also records
-  why the first attempt was rejected, when the retry ran, and how many stub citations were
+  gold file instead of a model call. It fails below 90% of expected rule ids (decisive
+  and supporting) in context, or below 75% in the part the budget shows. It makes no
+  chat-model calls.
+- `judge-eval answer` runs the full pipeline and scores citation recall on the decisive
+  ids, reporting the supporting ids that were cited as well. Each row also records why
+  the first attempt was rejected, when the retry ran, and how many stub citations were
   dropped. Runs are stored and can be re-scored for free after the gold set is edited.
 
 The gold set is extended whenever capability is added. It is the closest thing the system

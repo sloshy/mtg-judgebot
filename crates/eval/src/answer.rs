@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::{
-    gold::{Gold, GoldQuestion},
+    gold::{Gold, GoldQuestion, Weight},
     score::{self, CiteCounts, Recall},
 };
 
@@ -147,8 +147,15 @@ pub struct Row {
     pub expected_answer: String,
     /// Gold source label.
     pub expected_source: String,
-    /// Gold rule ids.
+    /// Gold decisive rule ids, which recall is scored on (in run files from
+    /// before the split, every expected id).
     pub expected_rule_ids: Vec<String>,
+    /// Gold supporting rule ids: background a good answer may leave out.
+    #[serde(default)]
+    pub supporting_rule_ids: Vec<String>,
+    /// The supporting ids some citation covers. Never a miss.
+    #[serde(default)]
+    pub supporting_cited: Vec<String>,
     /// What the bot did.
     pub outcome: Outcome,
     /// Rule ids the validated citations reference (empty on error).
@@ -236,7 +243,7 @@ impl Run {
         (cited, expecting)
     }
 
-    /// Aggregate citation recall over answerable questions.
+    /// Aggregate citation recall over answerable questions' decisive ids.
     #[must_use]
     pub fn recall(&self) -> Option<f64> {
         let hit: usize = self.rows.iter().map(|r| r.recall.hit.len()).sum();
@@ -366,11 +373,8 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
 
 fn score_row(q: &GoldQuestion, traced: &Traced, elapsed_ms: u128, calls: u64, usd: f64) -> Row {
     let result = &traced.result;
-    let expected_rule_ids: Vec<String> = q
-        .expected_rule_ids
-        .iter()
-        .map(crate::gold::YamlScalar::as_text)
-        .collect();
+    let expected_rule_ids = q.ids(Weight::Decisive);
+    let supporting_rule_ids = q.ids(Weight::Supporting);
     let (outcome, cited, counts, source_ok, correct_shape) = match result {
         Ok(v) => {
             let cited = score::cited_rule_ids(v.citations());
@@ -426,13 +430,20 @@ fn score_row(q: &GoldQuestion, traced: &Traced, elapsed_ms: u128, calls: u64, us
             )
         }
     };
-    let recall = if q.is_answerable() {
-        score::recall_with(&cited, &expected_rule_ids, &q.equivalents())
+    let (recall, supporting_cited) = if q.is_answerable() {
+        let equivalents = q.equivalents();
+        (
+            score::recall_with(&cited, &expected_rule_ids, &equivalents),
+            score::recall_with(&cited, &supporting_rule_ids, &equivalents).hit,
+        )
     } else {
-        Recall {
-            hit: vec![],
-            missed: vec![],
-        }
+        (
+            Recall {
+                hit: vec![],
+                missed: vec![],
+            },
+            Vec::new(),
+        )
     };
     let any_expected_cited = recall.any_hit();
     Row {
@@ -441,6 +452,8 @@ fn score_row(q: &GoldQuestion, traced: &Traced, elapsed_ms: u128, calls: u64, us
         expected_answer: q.expected_answer.clone(),
         expected_source: q.source.clone(),
         expected_rule_ids,
+        supporting_rule_ids,
+        supporting_cited,
         outcome,
         cited_rule_ids: cited,
         recall,
@@ -494,11 +507,12 @@ pub fn table(run: &Run) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "{:<width$}  {:<14}  {:<9}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7}  {:>5}  {:>8}",
+        "{:<width$}  {:<14}  {:<9}  {:>6}  {:>5}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7}  {:>5}  {:>8}",
         "question",
         "outcome",
         "retry",
         "recall",
+        "supp",
         "any",
         "rules",
         "rlngs",
@@ -526,11 +540,16 @@ pub fn table(run: &Run) -> String {
         };
         let _ = writeln!(
             s,
-            "{:<width$}  {:<14}  {:<9}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7.1}  {:>5}  {:>8.4}",
+            "{:<width$}  {:<14}  {:<9}  {:>6}  {:>5}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7.1}  {:>5}  {:>8.4}",
             r.id,
             outcome,
             retry,
             recall,
+            format!(
+                "{}/{}",
+                r.supporting_cited.len(),
+                r.supporting_rule_ids.len()
+            ),
             if r.any_expected_cited { "yes" } else { "no" },
             r.cites.n_rule_cites,
             r.cites.n_ruling_cites,
@@ -548,9 +567,11 @@ pub fn table(run: &Run) -> String {
     let n_rules: usize = run.rows.iter().map(|r| r.cites.n_rule_cites).sum();
     let n_rulings: usize = run.rows.iter().map(|r| r.cites.n_ruling_cites).sum();
     let n_oracle: usize = run.rows.iter().map(|r| r.cites.n_oracle_cites).sum();
+    let supporting: usize = run.rows.iter().map(|r| r.supporting_rule_ids.len()).sum();
+    let supporting_cited: usize = run.rows.iter().map(|r| r.supporting_cited.len()).sum();
     let _ = writeln!(
         s,
-        "\n{} questions: {ok} correct shape, {src} source match, citation recall {}, {} calls, TOTAL ${:.4} (cap ${:.2}); {}",
+        "\n{} questions: {ok} correct shape, {src} source match, decisive recall {}, {} calls, TOTAL ${:.4} (cap ${:.2}); {}",
         run.rows.len(),
         run.recall()
             .map_or_else(|| "n/a".to_owned(), |f| format!("{:.1}%", f * 100.0)),
@@ -561,7 +582,7 @@ pub fn table(run: &Run) -> String {
     );
     let _ = writeln!(
         s,
-        "questions with ≥1 expected id cited: {any}/{expecting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations"
+        "questions with ≥1 decisive id cited: {any}/{expecting}; supporting ids also cited: {supporting_cited}/{supporting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations"
     );
     let _ = writeln!(s, "{}", retries_line(run));
     s
@@ -605,6 +626,12 @@ fn retries_line(run: &Run) -> String {
 /// Recomputes each row's recall from its stored `cited_rule_ids` and rewrites
 /// the derived columns; the run file itself is not modified.
 pub fn rescore(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Result<String> {
+    Ok(table(&regraded(path, gold_path)?))
+}
+
+/// A stored run, its expectations and recall recomputed against the gold file
+/// (the stored citations are kept; nothing is re-asked of the model).
+fn regraded(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Result<Run> {
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut run: Run =
@@ -615,27 +642,28 @@ pub fn rescore(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::R
             tracing::warn!(id = %row.id, "row not in gold file; keeping stored recall");
             continue;
         };
+        row.expected_rule_ids = q.ids(Weight::Decisive);
+        row.supporting_rule_ids = q.ids(Weight::Supporting);
         if q.is_answerable() {
-            row.recall = score::recall_with(
-                &row.cited_rule_ids,
-                &q.expected_rule_ids
-                    .iter()
-                    .map(crate::gold::YamlScalar::as_text)
-                    .collect::<Vec<_>>(),
-                &q.equivalents(),
-            );
+            let equivalents = q.equivalents();
+            row.recall =
+                score::recall_with(&row.cited_rule_ids, &row.expected_rule_ids, &equivalents);
+            row.supporting_cited =
+                score::recall_with(&row.cited_rule_ids, &row.supporting_rule_ids, &equivalents).hit;
             row.any_expected_cited = row.recall.any_hit();
         }
     }
-    Ok(table(&run))
+    Ok(run)
 }
 
-pub fn show(path: &std::path::Path) -> anyhow::Result<String> {
+/// `eval show <run.json>`, graded against the current gold file as
+/// [`rescore`] grades it, so its expectations match the table's.
+///
+/// # Errors
+/// If the run or the gold file cannot be read or parsed.
+pub fn show(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Result<String> {
     use std::fmt::Write as _;
-    let raw =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let run: Run =
-        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    let run = regraded(path, gold_path)?;
     let mut s = String::new();
     let _ = writeln!(
         s,
@@ -656,8 +684,13 @@ pub fn show(path: &std::path::Path) -> anyhow::Result<String> {
         let _ = writeln!(s, "Q: {}\n", r.question.trim());
         let _ = writeln!(
             s,
-            "--- expected ({}) ---\n{}\n",
+            "--- expected ({}{}) ---\n{}\n",
             r.expected_rule_ids.join(" "),
+            if r.supporting_rule_ids.is_empty() {
+                String::new()
+            } else {
+                format!("; supporting {}", r.supporting_rule_ids.join(" "))
+            },
             r.expected_answer.trim()
         );
         match &r.outcome {
@@ -690,10 +723,20 @@ pub fn show(path: &std::path::Path) -> anyhow::Result<String> {
         }
         let _ = writeln!(
             s,
-            "\nrecall {}/{} (missed: {})  cites {} rule / {} ruling / {} oracle  source {}  {:.1}s  ${:.4}\n",
+            "\nrecall {}/{} (missed: {}{})  cites {} rule / {} ruling / {} oracle  source {}  {:.1}s  ${:.4}\n",
             r.recall.hit.len(),
             r.recall.hit.len() + r.recall.missed.len(),
             r.recall.missed.join(" "),
+            if r.supporting_rule_ids.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; supporting cited {}/{}: {}",
+                    r.supporting_cited.len(),
+                    r.supporting_rule_ids.len(),
+                    r.supporting_cited.join(" ")
+                )
+            },
             r.cites.n_rule_cites,
             r.cites.n_ruling_cites,
             r.cites.n_oracle_cites,
@@ -766,6 +809,14 @@ mod tests {
         Ok(())
     }
 
+    fn expected(id: &str, weight: Weight) -> anyhow::Result<crate::gold::Expected> {
+        Ok(crate::gold::Expected {
+            id: judge_core::RuleId::try_new(id.to_owned())?,
+            weight,
+            equivalents: vec![],
+        })
+    }
+
     /// A result with no first rejection.
     fn untraced(result: Result<judge_core::Verdict<judge_core::Validated>, JudgeError>) -> Traced {
         Traced {
@@ -783,9 +834,8 @@ mod tests {
             nicknames_used: vec![],
             categories: vec![],
             source: "Tournament".into(),
-            expected_rule_ids: vec![],
+            expected: vec![],
             expected_answer: String::new(),
-            equivalent_rule_ids: std::collections::BTreeMap::default(),
         };
         let r = score_row(
             &q,
@@ -822,7 +872,7 @@ mod tests {
             table(&run)
         );
         assert!(
-            table(&run).contains("questions with ≥1 expected id cited: 0/0"),
+            table(&run).contains("questions with ≥1 decisive id cited: 0/0"),
             "{}",
             table(&run)
         );
@@ -854,12 +904,13 @@ mod tests {
             nicknames_used: vec![],
             categories: vec![],
             source: "CR".into(),
-            expected_rule_ids: vec![
-                crate::gold::YamlScalar::Text("702.15".into()),
-                crate::gold::YamlScalar::Text("1.1".into()),
+            expected: vec![
+                expected("702.15", Weight::Decisive)?,
+                expected("100.2", Weight::Decisive)?,
+                expected("702.15b", Weight::Supporting)?,
+                expected("100.1", Weight::Supporting)?,
             ],
             expected_answer: String::new(),
-            equivalent_rule_ids: std::collections::BTreeMap::default(),
         };
         let ctx = Context {
             rules: vec![RuleChunk {
@@ -886,7 +937,7 @@ mod tests {
         let r = score_row(&q, &untraced(Ok(v)), 1, 1, 0.01);
         assert!(r.any_expected_cited);
         assert_eq!((r.cites.n_rule_cites, r.cites.n_ruling_cites), (1, 0));
-        assert_eq!(r.recall.missed, vec!["1.1".to_owned()]);
+        assert_eq!(r.recall.missed, vec!["100.2".to_owned()]);
         let run = Run {
             label: "l".into(),
             gold: "g".into(),
@@ -899,7 +950,7 @@ mod tests {
         };
         assert_eq!(run.any_expected_cited(), (1, 1));
         let t = table(&run);
-        assert!(t.contains("questions with ≥1 expected id cited: 1/1; 1 rule citations, 0 ruling citations, 0 oracle citations"), "{t}");
+        assert!(t.contains("questions with ≥1 decisive id cited: 1/1; supporting ids also cited: 1/2; 1 rule citations, 0 ruling citations, 0 oracle citations"), "{t}");
         // Old run files without the new fields still load.
         let json = serde_json::to_string(&run)?
             .replace(",\"any_expected_cited\":true", "")
@@ -926,9 +977,8 @@ mod tests {
             nicknames_used: vec![],
             categories: vec![],
             source: "CR".into(),
-            expected_rule_ids: vec![crate::gold::YamlScalar::Text("702.15".into())],
+            expected: vec![expected("702.15", Weight::Decisive)?],
             expected_answer: String::new(),
-            equivalent_rule_ids: std::collections::BTreeMap::default(),
         };
         let long = "gain that much life ".repeat(20);
         let ctx = Context {

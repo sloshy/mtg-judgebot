@@ -163,11 +163,9 @@ pub async fn run(
         let ctx = retriever.retrieve(&question, &cards, &extraction).await?;
         let shown = shown_rules(&ctx, &[], &Budget::default());
         let (mut hit, mut cut, mut missed) = (Vec::new(), Vec::new(), Vec::new());
-        for expected in q
-            .expected_rule_ids
-            .iter()
-            .map(super::gold::YamlScalar::as_text)
-        {
+        // Decisive and supporting alike: retrieving the background rules is
+        // still wanted, even where an answer need not cite them.
+        for expected in q.all_ids() {
             if present(shown.iter().copied(), &expected) {
                 hit.push(expected);
             } else {

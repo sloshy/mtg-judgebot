@@ -510,9 +510,12 @@ Key cross-file facts that aren't obvious from any one file:
   recompiles and matches stay exhaustive. The extractor's schema makes the primary
   category a required field, so an empty classification is an API-level schema violation.
 - **Gold eval set** (`eval/gold.yaml`): 21 adversarially verified questions with
-  `expected_rule_ids` and per-question `equivalent_rule_ids` (alternate rule ids stating
-  the same fact). The loader enforces that those keys are quoted and present in the
-  expected list. Extend the set when adding capability. `rescore` re-grades old runs
+  `decisive_rule_ids` (what a correct answer must cite; `answer` scores recall on these),
+  `supporting_rule_ids` (background, reported when cited, never a miss; `recall` gates on
+  both) and per-question `equivalent_rule_ids` (alternate rule ids stating the same fact).
+  The loader builds a validated `GoldQuestion` (`gold::Expected`): unknown keys are
+  errors, the two lists are disjoint, and every equivalent key names an id in one of
+  them. Extend the set when adding capability. `rescore` re-grades old runs
   after gold edits. Rule ids written unquoted in YAML are rejected, because floats drop
   trailing zeros.
 - **Discord layer:** interaction logic is kept pure and unit-tested (`render.rs`,

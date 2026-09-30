@@ -115,8 +115,8 @@ in `eval/published/`):
 
 Sonnet 5.5 is the budget option. Its input and output tokens cost half as much, and an
 answer a little over half as much, at about the same speed. It answered every question,
-all agreeing with the reference. It cited fewer of the expected rules, needed a retry more
-often, and made more small mistakes in its asides, such as a wrong toughness for a card
+all agreeing with the reference. It cited more of the rules each answer rests on (32 of 35
+against 30) but fewer of the background ones, needed a retry more often, and made more small mistakes in its asides, such as a wrong toughness for a card
 the question did not turn on. It also asks "did you mean?" more often for a shortened
 name (such as "Bruna" when the melded pair makes the card clear). To run it, name it for
 both stages:

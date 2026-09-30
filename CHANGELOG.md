@@ -52,6 +52,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   rejected when the retry ran, and how many stub citations were dropped, and the table
   totals both by kind. Citations are stored with their whole quote. `rescore` and `show`
   still read older run files, and say those did not record it.
+- **The gold set separates decisive rule ids from supporting ones.** `eval/gold.yaml`
+  lists what a correct answer must cite (`decisive_rule_ids`) apart from background it
+  may leave out (`supporting_rule_ids`). `judge-eval answer` and `rescore` score recall on
+  the decisive ids and report supporting ids that were cited; `recall` still gates on
+  both. The old `expected_rule_ids` key, like any unknown key, is now an error.
 
 ### Fixed
 

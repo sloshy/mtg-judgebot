@@ -56,8 +56,11 @@ model's output schema. The primary category's sections lead the retrieved materi
 Adversarially verified rules questions. Each question has:
 
 - The cards it mentions and the categories expected.
-- The rule ids a correct answer must cite (`expected_rule_ids`).
-- Alternate ids that state the same fact (`equivalent_rule_ids`, keyed by an expected id).
+- The rule ids a correct answer must cite (`decisive_rule_ids`), which recall is scored
+  on, and background rule ids a good answer may leave out (`supporting_rule_ids`). An id
+  is in one list or the other, and the retrieval gate counts both.
+- Alternate ids that state the same fact (`equivalent_rule_ids`, keyed by an id from
+  either list).
 - A reference answer.
 
 Rule ids **must be quoted** (`'614.12'`). Unquoted, YAML reads `702.10` as a float and
