@@ -54,8 +54,9 @@ your development one.
   compiled-in data is staged, Biome and the build for `web/`, and Biome, `astro check`,
   the build and a link check for the docs site. It always runs the repository lints:
   `cargo deny` (against the advisory database already fetched, so it works offline),
-  `cargo machete`, `taplo`, `typos`, `shellcheck`, `actionlint`, `hadolint` and the
-  compose file. It takes seconds unless clippy has a lot to recompile.
+  `cargo machete`, `taplo`, `typos`, `shellcheck`, `actionlint`, `hadolint`, a check
+  that the icon's copies match, and the compose file. It takes seconds unless clippy has
+  a lot to recompile.
 - **pre-push** checks the tip of each ref being pushed, with the groups the push
   changes since the remote's commit. Changed Rust, compiled-in data, `eval/` or the
   compose file also runs `cargo test`, the migrations and the `.sqlx` freshness check,

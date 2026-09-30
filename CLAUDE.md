@@ -99,8 +99,10 @@ web page's footer (`web/src/App.tsx`) carries the same text; change them togethe
 smoothed resize. `assets/icon.png` is the 512px original (the README, a Discord app's
 avatar). Copies: `site/src/assets/icon.png` (header logo) and `site/public/icon.png`
 (`og:image`). `favicon.png` (the native 32px grid) and `apple-touch-icon.png` (192px,
-nearest-neighbour, on `#1f2933`) sit in both `site/public/` and `web/public/`. Regenerate
-every copy from the original when it changes, and scale only by whole multiples of 32.
+nearest-neighbour, on `#1f2933`) sit in both `site/public/` and `web/public/`
+(`scripts/check.sh lint` fails when copies of one size differ or a size is wrong, but
+does not check how a copy was scaled). Regenerate every copy from the original when it
+changes, and scale only by whole multiples of 32.
 Wherever it is displayed scaled, the CSS sets `image-rendering: pixelated`.
 
 Check site changes in a browser with the `playwright-cli` skill. Run it against
@@ -115,7 +117,8 @@ service, web and site builds, compose parse. It also runs Biome over `web/` and 
 lychee over the built site's internal links. A `lint` job runs `cargo deny check`
 (`deny.toml`), `cargo machete`, `taplo fmt --check` (`.taplo.toml`, which leaves out
 `judge.example.toml`'s hand-aligned comments), `typos` (`_typos.toml`), shellcheck,
-actionlint and hadolint (`.hadolint.yaml`). Every tool's config records why each
+actionlint, hadolint (`.hadolint.yaml`) and `check_icons` (the icon's copies are
+byte-identical and the right size). Every tool's config records why each
 ignore is there. `publish-image.yml` calls it before it
 builds.
 

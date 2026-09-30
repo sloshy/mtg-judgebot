@@ -24,7 +24,7 @@
 #   web    Biome, then tsc + vite build
 #   site   Biome, astro check, the build, lychee over its internal links
 #   lint   cargo deny, cargo machete, taplo, typos, shellcheck, actionlint,
-#          hadolint, docker compose config
+#          hadolint, the icon's copies, docker compose config
 # sqlx and test need Postgres (DATABASE_URL, else the one in .env).
 #
 # Every step in the chosen groups runs even when an earlier one fails, and the
@@ -303,6 +303,49 @@ group_site() {
   rm -rf "$links"
 }
 
+# Whether a file opens with the PNG signature and an IHDR chunk, where
+# png_size reads.
+is_png() {
+  [ "$(head -c 16 "$1" | od -An -tx1 | tr -d ' \n')" = 89504e470d0a1a0a0000000d49484452 ]
+}
+
+# A PNG's width and height from its IHDR chunk, as `WxH`.
+png_size() {
+  od -An -j16 -N8 -tu1 "$1" |
+    awk '{ printf "%dx%d\n", $1*16777216 + $2*65536 + $3*256 + $4, $5*16777216 + $6*65536 + $7*256 + $8 }'
+}
+
+# The icon's copies (CLAUDE.md, "The icon"): each is a PNG, and each set is
+# byte-identical and of the size it is meant to be. Whether a copy was scaled from the original by
+# whole multiples is left to the regeneration procedure; checking it needs a
+# PNG decoder.
+check_icons() {
+  local ok=0 set size files first f
+  for set in \
+    "512 assets/icon.png site/src/assets/icon.png site/public/icon.png" \
+    "32 site/public/favicon.png web/public/favicon.png" \
+    "192 site/public/apple-touch-icon.png web/public/apple-touch-icon.png"; do
+    read -r size files <<< "$set"
+    read -r first _ <<< "$files"
+    for f in $files; do
+      if [ ! -f "$f" ]; then
+        echo "$f is missing" >&2
+        ok=1
+      elif ! is_png "$f"; then
+        echo "$f is not a PNG" >&2
+        ok=1
+      elif [ "$(png_size "$f")" != "${size}x${size}" ]; then
+        echo "$f is $(png_size "$f"), not ${size}x${size}" >&2
+        ok=1
+      elif [ -f "$first" ] && ! cmp -s "$first" "$f"; then
+        echo "$f differs from $first: regenerate every copy from assets/icon.png" >&2
+        ok=1
+      fi
+    done
+  done
+  return "$ok"
+}
+
 group_lint() {
   # A commit uses the advisory database already fetched (pre-push refreshes
   # it), so committing works offline.
@@ -318,6 +361,7 @@ group_lint() {
   step "shellcheck" shellcheck scripts/*.sh scripts/hooks/*
   step "actionlint" actionlint
   step "hadolint" hadolint Dockerfile
+  step "icons" check_icons
   # docker-compose.yml names .env as an env_file. The --at worktree has the
   # example there, as CI's compose job does; a plain run uses yours.
   if ! command -v docker > /dev/null; then

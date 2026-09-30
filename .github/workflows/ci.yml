@@ -123,7 +123,7 @@ jobs:
       - run: scripts/check.sh site
 
   lint:
-    name: Lint (deps, TOML, spelling, shell, workflows, Dockerfile)
+    name: Lint (deps, TOML, spelling, shell, workflows, Dockerfile, icons)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -138,7 +138,8 @@ jobs:
           path: .tools
           key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/tools.sh') }}
       # cargo deny (deny.toml), cargo machete, taplo, typos, shellcheck,
-      # actionlint, hadolint. The compose job below parses the compose file.
+      # actionlint, hadolint, the icon's copies. The compose job below parses
+      # the compose file.
       - run: scripts/check.sh lint
 
   compose:
