@@ -164,7 +164,12 @@ when the deployed surface is in question. Those calls cost money.
 
 A release is a GitHub release whose tag is `vX.Y.Z` on a commit of `main`.
 
-1. Move the *Unreleased* changelog section under that version.
+1. Move the *Unreleased* changelog section under that version, and set that version
+   in every `crates/*/Cargo.toml` (then `cargo update --workspace` for `Cargo.lock`), in
+   `web/` and `site/`'s `package.json` and `package-lock.json`, and in the image-tag
+   examples in `docs/DEPLOYMENT.md` and the configuration page. The binaries report the
+   crate version (the MCP server, `judge-ingest`'s User-Agent), and nothing checks it
+   against the tag.
 2. Wait for the push's *Publish image* run to finish. Otherwise the release and that run
    build in parallel.
 3. Create the release (`gh release create vX.Y.Z --generate-notes`, or the web form).

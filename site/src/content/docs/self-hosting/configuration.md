@@ -63,6 +63,6 @@ All configuration is environment variables. `.env.example` is the annotated temp
 | --- | --- | --- |
 | `INGEST_CACHE_DIR` | `.cache` (image: `/var/cache/judgebot`) | Where Scryfall bulk files and the CR text are cached. |
 | `RUST_LOG` | `info` in compose | Tracing filter. The containers use `info,sqlx=warn` (`serenity=warn` for the bot). |
-| `JUDGE_IMAGE`, `JUDGE_IMAGE_TAG` | upstream package, `latest` | Which image `bot`/`api`/`refresh` run (amd64 and arm64). A fork sets its own package. A release version (`1`, `1.0`, `1.0.0`) or a `sha-<short>` tag pins or rolls back. |
+| `JUDGE_IMAGE`, `JUDGE_IMAGE_TAG` | upstream package, `latest` | Which image `bot`/`api`/`refresh` run (amd64 and arm64). A fork sets its own package. A release version (`1`, `1.1`, `1.1.0`) or a `sha-<short>` tag pins or rolls back. |
 | `COMPOSE_PROFILES` | | Set `tunnel` on a deploy host so `up -d` also starts `cloudflared`. |
 | `TUNNEL_TOKEN`, `R2_*` | | In `.env.deploy`, read only by `cloudflared` and the backup script, never by the internet-facing containers. |

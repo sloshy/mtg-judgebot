@@ -17,6 +17,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-29
+
 ### Changed
 
 - **The default model is Claude Opus 5.5** (`claude-opus-5-5`) on both stages, and the
@@ -109,6 +111,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
+- **A `judge.toml` naming `claude-opus-5`** needs a `[models.<stage>.pricing]` table
+  ($5 input, $25 output), or the spend cap prices it as Opus 5.5 and under-counts it by
+  about a fifth. The built-in table lists current models only.
+- **Claude Platform on AWS no longer sends refusal fallbacks.** Set
+  `refusal_fallbacks = true` on that provider to keep sending them.
 - **Optional: reload the current CR** to move its examples under their rules now rather
   than at the next CR release. `rules latest` skips a version already loaded, so name the
   file: `docker compose run --rm refresh rules "<the .txt link on Wizards' rules page>"`,
@@ -192,5 +199,6 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
 - **The documentation site**, organised around running your own judgebot, from the
   canonical files in `docs/`.
 
-[Unreleased]: https://github.com/sloshy/mtg-judgebot/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/sloshy/mtg-judgebot/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/sloshy/mtg-judgebot/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/sloshy/mtg-judgebot/releases/tag/v1.0.0
