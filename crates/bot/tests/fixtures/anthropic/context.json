@@ -41,7 +41,7 @@
       "heading": "Interaction of Continuous Effects",
       "body": "613.7. Within a layer or sublayer, determining which order effects are applied in is usually done using a timestamp system. An object with a timestamp is 'older' than an object with a later timestamp.",
       "examples": [
-        "Example: A creature has a timestamp of 3."
+        "A creature has a timestamp of 3."
       ],
       "cr_version": "20250801"
     },

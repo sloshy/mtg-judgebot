@@ -11,8 +11,8 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use judge_core::{
-    Ambiguous, Card, CardId, Citation, Confidence, Context, DiscordOperator, JudgeError, RuleChunk,
-    RuleId, Ruling, Score, SourceOffer, Validated, Verdict, source,
+    Ambiguous, Card, CardId, Citation, Confidence, Context, DiscordOperator, EXAMPLE_PREFIX,
+    JudgeError, RuleChunk, RuleId, Ruling, Score, SourceOffer, Validated, Verdict, source,
 };
 use nonempty::NonEmpty;
 
@@ -605,17 +605,25 @@ pub fn card_not_found(name: &str) -> String {
     )
 }
 
-/// `/rule`: the chunks a rule number names, each with its examples, as many
-/// whole ones as fit. `None` when the number names nothing in the loaded CR.
+/// `/rule`: the chunks a rule number names, each with its examples quoted
+/// under the line they belong to, as many whole ones as fit. `None` when the
+/// number names nothing in the loaded CR.
 #[must_use]
 pub fn rules(asked: &RuleId, chunks: &[RuleChunk], symbols: &SymbolTable) -> Option<Lookup> {
     let first = chunks.first()?;
     let mut lines: Vec<Rendered> = Vec::new();
     for c in chunks {
-        let mut line = Rendered::substitute(c.body.trim(), symbols);
-        for e in &c.examples {
-            line.push_str("\n> ");
-            line.append(Rendered::substitute(&collapse_whitespace(e), symbols));
+        let mut line = Rendered::default();
+        for (i, l) in c.text().trim().lines().enumerate() {
+            if l.starts_with(EXAMPLE_PREFIX) {
+                line.push_str("\n> ");
+                line.append(Rendered::substitute(&collapse_whitespace(l), symbols));
+            } else {
+                if i > 0 {
+                    line.push_str("\n");
+                }
+                line.append(Rendered::substitute(l, symbols));
+            }
         }
         lines.push(line);
     }
@@ -1626,7 +1634,7 @@ mod lookup_tests {
         let chunks = [chunk(
             "702.19b",
             "702.19b The controller assigns damage.",
-            &["Example: A 2/2."],
+            &["A 2/2."],
         )?];
         let Some(view) = rules(&asked, &chunks, &SymbolTable::empty()) else {
             return Err("a rule with a chunk renders".into());
@@ -1639,6 +1647,21 @@ mod lookup_tests {
         );
         assert_eq!(view.footer.as_deref(), Some("CR 2026-08-19"));
         assert!(rules(&asked, &[], &SymbolTable::empty()).is_none());
+
+        // A rule-level chunk carries its examples in the body, each quoted
+        // under the line it belongs to.
+        let asked = RuleId::try_new("903.3".to_owned())?;
+        let chunks = [chunk(
+            "903.3",
+            "903.3. Each deck has a commander.\nExample: Face down.\n903.3a Some cards can be.",
+            &[],
+        )?];
+        let Some(view) = rules(&asked, &chunks, &SymbolTable::empty()) else {
+            return Err("a rule with a chunk renders".into());
+        };
+        assert!(view.description.contains(
+            "903.3. Each deck has a commander.\n> Example: Face down.\n903.3a Some cards can be."
+        ));
         Ok(())
     }
 

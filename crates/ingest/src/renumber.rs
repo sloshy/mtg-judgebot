@@ -31,7 +31,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
-use judge_core::{RuleChunk, RuleId};
+use judge_core::{EXAMPLE_PREFIX, RuleChunk, RuleId};
 use regex::Regex;
 
 /// A rule id as it appears in running text: `702.19`, `702.19b`, `704.5aa`.
@@ -51,6 +51,42 @@ pub struct StoredRule {
     pub parent_id: Option<RuleId>,
     pub body: String,
     pub examples: Vec<String>,
+}
+
+impl From<&RuleChunk> for StoredRule {
+    fn from(c: &RuleChunk) -> Self {
+        Self {
+            id: c.id.clone(),
+            parent_id: c.parent_id.clone(),
+            body: c.body.clone(),
+            examples: c.examples.clone(),
+        }
+    }
+}
+
+impl StoredRule {
+    /// The form two releases are compared in: the body's own lines, then every
+    /// example in order. A rule-level row carries its examples inside the body;
+    /// one stored by an older parser listed them after it. Both reduce to the
+    /// same thing, so a database loaded before the change still matches a
+    /// release parsed after it.
+    fn canonical(&self) -> Self {
+        let mut body = Vec::new();
+        let mut examples = Vec::new();
+        for line in self.body.lines() {
+            match line.strip_prefix(EXAMPLE_PREFIX) {
+                Some(e) => examples.push(e.to_owned()),
+                None => body.push(line),
+            }
+        }
+        examples.extend(self.examples.iter().cloned());
+        Self {
+            id: self.id.clone(),
+            parent_id: self.parent_id.clone(),
+            body: body.join("\n"),
+            examples,
+        }
+    }
 }
 
 /// The first line of a body: the rule's own line, which survives a sub-rule
@@ -88,9 +124,14 @@ where
 /// rule (ambiguous).
 #[must_use]
 pub fn renumber_map(old: &[StoredRule], new: &[RuleChunk]) -> BTreeMap<RuleId, RuleId> {
-    let mut map = candidates(old, new);
+    let old: Vec<StoredRule> = old.iter().map(StoredRule::canonical).collect();
+    let new: Vec<StoredRule> = new
+        .iter()
+        .map(|c| StoredRule::from(c).canonical())
+        .collect();
+    let mut map = candidates(&old, &new);
     let old_by_id: HashMap<&RuleId, &StoredRule> = old.iter().map(|r| (&r.id, r)).collect();
-    let new_by_id: HashMap<&RuleId, &RuleChunk> = new.iter().map(|r| (&r.id, r)).collect();
+    let new_by_id: HashMap<&RuleId, &StoredRule> = new.iter().map(|r| (&r.id, r)).collect();
     // Fixpoint: dropping one entry can invalidate another that referenced it,
     // so iterate until nothing more is dropped.
     loop {
@@ -119,7 +160,7 @@ pub fn renumber_map(old: &[StoredRule], new: &[RuleChunk]) -> BTreeMap<RuleId, R
 fn consistent(
     map: &BTreeMap<RuleId, RuleId>,
     old: Option<&StoredRule>,
-    new: Option<&RuleChunk>,
+    new: Option<&StoredRule>,
 ) -> bool {
     let (Some(old), Some(new)) = (old, new) else {
         return false;
@@ -142,7 +183,7 @@ fn consistent(
 
 /// The unchecked candidate map: unique masked-body matches at rule level, then
 /// leaves under their parent's new id.
-fn candidates(old: &[StoredRule], new: &[RuleChunk]) -> BTreeMap<RuleId, RuleId> {
+fn candidates(old: &[StoredRule], new: &[StoredRule]) -> BTreeMap<RuleId, RuleId> {
     let mut map = BTreeMap::new();
 
     // Rule level: unique masked body on both sides.
@@ -477,6 +518,47 @@ mod tests {
         );
         new.examples = vec!["Example: reworded.".into()];
         assert!(renumber_map(&[old], &[filler, new]).is_empty());
+    }
+
+    /// A database loaded by the older parser lists a rule's examples after its
+    /// body; a release parsed now writes them into the body in place. A
+    /// renumbering across that change is still followed, leaves included.
+    #[test]
+    fn examples_moved_into_the_body_still_match() {
+        let mut old = stored(
+            "702.20",
+            None,
+            "702.20. Vigilance.\n702.20a Attacking doesn't tap it.\n702.20b See 702.20a.",
+        );
+        old.examples = vec!["One.".into(), "Two, see 702.20b.".into()];
+        let mut old_a = stored(
+            "702.20a",
+            Some("702.20"),
+            "702.20a Attacking doesn't tap it.",
+        );
+        old_a.examples = vec!["Two, see 702.20b.".into()];
+        let new = chunk(
+            "702.21",
+            None,
+            "702.21. Vigilance.\nExample: One.\n702.21a Attacking doesn't tap it.\nExample: Two, see 702.21b.\n702.21b See 702.21a.",
+        );
+        let mut new_a = chunk(
+            "702.21a",
+            Some("702.21"),
+            "702.21a Attacking doesn't tap it.",
+        );
+        new_a.examples = vec!["Two, see 702.21b.".into()];
+        let old_b = stored("702.20b", Some("702.20"), "702.20b See 702.20a.");
+        let new_b = chunk("702.21b", Some("702.21"), "702.21b See 702.21a.");
+        let filler = chunk("702.20", None, "702.20. New.");
+        assert_eq!(
+            renumber_map(&[old, old_a, old_b], &[filler, new, new_a, new_b]),
+            m(&[
+                ("702.20", "702.21"),
+                ("702.20a", "702.21a"),
+                ("702.20b", "702.21b")
+            ])
+        );
     }
 
     #[test]

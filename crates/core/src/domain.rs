@@ -702,6 +702,11 @@ impl fmt::Display for Citation {
     }
 }
 
+/// How the CR labels an example paragraph, and how every rendering of a rule
+/// labels one: the parser writes it into a rule-level body, the material and
+/// the `lookup_rules` result print it before a leaf's examples.
+pub const EXAMPLE_PREFIX: &str = "Example: ";
+
 /// A CR chunk at rule granularity (e.g. `702.19` with its lettered sub-rules).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuleChunk {
@@ -713,9 +718,13 @@ pub struct RuleChunk {
     pub subsection: RuleId,
     /// Rule heading, e.g. `Lifelink`.
     pub heading: String,
-    /// Rule text including lettered sub-rules.
+    /// Rule text. A rule-level row holds its own line and every lettered
+    /// sub-rule, with each `Example:` paragraph on its own line directly after
+    /// the line it belongs to. A leaf holds its one line.
     pub body: String,
-    /// `Example:` lines belonging to this rule.
+    /// A leaf's own examples, without the `Example:` label. Empty on a
+    /// rule-level row, whose examples are in `body` in place (a row loaded by
+    /// an older parser may still list them here).
     pub examples: Vec<String>,
     /// CR release this chunk was parsed from.
     pub cr_version: CrVersion,
@@ -745,6 +754,19 @@ impl Card {
 }
 
 impl RuleChunk {
+    /// The chunk as it is shown: the body, then each listed example on its
+    /// own `Example:` line.
+    #[must_use]
+    pub fn text(&self) -> String {
+        let mut s = self.body.clone();
+        for e in &self.examples {
+            s.push('\n');
+            s.push_str(EXAMPLE_PREFIX);
+            s.push_str(e);
+        }
+        s
+    }
+
     /// True if `quote` names a span of the body or of an example, up to
     /// typographic punctuation ([`quote::locate`]).
     #[must_use]
@@ -753,10 +775,17 @@ impl RuleChunk {
     }
 
     /// The body's (or an example's) own span for `quote` (see [`quote::locate`]).
+    /// A listed example is shown with its `Example:` label ([`Self::text`]), so
+    /// a quote that starts with the label is looked up without it.
     #[must_use]
     pub fn locate_quote(&self, quote: &str) -> Option<&str> {
-        quote::locate(&self.body, quote)
-            .or_else(|| self.examples.iter().find_map(|e| quote::locate(e, quote)))
+        let unlabelled = quote.trim_start().strip_prefix(EXAMPLE_PREFIX.trim_end());
+        quote::locate(&self.body, quote).or_else(|| {
+            self.examples.iter().find_map(|e| {
+                quote::locate(e, quote)
+                    .or_else(|| unlabelled.and_then(|q| quote::locate(e, q.trim_start())))
+            })
+        })
     }
 }
 

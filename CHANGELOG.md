@@ -77,13 +77,26 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   quote, so the model sent the same quote again and the question went unanswered (Sonnet
   5.5, Valki // Tibalt). The notice now names the part of the label that was quoted and
   says to drop the citation, and the Cards heading says the label is not citable.
-- **An example cited under the wrong rule failed twice.** A rule's examples are printed
-  after all of its sub-rules, so an example of 903.3 sits under the 903.3e line and was
-  cited as 903.3e. The retry notice said the quote was mistyped, and the model sent it
-  again. The notice now names the rule the text belongs to.
+- **Examples were printed under the wrong rule.** A rule-level excerpt printed all of a
+  rule's examples, and its sub-rules', after its last sub-rule, without their
+  `Example:` label. An example of 903.3 therefore read as part of 903.3e and was cited as
+  903.3e; 174 of the CR's 277 examples were out of place. Each example now sits labelled
+  directly under the line it belongs to, in the model's material, the `lookup_rules`
+  result and `/rule`. A quote of rule text filed under a neighbouring rule still gets a
+  retry notice naming the rule that holds it. An existing database is corrected by the
+  next CR release, or at once by reloading the current one (below).
 - **Backslashes in answers.** Sonnet 5.5 sometimes wrote line breaks as a literal `\n`
   (and quotes as `\"`), which Discord and the web page showed as written. The answer's
   stray escapes are now decoded when the verdict is made (D22). Calls stored before this keep them.
+
+### Upgrading
+
+- **Optional: reload the current CR** to move its examples under their rules now rather
+  than at the next CR release. `rules latest` skips a version already loaded, so name the
+  file: `docker compose run --rm refresh rules "<the .txt link on Wizards' rules page>"`,
+  then `docker compose run --rm refresh embed`. About 150 rules are re-embedded (well
+  under a cent). Stored calls keep their citations; the nightly retirement pass checks
+  them against the new text as it does after any CR load.
 
 ## [1.0.0] - 2026-09-20
 

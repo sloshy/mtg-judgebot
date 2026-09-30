@@ -342,7 +342,7 @@ fn parent_of(id: &RuleId) -> Option<RuleId> {
 
 /// Bytes a chunk contributes to the CR section.
 fn chunk_size(r: &RuleChunk) -> usize {
-    r.body.len() + r.examples.iter().map(String::len).sum::<usize>()
+    r.text().len()
 }
 
 /// The chunks the CR section shows, in `ctx.rules` order (the retriever's
@@ -443,11 +443,7 @@ fn render_rules(s: &mut String, ctx: &Context, pinned: &[RuleId], budget: &Budge
         None => s.push_str("\n## Comprehensive Rules\n(no excerpts retrieved)\n"),
     }
     for r in shown_rules(ctx, pinned, budget) {
-        let _ = writeln!(s, "### [{}] {}\n{}", r.id, r.heading, r.body);
-        for e in &r.examples {
-            s.push_str(e);
-            s.push('\n');
-        }
+        let _ = writeln!(s, "### [{}] {}\n{}", r.id, r.heading, r.text());
     }
 }
 
@@ -555,9 +551,8 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
     match rejected.rejection() {
         Rejection::BadCitation(c) => {
             let why = match c {
-                // A rule-level excerpt prints its examples after all its
-                // sub-rules, so an example is cited under the last sub-rule.
-                // The quote is real; say whose text it is.
+                // Text of a neighbouring rule (an example, a sibling's line),
+                // cited under the wrong id. The quote is real; say whose text it is.
                 Citation::Rule { id, .. } if let Some(holder) = judge_core::quote_from_another_rule(c, ctx) => {
                     // Citing `holder` must not leave `id` in the prose uncovered
                     // (D20), or the retry fails on the number with none left.
@@ -568,7 +563,7 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
                     };
                     format!(
                         "that text is not in rule {id}. It is in the excerpt for rule {holder} (its text or one of its \
-                         Example: lines; a rule's examples are printed after all of its sub-rules). Cite it as \
+                         Example: lines, each printed under the line it belongs to). Cite it as \
                          {{\"kind\": \"rule\", \"id\": \"{holder}\", \"quote\": ...}} with the same quote, and {prose}"
                     )
                 }

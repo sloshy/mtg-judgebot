@@ -3,8 +3,9 @@
 //! Chunking (ARCHITECTURE.md §2), at *rule* granularity:
 //!
 //! * One row per rule `X.Y` (e.g. `702.19`): `body` = the rule's own line followed by
-//!   every lettered sub-rule (`702.19a`, `702.19b`, …) in order, one per line;
-//!   `examples` = every `Example:` paragraph under the rule or any of its sub-rules;
+//!   every lettered sub-rule (`702.19a`, `702.19b`, …) in order, one per line, with
+//!   each `Example:` paragraph on its own line directly after the line it belongs to
+//!   (so 903.3's example sits under 903.3, not under 903.3e); `examples` is empty;
 //!   `parent_id = NULL`; `subsection = "702"`; `heading` = the rule's first-line text
 //!   up to its first sentence-ending period (so `702.19. Trample` → `Trample`), or the
 //!   section title (`Interaction of Continuous Effects`) when that first sentence is
@@ -33,7 +34,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Context as _;
-use judge_core::{Category, CrVersion, GlossaryEntry, RuleChunk, RuleId};
+use judge_core::{Category, CrVersion, EXAMPLE_PREFIX, GlossaryEntry, RuleChunk, RuleId};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
 use crate::renumber::{StoredRule, renumber_map, rewrite_call};
@@ -339,9 +340,39 @@ struct RuleBuilder {
     id: String,
     subsection: String,
     heading: String,
-    lines: Vec<String>,
-    examples: Vec<String>,
+    /// The rule-level body in CR order, so an example stays under the line it
+    /// belongs to.
+    paragraphs: Vec<Paragraph>,
     leaves: Vec<LeafBuilder>,
+}
+
+/// One paragraph of a rule-level body.
+#[derive(Debug)]
+enum Paragraph {
+    /// The rule's own line or a sub-rule's line, id first.
+    Line(String),
+    /// An example, without its `Example:` label.
+    Example(String),
+}
+
+impl Paragraph {
+    fn text_mut(&mut self) -> &mut String {
+        match self {
+            Self::Line(t) | Self::Example(t) => t,
+        }
+    }
+}
+
+/// The rule-level body: one paragraph per line, examples labelled.
+fn body(paragraphs: &[Paragraph]) -> String {
+    paragraphs
+        .iter()
+        .map(|p| match p {
+            Paragraph::Line(t) => t.clone(),
+            Paragraph::Example(t) => format!("{EXAMPLE_PREFIX}{t}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Debug, Default)]
@@ -444,7 +475,7 @@ impl Parser {
                     self.start_rule(parent, "");
                 }
                 if let Some(cur) = self.current.as_mut() {
-                    cur.lines.push(format!("{id} {text}"));
+                    cur.paragraphs.push(Paragraph::Line(format!("{id} {text}")));
                     cur.leaves.push(LeafBuilder {
                         id: id.to_owned(),
                         line: format!("{id} {text}"),
@@ -457,7 +488,7 @@ impl Parser {
                 let Some(cur) = self.current.as_mut() else {
                     return;
                 };
-                cur.examples.push(t.to_owned());
+                cur.paragraphs.push(Paragraph::Example(t.to_owned()));
                 if matches!(self.last, Last::LeafLine | Last::LeafExample) {
                     if let Some(leaf) = cur.leaves.last_mut() {
                         leaf.examples.push(t.to_owned());
@@ -549,8 +580,8 @@ pub fn parse(text: &str, source: &str) -> anyhow::Result<ParsedCr> {
             parent_id: None,
             subsection: subsection.clone(),
             heading: r.heading.clone(),
-            body: r.lines.join("\n"),
-            examples: r.examples,
+            body: body(&r.paragraphs),
+            examples: Vec::new(),
             cr_version: cr_version.clone(),
         });
         for leaf in r.leaves {
@@ -596,8 +627,7 @@ fn new_rule(id: &str, text: &str, section_title: &str) -> RuleBuilder {
         id: id.to_owned(),
         subsection: id.get(..3).unwrap_or(id).to_owned(),
         heading: heading_of(text, section_title),
-        lines: vec![line],
-        examples: Vec::new(),
+        paragraphs: vec![Paragraph::Line(line)],
         leaves: Vec::new(),
     }
 }
@@ -607,26 +637,22 @@ fn append_continuation(cur: &mut RuleBuilder, last: Last, t: &str) {
         s.push(' ');
         s.push_str(t);
     }
+    if last == Last::None {
+        return;
+    }
+    // Whatever went last, the rule-level body's last paragraph is it.
+    if let Some(p) = cur.paragraphs.last_mut() {
+        extend(p.text_mut(), t);
+    }
     match last {
-        Last::None => {}
-        Last::RuleLine | Last::LeafLine => {
-            if let Some(l) = cur.lines.last_mut() {
-                extend(l, t);
-            }
-            if let Some(leaf) = cur.leaves.last_mut().filter(|_| last == Last::LeafLine) {
+        Last::None | Last::RuleLine | Last::RuleExample => {}
+        Last::LeafLine => {
+            if let Some(leaf) = cur.leaves.last_mut() {
                 extend(&mut leaf.line, t);
             }
         }
-        Last::RuleExample | Last::LeafExample => {
-            if let Some(e) = cur.examples.last_mut() {
-                extend(e, t);
-            }
-            if let Some(e) = cur
-                .leaves
-                .last_mut()
-                .and_then(|l| l.examples.last_mut())
-                .filter(|_| last == Last::LeafExample)
-            {
+        Last::LeafExample => {
+            if let Some(e) = cur.leaves.last_mut().and_then(|l| l.examples.last_mut()) {
                 extend(e, t);
             }
         }
@@ -994,35 +1020,67 @@ mod tests {
                 .iter()
                 .all(|e| e.starts_with("A 1/3 creature"))
         );
-        assert!(leaf.examples.iter().all(|e| r.examples.contains(e)));
-        assert!(r.examples.len() >= leaf.examples.len());
+        // The rule-level row lists none: its examples are in the body, each
+        // directly after the sub-rule it belongs to.
+        assert!(r.examples.is_empty());
+        let lines: Vec<&str> = r.body.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("613.4d "))
+            .ok_or_else(|| anyhow::anyhow!("613.4d line"))?;
+        assert!(
+            lines
+                .get(at + 1)
+                .is_some_and(|l| l.starts_with("Example: A 1/3 creature"))
+        );
         // 613.4's examples belong to it alone; 613.3 and 613.5 don't get them.
+        assert!(!find(&p, "613.3")?.body.contains("Example: A 1/3 creature"));
         assert!(
-            !find(&p, "613.3")?
-                .examples
-                .iter()
-                .any(|e| e.starts_with("A 1/3 creature"))
+            find(&p, "613.5")?
+                .body
+                .contains("Example: Honor of the Pure")
         );
-        let r5 = find(&p, "613.5")?;
-        assert!(
-            r5.examples
-                .iter()
-                .any(|e| e.starts_with("Honor of the Pure"))
-        );
-        assert!(
-            !r.examples
-                .iter()
-                .any(|e| e.starts_with("Honor of the Pure"))
-        );
-        // 707.2 has examples directly on the rule (before any leaf).
+        assert!(!r.body.contains("Honor of the Pure"));
+        // 707.2 has examples directly on the rule, before any leaf.
         let r707 = find(&p, "707.2")?;
+        let staff = r707
+            .body
+            .find("Example: Chimeric Staff")
+            .ok_or_else(|| anyhow::anyhow!("707.2's example"))?;
         assert!(
-            r707.examples
-                .iter()
-                .any(|e| e.starts_with("Chimeric Staff"))
+            staff
+                < r707
+                    .body
+                    .find("707.2a ")
+                    .ok_or_else(|| anyhow::anyhow!("707.2a line"))?
         );
         assert!(find(&p, "707.2a")?.examples.is_empty());
         assert!(r707.contains_quote("Chimeric Staff"));
+        Ok(())
+    }
+
+    /// 903.3's example follows the rule's own line; printed after the last
+    /// sub-rule it read as part of 903.3e, and was cited as 903.3e.
+    #[test]
+    fn an_example_stays_under_the_line_it_follows() -> R {
+        let text = "These rules are effective as of May 1, 2026.\n\n903. Commander\n\n903.3. Each deck has a commander.\nExample: A face-down commander\n     is still a commander.\n\n903.3a Some cards can be your commander.\n\n903.3b A melded commander is a commander.\nExample: Melded.\n\n903.3c A merged commander is a commander.\n\nGlossary\n\nTerm\nDef.\n\nCredits\n";
+        let p = parse(text, "x.txt")?;
+        let r = find(&p, "903.3")?;
+        assert_eq!(
+            r.body,
+            "903.3. Each deck has a commander.\n\
+             Example: A face-down commander is still a commander.\n\
+             903.3a Some cards can be your commander.\n\
+             903.3b A melded commander is a commander.\n\
+             Example: Melded.\n\
+             903.3c A merged commander is a commander."
+        );
+        assert!(r.examples.is_empty());
+        assert!(find(&p, "903.3a")?.examples.is_empty());
+        assert_eq!(find(&p, "903.3b")?.examples, vec!["Melded.".to_owned()]);
+        assert!(find(&p, "903.3c")?.examples.is_empty());
+        // Shown the same way wherever it is shown.
+        assert_eq!(r.text(), r.body);
         Ok(())
     }
 
@@ -1106,8 +1164,11 @@ mod tests {
         assert_eq!(leaf.examples, vec!["ex one ex continued".to_owned()]);
         let r = find(&p, "100.1")?;
         assert_eq!(r.heading, "First");
-        assert_eq!(r.body, "100.1. First. More.\n100.1a Sub continued here");
-        assert_eq!(r.examples, leaf.examples);
+        assert_eq!(
+            r.body,
+            "100.1. First. More.\n100.1a Sub continued here\nExample: ex one ex continued"
+        );
+        assert!(r.examples.is_empty());
         assert_eq!(
             p.glossary,
             vec![GlossaryEntry {
@@ -1128,7 +1189,8 @@ mod tests {
         let r = find(&p, "606.5")?;
         assert!(r.parent_id.is_none());
         assert!(r.body.starts_with("606.5. If the total cost"));
-        assert_eq!(r.examples, vec!["Combined.".to_owned()]);
+        assert!(r.body.ends_with("combined.\nExample: Combined."));
+        assert!(r.examples.is_empty());
         assert!(find(&p, "606.6")?.body.starts_with("606.6. Text six."));
         let aa = find(&p, "704.5aa")?;
         assert_eq!(aa.parent_id.as_ref().map(AsRef::as_ref), Some("704.5"));

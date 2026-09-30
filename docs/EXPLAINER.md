@@ -232,9 +232,10 @@ The CR is a numbered hierarchy: section `702` (Keyword Abilities) → rule `702.
 (Trample) → sub-rules `702.19a`, `702.19b`. The parser emits rows at **two granularities**:
 
 - **Rule-level rows** (`702.19`): the body is the rule's own sentence plus every lettered
-  sub-rule and every `Example:` paragraph beneath it. These are the search unit. They get
-  embeddings and appear in retrieval results. A rule plus its sub-rules is usually one
-  coherent idea of a few hundred words, the right size for a model to read in one piece.
+  sub-rule, each `Example:` paragraph directly under the line it belongs to. These are
+  the search unit. They get embeddings and appear in retrieval results. A rule plus its
+  sub-rules is usually one coherent idea of a few hundred words, the right size for a
+  model to read in one piece.
 - **Leaf rows** (`702.19b`): one line each, with `parent_id = 702.19`. These are the
   citation unit. A model that quotes sub-rule b should cite `702.19b`, not the rule above it.
 

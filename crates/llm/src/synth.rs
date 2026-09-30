@@ -276,17 +276,12 @@ pub fn render_tool_result(chunks: &[RuleChunk], max_chars: usize) -> String {
     let mut used = 0usize;
     let mut omitted = 0usize;
     for c in chunks {
-        let size = c.body.len() + c.examples.iter().map(String::len).sum::<usize>();
+        let text = c.text();
+        let size = text.len();
         // A prefix in id order, so the "omitted" count is honest and the model can ask for the rest by id.
         if omitted == 0 && (parts.is_empty() || used + size <= max_chars) {
             used += size;
-            parts.push(format!(
-                "[{}] {}\n{}\n{}",
-                c.id,
-                c.heading,
-                c.body,
-                c.examples.join("\n")
-            ));
+            parts.push(format!("[{}] {}\n{text}\n", c.id, c.heading));
         } else {
             omitted += 1;
         }

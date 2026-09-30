@@ -662,11 +662,12 @@ pub fn quotes_face_label(c: &Citation, ctx: &Context) -> Option<LabelPart> {
 /// The rule shown in `ctx` whose text holds a *rule* citation's quote, when
 /// the cited rule does not.
 ///
-/// A rule-level excerpt prints its examples after all of its sub-rules, so an
-/// example of `903.3` sits under the `903.3e` line and is cited as `903.3e`
-/// (Opus 5.5 on `stack-06`, on the attempt and again on the retry). The quote is
-/// verbatim, so "copy the text exactly" misleads; the useful thing to say is
-/// whose text it is. Rows of the cited rule's own family come first, then a
+/// A quote of rule text is sometimes filed under a neighbouring rule: an
+/// example of `903.3` cited as `903.3e` (Opus 5.5 on `stack-06`, on the attempt
+/// and again on the retry, when the excerpt still printed a rule's examples
+/// after all of its sub-rules), or a sub-rule's line under its sibling. The
+/// quote is verbatim, so "copy the text exactly" misleads; the useful thing to
+/// say is whose text it is. Rows of the cited rule's own family come first, then a
 /// sub-rule before its rule. A quote held only by unrelated rules of more
 /// than one family names none of them: a short phrase in many rules is not
 /// evidence of which one was meant. Never used to repair a citation.
@@ -852,7 +853,7 @@ mod tests {
             subsection: RuleId::try_new("702".to_owned())?,
             heading: "Lifelink".into(),
             body: body.into(),
-            examples: vec!["Example: something.".into()],
+            examples: vec!["Something.".into()],
             cr_version: CrVersion::try_new("20250801".to_owned())?,
         })
     }
@@ -905,7 +906,8 @@ mod tests {
             },
             Citation::Rule {
                 id: RuleId::try_new("702.15b".to_owned())?,
-                quote: Quote::try_new("Example: something.")?,
+                // A listed example is shown labelled; quoted with its label.
+                quote: Quote::try_new("Example: Something.")?,
             },
             Citation::ScryfallRuling {
                 card: CardId::new(Uuid::from_u128(7)),
@@ -1495,10 +1497,10 @@ mod tests {
         Ok(())
     }
 
-    /// Opus 5.5 on `stack-06` cited an example of `903.3` as `903.3e`: the
-    /// rule-level excerpt prints its examples after its last sub-rule. The
-    /// rule that holds the quote is named, a shown sub-rule first; still
-    /// rejected.
+    /// Opus 5.5 on `stack-06` cited an example of `903.3` as `903.3e`, back
+    /// when the excerpt printed a rule's examples after its last sub-rule. A
+    /// quote held by another shown rule names that rule, a shown sub-rule
+    /// first; still rejected.
     #[test]
     fn a_quote_from_another_shown_rule_names_that_rule() -> Result<(), Box<dyn std::error::Error>> {
         let mut c = ctx()?;
@@ -1507,9 +1509,9 @@ mod tests {
         leaf.examples.clear();
         let mut parent = rule(
             "702.15",
-            "702.15. Lifelink\n702.15c Lifelink applies to all damage.",
+            "702.15. Lifelink\nExample: a creature with lifelink deals 3.\n702.15c Lifelink applies to all damage.",
         )?;
-        parent.examples = vec!["Example: a creature with lifelink deals 3.".into()];
+        parent.examples.clear();
         c.rules.extend([parent, leaf]);
         let cite = |id: &str, quote: &str| -> Result<Citation, Box<dyn std::error::Error>> {
             Ok(Citation::Rule {
