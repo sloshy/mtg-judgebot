@@ -433,7 +433,7 @@ handling lives, so you can read further.
 | Answer names a rule number it never cited ("per `605.3b`…") | every rule number in the prose must be covered by a rule citation: the id, its rule, or a sub-rule. Otherwise the attempt is rejected, and the retry is told to cite it or remove it |
 | Model files a card's Oracle text as a ruling (the card has no rulings to cite) | still rejected, never relabelled. The retry notice names the kind it meant (`oracle_text`, with the card and face) instead of telling it to drop a good quote |
 | Model calls the tool repeatedly | `Synth` typestate: one round, by type |
-| Model's output is cut off at `max_tokens` | detected from the stop reason, retried once at medium effort |
+| Model's output is cut off at `max_tokens` | detected from the stop reason, retried once at medium effort, or low from medium |
 | Model claims a question is out of scope to dodge citing | `source` is stamped from extraction, not model-reported |
 | Model is asked about tournament policy | classifier routes `Tournament`/`OutOfScope` to a decline before any synthesis spend |
 
@@ -646,7 +646,9 @@ distinction and a hosted API, so the zero-config setup does not need a local mod
 is not worth the trouble under WSL2). Swappable by config.
 
 **Anthropic Claude for both model stages.** A low-effort call for extraction and a
-high-effort call with tool use and structured outputs for synthesis. Prompt caching
+medium-effort call with tool use and structured outputs for synthesis (Opus 5.5 answered
+the gold set as well at medium as at high, for less; a model without a measurement runs
+at high). Prompt caching
 matters for the large synthesis turn. The provider seam means this is a default, not a
 lock-in.
 

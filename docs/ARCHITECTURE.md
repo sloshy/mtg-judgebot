@@ -112,7 +112,8 @@ Discord message (+ last N Q&A in the same thread)
     - Thread history (last N Q&A)
   │
   ▼
-[5] Synthesis (LLM, high effort, structured output, one tool-use round)
+[5] Synthesis (LLM, the model's measured effort: medium on Opus 5.5, high
+    otherwise; structured output, one tool-use round)
     Same per-stage provider choice as [1]. The tool round and the schema
     travel in each backend's wire format (strict function calling on
     OpenAI-compatible servers when the provider says it has it).

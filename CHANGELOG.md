@@ -52,6 +52,16 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   rejected when the retry ran, and how many stub citations were dropped, and the table
   totals both by kind. Citations are stored with their whole quote. `rescore` and `show`
   still read older run files, and say those did not record it.
+- **Synthesis effort follows the model.** With no `effort` on `[models.synth]`, Claude
+  Opus 5.5 now synthesizes at `medium` (it was `high`), Claude Sonnet 5.5 stays at
+  `high`, and any other model runs at `high`. On the gold set, Opus at medium answered all
+  18 in-scope questions in agreement with the reference with no wrong asides, as at high,
+  for slightly less; Sonnet at medium misdescribed a card on one question and made three
+  wrong asides (one run each). A `judge.toml` that sets `effort` is unaffected, and so is
+  Bedrock's `anthropic.claude-opus-5-5`, which is not in the table. An answer cut off at
+  `max_tokens` is still retried at medium, and now at low when it was already medium.
+  `judge-eval answer` records the synthesis effort in the run file. The published Opus
+  run, the README's results and the Sample answers page are the medium run.
 - **The gold set separates decisive rule ids from supporting ones.** `eval/gold.yaml`
   lists what a correct answer must cite (`decisive_rule_ids`) apart from background it
   may leave out (`supporting_rule_ids`). `judge-eval answer` and `rescore` score recall on

@@ -318,7 +318,9 @@ Pipeline (`docs/ARCHITECTURE.md` §3 is kept current):
    the next two legs. The synthesis budget renders a prefix, so this order is what the
    model reads. Retrieval also adds rulings for all faces, glossary, nightmare-card notes
    and rated prior calls.
-4. **Synthesis.** High-effort, with citation validation and one retry. At most one
+4. **Synthesis.** At the model's measured effort (`judge_llm::SYNTH_EFFORTS`: Opus 5.5
+   medium, Sonnet 5.5 high, unlisted high; a truncated answer reruns at medium, or low from medium),
+   with citation validation and one retry. At most one
    `lookup_rules` tool round, enforced by typestate.
 5. **Persist** + Discord rating buttons.
 

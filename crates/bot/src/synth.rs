@@ -13,7 +13,9 @@
 //! * chunks fetched by the tool round go into `Context` (`rules` for
 //!   validation, `tool_round` so that the one retry `judge()` may make
 //!   renders them regardless of the budget, with the tool disabled);
-//! * a response truncated at `max_tokens` is retried once at `Effort::Medium`;
+//! * a response truncated at `max_tokens` is retried once at a lower effort
+//!   (`Effort::truncation_rerun`: medium from high and above, low from
+//!   medium; low is not retried);
 //! * a citation of a lettered sub-rule (`702.19b`) whose rule-level parent
 //!   (`702.19`, whose body folds the sub-rule text in) was shown is
 //!   hydrated from the store, because `Verdict::validate` looks the cited id
@@ -185,7 +187,7 @@ impl LlmSynthesizer {
     /// One synthesis conversation at `effort`. It may run the tool round only
     /// while the round is unspent ([`round_unspent`]): the first attempt, or
     /// the retry after a first call that could not be read. The retry after a
-    /// rejected citation, and the medium-effort rerun of an attempt truncated
+    /// rejected citation, and the lower-effort rerun of an attempt truncated
     /// after its tool round, already have that round's chunks in `ctx`.
     async fn converse(
         &self,
@@ -255,20 +257,21 @@ impl Synthesizer for LlmSynthesizer {
         rejected: Option<&RejectedAttempt>,
     ) -> Result<Verdict<Unvalidated>, JudgeError> {
         let first = self.converse(q, ctx, rejected, self.cfg.effort).await;
-        let truncated = match &first {
-            Err(JudgeError::Upstream(e)) if self.cfg.effort > Effort::Medium => {
-                e.downcast_ref::<Truncated>().map(|t| t.output_tokens)
-            }
+        let truncated = match (&first, self.cfg.effort.truncation_rerun()) {
+            (Err(JudgeError::Upstream(e)), Some(lower)) => e
+                .downcast_ref::<Truncated>()
+                .map(|t| (t.output_tokens, lower)),
             _ => None,
         };
         let verdict = match truncated {
-            Some(output_tokens) => {
+            Some((output_tokens, lower)) => {
                 tracing::warn!(
                     output_tokens,
                     max_tokens = self.cfg.max_tokens,
-                    "synthesis truncated; retrying at medium effort"
+                    effort = ?lower,
+                    "synthesis truncated; retrying at a lower effort"
                 );
-                self.converse(q, ctx, rejected, Effort::Medium).await?
+                self.converse(q, ctx, rejected, lower).await?
             }
             None => first?,
         };
@@ -2393,6 +2396,72 @@ mod tests {
         assert!(
             matches!(r, Err(JudgeError::Upstream(e)) if e.downcast_ref::<Truncated>().is_some())
         );
+        Ok(())
+    }
+
+    /// A stage at medium (Opus 5.5's default) reruns at low, one at max at
+    /// medium (not xhigh, which would likely truncate again); one at low has
+    /// nowhere to go and surfaces the truncation without a rerun.
+    #[tokio::test]
+    async fn truncation_reruns_at_a_lower_effort_than_the_configured_one() -> R {
+        for (effort, rerun) in [
+            (Effort::Medium, Some("low")),
+            (Effort::Max, Some("medium")),
+            (Effort::Low, None),
+        ] {
+            let server = MockServer::start().await;
+            if rerun.is_some() {
+                Mock::given(method("POST"))
+                    .and(path("/v1/messages"))
+                    .and(body_string_contains(format!(
+                        r#""effort":"{}""#,
+                        rerun.unwrap_or_default()
+                    )))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(message(
+                        "end_turn",
+                        &json!([{"type": "text", "text": verdict_json("613.7", "timestamp system")}]),
+                    )))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+            Mock::given(method("POST"))
+                .and(path("/v1/messages"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(message(
+                    "max_tokens",
+                    &json!([{"type": "text", "text": "{"}]),
+                )))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let (synth, retriever) = synth_against(&server, vec![])?;
+            let synth = LlmSynthesizer::new(
+                synth.model.clone(),
+                SynthConfig {
+                    effort,
+                    ..SynthConfig::default()
+                },
+                retriever,
+            );
+            let mut ctx = Context {
+                rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
+                ..Context::default()
+            };
+            let r = synth.answer(&q(), &mut ctx, None).await;
+            match rerun {
+                Some(lower) => {
+                    assert!(r.is_ok(), "{r:?}");
+                    let reqs = bodies(&server).await?;
+                    assert_eq!(
+                        at(reqs.get(1).ok_or("rerun")?, "/output_config/effort"),
+                        lower
+                    );
+                }
+                None => assert!(
+                    matches!(r, Err(JudgeError::Upstream(e)) if e.downcast_ref::<Truncated>().is_some())
+                ),
+            }
+        }
         Ok(())
     }
 }

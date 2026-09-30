@@ -197,6 +197,10 @@ pub struct RunModels {
     pub extract: String,
     /// The synthesis model.
     pub synth: String,
+    /// The synthesis effort as resolved (`medium`, `high`, …); absent in run
+    /// files from before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synth_effort: Option<String>,
 }
 
 /// The run file.
@@ -231,7 +235,13 @@ impl Run {
     pub fn models_line(&self) -> String {
         self.models.as_ref().map_or_else(
             || "models=unknown".to_owned(),
-            |m| format!("extract={} synth={}", m.extract, m.synth),
+            |m| {
+                let effort = m
+                    .synth_effort
+                    .as_deref()
+                    .map_or_else(String::new, |e| format!(" effort={e}"));
+                format!("extract={} synth={}{effort}", m.extract, m.synth)
+            },
         )
     }
 
@@ -313,6 +323,9 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
             .synth()
             .map(judge_bot::config::Stage::label)
             .unwrap_or_default(),
+        synth_effort: config
+            .synth()
+            .map(|s| format!("{:?}", s.effort).to_lowercase()),
     };
     let deps = crate::deps::build(
         pool,
@@ -880,12 +893,14 @@ mod tests {
             models: Some(RunModels {
                 extract: "ollama/qwen3:8b".into(),
                 synth: "anthropic/claude-opus-5-5".into(),
+                synth_effort: Some("medium".into()),
             }),
             ..run
         };
         assert!(
-            table(&with_models)
-                .contains("(cap $1.00); extract=ollama/qwen3:8b synth=anthropic/claude-opus-5-5"),
+            table(&with_models).contains(
+                "(cap $1.00); extract=ollama/qwen3:8b synth=anthropic/claude-opus-5-5 effort=medium"
+            ),
             "{}",
             table(&with_models)
         );

@@ -69,7 +69,8 @@ impl Stage for Final {}
 pub struct SynthConfig {
     /// Output ceiling; keep ≤ 16k while the backends are non-streaming.
     pub max_tokens: u32,
-    /// How hard the model thinks.
+    /// How hard the model thinks. The default, `High`, is for a model with no
+    /// [`SYNTH_EFFORTS`] row; the configuration resolves a listed model's own.
     pub effort: Effort,
     /// Server-side refusal fallback, where the backend supports it.
     pub fallbacks: Option<RefusalFallback>,
@@ -77,6 +78,30 @@ pub struct SynthConfig {
     /// subsection such as `702` would otherwise inject tens of thousands of
     /// tokens. Chunks past the cap are replaced by an "omitted" line.
     pub max_tool_result_chars: usize,
+}
+
+/// The synthesis effort each current model's gold runs chose, `(provider,
+/// model)`. Opus 5.5 at medium answered the gold set as well as at high, with
+/// no wrong asides, for slightly less; Sonnet 5.5 at medium misdescribed a card
+/// on one question and made three wrong asides, so it stays at high
+/// (2026-09-29, one run each; the high runs predate the examples fix
+/// `f6d7224`). Only current models are listed, as in [`crate::PRICES`]: an
+/// upgrade replaces its predecessor's row, and a new model is measured before
+/// it gets one. Ids match exactly, so a Bedrock `anthropic.` id is unlisted.
+pub const SYNTH_EFFORTS: &[(&str, &str, Effort)] = &[
+    (crate::spend::ANTHROPIC, "claude-opus-5-5", Effort::Medium),
+    (crate::spend::ANTHROPIC, "claude-sonnet-5-5", Effort::High),
+];
+
+/// The synthesis effort for `model` at `provider` when the operator names
+/// none: its [`SYNTH_EFFORTS`] row, else [`SynthConfig::default`]'s `High`,
+/// which errs toward correctness for a model nobody has measured.
+#[must_use]
+pub fn synth_effort_for(provider: &str, model: &str) -> Effort {
+    SYNTH_EFFORTS
+        .iter()
+        .find(|(p, m, _)| *p == provider && *m == model)
+        .map_or(SynthConfig::default().effort, |(_, _, e)| *e)
 }
 
 impl Default for SynthConfig {

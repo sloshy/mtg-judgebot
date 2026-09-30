@@ -38,7 +38,7 @@ model = "qwen3:8b"
 [models.synth]                       # the answer itself
 provider = "anthropic"
 model = "claude-opus-5-5"
-effort = "high"
+effort = "medium"                    # the default for this model; see below
 ```
 
 Two kinds of chat backend exist. `kind = "anthropic"` is the Messages API, reached through
@@ -110,14 +110,14 @@ in `eval/published/`):
 
 | | Answered (of 18 in scope) | Agree with the reference | Per question answered |
 | --- | --- | --- | --- |
-| `claude-opus-5-5` on both stages | 18 | 18 | $0.09 |
-| `claude-sonnet-5-5` on both stages | 18 | 18 | $0.05 |
+| `claude-opus-5-5` on both stages, synthesis at medium effort | 18 | 18 | $0.09 |
+| `claude-sonnet-5-5` on both stages, synthesis at high effort | 18 | 18 | $0.05 |
 
 Sonnet 5.5 is the budget option. Its input and output tokens cost half as much, and an
 answer a little over half as much, at about the same speed. It answered every question,
-all agreeing with the reference. It cited more of the rules each answer rests on (32 of 35
-against 30) but fewer of the background ones, needed a retry more often, and made more small mistakes in its asides, such as a wrong toughness for a card
-the question did not turn on. It also asks "did you mean?" more often for a shortened
+all agreeing with the reference. It cited about as many of the rules each answer rests on
+but fewer of the background ones, needed a retry more often, and made more small mistakes
+in its asides, such as a wrong toughness for a card the question did not turn on. It also asks "did you mean?" more often for a shortened
 name (such as "Bruna" when the melded pair makes the card clear). To run it, name it for
 both stages:
 
@@ -162,6 +162,29 @@ Other ways to lower the bill, on any model:
   questions are asked, and the bill is proportional to that.
 - **`/card` and `/rule`** answer the look-something-up questions without a model.
 - **An embedder** costs a few cents once and improves what the model is shown.
+
+## Effort
+
+`effort` on a stage is how hard the model thinks, and thinking tokens are billed as
+output. Extraction runs at `low`. Synthesis, when the file names no effort, runs at the
+level measured for its model on the gold set:
+
+| Model | Synthesis effort | Why |
+| --- | --- | --- |
+| `claude-opus-5-5` | `medium` | As good as `high` on the gold set (all 18 agreeing, no wrong asides) and a little cheaper. It is also Anthropic's default for this model. |
+| `claude-sonnet-5-5` | `high` | At `medium` it misdescribed a card on one question and made three wrong asides, for 15% less. |
+| any other model | `high` | Unmeasured, so the setting that errs toward correctness. |
+
+Each setting was run once, on 2026-09-29, and the `high` runs predate a change to how the
+material prints CR examples, so read "as good" as "no worse". Model ids match exactly: on
+Bedrock, `anthropic.claude-opus-5-5` is not in the table and runs at `high` unless you set
+`effort`.
+
+Setting `effort` on `[models.synth]` overrides this. An answer cut off at `max_tokens` is
+retried once at `medium`, or at `low` when it was already `medium`, and one at `low` is
+not retried. Raising effort
+above these costs more per answer. Measure a change with `judge-eval answer --config
+<your file>` before relying on it.
 
 `claude-haiku-4-5` cannot be used on either stage as the pipeline stands. Every request sets a reasoning
 effort, and that model is documented to reject it.

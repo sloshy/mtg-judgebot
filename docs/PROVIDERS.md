@@ -152,7 +152,12 @@ pub struct ChatResponse {
 - **`Effort` maps per backend.** Anthropic gets `output_config.effort`. OpenAI gets
   `reasoning_effort` (`low|medium|high`, `xhigh|max → high`), and only when the provider's
   `reasoning_effort = true`. Asking for effort on a provider that cannot send it is a
-  *load error*, not a silent drop.
+  *load error*, not a silent drop. A stage that names no effort gets `low` for extraction
+  and, for synthesis, the effort the model's gold runs chose (`judge_llm::SYNTH_EFFORTS`:
+  `claude-opus-5-5` medium, `claude-sonnet-5-5` high), else `high`. A truncated answer is
+  rerun once at medium, or at low from medium (`Effort::truncation_rerun`); one at `low` is
+  not rerun. Ids match exactly, so a Bedrock `anthropic.claude-opus-5-5` is unlisted and
+  runs at `high` unless its stage says otherwise.
 - **`Capabilities`** = `{ structured_output: Enforced | JsonMode | PromptOnly, strict_tools,
   effort, cache_hints, refusal_fallbacks }`. The adapters use it for two things:
   - When enforcement is `PromptOnly`/`JsonMode`, they append the schema to the **user
@@ -342,7 +347,7 @@ max_tokens = 2000
 [models.synth]
 provider = "anthropic"
 model = "claude-opus-5-5"
-effort = "high"
+effort = "medium"
 max_tokens = 16000
 # USD per million tokens. Required when the model is not in the built-in table,
 # unless the provider is `pricing = "free"`. A model the cap cannot price is a

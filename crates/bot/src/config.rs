@@ -1414,7 +1414,11 @@ impl Config {
                 );
                 Ok::<_, ConfigError>(Chat {
                     extract: stage("extract", x.max_tokens, x.effort)?,
-                    synth: stage("synth", s.max_tokens, s.effort)?,
+                    synth: stage(
+                        "synth",
+                        s.max_tokens,
+                        judge_llm::synth_effort_for(judge_anthropic::BACKEND, model),
+                    )?,
                 })
             })
             .transpose()?;
@@ -1775,12 +1779,17 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                 })?)
             }
         };
+        // Synthesis defaults to the effort the model's gold runs chose
+        // (`judge_llm::SYNTH_EFFORTS`), `high` for a model nobody measured.
         let (default_max, default_effort) = if stage == "extract" {
             let x = crate::extract::ExtractConfig::default();
             (x.max_tokens, x.effort)
         } else {
             let s = judge_llm::SynthConfig::default();
-            (s.max_tokens, s.effort)
+            (
+                s.max_tokens,
+                judge_llm::synth_effort_for(backend.kind(), &model),
+            )
         };
         Ok(Stage {
             provider: name.to_string(),
@@ -2282,6 +2291,34 @@ provider = "local"
 model = "qwen3:8b"
 "#;
 
+    /// With no `effort`, synthesis takes the model's measured effort: medium
+    /// for Opus 5.5, high for Sonnet 5.5, high for any model with no row
+    /// (an unlisted Anthropic id, a local model). An explicit knob wins.
+    #[test]
+    fn synthesis_effort_defaults_to_the_models_measured_one() -> R {
+        let env = [("ANTHROPIC_API_KEY", "k")];
+        let effort = |file: &str| -> Result<Effort, Box<dyn std::error::Error>> {
+            Ok(load(file, &env)?.synth().ok_or("synth")?.effort)
+        };
+        let synth_model = |m: &str| MINIMAL.replacen("claude-opus-5-5", m, 2);
+        assert_eq!(effort(MINIMAL)?, Effort::Medium);
+        assert_eq!(effort(&synth_model("claude-sonnet-5-5"))?, Effort::High);
+        assert_eq!(effort(&synth_model("claude-fable-5-1"))?, Effort::High);
+        assert_eq!(effort(KEYLESS)?, Effort::High);
+        let pinned = MINIMAL.replace(
+            "[models.synth]\nprovider = \"anthropic\"\nmodel = \"claude-opus-5-5\"\n",
+            "[models.synth]\nprovider = \"anthropic\"\nmodel = \"claude-opus-5-5\"\neffort = \"high\"\n",
+        );
+        assert_ne!(pinned, MINIMAL);
+        assert_eq!(effort(&pinned)?, Effort::High);
+        // The extraction stage is unaffected.
+        assert_eq!(
+            load(MINIMAL, &env)?.extract().ok_or("extract")?.effort,
+            Effort::Low
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_minimal_file_matches_the_environment_setup() -> R {
         let file = load(MINIMAL, &[("ANTHROPIC_API_KEY", "k")])?;
@@ -2289,7 +2326,8 @@ model = "qwen3:8b"
         for c in [&file, &env] {
             let (x, s) = (c.extract().ok_or("x")?, c.synth().ok_or("s")?);
             assert_eq!((x.max_tokens, x.effort), (2000, Effort::Low));
-            assert_eq!((s.max_tokens, s.effort), (16000, Effort::High));
+            // Opus 5.5's measured synthesis effort (judge_llm::SYNTH_EFFORTS).
+            assert_eq!((s.max_tokens, s.effort), (16000, Effort::Medium));
             assert_eq!(s.model, "claude-opus-5-5");
             assert_eq!(
                 s.price,
@@ -3649,7 +3687,7 @@ model = "qwen3:8b"
                     "model = \"claude-opus-5-5\"",
                     &format!("model = \"{model}\""),
                 )
-                .replace("\neffort = \"high\"", "\n# effort = \"high\"");
+                .replace("\neffort = \"medium\"", "\n# effort = \"medium\"");
             let c = load(&synth, &env).map_err(|e| format!("{provider}: {e}"))?;
             assert_eq!(
                 c.synth().map(Stage::label).as_deref(),

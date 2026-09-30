@@ -181,6 +181,22 @@ pub enum Effort {
     Max,
 }
 
+impl Effort {
+    /// What an answer truncated at this effort is rerun at: `Medium` from
+    /// anything above it, `Low` from `Medium`, and no rerun from `Low`. Not
+    /// one step down from `XHigh`/`Max`: those would likely truncate again,
+    /// and the `OpenAI` backend sends both as `high`, so the rerun would repeat
+    /// the truncated request byte for byte.
+    #[must_use]
+    pub const fn truncation_rerun(self) -> Option<Self> {
+        match self {
+            Self::Low => None,
+            Self::Medium => Some(Self::Low),
+            Self::High | Self::XHigh | Self::Max => Some(Self::Medium),
+        }
+    }
+}
+
 /// What the server may route a refused request to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum RefusalFallback {
