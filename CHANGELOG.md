@@ -48,6 +48,10 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   nickname too, which Sonnet 5.5 did not do ("tower" beside "Urza's Tower"). The
   synthesis prompt keeps every rule, with the capitals gone, the face label named as not
   citable, and the retry instructions left to each rejection's own notice.
+- **`judge-eval answer` records the retry.** Each row says why the first attempt was
+  rejected when the retry ran, and how many stub citations were dropped, and the table
+  totals both by kind. Citations are stored with their whole quote. `rescore` and `show`
+  still read older run files, and say those did not record it.
 
 ### Fixed
 

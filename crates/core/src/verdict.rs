@@ -92,6 +92,10 @@ pub struct Validated {
     cr_version: CrVersion,
     source: AnswerableSource,
     cards: Vec<CardRef>,
+    /// Stub citations `validate` set aside (D21). A diagnostic for the eval
+    /// harness, not part of the verdict any front door shows or stores.
+    #[serde(skip)]
+    stubs_dropped: usize,
 }
 
 impl sealed::Sealed for Unvalidated {}
@@ -457,6 +461,7 @@ impl Verdict<Unvalidated> {
                 cr_version,
                 source,
                 cards: ctx.cards.iter().map(CardRef::from).collect(),
+                stubs_dropped: stubs.len(),
             },
         })
     }
@@ -729,6 +734,13 @@ impl Verdict<Validated> {
     #[must_use]
     pub fn cards(&self) -> &[CardRef] {
         &self.state.cards
+    }
+    /// How many stub citations (quoting nothing) were dropped rather than
+    /// rejected (D21). Only this verdict's: a rejected earlier attempt's
+    /// stubs are not counted.
+    #[must_use]
+    pub fn stubs_dropped(&self) -> usize {
+        self.state.stubs_dropped
     }
 }
 

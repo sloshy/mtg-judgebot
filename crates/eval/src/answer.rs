@@ -6,7 +6,7 @@ use std::{path::PathBuf, time::Instant};
 
 use anyhow::Context as _;
 use judge_bot::config::Config;
-use judge_core::{Citation, JudgeError, Question, Verdict, judge};
+use judge_core::{JudgeError, Question, Rejection, Traced, judge_traced};
 use judge_llm::LlmError;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -116,7 +116,9 @@ pub enum Outcome {
         answer: String,
         /// Self-reported confidence.
         confidence: String,
-        /// Citations as `Display`ed (`rule 702.19b: "..."`).
+        /// Citations as `Display`ed with the whole quote (`rule 702.19b: "..."`).
+        /// Run files from before traced runs cut quotes at
+        /// `judge_core::DISPLAY_QUOTE_CHARS`.
         citations: Vec<String>,
         /// Category assigned.
         category: String,
@@ -167,6 +169,15 @@ pub struct Row {
     pub elapsed_ms: u128,
     /// Anthropic calls this question made.
     pub calls: u64,
+    /// Why the first synthesis attempt was rejected, when it was: the one
+    /// retry ran, and `outcome` is its result. Only meaningful in a traced
+    /// run ([`Run::traced`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_rejection: Option<Rejection>,
+    /// Stub citations dropped from the accepted verdict (D21). Stubs of a
+    /// rejected first attempt are not counted.
+    #[serde(default)]
+    pub stubs_dropped: usize,
     /// Estimated USD this question cost.
     pub usd: f64,
 }
@@ -193,6 +204,10 @@ pub struct Run {
     /// Which models ran; absent in run files from before providers were configurable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<RunModels>,
+    /// Whether rows record `first_rejection` and `stubs_dropped`. Older run
+    /// files do not, and their empty fields mean "not recorded", not "none".
+    #[serde(default)]
+    pub traced: bool,
     /// Rows in gold order.
     pub rows: Vec<Row>,
     /// Sum of `usd`.
@@ -310,18 +325,18 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
             text: q.question.clone(),
         };
         let started = Instant::now();
-        let result = judge(&deps, &question, &[]).await;
+        let traced = judge_traced(&deps, &question, &[]).await;
         let elapsed_ms = started.elapsed().as_millis();
         let row = score_row(
             q,
-            &result,
+            &traced,
             elapsed_ms,
             meter.calls() - calls0,
             meter.spent_usd() - usd0,
         );
         tracing::info!(id = %row.id, ok = row.correct_shape, usd = format_args!("{:.4}", row.usd), "scored");
         rows.push(row);
-        if let Err(JudgeError::Upstream(e)) = &result
+        if let Err(JudgeError::Upstream(e)) = &traced.result
             && e.downcast_ref::<LlmError>()
                 .is_some_and(|c| matches!(c, LlmError::SpendCapExceeded { .. }))
         {
@@ -334,6 +349,7 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
         gold: opts.gold.display().to_string(),
         max_usd: opts.max_usd,
         models: Some(run_models),
+        traced: true,
         total_usd: rows.iter().map(|r| r.usd).sum(),
         total_calls: rows.iter().map(|r| r.calls).sum(),
         rows,
@@ -348,13 +364,8 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
     Ok(run)
 }
 
-fn score_row(
-    q: &GoldQuestion,
-    result: &Result<Verdict<judge_core::Validated>, JudgeError>,
-    elapsed_ms: u128,
-    calls: u64,
-    usd: f64,
-) -> Row {
+fn score_row(q: &GoldQuestion, traced: &Traced, elapsed_ms: u128, calls: u64, usd: f64) -> Row {
+    let result = &traced.result;
     let expected_rule_ids: Vec<String> = q
         .expected_rule_ids
         .iter()
@@ -371,7 +382,7 @@ fn score_row(
             let outcome = Outcome::Verdict {
                 answer: v.answer().to_owned(),
                 confidence: format!("{:?}", v.confidence()).to_ascii_lowercase(),
-                citations: v.citations().iter().map(Citation::to_string).collect(),
+                citations: v.citations().iter().map(|c| format!("{c:#}")).collect(),
                 category: v.category().to_string(),
                 source,
                 cr_version: v.cr_version().to_string(),
@@ -440,6 +451,22 @@ fn score_row(
         elapsed_ms,
         calls,
         usd,
+        first_rejection: traced.first_rejection.clone(),
+        stubs_dropped: result
+            .as_ref()
+            .map_or(0, judge_core::Verdict::stubs_dropped),
+    }
+}
+
+/// A rejection's kind as the table shows it.
+fn rejection_kind(r: &Rejection) -> &'static str {
+    match r {
+        Rejection::BadCitation(_) => "citation",
+        Rejection::Malformed(_) => "malformed",
+        Rejection::Empty(_) => "empty",
+        Rejection::Uncited(_) => "uncited",
+        Rejection::Tool(_) => "tool",
+        Rejection::Oversized { .. } => "oversized",
     }
 }
 
@@ -467,9 +494,10 @@ pub fn table(run: &Run) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "{:<width$}  {:<12}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7}  {:>5}  {:>8}",
+        "{:<width$}  {:<14}  {:<9}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7}  {:>5}  {:>8}",
         "question",
         "outcome",
+        "retry",
         "recall",
         "any",
         "rules",
@@ -491,11 +519,17 @@ pub fn table(run: &Run) -> String {
             r.recall.hit.len(),
             r.recall.hit.len() + r.recall.missed.len()
         );
+        let retry = match (&r.first_rejection, run.traced) {
+            (Some(rej), _) => rejection_kind(rej),
+            (None, true) => "-",
+            (None, false) => "?",
+        };
         let _ = writeln!(
             s,
-            "{:<width$}  {:<12}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7.1}  {:>5}  {:>8.4}",
+            "{:<width$}  {:<14}  {:<9}  {:>6}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7.1}  {:>5}  {:>8.4}",
             r.id,
             outcome,
+            retry,
             recall,
             if r.any_expected_cited { "yes" } else { "no" },
             r.cites.n_rule_cites,
@@ -529,7 +563,37 @@ pub fn table(run: &Run) -> String {
         s,
         "questions with ≥1 expected id cited: {any}/{expecting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations"
     );
+    let _ = writeln!(s, "{}", retries_line(run));
     s
+}
+
+/// How many first attempts were rejected, by kind, and the stubs dropped.
+fn retries_line(run: &Run) -> String {
+    if !run.traced {
+        return "retries and dropped stubs: not recorded in this run file".to_owned();
+    }
+    let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
+    for rej in run.rows.iter().filter_map(|r| r.first_rejection.as_ref()) {
+        *kinds.entry(rejection_kind(rej)).or_default() += 1;
+    }
+    let retried: usize = kinds.values().sum();
+    let by_kind = if kinds.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " ({})",
+            kinds
+                .iter()
+                .map(|(k, n)| format!("{n} {k}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let stubs: usize = run.rows.iter().map(|r| r.stubs_dropped).sum();
+    format!(
+        "first attempts rejected: {retried}/{}{by_kind}; {stubs} stub citations dropped",
+        run.rows.len()
+    )
 }
 
 /// `eval show <run.json>`: question, expected answer and bot answer side by side.
@@ -618,6 +682,12 @@ pub fn show(path: &std::path::Path) -> anyhow::Result<String> {
                 let _ = writeln!(s, "--- bot: {variant} ---\n{message}");
             }
         }
+        if let Some(rej) = &r.first_rejection {
+            let _ = writeln!(s, "\nfirst attempt rejected, retried: {rej}");
+        }
+        if r.stubs_dropped > 0 {
+            let _ = writeln!(s, "{} stub citation(s) dropped", r.stubs_dropped);
+        }
         let _ = writeln!(
             s,
             "\nrecall {}/{} (missed: {})  cites {} rule / {} ruling / {} oracle  source {}  {:.1}s  ${:.4}\n",
@@ -696,6 +766,14 @@ mod tests {
         Ok(())
     }
 
+    /// A result with no first rejection.
+    fn untraced(result: Result<judge_core::Verdict<judge_core::Validated>, JudgeError>) -> Traced {
+        Traced {
+            result,
+            first_rejection: None,
+        }
+    }
+
     #[test]
     fn out_of_scope_error_counts_as_correct() {
         let q = GoldQuestion {
@@ -711,7 +789,7 @@ mod tests {
         };
         let r = score_row(
             &q,
-            &Err(JudgeError::OutOfScope(judge_core::Source::Tournament)),
+            &untraced(Err(JudgeError::OutOfScope(judge_core::Source::Tournament))),
             1,
             1,
             0.01,
@@ -719,19 +797,20 @@ mod tests {
         assert!(r.correct_shape && r.source_ok);
         let r = score_row(
             &q,
-            &Err(JudgeError::OutOfScope(judge_core::Source::OutOfScope)),
+            &untraced(Err(JudgeError::OutOfScope(judge_core::Source::OutOfScope))),
             1,
             1,
             0.01,
         );
         assert!(r.correct_shape && !r.source_ok);
-        let r = score_row(&q, &Err(JudgeError::LlmRefused), 1, 1, 0.01);
+        let r = score_row(&q, &untraced(Err(JudgeError::LlmRefused)), 1, 1, 0.01);
         assert!(!r.correct_shape);
         let run = Run {
             label: "l".into(),
             gold: "g".into(),
             max_usd: 1.0,
             models: None,
+            traced: false,
             rows: vec![r],
             total_usd: 0.01,
             total_calls: 1,
@@ -804,7 +883,7 @@ mod tests {
             Category::KeywordAbilities,
         )
         .validate(&ctx, AnswerableSource::Cr)?;
-        let r = score_row(&q, &Ok(v), 1, 1, 0.01);
+        let r = score_row(&q, &untraced(Ok(v)), 1, 1, 0.01);
         assert!(r.any_expected_cited);
         assert_eq!((r.cites.n_rule_cites, r.cites.n_ruling_cites), (1, 0));
         assert_eq!(r.recall.missed, vec!["1.1".to_owned()]);
@@ -813,6 +892,7 @@ mod tests {
             gold: "g".into(),
             max_usd: 1.0,
             models: None,
+            traced: false,
             rows: vec![r],
             total_usd: 0.01,
             total_calls: 1,
@@ -826,6 +906,103 @@ mod tests {
             .replace(",\"n_rule_cites\":1", "");
         let old: Run = serde_json::from_str(&json)?;
         assert!(!old.rows.first().is_some_and(|r| r.any_expected_cited));
+        Ok(())
+    }
+
+    /// A traced run records why the first attempt was rejected and the
+    /// stubs dropped, and keeps a long quote whole; an older run file says
+    /// it recorded neither rather than showing none.
+    #[test]
+    fn a_traced_row_records_the_retry_the_stubs_and_whole_quotes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use judge_core::{
+            AnswerableSource, Category, Citation, Confidence, Context, CrVersion, RuleChunk,
+            RuleId, Verdict,
+        };
+        let q = GoldQuestion {
+            id: "t".into(),
+            question: "q".into(),
+            cards: vec![],
+            nicknames_used: vec![],
+            categories: vec![],
+            source: "CR".into(),
+            expected_rule_ids: vec![crate::gold::YamlScalar::Text("702.15".into())],
+            expected_answer: String::new(),
+            equivalent_rule_ids: std::collections::BTreeMap::default(),
+        };
+        let long = "gain that much life ".repeat(20);
+        let ctx = Context {
+            rules: vec![RuleChunk {
+                id: RuleId::try_new("702.15b".to_owned())?,
+                parent_id: None,
+                subsection: RuleId::try_new("702".to_owned())?,
+                heading: "Lifelink".into(),
+                body: long.clone(),
+                examples: vec![],
+                cr_version: CrVersion::try_new("20250801".to_owned())?,
+            }],
+            ..Context::default()
+        };
+        let rule = |quote: &str| -> Result<Citation, Box<dyn std::error::Error>> {
+            Ok(Citation::Rule {
+                id: RuleId::try_new("702.15b".to_owned())?,
+                quote: judge_core::Quote::try_new(quote)?,
+            })
+        };
+        let v = Verdict::new(
+            "Lifelink causes its controller to gain that much life at the same time.".into(),
+            Confidence::High,
+            vec![rule(long.trim())?, rule("placeholder")?],
+            Category::KeywordAbilities,
+        )
+        .validate(&ctx, AnswerableSource::Cr)?;
+        let first = Rejection::Tool(judge_core::ToolMisuse::SecondRound { ids: vec![] });
+        let r = score_row(
+            &q,
+            &Traced {
+                result: Ok(v),
+                first_rejection: Some(first.clone()),
+            },
+            1,
+            1,
+            0.01,
+        );
+        assert_eq!(r.first_rejection, Some(first));
+        assert_eq!(r.stubs_dropped, 1);
+        let Outcome::Verdict { citations, .. } = &r.outcome else {
+            return Err("a verdict".into());
+        };
+        assert!(
+            citations
+                .first()
+                .is_some_and(|c| c.contains(long.trim()) && !c.contains('…'))
+        );
+        let mut run = Run {
+            label: "l".into(),
+            gold: "g".into(),
+            max_usd: 1.0,
+            models: None,
+            traced: true,
+            rows: vec![r],
+            total_usd: 0.01,
+            total_calls: 1,
+        };
+        let t = table(&run);
+        assert!(t.contains("verdict/high    tool"), "{t}");
+        assert!(
+            t.contains("first attempts rejected: 1/1 (1 tool); 1 stub citations dropped"),
+            "{t}"
+        );
+        // Round-trips, and a file from before tracing says so.
+        let back: Run = serde_json::from_str(&serde_json::to_string(&run)?)?;
+        assert_eq!(back.rows.first().map(|r| r.stubs_dropped), Some(1));
+        run.traced = false;
+        if let Some(r) = run.rows.first_mut() {
+            r.first_rejection = None;
+        }
+        let t = table(&run);
+        assert!(t.contains("verdict/high    ?"), "{t}");
+        assert!(t.contains("not recorded"), "{t}");
         Ok(())
     }
 

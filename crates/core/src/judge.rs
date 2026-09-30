@@ -32,6 +32,38 @@ pub async fn judge(
     q: &Question,
     history: &[Qa],
 ) -> Result<Verdict<Validated>, JudgeError> {
+    judge_traced(deps, q, history).await.result
+}
+
+/// What [`judge_traced`] saw on the way to its result.
+#[derive(Debug)]
+#[must_use]
+pub struct Traced {
+    /// What [`judge`] returns.
+    pub result: Result<Verdict<Validated>, JudgeError>,
+    /// Why the first synthesis attempt was rejected, when it was. Its
+    /// presence means the one retry ran; `result` is the retry's outcome.
+    pub first_rejection: Option<Rejection>,
+}
+
+/// [`judge`], also reporting the first attempt's rejection. For the eval
+/// harness, which measures how often and why the retry runs; the front doors
+/// call [`judge`].
+pub async fn judge_traced(deps: &Deps, q: &Question, history: &[Qa]) -> Traced {
+    let mut first_rejection = None;
+    let result = run(deps, q, history, &mut first_rejection).await;
+    Traced {
+        result,
+        first_rejection,
+    }
+}
+
+async fn run(
+    deps: &Deps,
+    q: &Question,
+    history: &[Qa],
+    first_rejection: &mut Option<Rejection>,
+) -> Result<Verdict<Validated>, JudgeError> {
     let e = deps.extractor.extract(q, history).await?;
     // The verdict's source is stamped from here, not reported by the synthesis
     // model: `validate` takes an `AnswerableSource`, so this is the only way in.
@@ -64,6 +96,7 @@ pub async fn judge(
         Err(JudgeError::ToolMisuse(t)) => (Rejection::Tool(t), String::new()),
         Err(e) => return Err(e),
     };
+    *first_rejection = Some(rejection.clone());
     let rejected = RejectedAttempt::new(rejection, &answer);
     // At INFO, not DEBUG: when the retry also fails, the *first* rejection is
     // usually what explains the second, and production runs at INFO.

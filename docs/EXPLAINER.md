@@ -602,8 +602,9 @@ cite, plus per-question lists of equivalent ids that state the same fact. Two ga
 - `judge-eval recall` runs card resolution and retrieval, taking the extraction from the
   gold file instead of a model call. It fails below 90% of expected rule ids in context,
   or below 75% in the part the budget shows. It makes no chat-model calls.
-- `judge-eval answer` runs the full pipeline and scores the answers. Runs are stored and can
-  be re-scored for free after the gold set is edited.
+- `judge-eval answer` runs the full pipeline and scores the answers. Each row also records
+  why the first attempt was rejected, when the retry ran, and how many stub citations were
+  dropped. Runs are stored and can be re-scored for free after the gold set is edited.
 
 The gold set is extended whenever capability is added. It is the closest thing the system
 has to a regression suite for the probabilistic parts.

@@ -672,8 +672,12 @@ impl fmt::Display for MalformedCitation {
 pub const DISPLAY_QUOTE_CHARS: usize = 200;
 
 /// The quote as `Display` shows it: debug-quoted, cut on a `char` boundary,
-/// with the `…` inside the quotes so the cut reads as part of the text.
-fn shown(quote: &str) -> String {
+/// with the `…` inside the quotes so the cut reads as part of the text. The
+/// alternate form (`{:#}`) prints it whole, for a record rather than a notice.
+fn shown(quote: &str, whole: bool) -> String {
+    if whole {
+        return format!("{quote:?}");
+    }
     let mut kept: String = quote.chars().take(DISPLAY_QUOTE_CHARS).collect();
     if kept.len() < quote.len() {
         kept.push('…');
@@ -683,20 +687,27 @@ fn shown(quote: &str) -> String {
 
 impl fmt::Display for Citation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let whole = f.alternate();
         match self {
-            Citation::Rule { id, quote } => write!(f, "rule {id}: {}", shown(quote.as_ref())),
+            Citation::Rule { id, quote } => {
+                write!(f, "rule {id}: {}", shown(quote.as_ref(), whole))
+            }
             Citation::ScryfallRuling {
                 card,
                 ruling,
                 quote,
             } => {
-                write!(f, "ruling {card}/{ruling}: {}", shown(quote.as_ref()))
+                write!(
+                    f,
+                    "ruling {card}/{ruling}: {}",
+                    shown(quote.as_ref(), whole)
+                )
             }
             Citation::PriorCall { id, quote } => {
-                write!(f, "prior call {id}: {}", shown(quote.as_ref()))
+                write!(f, "prior call {id}: {}", shown(quote.as_ref(), whole))
             }
             Citation::OracleText { card, face, quote } => {
-                write!(f, "oracle {card}#{face}: {}", shown(quote.as_ref()))
+                write!(f, "oracle {card}#{face}: {}", shown(quote.as_ref(), whole))
             }
         }
     }

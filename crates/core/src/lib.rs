@@ -19,7 +19,7 @@ pub mod verdict;
 pub use category::{Category, UnknownCategory};
 pub use domain::*;
 pub use error::JudgeError;
-pub use judge::{Deps, judge};
+pub use judge::{Deps, Traced, judge, judge_traced};
 pub use operator::{
     DiscordOperator, DiscordUsername, MissingContact, NetworkOperator, Operator, SupportEmail,
 };
