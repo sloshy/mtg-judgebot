@@ -187,19 +187,19 @@ has to be taken on trust:
 | | `claude-opus-5-5`, both stages, synthesis at medium effort (the default) | `claude-sonnet-5-5`, both stages, synthesis at high effort |
 | --- | --- | --- |
 | Out-of-scope questions declined (of 3) | 3 | 3 |
-| In-scope questions answered (of 18) | 18 | 18 |
-| …agreeing with the reference ruling | 18 | 18 |
+| In-scope questions answered (of 18) | 18 | 17 |
+| …agreeing with the reference ruling | 18 | 17 |
 | …partly (right on the main point, a sub-question missed) | 0 | 0 |
 | …contradicting the reference | 0 | 0 |
-| Asked "did you mean?" instead | 0 | 0 |
+| Asked "did you mean?" instead | 0 | 1 |
 | Not answered | 0 | 0 |
-| …following from what they cite alone | 14 | 14 |
-| Decisive rule ids cited | 31 of 35 (89%) | 32 of 35 (91%) |
-| Supporting rule ids also cited | 16 of 32 | 11 of 32 |
+| …following from what they cite alone | 14 | 13 |
+| Decisive rule ids cited | 31 of 35 (89%) | 29 of 35 (83%) |
+| Supporting rule ids also cited | 16 of 32 | 12 of 32 |
 | Cost per in-scope question (median) | $0.09 | $0.05 |
-| Cost per question *answered* | $0.09 | $0.05 |
-| Time per in-scope question (median / longest) | 15 s / 27 s | 12 s / 32 s |
-| Whole run | $1.62 | $0.97 |
+| Cost per question *answered* | $0.09 | $0.06 |
+| Time per in-scope question (median / longest) | 15 s / 27 s | 11 s / 32 s |
+| Whole run | $1.62 | $0.98 |
 
 What these measure, and what they do not:
 
@@ -207,27 +207,26 @@ What these measure, and what they do not:
   model was shown and quotes it verbatim, and every rule number in the text is one of
   those citations. "Not answered" means the pipeline refused to show an answer, not that
   it showed a wrong one. A rejected attempt gets one retry with a notice saying what
-  failed: Sonnet needed four retries in this run, Opus one, and every retry was answered.
+  failed: Sonnet needed five retries in this run, Opus one, and every retry was answered.
 - **"Did you mean?"** is the pipeline working as designed when a name could mean several
-  cards, but it leaves an eval question unanswered. Neither run asked one. Sonnet does not
-  always add full names for shortened ones: over several runs it asked about "Bruna" and
-  "Gisela" in about half, where Opus names the melded pair.
+  cards, but it leaves an eval question unanswered. Sonnet asked once, about "Bruna" and
+  "Gisela": it does not always add full names for shortened ones, and over several runs
+  it asked in about half, where Opus names the melded pair.
 - **Agreement with the reference** was judged by Claude reading each answer against the
   gold set's reference answer under a strict rubric. The references were written and
   checked by models, then audited against Oracle text, rulings and CR text (which found
   three to correct). No human judge has reviewed either side, so read this column as "no
   contradiction found", not as a measured accuracy. It grades the ruling, not every
-  aside: the same reading found no wrong side remarks in the Opus run, and three in the
-  Sonnet run (it gave Dark Confidant toughness 2, opened one answer "Yes to both parts"
-  before answering the second part no, and said Tarmogoyf's power "isn't 5" with nothing
-  to go on). None changed a ruling. One Sonnet answer also carries literal `\n` escapes,
-  which the pipeline now decodes (D22).
+  aside: the same reading found no wrong side remarks in the Opus run, and one in the
+  Sonnet run (it said Urborg under Blood Moon has no abilities, when Blood Moon gives it
+  "{T}: Add {R}"). It did not change the ruling.
 - **Following from what they cite** is the same kind of reading, asking whether each
-  ruling follows from the quoted text alone, with no outside knowledge. The other four
-  answers in each run lean on one uncited step a reader would accept: Doubling Season's
-  own text for the counter arithmetic, the definition of "dies" (700.4), or the rule that
-  Oracle text overrides an old printing (108.1). None rests a ruling on an unsupported
-  step. Graders apply this one less evenly than agreement, so a difference of one or two
+  ruling follows from the quoted text alone, with no outside knowledge. The rest lean on
+  an uncited step: Doubling Season's own text for the counter arithmetic, the definition
+  of "dies" (700.4), or the rule that Oracle text overrides an old printing (108.1). The
+  Sonnet run's grader counted the missing 108.1 as the step two answers (Waylay, the
+  Mirage Lion's Eye Diamond) turn on; the Opus run's counted the same gap as minor.
+  Graders apply this one less evenly than agreement, so a difference of one or two
   between runs means little.
 - **Decisive rule ids** are the rules each reference answer rests on, which a correct
   answer should cite. **Supporting** ids are background a good answer may leave out, so
@@ -243,16 +242,16 @@ What these measure, and what they do not:
 
 Opus 5.5 synthesizes at medium effort, Anthropic's default for it. At high it answered
 the set equally well, with no more of its rulings following from what it cited, for a
-few cents more per run. That high run, and the Sonnet run in the second column, predate
-the change that prints CR examples under their own rule, and each setting was run once,
-so read the comparison as "no worse", not as a measured gain. The second column is the
-budget option: the same pipeline on a model at half of Opus 5.5's input and output price
+few cents more per run. That high run predates the change that prints CR examples under
+their own rule, and each setting was run once, so read the comparison as "no worse", not
+as a measured gain. The second column is the budget option: the same pipeline on a
+model at half of Opus 5.5's input and output price
 (`eval/published/v1-sonnet-5-5.judge.toml`). It stays at high effort: at medium it
 misdescribed a card on one question and made three wrong asides, which the 15% it saved
-does not pay for. At high it answered every question too, all agreeing with the
-reference, at a little over half the cost per answer and about the same speed. It cited
-about as many of the decisive rules but fewer of the supporting ones, needed more
-retries and made more mistakes in its asides. The documentation site's Model choice page
+does not pay for. At high every answer it gave agreed with the reference, at about 60%
+of the cost per answer and slightly faster. It asked "did you mean?" once where Opus
+answered, cited about as many of the rules its answers rest on but fewer of the
+background ones, needed more retries and made one wrong aside. The documentation site's Model choice page
 covers switching and what else saves money.
 
 ## Design

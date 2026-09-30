@@ -31,12 +31,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **Claude Sonnet 5.5 is the measured budget option.** The built-in price table knows
   `claude-sonnet-5-5` ($2 input, $10 output, $0.20 cache reads per million tokens), so a
   `judge.toml` naming it needs no `pricing` table and the spend cap no longer prices it as
-  Opus 5. On the gold set, with the reworded prompts below, it answered all 18 in-scope
-  questions, all agreeing with the reference, for a little over half the default's cost
-  per answer
+  Opus 5. On the gold set, at high effort on this release's code, every answer it gave
+  agreed with the reference, for about 60% of the default's cost per answer. It
+  answered 17 of the 18 in-scope questions and asked "did you mean?" on the other
   (`eval/published/v1-sonnet-5-5.json`). The README's results and the Model choice page
   compare it with the default.
-
 - **Server-side refusal fallbacks are sent on the direct API only.** Anthropic documents
   the `fallbacks` beta for the Claude API only, so Claude Platform on AWS no longer sends
   it, as the proxy, Bedrock and Vertex doors already did not. A provider table's new

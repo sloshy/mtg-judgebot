@@ -111,15 +111,15 @@ in `eval/published/`):
 | | Answered (of 18 in scope) | Agree with the reference | Per question answered |
 | --- | --- | --- | --- |
 | `claude-opus-5-5` on both stages, synthesis at medium effort | 18 | 18 | $0.09 |
-| `claude-sonnet-5-5` on both stages, synthesis at high effort | 18 | 18 | $0.05 |
+| `claude-sonnet-5-5` on both stages, synthesis at high effort | 17 | 17 | $0.06 |
 
 Sonnet 5.5 is the budget option. Its input and output tokens cost half as much, and an
-answer a little over half as much, at about the same speed. It answered every question,
-all agreeing with the reference. It cited about as many of the rules each answer rests on
-but fewer of the background ones, needed a retry more often, and made more small mistakes
-in its asides, such as a wrong toughness for a card the question did not turn on. It also asks "did you mean?" more often for a shortened
-name (such as "Bruna" when the melded pair makes the card clear). To run it, name it for
-both stages:
+answer about 60% as much, slightly faster. Every answer it gave agreed with the
+reference. It cited about as many of the rules its answers rest on but fewer of the
+background ones, needed a retry more often, and made one small mistake in an aside the ruling did not turn on. It also asks
+"did you mean?" more often for a shortened name: it asked about "Bruna" and "Gisela" in
+this run, where the melded pair makes the card clear, which is the one question it did
+not answer. To run it, name it for both stages:
 
 ```toml
 [providers.anthropic]
@@ -175,8 +175,8 @@ level measured for its model on the gold set:
 | `claude-sonnet-5-5` | `high` | At `medium` it misdescribed a card on one question and made three wrong asides, for 15% less. |
 | any other model | `high` | Unmeasured, so the setting that errs toward correctness. |
 
-Each setting was run once, on 2026-09-29, and the `high` runs predate a change to how the
-material prints CR examples, so read "as good" as "no worse". Model ids match exactly: on
+Each setting was run once, on 2026-09-29, and the Opus `high` run predates a change to how
+the material prints CR examples, so read "as good" as "no worse". Model ids match exactly: on
 Bedrock, `anthropic.claude-opus-5-5` is not in the table and runs at `high` unless you set
 `effort`.
 
