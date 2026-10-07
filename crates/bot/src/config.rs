@@ -62,7 +62,8 @@ use judge_llm::{
 };
 use judge_openai::{Auth, Dialect, MaxTokensParam, OpenAi, StructuredOutputMode};
 use nutype::nutype;
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::{
@@ -96,6 +97,9 @@ const BUILD_DIRTY: Option<&str> = option_env!("JUDGE_BUILD_DIRTY");
 const VOYAGE_DEFAULT_MODEL: &str = "voyage-3.5";
 const VOYAGE_DEFAULT_DIMENSIONS: usize = 1024;
 const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
+
+mod schema;
+pub use schema::file_schema;
 
 // ---------- the file, typed ----------
 
@@ -261,82 +265,139 @@ fn validate_dimensions(n: &usize) -> Result<(), BadDimensions> {
 )]
 pub struct MaxTokens(u32);
 
-/// The whole file.
-#[derive(Debug, Deserialize)]
+/// The whole file. The doc comments on these types are the config editor's
+/// help text (`file_schema`), so they are written for the operator.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct File {
+    /// The doors to the models, each under a name of your choosing. A stage
+    /// names one by that name.
     #[serde(default)]
+    #[schemars(with = "BTreeMap<String, ProviderEntry>")]
     providers: BTreeMap<ProviderName, ProviderEntry>,
+    /// Which model each stage of the pipeline runs on.
     models: ModelsEntry,
 }
 
 /// One `[providers.<name>]` table, by `kind`.
-#[derive(Debug, Deserialize)]
+#[expect(
+    clippy::doc_markdown,
+    reason = "operator-facing help text in the config editor: product names are not code"
+)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 enum ProviderEntry {
-    /// The Messages API, through one of its doors.
+    /// Claude through the Messages API: Anthropic directly, a gateway, or a
+    /// cloud account.
     Anthropic {
+        /// Which door to Claude. The cloud doors take credentials from the
+        /// platform's own chain (AWS: environment, profile, SSO or role; GCP:
+        /// Application Default Credentials), probed once at startup.
         #[serde(default)]
         endpoint: Door,
-        /// Origin override: optional on every door (the cloud doors derive
-        /// theirs from `region`), required for `proxy`.
+        /// The origin, without `/v1/messages`. Required for a proxy; on
+        /// every other door an override of the default
+        /// (`https://api.anthropic.com` for direct, derived from `region`
+        /// on the cloud doors).
         #[serde(default)]
+        #[schemars(with = "Option<String>", url)]
         base_url: Option<BaseUrl>,
-        /// The key's variable: `direct` and `proxy` only. The cloud doors
-        /// take credentials from their platform's chain, never from here.
+        /// The environment variable holding the API key (the key itself is
+        /// never written in this file). Direct and proxy only.
         #[serde(default)]
+        #[schemars(with = "Option<String>", length(min = 1), extend("x-env-var" = true))]
         api_key_env: Option<EnvVar>,
-        /// Which header a proxy wants the key in; `proxy` only.
+        /// Which header the proxy wants the key in. Proxy only; default
+        /// `x-api-key`.
         #[serde(default)]
         auth: Option<ProxyHeader>,
-        /// The cloud doors' region (`claude-platform-on-aws`, `bedrock`, `vertex`).
+        /// The cloud region (`us-west-2`, `us-east-1`; Vertex also takes
+        /// `global`, `us`, `eu`). A Claude Platform on AWS workspace is bound
+        /// to one region.
         #[serde(default)]
+        #[schemars(
+            with = "Option<String>",
+            regex(pattern = r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+        )]
         region: Option<Region>,
-        /// `claude-platform-on-aws` only.
+        /// The workspace id, `wrkspc_...` (AWS Console > Claude Platform on
+        /// AWS > Workspaces).
         #[serde(default)]
+        #[schemars(with = "Option<String>", regex(pattern = r"^wrkspc_[A-Za-z0-9]+$"))]
         workspace_id: Option<WorkspaceId>,
-        /// `vertex` only.
+        /// The Google Cloud project id or number.
         #[serde(default)]
+        #[schemars(
+            with = "Option<String>",
+            regex(pattern = r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+        )]
         project: Option<Project>,
-        /// Whether server-side refusal fallbacks are sent. Absent means the
-        /// door's default: only `direct` sends them.
+        /// Send server-side refusal fallbacks, a beta Anthropic documents for
+        /// its own API only. Unset means on for direct and off on every other
+        /// door; it cannot be true on Bedrock, which takes no beta header.
         #[serde(default)]
         refusal_fallbacks: Option<bool>,
+        /// `"free"` skips the spend cap's reservation for this provider (a
+        /// flat-rate gateway). Calls are still counted.
         #[serde(default)]
         pricing: Option<FreePricing>,
     },
-    /// An OpenAI-compatible chat completions server.
+    /// Any OpenAI-compatible chat completions server: LiteLLM, OpenRouter,
+    /// Ollama, vLLM, llama.cpp, Azure OpenAI, OpenAI itself. Also serves
+    /// embeddings. A model here must be priced on its stage, or the provider
+    /// marked `pricing = "free"`.
     Openai {
+        /// The absolute http(s) URL with the API prefix
+        /// (`http://ollama:11434/v1`). Azure carries `?api-version=` here.
+        #[schemars(with = "String", url)]
         base_url: BaseUrl,
-        /// Absent for a local server that needs no key.
+        /// The environment variable holding the API key. Leave unset for a
+        /// local server that needs no key: then no auth header is sent.
         #[serde(default)]
+        #[schemars(with = "Option<String>", length(min = 1), extend("x-env-var" = true))]
         api_key_env: Option<EnvVar>,
-        /// Which header the key travels in; `bearer` unless said otherwise,
-        /// and an error without `api_key_env` (it would be ignored).
+        /// Which header the key travels in; default `bearer`. Needs
+        /// `api_key_env`.
         #[serde(default)]
         auth: Option<OpenAiHeader>,
+        /// How the answer's JSON shape is enforced. Weaker modes mean more
+        /// citation retries, not weaker guarantees: decoding and citation
+        /// validation are client-side.
         #[serde(default)]
         structured_output: StructuredOutputKnob,
+        /// Send `strict: true` on the lookup_rules function.
         #[serde(default = "yes")]
         strict_tools: bool,
+        /// Send `reasoning_effort` from the stage's `effort` (xhigh and max
+        /// map to high). While false, `effort` on a stage naming this
+        /// provider is an error.
         #[serde(default)]
         reasoning_effort: bool,
+        /// The name of the output-limit field: `max_completion_tokens` for
+        /// OpenAI's own API.
         #[serde(default)]
         max_tokens_param: MaxTokensKnob,
+        /// Forward `cache_control` on the system blocks (LiteLLM honours it
+        /// for Anthropic upstreams).
         #[serde(default)]
         cache_hints: bool,
-        /// Embeddings: whether `dimensions` goes on the wire. Off for a
+        /// Embeddings only: put `dimensions` on the wire. Turn off for a
         /// server that rejects the field (vLLM with a model that has no
         /// matryoshka training); the width is then only checked on the reply.
         #[serde(default = "yes")]
         send_dimensions: bool,
+        /// `"free"` skips the spend cap's reservation for this provider (a
+        /// local server). Calls are still counted.
         #[serde(default)]
         pricing: Option<FreePricing>,
     },
-    /// Voyage AI embeddings.
+    /// Voyage AI embeddings. Implied, with `VOYAGE_API_KEY`, when
+    /// `[models.embed]` names no provider.
     Voyage {
-        /// Defaults to `VOYAGE_API_KEY`.
+        /// The environment variable holding the API key; default
+        /// `VOYAGE_API_KEY`.
         #[serde(default)]
+        #[schemars(with = "Option<String>", length(min = 1), extend("x-env-var" = true))]
         api_key_env: Option<EnvVar>,
     },
 }
@@ -346,21 +407,42 @@ fn yes() -> bool {
 }
 
 /// `endpoint` on an `anthropic` provider. The full vocabulary is accepted so
-/// the file reads the same across releases; a door this binary was built
-/// without (Cargo features `aws`, `gcp`) is refused at load with
-/// [`ConfigError::NotBuilt`] naming the feature, not mistaken for a typo.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+/// the file reads the same across releases. A door this binary was built
+/// without (Cargo features `aws`, `gcp`) is refused at load naming the
+/// feature, not mistaken for a typo.
+#[expect(
+    clippy::doc_markdown,
+    reason = "operator-facing help text in the config editor: product names are not code"
+)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 enum Door {
+    /// Anthropic's own API, with an API key.
     #[default]
     Direct,
+    /// A gateway speaking the Messages API (LiteLLM's `/v1/messages`, a
+    /// corporate proxy), with a key in the header it wants.
     Proxy,
+    /// Anthropic's platform on an AWS account, signed with AWS credentials.
     ClaudePlatformOnAws,
+    /// Claude in Amazon Bedrock. Model ids are `anthropic.<model>` or an
+    /// inference profile `<prefix>.anthropic.<model>`. No structured outputs,
+    /// strict tools or fallbacks: the schema goes in the prompt.
     Bedrock,
+    /// Claude on Google Cloud Vertex AI, with Application Default
+    /// Credentials.
     Vertex,
 }
 
 impl Door {
+    const ALL: [Self; 5] = [
+        Self::Direct,
+        Self::Proxy,
+        Self::ClaudePlatformOnAws,
+        Self::Bedrock,
+        Self::Vertex,
+    ];
+
     /// The value as the file spells it.
     const fn name(self) -> &'static str {
         match self {
@@ -372,10 +454,98 @@ impl Door {
         }
     }
 
-    /// Whether the door takes a key (`api_key_env`) rather than a platform
-    /// credential chain.
-    const fn takes_key(self) -> bool {
-        matches!(self, Door::Direct | Door::Proxy)
+    /// Whether this binary was built with the door (Cargo features `aws`,
+    /// `gcp`); the constructors of one that was not say
+    /// [`ConfigError::NotBuilt`].
+    const fn built(self) -> bool {
+        match self {
+            Door::Direct | Door::Proxy => true,
+            Door::ClaudePlatformOnAws | Door::Bedrock => cfg!(feature = "aws"),
+            Door::Vertex => cfg!(feature = "gcp"),
+        }
+    }
+}
+
+/// A key of an `anthropic` provider table that belongs to some doors only.
+/// [`DoorKey::on`] is the one statement of which door takes which key: the
+/// loader refuses a key where it is [`Applies::No`], the door constructors
+/// require it where it is [`Applies::Required`]
+/// (`door_table_matches_the_loader` holds them to it), and the config editor
+/// shows a door only the keys it takes. Rules on a key's *value* stay with
+/// the loader: `refusal_fallbacks = true` on Bedrock, Bedrock's
+/// `anthropic.` model ids.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DoorKey {
+    BaseUrl,
+    ApiKeyEnv,
+    Auth,
+    Region,
+    WorkspaceId,
+    Project,
+}
+
+/// Whether a [`DoorKey`] applies on a door.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Applies {
+    Required,
+    Optional,
+    No,
+}
+
+impl DoorKey {
+    const ALL: [Self; 6] = [
+        Self::BaseUrl,
+        Self::ApiKeyEnv,
+        Self::Auth,
+        Self::Region,
+        Self::WorkspaceId,
+        Self::Project,
+    ];
+
+    /// The key as the file spells it.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::BaseUrl => "base_url",
+            Self::ApiKeyEnv => "api_key_env",
+            Self::Auth => "auth",
+            Self::Region => "region",
+            Self::WorkspaceId => "workspace_id",
+            Self::Project => "project",
+        }
+    }
+
+    const fn on(self, door: Door) -> Applies {
+        use Applies::{No, Optional, Required};
+        match (self, door) {
+            (Self::BaseUrl, Door::Proxy)
+            | (Self::ApiKeyEnv, Door::Direct | Door::Proxy)
+            | (Self::Region, Door::ClaudePlatformOnAws | Door::Bedrock | Door::Vertex)
+            | (Self::WorkspaceId, Door::ClaudePlatformOnAws)
+            | (Self::Project, Door::Vertex) => Required,
+            (Self::BaseUrl, _) | (Self::Auth, Door::Proxy) => Optional,
+            (
+                Self::ApiKeyEnv | Self::Auth | Self::Region | Self::WorkspaceId | Self::Project,
+                _,
+            ) => No,
+        }
+    }
+
+    /// Why the key is refused on a door where it is [`Applies::No`].
+    const fn misplaced(self) -> &'static str {
+        match self {
+            // Applies everywhere: never refused.
+            Self::BaseUrl => "applies to every door",
+            Self::ApiKeyEnv => {
+                "does not apply to a cloud door: this build signs with the platform's credential chain (SigV4, ADC); API-key auth for the cloud doors is not supported"
+            }
+            Self::Auth => "applies only to endpoint = \"proxy\"",
+            Self::Region => {
+                "applies only to the cloud doors (claude-platform-on-aws, bedrock, vertex)"
+            }
+            Self::WorkspaceId => "applies only to endpoint = \"claude-platform-on-aws\"",
+            Self::Project => "applies only to endpoint = \"vertex\"",
+        }
     }
 }
 
@@ -501,74 +671,107 @@ fn vertex(
 }
 
 /// `auth` on an `anthropic` proxy.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 enum ProxyHeader {
+    /// `x-api-key: <key>`, as Anthropic's API takes it.
     XApiKey,
+    /// `Authorization: Bearer <key>`.
     Bearer,
 }
 
 /// `auth` on an `openai` provider.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 enum OpenAiHeader {
+    /// `Authorization: Bearer <key>`.
     Bearer,
     /// Azure's `api-key` header.
     ApiKey,
 }
 
 /// `structured_output` on an `openai` provider.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum StructuredOutputKnob {
+    /// `response_format` with the schema, strict.
     #[default]
     JsonSchema,
+    /// JSON mode, with the schema appended to the prompt.
     JsonObject,
+    /// No server-side enforcement: the schema is in the prompt only.
     Prompt,
 }
 
 /// `max_tokens_param` on an `openai` provider.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum MaxTokensKnob {
+    /// `max_tokens`, what most servers take.
     #[default]
     MaxTokens,
+    /// `max_completion_tokens`, for the `OpenAI` API itself.
     MaxCompletionTokens,
 }
 
 /// `pricing = "free"` on a provider: the only value the key takes.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum FreePricing {
+    /// No reservation against the spend cap.
     Free,
 }
 
 /// `[models]`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ModelsEntry {
+    /// Entity extraction and classification: one cheap, low-effort call per
+    /// question.
     extract: StageEntry,
+    /// Synthesis: the judge's answer, with at most one `lookup_rules` round.
     synth: StageEntry,
+    /// Embeddings for the vector retrieval leg. Absent turns that leg off,
+    /// and the bot still works.
     #[serde(default)]
     embed: Option<EmbedEntry>,
 }
 
 /// `[models.extract]` / `[models.synth]`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct StageEntry {
+    /// The provider, by its name under `[providers]`. An `anthropic` or
+    /// `openai` one.
+    #[schemars(with = "String", length(min = 1), extend("x-provider-kinds" = ["anthropic", "openai"]))]
     provider: ProviderName,
+    /// The model id as the provider names it (`claude-opus-5-5`;
+    /// `anthropic.claude-opus-5-5` on Bedrock).
+    #[schemars(with = "String", length(min = 1))]
     model: ModelId,
+    /// The output ceiling in tokens, reasoning included. Default 2000 for
+    /// extract, 16000 for synth.
     #[serde(default)]
+    #[schemars(with = "Option<u32>", range(min = 1))]
     max_tokens: Option<MaxTokens>,
+    /// How hard the model thinks. Default low for extract; for synth the
+    /// model's measured effort on an `anthropic` provider (medium for
+    /// claude-opus-5-5 and claude-haiku-5-5), high for any other model or
+    /// provider. A truncated answer retries
+    /// once at medium, or at low from medium. On an `openai` provider it
+    /// needs `reasoning_effort = true`.
     #[serde(default)]
     effort: Option<EffortKnob>,
+    /// The model's price, which the spend cap reserves and settles at.
+    /// Required for a model on an `openai` provider not marked free. On
+    /// Anthropic it overrides the built-in table, which prices an unknown
+    /// model as claude-opus-5-5.
     #[serde(default)]
     pricing: Option<PricingEntry>,
 }
 
 /// `effort` on a stage.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum EffortKnob {
     Low,
@@ -595,14 +798,22 @@ impl From<EffortKnob> for Effort {
 /// dearer than an uncached read, and a cache write is billed at 1.25x the
 /// input price by Anthropic, the dearest write premium of the providers the
 /// judge knows.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PricingEntry {
+    /// USD per million input tokens.
+    #[schemars(with = "f64", range(min = 0.0))]
     input: Usd,
+    /// USD per million output tokens.
+    #[schemars(with = "f64", range(min = 0.0))]
     output: Usd,
+    /// USD per million cache-read tokens. Default: the input price.
     #[serde(default)]
+    #[schemars(with = "Option<f64>", range(min = 0.0))]
     cache_read: Option<Usd>,
+    /// USD per million cache-write tokens. Default: 1.25 x the input price.
     #[serde(default)]
+    #[schemars(with = "Option<f64>", range(min = 0.0))]
     cache_write: Option<Usd>,
 }
 
@@ -620,14 +831,24 @@ impl PricingEntry {
 }
 
 /// `[models.embed]`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct EmbedEntry {
-    /// Defaults to `voyage`.
+    /// A `voyage` or `openai` provider; default `voyage` (implied with
+    /// `VOYAGE_API_KEY` when there is no such table).
     #[serde(default)]
+    #[schemars(with = "Option<String>", length(min = 1), extend("x-provider-kinds" = ["voyage", "openai"]))]
     provider: Option<ProviderName>,
+    /// The embedding model (`voyage-3.5`, `text-embedding-3-small`).
+    /// Changing it means `judge-ingest reembed --yes`.
+    #[schemars(with = "String", length(min = 1))]
     model: ModelId,
+    /// The vector width, 1..=2000 (pgvector's HNSW limit). Default 1024 on
+    /// Voyage, required on an `openai` provider (text-embedding-3-small:
+    /// 1536, nomic-embed-text: 768). Changing it means
+    /// `judge-ingest reembed --yes`.
     #[serde(default)]
+    #[schemars(with = "Option<u32>", range(min = 1, max = MAX_DIMENSIONS))]
     dimensions: Option<Dimensions>,
 }
 
@@ -835,6 +1056,75 @@ pub enum ConfigError {
     /// The spend cap, or a backend's HTTP client.
     #[error(transparent)]
     Llm(#[from] LlmError),
+}
+
+/// Where a [`ConfigError`] points: the key to fix, for the config editor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "in", rename_all = "lowercase")]
+pub enum Location {
+    /// A key of the file, as a dotted path (`providers.litellm.auth`).
+    Toml {
+        /// The path.
+        path: String,
+    },
+    /// An environment variable.
+    Env {
+        /// The variable.
+        var: String,
+    },
+    /// A place in the file's text: a parse failure, or an unreadable file.
+    Text {
+        /// The byte range, when the parser had one.
+        span: Option<(usize, usize)>,
+    },
+    /// Nothing the operator can point at (an HTTP client failing to build).
+    Elsewhere,
+}
+
+impl ConfigError {
+    /// Where the fix goes. Exhaustive, so a new variant has to say.
+    #[must_use]
+    pub fn location(&self) -> Location {
+        let toml = |path: String| Location::Toml { path };
+        let env = |var: &str| Location::Env {
+            var: var.to_owned(),
+        };
+        match self {
+            Self::Missing { .. } => env(CONFIG_ENV),
+            Self::Parse { cause, .. } => Location::Text {
+                span: cause.span().map(|r| (r.start, r.end)),
+            },
+            Self::MissingEnv { var, .. } => env(var),
+            // An embed stage naming no provider falls back to `voyage`: the
+            // stage table is what to fix then.
+            Self::UnknownProvider { stage: "embed", .. }
+            | Self::WrongKind { stage: "embed", .. }
+            | Self::Embedder(_) => toml("models.embed".to_owned()),
+            Self::UnknownProvider { stage, .. } | Self::WrongKind { stage, .. } => {
+                toml(format!("models.{stage}.provider"))
+            }
+            Self::Unpriced { stage, .. } | Self::PricedFree { stage, .. } => {
+                toml(format!("models.{stage}.pricing"))
+            }
+            Self::NotBuilt { provider, .. } => toml(format!("providers.{provider}.endpoint")),
+            Self::Required { provider, key, .. } | Self::Misplaced { provider, key, .. } => {
+                toml(format!("providers.{provider}.{key}"))
+            }
+            Self::BedrockModelId { stage, .. } => toml(format!("models.{stage}.model")),
+            Self::Credentials { provider, .. } => toml(format!("providers.{provider}")),
+            Self::BadSourceUrl { .. } => env(SOURCE_URL_ENV),
+            Self::BadContact { var, .. } | Self::BadBudget { var, .. } => env(var),
+            Self::MissingContact(MissingContact::Discord) => env(OPERATOR_DISCORD_ENV),
+            Self::MissingContact(MissingContact::Email) => env(OPERATOR_EMAIL_ENV),
+            Self::EmbedDimensions { .. } => toml("models.embed.dimensions".to_owned()),
+            Self::EffortNotSent { stage, .. } => toml(format!("models.{stage}.effort")),
+            Self::NoChatModel => env(ANTHROPIC_KEY_ENV),
+            Self::BadDimensions { .. } => env("VOYAGE_DIMENSIONS"),
+            Self::Llm(LlmError::BadMaxSpend { setting, .. }) => env(setting),
+            Self::Read { .. } => Location::Text { span: None },
+            Self::Llm(_) => Location::Elsewhere,
+        }
+    }
 }
 
 // ---------- the resolved configuration ----------
@@ -1843,38 +2133,25 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                     reason,
                 };
                 // Each key belongs to some doors only; on another it would be
-                // silently ignored, so it is an error there.
-                if auth.is_some() && door != Door::Proxy {
-                    return Err(misplaced("auth", "applies only to endpoint = \"proxy\""));
-                }
-                if api_key_env.is_some() && !door.takes_key() {
-                    return Err(misplaced(
-                        "api_key_env",
-                        "does not apply to a cloud door: this build signs with the platform's credential chain (SigV4, ADC); API-key auth for the cloud doors is not supported",
-                    ));
-                }
-                if region.is_some() && door.takes_key() {
-                    return Err(misplaced(
-                        "region",
-                        "applies only to the cloud doors (claude-platform-on-aws, bedrock, vertex)",
-                    ));
-                }
-                if workspace_id.is_some() && door != Door::ClaudePlatformOnAws {
-                    return Err(misplaced(
-                        "workspace_id",
-                        "applies only to endpoint = \"claude-platform-on-aws\"",
-                    ));
+                // silently ignored, so it is an error there ([`DoorKey::on`]).
+                let present = [
+                    (DoorKey::Auth, auth.is_some()),
+                    (DoorKey::ApiKeyEnv, api_key_env.is_some()),
+                    (DoorKey::BaseUrl, base_url.is_some()),
+                    (DoorKey::Region, region.is_some()),
+                    (DoorKey::WorkspaceId, workspace_id.is_some()),
+                    (DoorKey::Project, project.is_some()),
+                ];
+                if let Some((key, _)) = present
+                    .into_iter()
+                    .find(|&(key, set)| set && key.on(door) == Applies::No)
+                {
+                    return Err(misplaced(key.name(), key.misplaced()));
                 }
                 if *refusal_fallbacks == Some(true) && door == Door::Bedrock {
                     return Err(misplaced(
                         "refusal_fallbacks",
                         "cannot be true on endpoint = \"bedrock\": it takes no anthropic-beta header, so the fallbacks beta cannot be sent",
-                    ));
-                }
-                if project.is_some() && door != Door::Vertex {
-                    return Err(misplaced(
-                        "project",
-                        "applies only to endpoint = \"vertex\"",
                     ));
                 }
                 let key = |var: Option<&EnvVar>| {
@@ -2285,6 +2562,123 @@ model = "claude-opus-5-5"
 provider = "anthropic"
 model = "claude-opus-5-5"
 "#;
+
+    /// [`DoorKey::on`] is what the loader does, door by door: a key it
+    /// calls `no` is refused as misplaced, one it calls `required` is
+    /// required (or the door is not built), and a table holding exactly the
+    /// keys it allows loads (or the door is not built).
+    #[test]
+    fn door_table_matches_the_loader() -> R {
+        use std::fmt::Write as _;
+        let value = |key: DoorKey| match key {
+            DoorKey::BaseUrl => "base_url = \"http://proxy:4000\"",
+            DoorKey::ApiKeyEnv => "api_key_env = \"K\"",
+            DoorKey::Auth => "auth = \"bearer\"",
+            DoorKey::Region => "region = \"us-east-1\"",
+            DoorKey::WorkspaceId => "workspace_id = \"wrkspc_abc\"",
+            DoorKey::Project => "project = \"my-proj\"",
+        };
+        let file = |door: Door, keys: &[DoorKey]| {
+            let model = if door == Door::Bedrock {
+                "anthropic.claude-opus-5-5"
+            } else {
+                "claude-opus-5-5"
+            };
+            let mut t = format!(
+                "[providers.p]\nkind = \"anthropic\"\nendpoint = \"{}\"\n",
+                door.name()
+            );
+            for k in keys {
+                t.push_str(value(*k));
+                t.push('\n');
+            }
+            for stage in ["extract", "synth"] {
+                let _ = write!(
+                    t,
+                    "[models.{stage}]\nprovider = \"p\"\nmodel = \"{model}\"\n"
+                );
+            }
+            t
+        };
+        let env = [("K", "k")];
+        for door in Door::ALL {
+            let required: Vec<DoorKey> = DoorKey::ALL
+                .into_iter()
+                .filter(|k| k.on(door) == Applies::Required)
+                .collect();
+            let allowed: Vec<DoorKey> = DoorKey::ALL
+                .into_iter()
+                .filter(|k| k.on(door) != Applies::No)
+                .collect();
+            for keys in [&required, &allowed] {
+                match load(&file(door, keys), &env) {
+                    Ok(_) => assert!(door.built(), "{door:?} loaded unbuilt"),
+                    Err(ConfigError::NotBuilt { .. }) => assert!(!door.built()),
+                    Err(e) => return Err(format!("{door:?} {keys:?}: {e}").into()),
+                }
+            }
+            for key in DoorKey::ALL {
+                match key.on(door) {
+                    Applies::No => {
+                        let mut keys = required.clone();
+                        keys.push(key);
+                        let err = load(&file(door, &keys), &env).err();
+                        assert!(
+                            matches!(&err, Some(ConfigError::Misplaced { key: k, .. }) if *k == key.name()),
+                            "{door:?} {key:?}: {err:?}"
+                        );
+                    }
+                    Applies::Required if door.built() => {
+                        let keys: Vec<DoorKey> =
+                            required.iter().copied().filter(|k| *k != key).collect();
+                        let err = load(&file(door, &keys), &env).err();
+                        assert!(
+                            matches!(&err, Some(ConfigError::Required { key: k, .. }) if *k == key.name()),
+                            "{door:?} {key:?}: {err:?}"
+                        );
+                    }
+                    Applies::Required | Applies::Optional => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// An error points the editor at the key to fix: a typo by its span in
+    /// the text, a resolution failure by its dotted path or its variable.
+    #[test]
+    fn errors_name_their_location() -> R {
+        let span = |text: &str| -> Result<String, Box<dyn std::error::Error>> {
+            let err = load(text, &[]).err().ok_or("loaded")?;
+            let Location::Text { span: Some((a, b)) } = err.location() else {
+                return Err(format!("{:?}", err.location()).into());
+            };
+            Ok(text.get(a..b).ok_or("span")?.to_owned())
+        };
+        assert_eq!(span(&MINIMAL.replacen("model =", "mdl =", 1))?, "mdl");
+        // A provider table is buffered by its `kind` tag before it is read,
+        // so a typo there points at the table (the message names the key).
+        assert!(
+            span(&MINIMAL.replace("api_key_env", "api_kye_env"))?
+                .starts_with("[providers.anthropic]")
+        );
+        let misplaced = MINIMAL.replace("api_key_env", "auth = \"bearer\"\napi_key_env");
+        assert_eq!(
+            load(&misplaced, &[("ANTHROPIC_API_KEY", "k")])
+                .err()
+                .map(|e| e.location()),
+            Some(Location::Toml {
+                path: "providers.anthropic.auth".to_owned()
+            })
+        );
+        assert_eq!(
+            load(MINIMAL, &[]).err().map(|e| e.location()),
+            Some(Location::Env {
+                var: "ANTHROPIC_API_KEY".to_owned()
+            })
+        );
+        Ok(())
+    }
 
     /// A file that resolves with no environment at all: a free, keyless
     /// OpenAI-compatible server for both stages.
