@@ -12,7 +12,7 @@ let formBase = ""; // JSON.stringify(form) as loaded, to know when it changed
 let tomlText = ""; // the judge.toml draft, in text mode
 let textEdited = false; // typed in since the Text view opened
 let envDraft = Object.create(null); // setting name -> value, only the changed ones
-// Variables to overwrite blind (secrets, hidden settings, unknown ones):
+// Variables to overwrite write-only (secrets, hidden settings, unknown ones):
 // name -> the value typed. Held in memory only, sent to the server, never
 // shown back.
 let replaceDraft = Object.create(null);

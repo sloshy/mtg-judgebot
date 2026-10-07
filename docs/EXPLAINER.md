@@ -553,7 +553,7 @@ against a mocked HTTP server (`wiremock`), not the live API.
 
 ---
 
-## 10. The three front doors
+## 10. The three interfaces
 
 All three share one composition root, `judge_bot::build_deps`, so they run the same
 pipeline.

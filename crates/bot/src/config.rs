@@ -270,8 +270,8 @@ pub struct MaxTokens(u32);
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct File {
-    /// The doors to the models, each under a name of your choosing. A stage
-    /// names one by that name.
+    /// The model providers, each under a name you choose. A stage refers to
+    /// a provider by that name.
     #[serde(default)]
     #[schemars(with = "BTreeMap<String, ProviderEntry>")]
     providers: BTreeMap<ProviderName, ProviderEntry>,
@@ -290,15 +290,15 @@ enum ProviderEntry {
     /// Claude through the Messages API: Anthropic directly, a gateway, or a
     /// cloud account.
     Anthropic {
-        /// Which door to Claude. The cloud doors take credentials from the
-        /// platform's own chain (AWS: environment, profile, SSO or role; GCP:
+        /// How requests reach Claude. The cloud endpoints take credentials from
+        /// the platform's own chain (AWS: environment, profile, SSO or role; GCP:
         /// Application Default Credentials), probed once at startup.
         #[serde(default)]
         endpoint: Door,
         /// The origin, without `/v1/messages`. Required for a proxy; on
-        /// every other door an override of the default
+        /// every other endpoint an override of the default
         /// (`https://api.anthropic.com` for direct, derived from `region`
-        /// on the cloud doors).
+        /// on the cloud endpoints).
         #[serde(default)]
         #[schemars(with = "Option<String>", url)]
         base_url: Option<BaseUrl>,
@@ -334,7 +334,7 @@ enum ProviderEntry {
         project: Option<Project>,
         /// Send server-side refusal fallbacks, a beta Anthropic documents for
         /// its own API only. Unset means on for direct and off on every other
-        /// door; it cannot be true on Bedrock, which takes no beta header.
+        /// endpoint; it cannot be true on Bedrock, which takes no beta header.
         #[serde(default)]
         refusal_fallbacks: Option<bool>,
         /// `"free"` skips the spend cap's reservation for this provider (a
@@ -407,7 +407,7 @@ fn yes() -> bool {
 }
 
 /// `endpoint` on an `anthropic` provider. The full vocabulary is accepted so
-/// the file reads the same across releases. A door this binary was built
+/// the file reads the same across releases. An endpoint this binary was built
 /// without (Cargo features `aws`, `gcp`) is refused at load naming the
 /// feature, not mistaken for a typo.
 #[expect(
@@ -535,13 +535,13 @@ impl DoorKey {
     const fn misplaced(self) -> &'static str {
         match self {
             // Applies everywhere: never refused.
-            Self::BaseUrl => "applies to every door",
+            Self::BaseUrl => "applies to every endpoint",
             Self::ApiKeyEnv => {
-                "does not apply to a cloud door: this build signs with the platform's credential chain (SigV4, ADC); API-key auth for the cloud doors is not supported"
+                "does not apply to a cloud endpoint: this build signs with the platform's credential chain (SigV4, ADC); API-key auth for the cloud endpoints is not supported"
             }
             Self::Auth => "applies only to endpoint = \"proxy\"",
             Self::Region => {
-                "applies only to the cloud doors (claude-platform-on-aws, bedrock, vertex)"
+                "applies only to the cloud endpoints (claude-platform-on-aws, bedrock, vertex)"
             }
             Self::WorkspaceId => "applies only to endpoint = \"claude-platform-on-aws\"",
             Self::Project => "applies only to endpoint = \"vertex\"",
@@ -3820,11 +3820,11 @@ model = "qwen3:8b"
         for (extra, expect) in [
             (
                 "endpoint = \"vertex\"\nregion = \"global\"\nproject = \"p\"\napi_key_env = \"ANTHROPIC_API_KEY\"",
-                "providers.anthropic: api_key_env does not apply to a cloud door",
+                "providers.anthropic: api_key_env does not apply to a cloud endpoint",
             ),
             (
                 "api_key_env = \"ANTHROPIC_API_KEY\"\nregion = \"us-west-2\"",
-                "providers.anthropic: region applies only to the cloud doors",
+                "providers.anthropic: region applies only to the cloud endpoints",
             ),
             (
                 "api_key_env = \"ANTHROPIC_API_KEY\"\nworkspace_id = \"wrkspc_01X\"",

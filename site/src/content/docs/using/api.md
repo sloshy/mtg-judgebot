@@ -10,7 +10,7 @@ sidebar:
 - `POST /api/judge`, on with `--api` (or with no flags at all).
 - `GET /api/health` and `GET /api/about`, served whatever is switched off.
 
-There is no authentication. The API is the anonymous front door, bounded by a per-address
+There is no authentication. The API is the anonymous interface, bounded by a per-address
 rate limit, the concurrency slots and the spend cap. It sends no CORS headers, so call it
 from a server or from the bundled page, not from a browser page on another origin.
 
@@ -84,4 +84,4 @@ built from it.
 
 ## MCP
 
-`/mcp` is a separate door with its own credential. See [Agents](../../using/agents/).
+`/mcp` is a separate interface with its own credential. See [Agents](../../using/agents/).

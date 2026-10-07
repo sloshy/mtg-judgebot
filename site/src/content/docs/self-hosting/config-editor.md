@@ -70,12 +70,12 @@ absolute one names a path in the container, so pass `--config` instead.
 | Database | `DATABASE_URL` present, `DB_PORT`, `JUDGE_AUTO_MIGRATE` | an unset `DATABASE_URL`, `JUDGE_AUTO_MIGRATE=maybe` |
 | Models | the `judge.toml` loader (or the zero-config setup), the spend settings, the source offer | a misplaced key, an unpriced model on an `openai` provider, an unset `api_key_env` variable |
 | Discord bot | the bot's own settings, then its operator contact | an unset `DISCORD_TOKEN`, a bad `GUILD_ID`, no `JUDGE_OPERATOR_DISCORD` |
-| HTTP API | the API's settings and the doors `API_INTERFACES` opens, then its operator contact | `--mcp` with no `MCP_TOKEN`, a bad `API_ADDR`, no `JUDGE_OPERATOR_EMAIL` |
+| HTTP API | the API's settings and the interfaces `API_INTERFACES` opens, then its operator contact | `--mcp` with no `MCP_TOKEN`, a bad `API_ADDR`, no `JUDGE_OPERATOR_EMAIL` |
 
 Two checks depend on the machine that serves rather than on the files, so the editor
 leaves them to startup:
 
-- a cloud door's credential chain (`claude-platform-on-aws`, `bedrock`, `vertex`)
+- a cloud endpoint's credential chain (`claude-platform-on-aws`, `bedrock`, `vertex`)
 - `--web`'s `WEB_DIST` directory (the image sets its own)
 
 A part that would refuse to start does not block saving. A deployment that never runs

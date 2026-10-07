@@ -2,7 +2,7 @@
 # licences the AGPL can carry, and where crates may come from.
 
 [graph]
-# The cloud doors are default features of judge-anthropic; the image builds
+# The cloud endpoints are default features of judge-anthropic; the image builds
 # them, so their dependencies are checked like any other.
 all-features = true
 

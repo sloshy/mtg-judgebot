@@ -8,7 +8,7 @@
 //! - `POST /api/save`: the same, written, unless either file changed since
 //!   the page read it.
 //!
-//! A draft carries shown settings (`env`) and blind replacements
+//! A draft carries shown settings (`env`) and write-only replacements
 //! (`replace`). A replacement's value goes into the file and nowhere else:
 //! every reply is scrubbed of it, as of every secret already in the file,
 //! and the `.env` diff names it without a value.
@@ -325,7 +325,7 @@ struct Draft {
     /// Shown settings to change, by name.
     #[serde(default)]
     env: BTreeMap<String, String>,
-    /// Variables to overwrite blind, by name: secrets, hidden settings,
+    /// Variables to overwrite write-only, by name: secrets, hidden settings,
     /// variables the registry does not know. Never sent back.
     #[serde(default)]
     replace: BTreeMap<String, String>,
@@ -352,7 +352,7 @@ struct Rendered {
     /// What the reply must not show: the sensitive values before and after,
     /// and every replacement.
     secrets: Vec<String>,
-    /// The variables overwritten blind.
+    /// The variables overwritten write-only.
     replaced: Vec<String>,
 }
 
@@ -705,8 +705,8 @@ mod tests {
             assert!(!out.contains(secret), "{secret} in {out}");
         }
         assert!(out.contains("<redacted>"), "{out}");
-        // A hidden setting cannot be overwritten blind.
-        let blind = Draft {
+        // A hidden setting is not changed through its shown field.
+        let through_field = Draft {
             toml: TomlDraft::None,
             env: BTreeMap::from([(
                 "ANTHROPIC_BASE_URL".to_owned(),
@@ -714,7 +714,7 @@ mod tests {
             )]),
             replace: BTreeMap::new(),
         };
-        assert!(render(&editor, &blind).is_err());
+        assert!(render(&editor, &through_field).is_err());
         Ok(())
     }
 

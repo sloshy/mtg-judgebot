@@ -13,7 +13,7 @@ A `judge.toml` picks something else, such as a different model per stage on diff
 providers. The file is the one `JUDGE_CONFIG` names, else `./judge.toml` if present.
 `judge.example.toml` shows every knob with its default. The file names secrets by
 environment variable and never holds one. [The config editor](../config-editor/) builds the
-file from forms, showing each door only the keys it takes, and checks every draft with the
+file from forms, showing each endpoint only the keys it takes, and checks every draft with the
 loader.
 
 Under Docker, a `./judge.toml` is read only when `.env` sets `JUDGE_CONFIG=./judge.toml`. The containers see only the file
@@ -44,7 +44,7 @@ effort = "medium"                    # the default for this model; see below
 ```
 
 Two kinds of chat backend exist. `kind = "anthropic"` is the Messages API, reached through
-one of five doors:
+one of five endpoints:
 
 - `direct`: the first-party API.
 - `proxy`: a gateway speaking `/v1/messages`, such as LiteLLM, with the key in
@@ -53,7 +53,7 @@ one of five doors:
 - `bedrock`: SigV4, a `region`, `anthropic.`-prefixed model ids. Takes no key.
 - `vertex`: Google ADC, a `project` and a `region`. Takes no key.
 
-Credentials for the three cloud doors come from the platform's own credential chain:
+Credentials for the three cloud endpoints come from the platform's own credential chain:
 `AWS_*` variables, a profile, an instance role, `GOOGLE_APPLICATION_CREDENTIALS`. They are
 checked once at startup, so a host with none fails there rather than on the first
 question.

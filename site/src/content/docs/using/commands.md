@@ -58,7 +58,7 @@ JSON goes to stdout and logs to stderr.
 | `persist <session>` | Persist an admitted verdict (idempotent). |
 | `card <name>` / `card-info <uuid>` | Resolve a name / a card by id. |
 | `get-rules <id>...` / `search <query> [--limit N]` / `glossary <term>` | Rules text, full-text search, glossary. |
-| `stats [--days N]` | The operator's view, over the last N UTC days (default 30): stored questions per day by front door, estimated model spend and model calls per day (from the `spend_days` ledger `bot` and `api` keep), ratings by score, retired calls, and the ten worst-rated calls. A Discord question asked with `private: True` is in the spend and not in the questions. CLI only. |
+| `stats [--days N]` | The operator's view, over the last N UTC days (default 30): stored questions per day by interface, estimated model spend and model calls per day (from the `spend_days` ledger `bot` and `api` keep), ratings by score, retired calls, and the ten worst-rated calls. A Discord question asked with `private: True` is in the spend and not in the questions. CLI only. |
 | `config` | The resolved provider setup, secrets redacted. |
 | `about` | The source offer: the repository holding this instance's source, the commit it was built from, the licence and copyright. No database needed. |
 

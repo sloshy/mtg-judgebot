@@ -196,8 +196,8 @@ Around the meter:
 
 ### 4.1 Anthropic Messages API
 
-One wire format serves several doors. The body is the Messages API everywhere, and the
-doors differ in auth, URL and a feature mask. `Endpoint` is an enum, so a new door is an
+One wire format serves several endpoints. The body is the Messages API everywhere, and the
+endpoints differ in auth, URL and a feature mask. `Endpoint` is an enum, so a new endpoint is an
 exhaustive-match compile error, not a config typo. The formats were verified against the
 live docs 2026-09-02.
 
@@ -209,35 +209,35 @@ live docs 2026-09-02.
 | `Bedrock { base_url, region, credentials }` | SigV4, service `bedrock-mantle` | `https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages` | `anthropic.`-prefixed (a whole `anthropic` segment is required) | `fallbacks`, `output_config.format`, tool `strict` and every `anthropic-beta` off. The schema goes in the prompt. |
 | `Vertex { base_url, project, region, token }` | GCP ADC bearer token | model in the URL, `anthropic_version` in the body (`wire::ModelField`). The origin depends on `global`, a multi-region or a specific region | bare | `fallbacks` off |
 
-Every door's `base_url` is derived from the region (or project) and can be overridden in
+Every endpoint's `base_url` is derived from the region (or project) and can be overridden in
 the provider table, so a changed platform hostname is a config edit, not a release.
 
 Structured outputs, strict tools, adaptive thinking/effort and prompt caching are GA on
-Vertex. The Bedrock door uses Bedrock's Messages-shaped endpoint (`bedrock-mantle`), where
+Vertex. The Bedrock endpoint is Bedrock's Messages-shaped API (`bedrock-mantle`), where
 Bedrock documents structured outputs as unsupported, hence the mask in the table.
 Anthropic documents server-side `fallbacks` for the Claude API only (Claude Sonnet 5.5's
 migration guide says "Claude API only"; the refusals page names Bedrock, Google Cloud and
-Foundry as unsupported). Claude Haiku 5.5 has no server-side fallback on any door: the
+Foundry as unsupported). Claude Haiku 5.5 has no server-side fallback on any endpoint: the
 `"default"` form the pipeline sends is accepted, and a declined request stays declined.
-Every door but `direct` therefore turns `SynthConfig::fallbacks`
-off with a warning rather than sending a beta the door may reject. A provider table's
-`refusal_fallbacks = true | false` overrides the door's default either way: `true` for a
+Every endpoint but `direct` therefore turns `SynthConfig::fallbacks`
+off with a warning rather than sending a beta the endpoint may reject. A provider table's
+`refusal_fallbacks = true | false` overrides the endpoint's default either way: `true` for a
 proxy that passes the beta through, or for Claude Platform on AWS once it is known to take
-it; `false` to never send it. `true` on `bedrock` is a load error, because that door drops
+it; `false` to never send it. `true` on `bedrock` is a load error, because that endpoint drops
 every `anthropic-beta` header and the field cannot travel without its beta.
 
 Each provider table resolves to one `Endpoint`, shared by the stages that name it. For the
-cloud doors:
+cloud endpoints:
 
 - They sit behind `judge-anthropic`'s `aws` (aws-config + aws-sigv4) and `gcp` (gcp_auth)
   Cargo features. Both are on by default, forwarded from `judge-bot`'s own features and
-  named in the Dockerfile. A lean build cannot name the doors, and the loader says "not
+  named in the Dockerfile. A lean build cannot name these endpoints, and the loader says "not
   built".
 - Credentials come from the platforms' standard chains (env, profile, instance role /
-  ADC), never from `judge.toml`. The cloud doors do not accept API keys.
+  ADC), never from `judge.toml`. The cloud endpoints do not accept API keys.
 - The chains are lazy, so loading never touches the network. `Config::probe_auth`
-  resolves each door once at startup. An empty chain fails there, naming the provider and
-  the door, not on every question.
+  resolves each endpoint once at startup. An empty chain fails there, naming the provider and
+  the endpoint, not on every question.
 
 ### 4.2 OpenAI-compatible chat completions
 
@@ -317,7 +317,7 @@ Voyage if `VOYAGE_API_KEY` is set. The eval numbers were measured on that setup.
 A `judge.toml` (path from `JUDGE_CONFIG`, else `./judge.toml` if present) selects
 providers and models. `judge.example.toml` documents every knob with its default. Two
 tests in `config.rs` pin it: one loads it as shipped, the other with every commented table
-uncommented and each door named by a stage. A renamed knob fails the gate, not the
+uncommented and each endpoint named by a stage. A renamed knob fails the gate, not the
 operator.
 
 ```toml
@@ -379,7 +379,7 @@ The loader enforces these rules at load time, each with a message naming the key
   redacted `ApiKey`. A table no stage names is parsed, and its key is never read.
 - A knob that would be silently ignored is an error naming both keys: `auth` without
   `api_key_env`, `effort` on an `openai` provider with `reasoning_effort = false`, a stage
-  price on a `pricing = "free"` provider, a cloud-door key on a keyed door.
+  price on a `pricing = "free"` provider, a cloud-endpoint key on a keyed endpoint.
 - A model on an `openai` provider must be priced or its provider `pricing = "free"`. The
   built-in table prices unknown *Anthropic* models only, as the default model, so a dearer
   one is under-counted unless it has a price of its own. An unknown OpenAI-compatible model

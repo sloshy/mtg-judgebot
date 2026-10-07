@@ -1,6 +1,6 @@
 ---
 title: The web page
-description: The anonymous front door, with the same pipeline, no ratings, and a rate limit per address.
+description: The anonymous interface, with the same pipeline, no ratings, and a rate limit per address.
 sidebar:
   order: 2
 ---
@@ -29,7 +29,7 @@ support address (`JUDGE_OPERATOR_EMAIL`, which `judge-api` does not start withou
 
 ## Turning it on and off
 
-Each of `judge-api`'s front doors is a launch option. With no flags it serves
+Each of `judge-api`'s interfaces is a launch option. With no flags it serves
 `POST /api/judge`, plus `GET /api/health` and `GET /api/about`, which are always on. The page needs `--web`, and the MCP transport needs
 `--mcp`. The compose file passes `--api --web`, so `docker compose up -d api` serves the
 page. Set `API_INTERFACES` in `.env` to change that list, for example `--api` alone for a

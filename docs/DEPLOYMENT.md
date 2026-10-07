@@ -124,7 +124,7 @@ Both files are gitignored.
   internet-facing API.
 
 Model credentials belong in `.env`: `ANTHROPIC_API_KEY`, every `api_key_env` a
-`judge.toml` names, and the cloud doors' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS`.
+`judge.toml` names, and the cloud endpoints' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS`.
 `bot`, `api` and `refresh` read them, and nothing else does.
 
 In `.env`, set:
@@ -198,7 +198,7 @@ the setup stays the `.env` one. Three consequences:
   it fails rather than run half a configuration. A provider
   table no stage names is parsed but its key is never read. `.env` is the `env_file` for
   all three containers, so one line there covers them.
-- **The cloud doors take credentials from the platform chain, not the file.** For
+- **The cloud endpoints take credentials from the platform chain, not the file.** For
   `claude-platform-on-aws` and `bedrock`, either put `AWS_ACCESS_KEY_ID`,
   `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`) in `.env`, or mount a credentials
   file and point to it. The containers run as `nobody` with no home directory, so the
@@ -219,14 +219,14 @@ the setup stays the `.env` one. Three consequences:
   For `vertex`, do the same with a service-account JSON and
   `GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/sa.json`. An IAM role that can only invoke
   the model is enough, because nothing here manages infrastructure. `refresh` needs none
-  of this: embeddings are Voyage or OpenAI-compatible, never a cloud door. None of it
+  of this: embeddings are Voyage or OpenAI-compatible, never a cloud endpoint. None of it
   goes in `.env.deploy`, which `bot`/`api` do not read.
 - **The startup log tells you what resolved.**
   - Every binary logs one `config=... extract=... synth=... embed=... cap=$...` line.
   - `bot`, `api`, `eval` and `judge-cli` make chat calls, so they then log
     `cloud credentials resolved` per cloud provider. The chain is probed once at
     startup, so a host with no credentials exits there, naming the provider and the
-    door. `refresh` makes no chat call and never probes.
+    endpoint. `refresh` makes no chat call and never probes.
   - Those four binaries then log `embedding space matches the database` or
     `embedding space mismatch` (below).
   - `docker compose run --rm --entrypoint judge-cli api config` prints the resolution
@@ -267,7 +267,7 @@ a 401 before the protocol sees it. Behind the token are:
 - The read-only lookups.
 
 ```ini
-API_INTERFACES='--api --web --mcp'        # the api container's front doors; without --mcp the token only warns
+API_INTERFACES='--api --web --mcp'        # the api container's interfaces; without --mcp the token only warns
 MCP_TOKEN=<openssl rand -base64 32>       # at least 24 characters, or the API refuses to start
 MCP_ALLOWED_HOSTS=judge.example.com,localhost   # Host values accepted: the tunnel's hostname, plus
                                                    # localhost for curl on the host; the list replaces the default
@@ -769,6 +769,6 @@ own if the connector restarts.
 | `JUDGE_CONFIG=/etc/judgebot/judge.toml: file not found` at startup | `JUDGE_CONFIG` in `.env` names a host file that does not exist; Docker mounted an empty directory in its place (and created a root-owned one on the host — `sudo rmdir` it) |
 | `providers.X: NAME (api_key_env) is not set` at startup | the key was exported in the shell that ran `cargo run` but never written to `.env`, which is all the containers read; or, from `refresh` alone, only the embed provider's key was set because "refresh only embeds" — `refresh` resolves the chat stages too, so the extract/synth providers' keys must be in `.env` as well |
 | Edited `judge.toml`, `docker compose up -d`, nothing changed | `up -d` recreates only on a configuration or image change and a bind-mounted file's content is neither; `docker compose restart bot api` (§4) |
-| `providers.X (...): no credentials` at startup | a cloud door with an empty chain: no `AWS_*` in `.env`, no mounted credentials file, or a mounted file the `nobody` user cannot read |
+| `providers.X (...): no credentials` at startup | a cloud endpoint with an empty chain: no `AWS_*` in `.env`, no mounted credentials file, or a mounted file the `nobody` user cannot read |
 | `embedding space mismatch; vector legs off` | `[models.embed]` names a model or width other than the one the database holds; `reembed` (§7) to move the data, or change the file back |
 | `no price for X/Y` at startup | a model on an `openai` provider without `[models.<stage>.pricing]`; add one (USD per million tokens) or `pricing = "free"` on the provider |

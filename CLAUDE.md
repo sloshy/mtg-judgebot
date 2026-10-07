@@ -159,7 +159,7 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
 repository the instance's source is in, the commit it was built from and the
 licence/copyright:
 
-- the web footer via `GET /api/about`, served beside `/api/health` whatever doors are off
+- the web footer via `GET /api/about`, served beside `/api/health` whatever interfaces are off
 - `/help` and `/license`
 - the MCP instructions and `about` tool
 - `judge-cli about`
@@ -172,7 +172,7 @@ Without `JUDGE_COMMIT` it uses `git rev-parse HEAD` plus a dirty flag. An unstam
 
 **The operator contact** (`judge_core::operator`) travels beside the source offer.
 `JUDGE_OPERATOR_DISCORD` (a `DiscordUsername`) is required by the bot, and
-`JUDGE_OPERATOR_EMAIL` (a `SupportEmail`) by `judge-api` whichever doors it opens.
+`JUDGE_OPERATOR_EMAIL` (a `SupportEmail`) by `judge-api` whichever interfaces it opens.
 "Required" is a type: `Data::new` takes a `DiscordOperator` and `App::new` a
 `NetworkOperator`, made only by `Operator::for_discord` / `for_network`
 (`Config::discord_operator` / `network_operator`). `judge-cli` and stdio `judge-mcp` hold
@@ -275,7 +275,7 @@ cargo run --release -p judge-ingest -- refresh          # cards + rules latest +
                                                         # step runs even if one fails, exit≠0 if any did
 scripts/refresh-data.sh              # nightly cron on the deploy host: `docker compose run --rm refresh`
 
-cargo run --release -p judge-api -- [--api] [--web] [--mcp]   # one flag per front door, all opt-in; no
+cargo run --release -p judge-api -- [--api] [--web] [--mcp]   # one flag per interface, all opt-in; no
                                                         # flags = POST /api/judge alone, on API_ADDR (:8787).
                                                         # --web needs a built web/dist and --mcp an MCP_TOKEN
                                                         # (both startup errors); a token with no --mcp only
@@ -315,8 +315,8 @@ Pipeline (`docs/ARCHITECTURE.md` §3 is kept current):
      whole-span alias (`[[bob]]` resolves: an alias names one card). A miss is offered
      only as `Ambiguous`: the possessive / short-name / alias-suffix hits under their own
      rung (so a duplicate is dropped), else fuzzy neighbours.
-   - The resolved cards are stamped onto `Verdict<Validated>` (`cards()`) and every front
-     door shows them.
+   - The resolved cards are stamped onto `Verdict<Validated>` (`cards()`) and every
+     interface shows them.
    - Resolution **never guesses**. Ambiguity becomes `Resolution::Ambiguous` and a Discord
      "did you mean?" button row.
 3. **Retrieval.** Three legs unioned in priority order: the primary category's CR
@@ -358,7 +358,7 @@ Crate graph (`core` ← `llm` ← `anthropic` and `openai` ← `embed` ← `bot`
 - `configure`: `judge-config`, the localhost editor for `judge.toml` and `.env` (D23).
   - Its form is `config::file_schema()` (schemars over the loader's serde types), so the
     doc comments on the `File`-shape types in `config.rs` are operator-facing help text.
-  - `DoorKey::on` is the one door × key table. The loader's misplaced check reads it.
+  - `DoorKey::on` is the one endpoint × key table. The loader's misplaced check reads it.
   - Secrets are write-only: `DotEnv::replace` writes a value the page typed, and
     every reply goes through `server::redact`. No `BadValue` may quote a value.
   - `env::VARS` must list every `.env.example` variable as secret or setting
@@ -379,7 +379,7 @@ Anthropic direct, one model for both stages, one `SpendMeter`.
 byte-for-byte against captured fixtures. `UPDATE_GOLDEN=1` re-captures them after an
 intended prompt/schema change. Review the diff.
 
-`api` (+ the SolidJS page in `web/`) is the anonymous front door. Which of its doors a
+`api` (+ the SolidJS page in `web/`) is the anonymous interface. Which of its interfaces a
 process opens is a launch option, not a consequence of starting it
 (`crates/api/src/interfaces.rs`):
 
@@ -547,7 +547,7 @@ Key cross-file facts that aren't obvious from any one file:
   pinning). Replies open with a non-pinging `<@user> asked:` header. Rule citations link
   to the Yawgatog CR mirror (anchor = `R` + id with dots stripped). Rulings and Oracle
   text link to Scryfall search-by-oracleid, because the `/card/<uuid>` route 404s.
-- **Card symbols are pictures on both front doors.**
+- **Card symbols are pictures on both interfaces.**
   - `discord/mana.rs` substitutes Discord application emoji (`{W}` → `<:mana_w:…>`).
   - `judge_core::symbol::emoji_name` is the one definition of the name. It lives in core
     because two programs (the bot and the `ingest emoji` uploader) must agree on it.
@@ -570,9 +570,9 @@ Key cross-file facts that aren't obvious from any one file:
   - The chat backend `judge-anthropic` has `Endpoint::{Direct, Proxy,
     ClaudePlatformOnAws, Bedrock, Vertex}`, one `Endpoint` per provider table, shared by
     the stages naming it.
-    - The cloud doors sit behind judge-anthropic's `aws`/`gcp` Cargo features. These are
+    - The cloud endpoints sit behind judge-anthropic's `aws`/`gcp` Cargo features. These are
       default on, forwarded from judge-bot's own features and named in the Dockerfile. A
-      lean build cannot name the doors, and the loader says "not built".
+      lean build cannot name these endpoints, and the loader says "not built".
     - Their credentials come from the platform chains, never `judge.toml`: SigV4 via
       aws-config (service `aws-external-anthropic` with the `anthropic-workspace-id`
       header, or `bedrock-mantle`) and ADC via gcp_auth. They are resolved lazily and
@@ -615,7 +615,7 @@ Key cross-file facts that aren't obvious from any one file:
     `docker compose restart bot api`.
   - The `api_key_env` of every provider a stage names lives in `.env` too. A table no
     stage names is parsed, but its key is never read.
-  - The cloud doors' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS` live in `.env` as well,
+  - The cloud endpoints' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS` live in `.env` as well,
     never in `.env.deploy`, which `bot`/`api` do not read.
 - `DISCORD_TOKEN`.
 - `GUILD_ID` (instant command registration).

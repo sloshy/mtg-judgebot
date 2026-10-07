@@ -55,7 +55,7 @@ By default each address may ask 4 questions per 5 minutes. That suits a public p
 will stop you quickly while testing. To ask more, raise `API_RATE_LIMIT` (or shorten
 `API_RATE_WINDOW_SECS`) in `.env` first.
 
-Each of `judge-api`'s front doors is a launch option. The compose file passes
+Each of `judge-api`'s interfaces is a launch option. The compose file passes
 `--api --web`, and `API_INTERFACES` in `.env` changes that list. `--api` alone serves the
 question route with no public page.
 

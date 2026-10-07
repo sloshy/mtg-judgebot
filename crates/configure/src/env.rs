@@ -11,7 +11,7 @@
 //! [`Shown::Hidden`].
 //!
 //! Writing is two paths. A shown setting is changed with [`DotEnv::set`],
-//! from a value the page displayed. Anything else is changed blind with
+//! from a value the page displayed. Anything else is changed write-only with
 //! [`DotEnv::replace`]: the page sends a new value for a [`Name`] and never
 //! receives the old one, and no [`BadValue`] quotes a value.
 //!

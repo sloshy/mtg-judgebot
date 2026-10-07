@@ -126,7 +126,7 @@ Discord message (+ last N Q&A in the same thread)
         Cr | Commander reach this step)
       - crVersion from the retrieved chunks
       - the resolved cards (CardRef: id + name) from Context
-    Every front door then shows "Cards: …" from the verdict alone.
+    Every interface then shows "Cards: …" from the verdict alone.
     Each citation = typed reference + quoted span. Validation:
       - first, citations that quote nothing (blank, a stock word, under 4
         chars) are dropped (D21). An answer with nothing else is a
@@ -181,7 +181,7 @@ records that space in `embedding_space`, and every vector reader and writer chec
 before touching a column. Two models' vectors are therefore never mixed, and switching is
 one explicit, transactional `ingest reembed`. Nothing in `crates/core` knows any of this exists.
 
-Three front doors share this pipeline through the same composition root
+Three interfaces share this pipeline through the same composition root
 (`judge_bot::build_deps`):
 
 - **Discord adapter** (`crates/bot`): `/judge` slash command, rating buttons,
@@ -195,11 +195,11 @@ Three front doors share this pipeline through the same composition root
     `PgLibrary::rulings`. They call no model and touch no meter.
 - **HTTP adapter** (`crates/api` + `web/`): anonymous `POST /api/judge` behind
   a per-IP fixed-window rate limit, and a SolidJS single page.
-  - Each front door is opted into at launch (`crates/api/src/interfaces.rs`).
+  - Each interface is opted into at launch (`crates/api/src/interfaces.rs`).
     `judge-api` alone serves the JSON route, `--web` adds the page and `--mcp`
-    adds the MCP transport. A door nobody named is not mounted. The set is a
+    adds the MCP transport. An interface nobody named is not mounted. The set is a
     `NonEmpty`, so "serving nothing" is unrepresentable.
-  - `GET /api/health` and `GET /api/about` are served whatever doors are off.
+  - `GET /api/health` and `GET /api/about` are served whatever interfaces are off.
     The container healthcheck needs the first.
   - `/api/about` is the source offer (`judge_core::source`): repository, built
     commit, licence and copyright. The AGPL requires every remote interface to
@@ -211,7 +211,7 @@ Three front doors share this pipeline through the same composition root
     bot takes a `DiscordOperator` and the HTTP layer a `NetworkOperator`. The
     only way to make either is `Operator::for_discord` / `for_network`. So the
     bot cannot start without `JUDGE_OPERATOR_DISCORD`, and `judge-api` cannot
-    start without `JUDGE_OPERATOR_EMAIL`, whichever doors it opens. A local
+    start without `JUDGE_OPERATOR_EMAIL`, whichever interfaces it opens. A local
     `judge-cli` or stdio `judge-mcp` holds a plain `Operator` and needs neither.
   - There are no rating endpoints, because anonymous callers are not
     accountable identities.
@@ -228,7 +228,7 @@ Three front doors share this pipeline through the same composition root
   - `env::VARS` lists every variable `.env.example` carries as a secret or a
     setting. A value reaches the page only through a `Setting`. A secret, a
     variable the list does not know, or a hidden setting is reported as set or
-    not, and is changed blind (`DotEnv::replace`): the page sends a new value
+    not, and is changed write-only (`DotEnv::replace`): the page sends a new value
     and every reply is scrubbed of it. Help text is `.env.example`'s
     comments.
   - Each draft goes through `check::run`: the `judge.toml` loader,
@@ -281,7 +281,7 @@ Three front doors share this pipeline through the same composition root
   - Read-only lookups (resolve a card, rules by id or search, rulings, notes,
     glossary) round the surface out (`PgLibrary`).
 
-The Discord and web front doors draw Magic's card symbols (`{W}`, `{2/U}`, `{T}`) as
+The Discord and web interfaces draw Magic's card symbols (`{W}`, `{2/U}`, `{T}`) as
 pictures, from one set of names:
 
 - **Discord** substitutes *application* emoji (`<:mana_w:…>`). The bot owns them,

@@ -22,14 +22,14 @@
 #   - A knob that would be silently ignored is an error naming both keys
 #     (`auth` without api_key_env, `effort` on an openai provider with
 #     reasoning_effort = false, a stage price on a pricing = "free" provider,
-#     a cloud-door key on a keyed door and vice versa).
+#     a cloud-endpoint key on a keyed endpoint and vice versa).
 #   - A model the spend cap cannot price is a startup error (see [models.synth]).
 #
 # `judge-cli config` prints the resolved result with secrets redacted. Every
 # binary logs the same one-line summary at startup.
 
 # ---------------------------------------------------------------------------
-# Providers: the doors. A stage names one by its table key.
+# Providers: where requests are sent. A stage names one by its table key.
 # ---------------------------------------------------------------------------
 
 [providers.anthropic]
@@ -37,10 +37,10 @@ kind = "anthropic"                 # anthropic | openai | voyage
 endpoint = "direct"                # direct | proxy | claude-platform-on-aws | bedrock | vertex   (default: direct)
 api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only, required there
 # base_url = "https://api.anthropic.com"   # default for direct, required for proxy,
-                                           # an origin override on the cloud doors
+                                           # an origin override on the cloud endpoints
 # refusal_fallbacks = true         # send server-side refusal fallbacks (a beta Anthropic
                                    # documents for its own API only). Default: true on
-                                   # direct, false on every other door; set it to say otherwise.
+                                   # direct, false on every other endpoint; set it to say otherwise.
 # pricing = "free"                 # skip the spend reservation for this provider
                                    # (a flat-rate gateway). Calls are still counted.
 
@@ -58,8 +58,8 @@ api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only, required there
 # Anthropic on a cloud account. No api_key_env: credentials come from the
 # platform's own chain (AWS: environment, profile, SSO, instance or container
 # role; GCP: Application Default Credentials), resolved lazily and probed once
-# at startup, so an empty chain fails there naming the provider and the door.
-# Each door needs the Cargo feature it was built with (`aws`, `gcp`). Both are
+# at startup, so an empty chain fails there naming the provider and the endpoint.
+# Each endpoint needs the Cargo feature it was built with (`aws`, `gcp`). Both are
 # on by default and in the published image.
 # [providers.claude-aws]
 # kind = "anthropic"

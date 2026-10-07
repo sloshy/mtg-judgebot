@@ -647,7 +647,7 @@ impl Anthropic {
                 output_format = output,
                 strict_tools = strict,
                 betas,
-                "this door cannot honour part of the request server-side; masked off (the schema is in the prompt, validation is client-side)"
+                "this endpoint cannot honour part of the request server-side; masked off (the schema is in the prompt, validation is client-side)"
             );
         }
         if !(fallbacks || output || strict) {
@@ -1403,7 +1403,7 @@ mod door_tests {
         assert_sigv4(&r, "AKIDTEST", "eu-central-1", "bedrock-mantle");
         assert!(
             hdr(&r, "anthropic-beta").is_none(),
-            "no beta header on this door: not the request's fallbacks beta, not the process-wide one"
+            "no beta header on this endpoint: not the request's fallbacks beta, not the process-wide one"
         );
         assert!(hdr(&r, WORKSPACE_HEADER).is_none());
         let b = body(&r);

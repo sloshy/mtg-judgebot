@@ -145,7 +145,7 @@ Citations are validated client-side, and the answer's lifecycle is a type.
   second tool round a compile error (I4).
 - **One retry**, with the rejection rendered into the prompt and the rejected answer quoted
   back as a blockquote, then an error the user sees. Retries live in `judge()`, not in the
-  Discord layer, so every front door gets the same behaviour.
+  Discord layer, so every interface gets the same behaviour.
 - The bot **declines tournament policy** (MTR/IPG) after the cheap classification call
   rather than answering it badly. That material is not ingested.
 
@@ -207,16 +207,16 @@ Bedrock and Vertex were already reachable through LiteLLM or their OpenAI-compat
 endpoints with no new dependencies. Native SigV4 and ADC support was added anyway, for the
 operator who wants Claude on their own cloud account *without* running a proxy. The cost
 is two auth crates behind the `aws`/`gcp` Cargo features. The features are on by default
-and named in the Dockerfile. A lean build without them cannot name the doors, and the
+and named in the Dockerfile. A lean build without them cannot name these endpoints, and the
 loader says "not built".
 
 Credentials come from the platforms' own chains, never from `judge.toml`. They are
 resolved lazily and probed once at startup, so an empty chain fails there, not on the
-first question. Each door's feature mask (what it cannot accept: server-side fallbacks,
+first question. Each endpoint's feature mask (what it cannot accept: server-side fallbacks,
 strict tools, betas) was verified against the live docs. The mask is an exhaustive
 `match`, not a flag. The one flag over it is a provider's `refusal_fallbacks`, because
 Anthropic documents that beta for its own API only and a proxy or Claude Platform on AWS
-may take it anyway. It cannot turn fallbacks on for a door that takes no beta header.
+may take it anyway. It cannot turn fallbacks on for an endpoint that takes no beta header.
 
 ## D9. Embedding space tracking
 
@@ -382,7 +382,7 @@ What follows for the code and the docs:
 - The setup experience is organised around creating your own Discord application and
   instance (the README's "Running it" and the site's "Run your own judgebot" section).
 - `GUILD_ID` keeps its meaning as a registration shortcut rather than an allowlist.
-- An instance's anonymous web page is a second front door to the instance its operator
+- An instance's anonymous web page is a second public interface to the instance its operator
   runs. It is public in the sense that it needs no login. It is not a shared service
   other communities are meant to depend on.
 - One bot in several servers you administer works today. What is shared between them is
@@ -564,7 +564,7 @@ no rules answer means those two characters.
 - *A rejection with its own retry notice.* It keeps "admitted as written" intact, but it
   costs a retry per occurrence for a habit the retry can repeat, losing an answer that was
   right.
-- *Decoding at display time.* Each front door would need it, and the stored call would
+- *Decoding at display time.* Each interface would need it, and the stored call would
   still carry the escapes into later prompts.
 
 ## D23. A config editor generated from the loader, run on localhost
@@ -572,16 +572,16 @@ no rules answer means those two characters.
 *Decided 2026-10-07.*
 
 `judge.toml` and `.env` are documented by their example files, but which keys apply where
-(a door's keys, a stage's provider kinds, which knob makes another an error) was learned
+(an endpoint's keys, a stage's provider kinds, which knob makes another an error) was learned
 by loading the file and reading the error. `judge-config` is an optional page for editing
 both. Three choices make it hold to the loader rather than drift from it.
 
 - **The form is the loader's types.** `file_schema()` is schemars over the same serde
   structs `Config::from_toml` parses, so a new knob is a field with no editor change, and
   the structs' doc comments are written as the operator's help text. What types cannot
-  say comes from the tables the loader checks against: which door takes which key is one
+  say comes from the tables the loader checks against: which endpoint takes which key is one
   `DoorKey::on` table, read by the misplaced-key check and emitted as `x-doors`.
-  `door_table_matches_the_loader` holds the door constructors' required keys to it.
+  `door_table_matches_the_loader` holds the endpoint constructors' required keys to it.
 - **Validation is the binaries' own code.** Each draft runs through the loaders the
   binaries call at startup, one surface at a time, and `ConfigError::location()` (an
   exhaustive match) names the key or variable to fix. Nothing in the editor restates a
@@ -609,7 +609,7 @@ loopback names, which closes DNS rebinding. Writes are whole-file renames throug
   either restate the cross-field rules in JavaScript or need the loader split into a pure
   crate compiled to WebAssembly. The loader reaches into the backends' endpoint types and
   the environment, so that split is the larger change.
-- *A door in `judge-api`.* That process faces the internet. A route that writes files
+- *Serving it from `judge-api`.* That process faces the internet. A route that writes files
   does not belong there, even behind a token.
 - *A terminal UI.* It works over SSH without a port forward, but shows less of each key's
   help at once than a form does.
