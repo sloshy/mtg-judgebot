@@ -15,7 +15,7 @@ let envDraft = {}; // setting name -> value, only the changed ones
 let report = null; // the last /api/check answer
 let tab = "models";
 let flagged = { toml: new Map(), env: new Map(), text: null };
-let savedNote = ""; // what to do after the last save, until the next edit
+let savedNote = null; // the steps after the last save, until the next edit
 
 // ---------- plumbing ----------
 
@@ -71,6 +71,15 @@ function prose(text, cls = "help") {
 /// A doc comment's prose: its hard wraps are not line breaks.
 function doc(text, cls = "help") {
   return prose(String(text || "").replace(/([^\n])\n(?!\n)/g, "$1 "), cls);
+}
+
+/// A list of short points, each with `code` spans.
+function points(items, cls = "points") {
+  return el(
+    "ul",
+    { class: cls },
+    items.filter(Boolean).map((item) => spans(el("li"), String(item).split("`"))),
+  );
 }
 
 function spans(p, parts) {
@@ -170,7 +179,7 @@ function scheduleCheck() {
   if (tab === "review") renderReview();
   const pending = pendingCount();
   document.getElementById("pending").textContent = pending || "";
-  if (pending) savedNote = "";
+  if (pending) savedNote = null;
   clearTimeout(checkTimer);
   checkTimer = setTimeout(runCheck, 250);
 }
@@ -536,8 +545,14 @@ function renderModels() {
         "div",
         { class: "card" },
         el("h3", { text: "No judge.toml: the zero-config setup" }),
+        prose(`No file at ${state.toml.path}, so every binary runs:`, "desc"),
+        points([
+          "Anthropic's API directly, keyed by `ANTHROPIC_API_KEY`",
+          "`claude-opus-5-5` for both stages",
+          "Voyage embeddings, when `VOYAGE_API_KEY` is set",
+        ]),
         prose(
-          `There is no ${state.toml.path}. Every binary then runs Anthropic's API directly with ANTHROPIC_API_KEY, claude-opus-5-5 for both stages, and Voyage embeddings if VOYAGE_API_KEY is set. Its knobs are in Settings. A judge.toml chooses providers and models per stage.`,
+          "Its knobs (`ANTHROPIC_BASE_URL`, `VOYAGE_MODEL`, `VOYAGE_DIMENSIONS`) are in Settings. To choose providers and models per stage:",
           "desc",
         ),
         el(
@@ -805,9 +820,15 @@ function renderSettings() {
   const root = document.getElementById("tab-settings");
   root.replaceChildren();
   root.append(
-    prose(
-      `${state.env.path}${state.env.exists ? "" : " does not exist yet: saving creates it from .env.example"}. Secrets (keys, tokens, DATABASE_URL, the alert webhook) are never shown or written here; edit them in the file. Blank means the default.`,
-      "notice",
+    points(
+      [
+        state.env.exists
+          ? `Editing ${state.env.path}`
+          : `${state.env.path} does not exist yet: saving creates it from \`.env.example\``,
+        "Secrets (API keys, tokens, `DATABASE_URL`, the alert webhook) are never shown or written: edit them in the file",
+        "Blank means the default",
+      ],
+      "points notice",
     ),
   );
   if (state.env.error) {
@@ -831,9 +852,9 @@ function renderSettings() {
       "div",
       { class: "card" },
       el("h3", { text: "Other variables in .env" }),
-      prose(
-        "Provider keys and other variables this editor does not know. Never shown or written.",
-        "desc muted",
+      points(
+        ["Provider keys and other variables this editor does not know", "Never shown or written"],
+        "points muted",
       ),
     );
     for (const o of state.env.others) {
@@ -1011,12 +1032,16 @@ function renderReview() {
       errors.length
         ? el("span", {
             class: "small",
-            text: `${errors.length} part(s) would refuse to start. Saving is allowed (you may not run them all).`,
+            text: `${errors.length} part(s) would refuse to start. Saving is still allowed.`,
           })
         : null,
     ),
   );
-  if (savedNote) root.append(prose(savedNote, "notice"));
+  if (savedNote) {
+    root.append(
+      el("div", { class: "notice" }, prose("Saved. To apply it:", ""), points(savedNote)),
+    );
+  }
 }
 
 async function doSave(errors) {
@@ -1036,12 +1061,13 @@ async function doSave(errors) {
   }
   await load();
   switchTab("review");
-  const steps = [];
-  if (envDiffers)
-    steps.push("`docker compose up -d` (recreates the containers whose environment changed)");
-  if (tomlDiffers)
-    steps.push("`docker compose restart bot api` (a judge.toml edit is not a change `up -d` sees)");
-  savedNote = `Saved. Under Docker, apply it with ${steps.join(" and ")}. A cargo run binary reads the files when it starts.`;
+  savedNote = [
+    envDiffers &&
+      "Docker, `.env` changed: `docker compose up -d` (recreates the containers whose environment changed)",
+    tomlDiffers &&
+      "Docker, `judge.toml` changed: `docker compose restart bot api` (`up -d` does not see a mounted file's edit)",
+    "`cargo run`: restart the binaries; they read both files at startup",
+  ];
   renderReview();
 }
 

@@ -179,6 +179,21 @@ aside ul {
   cursor: pointer;
 }
 
+ul.points,
+aside ul.points {
+  list-style: disc;
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+
+.points > li + li {
+  margin-top: 2px;
+}
+
+ul.points.notice {
+  padding-left: 32px;
+}
+
 #warnings li {
   color: var(--warn);
   font-size: 13px;
