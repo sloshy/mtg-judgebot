@@ -36,7 +36,10 @@ mod types;
 pub use error::LlmError;
 pub use prompt::{needs_schema_in_prompt, schema_block, strip_json_fence};
 pub use secret::ApiKey;
-pub use spend::{DEFAULT_MAX_SPEND_USD, Metered, PRICES, Price, Pricing, SpendMeter, pricing_for};
+pub use spend::{
+    DEFAULT_MAX_SPEND_USD, LongContext, Metered, PRICES, Price, Pricing, Rate, SpendMeter,
+    pricing_for,
+};
 pub use synth::{
     Final, Fresh, LOOKUP_RULES, LookupRulesInput, SYNTH_EFFORTS, SendOutcome, Step, Synth,
     SynthConfig, ToolRequested, Truncated, classify, synth_effort_for,

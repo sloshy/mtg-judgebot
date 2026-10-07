@@ -85,12 +85,15 @@ pub struct SynthConfig {
 /// no wrong asides, for slightly less; Sonnet 5.5 at medium misdescribed a card
 /// on one question and made three wrong asides, so it stays at high
 /// (2026-09-29, one run each; the high runs predate the examples fix
-/// `f6d7224`). Only current models are listed, as in [`crate::PRICES`]: an
+/// `f6d7224`). Haiku 5.5 agreed with the reference as often at medium as at
+/// high on the questions both answered, with fewer wrong asides, and
+/// medium is Anthropic's default for it (2026-10-07, one run each). Only current models are listed, as in [`crate::PRICES`]: an
 /// upgrade replaces its predecessor's row, and a new model is measured before
 /// it gets one. Ids match exactly, so a Bedrock `anthropic.` id is unlisted.
 pub const SYNTH_EFFORTS: &[(&str, &str, Effort)] = &[
     (crate::spend::ANTHROPIC, "claude-opus-5-5", Effort::Medium),
     (crate::spend::ANTHROPIC, "claude-sonnet-5-5", Effort::High),
+    (crate::spend::ANTHROPIC, "claude-haiku-5-5", Effort::Medium),
 ];
 
 /// The synthesis effort for `model` at `provider` when the operator names

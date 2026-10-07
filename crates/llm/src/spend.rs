@@ -80,6 +80,52 @@ impl Pricing {
     }
 }
 
+/// A built-in table entry: one rate card, or two chosen by how long the
+/// prompt is. Anthropic bills some models at a higher card once the prompt
+/// passes a threshold, for every token of that request. Operator rates
+/// ([`Price::PerToken`]) stay a single [`Pricing`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rate {
+    /// The card for a prompt at or below `long`'s threshold (or every prompt).
+    pub base: Pricing,
+    /// The card for a longer prompt, where the model has one.
+    pub long: Option<LongContext>,
+}
+
+/// The rate card a model is billed at once its prompt passes `above` tokens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LongContext {
+    /// Prompt tokens (uncached input, cache reads and cache writes) at or
+    /// below which [`Rate::base`] applies.
+    pub above: u64,
+    /// The card for every token of a longer request, output included.
+    pub pricing: Pricing,
+}
+
+impl Rate {
+    /// One card for every prompt length.
+    #[must_use]
+    pub const fn flat(base: Pricing) -> Self {
+        Self { base, long: None }
+    }
+
+    /// The card a request with `prompt_tokens` of prompt is billed at.
+    #[must_use]
+    pub fn card(&self, prompt_tokens: u64) -> Pricing {
+        match self.long {
+            Some(long) if prompt_tokens > long.above => long.pricing,
+            _ => self.base,
+        }
+    }
+
+    /// Estimated cost of `usage` in USD, on the card its prompt length selects.
+    #[must_use]
+    pub fn usd(&self, usage: &Usage) -> f64 {
+        self.card(usage.input + usage.cache_read + usage.cache_write)
+            .usd(usage)
+    }
+}
+
 /// What a model is billed at. A closed sum so that "costs nothing" is a
 /// state the cap understands rather than a bypass beside it, and so that
 /// where a rate came from decides how a response is settled: the built-in
@@ -93,7 +139,7 @@ pub enum Price {
     /// The built-in table's rate for the configured model. Reserves at this
     /// rate; settles at [`pricing_for`] the response's model, which prices an
     /// Anthropic model the table does not list as the default.
-    Table(Pricing),
+    Table(Rate),
     /// An operator-supplied rate (`[models.<stage>.pricing]`): reserves and
     /// settles at exactly this, whatever model the response names. The table
     /// is never consulted, so a proxy priced above or below it bills as the
@@ -115,15 +161,35 @@ const SONNET_5_5: Pricing = Pricing {
     cache_read: 0.20,
     cache_write: 2.50,
 };
+/// Haiku 5.5 has two cards: this one up to 100K prompt tokens, five times it beyond.
+const HAIKU_5_5: Rate = Rate {
+    base: Pricing {
+        input: 0.10,
+        output: 0.50,
+        cache_read: 0.01,
+        cache_write: 0.125,
+    },
+    long: Some(LongContext {
+        above: 100_000,
+        pricing: Pricing {
+            input: 0.50,
+            output: 2.50,
+            cache_read: 0.05,
+            cache_write: 0.625,
+        },
+    }),
+};
 
 /// Built-in price table, `(provider, model)` → USD per million tokens.
 /// Opus 5.5 taken from its launch pricing 2026-09-22, Sonnet 5.5 from its
-/// launch pricing 2026-09-28 (cache writes at the usual 1.25 × input). Only
+/// launch pricing 2026-09-28, Haiku 5.5 from its launch pricing 2026-10-07
+/// (cache reads at 0.1 × and writes at the usual 1.25 × input). Only
 /// current models are listed: an upgrade replaces its predecessor's row.
 /// Re-check when a model is added or a price changes.
-pub const PRICES: &[(&str, &str, Pricing)] = &[
-    (ANTHROPIC, "claude-opus-5-5", OPUS_5_5),
-    (ANTHROPIC, "claude-sonnet-5-5", SONNET_5_5),
+pub const PRICES: &[(&str, &str, Rate)] = &[
+    (ANTHROPIC, "claude-opus-5-5", Rate::flat(OPUS_5_5)),
+    (ANTHROPIC, "claude-sonnet-5-5", Rate::flat(SONNET_5_5)),
+    (ANTHROPIC, "claude-haiku-5-5", HAIKU_5_5),
 ];
 
 /// Pricing for `model` at `provider`. An unknown Anthropic model (including
@@ -132,12 +198,12 @@ pub const PRICES: &[(&str, &str, Pricing)] = &[
 /// model elsewhere is `None`, because it could be anything and the operator
 /// must say.
 #[must_use]
-pub fn pricing_for(provider: &str, model: &str) -> Option<Pricing> {
+pub fn pricing_for(provider: &str, model: &str) -> Option<Rate> {
     PRICES
         .iter()
         .find(|(p, m, _)| *p == provider && *m == model)
-        .map(|(_, _, pricing)| *pricing)
-        .or_else(|| (provider == ANTHROPIC).then_some(OPUS_5_5))
+        .map(|(_, _, rate)| *rate)
+        .or_else(|| (provider == ANTHROPIC).then_some(Rate::flat(OPUS_5_5)))
 }
 
 /// Spend counters and cap shared by everything built over one meter.
@@ -423,15 +489,15 @@ impl<B: Backend> Metered<B> {
 
     /// Reserve the worst case of `req`, or nothing for a free model.
     fn reserve(&self, req: &ChatRequest) -> Result<Option<Reservation>, LlmError> {
-        let (pricing, from_table) = match self.price {
+        let (rate, from_table) = match self.price {
             Price::Free => return Ok(None),
-            Price::Table(pricing) => (pricing, true),
-            Price::PerToken(pricing) => (pricing, false),
+            Price::Table(rate) => (rate, true),
+            Price::PerToken(pricing) => (Rate::flat(pricing), false),
         };
-        let micro = estimate_micro(req, &pricing);
+        let micro = estimate_micro(req, &rate);
         self.meter.0.reserve(micro)?;
         Ok(Some(Reservation {
-            pricing,
+            rate,
             from_table,
             micro,
         }))
@@ -444,9 +510,9 @@ impl<B: Backend> Metered<B> {
             // an operator's rate is what the operator pays, whatever the server
             // called the model.
             let rate = if r.from_table {
-                pricing_for(self.inner.provider(), model).unwrap_or(r.pricing)
+                pricing_for(self.inner.provider(), model).unwrap_or(r.rate)
             } else {
-                r.pricing
+                r.rate
             };
             let usd = rate.usd(usage);
             self.meter.0.settle(r.micro, to_micro(usd));
@@ -473,8 +539,8 @@ impl<B: Backend> Metered<B> {
 #[derive(Clone, Copy)]
 struct Reservation {
     /// The rate reserved at.
-    pricing: Pricing,
-    /// Whether `pricing` came from the table (settle by the response's model) or the operator (settle at `pricing`).
+    rate: Rate,
+    /// Whether `rate` came from the table (settle by the response's model) or the operator (settle at `rate`).
     from_table: bool,
     micro: u64,
 }
@@ -546,14 +612,19 @@ fn env_cap(raw: &str) -> Result<f64, LlmError> {
 /// Worst-case cost of `req` in micro-dollars: `max_tokens` at the output
 /// price plus the serialized neutral request at roughly four bytes per token
 /// at the uncached input price. Deliberately pessimistic; the reservation is
-/// replaced by the real usage afterwards.
-fn estimate_micro(req: &ChatRequest, p: &Pricing) -> u64 {
+/// replaced by the real usage afterwards. The card is chosen at half as many
+/// tokens again as the estimate, because a newer tokenizer counts about 30%
+/// more tokens than four bytes each: a prompt near a long-context threshold
+/// is reserved on the dearer card rather than settling five times over it.
+fn estimate_micro(req: &ChatRequest, rate: &Rate) -> u64 {
     let body_bytes = serde_json::to_vec(req).map_or(0, |b| b.len());
+    let tokens = u64::try_from(body_bytes / 4).unwrap_or(u64::MAX);
+    let p = rate.card(tokens.saturating_add(tokens / 2));
     #[expect(
         clippy::cast_precision_loss,
         reason = "a rough token estimate from a byte count; far below 2^53"
     )]
-    let input_tokens = (body_bytes / 4) as f64;
+    let input_tokens = tokens as f64;
     let usd = (f64::from(req.max_tokens) * p.output + input_tokens * p.input) / 1_000_000.0;
     to_micro(usd)
 }
@@ -675,6 +746,51 @@ mod tests {
             .map(|p| p.usd(&u))
             .unwrap_or_default();
         assert!((usd - (2.0 + 10.0 + 0.2 + 2.5)).abs() < 1e-9, "{usd}");
+        // Haiku 5.5's 4M-token prompt is past 100K, so every token is on the long card.
+        let usd = pricing_for(ANTHROPIC, "claude-haiku-5-5")
+            .map(|p| p.usd(&u))
+            .unwrap_or_default();
+        assert!((usd - (0.5 + 2.5 + 0.05 + 0.625)).abs() < 1e-9, "{usd}");
+        // Up to 100K prompt tokens, counting cache reads and writes, it is the base card.
+        let short = |input, cache_read| Usage {
+            input,
+            output: 1_000_000,
+            cache_read,
+            cache_write: 0,
+        };
+        let haiku = pricing_for(ANTHROPIC, "claude-haiku-5-5").ok_or(LlmError::BadMaxSpend {
+            setting: "test",
+            value: String::new(),
+        });
+        let usd = haiku
+            .as_ref()
+            .map(|r| r.usd(&short(100_000, 0)))
+            .unwrap_or_default();
+        assert!((usd - (0.01 + 0.5)).abs() < 1e-9, "{usd}");
+        let usd = haiku
+            .as_ref()
+            .map(|r| r.usd(&short(60_000, 40_001)))
+            .unwrap_or_default();
+        assert!((usd - (0.03 + 2.5 + 0.002_000_05)).abs() < 1e-9, "{usd}");
+        // The reservation takes the long card from two thirds of the threshold on, so a
+        // prompt the tokenizer counts higher than four bytes a token is not under-reserved.
+        let rate = haiku.unwrap_or(Rate::flat(OPUS_5_5));
+        let at = |bytes: usize| {
+            let mut r = req(0);
+            r.system = vec![crate::TextBlock::plain("x".repeat(bytes))];
+            estimate_micro(&r, &rate)
+        };
+        // Micro-dollars; the request's own JSON adds a few dozen tokens.
+        let base = at(240_000);
+        assert!(
+            (6_000..6_100).contains(&base),
+            "60K tokens: the base card, {base}"
+        );
+        let long = at(280_000);
+        assert!(
+            (35_000..35_100).contains(&long),
+            "70K tokens: the long card, {long}"
+        );
         // Unknown Anthropic models price as the default, Opus 5.5; unknown providers are unpriced.
         assert_eq!(
             pricing_for(ANTHROPIC, "claude-something-new"),
@@ -872,7 +988,7 @@ mod tests {
             Metered::new(stub(vec![]), SpendMeter::new())
                 .map(|m| m.price())
                 .ok(),
-            Some(Price::Table(OPUS_5_5)),
+            Some(Price::Table(Rate::flat(OPUS_5_5))),
             "the table's price is marked as such"
         );
     }
@@ -924,7 +1040,7 @@ mod tests {
         let m = Metered::priced(
             stub(vec![Ok(reply(1_000_000, 200_000, 0, 0))]),
             meter.clone(),
-            Price::Table(rate),
+            Price::Table(Rate::flat(rate)),
         );
         m.complete(&req(64)).await?;
         assert!(

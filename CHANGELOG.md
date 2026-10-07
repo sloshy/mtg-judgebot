@@ -17,6 +17,23 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
+### Added
+
+- **Claude Haiku 5.5 is measured and priced.** The built-in price table knows
+  `claude-haiku-5-5` and both of its rate cards ($0.10 input, $0.50 output per million
+  tokens, and five times that for every token of a request whose prompt passes 100K), so
+  a `judge.toml` naming it needs no `pricing` table. With no `effort`, it synthesizes at
+  `medium`. On the gold set it cost five cents for the run: none of its answers
+  contradicted the reference, 14 of the 18 in-scope questions were answered in full, 2
+  in part, and 2 got "did you mean?" (`eval/published/v1-haiku-5-5.json`). Sonnet 5.5
+  stays the recommended budget option. The README's results and the Model choice page
+  compare all three.
+
+### Changed
+
+- **The eval binary is `judge-eval`**, the name the documentation already used. It was
+  built as `eval`.
+
 ## [1.1.0] - 2026-09-29
 
 ### Changed

@@ -1012,6 +1012,7 @@ impl Stage {
     }
 
     fn report(&self) -> serde_json::Value {
+        let card = |p: &Pricing| serde_json::json!({"input": p.input, "output": p.output, "cache_read": p.cache_read, "cache_write": p.cache_write});
         serde_json::json!({
             "provider": self.provider,
             "model": self.model,
@@ -1019,7 +1020,17 @@ impl Stage {
             "effort": format!("{:?}", self.effort).to_lowercase(),
             "pricing": match self.price {
                 Price::Free => serde_json::json!("free"),
-                Price::Table(p) | Price::PerToken(p) => serde_json::json!({"input": p.input, "output": p.output, "cache_read": p.cache_read, "cache_write": p.cache_write}),
+                Price::Table(rate) => {
+                    let mut v = card(&rate.base);
+                    if let (Some(long), Some(o)) = (rate.long, v.as_object_mut()) {
+                        o.insert(
+                            "above_prompt_tokens".into(),
+                            serde_json::json!({"tokens": long.above, "card": card(&long.pricing)}),
+                        );
+                    }
+                    v
+                }
+                Price::PerToken(p) => card(&p),
             },
         })
     }
@@ -2292,7 +2303,7 @@ model = "qwen3:8b"
 "#;
 
     /// With no `effort`, synthesis takes the model's measured effort: medium
-    /// for Opus 5.5, high for Sonnet 5.5, high for any model with no row
+    /// for Opus 5.5, high for Sonnet 5.5, medium for Haiku 5.5, high for any model with no row
     /// (an unlisted Anthropic id, a local model). An explicit knob wins.
     #[test]
     fn synthesis_effort_defaults_to_the_models_measured_one() -> R {
@@ -2303,6 +2314,7 @@ model = "qwen3:8b"
         let synth_model = |m: &str| MINIMAL.replacen("claude-opus-5-5", m, 2);
         assert_eq!(effort(MINIMAL)?, Effort::Medium);
         assert_eq!(effort(&synth_model("claude-sonnet-5-5"))?, Effort::High);
+        assert_eq!(effort(&synth_model("claude-haiku-5-5"))?, Effort::Medium);
         assert_eq!(effort(&synth_model("claude-fable-5-1"))?, Effort::High);
         assert_eq!(effort(KEYLESS)?, Effort::High);
         let pinned = MINIMAL.replace(

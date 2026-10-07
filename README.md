@@ -178,28 +178,28 @@ same fact, so the metric tracks correctness rather than one author's citation ta
 
 ### Results
 
-Two full runs of the 21 questions, both on 2026-09-29, on CR 2026-08-19 with Voyage
-`voyage-3.5` embeddings. The run files are committed under
-`eval/published/` with every question, answer, citation, time and cost, so none of this
-has to be taken on trust:
+Three full runs of the 21 questions, on CR 2026-08-19 with Voyage `voyage-3.5`
+embeddings: Opus and Sonnet on 2026-09-29, Haiku on 2026-10-07 on the same pipeline. The
+run files are committed under `eval/published/` with every question, answer, citation,
+time and cost, so none of this has to be taken on trust:
 `judge-eval show eval/published/v1-opus-5-5.json` prints each answer beside its reference.
 
-| | `claude-opus-5-5`, both stages, synthesis at medium effort (the default) | `claude-sonnet-5-5`, both stages, synthesis at high effort |
-| --- | --- | --- |
-| Out-of-scope questions declined (of 3) | 3 | 3 |
-| In-scope questions answered (of 18) | 18 | 17 |
-| …agreeing with the reference ruling | 18 | 17 |
-| …partly (right on the main point, a sub-question missed) | 0 | 0 |
-| …contradicting the reference | 0 | 0 |
-| Asked "did you mean?" instead | 0 | 1 |
-| Not answered | 0 | 0 |
-| …following from what they cite alone | 14 | 13 |
-| Decisive rule ids cited | 31 of 35 (89%) | 29 of 35 (83%) |
-| Supporting rule ids also cited | 16 of 32 | 12 of 32 |
-| Cost per in-scope question (median) | $0.09 | $0.05 |
-| Cost per question *answered* | $0.09 | $0.06 |
-| Time per in-scope question (median / longest) | 15 s / 27 s | 11 s / 32 s |
-| Whole run | $1.62 | $0.98 |
+| | `claude-opus-5-5`, both stages, synthesis at medium effort (the default) | `claude-sonnet-5-5`, both stages, synthesis at high effort | `claude-haiku-5-5`, both stages, synthesis at medium effort |
+| --- | --- | --- | --- |
+| Out-of-scope questions declined (of 3) | 3 | 3 | 3 |
+| In-scope questions answered (of 18) | 18 | 17 | 16 |
+| …agreeing with the reference ruling | 18 | 17 | 14 |
+| …partly (right on the main point, a sub-question missed) | 0 | 0 | 2 |
+| …contradicting the reference | 0 | 0 | 0 |
+| Asked "did you mean?" instead | 0 | 1 | 2 |
+| Not answered | 0 | 0 | 0 |
+| …following from what they cite alone | 14 | 13 | 10 |
+| Decisive rule ids cited | 31 of 35 (89%) | 29 of 35 (83%) | 24 of 35 (69%) |
+| Supporting rule ids also cited | 16 of 32 | 12 of 32 | 10 of 32 |
+| Cost per in-scope question (median) | $0.09 | $0.05 | $0.003 |
+| Cost per question *answered* | $0.09 | $0.06 | $0.003 |
+| Time per in-scope question (median / longest) | 15 s / 27 s | 11 s / 32 s | 13 s / 26 s |
+| Whole run | $1.62 | $0.98 | $0.05 |
 
 What these measure, and what they do not:
 
@@ -207,11 +207,14 @@ What these measure, and what they do not:
   model was shown and quotes it verbatim, and every rule number in the text is one of
   those citations. "Not answered" means the pipeline refused to show an answer, not that
   it showed a wrong one. A rejected attempt gets one retry with a notice saying what
-  failed: Sonnet needed five retries in this run, Opus one, and every retry was answered.
+  failed: Sonnet needed five retries in this run, Haiku three, Opus one, and every retry
+  was answered.
 - **"Did you mean?"** is the pipeline working as designed when a name could mean several
   cards, but it leaves an eval question unanswered. Sonnet asked once, about "Bruna" and
   "Gisela": it does not always add full names for shortened ones, and over several runs
-  it asked in about half, where Opus names the melded pair.
+  it asked in about half, where Opus names the melded pair. Haiku asked about the same
+  pair, and once about "Glimmerpuff", a card name its extraction made up for a question
+  that names Clone and Tarmogoyf.
 - **Agreement with the reference** was judged by Claude reading each answer against the
   gold set's reference answer under a strict rubric. The references were written and
   checked by models, then audited against Oracle text, rulings and CR text (which found
@@ -219,7 +222,9 @@ What these measure, and what they do not:
   contradiction found", not as a measured accuracy. It grades the ruling, not every
   aside: the same reading found no wrong side remarks in the Opus run, and one in the
   Sonnet run (it said Urborg under Blood Moon has no abilities, when Blood Moon gives it
-  "{T}: Add {R}"). It did not change the ruling.
+  "{T}: Add {R}"). It did not change the ruling. The Haiku run had two: that an opponent
+  gets priority only once all players pass, and a ruling on Urborg's page credited to
+  Magus of the Moon.
 - **Following from what they cite** is the same kind of reading, asking whether each
   ruling follows from the quoted text alone, with no outside knowledge. The rest lean on
   an uncited step: Doubling Season's own text for the counter arithmetic, the definition
@@ -251,8 +256,20 @@ misdescribed a card on one question and made three wrong asides, which the 15% i
 does not pay for. At high every answer it gave agreed with the reference, at about 60%
 of the cost per answer and slightly faster. It asked "did you mean?" once where Opus
 answered, cited about as many of the rules its answers rest on but fewer of the
-background ones, needed more retries and made one wrong aside. The documentation site's Model choice page
-covers switching and what else saves money.
+background ones, needed more retries and made one wrong aside.
+
+The third column is the cheapest model, at a twentieth of Sonnet's price per token
+(`eval/published/v1-haiku-5-5.judge.toml`). A whole run cost five cents. No answer
+contradicted the reference, but two answered only part of the question: it pointed out
+that Questing Beast has no trample without working the trample-and-deathtouch case the
+asker described, and it would not name "Tim" (Prodigal Sorcerer). Fewer of its rulings
+follow from what they cite, usually because a card's text is used without being quoted,
+and it cites fewer of the rules its answers rest on. It synthesizes at medium effort,
+Anthropic's default for it: at high and at low it agreed with the reference as often or
+less often on the questions every run answered, and made more wrong asides
+(`judge-eval answer`, one run each). Sonnet stays the budget option to recommend. Haiku
+is for a community where the bill matters more than a partial answer now and then. The
+documentation site's Model choice page covers switching and what else saves money.
 
 ## Design
 

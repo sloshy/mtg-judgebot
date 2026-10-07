@@ -154,7 +154,8 @@ pub struct ChatResponse {
   `reasoning_effort = true`. Asking for effort on a provider that cannot send it is a
   *load error*, not a silent drop. A stage that names no effort gets `low` for extraction
   and, for synthesis, the effort the model's gold runs chose (`judge_llm::SYNTH_EFFORTS`:
-  `claude-opus-5-5` medium, `claude-sonnet-5-5` high), else `high`. A truncated answer is
+  `claude-opus-5-5` medium, `claude-sonnet-5-5` high, `claude-haiku-5-5` medium), else
+  `high`. A truncated answer is
   rerun once at medium, or at low from medium (`Effort::truncation_rerun`); one at `low` is
   not rerun. Ids match exactly, so a Bedrock `anthropic.claude-opus-5-5` is unlisted and
   runs at `high` unless its stage says otherwise.
@@ -173,7 +174,10 @@ usage the response reports. The reservation is sized from the serialized *neutra
 
 - `Table`: the built-in table (`judge_llm::PRICES`, Anthropic first-party models). It is
   re-read for the model the *response* names, because an Anthropic fallback may route
-  elsewhere.
+  elsewhere. An entry is a `Rate`: one card, or two where Anthropic bills a longer prompt
+  at a dearer card (`claude-haiku-5-5` past 100K prompt tokens, cache reads and writes
+  counted). The reservation picks the card at half as many tokens again as its estimate,
+  so a newer tokenizer's higher count does not settle a request five times over it.
 - `PerToken`: the operator's rate from `[models.<stage>.pricing]`, settled at that rate
   whatever model the response names.
 - `Free`: never reserves, still counts calls (`pricing = "free"` on a provider).
@@ -213,7 +217,9 @@ Vertex. The Bedrock door uses Bedrock's Messages-shaped endpoint (`bedrock-mantl
 Bedrock documents structured outputs as unsupported, hence the mask in the table.
 Anthropic documents server-side `fallbacks` for the Claude API only (Claude Sonnet 5.5's
 migration guide says "Claude API only"; the refusals page names Bedrock, Google Cloud and
-Foundry as unsupported). Every door but `direct` therefore turns `SynthConfig::fallbacks`
+Foundry as unsupported). Claude Haiku 5.5 has no server-side fallback on any door: the
+`"default"` form the pipeline sends is accepted, and a declined request stays declined.
+Every door but `direct` therefore turns `SynthConfig::fallbacks`
 off with a warning rather than sending a beta the door may reject. A provider table's
 `refusal_fallbacks = true | false` overrides the door's default either way: `true` for a
 proxy that passes the beta through, or for Claude Platform on AWS once it is known to take

@@ -103,8 +103,8 @@ same summary line at startup.
 
 ## What a cheaper model costs
 
-The default is the expensive model. It and a cheaper one were measured on the 21-question
-gold set, both on 2026-09-29
+The default is the expensive model. It and two cheaper ones were measured on the
+21-question gold set, Opus and Sonnet on 2026-09-29 and Haiku on 2026-10-07
 ([Evaluation](../../how-it-works/evaluation/#results) has the table, and the run files are
 in `eval/published/`):
 
@@ -112,6 +112,7 @@ in `eval/published/`):
 | --- | --- | --- | --- |
 | `claude-opus-5-5` on both stages, synthesis at medium effort | 18 | 18 | $0.09 |
 | `claude-sonnet-5-5` on both stages, synthesis at high effort | 17 | 17 | $0.06 |
+| `claude-haiku-5-5` on both stages, synthesis at medium effort | 16 | 14, and 2 in part | $0.003 |
 
 Sonnet 5.5 is the budget option. Its input and output tokens cost half as much, and an
 answer about 60% as much, slightly faster. Every answer it gave agreed with the
@@ -147,6 +148,16 @@ model = "voyage-3.5"
 This is the file the run used (`eval/published/v1-sonnet-5-5.judge.toml`). The built-in
 price table knows the model, so it needs no `pricing` table.
 
+Haiku 5.5 is the cheapest: a twentieth of Sonnet's price per token, and five cents for the
+whole set. None of its answers contradicted the reference, but two answered only part of
+the question, and two more questions got "did you mean?", once over a card name its
+extraction made up. Fewer of its rulings follow from what they cite, and it made two
+wrong asides. Sonnet stays the budget option to recommend. Haiku suits a server where the
+bill matters more than an occasional partial answer. Its file is
+`eval/published/v1-haiku-5-5.judge.toml`: the one above with `claude-haiku-5-5` on both
+stages and `effort = "medium"`. The price table knows both of its rate cards, including
+the dearer one for a prompt over 100K tokens, which the judge's prompts stay well under.
+
 Twenty-one questions is a small sample. Any other model means running
 `judge-eval answer --config <your file>` before you trust it. A model that fails often
 there may need the prompts in `crates/bot/src/prompts/` re-tuned for it against the gold
@@ -156,7 +167,7 @@ Other ways to lower the bill, on any model:
 
 - **The extraction stage** is a small share of an answer's cost (about a third of a cent
   of ten on the default). A local model there (`pricing = "free"`) removes it. It is the
-  safer stage to move: both models above separated the 3 out-of-scope questions from the
+  safer stage to move: all three models above separated the 3 out-of-scope questions from the
   18 in scope, which is the part of extraction the gold set measures.
 - **`JUDGE_USER_LIMIT`, `API_RATE_LIMIT` and `JUDGE_BUDGET_PERIOD`** limit how many
   questions are asked, and the bill is proportional to that.
@@ -173,9 +184,10 @@ level measured for its model on the gold set:
 | --- | --- | --- |
 | `claude-opus-5-5` | `medium` | As good as `high` on the gold set (all 18 agreeing, no wrong asides) and a little cheaper. It is also Anthropic's default for this model. |
 | `claude-sonnet-5-5` | `high` | At `medium` it misdescribed a card on one question and made three wrong asides, for 15% less. |
+| `claude-haiku-5-5` | `medium` | On the questions every run answered it agreed with the reference as often as at `high`, with fewer wrong asides; `low` did worse. It is also Anthropic's default for this model. |
 | any other model | `high` | Unmeasured, so the setting that errs toward correctness. |
 
-Each setting was run once, on 2026-09-29, and the Opus `high` run predates a change to how
+Each setting was run once, on 2026-09-29 (Haiku on 2026-10-07), and the Opus `high` run predates a change to how
 the material prints CR examples, so read "as good" as "no worse". Model ids match exactly: on
 Bedrock, `anthropic.claude-opus-5-5` is not in the table and runs at `high` unless you set
 `effort`.
@@ -185,6 +197,3 @@ retried once at `medium`, or at `low` when it was already `medium`, and one at `
 not retried. Raising effort
 above these costs more per answer. Measure a change with `judge-eval answer --config
 <your file>` before relying on it.
-
-`claude-haiku-4-5` cannot be used on either stage as the pipeline stands. Every request sets a reasoning
-effort, and that model is documented to reject it.
