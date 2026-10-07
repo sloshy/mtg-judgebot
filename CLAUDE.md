@@ -217,6 +217,11 @@ to anything provider-shaped: wire format, schema dialect, pricing, auth.
 
 ## Commands
 
+Binary names: `judge-eval`, `judge-cli` and `judge-mcp` are what `target/release/` holds.
+`bot`, `api` and `ingest` build as those bare names and become `judge-bot`, `judge-api` and
+`judge-ingest` only in the image (Dockerfile), so locally run them with `cargo run -p
+judge-<name>` or `target/release/<bare name>`.
+
 Everything needs env from `.env` (`set -a; source .env; set +a`). Postgres runs in
 Docker on **localhost:5432**. `DB_PORT` in `.env` moves the published port. The
 containers always reach it at `db:5432`.

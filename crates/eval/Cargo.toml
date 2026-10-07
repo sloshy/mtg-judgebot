@@ -9,7 +9,7 @@ publish.workspace = true
 description = "Offline evaluation against eval/gold.yaml (retrieval recall gate, ARCHITECTURE.md §6 step 4)."
 
 [[bin]]
-name = "eval"
+name = "judge-eval"
 path = "src/main.rs"
 
 [dependencies]
