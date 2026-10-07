@@ -8,6 +8,11 @@
 //! - `POST /api/save`: the same, written, unless either file changed since
 //!   the page read it.
 //!
+//! A draft carries shown settings (`env`) and blind replacements
+//! (`replace`). A replacement's value goes into the file and nowhere else:
+//! every reply is scrubbed of it, as of every secret already in the file,
+//! and the `.env` diff names it without a value.
+//!
 //! The calls need the token printed at startup, in a header a page from
 //! another origin cannot set without a CORS preflight this server never
 //! answers; the `Host` must be a loopback name (or one passed with
@@ -278,6 +283,19 @@ async fn state(State(editor): State<Arc<Editor>>) -> Result<Body<Json>, Failure>
     Ok(Body(out))
 }
 
+/// The ways a message can spell `secret`: as is, and as Rust's `{:?}` and
+/// `escape_default` write it (`"` and `\` escaped), which is how the loaders
+/// quote a value they reject (`JUDGE_SOURCE_URL="…": not an http(s) URL`).
+fn spellings(secret: &str) -> Vec<String> {
+    let mut forms = vec![
+        secret.to_owned(),
+        secret.escape_debug().to_string(),
+        secret.escape_default().to_string(),
+    ];
+    forms.dedup();
+    forms
+}
+
 /// Mask every occurrence of a value the page must not see
 /// ([`DotEnv::sensitive`]) in every string of `v`. The loaders' messages
 /// quote values they reject (`GUILD_ID must be …, got "…"`), and a setting
@@ -286,8 +304,10 @@ fn redact(v: &mut Json, secrets: &[String]) {
     match v {
         Json::String(s) => {
             for secret in secrets {
-                if s.contains(secret.as_str()) {
-                    *s = s.replace(secret.as_str(), "<redacted>");
+                for form in spellings(secret) {
+                    if s.contains(form.as_str()) {
+                        *s = s.replace(form.as_str(), "<redacted>");
+                    }
                 }
             }
         }
@@ -302,9 +322,13 @@ fn redact(v: &mut Json, secrets: &[String]) {
 struct Draft {
     /// The `judge.toml`: the form's JSON, raw text, or absent.
     toml: TomlDraft,
-    /// Settings to change, by name.
+    /// Shown settings to change, by name.
     #[serde(default)]
     env: BTreeMap<String, String>,
+    /// Variables to overwrite blind, by name: secrets, hidden settings,
+    /// variables the registry does not know. Never sent back.
+    #[serde(default)]
+    replace: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -325,8 +349,11 @@ struct Rendered {
     env_old: Option<String>,
     env_new: String,
     env: DotEnv,
-    /// What the reply must not show: the sensitive values before and after.
+    /// What the reply must not show: the sensitive values before and after,
+    /// and every replacement.
     secrets: Vec<String>,
+    /// The variables overwritten blind.
+    replaced: Vec<String>,
 }
 
 fn render(editor: &Editor, draft: &Draft) -> Result<Rendered, Failure> {
@@ -362,6 +389,28 @@ fn render(editor: &Editor, draft: &Draft) -> Result<Rendered, Failure> {
         let value = env::Value::new(setting, value).map_err(|e| bad(&e))?;
         env.set(setting, &value).map_err(|e| bad(&e))?;
     }
+    let mut replaced = vec![];
+    for (name, raw) in &draft.replace {
+        let var = env::Name::new(name).ok_or_else(|| {
+            bad(&format!(
+                "{name:?} is not a variable name (letters, digits, _)"
+            ))
+        })?;
+        // A shown setting is changed from the value the page displayed.
+        if let Some(s) = Setting::named(name)
+            && env.setting(s) != Shown::Hidden
+        {
+            return Err(bad(&format!("{name} is shown: change it in its field")));
+        }
+        let value = env::Value::replacement(&var, raw).map_err(|e| bad(&e))?;
+        env.replace(&var, &value).map_err(|e| bad(&e))?;
+        // As `DotEnv::sensitive`: a value under four characters is not worth
+        // garbling every message over.
+        if value.as_str().len() >= 4 {
+            secrets.push(value.as_str().to_owned());
+        }
+        replaced.push(name.clone());
+    }
     let env_new = env.render();
     // Read back as the binaries will: a `${NAME}` elsewhere sees the edit.
     let env = DotEnv::parse(&env_new).map_err(|e| bad(&e))?;
@@ -376,6 +425,7 @@ fn render(editor: &Editor, draft: &Draft) -> Result<Rendered, Failure> {
         env_new,
         env,
         secrets,
+        replaced,
     })
 }
 
@@ -420,7 +470,7 @@ fn report(editor: &Editor, r: &Rendered) -> Json {
     let mut out = json!({
         "toml": { "old": r.toml_old, "new": r.toml_new },
         "env": { "changed": r.env_old.as_deref() != Some(r.env_new.as_str()) },
-        "env_diff": env_diff(r.env_old.as_deref(), &r.env_new),
+        "env_diff": env_diff(r.env_old.as_deref(), &r.env_new, &r.replaced),
         "checks": checks,
         "warnings": warnings(editor, r),
     });
@@ -428,12 +478,16 @@ fn report(editor: &Editor, r: &Rendered) -> Json {
     out
 }
 
-/// The `.env` lines that change, with secrets' lines never shown: the
-/// editor only writes settings, but a diff must not echo the file.
-fn env_diff(old: Option<&str>, new: &str) -> Vec<Json> {
+/// The `.env` lines that change. A shown setting's line is shown; a
+/// replaced variable is named with `~` and no value; any other line is
+/// never shown, whatever it holds.
+fn env_diff(old: Option<&str>, new: &str, replaced: &[String]) -> Vec<Json> {
     let old_lines: Vec<&str> = old.map(|o| o.lines().collect()).unwrap_or_default();
-    let shown =
-        |line: &str| env::assignment(line).is_some_and(|(name, _)| Setting::named(name).is_some());
+    let shown = |line: &str| {
+        env::assignment(line).is_some_and(|(name, _)| {
+            Setting::named(name).is_some() && !replaced.iter().any(|r| r == name)
+        })
+    };
     let new_lines: Vec<&str> = new.lines().collect();
     let mut out = vec![];
     for l in &old_lines {
@@ -445,6 +499,9 @@ fn env_diff(old: Option<&str>, new: &str) -> Vec<Json> {
         if !old_lines.contains(l) && shown(l) {
             out.push(json!({ "op": "+", "line": l }));
         }
+    }
+    for name in replaced {
+        out.push(json!({ "op": "~", "line": format!("{name}: new value (not shown)") }));
     }
     out
 }
@@ -640,6 +697,7 @@ mod tests {
         let draft = Draft {
             toml: TomlDraft::None,
             env: BTreeMap::from([("JUDGE_ROLE".to_owned(), "Judges".to_owned())]),
+            replace: BTreeMap::new(),
         };
         let r = render(&editor, &draft)?;
         let out = report(&editor, &r).to_string();
@@ -654,8 +712,58 @@ mod tests {
                 "ANTHROPIC_BASE_URL".to_owned(),
                 "https://x.example".to_owned(),
             )]),
+            replace: BTreeMap::new(),
         };
         assert!(render(&editor, &blind).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_replacement_is_written_and_never_echoed() -> R {
+        let (_dir, editor) = editor(
+            "DISCORD_TOKEN=old-token\nANTHROPIC_BASE_URL=https://u:pw@proxy.example\nJUDGE_ROLE=Judge\n",
+        )?;
+        let draft = |replace: &[(&str, &str)]| Draft {
+            toml: TomlDraft::None,
+            env: BTreeMap::new(),
+            replace: replace
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+        };
+        let d = draft(&[
+            ("DISCORD_TOKEN", "NEWSECRETTOKEN"),
+            ("ANTHROPIC_BASE_URL", "https://NEWPROXYHOST.example"),
+            ("LITELLM_KEY", "NEWLITELLMKEY"),
+        ]);
+        let r = render(&editor, &d)?;
+        let out = report(&editor, &r).to_string();
+        for secret in [
+            "NEWSECRETTOKEN",
+            "NEWPROXYHOST",
+            "NEWLITELLMKEY",
+            "old-token",
+        ] {
+            assert!(!out.contains(secret), "{secret} in {out}");
+        }
+        assert!(
+            out.contains("DISCORD_TOKEN: new value (not shown)"),
+            "{out}"
+        );
+        // A loader quoting a value with `{:?}` escapes it: still masked.
+        let (_q, quoted) =
+            self::editor("DISCORD_TOKEN='old\"disc\\ord'\nJUDGE_SOURCE_URL=${DISCORD_TOKEN}\n")?;
+        let fresh = draft(&[("DISCORD_TOKEN", "new\"discord\\secret")]);
+        let out = report(&quoted, &render(&quoted, &fresh)?).to_string();
+        assert!(!out.contains("disc"), "{out}");
+        let untouched = report(&quoted, &render(&quoted, &draft(&[]))?).to_string();
+        assert!(!untouched.contains("disc"), "{untouched}");
+        assert!(r.env_new.contains("DISCORD_TOKEN=NEWSECRETTOKEN\n"));
+        assert!(r.env_new.ends_with("LITELLM_KEY=NEWLITELLMKEY\n"));
+        // A shown setting goes through its field; a bad name is refused.
+        assert!(render(&editor, &draft(&[("JUDGE_ROLE", "x")])).is_err());
+        assert!(render(&editor, &draft(&[("BAD NAME", "x")])).is_err());
+        assert!(render(&editor, &draft(&[("DISCORD_TOKEN", " ")])).is_err());
         Ok(())
     }
 

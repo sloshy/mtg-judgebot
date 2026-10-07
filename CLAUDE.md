@@ -291,7 +291,7 @@ judge-cli verdict <s> <file|-> [--persist] | persist <s>   # the agent-driven se
 judge-cli card <name> | card-info <uuid> | get-rules <id>.. | search "<q>" [--limit N] | glossary <term>
 judge-cli config                                        # the resolved provider/model setup, secrets redacted
 cargo run --release -p judge-configure                  # judge-config: edit judge.toml + .env on 127.0.0.1:8790
-                                                        # (prints a #token= URL; secrets never shown or written)
+                                                        # (prints a #token= URL; secrets write-only, never shown)
 judge-mcp                                               # the MCP server on stdio (.mcp.json starts it)
                                                         # remote: judge-api --mcp serves /mcp (needs MCP_TOKEN)
 
@@ -359,6 +359,8 @@ Crate graph (`core` ← `llm` ← `anthropic` and `openai` ← `embed` ← `bot`
   - Its form is `config::file_schema()` (schemars over the loader's serde types), so the
     doc comments on the `File`-shape types in `config.rs` are operator-facing help text.
   - `DoorKey::on` is the one door × key table. The loader's misplaced check reads it.
+  - Secrets are write-only: `DotEnv::replace` writes a value the page typed, and
+    every reply goes through `server::redact`. No `BadValue` may quote a value.
   - `env::VARS` must list every `.env.example` variable as secret or setting
     (`registry_matches_the_example`), and a new variable needs a comment block directly
     above its line, which becomes its help.

@@ -226,8 +226,10 @@ Three front doors share this pipeline through the same composition root
     generated from the loader's serde types, with `x-doors` from
     `DoorKey::on`, the table the loader's misplaced-key check reads.
   - `env::VARS` lists every variable `.env.example` carries as a secret or a
-    setting. Only a `Setting` is written. A secret, or a variable the list does
-    not know, is reported only as set or not. Help text is `.env.example`'s
+    setting. A value reaches the page only through a `Setting`. A secret, a
+    variable the list does not know, or a hidden setting is reported as set or
+    not, and is changed blind (`DotEnv::replace`): the page sends a new value
+    and every reply is scrubbed of it. Help text is `.env.example`'s
     comments.
   - Each draft goes through `check::run`: the `judge.toml` loader,
     `discord::Config::from_vars`, `ApiConfig::from_vars` and `check`, the

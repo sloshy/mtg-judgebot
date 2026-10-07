@@ -25,9 +25,9 @@ use tokio::sync::Mutex;
 const USAGE: &str = "\
 usage: judge-config [--env FILE] [--config FILE] [--listen ADDR] [--allow-host NAME]...
 
-A page on localhost for editing judge.toml and the settings in .env, each
-draft checked by the binaries' own loaders. Secrets in .env are never shown
-or written: the page says only whether each is set.
+A page on localhost for editing judge.toml and .env, each draft checked by
+the binaries' own loaders. Secrets in .env are never shown: the page says
+whether each is set, and can replace one with a value you type.
 
   --env FILE         the .env to edit (default ./.env)
   --config FILE      the judge.toml to edit (default: JUDGE_CONFIG from the

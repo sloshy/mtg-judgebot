@@ -1,14 +1,19 @@
-//! The `.env` side: which variables exist, which of them the editor may
-//! change, and a line-preserving writer.
+//! The `.env` side: which variables exist, what the editor may show of
+//! them, and a line-preserving writer.
 //!
 //! [`VARS`] lists every variable `.env.example` carries, each a
-//! [`Kind::Secret`] or a [`Kind::Setting`]. Only a [`Setting`] can be
-//! written, and a `Setting` is only made from a `Kind::Setting` entry, so a
-//! secret (an API key, `DISCORD_TOKEN`, `DATABASE_URL` with its password, the
-//! alert webhook) cannot be changed or even read back through the editor:
-//! the page learns whether it is set and nothing else. A variable the
-//! registry does not know (a provider's `api_key_env`, `AWS_*`) is treated as
-//! a secret.
+//! [`Kind::Secret`] or a [`Kind::Setting`]. Values reach the page only
+//! through a [`Setting`] (made only from a `Kind::Setting` entry), so a secret
+//! (an API key, `DISCORD_TOKEN`, `DATABASE_URL` with its password, the alert
+//! webhook) is never read back: the page learns whether it is set. A
+//! variable the registry does not know (a provider's `api_key_env`, `AWS_*`)
+//! is treated as a secret, and so is a setting whose value is
+//! [`Shown::Hidden`].
+//!
+//! Writing is two paths. A shown setting is changed with [`DotEnv::set`],
+//! from a value the page displayed. Anything else is changed blind with
+//! [`DotEnv::replace`]: the page sends a new value for a [`Name`] and never
+//! receives the old one, and no [`BadValue`] quotes a value.
 //!
 //! The help text is `.env.example`'s own comments ([`help`]): the block of
 //! comment lines directly above a variable documents it, and consecutive
@@ -268,6 +273,29 @@ pub fn help(text: &str) -> BTreeMap<&str, String> {
     out
 }
 
+/// A variable name the editor may write a replacement for: letters, digits
+/// and `_`, not starting with a digit (what both dotenvy and Compose read).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Name(String);
+
+impl Name {
+    /// `name`, if it is one.
+    #[must_use]
+    pub fn new(name: &str) -> Option<Self> {
+        let mut bytes = name.bytes();
+        let first = bytes.next()?;
+        ((first.is_ascii_alphabetic() || first == b'_')
+            && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .then(|| Self(name.to_owned()))
+    }
+
+    /// The name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// A value the editor may write: one line, and spellable in a `.env` that
 /// both `dotenvy` and Docker Compose read the same way.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -278,18 +306,21 @@ pub struct Value(String);
 pub enum BadValue {
     /// A line break would end the assignment.
     #[error("{0}: a value must be one line")]
-    Multiline(&'static str),
+    Multiline(String),
     /// Needs quoting, and holds a `'` along with a character double quotes
     /// do not protect.
     #[error("{0}: a value holding ' and any of \" \\ $ ` cannot be written to .env")]
-    Unquotable(&'static str),
+    Unquotable(String),
     /// The written line would not read back as the value.
     #[error("{0}: the value would not read back unchanged from .env")]
-    RoundTrip(&'static str),
+    RoundTrip(String),
     /// The current value is not shown ([`Shown::Hidden`]), so it is not
     /// replaced either: the page never saw what it would overwrite.
-    #[error("{0} is set to a value this editor does not show; edit it in .env")]
-    Hidden(&'static str),
+    #[error("{0} is set to a value this editor does not show; replace it instead")]
+    Hidden(String),
+    /// A replacement must say something: a blank one is no replacement.
+    #[error("{0}: an empty replacement; cancel it to keep the current value")]
+    Empty(String),
 }
 
 impl Value {
@@ -298,19 +329,35 @@ impl Value {
     /// # Errors
     /// [`BadValue`].
     pub fn new(setting: Setting, raw: &str) -> Result<Self, BadValue> {
+        Self::named(setting.name(), raw)
+    }
+
+    /// A replacement for the variable `name` ([`DotEnv::replace`]): as
+    /// [`Value::new`], and not blank.
+    ///
+    /// # Errors
+    /// [`BadValue`]. No error carries the value: it may be a secret.
+    pub fn replacement(name: &Name, raw: &str) -> Result<Self, BadValue> {
+        if raw.trim().is_empty() {
+            return Err(BadValue::Empty(name.0.clone()));
+        }
+        Self::named(&name.0, raw)
+    }
+
+    fn named(name: &str, raw: &str) -> Result<Self, BadValue> {
         let v = raw.trim();
         if v.contains(['\n', '\r', '\0']) {
-            return Err(BadValue::Multiline(setting.name()));
+            return Err(BadValue::Multiline(name.to_owned()));
         }
         let value = Self(v.to_owned());
-        let line = value.line(setting)?;
+        let line = value.line(name)?;
         // What both readers will see: dotenvy's reading of the line we write.
         let read = dotenvy::from_read_iter(line.as_bytes())
             .next()
             .and_then(Result::ok)
             .map(|(_, v)| v);
         if read.as_deref().unwrap_or_default() != v {
-            return Err(BadValue::RoundTrip(setting.name()));
+            return Err(BadValue::RoundTrip(name.to_owned()));
         }
         Ok(value)
     }
@@ -323,7 +370,7 @@ impl Value {
 
     /// `NAME=value`, quoted only when it must be. Single quotes are literal
     /// to both readers; `$` is quoted so Compose does not interpolate it.
-    fn line(&self, setting: Setting) -> Result<String, BadValue> {
+    fn line(&self, name: &str) -> Result<String, BadValue> {
         let v = &self.0;
         let bare = v.bytes().all(|b| {
             b.is_ascii_alphanumeric()
@@ -332,7 +379,6 @@ impl Value {
                     b'_' | b'-' | b'.' | b'/' | b':' | b'@' | b',' | b'+' | b'%' | b'='
                 )
         });
-        let name = setting.name();
         Ok(if bare {
             format!("{name}={v}")
         } else if !v.contains('\'') {
@@ -340,7 +386,7 @@ impl Value {
         } else if !v.contains(['"', '\\', '$', '`']) {
             format!("{name}=\"{v}\"")
         } else {
-            return Err(BadValue::Unquotable(name));
+            return Err(BadValue::Unquotable(name.to_owned()));
         })
     }
 }
@@ -494,10 +540,24 @@ impl DotEnv {
         let name = setting.name();
         match self.setting(setting) {
             Shown::Value(v) if v == value.as_str() => return Ok(()),
-            Shown::Hidden => return Err(BadValue::Hidden(name)),
+            Shown::Hidden => return Err(BadValue::Hidden(name.to_owned())),
             Shown::Value(_) | Shown::Unset => {}
         }
-        let line = value.line(setting)?;
+        self.place(name, value)
+    }
+
+    /// Write `value` to `name` without reading what was there: the way a
+    /// secret, a hidden setting or any other variable is changed. The page
+    /// sends the value and never gets it back.
+    ///
+    /// # Errors
+    /// [`BadValue`] when the value cannot be spelled.
+    pub fn replace(&mut self, name: &Name, value: &Value) -> Result<(), BadValue> {
+        self.place(&name.0, value)
+    }
+
+    fn place(&mut self, name: &str, value: &Value) -> Result<(), BadValue> {
+        let line = value.line(name)?;
         let at = |commented: bool| {
             self.lines
                 .iter()
@@ -695,8 +755,40 @@ mod tests {
         let mut env = env;
         assert_eq!(
             env.set(role, &Value::new(role, "x")?),
-            Err(BadValue::Hidden("JUDGE_ROLE"))
+            Err(BadValue::Hidden("JUDGE_ROLE".to_owned()))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_replacement_overwrites_blind_and_never_quotes_its_value_in_errors() -> R {
+        let mut env =
+            DotEnv::parse("DISCORD_TOKEN=old-token\n#LITELLM_KEY=\nJUDGE_ROLE=${DISCORD_TOKEN}\n")?;
+        let n = |s| Name::new(s).ok_or(s);
+        for (name, value) in [
+            ("DISCORD_TOKEN", "new token"),
+            ("JUDGE_ROLE", "Judges"),
+            ("OPENAI_API_KEY", "sk-x"),
+        ] {
+            env.replace(&n(name)?, &Value::replacement(&n(name)?, value)?)?;
+        }
+        let back = DotEnv::parse(&env.render())?;
+        assert_eq!(back.lookup()("DISCORD_TOKEN").as_deref(), Some("new token"));
+        assert_eq!(back.lookup()("JUDGE_ROLE").as_deref(), Some("Judges"));
+        assert!(
+            env.render().ends_with("OPENAI_API_KEY=sk-x\n"),
+            "{}",
+            env.render()
+        );
+        let err = Value::replacement(&n("X")?, "a\nSECRET")
+            .err()
+            .ok_or("accepted")?;
+        assert!(!err.to_string().contains("SECRET"));
+        assert_eq!(
+            Value::replacement(&n("X")?, "  "),
+            Err(BadValue::Empty("X".to_owned()))
+        );
+        assert!(Name::new("1A").is_none() && Name::new("A.B").is_none() && Name::new("").is_none());
         Ok(())
     }
 

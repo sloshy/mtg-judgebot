@@ -11,7 +11,13 @@ let form = null; // the judge.toml draft as JSON, in form mode
 let formBase = ""; // JSON.stringify(form) as loaded, to know when it changed
 let tomlText = ""; // the judge.toml draft, in text mode
 let textEdited = false; // typed in since the Text view opened
-let envDraft = {}; // setting name -> value, only the changed ones
+let envDraft = Object.create(null); // setting name -> value, only the changed ones
+// Variables to overwrite blind (secrets, hidden settings, unknown ones):
+// name -> the value typed. Held in memory only, sent to the server, never
+// shown back.
+let replaceDraft = Object.create(null);
+const replaceOpen = new Set(); // rows whose replacement input is open
+const addedNames = new Set(); // variables added on this page, not yet in .env
 let report = null; // the last /api/check answer
 let tab = "models";
 let flagged = { toml: new Map(), env: new Map(), text: null };
@@ -146,6 +152,7 @@ function envVar(name) {
 }
 
 function envIsSet(name) {
+  if (Object.hasOwn(replaceDraft, name)) return true;
   if (Object.hasOwn(envDraft, name)) return envDraft[name].trim() !== "";
   const v = envVar(name) || state.env.others.find((o) => o.name === name);
   return Boolean(v?.set);
@@ -166,7 +173,7 @@ function tomlChanged() {
 }
 
 function pendingCount() {
-  return Object.keys(envDraft).length + (tomlChanged() ? 1 : 0);
+  return Object.keys(envDraft).length + Object.keys(replaceDraft).length + (tomlChanged() ? 1 : 0);
 }
 
 let checkSeq = 0;
@@ -187,7 +194,7 @@ function scheduleCheck() {
 async function runCheck() {
   const seq = ++checkSeq;
   try {
-    const r = await call("/api/check", { toml: tomlDraft(), env: envDraft });
+    const r = await call("/api/check", { toml: tomlDraft(), env: envDraft, replace: replaceDraft });
     if (seq !== checkSeq) return;
     report = r;
     fatal("");
@@ -337,6 +344,7 @@ function switchTab(name) {
     document.getElementById(`tab-${t}`).hidden = t !== name;
   }
   if (name === "review") renderReview();
+  if (name === "settings") renderSettings();
 }
 
 // ---------- generic fields ----------
@@ -519,7 +527,11 @@ async function setTomlMode(mode) {
     // file with every form edit in it.
     let rendered;
     try {
-      rendered = await call("/api/check", { toml: tomlDraft(), env: envDraft });
+      rendered = await call("/api/check", {
+        toml: tomlDraft(),
+        env: envDraft,
+        replace: replaceDraft,
+      });
     } catch (e) {
       fatal(`Cannot show the text: ${e.message}`);
       return;
@@ -825,7 +837,8 @@ function renderSettings() {
         state.env.exists
           ? `Editing ${state.env.path}`
           : `${state.env.path} does not exist yet: saving creates it from \`.env.example\``,
-        "Secrets (API keys, tokens, `DATABASE_URL`, the alert webhook) are never shown or written: edit them in the file",
+        "Secrets (API keys, tokens, `DATABASE_URL`, the alert webhook) are never shown",
+        "Replace… writes a new value you type or paste; Cancel drops it before saving",
         "Blank means the default",
       ],
       "points notice",
@@ -847,57 +860,171 @@ function renderSettings() {
     }
     root.append(card);
   }
-  if (state.env.others.length) {
-    const card = el(
-      "div",
-      { class: "card" },
-      el("h3", { text: "Other variables in .env" }),
-      points(
-        ["Provider keys and other variables this editor does not know", "Never shown or written"],
-        "points muted",
+  const others = [
+    ...state.env.others.map((o) => ({ name: o.name, set: o.set })),
+    ...[...new Set([...wantedKeys(), ...addedNames])]
+      .filter((n) => !state.env.others.some((o) => o.name === n))
+      .map((name) => ({ name, set: false, wanted: true })),
+  ];
+  const card = el(
+    "div",
+    { class: "card" },
+    el("h3", { text: "Other variables in .env" }),
+    points(
+      [
+        "Provider keys and other variables this editor does not know",
+        "Never shown: replace one, or add a variable a `judge.toml` provider names",
+      ],
+      "points muted",
+    ),
+  );
+  for (const o of others) {
+    card.append(
+      el(
+        "div",
+        { class: "field", dataset: { env: o.name } },
+        el("label", {}, el("code", { text: o.name })),
+        replacer(o.name, o.set, o.wanted ? "not in .env yet" : "never shown"),
       ),
     );
-    for (const o of state.env.others) {
-      card.append(
-        el(
-          "div",
-          { class: "field", dataset: { env: o.name } },
-          el("label", {}, el("code", { text: o.name })),
-          el("span", { class: `badge ${o.set ? "ok" : ""}`, text: o.set ? "set" : "blank" }),
-        ),
-      );
-    }
-    root.append(card);
   }
+  const newName = el("input", {
+    type: "text",
+    placeholder: "NAME, e.g. LITELLM_KEY",
+    spellcheck: "false",
+    autocapitalize: "characters",
+    "aria-label": "New variable name",
+  });
+  const add = () => {
+    const n = newName.value.trim();
+    const known = state.env.vars.some((v) => v.name === n);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n) || known) {
+      newName.setCustomValidity(
+        known ? `${n} has its own field above` : "Letters, digits and _ only",
+      );
+      newName.reportValidity();
+      return;
+    }
+    addedNames.add(n);
+    replaceOpen.add(n);
+    renderSettings();
+    document.querySelector(`[data-env="${CSS.escape(n)}"] input`)?.focus();
+  };
+  newName.addEventListener("input", () => newName.setCustomValidity(""));
+  newName.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") add();
+  });
+  card.append(
+    el(
+      "div",
+      { class: "row" },
+      newName,
+      el("button", { class: "btn", type: "button", text: "Add variable", onclick: add }),
+    ),
+  );
+  root.append(card);
   applyFlags();
+}
+
+/// A write-only control: whether `name` is set, and a masked input that
+/// replaces its value. The current value is never on the page; what is typed
+/// stays in `replaceDraft` until saved or cancelled.
+function replacer(name, set, why) {
+  const pending = Object.hasOwn(replaceDraft, name);
+  const status = el("span", {
+    class: `badge ${pending ? "chg" : set ? "ok" : ""}`,
+    text: pending ? (set ? "will be replaced" : "will be set") : set ? "set" : "not set",
+  });
+  const head = el("div", { class: "row" }, status, el("span", { class: "muted small", text: why }));
+  const wrap = el("div", {}, head);
+  if (!replaceOpen.has(name)) {
+    head.append(
+      el("button", {
+        class: "btn",
+        type: "button",
+        text: set ? "Replace…" : "Set…",
+        onclick: () => {
+          replaceOpen.add(name);
+          renderSettings();
+          document.querySelector(`[data-env="${CSS.escape(name)}"] input`)?.focus();
+        },
+      }),
+    );
+    return wrap;
+  }
+  const box = el("input", {
+    type: "password",
+    // Not a login: no browser or password manager should offer to store it.
+    autocomplete: "off",
+    "data-1p-ignore": "true",
+    "data-lpignore": "true",
+    "data-bwignore": "true",
+    "data-form-type": "other",
+    spellcheck: "false",
+    autocapitalize: "off",
+    placeholder: set ? "new value" : "value",
+    "aria-label": `New value for ${name}`,
+  });
+  box.value = Object.hasOwn(replaceDraft, name) ? replaceDraft[name] : "";
+  box.addEventListener("input", () => {
+    if (box.value.trim() === "") delete replaceDraft[name];
+    else replaceDraft[name] = box.value;
+    const now = Object.hasOwn(replaceDraft, name);
+    status.className = `badge ${now ? "chg" : set ? "ok" : ""}`;
+    status.textContent = now ? (set ? "will be replaced" : "will be set") : set ? "set" : "not set";
+    scheduleCheck();
+  });
+  const show = el("button", {
+    class: "btn",
+    type: "button",
+    text: "Show",
+    "aria-pressed": "false",
+    onclick: () => {
+      const visible = box.type === "password";
+      box.type = visible ? "text" : "password";
+      show.textContent = visible ? "Hide" : "Show";
+      show.setAttribute("aria-pressed", String(visible));
+    },
+  });
+  const cancel = el("button", {
+    class: "btn",
+    type: "button",
+    text: "Cancel",
+    onclick: () => {
+      delete replaceDraft[name];
+      replaceOpen.delete(name);
+      scheduleCheck();
+      renderSettings();
+    },
+  });
+  wrap.append(el("div", { class: "row" }, box, show, cancel));
+  return wrap;
+}
+
+/// Variables the `judge.toml` draft names as `api_key_env` that `.env` does
+/// not assign: a new provider's key, waiting to be set.
+function wantedKeys() {
+  const names = new Set();
+  for (const p of Object.values(form?.providers || {})) {
+    if (typeof p?.api_key_env === "string" && p.api_key_env.trim()) names.add(p.api_key_env.trim());
+  }
+  const present = new Set([
+    ...state.env.vars.map((v) => v.name),
+    ...state.env.others.map((o) => o.name),
+  ]);
+  return [...names].filter((n) => !present.has(n));
 }
 
 function settingRow(v, help) {
   const label = el("label", {}, el("code", { text: v.name }));
   const helpNode = help ? el("details", {}, el("summary", { text: "about" }), prose(help)) : null;
-  if (v.kind === "secret") {
+  if (v.kind === "secret" || v.hidden) {
+    const why = v.hidden ? "not shown: it expands $ or carries credentials" : "secret: never shown";
     return el(
       "div",
       { class: "field", dataset: { env: v.name } },
       label,
-      el(
-        "div",
-        { class: "row" },
-        el("span", { class: `badge ${v.set ? "ok" : ""}`, text: v.set ? "set" : "not set" }),
-        el("span", { class: "muted small", text: "secret: edit in .env" }),
-      ),
-      helpNode,
-    );
-  }
-  if (v.hidden) {
-    return el(
-      "div",
-      { class: "field", dataset: { env: v.name } },
-      label,
-      el("span", {
-        class: "muted small",
-        text: "set, not shown: it expands $ or carries credentials. Edit in .env.",
-      }),
+      replacer(v.name, v.set, why),
       helpNode,
     );
   }
@@ -999,7 +1126,8 @@ function renderReview() {
   if (envDiffers) {
     const pre = el("pre", { class: "diff" });
     for (const d of report.env_diff) {
-      pre.append(el("span", { class: d.op === "+" ? "add" : "del", text: `${d.op} ${d.line}` }));
+      const cls = { "+": "add", "-": "del", "~": "chg" }[d.op];
+      pre.append(el("span", { class: cls, text: `${d.op} ${d.line}` }));
     }
     if (!state.env.exists)
       pre.append(el("span", { class: "gap", text: "  (created from .env.example)" }));
@@ -1047,11 +1175,12 @@ function renderReview() {
 async function doSave(errors) {
   if (errors && !confirm("Some parts would refuse to start with these files. Save anyway?")) return;
   const tomlDiffers = tomlChanged();
-  const envDiffers = Object.keys(envDraft).length > 0;
+  const envDiffers = Object.keys(envDraft).length + Object.keys(replaceDraft).length > 0;
   try {
     await call("/api/save", {
       toml: tomlDraft(),
       env: envDraft,
+      replace: replaceDraft,
       toml_hash: state.toml.hash,
       env_hash: state.env.hash,
     });
@@ -1085,7 +1214,10 @@ async function load() {
     return;
   }
   fatal("");
-  envDraft = {};
+  envDraft = Object.create(null);
+  replaceDraft = Object.create(null);
+  replaceOpen.clear();
+  addedNames.clear();
   report = null;
   if (state.toml.exists && state.toml.form) {
     tomlMode = "form";

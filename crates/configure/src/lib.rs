@@ -1,5 +1,5 @@
-//! `judge-config`: a page on localhost for editing `judge.toml` and the
-//! non-secret settings in `.env`, with every draft checked by the same
+//! `judge-config`: a page on localhost for editing `judge.toml` and `.env`
+//! (secrets write-only: replaced, never shown), with every draft checked by the same
 //! loaders the binaries run (`check`). The form is generated from the
 //! loader's types (`judge_bot::config::file_schema`) and the help text from
 //! the files' own comments, so neither is restated here.

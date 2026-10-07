@@ -1,13 +1,13 @@
 ---
 title: The config editor
-description: judge-config, a page on localhost for editing judge.toml and the settings in .env, with every draft checked by the binaries' own loaders.
+description: judge-config, a page on localhost for editing judge.toml and .env (secrets write-only), with every draft checked by the binaries' own loaders.
 sidebar:
   order: 5
 ---
 
-`judge-config` serves a page on `127.0.0.1` for editing [`judge.toml`](../models/) and the
-non-secret settings in `.env`. It is optional: both files stay plain text, and the
-editor writes them the way you would.
+`judge-config` serves a page on `127.0.0.1` for editing [`judge.toml`](../models/) and
+`.env`. It is optional: both files stay plain text, and the editor writes them the way
+you would.
 
 - **Forms from the loader's types.** The `judge.toml` form is generated from the types the
   loader parses into, and the help text is their documentation. A setting's help is its
@@ -20,10 +20,17 @@ editor writes them the way you would.
 - **Only the lines you change are written.** Comments, blank lines, key order and the
   spelling of every unchanged value survive. The Review tab shows the diff of both
   files before anything is written.
-- **Secrets stay in the file.** API keys, `DISCORD_TOKEN`, `MCP_TOKEN`,
+- **Secrets are write-only.** API keys, `DISCORD_TOKEN`, `MCP_TOKEN`,
   `JUDGE_ALERT_WEBHOOK`, `DATABASE_URL` and any variable the editor does not know are
-  never shown or written. The page says only whether each is set. A `judge.toml`
-  provider's `api_key_env` gets a "set in .env" or "not set in .env" badge.
+  never shown. The page says whether each is set.
+  - **Replace…** (**Set…** when unset) opens a masked input for typing or pasting a new
+    value. **Show** reveals what you typed, and **Cancel** drops it.
+  - The value goes into the file and nowhere else. The Review tab lists the variable as
+    `NAME: new value (not shown)`, and no reply from the editor carries it.
+  - **Add variable** writes one the editor does not know, such as a new provider's key.
+    An `api_key_env` that `.env` does not assign is offered there already.
+  - A `judge.toml` provider's `api_key_env` gets a "set in .env" or "not set in .env"
+    badge.
 
 ## Running it
 
@@ -95,8 +102,11 @@ The binaries read both files only when they start.
 - A `.env` that dotenvy cannot read, that assigns a variable twice, or whose assignment
   is spelled in a way the editor cannot place on one line. The binaries and Compose
   would disagree about such a file, so fix it by hand first.
-- A setting whose value expands `$`, or is a URL carrying a user name or password. It is
-  marked "set, not shown" and is edited in the file.
+- Showing a setting whose value expands `$`, or is a URL carrying a user name or
+  password. While its value has that shape it is treated as a secret: replaced, never
+  shown. Replaced with a plain value, it is an ordinary setting again and is shown on
+  the next load.
+- A blank replacement. **Cancel** keeps the current value.
 - A `judge.toml` that is not valid TOML opens in the Text view. Saving the text is
   allowed, and the loader reports what it makes of it.
 

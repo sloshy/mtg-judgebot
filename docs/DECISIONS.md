@@ -587,11 +587,16 @@ both. Three choices make it hold to the loader rather than drift from it.
   exhaustive match) names the key or variable to fix. Nothing in the editor restates a
   rule. Two checks are left to startup because they depend on the serving machine: a
   cloud credential chain and `WEB_DIST`.
-- **Secrets are never on the page.** Only a `Setting` can be written, and only the
-  registry makes one. A secret, an unknown variable, a value that expands `$` or a URL
-  with credentials is reported as set or not. A `.env` that dotenvy and Compose would
-  read differently (a duplicate, an assignment the editor cannot place) is refused rather
-  than edited.
+- **Secrets are write-only.** A value reaches the page only through a `Setting`, and
+  only the registry makes one. A secret, an unknown variable, a value that expands `$`
+  or a URL with credentials is reported as set or not. It can still be replaced: the
+  page sends a new value (`DotEnv::replace`, typed into a masked input) and never
+  receives the old one. Every reply is scrubbed of each secret in the file and each
+  replacement, in the escaped spellings the loaders' messages use too, and the `.env`
+  diff names a replaced variable without its value. A hidden setting is hidden for its
+  value's shape, so one replaced with a plain value is shown again on the next load. A `.env`
+  that dotenvy and Compose would read differently (a duplicate, an assignment the editor
+  cannot place) is refused rather than edited.
 
 It binds `127.0.0.1`, requires a per-run token in a header (which a cross-origin page
 cannot send without a preflight the server never answers), and checks `Host` against
@@ -608,5 +613,8 @@ loopback names, which closes DNS rebinding. Writes are whole-file renames throug
   does not belong there, even behind a token.
 - *A terminal UI.* It works over SSH without a port forward, but shows less of each key's
   help at once than a form does.
-- *Editing secrets too.* A page that never holds a secret cannot leak one, and the
-  secrets are the values least in need of discovery.
+- *Showing secrets so they can be edited in place.* A page that never receives a secret
+  cannot leak one, and replacing a key does not need the old one.
+- *Leaving secrets to the file.* The first version did, but a new provider's
+  `api_key_env` then meant leaving the page to finish the job. Write-only keeps what that
+  protected: the page holds no secret it was not just given.

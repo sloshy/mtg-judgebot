@@ -143,7 +143,8 @@ file compose mounts from that path.
 
 `judge-config` (`cargo run --release -p judge-configure`, also in the image) edits both
 files from a page on localhost. Its forms come from the loader's own types, and every
-draft is checked by the loaders the binaries run. It never shows or writes a secret.
+draft is checked by the loaders the binaries run. Secrets are write-only: it never shows
+one, and can replace one with a value you type.
 [The config editor](https://mtg-judgebot.rpeters.dev/self-hosting/config-editor/) has the
 details.
 

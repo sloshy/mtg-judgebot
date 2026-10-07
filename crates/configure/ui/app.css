@@ -365,6 +365,11 @@ button.btn:disabled {
   border-color: var(--ok);
 }
 
+.badge.chg {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
 .badge.bad {
   color: var(--bad);
   border-color: var(--bad);
@@ -396,6 +401,10 @@ pre.diff .add {
 
 pre.diff .del {
   background: var(--del);
+}
+
+pre.diff .chg {
+  background: var(--focus);
 }
 
 pre.diff .gap {
