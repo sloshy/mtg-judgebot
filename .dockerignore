@@ -8,3 +8,7 @@ site
 .claude
 .mcp.json
 .tools
+# Credentials: COPY . . would otherwise put them in the builder layer.
+.env
+.env.*
+!.env.example
