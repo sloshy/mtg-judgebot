@@ -29,10 +29,24 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   stays the recommended budget option. The README's results and the Model choice page
   compare all three.
 
+- **`judge-config`, a config editor on localhost.** It edits `judge.toml` and the
+  non-secret settings in `.env` from forms generated from the loader's own types. The help
+  text comes from the files' documentation. Each draft runs through the loaders the
+  binaries run at startup, and the panel says whether the database settings, the models,
+  the Discord bot and the HTTP API would start, naming the key to fix if not. Only changed
+  lines are written, after a diff. Secrets are never shown or written. It is in the image
+  (`docker compose run … --entrypoint judge-config api`) and runs with
+  `cargo run -p judge-configure`. See the Config editor page.
+
 ### Changed
 
 - **The eval binary is `judge-eval`**, the name the documentation already used. It was
   built as `eval`.
+- **`.env.example` gains commented `ANTHROPIC_BASE_URL`, `VOYAGE_MODEL` and
+  `VOYAGE_DIMENSIONS` lines**, and each comment block now sits directly above the
+  variables it describes. No variable's meaning or default changed. Its
+  `API_INTERFACES` example is quoted: uncommented as it was (`--api --web` bare),
+  every `cargo run` binary refused the `.env` at startup. Compose was unaffected.
 
 ## [1.1.0] - 2026-09-29
 

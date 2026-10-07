@@ -41,7 +41,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json \
-    -p judge-bot -p judge-api -p judge-ingest -p judge-agent --features judge-bot/aws,judge-bot/gcp \
+    -p judge-bot -p judge-api -p judge-ingest -p judge-agent -p judge-configure --features judge-bot/aws,judge-bot/gcp \
     && find target -exec touch -h -d "@$(date +%s)" {} +
 COPY . .
 # The commit the image is built from, for the source offer every remote
@@ -59,9 +59,9 @@ ENV JUDGE_COMMIT=$JUDGE_COMMIT JUDGE_DIRTY=$JUDGE_DIRTY
 # The binaries are copied out and `target/` removed in the same step, so this
 # layer holds megabytes rather than the ~4 GB target directory, which CI would
 # otherwise export to its build cache on every run and never read back.
-RUN cargo build --release -p judge-bot -p judge-api -p judge-ingest -p judge-agent --features judge-bot/aws,judge-bot/gcp \
+RUN cargo build --release -p judge-bot -p judge-api -p judge-ingest -p judge-agent -p judge-configure --features judge-bot/aws,judge-bot/gcp \
     && mkdir /out \
-    && cp target/release/bot target/release/api target/release/ingest target/release/judge-cli target/release/judge-mcp /out/ \
+    && cp target/release/bot target/release/api target/release/ingest target/release/judge-cli target/release/judge-mcp target/release/judge-config /out/ \
     && rm -rf target
 
 FROM debian:bookworm-slim
@@ -79,6 +79,9 @@ COPY --from=builder /out/ingest /usr/local/bin/judge-ingest
 # host (`docker compose run --rm --entrypoint judge-cli api ...`).
 COPY --from=builder /out/judge-cli /usr/local/bin/judge-cli
 COPY --from=builder /out/judge-mcp /usr/local/bin/judge-mcp
+# The config editor, a page on localhost for judge.toml and .env; run with the
+# checkout mounted (site: self-hosting/config-editor).
+COPY --from=builder /out/judge-config /usr/local/bin/judge-config
 ENV INGEST_CACHE_DIR=/var/cache/judgebot
 COPY --from=web /web/dist /srv/web
 ENV WEB_DIST=/srv/web

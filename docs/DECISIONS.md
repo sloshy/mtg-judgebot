@@ -567,3 +567,46 @@ no rules answer means those two characters.
 - *Decoding at display time.* Each front door would need it, and the stored call would
   still carry the escapes into later prompts.
 
+## D23. A config editor generated from the loader, run on localhost
+
+*Decided 2026-10-07.*
+
+`judge.toml` and `.env` are documented by their example files, but which keys apply where
+(a door's keys, a stage's provider kinds, which knob makes another an error) was learned
+by loading the file and reading the error. `judge-config` is an optional page for editing
+both. Three choices make it hold to the loader rather than drift from it.
+
+- **The form is the loader's types.** `file_schema()` is schemars over the same serde
+  structs `Config::from_toml` parses, so a new knob is a field with no editor change, and
+  the structs' doc comments are written as the operator's help text. What types cannot
+  say comes from the tables the loader checks against: which door takes which key is one
+  `DoorKey::on` table, read by the misplaced-key check and emitted as `x-doors`.
+  `door_table_matches_the_loader` holds the door constructors' required keys to it.
+- **Validation is the binaries' own code.** Each draft runs through the loaders the
+  binaries call at startup, one surface at a time, and `ConfigError::location()` (an
+  exhaustive match) names the key or variable to fix. Nothing in the editor restates a
+  rule. Two checks are left to startup because they depend on the serving machine: a
+  cloud credential chain and `WEB_DIST`.
+- **Secrets are never on the page.** Only a `Setting` can be written, and only the
+  registry makes one. A secret, an unknown variable, a value that expands `$` or a URL
+  with credentials is reported as set or not. A `.env` that dotenvy and Compose would
+  read differently (a duplicate, an assignment the editor cannot place) is refused rather
+  than edited.
+
+It binds `127.0.0.1`, requires a per-run token in a header (which a cross-origin page
+cannot send without a preflight the server never answers), and checks `Host` against
+loopback names, which closes DNS rebinding. Writes are whole-file renames through
+`toml_edit` and a line-preserving `.env` writer, so comments and untouched lines survive.
+
+**Rejected:**
+
+- *A static page on the documentation site.* It needs nothing installed, but it would
+  either restate the cross-field rules in JavaScript or need the loader split into a pure
+  crate compiled to WebAssembly. The loader reaches into the backends' endpoint types and
+  the environment, so that split is the larger change.
+- *A door in `judge-api`.* That process faces the internet. A route that writes files
+  does not belong there, even behind a token.
+- *A terminal UI.* It works over SSH without a port forward, but shows less of each key's
+  help at once than a form does.
+- *Editing secrets too.* A page that never holds a secret cannot leak one, and the
+  secrets are the values least in need of discovery.

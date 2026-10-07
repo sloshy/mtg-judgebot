@@ -5,6 +5,7 @@
     "includes": [
       "web/**",
       "site/**",
+      "crates/configure/ui/**",
       "!**/dist",
       "!**/node_modules",
       "!site/.astro",

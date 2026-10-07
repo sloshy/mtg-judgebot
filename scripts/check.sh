@@ -21,7 +21,7 @@
 #   rust   cargo fmt --check, clippy on every target with warnings denied
 #   sqlx   migrations applied, then the committed .sqlx data matches the SQL
 #   test   cargo test --workspace
-#   web    Biome, then tsc + vite build
+#   web    Biome (web/ and judge-config's page), then tsc + vite build
 #   site   Biome, astro check, the build, lychee over its internal links
 #   lint   cargo deny, cargo machete, taplo, typos, shellcheck, actionlint,
 #          hadolint, the icon's copies, docker compose config
@@ -57,6 +57,8 @@ groups_for() {
   local rust=0 web=0 site=0 path
   while IFS= read -r path; do
     case "$path" in
+      # judge-config's page: compiled in, and linted with web's Biome.
+      crates/configure/ui/*) rust=1 web=1 ;;
       # Compiled in: include_str!/build.rs inputs and the sqlx offline data.
       crates/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | .sqlx/* | data/* | judge.example.toml) rust=1 ;;
       web/*) web=1 ;;
@@ -274,6 +276,7 @@ group_web() {
     return
   fi
   step "web: biome" npm --prefix web run --silent lint
+  step "judge-config page: biome" web/node_modules/.bin/biome check crates/configure/ui
   step "web: tsc + build" npm --prefix web run --silent build
 }
 

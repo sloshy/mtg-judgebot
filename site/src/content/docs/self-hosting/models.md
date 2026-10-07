@@ -12,7 +12,9 @@ The eval numbers were measured on that setup.
 A `judge.toml` picks something else, such as a different model per stage on different
 providers. The file is the one `JUDGE_CONFIG` names, else `./judge.toml` if present.
 `judge.example.toml` shows every knob with its default. The file names secrets by
-environment variable and never holds one.
+environment variable and never holds one. [The config editor](../config-editor/) builds the
+file from forms, showing each door only the keys it takes, and checks every draft with the
+loader.
 
 Under Docker, a `./judge.toml` is read only when `.env` sets `JUDGE_CONFIG=./judge.toml`. The containers see only the file
 compose mounts, never the repo root, so the `./judge.toml` default does not apply. Without

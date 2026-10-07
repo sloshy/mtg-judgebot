@@ -231,6 +231,9 @@ the setup stays the `.env` one. Three consequences:
     `embedding space mismatch` (below).
   - `docker compose run --rm --entrypoint judge-cli api config` prints the resolution
     as JSON, secrets redacted.
+  - `judge-config` edits `judge.toml` and `.env` from a page on localhost and checks each
+    draft with the same loader (site: The config editor, for the `docker compose run`
+    line that runs it here).
 
 After editing `judge.toml`, run `docker compose restart bot api`, not `up -d`. The file
 is read only at startup. Compose recreates a container only when its configuration or
@@ -264,7 +267,7 @@ a 401 before the protocol sees it. Behind the token are:
 - The read-only lookups.
 
 ```ini
-API_INTERFACES=--api --web --mcp          # the api container's front doors; without --mcp the token only warns
+API_INTERFACES='--api --web --mcp'        # the api container's front doors; without --mcp the token only warns
 MCP_TOKEN=<openssl rand -base64 32>       # at least 24 characters, or the API refuses to start
 MCP_ALLOWED_HOSTS=judge.example.com,localhost   # Host values accepted: the tunnel's hostname, plus
                                                    # localhost for curl on the host; the list replaces the default

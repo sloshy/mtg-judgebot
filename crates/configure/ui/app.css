@@ -1,0 +1,405 @@
+:root {
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --text: #1f2933;
+  --muted: #5f6b7a;
+  --line: #d9dee5;
+  --accent: #2f5fd0;
+  --ok: #1d7a46;
+  --bad: #b3261e;
+  --warn: #8a5a00;
+  --add: #e6f4ea;
+  --del: #fce8e6;
+  --focus: #fff4cc;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181d;
+    --panel: #1c2128;
+    --text: #e3e7ec;
+    --muted: #9aa5b1;
+    --line: #333b45;
+    --accent: #7ea2ff;
+    --ok: #5fcf8f;
+    --bad: #ff8a80;
+    --warn: #f2c14e;
+    --add: #17321f;
+    --del: #3a1d1b;
+    --focus: #3a3215;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font:
+    15px / 1.5 system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+}
+
+code,
+pre,
+textarea.code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.top {
+  padding: 16px 24px 8px;
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 13px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.tabs button {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  padding: 10px 14px;
+  font: inherit;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+
+.tabs button[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.count:not(:empty) {
+  background: var(--accent);
+  color: var(--panel);
+  border-radius: 10px;
+  padding: 0 7px;
+  font-size: 12px;
+  margin-left: 4px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 24px;
+  padding: 16px 24px 48px;
+  max-width: 1280px;
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 16px;
+  }
+
+  aside {
+    order: -1;
+  }
+}
+
+aside {
+  position: sticky;
+  top: 12px;
+  align-self: start;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+aside h2 {
+  font-size: 15px;
+  margin: 0 0 8px;
+}
+
+aside ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.check {
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+.check:first-child {
+  border-top: 0;
+}
+
+.check .name {
+  font-weight: 600;
+}
+
+.check.ok .state {
+  color: var(--ok);
+}
+
+.check.error .state {
+  color: var(--bad);
+}
+
+.check.skipped .state {
+  color: var(--muted);
+}
+
+.check .msg {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.check a {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+#warnings li {
+  color: var(--warn);
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.card h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.card > .desc {
+  margin: 0 0 8px;
+}
+
+h2.section {
+  font-size: 17px;
+  margin: 8px 0 12px;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 4px 16px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.field:first-of-type {
+  border-top: 0;
+}
+
+@media (max-width: 600px) {
+  .field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.field label {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.field label code {
+  font-weight: 600;
+}
+
+.req {
+  color: var(--bad);
+  font-weight: 400;
+  font-size: 12px;
+  margin-left: 4px;
+}
+
+.field .help {
+  grid-column: 2;
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+  white-space: pre-line;
+}
+
+@media (max-width: 600px) {
+  .field .help {
+    grid-column: 1;
+  }
+}
+
+.field.flagged {
+  background: var(--focus);
+  border-radius: 6px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.field .err {
+  grid-column: 2;
+  color: var(--bad);
+  font-size: 13px;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  max-width: 100%;
+}
+
+input[type="text"],
+input[type="number"] {
+  width: 100%;
+  max-width: 420px;
+}
+
+textarea.code {
+  width: 100%;
+  min-height: 60vh;
+  white-space: pre;
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button.btn {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+button.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--panel);
+}
+
+button.btn.danger {
+  color: var(--bad);
+}
+
+button.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+
+.badge {
+  font-size: 12px;
+  border-radius: 10px;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  font-weight: 400;
+}
+
+.badge.ok {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.badge.bad {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+pre.diff {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 0;
+  overflow-x: auto;
+  margin: 0 0 16px;
+}
+
+pre.diff span {
+  display: block;
+  padding: 0 12px;
+}
+
+pre.diff .add {
+  background: var(--add);
+}
+
+pre.diff .del {
+  background: var(--del);
+}
+
+pre.diff .gap {
+  color: var(--muted);
+}
+
+.fatal {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  right: 16px;
+  background: var(--bad);
+  color: var(--panel);
+  padding: 12px 16px;
+  border-radius: 8px;
+}
+
+.notice {
+  border-left: 3px solid var(--accent);
+  padding: 4px 12px;
+  margin: 0 0 16px;
+}

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>judge-config</title>
+    <link rel="stylesheet" href="app.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="top">
+      <h1>judge-config</h1>
+      <p id="paths" class="muted"></p>
+    </header>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="models" aria-selected="true">Models · judge.toml</button>
+      <button type="button" role="tab" data-tab="settings" aria-selected="false">Settings · .env</button>
+      <button type="button" role="tab" data-tab="review" aria-selected="false">Review &amp; save <span id="pending" class="count"></span></button>
+    </div>
+    <div class="layout">
+      <main>
+        <section id="tab-models" class="tab"></section>
+        <section id="tab-settings" class="tab" hidden></section>
+        <section id="tab-review" class="tab" hidden></section>
+      </main>
+      <aside id="checks" aria-live="polite">
+        <h2>Would it start?</h2>
+        <ul id="check-list"></ul>
+        <ul id="warnings"></ul>
+        <p class="muted small">
+          Checked by the binaries' own loaders. Cloud credentials and <code>--web</code>'s directory are
+          checked at startup on the serving machine.
+        </p>
+      </aside>
+    </div>
+    <p id="fatal" class="fatal" hidden></p>
+  </body>
+</html>

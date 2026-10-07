@@ -95,7 +95,7 @@ const manifest = [
     src: "docs/DEPLOYMENT.md",
     dest: "self-hosting/deployment.md",
     title: "Production deployment",
-    order: 5,
+    order: 6,
     description:
       "The runbook: Cloudflare Tunnel, backups to R2, the nightly refresh, redeploying and rolling back.",
   },

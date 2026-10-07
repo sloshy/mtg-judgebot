@@ -12,6 +12,9 @@ All configuration is environment variables. `.env.example` is the annotated temp
 - The containers get theirs through compose's `env_file`.
 - A [`judge.toml`](../models/) chooses providers and models. It names environment variables
   for its secrets and never holds one.
+- [`judge-config`](../config-editor/) edits the settings below, and `judge.toml`, from a
+  page on localhost, checking each draft with the binaries' own loaders. It never shows
+  or writes a secret.
 
 ## Database and models
 

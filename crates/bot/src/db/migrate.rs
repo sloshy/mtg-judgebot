@@ -260,7 +260,11 @@ pub fn auto_migrate_enabled() -> Result<bool, Error> {
     parse_flag(std::env::var(AUTO_MIGRATE_ENV).ok().as_deref())
 }
 
-fn parse_flag(raw: Option<&str>) -> Result<bool, Error> {
+/// `JUDGE_AUTO_MIGRATE`'s value: unset or blank is on.
+///
+/// # Errors
+/// [`Error::BadFlag`] for anything but the accepted spellings.
+pub fn parse_flag(raw: Option<&str>) -> Result<bool, Error> {
     let Some(raw) = raw else { return Ok(true) };
     match raw.trim().to_ascii_lowercase().as_str() {
         "" | "true" | "1" | "yes" | "on" => Ok(true),

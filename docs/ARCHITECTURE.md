@@ -220,6 +220,21 @@ Three front doors share this pipeline through the same composition root
     with the same `pin_card` used by the Discord buttons.
   - Follow-up history comes from a client-generated session UUID, stored as
     thread id `web:<uuid>`.
+- **Config editor** (`crates/configure`, binary `judge-config`): a page on
+  `127.0.0.1` for `judge.toml` and the settings in `.env` (D23).
+  - The `judge.toml` form is `judge_bot::config::file_schema()`: JSON Schema
+    generated from the loader's serde types, with `x-doors` from
+    `DoorKey::on`, the table the loader's misplaced-key check reads.
+  - `env::VARS` lists every variable `.env.example` carries as a secret or a
+    setting. Only a `Setting` is written. A secret, or a variable the list does
+    not know, is reported only as set or not. Help text is `.env.example`'s
+    comments.
+  - Each draft goes through `check::run`: the `judge.toml` loader,
+    `discord::Config::from_vars`, `ApiConfig::from_vars` and `check`, the
+    migration flag. Errors carry `ConfigError::location()`, the key or variable
+    to fix.
+  - Writes go through `toml_edit` and a line-preserving `.env` writer, so only
+    changed lines move. They are refused when a file changed since it was read.
 - **Agent adapter** (`crates/agent`): the judge as a tool surface for *other*
   agents.
   - Over MCP, `judge-mcp` serves a local client on stdio. For a remote one,

@@ -141,6 +141,12 @@ embeddings. `judge.example.toml` documents every knob, and
 Under Docker, also set `JUDGE_CONFIG=./judge.toml` in `.env`. The containers see only the
 file compose mounts from that path.
 
+`judge-config` (`cargo run --release -p judge-configure`, also in the image) edits both
+files from a page on localhost. Its forms come from the loader's own types, and every
+draft is checked by the loaders the binaries run. It never shows or writes a secret.
+[The config editor](https://mtg-judgebot.rpeters.dev/self-hosting/config-editor/) has the
+details.
+
 ### The web page and the HTTP API
 
 `docker compose up -d api` serves an anonymous page on <http://localhost:8787> with the
@@ -297,6 +303,7 @@ crates/
   eval       gold-set harness: recall / answer / rescore / show (bin)
   api        anonymous HTTP adapter (axum); the web page and the /mcp transport are opt-in flags (bin)
   agent      the judge for other agents: sessions, lookups and the pipeline as judge-cli and judge-mcp
+  configure  judge-config: a localhost page editing judge.toml and .env, checked by the loaders (bin)
 web/         SolidJS + TypeScript single page (Vite)
 site/        the documentation site (Astro + Starlight); docs/ is its source
 data/        categories.yaml (generates the Category enum), aliases.yaml, notes.yaml

@@ -51,14 +51,14 @@ the one list, and the sync script deletes copies whose manifest entry is gone.
 
 Pages with no canonical file are authored directly under `site/src/content/docs/`: what
 the judge is, trying it without Discord, requirements and first run, Discord app setup,
-configuration reference, model choice (`judge.toml`), Discord commands, the web page, the
-HTTP API, agents, command reference, data files, attribution, schema. The README carries
+configuration reference, model choice (`judge.toml`), the config editor, Discord commands, the
+web page, the HTTP API, agents, command reference, data files, attribution, schema. The README carries
 short versions of the model, web and API material and links to those pages.
 
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D22),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D23),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -290,6 +290,8 @@ judge-cli begin "<q>" [--thread T] | prompt <s> | status <s> | extract <s> <file
 judge-cli verdict <s> <file|-> [--persist] | persist <s>   # the agent-driven session, step by step
 judge-cli card <name> | card-info <uuid> | get-rules <id>.. | search "<q>" [--limit N] | glossary <term>
 judge-cli config                                        # the resolved provider/model setup, secrets redacted
+cargo run --release -p judge-configure                  # judge-config: edit judge.toml + .env on 127.0.0.1:8790
+                                                        # (prints a #token= URL; secrets never shown or written)
 judge-mcp                                               # the MCP server on stdio (.mcp.json starts it)
                                                         # remote: judge-api --mcp serves /mcp (needs MCP_TOKEN)
 
@@ -353,6 +355,16 @@ Crate graph (`core` ← `llm` ← `anthropic` and `openai` ← `embed` ← `bot`
   Discord layer with pure `render.rs`.
 - `ingest` / `eval` / `api`: bins.
 - `agent`: lib + `judge-cli` / `judge-mcp` bins. `api` mounts its MCP handler.
+- `configure`: `judge-config`, the localhost editor for `judge.toml` and `.env` (D23).
+  - Its form is `config::file_schema()` (schemars over the loader's serde types), so the
+    doc comments on the `File`-shape types in `config.rs` are operator-facing help text.
+  - `DoorKey::on` is the one door × key table. The loader's misplaced check reads it.
+  - `env::VARS` must list every `.env.example` variable as secret or setting
+    (`registry_matches_the_example`), and a new variable needs a comment block directly
+    above its line, which becomes its help.
+  - A new `ConfigError` variant needs a `location()` arm. The match is exhaustive.
+  - The page (`crates/configure/ui/`) is plain JS under a strict CSP, built with no
+    `innerHTML`, linted by web's Biome in `check.sh web`.
 
 `judge_bot::build_deps(pool, Models, embedder)` is the composition root shared by the bot,
 eval, the HTTP API and the agent's `judge` tool. `Models::{single, pair, priced}` take the
