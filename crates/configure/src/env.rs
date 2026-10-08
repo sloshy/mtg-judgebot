@@ -746,7 +746,7 @@ mod tests {
         assert_eq!(err, BadEnv::Unreadable { line: Some(2) });
         assert!(!err.to_string().contains("SECRET"));
         let env = DotEnv::parse(
-            "DISCORD_TOKEN=tok-secret\nJUDGE_ROLE=${DISCORD_TOKEN}\nLITELLM_KEY=lk-secret\nJUDGE_IMAGE_TAG=1.1.0\n",
+            "CFG_TEST_TOKEN=tok-secret\nJUDGE_ROLE=${CFG_TEST_TOKEN}\nLITELLM_KEY=lk-secret\nJUDGE_IMAGE_TAG=1.1.0\n",
         )?;
         let mut sensitive = env.sensitive();
         sensitive.sort_unstable();
@@ -762,8 +762,9 @@ mod tests {
 
     #[test]
     fn a_replacement_overwrites_blind_and_never_quotes_its_value_in_errors() -> R {
-        let mut env =
-            DotEnv::parse("DISCORD_TOKEN=old-token\n#LITELLM_KEY=\nJUDGE_ROLE=${DISCORD_TOKEN}\n")?;
+        let mut env = DotEnv::parse(
+            "DISCORD_TOKEN=old-token\n#LITELLM_KEY=\nJUDGE_ROLE=${CFG_TEST_TOKEN}\n",
+        )?;
         let n = |s| Name::new(s).ok_or(s);
         for (name, value) in [
             ("DISCORD_TOKEN", "new token"),

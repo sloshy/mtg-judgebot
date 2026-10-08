@@ -1,4 +1,4 @@
-//! Which front doors this process serves, and the command line that picks them.
+//! Which interfaces this process serves, and the command line that picks them.
 //!
 //! Every interface is opt-in. `judge-api` with no flags serves the JSON API
 //! alone — the one mode the binary is named for — and the web page and the MCP
@@ -11,14 +11,14 @@
 //! The set is a [`NonEmpty`], so "a listener bound to no interface at all" is
 //! not a state this program can reach: the no-flag case *is* an interface.
 //! `GET /api/health` is outside the set — it reports on the process, not on a
-//! front door, and a container healthcheck must be able to reach it whatever
+//! interface, and a container healthcheck must be able to reach it whatever
 //! else is switched off.
 
 use std::{ffi::OsString, fmt};
 
 use nonempty::NonEmpty;
 
-/// One front door of the HTTP adapter.
+/// One interface of the HTTP adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Interface {
     /// `POST /api/judge` — the anonymous question route.
@@ -73,11 +73,11 @@ impl Interfaces {
     pub const DEFAULT: Interface = Interface::Api;
 
     /// Build a set directly. The command line is [`parse`]; this is for a
-    /// caller that already knows which doors it wants (tests, or an embedder
+    /// caller that already knows which interfaces it wants (tests, or an embedder
     /// of [`crate::router`]).
     ///
     /// Duplicates collapse and the order becomes [`Interface::ALL`]'s, so two
-    /// ways of naming the same doors are the same value — equality here is set
+    /// ways of naming the same interfaces are the same value — equality here is set
     /// equality, not "typed in the same order".
     #[must_use]
     pub fn of(interfaces: &NonEmpty<Interface>) -> Self {
@@ -88,7 +88,7 @@ impl Interfaces {
         // Every variant is in `ALL`, so the filter keeps at least the head and
         // the fallback is unreachable today. It is the whole input rather than
         // part of it, so a variant that went missing from `ALL` would cost the
-        // canonical order and nothing else — never a door dropped or added.
+        // canonical order and nothing else — never an interface dropped or added.
         Self(NonEmpty::from_vec(canonical).unwrap_or_else(|| interfaces.clone()))
     }
 
@@ -185,7 +185,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Launch>
             anyhow::bail!("unknown argument {arg:?}\n\n{USAGE}");
         };
         // Repeats are refused rather than folded: a command line naming the
-        // same door twice is a mistake, and silently accepting it hides which
+        // same interface twice is a mistake, and silently accepting it hides which
         // one the operator meant to write.
         anyhow::ensure!(
             !chosen.contains(&interface),

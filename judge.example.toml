@@ -125,7 +125,7 @@ pricing = "free"                       # local: the spend cap never reserves for
 
 # ---------------------------------------------------------------------------
 # Models: one per stage. Both chat stages are required. Embed is optional
-# (absent = the vector retrieval leg is off, and the bot still works).
+# (absent = the vector search is off, and the bot still works).
 # ---------------------------------------------------------------------------
 
 [models.extract]                       # entity extraction + classification: cheap, low effort

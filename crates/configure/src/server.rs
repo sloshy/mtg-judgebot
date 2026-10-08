@@ -688,8 +688,9 @@ mod tests {
         let (_dir, editor) = editor(
             "DATABASE_URL=postgres://u:dbpassword@localhost:5433/j\n\
              DISCORD_TOKEN=SECRETDISCORD\n\
-             GUILD_ID=${DISCORD_TOKEN}\n\
-             JUDGE_CONFIG=${DISCORD_TOKEN}\n\
+             CFG_TEST_TOKEN=SECRETCFG\n\
+             GUILD_ID=${CFG_TEST_TOKEN}\n\
+             JUDGE_CONFIG=${CFG_TEST_TOKEN}\n\
              ANTHROPIC_BASE_URL=https://u:SECRETBASEPW@proxy.example\n\
              MCP_TOKEN=short-SECRETMCP\n\
              API_INTERFACES='--api --mcp'\n",
@@ -701,7 +702,13 @@ mod tests {
         };
         let r = render(&editor, &draft)?;
         let out = report(&editor, &r).to_string();
-        for secret in ["SECRETDISCORD", "SECRETBASEPW", "SECRETMCP", "dbpassword"] {
+        for secret in [
+            "SECRETDISCORD",
+            "SECRETCFG",
+            "SECRETBASEPW",
+            "SECRETMCP",
+            "dbpassword",
+        ] {
             assert!(!out.contains(secret), "{secret} in {out}");
         }
         assert!(out.contains("<redacted>"), "{out}");
@@ -752,8 +759,8 @@ mod tests {
         );
         // A loader quoting a value with `{:?}` escapes it: still masked.
         let (_q, quoted) =
-            self::editor("DISCORD_TOKEN='old\"disc\\ord'\nJUDGE_SOURCE_URL=${DISCORD_TOKEN}\n")?;
-        let fresh = draft(&[("DISCORD_TOKEN", "new\"discord\\secret")]);
+            self::editor("CFG_TEST_TOKEN='old\"disc\\ord'\nJUDGE_SOURCE_URL=${CFG_TEST_TOKEN}\n")?;
+        let fresh = draft(&[("CFG_TEST_TOKEN", "new\"discord\\secret")]);
         let out = report(&quoted, &render(&quoted, &fresh)?).to_string();
         assert!(!out.contains("disc"), "{out}");
         let untouched = report(&quoted, &render(&quoted, &draft(&[]))?).to_string();

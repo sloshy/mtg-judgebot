@@ -3,7 +3,7 @@
 //! restates a rule; a rule the loaders gain is checked here with no edit.
 //!
 //! Two things are left to startup, because they depend on the machine that
-//! serves rather than on the files: a cloud door's credential chain
+//! serves rather than on the files: a cloud endpoint's credential chain
 //! (`Config::probe_auth`, which may touch the network) and `--web`'s
 //! `WEB_DIST` directory (the image sets its own).
 
@@ -25,7 +25,7 @@ pub enum Surface {
     Models,
     /// The Discord bot (`judge-bot`).
     Bot,
-    /// `judge-api`, with the doors `API_INTERFACES` opens.
+    /// `judge-api`, with the interfaces `API_INTERFACES` opens.
     Api,
     /// The database settings.
     Database,
@@ -81,7 +81,7 @@ pub fn run(toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Chec
         Err(e) => config_error(e),
     };
     // Each binary reads its own settings before the models (bot: Discord's;
-    // api: its own and the doors'), so their errors stand on their own.
+    // api: its own and the interfaces'), so their errors stand on their own.
     let config = config.ok();
     vec![
         Check {
@@ -217,7 +217,7 @@ fn api(config: Option<&Config>, env: &dyn Fn(&str) -> Option<String>) -> Outcome
         Err(e) => return anyhow_error(&e),
     };
     // `--web`'s directory is the serving machine's business (the image sets
-    // WEB_DIST itself), so check every other door.
+    // WEB_DIST itself), so check every other interface.
     let others: Vec<Interface> = [Interface::Api, Interface::Mcp]
         .into_iter()
         .filter(|i| interfaces.has(*i))

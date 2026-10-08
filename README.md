@@ -28,12 +28,12 @@ More answers, copied verbatim from a published evaluation run, are on the site's
    from rules concepts, picks up to three categories from a fixed taxonomy, and checks
    scope. Tournament-policy and price questions are declined before any money is spent on
    synthesis.
-2. **Resolve cards** through a typed ladder: alias table (nicknames, possessives) →
+2. **Resolve cards** through a typed resolution order: alias table (nicknames, possessives) →
    exact name → old printed names → short names ("Ragavan") → trigram fuzzy. A
    `[[Full Card Name]]` in brackets matches that exact name (or a listed nickname) only.
    Answers list the cards they resolved to. The bot **never guesses**: ambiguity ("Tibalt") becomes a
    "Did you mean…?" button row.
-3. **Retrieve** from Postgres through three legs: a curated category→CR-section map,
+3. **Retrieve** from Postgres through three sources: a curated category→CR-section map,
    full-text search, and pgvector semantic search over rule embeddings. Retrieval adds
    the cards' rulings, glossary entries, hand-written notes for "nightmare" cards
    (Humility, Blood Moon…), and similar prior calls labeled with their community rating.

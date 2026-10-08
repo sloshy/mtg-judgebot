@@ -18,7 +18,7 @@
 //!   mounted at `/mcp` behind that bearer token ([`mcp`]), sharing the judge
 //!   slots and the spend cap with the web route.
 //!
-//! Which of those front doors this process opens is a launch option, not a
+//! Which of those interfaces this process opens is a launch option, not a
 //! consequence of being started: see [`interfaces`]. The default is the JSON
 //! API alone, so the web page is served only where an operator asked for it.
 

@@ -54,7 +54,7 @@ impl JudgeError {
     /// "did you mean?", an unknown card gets a spelling hint, an out-of-scope
     /// question gets told so. Those three are the pipeline working.
     ///
-    /// It lives here, beside the enum, so both front doors agree on what a
+    /// It lives here, beside the enum, so both interfaces agree on what a
     /// failure is; a new variant must be classified once, and exhaustively.
     #[must_use]
     pub const fn is_operator_failure(&self) -> bool {

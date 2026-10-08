@@ -270,7 +270,7 @@ LiteLLM. `auth = "bearer" | "api-key"` covers Azure's header. `base_url` can car
 /v1/embeddings` with `input`, `model` and, unless `send_dimensions = false`, `dimensions`.
 It ignores `InputKind`, because that API has no query/document distinction.
 `[models.embed]` chooses between them. Without one, `VOYAGE_API_KEY` selects Voyage and a
-blank key turns the vector leg off.
+blank key turns the vector search off.
 
 **Vector space identity.** Vectors from two models cannot share a column, and pgvector's
 HNSW index needs a fixed width, so every embedder implements `WithSpace`: a `Space` of
@@ -286,7 +286,7 @@ provider *kind* (`voyage | openai`, not the operator's table name), model and di
   `Arc<db::Vectors>` (`Config::vectors(pool)`, one per process), which embeds nothing until
   the stored space equals its own. The row is re-read on **every use**, and once at
   startup so the verdict sits beside the config summary. A running bot therefore picks up
-  the first `ingest embed`. A `reembed` under it darkens the vector legs, with an
+  the first `ingest embed`. A `reembed` under it turns vector search off, with an
   error-level log naming both spaces, instead of erroring or mixing.
 - Writers hold the space. `PgCallStore::persist` and every `ingest embed` batch take the
   shared side of `CALLS_REWRITE_LOCK` in their transaction and read the row under it

@@ -123,7 +123,7 @@ impl fmt::Display for Report {
     }
 }
 
-/// Run the evaluator over `gold`, with the vector leg when `vectors` is given.
+/// Run the evaluator over `gold`, with the vector search when `vectors` is given.
 ///
 /// # Errors
 /// On database failure.

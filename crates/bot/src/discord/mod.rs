@@ -375,7 +375,7 @@ impl Data {
                 }
             }
             Err(e) => {
-                // Same classification as the HTTP front door, from the same
+                // Same classification as the HTTP interface, from the same
                 // place: an unknown card or an out-of-scope question is the
                 // pipeline working, and says all it needs to in the reply.
                 if e.is_operator_failure() {
@@ -714,7 +714,7 @@ async fn card_command(
     if name.is_empty() || name.chars().count() > render::LOOKUP_INPUT_LIMIT {
         return say(ctx, render::LOOKUP_BAD_NAME, true).await;
     }
-    // The resolver's fuzzy rung and a cold pool can outlast Discord's 3 s.
+    // The resolver's fuzzy step and a cold pool can outlast Discord's 3 s.
     defer(ctx, private).await?;
     let resolution = match data.deps.resolver.resolve(name).await {
         Ok(r) => r,

@@ -49,13 +49,13 @@ pub enum LlmError {
         /// The variable.
         var: &'static str,
     },
-    /// A cloud door could not obtain its credentials (the platform's
+    /// A cloud endpoint could not obtain its credentials (the platform's
     /// credential chain found none, or refused) or could not sign the
-    /// request with them. `door` names the door for the log line.
-    #[error("{door} auth: {message}")]
+    /// request with them. `endpoint` names the endpoint for the log line.
+    #[error("{endpoint} auth: {message}")]
     Auth {
-        /// The door, e.g. `bedrock`.
-        door: &'static str,
+        /// The endpoint, e.g. `bedrock`.
+        endpoint: &'static str,
         /// The platform library's message.
         message: String,
     },
@@ -130,7 +130,7 @@ mod tests {
         assert!(!LlmError::MissingApiKey { var: "X" }.is_retryable());
         assert!(
             !LlmError::Auth {
-                door: "bedrock",
+                endpoint: "bedrock",
                 message: String::new()
             }
             .is_retryable()

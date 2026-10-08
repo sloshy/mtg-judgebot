@@ -309,20 +309,20 @@ cargo run -p judge-eval -- show eval/runs/<run>.json    # bot vs gold answers si
 Pipeline (`docs/ARCHITECTURE.md` §3 is kept current):
 
 1. **Extraction + classification.** One low-effort LLM call with structured output.
-2. **Card resolution.** A typed ladder: alias → possessive-stripped alias → exact →
+2. **Card resolution.** A typed resolution order: alias → possessive-stripped alias → exact →
    printed name → short-name-before-comma → alias-suffix → trigram fuzzy.
    - A `[[bracketed]]` span is `CardSpan::Exact` and takes only exact → printed name →
      whole-span alias (`[[bob]]` resolves: an alias names one card). A miss is offered
      only as `Ambiguous`: the possessive / short-name / alias-suffix hits under their own
-     rung (so a duplicate is dropped), else fuzzy neighbours.
+     step (so a duplicate is dropped), else fuzzy neighbours.
    - The resolved cards are stamped onto `Verdict<Validated>` (`cards()`) and every
      interface shows them.
    - Resolution **never guesses**. Ambiguity becomes `Resolution::Ambiguous` and a Discord
      "did you mean?" button row.
-3. **Retrieval.** Three legs unioned in priority order: the primary category's CR
+3. **Retrieval.** Three sources unioned in priority order: the primary category's CR
    subsections ranked by text relevance, tsvector BM25, pgvector cosine, then the
    secondary categories. Primary subsections sharing no word with the question go after
-   the next two legs. The synthesis budget renders a prefix, so this order is what the
+   the next two sources. The synthesis budget renders a prefix, so this order is what the
    model reads. Retrieval also adds rulings for all faces, glossary, nightmare-card notes
    and rated prior calls.
 4. **Synthesis.** At the model's measured effort (`judge_llm::SYNTH_EFFORTS`: Opus 5.5
@@ -358,7 +358,7 @@ Crate graph (`core` ← `llm` ← `anthropic` and `openai` ← `embed` ← `bot`
 - `configure`: `judge-config`, the localhost editor for `judge.toml` and `.env` (D23).
   - Its form is `config::file_schema()` (schemars over the loader's serde types), so the
     doc comments on the `File`-shape types in `config.rs` are operator-facing help text.
-  - `DoorKey::on` is the one endpoint × key table. The loader's misplaced check reads it.
+  - `EndpointKey::on` is the one endpoint × key table. The loader's misplaced check reads it.
   - Secrets are write-only: `DotEnv::replace` writes a value the page typed, and
     every reply goes through `server::redact`. No `BadValue` may quote a value.
   - `env::VARS` must list every `.env.example` variable as secret or setting
@@ -492,7 +492,7 @@ Key cross-file facts that aren't obvious from any one file:
   - Inputs are bounded (`MAX_QUESTION_CHARS`, `MAX_EXTRACTION_ITEMS`, `MAX_LOOKUP_IDS`,
     `MAX_ANSWER_CHARS`).
   - Persisting is idempotent in the database (`calls.session_id` unique, `PersistCall`).
-    A session-persisted call is thread history only. The prior-call leg skips
+    A session-persisted call is thread history only. The prior-call query skips
     `session_id IS NOT NULL` rows because nothing can rate them.
   - `Rejection` is adjacently tagged because it is stored.
   - The surface is `crates/agent`. `ops.rs` is the one list of operations, and `mcp.rs`
@@ -510,10 +510,10 @@ Key cross-file facts that aren't obvious from any one file:
   - The adapters hold no bare `Embedder`. `PgRetriever`/`PgLibrary`/`PgCallStore` take
     `Arc<db::Vectors>` (`Config::vectors(pool)`, one per process), which embeds nothing
     until the stored space equals its own. A mismatch is an error-level log naming both
-    spaces and dark vector legs, never a mixed column.
+    spaces and vector search turned off, never a mixed column.
   - The row is re-read on every use, and once at startup so the verdict sits beside the
     config summary. A running bot picks up the first `ingest embed`, and a `reembed` under
-    it darkens the legs instead of erroring or mixing.
+    it turns vector search off instead of erroring or mixing.
   - Writers hold the space. `PgCallStore::persist` and every `ingest embed` batch take
     the shared side of `CALLS_REWRITE_LOCK` in their transaction and read the row under it
     (`hold_space` / `Vectors::hold`). `switch_space` takes the exclusive side, as the CR
@@ -602,7 +602,7 @@ Key cross-file facts that aren't obvious from any one file:
 
 - `DATABASE_URL` (port 5432, or `DB_PORT`).
 - `ANTHROPIC_API_KEY`.
-- `VOYAGE_API_KEY`. Blank turns the vector leg off, and the bot still works. A
+- `VOYAGE_API_KEY`. Blank turns the vector search off, and the bot still works. A
   `judge.toml` `[models.embed]` overrides it, including OpenAI-compatible embeddings.
 - `JUDGE_CONFIG`: optional path to a `judge.toml` (see above). It is a *host* path.
   - `cargo run` reads it as is.
@@ -637,7 +637,7 @@ For the HTTP API it also holds:
 - `MCP_ALLOWED_HOSTS`: the `Host` values the MCP transport accepts, meaning the public
   hostname behind the tunnel.
 - `MCP_JUDGE_LIMIT`/`MCP_JUDGE_WINDOW_SECS`: `judge` runs per window through `/mcp`. This
-  is the blast radius of a leaked token.
+  is the most a leaked token can spend.
 
 The bot/api containers override `DATABASE_URL` to `db:5432` inside the compose network.
 The image builds the web page and sets `WEB_DIST=/srv/web`. The `api` service's `command`

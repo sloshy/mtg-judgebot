@@ -22,16 +22,16 @@
 //! table knows Anthropic's models and prices unknown ones there as the default, but
 //! an unknown model on an OpenAI-compatible server could be anything, so the
 //! operator must say, or mark the provider `pricing = "free"`), an Anthropic
-//! door that is not built into this binary, and a key that contradicts
+//! endpoint that is not built into this binary, and a key that contradicts
 //! another (`auth` with no `api_key_env`, a stage price on a free provider,
 //! `effort` on a provider that will not send it) — a knob that would be
 //! silently ignored is an error naming both keys instead.
 //!
-//! The cloud doors (`claude-platform-on-aws`, `bedrock`, `vertex`) hold no
+//! The cloud endpoints (`claude-platform-on-aws`, `bedrock`, `vertex`) hold no
 //! key: their credentials come from the platform's chain, resolved lazily so
 //! loading a config never touches the network. A binary about to serve
 //! questions calls [`Config::probe_auth`] once after loading, so a host with
-//! no credentials fails at startup naming the provider and the door, the
+//! no credentials fails at startup naming the provider and the endpoint, the
 //! way a missing `api_key_env` does — not on the first question. Each
 //! provider entry resolves to one [`Endpoint`], shared by the stages that
 //! name it, so two stages on one cloud provider share one credential chain.
@@ -294,7 +294,7 @@ enum ProviderEntry {
         /// the platform's own chain (AWS: environment, profile, SSO or role; GCP:
         /// Application Default Credentials), probed once at startup.
         #[serde(default)]
-        endpoint: Door,
+        endpoint: EndpointKind,
         /// The origin, without `/v1/messages`. Required for a proxy; on
         /// every other endpoint an override of the default
         /// (`https://api.anthropic.com` for direct, derived from `region`
@@ -416,7 +416,7 @@ fn yes() -> bool {
 )]
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-enum Door {
+enum EndpointKind {
     /// Anthropic's own API, with an API key.
     #[default]
     Direct,
@@ -434,7 +434,7 @@ enum Door {
     Vertex,
 }
 
-impl Door {
+impl EndpointKind {
     const ALL: [Self; 5] = [
         Self::Direct,
         Self::Proxy,
@@ -446,36 +446,36 @@ impl Door {
     /// The value as the file spells it.
     const fn name(self) -> &'static str {
         match self {
-            Door::Direct => "direct",
-            Door::Proxy => "proxy",
-            Door::ClaudePlatformOnAws => "claude-platform-on-aws",
-            Door::Bedrock => "bedrock",
-            Door::Vertex => "vertex",
+            EndpointKind::Direct => "direct",
+            EndpointKind::Proxy => "proxy",
+            EndpointKind::ClaudePlatformOnAws => "claude-platform-on-aws",
+            EndpointKind::Bedrock => "bedrock",
+            EndpointKind::Vertex => "vertex",
         }
     }
 
-    /// Whether this binary was built with the door (Cargo features `aws`,
+    /// Whether this binary was built with the endpoint (Cargo features `aws`,
     /// `gcp`); the constructors of one that was not say
     /// [`ConfigError::NotBuilt`].
     const fn built(self) -> bool {
         match self {
-            Door::Direct | Door::Proxy => true,
-            Door::ClaudePlatformOnAws | Door::Bedrock => cfg!(feature = "aws"),
-            Door::Vertex => cfg!(feature = "gcp"),
+            EndpointKind::Direct | EndpointKind::Proxy => true,
+            EndpointKind::ClaudePlatformOnAws | EndpointKind::Bedrock => cfg!(feature = "aws"),
+            EndpointKind::Vertex => cfg!(feature = "gcp"),
         }
     }
 }
 
-/// A key of an `anthropic` provider table that belongs to some doors only.
-/// [`DoorKey::on`] is the one statement of which door takes which key: the
-/// loader refuses a key where it is [`Applies::No`], the door constructors
+/// A key of an `anthropic` provider table that belongs to some endpoints only.
+/// [`EndpointKey::on`] is the one statement of which endpoint takes which key: the
+/// loader refuses a key where it is [`Applies::No`], the endpoint constructors
 /// require it where it is [`Applies::Required`]
-/// (`door_table_matches_the_loader` holds them to it), and the config editor
-/// shows a door only the keys it takes. Rules on a key's *value* stay with
+/// (`endpoint_table_matches_the_loader` holds them to it), and the config editor
+/// shows an endpoint only the keys it takes. Rules on a key's *value* stay with
 /// the loader: `refusal_fallbacks = true` on Bedrock, Bedrock's
 /// `anthropic.` model ids.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DoorKey {
+enum EndpointKey {
     BaseUrl,
     ApiKeyEnv,
     Auth,
@@ -484,7 +484,7 @@ enum DoorKey {
     Project,
 }
 
-/// Whether a [`DoorKey`] applies on a door.
+/// Whether a [`EndpointKey`] applies on an endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Applies {
@@ -493,7 +493,7 @@ enum Applies {
     No,
 }
 
-impl DoorKey {
+impl EndpointKey {
     const ALL: [Self; 6] = [
         Self::BaseUrl,
         Self::ApiKeyEnv,
@@ -515,15 +515,18 @@ impl DoorKey {
         }
     }
 
-    const fn on(self, door: Door) -> Applies {
+    const fn on(self, kind: EndpointKind) -> Applies {
         use Applies::{No, Optional, Required};
-        match (self, door) {
-            (Self::BaseUrl, Door::Proxy)
-            | (Self::ApiKeyEnv, Door::Direct | Door::Proxy)
-            | (Self::Region, Door::ClaudePlatformOnAws | Door::Bedrock | Door::Vertex)
-            | (Self::WorkspaceId, Door::ClaudePlatformOnAws)
-            | (Self::Project, Door::Vertex) => Required,
-            (Self::BaseUrl, _) | (Self::Auth, Door::Proxy) => Optional,
+        match (self, kind) {
+            (Self::BaseUrl, EndpointKind::Proxy)
+            | (Self::ApiKeyEnv, EndpointKind::Direct | EndpointKind::Proxy)
+            | (
+                Self::Region,
+                EndpointKind::ClaudePlatformOnAws | EndpointKind::Bedrock | EndpointKind::Vertex,
+            )
+            | (Self::WorkspaceId, EndpointKind::ClaudePlatformOnAws)
+            | (Self::Project, EndpointKind::Vertex) => Required,
+            (Self::BaseUrl, _) | (Self::Auth, EndpointKind::Proxy) => Optional,
             (
                 Self::ApiKeyEnv | Self::Auth | Self::Region | Self::WorkspaceId | Self::Project,
                 _,
@@ -531,7 +534,7 @@ impl DoorKey {
         }
     }
 
-    /// Why the key is refused on a door where it is [`Applies::No`].
+    /// Why the key is refused on an endpoint where it is [`Applies::No`].
     const fn misplaced(self) -> &'static str {
         match self {
             // Applies everywhere: never refused.
@@ -549,17 +552,17 @@ impl DoorKey {
     }
 }
 
-/// `value`, or [`ConfigError::Required`] naming the key and the door.
+/// `value`, or [`ConfigError::Required`] naming the key and the endpoint.
 fn required<T>(
     provider: &str,
     key: &'static str,
-    door: Door,
+    kind: EndpointKind,
     value: Option<T>,
 ) -> Result<T, ConfigError> {
     value.ok_or_else(|| ConfigError::Required {
         provider: provider.to_owned(),
         key,
-        door: door.name(),
+        kind: kind.name(),
     })
 }
 
@@ -571,7 +574,7 @@ fn bedrock_model_id(model: &str) -> bool {
     model.starts_with("anthropic.") || model.contains(".anthropic.")
 }
 
-/// A cloud door's origin: the configured override, or the constructor's.
+/// A cloud endpoint's origin: the configured override, or the constructor's.
 #[cfg(any(feature = "aws", feature = "gcp"))]
 fn at_origin(endpoint: Endpoint, base_url: Option<&BaseUrl>) -> Endpoint {
     match base_url {
@@ -580,7 +583,7 @@ fn at_origin(endpoint: Endpoint, base_url: Option<&BaseUrl>) -> Endpoint {
     }
 }
 
-// The cloud doors. Each exists only when its feature is compiled in; the
+// The cloud endpoints. Each exists only when its feature is compiled in; the
 // stub otherwise names the feature. The unused-parameter shape of the stubs
 // is deliberate: both signatures must agree so the caller does not care.
 
@@ -591,11 +594,16 @@ fn claude_platform_on_aws(
     workspace_id: Option<&WorkspaceId>,
     base_url: Option<&BaseUrl>,
 ) -> Result<Endpoint, ConfigError> {
-    let region = required(provider, "region", Door::ClaudePlatformOnAws, region)?;
+    let region = required(
+        provider,
+        "region",
+        EndpointKind::ClaudePlatformOnAws,
+        region,
+    )?;
     let workspace_id = required(
         provider,
         "workspace_id",
-        Door::ClaudePlatformOnAws,
+        EndpointKind::ClaudePlatformOnAws,
         workspace_id,
     )?;
     Ok(at_origin(
@@ -613,7 +621,7 @@ fn claude_platform_on_aws(
 ) -> Result<Endpoint, ConfigError> {
     Err(ConfigError::NotBuilt {
         provider: provider.to_owned(),
-        what: format!("endpoint = {:?}", Door::ClaudePlatformOnAws.name()),
+        what: format!("endpoint = {:?}", EndpointKind::ClaudePlatformOnAws.name()),
         feature: "aws",
     })
 }
@@ -624,7 +632,7 @@ fn bedrock(
     region: Option<&Region>,
     base_url: Option<&BaseUrl>,
 ) -> Result<Endpoint, ConfigError> {
-    let region = required(provider, "region", Door::Bedrock, region)?;
+    let region = required(provider, "region", EndpointKind::Bedrock, region)?;
     Ok(at_origin(Endpoint::bedrock(region.to_string()), base_url))
 }
 
@@ -636,7 +644,7 @@ fn bedrock(
 ) -> Result<Endpoint, ConfigError> {
     Err(ConfigError::NotBuilt {
         provider: provider.to_owned(),
-        what: format!("endpoint = {:?}", Door::Bedrock.name()),
+        what: format!("endpoint = {:?}", EndpointKind::Bedrock.name()),
         feature: "aws",
     })
 }
@@ -648,8 +656,8 @@ fn vertex(
     region: Option<&Region>,
     base_url: Option<&BaseUrl>,
 ) -> Result<Endpoint, ConfigError> {
-    let project = required(provider, "project", Door::Vertex, project)?;
-    let region = required(provider, "region", Door::Vertex, region)?;
+    let project = required(provider, "project", EndpointKind::Vertex, project)?;
+    let region = required(provider, "region", EndpointKind::Vertex, region)?;
     Ok(at_origin(
         Endpoint::vertex(project.to_string(), region.to_string()),
         base_url,
@@ -665,7 +673,7 @@ fn vertex(
 ) -> Result<Endpoint, ConfigError> {
     Err(ConfigError::NotBuilt {
         provider: provider.to_owned(),
-        what: format!("endpoint = {:?}", Door::Vertex.name()),
+        what: format!("endpoint = {:?}", EndpointKind::Vertex.name()),
         feature: "gcp",
     })
 }
@@ -731,7 +739,7 @@ struct ModelsEntry {
     extract: StageEntry,
     /// Synthesis: the judge's answer, with at most one `lookup_rules` round.
     synth: StageEntry,
-    /// Embeddings for the vector retrieval leg. Absent turns that leg off,
+    /// Embeddings for vector search. Absent turns vector search off,
     /// and the bot still works.
     #[serde(default)]
     embed: Option<EmbedEntry>,
@@ -935,18 +943,18 @@ pub enum ConfigError {
         /// The Cargo feature that would have built it.
         feature: &'static str,
     },
-    /// A key the door needs is missing.
-    #[error("providers.{provider}: {key} is required for endpoint = {door:?}")]
+    /// A key the endpoint needs is missing.
+    #[error("providers.{provider}: {key} is required for endpoint = {kind:?}")]
     Required {
         /// The provider.
         provider: String,
         /// The key.
         key: &'static str,
-        /// The door.
-        door: &'static str,
+        /// The endpoint.
+        kind: &'static str,
     },
     /// A stage on Bedrock names a model without Bedrock's `anthropic.`
-    /// prefix; the door would answer every question with a 400.
+    /// prefix; the endpoint would answer every question with a 400.
     #[error(
         "models.{stage}.model = {model:?}: Claude in Amazon Bedrock names models with an `anthropic.` prefix (anthropic.claude-opus-5-5, or an inference profile such as global.anthropic.claude-opus-4-6-v1)"
     )]
@@ -956,13 +964,13 @@ pub enum ConfigError {
         /// The model.
         model: String,
     },
-    /// A cloud door's credential chain handed out nothing when
+    /// A cloud endpoint's credential chain handed out nothing when
     /// [`Config::probe_auth`] asked at startup.
     #[error("providers.{provider} ({endpoint}): no credentials: {cause}")]
     Credentials {
         /// The provider.
         provider: String,
-        /// The door, as [`Endpoint::describe`] names it.
+        /// The endpoint, as [`Endpoint::describe`] names it.
         endpoint: String,
         /// The chain's answer.
         cause: LlmError,
@@ -1147,14 +1155,14 @@ impl std::fmt::Display for Source {
     }
 }
 
-/// A chat provider, resolved: the door and its credential.
+/// A chat provider, resolved: the endpoint and its credential.
 #[derive(Clone, Debug)]
 pub enum ChatProvider {
     /// The Messages API through `endpoint`.
     Anthropic {
-        /// The door.
+        /// The endpoint.
         endpoint: Endpoint,
-        /// `refusal_fallbacks`: overrides the door's default when set.
+        /// `refusal_fallbacks`: overrides the endpoint's default when set.
         refusal_fallbacks: Option<bool>,
     },
     /// An OpenAI-compatible server.
@@ -1180,14 +1188,14 @@ impl ChatProvider {
         }
     }
 
-    /// A description for the report: the door, never the key.
+    /// A description for the report: the endpoint, never the key.
     fn describe(&self) -> serde_json::Value {
         match self {
             ChatProvider::Anthropic {
                 endpoint,
                 refusal_fallbacks,
             } => {
-                let mut door = match endpoint {
+                let mut kind = match endpoint {
                     Endpoint::Direct { base_url, .. } => {
                         serde_json::json!({"kind": "anthropic", "endpoint": "direct", "base_url": base_url})
                     }
@@ -1225,10 +1233,10 @@ impl ChatProvider {
                         serde_json::json!({"kind": "anthropic", "endpoint": "vertex", "project": project, "region": region, "base_url": base_url})
                     }
                 };
-                if let (Some(send), Some(map)) = (refusal_fallbacks, door.as_object_mut()) {
+                if let (Some(send), Some(map)) = (refusal_fallbacks, kind.as_object_mut()) {
                     map.insert("refusal_fallbacks".into(), (*send).into());
                 }
-                door
+                kind
             }
             ChatProvider::OpenAi {
                 base_url,
@@ -1374,7 +1382,7 @@ pub struct Embed {
     backend: EmbedProvider,
 }
 
-/// An embeddings provider, resolved: the door and its credential.
+/// An embeddings provider, resolved: the endpoint and its credential.
 #[derive(Clone, Debug)]
 enum EmbedProvider {
     Voyage {
@@ -1440,7 +1448,7 @@ impl Embed {
         })
     }
 
-    /// A description for the report: the door, never the key.
+    /// A description for the report: the endpoint, never the key.
     fn describe(&self) -> serde_json::Value {
         match &self.backend {
             EmbedProvider::Voyage { .. } => serde_json::json!({"kind": "voyage"}),
@@ -1788,7 +1796,7 @@ impl Config {
         Ok(self.operator.clone().for_discord()?)
     }
 
-    /// The operator as `judge-api` must know them, whichever doors it opens.
+    /// The operator as `judge-api` must know them, whichever interfaces it opens.
     ///
     /// # Errors
     /// [`ConfigError::MissingContact`] without `JUDGE_OPERATOR_EMAIL`.
@@ -1814,8 +1822,8 @@ impl Config {
         self.embed.as_ref()
     }
 
-    /// The process's spend meter: what the models bill to and the front
-    /// doors read.
+    /// The process's spend meter: what the models bill to and the
+    /// interfaces read.
     #[must_use]
     pub fn meter(&self) -> &SpendMeter {
         &self.meter
@@ -1848,17 +1856,17 @@ impl Config {
         )))
     }
 
-    /// Resolve every cloud door's credentials once, without sending
+    /// Resolve every cloud endpoint's credentials once, without sending
     /// anything: the chains are lazy, so this is where a host with no AWS
     /// credentials or no ADC fails — at startup, naming the provider and the
-    /// door, like a missing `api_key_env` fails at load. Logs each door
+    /// endpoint, like a missing `api_key_env` fails at load. Logs each endpoint
     /// resolved, so the startup log says which host a stage signs for (the
-    /// summary line names the provider, not the door). Key doors and
+    /// summary line names the provider, not the endpoint). Key endpoints and
     /// `openai` providers need nothing and log nothing; a provider shared by
     /// both stages is probed once.
     ///
     /// # Errors
-    /// [`ConfigError::Credentials`] for the first door whose chain has none.
+    /// [`ConfigError::Credentials`] for the first endpoint whose chain has none.
     pub async fn probe_auth(&self) -> Result<(), ConfigError> {
         let mut probed = std::collections::BTreeSet::new();
         for stage in [self.extract(), self.synth()].into_iter().flatten() {
@@ -2035,7 +2043,7 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
             // A bare id on Bedrock would 400 on every question; the documented
             // forms are `anthropic.<model>` and `<profile>.anthropic.<model>`.
             ProviderEntry::Anthropic {
-                endpoint: Door::Bedrock,
+                endpoint: EndpointKind::Bedrock,
                 ..
             } if !bedrock_model_id(entry.model.as_ref()) => {
                 return Err(ConfigError::BedrockModelId {
@@ -2126,29 +2134,29 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                 refusal_fallbacks,
                 pricing,
             } => {
-                let door = *endpoint;
+                let kind = *endpoint;
                 let misplaced = |key: &'static str, reason: &'static str| ConfigError::Misplaced {
                     provider: name.to_string(),
                     key,
                     reason,
                 };
-                // Each key belongs to some doors only; on another it would be
-                // silently ignored, so it is an error there ([`DoorKey::on`]).
+                // Each key belongs to some endpoints only; on another it would be
+                // silently ignored, so it is an error there ([`EndpointKey::on`]).
                 let present = [
-                    (DoorKey::Auth, auth.is_some()),
-                    (DoorKey::ApiKeyEnv, api_key_env.is_some()),
-                    (DoorKey::BaseUrl, base_url.is_some()),
-                    (DoorKey::Region, region.is_some()),
-                    (DoorKey::WorkspaceId, workspace_id.is_some()),
-                    (DoorKey::Project, project.is_some()),
+                    (EndpointKey::Auth, auth.is_some()),
+                    (EndpointKey::ApiKeyEnv, api_key_env.is_some()),
+                    (EndpointKey::BaseUrl, base_url.is_some()),
+                    (EndpointKey::Region, region.is_some()),
+                    (EndpointKey::WorkspaceId, workspace_id.is_some()),
+                    (EndpointKey::Project, project.is_some()),
                 ];
                 if let Some((key, _)) = present
                     .into_iter()
-                    .find(|&(key, set)| set && key.on(door) == Applies::No)
+                    .find(|&(key, set)| set && key.on(kind) == Applies::No)
                 {
                     return Err(misplaced(key.name(), key.misplaced()));
                 }
-                if *refusal_fallbacks == Some(true) && door == Door::Bedrock {
+                if *refusal_fallbacks == Some(true) && kind == EndpointKind::Bedrock {
                     return Err(misplaced(
                         "refusal_fallbacks",
                         "cannot be true on endpoint = \"bedrock\": it takes no anthropic-beta header, so the fallbacks beta cannot be sent",
@@ -2157,20 +2165,20 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                 let key = |var: Option<&EnvVar>| {
                     self.secret(
                         name.as_ref(),
-                        required(name.as_ref(), "api_key_env", door, var)?.as_ref(),
+                        required(name.as_ref(), "api_key_env", kind, var)?.as_ref(),
                     )
                 };
-                let endpoint = match door {
-                    Door::Direct => Endpoint::Direct {
+                let endpoint = match kind {
+                    EndpointKind::Direct => Endpoint::Direct {
                         base_url: base_url.as_ref().map_or_else(
                             || ANTHROPIC_DEFAULT_BASE_URL.to_owned(),
                             ToString::to_string,
                         ),
                         api_key: key(api_key_env.as_ref())?,
                     },
-                    Door::Proxy => {
+                    EndpointKind::Proxy => {
                         let base_url =
-                            required(name.as_ref(), "base_url", door, base_url.as_ref())?;
+                            required(name.as_ref(), "base_url", kind, base_url.as_ref())?;
                         let header = match auth.unwrap_or(ProxyHeader::XApiKey) {
                             ProxyHeader::XApiKey => ProxyAuth::XApiKey,
                             ProxyHeader::Bearer => ProxyAuth::Bearer,
@@ -2181,14 +2189,16 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                             header,
                         }
                     }
-                    Door::ClaudePlatformOnAws => claude_platform_on_aws(
+                    EndpointKind::ClaudePlatformOnAws => claude_platform_on_aws(
                         name.as_ref(),
                         region.as_ref(),
                         workspace_id.as_ref(),
                         base_url.as_ref(),
                     )?,
-                    Door::Bedrock => bedrock(name.as_ref(), region.as_ref(), base_url.as_ref())?,
-                    Door::Vertex => vertex(
+                    EndpointKind::Bedrock => {
+                        bedrock(name.as_ref(), region.as_ref(), base_url.as_ref())?
+                    }
+                    EndpointKind::Vertex => vertex(
                         name.as_ref(),
                         project.as_ref(),
                         region.as_ref(),
@@ -2563,30 +2573,30 @@ provider = "anthropic"
 model = "claude-opus-5-5"
 "#;
 
-    /// [`DoorKey::on`] is what the loader does, door by door: a key it
+    /// [`EndpointKey::on`] is what the loader does, endpoint by endpoint: a key it
     /// calls `no` is refused as misplaced, one it calls `required` is
-    /// required (or the door is not built), and a table holding exactly the
-    /// keys it allows loads (or the door is not built).
+    /// required (or the endpoint is not built), and a table holding exactly the
+    /// keys it allows loads (or the endpoint is not built).
     #[test]
-    fn door_table_matches_the_loader() -> R {
+    fn endpoint_table_matches_the_loader() -> R {
         use std::fmt::Write as _;
-        let value = |key: DoorKey| match key {
-            DoorKey::BaseUrl => "base_url = \"http://proxy:4000\"",
-            DoorKey::ApiKeyEnv => "api_key_env = \"K\"",
-            DoorKey::Auth => "auth = \"bearer\"",
-            DoorKey::Region => "region = \"us-east-1\"",
-            DoorKey::WorkspaceId => "workspace_id = \"wrkspc_abc\"",
-            DoorKey::Project => "project = \"my-proj\"",
+        let value = |key: EndpointKey| match key {
+            EndpointKey::BaseUrl => "base_url = \"http://proxy:4000\"",
+            EndpointKey::ApiKeyEnv => "api_key_env = \"K\"",
+            EndpointKey::Auth => "auth = \"bearer\"",
+            EndpointKey::Region => "region = \"us-east-1\"",
+            EndpointKey::WorkspaceId => "workspace_id = \"wrkspc_abc\"",
+            EndpointKey::Project => "project = \"my-proj\"",
         };
-        let file = |door: Door, keys: &[DoorKey]| {
-            let model = if door == Door::Bedrock {
+        let file = |kind: EndpointKind, keys: &[EndpointKey]| {
+            let model = if kind == EndpointKind::Bedrock {
                 "anthropic.claude-opus-5-5"
             } else {
                 "claude-opus-5-5"
             };
             let mut t = format!(
                 "[providers.p]\nkind = \"anthropic\"\nendpoint = \"{}\"\n",
-                door.name()
+                kind.name()
             );
             for k in keys {
                 t.push_str(value(*k));
@@ -2601,40 +2611,40 @@ model = "claude-opus-5-5"
             t
         };
         let env = [("K", "k")];
-        for door in Door::ALL {
-            let required: Vec<DoorKey> = DoorKey::ALL
+        for kind in EndpointKind::ALL {
+            let required: Vec<EndpointKey> = EndpointKey::ALL
                 .into_iter()
-                .filter(|k| k.on(door) == Applies::Required)
+                .filter(|k| k.on(kind) == Applies::Required)
                 .collect();
-            let allowed: Vec<DoorKey> = DoorKey::ALL
+            let allowed: Vec<EndpointKey> = EndpointKey::ALL
                 .into_iter()
-                .filter(|k| k.on(door) != Applies::No)
+                .filter(|k| k.on(kind) != Applies::No)
                 .collect();
             for keys in [&required, &allowed] {
-                match load(&file(door, keys), &env) {
-                    Ok(_) => assert!(door.built(), "{door:?} loaded unbuilt"),
-                    Err(ConfigError::NotBuilt { .. }) => assert!(!door.built()),
-                    Err(e) => return Err(format!("{door:?} {keys:?}: {e}").into()),
+                match load(&file(kind, keys), &env) {
+                    Ok(_) => assert!(kind.built(), "{kind:?} loaded unbuilt"),
+                    Err(ConfigError::NotBuilt { .. }) => assert!(!kind.built()),
+                    Err(e) => return Err(format!("{kind:?} {keys:?}: {e}").into()),
                 }
             }
-            for key in DoorKey::ALL {
-                match key.on(door) {
+            for key in EndpointKey::ALL {
+                match key.on(kind) {
                     Applies::No => {
                         let mut keys = required.clone();
                         keys.push(key);
-                        let err = load(&file(door, &keys), &env).err();
+                        let err = load(&file(kind, &keys), &env).err();
                         assert!(
                             matches!(&err, Some(ConfigError::Misplaced { key: k, .. }) if *k == key.name()),
-                            "{door:?} {key:?}: {err:?}"
+                            "{kind:?} {key:?}: {err:?}"
                         );
                     }
-                    Applies::Required if door.built() => {
-                        let keys: Vec<DoorKey> =
+                    Applies::Required if kind.built() => {
+                        let keys: Vec<EndpointKey> =
                             required.iter().copied().filter(|k| *k != key).collect();
-                        let err = load(&file(door, &keys), &env).err();
+                        let err = load(&file(kind, &keys), &env).err();
                         assert!(
                             matches!(&err, Some(ConfigError::Required { key: k, .. }) if *k == key.name()),
-                            "{door:?} {key:?}: {err:?}"
+                            "{kind:?} {key:?}: {err:?}"
                         );
                     }
                     Applies::Required | Applies::Optional => {}
@@ -3452,7 +3462,7 @@ model = "qwen3:8b"
     }
 
     #[test]
-    fn anthropic_doors() -> R {
+    fn anthropic_endpoints() -> R {
         let proxy = MINIMAL.replace(
             "kind = \"anthropic\"\n",
             "kind = \"anthropic\"\nendpoint = \"proxy\"\nbase_url = \"http://litellm:4000/\"\nauth = \"bearer\"\n",
@@ -3532,7 +3542,7 @@ model = "qwen3:8b"
     }
 
     #[test]
-    fn refusal_fallbacks_follow_the_door_unless_overridden() -> R {
+    fn refusal_fallbacks_follow_the_endpoint_unless_overridden() -> R {
         let direct = load(MINIMAL, &[("ANTHROPIC_API_KEY", "k")])?;
         assert!(direct.models()?.synth().capabilities().refusal_fallbacks);
         assert_eq!(
@@ -3566,7 +3576,7 @@ model = "qwen3:8b"
             e.contains("refusal_fallbacks") && e.contains("anthropic-beta"),
             "{e}"
         );
-        // `false` only says what the door already does. (The file then fails on
+        // `false` only says what the endpoint already does. (The file then fails on
         // its bare model id, which Bedrock would 400; not on this key.)
         let e = err("endpoint = \"bedrock\"\nregion = \"us-east-1\"\nrefusal_fallbacks = false");
         assert!(!e.contains("refusal_fallbacks"), "{e}");
@@ -3574,7 +3584,7 @@ model = "qwen3:8b"
 
     #[cfg(feature = "aws")]
     #[test]
-    fn aws_doors_resolve_from_their_keys() -> R {
+    fn aws_endpoints_resolve_from_their_keys() -> R {
         use judge_llm::StructuredOutput;
         let c = load(
             &anthropic_with(
@@ -3611,7 +3621,7 @@ model = "qwen3:8b"
             c.report().pointer("/providers/anthropic/endpoint"),
             Some(&serde_json::json!("claude-platform-on-aws"))
         );
-        // The operator can say the door takes them after all; the report shows the override.
+        // The operator can say the endpoint takes them after all; the report shows the override.
         let c = load(
             &anthropic_with(
                 "endpoint = \"claude-platform-on-aws\"\nregion = \"us-west-2\"\nworkspace_id = \"wrkspc_01AbC\"\nrefusal_fallbacks = true",
@@ -3755,7 +3765,7 @@ model = "qwen3:8b"
 
     /// `region` and `project` go into a hostname or a URL path: a value
     /// that would not survive that fails at load naming the key, on every
-    /// build (the check is in the type, before any door is resolved).
+    /// build (the check is in the type, before any endpoint is resolved).
     #[test]
     fn region_and_project_are_checked_as_labels() {
         let err = |extra: &str| {
@@ -3790,10 +3800,10 @@ model = "qwen3:8b"
         );
     }
 
-    /// The key doors hold their key: probing them is `Ok` without I/O, so
+    /// The key endpoints hold their key: probing them is `Ok` without I/O, so
     /// the zero-config setup and a proxy start as they always did.
     #[tokio::test]
-    async fn probe_auth_needs_nothing_from_a_key_door() -> R {
+    async fn probe_auth_needs_nothing_from_a_key_endpoint() -> R {
         let c = Config::from_vars(|k| (k == "ANTHROPIC_API_KEY").then(|| "k".to_owned()))?;
         c.probe_auth().await?;
         let c = load(
@@ -3809,14 +3819,14 @@ model = "qwen3:8b"
     }
 
     #[test]
-    fn cloud_door_keys_are_checked_per_door() {
+    fn cloud_endpoint_keys_are_checked_per_endpoint() {
         let err = |extra: &str| {
             load(&anthropic_with(extra), &[("ANTHROPIC_API_KEY", "k")])
                 .err()
                 .map(|e| e.to_string())
                 .unwrap_or_default()
         };
-        // Misplaced keys are errors on every build; missing ones on a built door.
+        // Misplaced keys are errors on every build; missing ones on a built endpoint.
         for (extra, expect) in [
             (
                 "endpoint = \"vertex\"\nregion = \"global\"\nproject = \"p\"\napi_key_env = \"ANTHROPIC_API_KEY\"",
@@ -3846,11 +3856,11 @@ model = "qwen3:8b"
             "endpoint = \"claude-platform-on-aws\"\nregion = \"us-west-2\"\nworkspace_id = \"arn:aws:aws-external-anthropic:us-west-2:1:workspace/wrkspc_01X\"",
         );
         assert!(e.contains("workspace_id") && e.contains("wrkspc_"), "{e}");
-        // A missing key is an error on a built door; a door this build lacks
-        // names its feature first, whatever else is missing. Each door is
+        // A missing key is an error on a built endpoint; an endpoint this build lacks
+        // names its feature first, whatever else is missing. Each endpoint is
         // checked against its own feature, so the `aws`-only and `gcp`-only
         // builds are exercised too, not just both-on and both-off.
-        for (extra, door, feature, built, missing) in [
+        for (extra, kind, feature, built, missing) in [
             (
                 "endpoint = \"bedrock\"",
                 "bedrock",
@@ -3874,10 +3884,10 @@ model = "qwen3:8b"
             ),
         ] {
             let expect = if built {
-                format!("providers.anthropic: {missing} is required for endpoint = \"{door}\"")
+                format!("providers.anthropic: {missing} is required for endpoint = \"{kind}\"")
             } else {
                 format!(
-                    "providers.anthropic: endpoint = \"{door}\" is not built in this binary; it needs the \"{feature}\" feature of judge-anthropic (on by default)"
+                    "providers.anthropic: endpoint = \"{kind}\" is not built in this binary; it needs the \"{feature}\" feature of judge-anthropic (on by default)"
                 )
             };
             assert_eq!(err(extra), expect, "{extra:?}");
@@ -4031,7 +4041,7 @@ model = "qwen3:8b"
     }
 
     #[test]
-    fn the_example_file_loads_with_every_door_uncommented() -> R {
+    fn the_example_file_loads_with_every_endpoint_uncommented() -> R {
         let text = example_with_every_table_uncommented();
         assert!(
             text.contains("\n[providers.claude-proxy]\n")
@@ -4062,7 +4072,7 @@ model = "qwen3:8b"
             Some(&serde_json::json!("voyage")),
             "the explicit voyage table, not the implied one"
         );
-        // And each commented door resolves when synth names it (the pricing
+        // And each commented endpoint resolves when synth names it (the pricing
         // table makes gpt-5 on litellm priceable; `effort` must go, since the
         // example's litellm has reasoning_effort = false and the loader
         // refuses a knob the model would never see).
@@ -4073,7 +4083,7 @@ model = "qwen3:8b"
             )
             .is_err_and(|e| e.to_string().contains("reasoning_effort = false"))
         );
-        let doors: &[(&str, &str, &str)] = &[
+        let endpoints: &[(&str, &str, &str)] = &[
             ("claude-proxy", "claude-opus-5-5", "proxy"),
             ("litellm", "gpt-5", "openai"),
             #[cfg(feature = "aws")]
@@ -4083,7 +4093,7 @@ model = "qwen3:8b"
             #[cfg(feature = "gcp")]
             ("vertex", "claude-opus-5-5", "vertex"),
         ];
-        for (provider, model, door) in doors {
+        for (provider, model, kind) in endpoints {
             let synth = text
                 .replace(
                     "provider = \"anthropic\"",
@@ -4103,7 +4113,7 @@ model = "qwen3:8b"
             let seen = report
                 .pointer(&format!("/providers/{provider}/endpoint"))
                 .or_else(|| report.pointer(&format!("/providers/{provider}/kind")));
-            assert_eq!(seen, Some(&serde_json::json!(door)), "{provider}: {report}");
+            assert_eq!(seen, Some(&serde_json::json!(kind)), "{provider}: {report}");
         }
         Ok(())
     }

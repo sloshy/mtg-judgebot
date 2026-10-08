@@ -4,7 +4,7 @@
 //! * [`wire`]    — serde types for `POST /v1/messages` and its response.
 //! * [`schema`]  — schemars → Anthropic structured-output schema subset.
 //! * [`convert`] — neutral [`judge_llm::ChatRequest`] ↔ Messages API.
-//! * [`client`]  — [`Endpoint`] (which door, which auth) and [`Anthropic`],
+//! * [`client`]  — [`Endpoint`] (which endpoint, which auth) and [`Anthropic`],
 //!   the [`judge_llm::Backend`] implementation (metered by `judge-llm`
 //!   before the pipeline sees it).
 //! * [`aws`] (feature `aws`) — `SigV4` and the AWS credential chain for

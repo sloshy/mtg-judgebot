@@ -43,6 +43,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 - **The eval binary is `judge-eval`**, the name the documentation already used. It was
   built as `eval`.
+- **Log wording.** The resolver's `card resolved` / `card ambiguous` lines name the
+  matching step as `step=` (was `rung=`), and the embedding-space lines say `vector search
+  off` / `on` (was `vector legs`). A log query filtering on the old text needs updating.
 - **`.env.example` gains commented `ANTHROPIC_BASE_URL`, `VOYAGE_MODEL` and
   `VOYAGE_DIMENSIONS` lines**, and each comment block now sits directly above the
   variables it describes. No variable's meaning or default changed. Its

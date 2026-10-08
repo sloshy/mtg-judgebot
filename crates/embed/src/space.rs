@@ -96,7 +96,7 @@ impl fmt::Display for Space {
 }
 
 /// The configured embedder writes into a different space than the stored
-/// vectors belong to. Nothing mixes them: the vector legs go dark and
+/// vectors belong to. Nothing mixes them: the vector search is turned off and
 /// `ingest embed` refuses; `ingest reembed --yes` switches the database.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub struct SpaceMismatch {

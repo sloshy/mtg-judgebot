@@ -17,7 +17,7 @@ pub trait Extractor: Send + Sync {
 /// Pipeline step 2: resolve one card-name span. Never guesses.
 #[async_trait]
 pub trait Resolver: Send + Sync {
-    /// Resolve a single span through the alias → bracket → printed-name → fuzzy ladder.
+    /// Resolve a single span through the alias → bracket → printed-name → fuzzy resolution order.
     async fn resolve(&self, span: &str) -> Result<Resolution, JudgeError>;
 }
 

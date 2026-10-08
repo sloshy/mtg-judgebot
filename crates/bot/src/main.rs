@@ -54,10 +54,10 @@ async fn main() -> Result<()> {
     let operator = judge.discord_operator()?;
     tracing::info!(discord = %operator.username(), "operator contact");
     let models = judge.models()?;
-    // A cloud door with no credentials fails here, not on the first question.
+    // A cloud endpoint with no credentials fails here, not on the first question.
     judge.probe_auth().await?;
     // The embedder is optional: without one the retriever skips its vector
-    // leg. One `Vectors` for the store and the retriever: the space check
+    // source. One `Vectors` for the store and the retriever: the space check
     // against `embedding_space` runs once and disables both on a mismatch.
     let vectors = judge.vectors(pool.clone())?;
     // The verdict (on, absent row, mismatch) lands here beside the summary, not in the first request's log.
@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
         v.enabled().await;
     } else {
         tracing::warn!(
-            "no embedder configured (VOYAGE_API_KEY or [models.embed]); running without the vector leg"
+            "no embedder configured (VOYAGE_API_KEY or [models.embed]); running without vector search"
         );
     }
     let mut store = PgCallStore::new(pool.clone());

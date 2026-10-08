@@ -34,7 +34,7 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 /// The models the pipeline runs on: one per stage, both billed to one
 /// meter. The stages may share one model (the zero-config setup) or not;
-/// the meter is one per process either way, so a front door reads the whole
+/// the meter is one per process either way, so an interface reads the whole
 /// spend. The fields are private and the constructors wrap the backends
 /// themselves, so a `Models` cannot hold an uncapped model or report a meter
 /// its models do not bill to.
@@ -156,7 +156,7 @@ pub struct DepsConfig {
 
 /// Wire the Postgres adapters and the model adapters into [`Deps`] with
 /// [`DepsConfig::default`]. `vectors` is optional: without one the retriever
-/// skips its vector leg and orders prior calls by recency. A binary that also
+/// skips its vector search and orders prior calls by recency. A binary that also
 /// builds a `PgCallStore` hands it the same `Arc` ([`config::Config::vectors`]),
 /// so the space check runs once.
 #[must_use]

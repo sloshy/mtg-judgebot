@@ -79,7 +79,7 @@ impl Extractor for LlmExtractor {
             // level lands in default production logs.
             tracing::warn!(
                 chars = q.text.chars().count(),
-                "extractor returned no category other than `other`; the category-map leg will be empty"
+                "extractor returned no category other than `other`; the category-map query will be empty"
             );
         }
         tracing::info!(

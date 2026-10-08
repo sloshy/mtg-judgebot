@@ -1,32 +1,32 @@
-//! [`PgResolver`]: the card resolution ladder (ARCHITECTURE.md §3 step 2).
+//! [`PgResolver`]: the card resolution order (ARCHITECTURE.md §3 step 2).
 //!
 //! A bracketed span (`[[Card Name]]`) is the user naming a card exactly, and
-//! takes its own short ladder: exact current or face name → `printed_names` →
+//! takes its own shorter order: exact current or face name → `printed_names` →
 //! the alias table, whole span only. An exact alias is the curated table's one
 //! card for that spelling, not a looser match, so `[[bob]]`, typed out of
 //! card-fetcher habit, is Dark Confidant as surely as `bob` is. When none of
 //! those match, nothing is resolved; the span is *offered* back as a "did you
-//! mean…?": the cards the loose ladder's other naming rungs (possessive, short
+//! mean…?": the cards the unbracketed order's other naming steps (possessive, short
 //! name, alias suffix) point at when there are any — so `[[bob's]]` offers
 //! Dark Confidant and is dropped as a duplicate when the extractor also named
 //! the card — else the fuzzy neighbours.
 //!
-//! Anything else takes the full ladder: `card_aliases` → exact current name →
+//! Anything else takes the full order: `card_aliases` → exact current name →
 //! `printed_names` → name-before-the-comma → alias suffix → `pg_trgm` fuzzy.
-//! Exact rungs match case-insensitively on both `cards.name` and
+//! Exact steps match case-insensitively on both `cards.name` and
 //! `card_faces.name` (so "Stomp" finds "Bonecrusher Giant // Stomp"); every
 //! current name is also a printed name, so `Exact` runs first to keep `via`
 //! informative (an errata'd old name reports `PrintedName`).
-//! The fuzzy rung scores with `strict_word_similarity`, so a partial name such
+//! The fuzzy step scores with `strict_word_similarity`, so a partial name such
 //! as "urza" scores 1.0 against every "Urza's …" card and comes back
 //! `Ambiguous`, while a short span buried inside a word ("led" in "Grizzled")
-//! does not match; the ladder never guesses. When an exact rung matches several
+//! does not match; resolution never guesses. When an exact step matches several
 //! cards, one whose *full* name is the span wins over face-name matches
 //! ("Lightning Bolt" beats "Emeritus of Conflict // Lightning Bolt").
-//! Just before the fuzzy rung, an unbracketed multi-word span is retried
+//! Just before the fuzzy step, an unbracketed multi-word span is retried
 //! against the alias table on each of its word-suffixes ("mirage LED" →
 //! `led`), so a set / printing qualifier in front of a nickname does not fuzz
-//! onto an unrelated card. The rung is deliberately narrow: it counts only when
+//! onto an unrelated card. The step is deliberately narrow: it counts only when
 //! exactly one suffix is an alias *and* every word before it is a known
 //! qualifier ([`QUALIFIERS`]: articles, printing words, classic set names).
 //! Otherwise a typo'd real name whose last word happens to be a nickname
@@ -92,7 +92,7 @@ impl PgResolver {
         Ok(rows.into_iter().map(|r| (r.alias, r.oracle_id)).collect())
     }
 
-    /// The alias-suffix rung: `None` unless exactly one word-suffix of a
+    /// The alias-suffix step: `None` unless exactly one word-suffix of a
     /// multi-word span is an alias and the words before it are all
     /// [`QUALIFIERS`].
     async fn alias_suffix(
@@ -110,7 +110,7 @@ impl PgResolver {
                     tracing::debug!(
                         span = query,
                         alias,
-                        "alias suffix preceded by a non-qualifier; skipping rung"
+                        "alias suffix preceded by a non-qualifier; skipping step"
                     );
                     return Ok(None);
                 }
@@ -121,7 +121,7 @@ impl PgResolver {
             }
             [] => Ok(None),
             many => {
-                tracing::debug!(span = query, aliases = ?many.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(), "several alias suffixes; skipping rung");
+                tracing::debug!(span = query, aliases = ?many.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(), "several alias suffixes; skipping step");
                 Ok(None)
             }
         }
@@ -242,11 +242,11 @@ impl PgResolver {
                     "card {id} matched {query:?} but has no cards/card_faces row"
                 ))
             })?;
-        tracing::info!(span = query, card = %card.name, rung = ?via, "card resolved");
+        tracing::info!(span = query, card = %card.name, step = ?via, "card resolved");
         Ok(Resolution::Resolved { card, via })
     }
 
-    /// `None` when `ids` is empty (fall through to the next rung). Several
+    /// `None` when `ids` is empty (fall through to the next step). Several
     /// matches are still unambiguous when exactly one of them is a card whose
     /// full name is the span (the others matched on a face or printed name).
     async fn decide(
@@ -272,16 +272,16 @@ impl PgResolver {
         &self,
         query: &str,
         ids: &[Uuid],
-        rung: MatchedVia,
+        step: MatchedVia,
     ) -> Result<Resolution, JudgeError> {
         let ids: Vec<Uuid> = ids.iter().copied().take(MAX_CANDIDATES).collect();
         let cards = load_cards(&self.pool, &ids).await?;
-        tracing::info!(span = query, candidates = cards.len(), rung = ?rung, "card ambiguous");
+        tracing::info!(span = query, candidates = cards.len(), step = ?step, "card ambiguous");
         Ok(match NonEmpty::from_vec(cards) {
             Some(candidates) => Resolution::Ambiguous {
                 query: query.to_owned(),
                 candidates,
-                via: rung,
+                via: step,
             },
             None => Resolution::NotFound {
                 query: query.to_owned(),
@@ -289,12 +289,12 @@ impl PgResolver {
         })
     }
 
-    /// The bracketed ladder: the exact name, then an old printed name, then an
+    /// The bracketed order: the exact name, then an old printed name, then an
     /// exact alias (the table maps that spelling to one card, so taking it is
     /// not a guess). On a miss something is offered but never picked, even a
     /// single strong match: the brackets say "this spelling", and a different
-    /// spelling is the user's call. The offer is the naming rungs' cards
-    /// ([`Self::named_offer`], reported under their own rung so `judge()`
+    /// spelling is the user's call. The offer is the naming steps' cards
+    /// ([`Self::named_offer`], reported under their own step so `judge()`
     /// drops the offer when another span resolved one of them), else the fuzzy
     /// neighbours (reported `Fuzzy`, never dropped that way).
     async fn exact_only(&self, query: &str, name: &str) -> Result<Resolution, JudgeError> {
@@ -330,11 +330,11 @@ impl PgResolver {
         self.ambiguous(query, &ids, MatchedVia::Fuzzy).await
     }
 
-    /// The cards the loose ladder's other naming rungs would pick for
-    /// `lowered`, and the first rung that named any: the possessive-stripped
+    /// The cards the unbracketed order's other naming steps would pick for
+    /// `lowered`, and the first step that named any: the possessive-stripped
     /// alias / exact / short name, short name, alias suffix. (The whole-span
-    /// alias is not an offer: the bracketed ladder takes it.) Offers only; the
-    /// fuzzy rung is not a naming rung and is left to the caller.
+    /// alias is not an offer: the bracketed order takes it.) Offers only; the
+    /// fuzzy step is not a naming step and is left to the caller.
     async fn named_offer(
         &self,
         lowered: &str,
@@ -366,15 +366,15 @@ impl PgResolver {
         Ok(None)
     }
 
-    /// The full ladder for an unbracketed span.
-    async fn ladder(&self, query: &str, text: &str) -> Result<Resolution, JudgeError> {
+    /// The full order for an unbracketed span.
+    async fn resolve_loose(&self, query: &str, text: &str) -> Result<Resolution, JudgeError> {
         let query = query.to_owned();
         let lowered = text.to_lowercase();
         if let Some(id) = self.alias(&lowered).await? {
             return self.resolved(&query, id, MatchedVia::Alias).await;
         }
         // "bob's trigger", "goyf's toughness": retry the alias, exact and short-name
-        // rungs on the span with its possessive/punctuation removed.
+        // steps on the span with its possessive/punctuation removed.
         if let Some(stripped) = strip_possessive(&lowered) {
             if let Some(id) = self.alias(&stripped).await? {
                 return self.resolved(&query, id, MatchedVia::Alias).await;
@@ -446,7 +446,7 @@ impl PgResolver {
     }
 }
 
-/// Words allowed in front of a nickname for the alias-suffix rung: articles
+/// Words allowed in front of a nickname for the alias-suffix step: articles
 /// and possessives, printing / finish qualifiers, and classic set names. Not
 /// exhaustive on purpose — an unknown word means "this is probably a card
 /// name", and fuzzy gets the span instead.
@@ -590,7 +590,7 @@ fn only_qualifiers_before(lowered: &str, alias: &str) -> bool {
 
 /// Drop a trailing English possessive (`bob's`, `goyf’s`, `Jace's`) and
 /// trailing punctuation so nicknames written in running prose still reach
-/// the alias and name rungs. Returns `None` when nothing was stripped.
+/// the alias and name steps. Returns `None` when nothing was stripped.
 fn strip_possessive(lowered: &str) -> Option<String> {
     let t = lowered.trim_end_matches(['?', '!', '.', ',', ':', ';']);
     let t = t
@@ -601,10 +601,10 @@ fn strip_possessive(lowered: &str) -> Option<String> {
     (!t.is_empty() && t != lowered).then(|| t.to_owned())
 }
 
-/// How a span asks to be matched. The two ladders are separate methods
-/// selected by an exhaustive match, so no looser rung of the loose ladder
+/// How a span asks to be matched. The two orders are separate methods
+/// selected by an exhaustive match, so no looser step of the unbracketed order
 /// (possessive, short name, alias suffix, a confident fuzzy pick) can resolve
-/// a bracketed span. The bracketed ladder shares only the whole-span alias.
+/// a bracketed span. The bracketed order shares only the whole-span alias.
 #[derive(Debug, PartialEq, Eq)]
 enum CardSpan<'a> {
     /// `[[Card Name]]`: the inner name, trimmed.
@@ -632,7 +632,7 @@ impl Resolver for PgResolver {
                 })
             }
             CardSpan::Exact(name) => self.exact_only(query, name).await,
-            CardSpan::Loose(text) => self.ladder(query, text).await,
+            CardSpan::Loose(text) => self.resolve_loose(query, text).await,
         }
     }
 }
@@ -693,7 +693,7 @@ mod unit {
 
 #[cfg(test)]
 mod pg {
-    //! The alias-suffix rung against a throwaway database (`DATABASE_URL`
+    //! The alias-suffix step against a throwaway database (`DATABASE_URL`
     //! via dotenvy; `#[sqlx::test]` applies `./migrations`).
 
     use judge_core::{MatchedVia, Resolution, Resolver};
@@ -772,7 +772,7 @@ mod pg {
             resolved(&resolver.resolve("the foil Bob").await?),
             Some(("Dark Confidant", MatchedVia::AliasSuffix))
         );
-        // A plain alias still reports `Alias`; a single non-alias word never reaches the rung.
+        // A plain alias still reports `Alias`; a single non-alias word never reaches the step.
         assert_eq!(
             resolved(&resolver.resolve("LED").await?),
             Some(("Lion's Eye Diamond", MatchedVia::Alias))
@@ -781,7 +781,7 @@ mod pg {
             resolver.resolve("mirage").await?,
             Resolution::NotFound { .. }
         ));
-        // Two different aliases in one span: the rung stands down and the ladder falls through.
+        // Two different aliases in one span: the step is skipped and resolution falls through.
         let r = resolver.resolve("bob led").await?;
         assert!(
             !matches!(
@@ -793,7 +793,7 @@ mod pg {
             ),
             "{r:?}"
         );
-        // Exact rungs still win over the suffix rung.
+        // Exact steps still win over the suffix step.
         assert_eq!(
             resolved(&resolver.resolve("dark confidant").await?),
             Some(("Dark Confidant", MatchedVia::Exact))
@@ -807,7 +807,7 @@ mod pg {
     ) -> anyhow::Result<()> {
         seed(&pool).await?;
         let resolver = PgResolver::new(pool);
-        // A dropped apostrophe: "warleaders" is no qualifier, so the rung stands down and fuzzy finds the real card.
+        // A dropped apostrophe: "warleaders" is no qualifier, so the step is skipped and fuzzy finds the real card.
         let r = resolver.resolve("Warleaders Helix").await?;
         assert!(
             !matches!(
@@ -832,7 +832,7 @@ mod pg {
             ),
             "{r:?}"
         );
-        // A bracketed span is exact spelling; the rung is skipped even with a qualifier prefix.
+        // A bracketed span is exact spelling; the step is skipped even with a qualifier prefix.
         let r = resolver.resolve("[[foil helix]]").await?;
         assert!(!matches!(&r, Resolution::Resolved { .. }), "{r:?}");
         // The intended case still works with a qualifier prefix.
@@ -858,7 +858,7 @@ mod pg {
             Some(("Dark Confidant", MatchedVia::Alias))
         );
         // Any looser naming in brackets is not resolved, only offered, under the
-        // rung that named it (so another span resolving the card drops the offer).
+        // step that named it (so another span resolving the card drops the offer).
         let offered = |r: Resolution| match r {
             Resolution::Ambiguous {
                 candidates, via, ..

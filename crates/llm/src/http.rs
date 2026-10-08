@@ -200,7 +200,7 @@ mod tests {
         let err = post_with_retries(
             || {
                 Err(LlmError::Auth {
-                    door: "bedrock",
+                    endpoint: "bedrock",
                     message: "no credentials".into(),
                 })
             },
@@ -211,7 +211,7 @@ mod tests {
             matches!(
                 err,
                 Err(LlmError::Auth {
-                    door: "bedrock",
+                    endpoint: "bedrock",
                     ..
                 })
             ),

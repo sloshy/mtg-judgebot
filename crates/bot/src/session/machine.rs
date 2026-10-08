@@ -97,7 +97,7 @@ impl std::str::FromStr for SessionId {
 /// Q&A into its prompts and append its own answer to that thread's history.
 /// This type makes that unrepresentable: the only constructors are [`Self::new`]
 /// (a fresh id) and parsing a string that already has the prefix and a uuid
-/// after it (a follow-up in a thread this front door minted).
+/// after it (a follow-up in a thread this interface minted).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 #[schemars(description = "Thread id as returned by an earlier reply: `agent:<uuid>`")]

@@ -1,5 +1,5 @@
 //! sqlx adapters for the DB-backed ports: [`PgResolver`] (card resolution
-//! ladder), [`PgRetriever`] (category map + BM25 + vector, rulings, glossary,
+//! resolution order), [`PgRetriever`] (category map + BM25 + vector, rulings, glossary,
 //! notes, prior calls), [`PgCallStore`] (calls + ratings) and
 //! [`PgSessionStore`] (agent-driven sessions), plus [`Vectors`], the guard
 //! every embedder passes through (`space.rs`: the stored vector space), and

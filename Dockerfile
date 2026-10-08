@@ -26,7 +26,7 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Packages, features and profile must be the build's own, or cargo recompiles
-# the dependencies with different flags. The Anthropic cloud doors (Claude
+# the dependencies with different flags. The Anthropic cloud endpoints (Claude
 # Platform on AWS, Bedrock, Vertex) are judge-bot's default features; named
 # here so the image keeps them if the default ever changes.
 #

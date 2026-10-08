@@ -93,7 +93,7 @@ Three things happen in this call:
   otherwise fuzzy-match real cards.
 - The question is **classified** into a fixed taxonomy of 25 categories that mirror the
   CR's structure (`data/categories.yaml`). `primary` is required. Up to two `secondary`
-  guesses are kept. The categories drive the first retrieval leg.
+  guesses are kept. The categories drive the first retrieval source.
 - The **source** says whether this is a rules question (`cr`), a Commander-format question,
   tournament policy, or off-topic. The last two stop here with a polite decline.
 
@@ -103,18 +103,18 @@ drift apart.
 
 ### Step 2: Card resolution
 
-This step uses SQL and no model. Each span goes down a ladder of increasingly loose
-lookups and stops at the first rung that answers:
+This step uses SQL and no model. Each span goes down a resolution order of increasingly loose
+lookups and stops at the first step that answers:
 
 1. hand-curated alias table (`bob` → Dark Confidant),
-2. the same after stripping a possessive (`bob's`), also retrying the exact and short-name rungs,
+2. the same after stripping a possessive (`bob's`), also retrying the exact and short-name steps,
 3. exact current name (also matches a single face of a two-faced card),
 4. every name the card has ever been printed under (old names, errata'd names),
 5. the part of a name before the comma (`Jace` → several Jaces → ambiguous),
 6. a nickname preceded only by printing words (`foil bob`),
 7. trigram fuzzy match, for typos.
 
-A span written in brackets, `[[Full Card Name]]`, skips that ladder. The brackets say "this
+A span written in brackets, `[[Full Card Name]]`, skips that resolution order. The brackets say "this
 exact name", so it is tried only against current and printed names, then the alias table.
 An alias names one card for that exact spelling, so `[[bob]]` is Dark Confidant, as `bob`
 is. A looser match is offered as a question, never taken as the answer. `[[bob's]]` asks
@@ -129,7 +129,7 @@ The important property: **it never guesses.** If two or more cards remain, the r
 
 Fuzzy matching uses Postgres's `pg_trgm` extension. A trigram is a three-letter window.
 "bolt" is `{" b","bo","ol","lt","t "}`. Two strings are similar when they share many
-trigrams, which tolerates typos without any model. The fuzzy rung accepts a candidate in
+trigrams, which tolerates typos without any model. The fuzzy step accepts a candidate in
 two cases: it is alone with a strong score (0.7 or more), or it leads the runner-up by a
 clear margin (0.15).
 
@@ -138,7 +138,7 @@ clear margin (0.15).
 Now the bot assembles the "material": everything the model will be allowed to read. It runs
 seven queries concurrently and unions the results into a `Context`:
 
-- **CR rules**, from three "legs" (explained in §5): the curated subsections for the
+- **CR rules**, from three retrieval sources (explained in §5): the curated subsections for the
   categories, a full-text keyword search, and a vector similarity search.
 - **Scryfall rulings** for every face of every resolved card.
 - **Glossary** entries whose term appears in the cards' Oracle text.
@@ -249,22 +249,22 @@ three-digit sections. Asking for `702` expands to every rule in it.
 This section holds most of the vector-database material. The bot combines three search
 techniques because each fails differently.
 
-### Leg A: category map
+### Source A: category map
 
-This leg is structured and always on. The classifier put the question in
+This source is structured and always on. The classifier put the question in
 `triggered_abilities`. The YAML says that category maps to CR sections 603 and 113.3. Every
 rule in those sections goes into the context. Rules that share a word with the question
-come first, ranked by the same relevance score as leg B. The secondary categories' rules
-are added the same way, after the other legs.
+come first, ranked by the same relevance score as source B. The secondary categories' rules
+are added the same way, after the other sources.
 
 This is simple and reliable. It costs nothing and never misses when the classifier is right.
 It gives the model the surrounding rules it needs even when the "obvious" rule alone is not
 enough. It fails when the classifier is wrong or when the answer lives in a section nobody
 would file the question under.
 
-### Leg B: full-text search
+### Source B: full-text search
 
-This leg matches keywords, using Postgres's built-in full-text engine. Each rule row has a
+This source matches keywords, using Postgres's built-in full-text engine. Each rule row has a
 generated `tsvector` column: the text split into words, lower-cased, reduced to word stems
 ("triggers" → "trigger"), with common words like "the" removed. The question is reduced the
 same way, and a row matches if it contains any of those stems. Rows are ranked with
@@ -277,9 +277,9 @@ This finds rules that share **vocabulary** with the question: "leaves the battle
 the user and the CR use different words for the same idea ("dies" versus "is put into a
 graveyard from the battlefield"). Common words also distract it.
 
-### Leg C: vector similarity
+### Source C: vector similarity
 
-This leg matches meaning. It is the piece most people are new to, so it gets the most
+This source matches meaning. It is the piece most people are new to, so it gets the most
 detail.
 
 **Embeddings.** An embedding model is a neural network that turns a piece of text into a
@@ -291,7 +291,7 @@ the source is gone" should be neighbours even though they share almost no words.
 
 **Similarity.** Two vectors are compared by **cosine similarity**: the cosine of the angle
 between them, 1.0 for identical direction, 0 for unrelated. pgvector exposes this as the
-`<=>` operator (cosine *distance*, 1 minus similarity, so smaller is closer). The leg is
+`<=>` operator (cosine *distance*, 1 minus similarity, so smaller is closer). The source is
 essentially:
 
 ```sql
@@ -307,7 +307,7 @@ LIMIT 12
 fine at this scale. pgvector also provides an **HNSW** index (Hierarchical Navigable
 Small World), a graph structure that finds approximate nearest neighbours quickly. It is
 approximate, so it can occasionally miss the true nearest row. That is acceptable here
-because the other two legs cover for it. The index is *partial*: it covers rule-level rows
+because the other two sources cover for it. The index is *partial*: it covers rule-level rows
 only (`WHERE parent_id IS NULL`). Every row it returns is therefore one the query wants, and
 no filter applied afterwards can shrink the result below the limit.
 
@@ -320,14 +320,14 @@ question as a query.
 release re-embeds only the rules whose text changed. The loader nulls those embeddings and
 the nightly `ingest embed` fills them. Each question costs one small embedding call.
 
-The vector leg's failures are instructive too. It is fuzzy by design, so it returns rules
+The vector search's failures are instructive too. It is fuzzy by design, so it returns rules
 that are *about* the same theme without being the one that decides the question. It cannot
 tell `702.19` from `702.20` if their wording is similar. It also has a class of operational
 problems that get their own section (§7).
 
-### Leg order
+### Source order
 
-The legs are merged in priority order, and a rule found twice is kept once:
+The sources are merged in priority order, and a rule found twice is kept once:
 
 1. the primary category's rules that share a word with the question,
 2. full-text hits,
@@ -347,7 +347,7 @@ synthesis. Having read the material, the model can ask for rules by number once.
 ### Prior calls
 
 The prior-call query is the feedback loop. Earlier answers are stored with their own
-embedding (of the question). The leg picks calls in the same categories, about at least one
+embedding (of the question). The prior-call query picks calls in the same categories, about at least one
 of the same cards, not retired and not down-voted. It orders them by vector distance to the
 new question. The rating is a **Bayesian-smoothed mean**: `(2.0 × 3 + Σ scores) / (3 + n)`.
 That is "pretend there were three votes of 2.0 before anyone voted". One 3 does not make a
@@ -453,10 +453,10 @@ handling lives, so you can read further.
 
 | Problem | Handling |
 |---|---|
-| Right rule uses different words than the question | vector leg |
-| Vector leg returns thematically near but wrong rules | union with the exact legs, and the model can `lookup_rules` |
-| Classifier picks the wrong category | full-text and vector legs, `lookup_rules` |
-| Too much material for the prompt | `Budget` in `bot/synth.rs`, where the structured leg survives cuts |
+| Right rule uses different words than the question | vector search |
+| Vector search returns thematically near but wrong rules | union with the exact sources, and the model can `lookup_rules` |
+| Classifier picks the wrong category | full-text and vector search, `lookup_rules` |
+| Too much material for the prompt | `Budget` in `bot/synth.rs`, where the structured source survives cuts |
 | Model cites a sub-rule shown only inside its parent | the synthesizer hydrates the leaf row so validation finds it |
 | CR renumbered, so stored calls cite stale ids | `renumber_map` (ingest, §8) |
 | A cited rule was reworded or deleted | retirement pass marks the call retired, and restores it if the text returns |
@@ -466,10 +466,10 @@ handling lives, so you can read further.
 | Problem | Handling |
 |---|---|
 | Vectors from two embedding models in one column (silently wrong results) | `embedding_space` table names the model, and readers and writers check it on every use (`db/space.rs`) |
-| Embedding model switched while the bot runs | vector legs go dark with an error log rather than mixing spaces |
+| Embedding model switched while the bot runs | vector search is turned off with an error log rather than mixing spaces |
 | Switching models is expensive (re-pays every row) | `ingest reembed --yes` is explicit, probes the new embedder first, and prints a rough cost without `--yes` |
 | A switch races an in-flight write | advisory lock: writers take the shared side, the switch takes the exclusive side |
-| No embedding key configured | vector leg off, and the other legs still work |
+| No embedding key configured | vector search off, and the other sources still work |
 | Voyage free-tier token limits | batch size knob `VOYAGE_MAX_BATCH` |
 | HNSW post-filtering shrinking results | partial index over the rows that are searched and no others |
 
@@ -504,7 +504,7 @@ stale). Two mechanisms keep them current without a human curator.
 **Retirement.** Every call's citations are its declared dependencies on the world. The
 nightly pass re-runs the same substring check that admitted each citation, against today's
 rules, rulings and Oracle text. If any check fails, the call is retired and leaves the
-prior-call leg. If the text comes back, the call is restored. Each call also stores a
+prior-call query. If the text comes back, the call is restored. Each call also stores a
 fingerprint of the Oracle text of every card in its context, so an erratum retires calls
 *about* a card even when they cited only the CR. This replaced an earlier rule that retired
 every call on every CR release. That rule threw away many still-correct answers and kept
@@ -696,7 +696,7 @@ to R2. `docs/DEPLOYMENT.md` is the runbook.
 
 - The pipeline: `crates/core/src/judge.rs`, then `verdict.rs` and `quote.rs`.
 - Retrieval SQL: `crates/bot/src/db/retrieve.rs` and `rules.rs`.
-- The resolution ladder: `crates/bot/src/db/resolve.rs` (its module comment is thorough).
+- The resolution order: `crates/bot/src/db/resolve.rs` (its module comment is thorough).
 - Vector-space bookkeeping: `crates/bot/src/db/space.rs`, `crates/embed/src/space.rs`.
 - The model contract: `crates/bot/src/prompts/synth_system.md`, and
   `extract_system.md` beside it for the extraction stage.

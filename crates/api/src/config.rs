@@ -1,4 +1,4 @@
-//! Everything the HTTP adapter reads from the environment. Which front doors
+//! Everything the HTTP adapter reads from the environment. Which interfaces
 //! it opens comes from the command line instead ([`crate::interfaces`]);
 //! [`ApiConfig::check`] is where the two have to agree.
 
@@ -76,7 +76,7 @@ impl ApiConfig {
     /// tools, and a guessable token is worse than none.
     pub const MIN_MCP_TOKEN_BYTES: usize = 24;
     /// `MCP_JUDGE_LIMIT` default: `judge` runs per window through `/mcp`.
-    /// The token is one identity, so this is the blast radius of a leak in
+    /// The token is one identity, so this is the most a leak can cost, in
     /// pipeline runs (about $0.10 each), on top of `JUDGE_MAX_USD`.
     pub const DEFAULT_MCP_JUDGE_LIMIT: u32 = 20;
     /// `MCP_JUDGE_WINDOW_SECS` default.
@@ -166,7 +166,7 @@ impl ApiConfig {
     /// Refuse a launch the environment cannot satisfy, before anything binds
     /// a port.
     ///
-    /// Only the interfaces that *cannot work* are refused — a door the
+    /// Only the interfaces that *cannot work* are refused — an interface the
     /// operator named that has no credential or nothing to serve. The mirror
     /// cases (an `MCP_TOKEN` with no `--mcp`) are startup warnings in the
     /// binary instead: refusing there would take a working web page down over
@@ -372,7 +372,7 @@ mod tests {
 
     const A_TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
-    /// `--mcp` names a door that cannot open without a token, so it is
+    /// `--mcp` names an interface that cannot open without a token, so it is
     /// refused. The mirror case — a token with no `--mcp` — is deliberately
     /// *not* an error: it serves nothing and exposes nothing, and refusing
     /// would take the web page down with it. The binary warns instead.

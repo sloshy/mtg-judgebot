@@ -15,7 +15,7 @@ use judge_llm::{ApiKey, LlmError};
 /// The OAuth scope Vertex AI wants.
 pub const SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 
-/// The `door` an [`LlmError::Auth`] from the credential chain names.
+/// The `endpoint` an [`LlmError::Auth`] from the credential chain names.
 const PLATFORM: &str = "gcp";
 
 /// Where the bearer token comes from.
@@ -53,7 +53,7 @@ impl fmt::Debug for Adc {
 impl TokenSource for Adc {
     async fn token(&self) -> Result<ApiKey, LlmError> {
         let auth = |e: gcp_auth::Error| LlmError::Auth {
-            door: PLATFORM,
+            endpoint: PLATFORM,
             message: e.to_string(),
         };
         let provider = self

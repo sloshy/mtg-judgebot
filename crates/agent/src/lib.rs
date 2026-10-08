@@ -22,7 +22,7 @@
 //!
 //! [`Toolbox`] holds the ports both need. Its spend cap, judge slots and
 //! `judge` quota are per process: inside `judge-api` they are the ones the
-//! web page uses, so the two front doors share one budget; a `judge-cli`
+//! web page uses, so the two interfaces share one budget; a `judge-cli`
 //! invocation or a stdio `judge-mcp` is its own process with its own
 //! `JUDGE_MAX_USD` counter, which is fine for the operator's own shell and
 //! is why the remote transport is `/mcp` and not a stdio server exposed to
@@ -56,7 +56,7 @@ use tokio::sync::Semaphore;
 pub const ACQUIRE_WAIT: Duration = Duration::from_secs(10);
 /// Thread history handed to the pipeline and to sessions.
 pub const DEFAULT_HISTORY: usize = 5;
-/// `JUDGE_CONCURRENCY` default, as for the other front doors.
+/// `JUDGE_CONCURRENCY` default, as for the other interfaces.
 pub const DEFAULT_CONCURRENCY: usize = 2;
 
 /// The built-in pipeline, present when models are configured.
@@ -67,7 +67,7 @@ pub struct Pipeline {
     meter: SpendMeter,
 }
 
-/// How many `judge` runs one toolbox allows per window: the blast radius of
+/// How many `judge` runs one toolbox allows per window: the most that can be spent through
 /// a leaked remote token, in pipeline runs rather than only in dollars. A
 /// leaked token would otherwise take every judge slot and the whole spend
 /// cap away from the anonymous web page.
@@ -136,9 +136,9 @@ pub struct Options {
     pub models: Option<Models>,
     /// The request knobs the models were configured with.
     pub deps_config: DepsConfig,
-    /// The embedder behind its space check; `None` turns the vector legs off.
+    /// The embedder behind its space check; `None` turns the vector search off.
     pub vectors: Option<Arc<Vectors>>,
-    /// Pipeline slots, shared with any other front door in the same process.
+    /// Pipeline slots, shared with any other interface in the same process.
     pub permits: Arc<Semaphore>,
     /// A cap on `judge` runs per window for this toolbox; `None` for a local
     /// operator's own process.
@@ -263,7 +263,7 @@ impl Toolbox {
                 "no model configured (ANTHROPIC_API_KEY or a judge.toml); the built-in `judge` pipeline is unavailable, sessions are not affected"
             );
         } else {
-            // A cloud door with no credentials fails here, not on the first `judge` call.
+            // A cloud endpoint with no credentials fails here, not on the first `judge` call.
             config.probe_auth().await?;
         }
         let vectors = config.vectors(pool.clone())?;
@@ -271,7 +271,7 @@ impl Toolbox {
         if let Some(v) = &vectors {
             v.enabled().await;
         } else {
-            tracing::info!("no embedder configured; running without the vector legs");
+            tracing::info!("no embedder configured; running without vector search");
         }
         let concurrency = match set("JUDGE_CONCURRENCY") {
             Some(v) => v

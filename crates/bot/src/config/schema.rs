@@ -3,8 +3,8 @@
 //! added to the file is a field in the editor with no edit there: the doc
 //! comments are the help text, the enums the choices. What the types cannot
 //! say is added from the tables the loader itself checks against:
-//! `x-doors` on each door-dependent key of an `anthropic` provider
-//! ([`DoorKey::on`]), and `x-built-doors`, the endpoints this binary was
+//! `x-endpoints` on each endpoint-dependent key of an `anthropic` provider
+//! ([`EndpointKey::on`]), and `x-built-endpoints`, the endpoints this binary was
 //! built with. Everything else (a stage naming a missing provider, an
 //! unpriced model) is left to the loader, which the editor runs on every
 //! draft.
@@ -12,7 +12,7 @@
 use schemars::generate::SchemaSettings;
 use serde_json::{Map, Value, json};
 
-use super::{Door, DoorKey, File};
+use super::{EndpointKey, EndpointKind, File};
 
 /// The schema of a `judge.toml`.
 #[must_use]
@@ -23,27 +23,27 @@ pub fn file_schema() -> Value {
     let mut value = schema.to_value();
     // An absent optional key means "the loader's default", which the help
     // text states and which is often not one value (`auth` is x-api-key on a
-    // proxy, `refusal_fallbacks` depends on the door). schemars says `null`
+    // proxy, `refusal_fallbacks` depends on the endpoint). schemars says `null`
     // there, which an editor would show as the default: drop it.
     drop_null_defaults(&mut value);
     if let Some(variant) = anthropic_variant(&mut value) {
-        for key in DoorKey::ALL {
-            let doors: Map<String, Value> = Door::ALL
+        for key in EndpointKey::ALL {
+            let endpoints: Map<String, Value> = EndpointKind::ALL
                 .into_iter()
                 .map(|d| (d.name().to_owned(), json!(key.on(d))))
                 .collect();
             if let Some(prop) = variant.get_mut(key.name()).and_then(Value::as_object_mut) {
-                prop.insert("x-doors".to_owned(), Value::Object(doors));
+                prop.insert("x-endpoints".to_owned(), Value::Object(endpoints));
             }
         }
     }
     if let Some(root) = value.as_object_mut() {
-        let built: Vec<&str> = Door::ALL
+        let built: Vec<&str> = EndpointKind::ALL
             .into_iter()
             .filter(|d| d.built())
-            .map(Door::name)
+            .map(EndpointKind::name)
             .collect();
-        root.insert("x-built-doors".to_owned(), json!(built));
+        root.insert("x-built-endpoints".to_owned(), json!(built));
     }
     value
 }
@@ -79,15 +79,18 @@ mod tests {
     type R = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn every_door_key_is_annotated() -> R {
+    fn every_endpoint_key_is_annotated() -> R {
         let mut schema = file_schema();
         let variant = anthropic_variant(&mut schema).ok_or("no anthropic variant")?;
-        for key in DoorKey::ALL {
-            let doors = variant
+        for key in EndpointKey::ALL {
+            let endpoints = variant
                 .get(key.name())
-                .and_then(|p| p.get("x-doors"))
+                .and_then(|p| p.get("x-endpoints"))
                 .ok_or(key.name())?;
-            assert_eq!(doors.as_object().map(Map::len), Some(Door::ALL.len()));
+            assert_eq!(
+                endpoints.as_object().map(Map::len),
+                Some(EndpointKind::ALL.len())
+            );
         }
         Ok(())
     }

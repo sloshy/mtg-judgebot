@@ -351,7 +351,7 @@ async fn bracket_hit_on_card_and_face_names(pool: PgPool) -> anyhow::Result<()> 
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn printed_and_exact_rungs(pool: PgPool) -> anyhow::Result<()> {
+async fn printed_and_exact_steps(pool: PgPool) -> anyhow::Result<()> {
     seed(&pool).await?;
     let resolver = PgResolver::new(pool.clone());
     let r = resolver.resolve("urzas mine (OLD)").await?;
@@ -557,7 +557,7 @@ async fn retrieve_unions_category_map_and_full_text(pool: PgPool) -> anyhow::Res
     // rule-level rows only (no "613" section row, no "613.1d" leaf), in id order.
     assert_eq!(ids, ["702.19", "702.2", "613.1", "613.2"]);
     assert!(!ids.contains(&"613") && !ids.contains(&"613.1d"), "{ids:?}");
-    // Full-text leg finds trample by phrase and ranks it above deathtouch.
+    // Full-text search finds trample by phrase and ranks it above deathtouch.
     let trample = ids.iter().position(|id| *id == "702.19");
     let deathtouch = ids.iter().position(|id| *id == "702.2");
     assert!(trample.is_some() && trample < deathtouch, "{ids:?}");
@@ -810,7 +810,7 @@ async fn history_returns_the_last_n_oldest_first(pool: PgPool) -> anyhow::Result
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn possessive_nickname_hits_the_alias_rung(pool: PgPool) -> anyhow::Result<()> {
+async fn possessive_nickname_hits_the_alias_step(pool: PgPool) -> anyhow::Result<()> {
     seed(&pool).await?;
     let r = PgResolver::new(pool).resolve("bob's").await?;
     match r {
@@ -1099,7 +1099,7 @@ async fn index_definitions(pool: &PgPool) -> anyhow::Result<Vec<(String, String)
 #[sqlx::test(migrations = "./migrations")]
 async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Result<()> {
     seed(&pool).await?;
-    // No row yet: nothing is embedded, so the legs stay off and the embedder is never called.
+    // No row yet: nothing is embedded, so vector search stays off and the embedder is never called.
     let fake = FakeEmbedder::new(Provider::Voyage, "voyage-3.5", 1024);
     let vectors = Vectors::new(pool.clone(), Arc::clone(&fake) as Arc<dyn WithSpace>);
     assert!(!vectors.enabled().await);
@@ -1134,7 +1134,7 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
         "{mismatched:?}"
     );
 
-    // Through the adapters: retrieval still succeeds (the other legs run), a persisted call
+    // Through the adapters: retrieval still succeeds (the other sources run), a persisted call
     // carries no vector, and the embedder behind the mismatch is never called.
     let q = question("Does lifelink work on Dark Confidant's trigger?");
     let ctx = PgRetriever::new(pool.clone())
@@ -1163,7 +1163,7 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
     assert_eq!(other.calls(), 0);
     assert_eq!(fake.calls(), 1);
 
-    // A `reembed` under a running process: the same `Vectors` that was on goes dark on its
+    // A `reembed` under a running process: the same `Vectors` that was on turns off on its
     // next use (the row is re-read every time), instead of erroring on the new width.
     let nomic = Space {
         provider: Provider::OpenAi,
@@ -1392,7 +1392,7 @@ async fn forget_user_deletes_only_that_users_ratings(pool: PgPool) -> anyhow::Re
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn usage_counts_calls_by_door_joins_the_ledger_and_lists_the_worst_rated(
+async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_rated(
     pool: PgPool,
 ) -> anyhow::Result<()> {
     let mut ids = Vec::new();

@@ -1,7 +1,7 @@
 //! Fill NULL `embedding` columns on `rules`, `glossary` and `calls` via the `Embedder`.
 //!
 //! Only rule-level `rules` rows (`parent_id IS NULL`) are embedded: the retriever's
-//! vector leg returns rule chunks only (leaves are folded into their rule's body), and
+//! vector search returns rule chunks only (leaves are folded into their rule's body), and
 //! the HNSW index is partial over exactly those rows.
 //!
 //! Each table is walked in batches of at most [`MAX_BATCH`] rows (Voyage's per-request

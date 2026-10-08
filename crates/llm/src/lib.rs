@@ -11,7 +11,7 @@
 //!   implements it, so a backend cannot reach the wire uncapped.
 //! * [`Metered`] — the spend cap around any backend: reserve a worst case
 //!   before sending, settle to the real usage after; [`SpendMeter`] is the
-//!   read handle the front doors log from, [`Price`] what a model is billed at.
+//!   read handle the interfaces log from, [`Price`] what a model is billed at.
 //! * [`http`] — the retry loop every HTTP backend shares; [`ApiKey`] the
 //!   credential type whose `Debug` is redacted.
 //! * [`prompt`] — what an adapter adds to the *user turn* when the backend

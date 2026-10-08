@@ -19,7 +19,7 @@
 //! * a citation of a lettered sub-rule (`702.19b`) whose rule-level parent
 //!   (`702.19`, whose body folds the sub-rule text in) was shown is
 //!   hydrated from the store, because `Verdict::validate` looks the cited id
-//!   up in `Context` and the retriever legs only return rule-level rows;
+//!   up in `Context` and the retriever's sources only return rule-level rows;
 //! * what the backend cannot do server-side is handled here, by its
 //!   `Capabilities`: the `Verdict` schema is appended to the *user turn*
 //!   when the backend cannot enforce it (the system prompt stays the same

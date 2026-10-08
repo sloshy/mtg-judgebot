@@ -219,7 +219,7 @@ pub async fn run(
             .context("clearing the embedding space")?;
         println!(
             "cleared every vector in {target}, indexes rebuilt; the row did not change, so running processes log no mismatch \
-             and their vector legs answer from nothing until the refill finishes"
+             and their vector search answers from nothing until the refill finishes"
         );
     } else if switching {
         switch_space(pool, target)

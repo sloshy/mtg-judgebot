@@ -1,6 +1,6 @@
 //! [`PgRetriever`]: pipeline step 4 (ARCHITECTURE.md §3).
 //!
-//! `Context.rules` is the union of three legs, deduplicated by id in priority
+//! `Context.rules` is the union of three sources, deduplicated by id in priority
 //! order ([`priority_order`]): the primary category's curated subsections
 //! ranked by relevance to the question, full-text (BM25-like `ts_rank_cd`),
 //! vector (pgvector cosine, only when a [`Vectors`] is configured, its space is
@@ -23,9 +23,9 @@ use uuid::Uuid;
 
 use super::{Vectors, bad_row, rules, upstream};
 
-/// Rule-level rows taken from the full-text leg.
+/// Rule-level rows taken from the full-text search.
 pub const BM25_LIMIT: i64 = 12;
-/// Rule-level rows taken from the vector leg.
+/// Rule-level rows taken from the vector search.
 pub const VECTOR_LIMIT: i64 = 12;
 /// Prior calls shown as examples.
 pub const PRIOR_LIMIT: i64 = 5;
@@ -46,7 +46,7 @@ impl fmt::Debug for PgRetriever {
 }
 
 impl PgRetriever {
-    /// A retriever without an embedder: the vector leg and similarity-ordered
+    /// A retriever without an embedder: the vector search and similarity-ordered
     /// prior calls are skipped (with a warning) until [`Self::with_vectors`].
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
@@ -56,7 +56,7 @@ impl PgRetriever {
         }
     }
 
-    /// Enable the vector leg and similarity ordering of prior calls, subject
+    /// Enable the vector search and similarity ordering of prior calls, subject
     /// to the space check in [`Vectors`].
     #[must_use]
     pub fn with_vectors(mut self, vectors: Arc<Vectors>) -> Self {
@@ -69,14 +69,14 @@ impl PgRetriever {
     async fn embed_query(&self, text: &str) -> Option<Vector> {
         let Some(vectors) = &self.vectors else {
             tracing::warn!(
-                "no embedder configured; skipping the vector leg and prior-call similarity"
+                "no embedder configured; skipping the vector search and prior-call similarity"
             );
             return None;
         };
         vectors.embed(text, InputKind::Query).await
     }
 
-    /// Leg (a): the rule-level chunks of the subsections curated for each of
+    /// Source (a): the rule-level chunks of the subsections curated for each of
     /// `categories`, one list per category in the given (priority) order, each
     /// ranked by relevance to the question.
     async fn category_map(
@@ -96,7 +96,7 @@ impl PgRetriever {
         .fetch_all(&self.pool)
         .await
         .map_err(upstream("categories"))?;
-        let mut legs = Vec::with_capacity(categories.len());
+        let mut sources = Vec::with_capacity(categories.len());
         for c in categories {
             let wanted: Vec<String> = if let Some(r) = rows.iter().find(|r| r.id == c.id()) {
                 r.subsections.clone()
@@ -105,15 +105,15 @@ impl PgRetriever {
                 c.subsections().iter().map(|s| (*s).to_owned()).collect()
             };
             let (subsections, exact) = rules::partition_ids(&wanted);
-            legs.push(
+            sources.push(
                 rules::in_subsections_ranked(&self.pool, &subsections, &exact, concepts, question)
                     .await?,
             );
         }
-        Ok(legs)
+        Ok(sources)
     }
 
-    /// Leg (c): nearest rule-level chunks, when the question could be embedded.
+    /// Source (c): nearest rule-level chunks, when the question could be embedded.
     async fn nearest(&self, embedding: Option<&Vector>) -> Result<Vec<RuleChunk>, JudgeError> {
         match embedding {
             Some(v) => rules::nearest(&self.pool, v, VECTOR_LIMIT).await,
@@ -421,15 +421,15 @@ impl Retriever for PgRetriever {
 /// deduplicated by id, first occurrence winning.
 ///
 /// The budget renders a *prefix* of this list (`synth::shown_rules`) and the
-/// legs together return several times what it shows, so this order decides
+/// sources together return several times what it shows, so this order decides
 /// what the model reads; `eval recall` scores exactly that. It is a priority
 /// order, not a relevance merge: a large primary category whose rules all
 /// share some word with the question still fills the budget before a better
 /// full-text hit (the gold trample + deathtouch question under `combat`). That
-/// trade was measured. On the gold set, with and without the vector leg, this
+/// trade was measured. On the gold set, with and without the vector search, this
 /// order shows 81% of the expected rules; merging the primary category with
 /// the full-text hits by score 55-76% (the top full-text hits are long general
-/// rules such as 608.2), round-robin across legs 67-70%, capping the primary
+/// rules such as 608.2), round-robin across sources 67-70%, capping the primary
 /// category at 10-15 chunks 75-78%, and the old id-sorted union of all
 /// categories 43%. 97% were retrieved in every case.
 fn priority_order(
@@ -439,11 +439,11 @@ fn priority_order(
 ) -> Vec<RuleChunk> {
     let mut categories = categories.into_iter();
     let primary = categories.next().unwrap_or_default();
-    let legs = [primary.matching, matched, nearest, primary.rest]
+    let sources = [primary.matching, matched, nearest, primary.rest]
         .into_iter()
         .chain(categories.flat_map(|c| [c.matching, c.rest]));
     let mut out: Vec<RuleChunk> = Vec::new();
-    for c in legs.flatten() {
+    for c in sources.flatten() {
         if !out.iter().any(|r| r.id == c.id) {
             out.push(c);
         }

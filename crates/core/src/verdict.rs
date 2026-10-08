@@ -93,7 +93,7 @@ pub struct Validated {
     source: AnswerableSource,
     cards: Vec<CardRef>,
     /// Stub citations `validate` set aside (D21). A diagnostic for the eval
-    /// harness, not part of the verdict any front door shows or stores.
+    /// harness, not part of the verdict any interface shows or stores.
     #[serde(skip)]
     stubs_dropped: usize,
 }

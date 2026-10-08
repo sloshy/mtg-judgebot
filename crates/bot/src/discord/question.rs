@@ -1,5 +1,5 @@
 //! Rewriting a question after a "did you mean…?" pick: the ambiguous span is
-//! replaced by `[[Full Card Name]]`, which the resolver's bracket rung then
+//! replaced by `[[Full Card Name]]`, which the resolver's bracket step then
 //! matches exactly (ARCHITECTURE.md §3 step 2).
 
 use std::ops::Range;

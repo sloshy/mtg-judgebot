@@ -363,7 +363,9 @@ function input(s, value, put, opts = {}) {
     }
     for (const o of opts2) {
       const unbuilt =
-        opts.doors && !state.schema["x-built-doors"].includes(o.value) ? " (not built)" : "";
+        opts.endpoints && !state.schema["x-built-endpoints"].includes(o.value)
+          ? " (not built)"
+          : "";
       sel.append(el("option", { value: o.value, text: `${o.value}${unbuilt}` }));
     }
     sel.value = value ?? "";
@@ -453,11 +455,11 @@ function fields(schema, obj, path, opts = {}) {
     if (opts.skip?.includes(key)) continue;
     const here = path ? `${path}.${key}` : key;
     let req = required.has(key);
-    // A door-dependent key on an anthropic provider: shown only where the
-    // door takes it, unless it is set (then shown, to be removed).
-    const doors = prop["x-doors"];
-    if (doors && opts.door) {
-      const applies = doors[opts.door];
+    // An endpoint-dependent key on an anthropic provider: shown only where the
+    // endpoint takes it, unless it is set (then shown, to be removed).
+    const endpoints = prop["x-endpoints"];
+    if (endpoints && opts.endpoint) {
+      const applies = endpoints[opts.endpoint];
       if (applies === "no" && obj[key] === undefined) continue;
       req = applies === "required";
     }
@@ -475,11 +477,11 @@ function fields(schema, obj, path, opts = {}) {
         scheduleCheck();
         if (opts.onChange?.(key)) renderModels();
       },
-      { required: req, doors: key === "endpoint" },
+      { required: req, endpoints: key === "endpoint" },
     );
     let help = prop.description || r.description;
-    if (doors && opts.door && doors[opts.door] === "no") {
-      help = `Does not apply to endpoint = "${opts.door}": remove it. ${help || ""}`;
+    if (endpoints && opts.endpoint && endpoints[opts.endpoint] === "no") {
+      help = `Does not apply to endpoint = "${opts.endpoint}": remove it. ${help || ""}`;
     }
     out.push(fieldRow(key, here, help, control, req));
   }
@@ -691,7 +693,7 @@ function renderProviders() {
       card.append(
         ...fields(variant, entry, `providers.${name}`, {
           skip: ["kind"],
-          door: entry.kind === "anthropic" ? entry.endpoint || "direct" : null,
+          endpoint: entry.kind === "anthropic" ? entry.endpoint || "direct" : null,
           onChange: (key) => key === "endpoint",
         }),
       );
@@ -884,7 +886,7 @@ function renderSettings() {
         "div",
         { class: "field", dataset: { env: o.name } },
         el("label", {}, el("code", { text: o.name })),
-        replacer(o.name, o.set, o.wanted ? "not in .env yet" : "never shown"),
+        replacer(o.name, o.set, o.wanted ? "not in .env yet" : null),
       ),
     );
   }
@@ -935,7 +937,12 @@ function replacer(name, set, why) {
     class: `badge ${pending ? "chg" : set ? "ok" : ""}`,
     text: pending ? (set ? "will be replaced" : "will be set") : set ? "set" : "not set",
   });
-  const head = el("div", { class: "row" }, status, el("span", { class: "muted small", text: why }));
+  const head = el(
+    "div",
+    { class: "row" },
+    status,
+    why ? el("span", { class: "muted small", text: why }) : null,
+  );
   const wrap = el("div", {}, head);
   if (!replaceOpen.has(name)) {
     head.append(
@@ -1019,7 +1026,7 @@ function settingRow(v, help) {
   const label = el("label", {}, el("code", { text: v.name }));
   const helpNode = help ? el("details", {}, el("summary", { text: "about" }), prose(help)) : null;
   if (v.kind === "secret" || v.hidden) {
-    const why = v.hidden ? "not shown: it expands $ or carries credentials" : "secret: never shown";
+    const why = v.hidden ? "not shown: it expands $ or carries credentials" : null;
     return el(
       "div",
       { class: "field", dataset: { env: v.name } },

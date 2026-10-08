@@ -10,13 +10,13 @@
 //!
 //! [`Vectors`] wraps a [`WithSpace`] embedder with that check: it embeds
 //! nothing until the stored space equals its own. On a mismatch the
-//! vector legs are off with an error-level log naming both spaces — a wrong
-//! answer from a mixed space would be silent, a missing leg is not — and on
+//! vector search is off with an error-level log naming both spaces — a wrong
+//! answer from a mixed space would be silent, a missing source is not — and on
 //! an absent row (nothing embedded yet) they are off with a warning until
 //! `ingest embed` writes it. The row is re-read on every use (one primary-key
-//! read of a one-row table, beside the seven legs a retrieval already runs),
+//! read of a one-row table, beside the seven queries a retrieval already runs),
 //! so a running bot picks up the first `ingest embed`, and a `reembed` under
-//! a running bot darkens its legs instead of erroring on the new width or
+//! a running bot turns its vector search off instead of erroring on the new width or
 //! mixing spaces at the old one; the log line fires on the transition, not
 //! on every request.
 //!
@@ -326,7 +326,7 @@ impl Vectors {
         let stored = match stored {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!(error = %e, %configured, "could not read embedding_space; vector legs off for this request");
+                tracing::error!(error = %e, %configured, "could not read embedding_space; vector search off for this request");
                 return false;
             }
         };
@@ -340,13 +340,13 @@ impl Vectors {
         if after != self.state() {
             match &after {
                 State::Enabled => {
-                    tracing::info!(space = %configured, "embedding space matches the database; vector legs on");
+                    tracing::info!(space = %configured, "embedding space matches the database; vector search on");
                 }
                 State::Absent => {
-                    tracing::warn!(space = %configured, "no embedding_space row: nothing embedded yet; vector legs off until `ingest embed` runs");
+                    tracing::warn!(space = %configured, "no embedding_space row: nothing embedded yet; vector search off until `ingest embed` runs");
                 }
                 State::Mismatch(stored) => {
-                    tracing::error!(%configured, %stored, "embedding space mismatch; vector legs off, nothing is mixed (run `ingest reembed --yes` to switch)");
+                    tracing::error!(%configured, %stored, "embedding space mismatch; vector search off, nothing is mixed (run `ingest reembed --yes` to switch)");
                 }
                 State::Unchecked => {}
             }
@@ -383,7 +383,7 @@ impl Vectors {
         let vectors = match self.embedder.embed(&[text], kind).await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, "embedding failed; skipping the vector leg");
+                tracing::warn!(error = %e, "embedding failed; skipping the vector search");
                 return None;
             }
         };
@@ -394,12 +394,12 @@ impl Vectors {
                 tracing::warn!(
                     got = v.len(),
                     want,
-                    "embedder returned a vector of the wrong width; skipping the vector leg"
+                    "embedder returned a vector of the wrong width; skipping the vector search"
                 );
                 None
             }
             None => {
-                tracing::warn!("embedder returned no vector; skipping the vector leg");
+                tracing::warn!("embedder returned no vector; skipping the vector search");
                 None
             }
         }

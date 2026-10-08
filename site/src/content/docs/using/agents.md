@@ -40,7 +40,7 @@ judge-cli verdict <session> verdict.json --persist                   # validated
 ```
 
 Session-persisted calls are thread history only. Nothing can rate them, so the prior-call
-leg never shows them as examples. Session thread ids carry an `agent:` prefix that a
+source never shows them as examples. Session thread ids carry an `agent:` prefix that a
 Discord thread id cannot have, so a session cannot read a channel's history.
 
 ## Lookups

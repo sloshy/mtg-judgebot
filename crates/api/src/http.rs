@@ -132,7 +132,7 @@ impl App {
         self
     }
 
-    /// The judge slots, to share with another front door in this process
+    /// The judge slots, to share with another interface in this process
     /// (the MCP transport), so that both together stay under `JUDGE_CONCURRENCY`.
     #[must_use]
     pub fn permits(&self) -> Arc<Semaphore> {
@@ -177,7 +177,7 @@ impl App {
             Ok(v) => {
                 if let Some(ctx) = captured.as_ref() {
                     // Persisting feeds session history and the prior-call
-                    // retrieval leg; web calls arrive unrated, exactly like an
+                    // retrieval source; web calls arrive unrated, exactly like an
                     // unrated Discord call. Failure only costs those.
                     if let Err(e) = self.store.persist(q, &v, ctx).await {
                         tracing::error!(
@@ -230,14 +230,14 @@ const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
 /// fallback with one. The startup log is where an operator reads why.
 ///
 /// `GET /api/health` is unconditional: it reports on the process, not on a
-/// front door, and the container healthcheck has to reach it whatever else is
+/// interface, and the container healthcheck has to reach it whatever else is
 /// switched off.
 ///
 /// The MCP router ([`crate::mcp::router`]) is merged *into* this one, so the
 /// web fallback wins and the token gate stays on `/mcp` alone.
 pub fn router(app: Arc<App>, interfaces: &Interfaces, web_dist: &Path) -> Router {
     // `/about` sits beside `/health`, outside the opt-in set: the source
-    // offer is owed on every door, and the page reads it from here.
+    // offer is owed on every interface, and the page reads it from here.
     let mut router = Router::new()
         .route("/api/health", get(health))
         .route("/api/about", get(about));
@@ -775,7 +775,7 @@ mod tests {
         Ok(())
     }
 
-    /// The point of the opt-in: a door nobody named is not mounted, and the
+    /// The point of the opt-in: an interface nobody named is not mounted, and the
     /// paths behind it are not answered by something else standing in.
     #[tokio::test]
     async fn an_interface_left_off_is_not_mounted() -> Res {
@@ -842,7 +842,7 @@ mod tests {
         Ok(())
     }
 
-    /// The source offer is owed on every door, so `/api/about` sits beside
+    /// The source offer is owed on every interface, so `/api/about` sits beside
     /// `/api/health` outside the opt-in set, and carries what the offer
     /// holds: the repository, the commit and its link, and the notice.
     #[tokio::test]

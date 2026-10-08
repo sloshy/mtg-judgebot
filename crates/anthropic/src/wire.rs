@@ -10,7 +10,7 @@ use serde_json::Value;
 /// Request body of `POST /v1/messages`.
 #[derive(Clone, Debug, Serialize)]
 pub struct MessagesRequest {
-    /// Which model, spelled the way the door wants it (first, as the
+    /// Which model, spelled the way the endpoint wants it (first, as the
     /// first-party body has it).
     #[serde(flatten)]
     pub model: ModelField,
@@ -38,9 +38,9 @@ pub struct MessagesRequest {
     pub fallbacks: Option<Fallbacks>,
 }
 
-/// How the body names the model. Every door takes `"model": "<id>"`
+/// How the body names the model. Every endpoint takes `"model": "<id>"`
 /// except Vertex, which puts the model in the URL path and takes
-/// `anthropic_version` in the body instead (on the other doors that is the
+/// `anthropic_version` in the body instead (on the other endpoints that is the
 /// `anthropic-version` header). An enum so a body can carry neither or
 /// both only by construction, never by a stray `Option`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]

@@ -42,16 +42,16 @@ impl PgLibrary {
         }
     }
 
-    /// Add the vector leg to `search_rules`, subject to the space check in [`Vectors`].
+    /// Add the vector search to `search_rules`, subject to the space check in [`Vectors`].
     #[must_use]
     pub fn with_vectors(mut self, vectors: Arc<Vectors>) -> Self {
         self.vectors = Some(vectors);
         self
     }
 
-    /// Rule-level chunks matching `query`: the full-text leg, then (with an
+    /// Rule-level chunks matching `query`: the full-text search, then (with an
     /// embedder) the nearest by cosine, unioned in that order and cut to
-    /// `limit` (clamped to `1..=MAX_SEARCH`). The same two legs the retriever
+    /// `limit` (clamped to `1..=MAX_SEARCH`). The same two sources the retriever
     /// runs, minus the category map, which needs a classification. An empty
     /// query returns nothing and embeds nothing.
     ///

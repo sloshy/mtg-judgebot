@@ -1,4 +1,4 @@
-//! `SigV4` for the two AWS doors ([`Endpoint::ClaudePlatformOnAws`] and
+//! `SigV4` for the two AWS endpoints ([`Endpoint::ClaudePlatformOnAws`] and
 //! [`Endpoint::Bedrock`]): where the credentials come from and how a request
 //! is signed with them.
 //!
@@ -28,13 +28,13 @@ use aws_sigv4::{
 use judge_llm::LlmError;
 use reqwest::header::{HeaderName, HeaderValue};
 
-/// The `door` an [`LlmError::Auth`] from the credential chain names.
+/// The `endpoint` an [`LlmError::Auth`] from the credential chain names.
 const PLATFORM: &str = "aws";
 
-/// The two doors `SigV4` signs, each with its service name (the third field
+/// The two endpoints `SigV4` signs, each with its service name (the third field
 /// of the credential scope, `.../{region}/{service}/aws4_request`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AwsDoor {
+pub enum AwsEndpoint {
     /// Claude Platform on AWS: service `aws-external-anthropic`.
     ClaudePlatform,
     /// Claude in Amazon Bedrock (the Messages-shaped endpoint): service
@@ -43,22 +43,22 @@ pub enum AwsDoor {
     Bedrock,
 }
 
-impl AwsDoor {
+impl AwsEndpoint {
     /// The `SigV4` service name.
     #[must_use]
     pub const fn service(self) -> &'static str {
         match self {
-            AwsDoor::ClaudePlatform => "aws-external-anthropic",
-            AwsDoor::Bedrock => "bedrock-mantle",
+            AwsEndpoint::ClaudePlatform => "aws-external-anthropic",
+            AwsEndpoint::Bedrock => "bedrock-mantle",
         }
     }
 
-    /// The door's name in errors and logs.
+    /// The endpoint's name in errors and logs.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            AwsDoor::ClaudePlatform => "claude-platform-on-aws",
-            AwsDoor::Bedrock => "bedrock",
+            AwsEndpoint::ClaudePlatform => "claude-platform-on-aws",
+            AwsEndpoint::Bedrock => "bedrock",
         }
     }
 }
@@ -110,7 +110,7 @@ impl AwsCredentials for DefaultChain {
                     .load()
                     .await;
                 config.credentials_provider().ok_or_else(|| LlmError::Auth {
-                    door: PLATFORM,
+                    endpoint: PLATFORM,
                     message: "the default credential chain has no provider".to_owned(),
                 })
             })
@@ -119,7 +119,7 @@ impl AwsCredentials for DefaultChain {
             .provide_credentials()
             .await
             .map_err(|e| LlmError::Auth {
-                door: PLATFORM,
+                endpoint: PLATFORM,
                 message: e.to_string(),
             })
     }
@@ -164,7 +164,7 @@ impl AwsCredentials for StaticCredentials {
     }
 }
 
-/// Sign `request` in place for `door` in `region`: adds `x-amz-date`,
+/// Sign `request` in place for `endpoint` in `region`: adds `x-amz-date`,
 /// `authorization` and, for temporary credentials, `x-amz-security-token`.
 /// Every header already on the request is signed (`host` is derived from
 /// the URL), so the request must be complete — body included — before
@@ -180,13 +180,13 @@ impl AwsCredentials for StaticCredentials {
 /// parameters.
 pub fn sign_request(
     request: &mut reqwest::Request,
-    door: AwsDoor,
+    endpoint: AwsEndpoint,
     region: &str,
     credentials: &Credentials,
     now: SystemTime,
 ) -> Result<(), LlmError> {
     let auth = |message: String| LlmError::Auth {
-        door: door.name(),
+        endpoint: endpoint.name(),
         message,
     };
     let headers = request
@@ -212,7 +212,7 @@ pub fn sign_request(
     let params = v4::SigningParams::builder()
         .identity(&identity)
         .region(region)
-        .name(door.service())
+        .name(endpoint.service())
         .time(now)
         .settings(SigningSettings::default())
         .build()
@@ -239,8 +239,11 @@ mod tests {
 
     #[test]
     fn service_names_are_the_documented_ones() {
-        assert_eq!(AwsDoor::ClaudePlatform.service(), "aws-external-anthropic");
-        assert_eq!(AwsDoor::Bedrock.service(), "bedrock-mantle");
+        assert_eq!(
+            AwsEndpoint::ClaudePlatform.service(),
+            "aws-external-anthropic"
+        );
+        assert_eq!(AwsEndpoint::Bedrock.service(), "bedrock-mantle");
     }
 
     #[test]
@@ -267,7 +270,7 @@ mod tests {
         let creds = StaticCredentials::new("AKIDTEST", "secret", Some("tok".into())).0;
         sign_request(
             &mut request,
-            AwsDoor::Bedrock,
+            AwsEndpoint::Bedrock,
             "us-east-1",
             &creds,
             SystemTime::UNIX_EPOCH,
@@ -319,7 +322,7 @@ mod tests {
         let creds = StaticCredentials::new("AKIDTEST", "secret", None).0;
         sign_request(
             &mut request,
-            AwsDoor::ClaudePlatform,
+            AwsEndpoint::ClaudePlatform,
             "us-west-2",
             &creds,
             SystemTime::UNIX_EPOCH,

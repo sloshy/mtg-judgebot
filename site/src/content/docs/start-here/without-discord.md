@@ -10,8 +10,8 @@ web page on your own machine, and the cheapest is the command line. Both need th
 and the data. The model provider is the only paid part.
 
 You need Docker with the compose plugin and an Anthropic API key. A Voyage AI key is
-optional. It adds a semantic-search leg to retrieval. Without it the judge uses the
-other two legs: the rules for the question's category, and full-text search. Nothing is compiled: the image is published for amd64 and arm64.
+optional. It adds a semantic-search source to retrieval. Without it the judge uses the
+other two sources: the rules for the question's category, and full-text search. Nothing is compiled: the image is published for amd64 and arm64.
 
 ```sh
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot

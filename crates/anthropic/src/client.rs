@@ -1,16 +1,16 @@
-//! The Messages API backend: [`Endpoint`] (which door, with what auth) and
+//! The Messages API backend: [`Endpoint`] (which endpoint, with what auth) and
 //! [`Anthropic`], the [`Backend`] over it. No spend cap here — that is
 //! [`judge_llm::Metered`], the only way a backend becomes the pipeline's
 //! `ChatModel` — and no retry loop of its own: the request goes through
 //! [`judge_llm::http::post_with_retries`].
 //!
-//! The body is the Messages API on every door; what differs is the URL,
+//! The body is the Messages API on every endpoint; what differs is the URL,
 //! the auth, whether the model is named in the body or the URL, and what
-//! the door can honour server-side. That last part is [`Endpoint::capabilities`],
-//! and [`Anthropic::mask`] removes from a request what its door would reject
+//! the endpoint can honour server-side. That last part is [`Endpoint::capabilities`],
+//! and [`Anthropic::mask`] removes from a request what its endpoint would reject
 //! (the fallbacks beta, `output_config.format`, `strict` tools) rather than
 //! sending it: the adapters have already put the schema in the prompt when
-//! the door says so, and validation is client-side regardless.
+//! the endpoint says so, and validation is client-side regardless.
 
 use std::{
     borrow::Cow,
@@ -28,7 +28,7 @@ use judge_llm::{
 };
 
 #[cfg(feature = "aws")]
-use crate::aws::{AwsCredentials, AwsDoor, DefaultChain, sign_request};
+use crate::aws::{AwsCredentials, AwsEndpoint, DefaultChain, sign_request};
 #[cfg(feature = "gcp")]
 use crate::gcp::{Adc, TokenSource};
 use crate::{
@@ -51,16 +51,16 @@ pub enum ProxyAuth {
     Bearer,
 }
 
-/// Which door the Messages API is reached through. The body is the same
-/// everywhere; the URL, the auth and what the door supports differ. An enum
-/// so that a new door is an exhaustive-match compile error, not a config
-/// typo. The cloud doors exist only when their Cargo feature is on (`aws`,
+/// Which endpoint the Messages API is reached through. The body is the same
+/// everywhere; the URL, the auth and what the endpoint supports differ. An enum
+/// so that a new endpoint is an exhaustive-match compile error, not a config
+/// typo. The cloud endpoints exist only when their Cargo feature is on (`aws`,
 /// `gcp`; both default), so a binary built without one cannot even name it.
 ///
-/// Every door has a `base_url`: the origin the messages path is appended
+/// Every endpoint has a `base_url`: the origin the messages path is appended
 /// to. The cloud constructors derive it from the region as the platform
 /// documents (verified 2026-09-02, cited on each variant); it is a field so
-/// a test can point the door at a mock, and an operator can correct it
+/// a test can point the endpoint at a mock, and an operator can correct it
 /// without a release.
 #[derive(Clone, Debug)]
 pub enum Endpoint {
@@ -245,7 +245,7 @@ impl Endpoint {
         }
     }
 
-    /// The same door at another origin (an operator's override, a test's mock).
+    /// The same endpoint at another origin (an operator's override, a test's mock).
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         let origin = base_url.into();
@@ -294,7 +294,7 @@ impl Endpoint {
         }
     }
 
-    /// How the body names `model` on this door.
+    /// How the body names `model` on this endpoint.
     fn model_field(&self, model: &str) -> ModelField {
         match self {
             Endpoint::Direct { .. } | Endpoint::Proxy { .. } => ModelField::from(model),
@@ -307,8 +307,8 @@ impl Endpoint {
         }
     }
 
-    /// Headers the door needs beyond auth and the API version.
-    fn door_headers(&self) -> Vec<(&'static str, String)> {
+    /// Headers the endpoint needs beyond auth and the API version.
+    fn endpoint_headers(&self) -> Vec<(&'static str, String)> {
         match self {
             Endpoint::Direct { .. } | Endpoint::Proxy { .. } => Vec::new(),
             #[cfg(feature = "aws")]
@@ -322,7 +322,7 @@ impl Endpoint {
         }
     }
 
-    /// Whether the door takes the `anthropic-beta` header at all. Bedrock
+    /// Whether the endpoint takes the `anthropic-beta` header at all. Bedrock
     /// documents it as unsupported, so no beta — a request's own or one
     /// added with [`Anthropic::with_beta`] — is sent there.
     fn accepts_betas(&self) -> bool {
@@ -337,9 +337,9 @@ impl Endpoint {
         }
     }
 
-    /// Whether this door's credentials are discovered at first use rather
-    /// than held: the cloud doors resolve a platform chain (environment,
-    /// profile, instance role, ADC), the key doors were given their key.
+    /// Whether this endpoint's credentials are discovered at first use rather
+    /// than held: the cloud endpoints resolve a platform chain (environment,
+    /// profile, instance role, ADC), the key endpoints were given their key.
     #[must_use]
     pub fn lazy_credentials(&self) -> bool {
         match self {
@@ -351,12 +351,12 @@ impl Endpoint {
         }
     }
 
-    /// Resolve this door's credentials once without sending anything. The
+    /// Resolve this endpoint's credentials once without sending anything. The
     /// constructors are lazy so that building a client never touches the
     /// network or the disk; a binary about to serve questions calls this at
-    /// startup so a host with no credentials fails there, naming the door,
+    /// startup so a host with no credentials fails there, naming the endpoint,
     /// the way a missing `api_key_env` fails at load — not per question,
-    /// after the spend reservation. A key door returns `Ok` without I/O.
+    /// after the spend reservation. A key endpoint returns `Ok` without I/O.
     ///
     /// # Errors
     /// [`LlmError::Auth`] when the platform chain has no credentials.
@@ -364,13 +364,13 @@ impl Endpoint {
         self.auth().await.map(drop)
     }
 
-    /// This door's auth for one call: the key it holds, or the credentials
+    /// This endpoint's auth for one call: the key it holds, or the credentials
     /// its platform chain hands out now.
     #[cfg_attr(
         not(any(feature = "aws", feature = "gcp")),
         expect(
             clippy::unused_async,
-            reason = "only the cloud doors fetch credentials"
+            reason = "only the cloud endpoints fetch credentials"
         )
     )]
     async fn auth(&self) -> Result<Auth, LlmError> {
@@ -392,7 +392,7 @@ impl Endpoint {
                 credentials,
                 ..
             } => Auth::SigV4 {
-                door: AwsDoor::ClaudePlatform,
+                endpoint: AwsEndpoint::ClaudePlatform,
                 region: region.clone(),
                 credentials: credentials.credentials().await?,
             },
@@ -402,7 +402,7 @@ impl Endpoint {
                 credentials,
                 ..
             } => Auth::SigV4 {
-                door: AwsDoor::Bedrock,
+                endpoint: AwsEndpoint::Bedrock,
                 region: region.clone(),
                 credentials: credentials.credentials().await?,
             },
@@ -411,7 +411,7 @@ impl Endpoint {
         })
     }
 
-    /// What this door supports server-side.
+    /// What this endpoint supports server-side.
     #[must_use]
     pub fn capabilities(&self) -> Capabilities {
         let first_party = Capabilities {
@@ -447,7 +447,7 @@ impl Endpoint {
         }
     }
 
-    /// A name for logs: the door and where it points, never a credential.
+    /// A name for logs: the endpoint and where it points, never a credential.
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
@@ -481,7 +481,7 @@ enum Auth {
     Bearer(ApiKey),
     #[cfg(feature = "aws")]
     SigV4 {
-        door: AwsDoor,
+        endpoint: AwsEndpoint,
         region: String,
         credentials: aws_credential_types::Credentials,
     },
@@ -508,14 +508,14 @@ impl Auth {
             Auth::Bearer(key) => Ok(builder.bearer_auth(key.expose())),
             #[cfg(feature = "aws")]
             Auth::SigV4 {
-                door,
+                endpoint,
                 region,
                 credentials,
             } => {
                 let mut request = builder.build()?;
                 sign_request(
                     &mut request,
-                    *door,
+                    *endpoint,
                     region,
                     credentials,
                     std::time::SystemTime::now(),
@@ -534,10 +534,10 @@ pub struct Anthropic {
     model: String,
     betas: Vec<String>,
     /// Whether the "masked off" warning has been logged; shared by clones so
-    /// a door that cannot honour something says so once per backend (each
+    /// an endpoint that cannot honour something says so once per backend (each
     /// stage builds its own, so at most once per stage), not per request.
     warned_mask: Arc<AtomicBool>,
-    /// Overrides the door's [`Capabilities::refusal_fallbacks`] when set.
+    /// Overrides the endpoint's [`Capabilities::refusal_fallbacks`] when set.
     refusal_fallbacks: Option<bool>,
 }
 
@@ -575,17 +575,17 @@ impl Anthropic {
         self
     }
 
-    /// Whether server-side refusal fallbacks are sent, overriding the door's
+    /// Whether server-side refusal fallbacks are sent, overriding the endpoint's
     /// default (only [`Endpoint::Direct`] sends them): `Some(true)` for a
     /// proxy that passes the beta through, `Some(false)` to never send them,
-    /// `None` for the door's default.
+    /// `None` for the endpoint's default.
     #[must_use]
     pub const fn with_refusal_fallbacks(mut self, send: Option<bool>) -> Self {
         self.refusal_fallbacks = send;
         self
     }
 
-    /// The door's capabilities with the fallbacks override applied. A door
+    /// The endpoint's capabilities with the fallbacks override applied. An endpoint
     /// that takes no `anthropic-beta` header (Bedrock) cannot carry the
     /// fallbacks beta, whatever the override says.
     fn caps(&self) -> Capabilities {
@@ -599,7 +599,7 @@ impl Anthropic {
 
     /// Add a beta flag sent as `anthropic-beta` on every request (on top of
     /// the ones a request itself needs, such as the fallbacks beta) — on the
-    /// doors that take the header; Bedrock does not, and drops it with the
+    /// endpoints that take the header; Bedrock does not, and drops it with the
     /// mask warning.
     #[must_use]
     pub fn with_beta(mut self, beta: impl Into<String>) -> Self {
@@ -616,19 +616,19 @@ impl Anthropic {
         &self.betas
     }
 
-    /// The door in use.
+    /// The endpoint in use.
     #[must_use]
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
 
-    /// `req` with what this door cannot honour removed, per
+    /// `req` with what this endpoint cannot honour removed, per
     /// [`Endpoint::capabilities`]: `fallbacks` (and the beta header it would
     /// have needed) where there are no server-side fallbacks, the output
     /// schema where structured outputs are not enforced (the adapter has put
     /// it in the prompt), `strict` on tools where strict tools are not
     /// supported. The process-wide betas ([`Anthropic::with_beta`]) are not
-    /// in the request, but a door with no `anthropic-beta` header drops them
+    /// in the request, but an endpoint with no `anthropic-beta` header drops them
     /// too ([`Endpoint::accepts_betas`]), and this is where that is said.
     /// Warns the first time.
     fn mask<'a>(&self, req: &'a ChatRequest) -> Cow<'a, ChatRequest> {
@@ -723,7 +723,7 @@ impl Backend for Anthropic {
             Vec::new()
         };
         let url = self.endpoint.url(&self.model);
-        let door_headers = self.endpoint.door_headers();
+        let endpoint_headers = self.endpoint.endpoint_headers();
         let auth = self.endpoint.auth().await?;
         let build = || {
             let mut builder = self
@@ -731,7 +731,7 @@ impl Backend for Anthropic {
                 .post(&url)
                 .header("anthropic-version", API_VERSION)
                 .header("content-type", "application/json");
-            for (name, value) in &door_headers {
+            for (name, value) in &endpoint_headers {
                 builder = builder.header(*name, value);
             }
             if !betas.is_empty() {
@@ -1002,7 +1002,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_fallbacks_override_beats_the_door() -> Result<(), LlmError> {
+    async fn the_fallbacks_override_beats_the_endpoint_default() -> Result<(), LlmError> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
@@ -1022,7 +1022,7 @@ mod tests {
         .with_refusal_fallbacks(Some(true));
         assert!(proxy.capabilities().refusal_fallbacks);
         proxy.complete(&with_fallbacks).await?;
-        // The direct door, told not to.
+        // The direct endpoint, told not to.
         let direct = Anthropic::new(Endpoint::Direct {
             base_url: server.uri(),
             api_key: "k".into(),
@@ -1135,10 +1135,10 @@ mod tests {
         Ok(())
     }
 
-    /// A key door already holds its credential: the probe is `Ok` and does no I/O
-    /// (the mock is never reached, and the key doors are not lazy).
+    /// A key endpoint already holds its credential: the probe is `Ok` and does no I/O
+    /// (the mock is never reached, and the key endpoints are not lazy).
     #[tokio::test]
-    async fn key_doors_probe_without_io() -> Result<(), LlmError> {
+    async fn key_endpoints_probe_without_io() -> Result<(), LlmError> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(500))
@@ -1186,11 +1186,11 @@ mod tests {
     }
 }
 
-/// The cloud doors against wiremock: signed / bearer headers, paths, and the
+/// The cloud endpoints against wiremock: signed / bearer headers, paths, and the
 /// body differences, with injected credentials so no cloud account is
 /// touched. What went over the wire is what is asserted.
 #[cfg(all(test, any(feature = "aws", feature = "gcp")))]
-mod door_tests {
+mod endpoint_tests {
     use super::*;
     use judge_llm::{
         Effort, OutputSchema, RefusalFallback, TextBlock, ToolChoice, ToolSpec, Turn, schema_of,
@@ -1209,7 +1209,7 @@ mod door_tests {
     }
 
     /// The synthesis shape: a strict tool, an output schema, effort, and
-    /// the fallbacks beta — everything a door might have to mask.
+    /// the fallbacks beta — everything an endpoint might have to mask.
     fn full_req() -> ChatRequest {
         ChatRequest {
             max_tokens: 64,
@@ -1442,17 +1442,17 @@ mod door_tests {
     impl AwsCredentials for NoCredentials {
         async fn credentials(&self) -> Result<aws_credential_types::Credentials, LlmError> {
             Err(LlmError::Auth {
-                door: "aws",
+                endpoint: "aws",
                 message: "no providers in chain".to_owned(),
             })
         }
     }
 
-    /// The probe is the chain resolution and nothing else: a door whose
-    /// chain is empty fails there, naming the door, and nothing is sent.
+    /// The probe is the chain resolution and nothing else: an endpoint whose
+    /// chain is empty fails there, naming the endpoint, and nothing is sent.
     #[cfg(feature = "aws")]
     #[tokio::test]
-    async fn a_cloud_door_probes_its_chain_without_sending() -> Result<(), LlmError> {
+    async fn a_cloud_endpoint_probes_its_chain_without_sending() -> Result<(), LlmError> {
         use super::tests::req;
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1466,10 +1466,13 @@ mod door_tests {
             credentials: Arc::new(NoCredentials),
         };
         assert!(empty.lazy_credentials());
-        let Err(LlmError::Auth { door, message }) = empty.probe().await else {
+        let Err(LlmError::Auth { endpoint, message }) = empty.probe().await else {
             return Err(LlmError::Request("probe should fail".into()));
         };
-        assert_eq!((door, message.as_str()), ("aws", "no providers in chain"));
+        assert_eq!(
+            (endpoint, message.as_str()),
+            ("aws", "no providers in chain")
+        );
         // The same failure per question, had nothing probed — and still nothing sent.
         let Err(LlmError::Auth { .. }) = Anthropic::new(empty)?.complete(&req()).await else {
             return Err(LlmError::Request("complete should fail".into()));
@@ -1502,7 +1505,7 @@ mod door_tests {
             "https://aws-external-anthropic.us-west-2.api.aws/v1/messages"
         );
         assert_eq!(
-            cpa.door_headers(),
+            cpa.endpoint_headers(),
             [(WORKSPACE_HEADER, "wrkspc_01X".to_owned())]
         );
         assert_eq!(
@@ -1514,7 +1517,7 @@ mod door_tests {
             bedrock.url("anthropic.claude-opus-5-5"),
             "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages"
         );
-        assert!(bedrock.door_headers().is_empty());
+        assert!(bedrock.endpoint_headers().is_empty());
         assert_eq!(
             bedrock.with_base_url("http://vpce.internal/").url("m"),
             "http://vpce.internal/anthropic/v1/messages"

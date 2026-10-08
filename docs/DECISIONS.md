@@ -104,7 +104,7 @@ Retrieval is entity-first and hybrid, and the CR is chunked at two granularities
 questions have the shape "card A + card B + rule concept C", so:
 
 - **Card names are entities.** A cheap structured-output call extracts them and SQL
-  resolves them through a typed ladder: alias → possessive-stripped alias → exact →
+  resolves them through a typed resolution order: alias → possessive-stripped alias → exact →
   printed name → short name before the comma → alias suffix → trigram fuzzy. A
   `[[bracketed]]` span is exact name, printed name or exact alias only, with near misses
   offered as choices. An alias is not a near miss: the table maps that spelling to one
@@ -113,7 +113,7 @@ questions have the shape "card A + card B + rule concept C", so:
 - **The resolver never guesses.** Ambiguity is `Resolution::Ambiguous` and becomes a "did
   you mean?" button row (I1). A wrong card silently resolved would produce a confidently
   wrong ruling with valid-looking citations, which is the worst failure the bot can have.
-- **Three retrieval legs, unioned in priority order.** They are the curated category →
+- **Three retrieval sources, unioned in priority order.** They are the curated category →
   CR-section map (structured, always on), full-text search (keywords like "leaves the
   battlefield") and pgvector similarity (meaning). Each fails differently. The synthesis
   budget renders a prefix of the union, so the order is what the model reads. Rulings for
@@ -231,7 +231,7 @@ to `ALTER` and re-run `embed` by hand. The command is safer.
 - A one-row `embedding_space` table names the stored space.
 - `ingest embed` writes that row with the first vector it writes and refuses to write
   into another space.
-- The adapters re-read the row on every use and go **dark, never mixed** on a mismatch
+- The adapters re-read the row on every use and turn vector search **off, never mixed** on a mismatch
   (error log naming both spaces).
 
 Writers hold the space under the shared side of an advisory lock. The switch takes the
@@ -305,7 +305,7 @@ The build order was chosen so retrieval was measured before any synthesis existe
 4. Retrieval, behind a gate of at least 90 % of gold rule ids present in the context.
 5. Synthesis, scored against the gold answers.
 6. Discord.
-7. The prior-call leg, which needs rated data to exist.
+7. The prior-call query, which needs rated data to exist.
 
 `judge-eval recall` still runs the gate for free on every retrieval change. The paid full
 run costs about $1.70 and is not part of CI. Nothing in the test suite calls a paid API:
@@ -580,8 +580,8 @@ both. Three choices make it hold to the loader rather than drift from it.
   structs `Config::from_toml` parses, so a new knob is a field with no editor change, and
   the structs' doc comments are written as the operator's help text. What types cannot
   say comes from the tables the loader checks against: which endpoint takes which key is one
-  `DoorKey::on` table, read by the misplaced-key check and emitted as `x-doors`.
-  `door_table_matches_the_loader` holds the endpoint constructors' required keys to it.
+  `EndpointKey::on` table, read by the misplaced-key check and emitted as `x-endpoints`.
+  `endpoint_table_matches_the_loader` holds the endpoint constructors' required keys to it.
 - **Validation is the binaries' own code.** Each draft runs through the loaders the
   binaries call at startup, one surface at a time, and `ConfigError::location()` (an
   exhaustive match) names the key or variable to fix. Nothing in the editor restates a

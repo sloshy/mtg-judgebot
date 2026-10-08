@@ -1,4 +1,4 @@
-//! `rules` table access shared by the retriever's three legs and `lookup_rules`.
+//! `rules` table access shared by the retriever's three sources and `lookup_rules`.
 //!
 //! "Rule-level" rows are those whose id has the shape `NNN.M` (e.g. `702.19`):
 //! that is the chunk granularity of ARCHITECTURE.md §2. Section rows (`702`)
@@ -138,7 +138,7 @@ pub(super) struct CategoryRules {
     pub rest: Vec<RuleChunk>,
 }
 
-/// Category-map leg, ranked: the rule-level rows of `subsections` plus the
+/// Category-map query, ranked: the rule-level rows of `subsections` plus the
 /// rows named exactly by `ids`, scored against `concepts`/`question` with the
 /// same `ts_rank_cd` expression as [`bm25`].
 ///
@@ -207,7 +207,7 @@ pub(super) async fn in_subsections_ranked(
     })
 }
 
-/// Full-text leg: rule-level rows matching any lexeme of `concepts` or
+/// Full-text search: rule-level rows matching any lexeme of `concepts` or
 /// `question`, ranked by `ts_rank_cd` (concept matches weigh double).
 /// Lexemes are OR-ed so that a long question still matches; punctuation-only
 /// tokens, numeric-dotted tokens (rule ids) and the stray single letters they
@@ -250,7 +250,7 @@ pub(super) async fn bm25(
     chunks(rows)
 }
 
-/// Vector leg: the `limit` rule-level rows nearest to `embedding` by cosine distance.
+/// Vector search: the `limit` rule-level rows nearest to `embedding` by cosine distance.
 /// `parent_id IS NULL` matches the partial HNSW index (only rule-level rows are
 /// embedded), so the index scan is not post-filtered down below `limit`.
 pub(super) async fn nearest(

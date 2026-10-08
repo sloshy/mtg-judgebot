@@ -12,7 +12,7 @@
 //!
 //! The counters live in a [`SpendMeter`]: every `Metered` built over the
 //! same meter shares one total and one cap (one cap per process, as the
-//! front doors expect), and the meter is what they read `spent_usd()` from.
+//! interfaces expect), and the meter is what they read `spent_usd()` from.
 //!
 //! The total is this process's, for its lifetime. A *budget period* is built
 //! on one extra number, the [`SpendMeter::set_adjustment_micro`] adjustment:

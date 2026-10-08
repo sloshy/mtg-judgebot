@@ -33,7 +33,7 @@ use anyhow::Context as _;
 const RECALL_GATE: f64 = 0.90;
 /// Expected rules the synthesis prompt shows under the production budget.
 /// 54/67 (81%) on the gold set when this gate was added, from 29/67 (43%)
-/// before the legs were ranked. Set a few ids below that on purpose, so a CR
+/// before the sources were ranked. Set a few ids below that on purpose, so a CR
 /// update that shifts one rank does not turn it red, while a regression of the
 /// kind it was added for (every slot taken by one low-value category) does.
 const SHOWN_GATE: f64 = 0.75;

@@ -69,7 +69,7 @@ categories:
     subsections: ["702.1", "702.2"]
   - id: keyword_actions
     label: Keyword actions (destroy, exile, sacrifice, mill, ...)
-    # As for keyword_abilities: the general rule only; the specific action comes from the fuzzy legs.
+    # As for keyword_abilities: the general rule only; the specific action comes from full-text and vector search.
     subsections: ["701.1"]
   - id: mana_abilities
     label: Mana abilities and mana production

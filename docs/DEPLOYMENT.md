@@ -75,11 +75,11 @@ docker compose exec -T db psql -U judgebot -d judgebot \
              (select provider||'/'||model||'/'||dimensions from embedding_space) space;"
 ```
 
-If `embedded` is 0, the vector leg is off. Run `scripts/refresh-data.sh embed`
+If `embedded` is 0, the vector search is off. Run `scripts/refresh-data.sh embed`
 rather than shipping a degraded retriever.
 
-The vector leg is also off when `space` is empty or names a model other than the one
-the bot is configured with. The bot's vector legs stay off until the row and the
+The vector search is also off when `space` is empty or names a model other than the one
+the bot is configured with. The bot's vector search stays off until the row and the
 configuration agree. It logs an error-level line at startup and when the row changes,
 and it never mixes vectors from two models in one column. The fix depends on the cause:
 
@@ -532,7 +532,7 @@ Every `rule renumbered` and `call relocated` is logged. To see what a run did:
 select retired_reason, count(*) from calls where retired_at is not null group by 1;
 ```
 
-Between the `rules` and `embed` steps (about a minute), the vector leg cannot find
+Between the `rules` and `embed` steps (about a minute), the vector search cannot find
 the changed rules. If `embed` fails (the embedder is down or rate-limited), those rules
 stay unembedded until the next night's run, because `embed` always fills every NULL.
 
@@ -546,7 +546,7 @@ re-parse of an already-loaded version that way, delete the cached txt first.
 Vectors from two models cannot share a column. The database therefore records which
 model's vectors it holds (`embedding_space`, one row: provider kind, model, width), and
 every reader and writer checks it first. If a bot's `[models.embed]` names a different
-model or width, it does not mix them. It logs `embedding space mismatch; vector legs off` and
+model or width, it does not mix them. It logs `embedding space mismatch; vector search off` and
 answers from the curated map and full-text search alone until the two agree.
 
 `judge-ingest reembed` moves the database to a new model. It pays the provider to
@@ -567,8 +567,8 @@ docker compose restart bot api                # bot/api read judge.toml once, at
 ```
 
 The running `bot`/`api` keep the `[models.embed]` they started with, so they must be
-restarted at some point. They re-read the space row on every request. Their vector legs
-turn off as soon as the row disagrees with their configuration and back on as soon as
+restarted at some point. They re-read the space row on every request. Their vector search
+turns off as soon as the row disagrees with their configuration and back on as soon as
 it agrees. Either order works:
 
 - Restarting before `--yes` turns them off from the restart until the switch.
@@ -578,12 +578,12 @@ Either way there is one window without vectors, and no mixing. The order above k
 
 The refill is resumable. If the embed loop dies (rate limit, a provider outage),
 `scripts/refresh-data.sh embed` or the next nightly run fills whatever is still NULL.
-Retrieval degrades to the other legs for the rows not yet embedded. `reembed --yes`
+Retrieval degrades to the other sources for the rows not yet embedded. `reembed --yes`
 resumes too: with the row already switched it has nothing to switch, so it fills the
 empty rows and pays for nothing twice.
 
 `--clear` clears and re-buys every vector in the same space. The row does not change,
-so the running bot logs no mismatch, and its vector leg finds nothing until the refill
+so the running bot logs no mismatch, and its vector search finds nothing until the refill
 finishes.
 
 Resume outside the nightly `refresh` window (the cron above). Two refills at once both
@@ -770,5 +770,5 @@ own if the connector restarts.
 | `providers.X: NAME (api_key_env) is not set` at startup | the key was exported in the shell that ran `cargo run` but never written to `.env`, which is all the containers read; or, from `refresh` alone, only the embed provider's key was set because "refresh only embeds" — `refresh` resolves the chat stages too, so the extract/synth providers' keys must be in `.env` as well |
 | Edited `judge.toml`, `docker compose up -d`, nothing changed | `up -d` recreates only on a configuration or image change and a bind-mounted file's content is neither; `docker compose restart bot api` (§4) |
 | `providers.X (...): no credentials` at startup | a cloud endpoint with an empty chain: no `AWS_*` in `.env`, no mounted credentials file, or a mounted file the `nobody` user cannot read |
-| `embedding space mismatch; vector legs off` | `[models.embed]` names a model or width other than the one the database holds; `reembed` (§7) to move the data, or change the file back |
+| `embedding space mismatch; vector search off` | `[models.embed]` names a model or width other than the one the database holds; `reembed` (§7) to move the data, or change the file back |
 | `no price for X/Y` at startup | a model on an `openai` provider without `[models.<stage>.pricing]`; add one (USD per million tokens) or `pricing = "free"` on the provider |

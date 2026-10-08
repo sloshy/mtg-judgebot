@@ -37,7 +37,7 @@ const manifest = [
     order: 2,
     sections: [4, 6],
     description:
-      "Data sources for rules, cards and rulings, the three retrieval legs, and the synthesis guardrails.",
+      "Data sources for rules, cards and rulings, the three retrieval sources, and the synthesis guardrails.",
     lead: "Part two of the explainer. Part one covered the pipeline end to end.",
   },
   {
@@ -47,7 +47,7 @@ const manifest = [
     order: 3,
     sections: [7, 10],
     description:
-      "What goes wrong and what handles it, the rating loop, the spend cap, and the three front doors.",
+      "What goes wrong and what handles it, the rating loop, the spend cap, and the three interfaces.",
     lead: "Part three of the explainer.",
   },
   {
@@ -80,7 +80,7 @@ const manifest = [
     title: "Model providers",
     order: 7,
     description:
-      "The judge.toml provider model, covering the seam, the backends and their doors, dialect knobs, pricing and the embedding space.",
+      "The judge.toml provider model, covering the seam, the backends and their endpoints, dialect knobs, pricing and the embedding space.",
   },
   {
     src: "README.md",

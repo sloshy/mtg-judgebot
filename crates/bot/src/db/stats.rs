@@ -24,7 +24,7 @@ const QUESTION_CHARS: usize = 200;
 pub struct Day {
     /// `YYYY-MM-DD`.
     pub day: String,
-    /// Calls stored that day, by front door.
+    /// Calls stored that day, by interface.
     pub discord: i64,
     /// Asked through the web page or `POST /api/judge`.
     pub web: i64,

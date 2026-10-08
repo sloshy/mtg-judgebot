@@ -1,8 +1,8 @@
 //! `api` — the HTTP binary: reads the command line and the environment, builds
 //! the shared composition ([`judge_bot::build_deps`]) plus the call store, and
-//! serves the front doors it was asked for.
+//! serves the interfaces it was asked for.
 //!
-//! Command line (`judge_api::interfaces`): every front door is opt-in, and
+//! Command line (`judge_api::interfaces`): every interface is opt-in, and
 //! `judge-api` with no arguments serves the JSON API alone. `--web` adds (or,
 //! alone, substitutes) the built web client, `--mcp` the MCP transport;
 //! `--help` prints the usage. `GET /api/health` is served either way.
@@ -86,14 +86,14 @@ async fn main() -> Result<()> {
     // cap); the meter handed to the HTTP layer is the one they bill to.
     let judge = JudgeConfig::load()?;
     tracing::info!("{}", judge.summary());
-    // Every door names who runs it: no JUDGE_OPERATOR_EMAIL, no server.
+    // Every interface names who runs it: no JUDGE_OPERATOR_EMAIL, no server.
     let operator = judge.network_operator()?;
     tracing::info!(email = %operator.email(), "operator contact");
     let models = judge.models()?;
-    // A cloud door with no credentials fails here, not on the first question.
+    // A cloud endpoint with no credentials fails here, not on the first question.
     judge.probe_auth().await?;
     // The embedder is optional: without one the retriever skips its vector
-    // leg. One `Vectors` for every adapter in the process: the space check
+    // source. One `Vectors` for every adapter in the process: the space check
     // against `embedding_space` runs once and disables them all on a mismatch.
     let vectors = judge.vectors(pool.clone())?;
     // The verdict (on, absent row, mismatch) lands here beside the summary, not in the first request's log.
@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
         v.enabled().await;
     } else {
         tracing::warn!(
-            "no embedder configured (VOYAGE_API_KEY or [models.embed]); running without the vector leg"
+            "no embedder configured (VOYAGE_API_KEY or [models.embed]); running without vector search"
         );
     }
     let mut store = PgCallStore::new(pool.clone());
@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
     );
     let mut routes = router(Arc::clone(&app), &interfaces, &cfg.web_dist);
     // The MCP transport shares the judge slots (one JUDGE_CONCURRENCY for
-    // both front doors) and the metered models (one cap). It takes the flag
+    // both interfaces) and the metered models (one cap). It takes the flag
     // *and* the token: `check` has already refused `--mcp` without one, and
     // the filter is what makes a token alone inert rather than a mount.
     if let Some(token) = cfg
@@ -164,7 +164,7 @@ async fn main() -> Result<()> {
         let service = judge_agent::mcp::http_service(Arc::new(toolbox), cfg.mcp_hosts.clone());
         routes = routes.merge(judge_api::mcp::router(service, token));
     }
-    // The enabled *and* the disabled doors: an operator hunting a 404 reads
+    // The enabled *and* the disabled interfaces: an operator hunting a 404 reads
     // the reason here rather than inferring it from the routes that answer.
     tracing::info!(
         interfaces = %interfaces,

@@ -47,7 +47,7 @@ pub struct Traced {
 }
 
 /// [`judge`], also reporting the first attempt's rejection. For the eval
-/// harness, which measures how often and why the retry runs; the front doors
+/// harness, which measures how often and why the retry runs; the interfaces
 /// call [`judge`].
 pub async fn judge_traced(deps: &Deps, q: &Question, history: &[Qa]) -> Traced {
     let mut first_rejection = None;
@@ -115,7 +115,7 @@ async fn run(
 /// second reference to a card that *did* resolve from another span. Two
 /// duplicate rules drop those before anything is reported:
 ///
-/// * an `Ambiguous` span from a non-fuzzy rung (alias, short name, printed
+/// * an `Ambiguous` span from a non-fuzzy step (alias, short name, printed
 ///   name…) whose candidates include a card resolved from another span is a
 ///   duplicate reference. Fuzzy candidates are trigram neighbours, not names
 ///   the user could have meant ("Urza" beside "Urza's Saga" is a different
@@ -255,7 +255,7 @@ mod tests {
         assert!(matches!(r, Err(JudgeError::AmbiguousCards(a)) if a.len() == 1));
     }
 
-    /// An ambiguous span from a non-fuzzy rung (the nickname + full-name shape).
+    /// An ambiguous span from a non-fuzzy step (the nickname + full-name shape).
     fn ambiguous(query: &str, candidates: NonEmpty<Card>) -> Resolution {
         Resolution::Ambiguous {
             query: query.into(),

@@ -24,7 +24,7 @@ All configuration is environment variables. `.env.example` is the annotated temp
 | `DB_PORT` | `5432` | compose only | The loopback port compose publishes Postgres on. Change it together with the port in `DATABASE_URL` when 5432 is taken. |
 | `ANTHROPIC_API_KEY` | | bot, api, eval, agent, ingest | The zero-config model setup: Anthropic direct, `claude-opus-5-5` for both stages. Unused when a `judge.toml` names other providers. |
 | `ANTHROPIC_BASE_URL` | Anthropic's | same | Zero-config only. A gateway speaking `/v1/messages`. |
-| `VOYAGE_API_KEY` | | bot, api, ingest, eval, agent | Zero-config embeddings (`voyage-3.5`, 1024). Blank turns the vector leg off. |
+| `VOYAGE_API_KEY` | | bot, api, ingest, eval, agent | Zero-config embeddings (`voyage-3.5`, 1024). Blank turns the vector search off. |
 | `VOYAGE_MODEL`, `VOYAGE_DIMENSIONS` | `voyage-3.5`, `1024` | same | Zero-config embedding model and width. |
 | `JUDGE_CONFIG` | | all | Path to a `judge.toml`. Blank: `./judge.toml` if present (for `cargo run`), else the zero-config setup. Compose mounts only the file this names, so under Docker a `./judge.toml` is ignored until this names it. |
 | `<provider>_KEY` … | | all | Whatever `api_key_env` names in `judge.toml`, one per provider a stage uses. A table no stage names is parsed but its key is never read. |

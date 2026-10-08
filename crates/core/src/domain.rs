@@ -404,7 +404,7 @@ pub enum Confidence {
     High,
 }
 
-/// How a card-name span was matched to a card (resolution ladder order).
+/// How a card-name span was matched to a card (resolution order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchedVia {
@@ -445,7 +445,7 @@ pub enum Resolution {
     Resolved {
         /// The card.
         card: Card,
-        /// Which rung of the ladder matched.
+        /// Which step of the resolution order matched.
         via: MatchedVia,
     },
     /// Several cards matched; ask the user.
@@ -455,7 +455,7 @@ pub enum Resolution {
         /// Cards it could be.
         #[schemars(with = "Vec<Card>")]
         candidates: NonEmpty<Card>,
-        /// Which rung produced the candidates. `Fuzzy` candidates are trigram
+        /// Which step produced the candidates. `Fuzzy` candidates are trigram
         /// neighbours, not names the user could have meant, so `judge()` never
         /// treats a fuzzy-ambiguous span as a duplicate of a resolved card.
         via: MatchedVia,

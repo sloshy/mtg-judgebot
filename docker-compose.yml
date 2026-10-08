@@ -88,7 +88,7 @@ services:
     container_name: judgebot-api
     restart: unless-stopped
     entrypoint: ["judge-api"]
-    # Every front door judge-api can open is opt-in: with no arguments it
+    # Every interface judge-api can open is opt-in: with no arguments it
     # serves POST /api/judge and nothing else. This default adds the web page;
     # drop `--web` for an API-only deployment, and add `--mcp` when MCP_TOKEN
     # is set. `--mcp` with no token is refused at startup; a token with no
@@ -169,7 +169,7 @@ services:
       db:
         condition: service_healthy
 
-  # Public front door. Dials out to Cloudflare's edge, so the host needs no
+  # Public entry point. Dials out to Cloudflare's edge, so the host needs no
   # open inbound port, no public IPv4 and no dynamic DNS. Off by default;
   # deployments opt in with COMPOSE_PROFILES=tunnel in .env.
   cloudflared:

@@ -23,7 +23,7 @@ The design principle. Rules questions have the shape "card A + card B + rule con
   all lettered sub-rules and `Example:` lines), keep parent links, and map
   question categories to whole subsections (e.g. `613`, `614`).
 - **Scryfall rulings are keyed by card** → fetch directly once cards resolve.
-- **Three retrieval legs** for the fuzzy part: category map (structured),
+- **Three retrieval sources** for the fuzzy part: category map (structured),
   BM25/full-text (keywords like "leaves the battlefield"), vector (semantic).
 - **The CR always outranks prior calls.**
 
@@ -51,24 +51,24 @@ Discord message (+ last N Q&A in the same thread)
   │
   ▼
 [2] Card resolution (per span)
-    A typed ladder, each rung tried only when the one above found nothing:
+    A typed resolution order, each step tried only when the one above found nothing:
     alias → possessive-stripped alias ("bob's" → "bob") →
     exact name → printed-name table → short name before the comma ("Ragavan")
     → alias as a suffix → trigram fuzzy
-    A [[bracketed]] span has its own ladder: exact name → printed name →
+    A [[bracketed]] span has its own resolution order: exact name → printed name →
     alias (whole span). It is CardSpan::Exact, chosen by an exhaustive
-    match, so no looser rung can resolve it. An alias maps one spelling to
+    match, so no looser step can resolve it. An alias maps one spelling to
     one card, so [[bob]] resolves. A miss is never resolved, only offered
     as Ambiguous:
-      - the cards the other naming rungs (possessive, short name, alias
-        suffix) point at, under that rung's matchedVia, so [[bob's]] offers
+      - the cards the other naming steps (possessive, short name, alias
+        suffix) point at, under that step's matchedVia, so [[bob's]] offers
         Dark Confidant. Dropped as a duplicate when the extractor also
         named the card.
-      - with no naming-rung hit, the fuzzy neighbours.
+      - with no naming-step hit, the fuzzy neighbours.
     Output: Resolution = Resolved(card, matchedVia) | Ambiguous(candidates) | NotFound
     Duplicate references (nickname + full name) are dropped. A span is a
     duplicate when it is
-      - Ambiguous from a non-fuzzy rung and shares a candidate with a card
+      - Ambiguous from a non-fuzzy step and shares a candidate with a card
         Resolved from another span, or
       - NotFound, but its words appear as whole words in a resolved card's
         (face) name.
@@ -91,7 +91,7 @@ Discord message (+ last N Q&A in the same thread)
     - CR: category → curated subsection IDs (always) + tsvector BM25 + pgvector
           cosine. Union, dedupe, expand to full rule chunk.
           Order matters: the synthesis budget (25 chunks / 30 kB) renders
-          only a prefix, and the legs return several times that. Priority:
+          only a prefix, and the sources return several times that. Priority:
             1. the primary category's rules sharing a word with the
                question (ranked by text relevance, not by id)
             2. BM25
@@ -153,7 +153,7 @@ Discord message (+ last N Q&A in the same thread)
 [6] Persist call (question, verdict, context ids, crVersion); rating buttons.
 ```
 
-The two model calls ([1] and [5]) and the vector leg of [4] reach their providers through
+The two model calls ([1] and [5]) and the vector search of [4] reach their providers through
 one seam (`docs/PROVIDERS.md`).
 
 - `crates/llm` holds the provider-neutral request and response, the spend cap and the
@@ -223,8 +223,8 @@ Three interfaces share this pipeline through the same composition root
 - **Config editor** (`crates/configure`, binary `judge-config`): a page on
   `127.0.0.1` for `judge.toml` and the settings in `.env` (D23).
   - The `judge.toml` form is `judge_bot::config::file_schema()`: JSON Schema
-    generated from the loader's serde types, with `x-doors` from
-    `DoorKey::on`, the table the loader's misplaced-key check reads.
+    generated from the loader's serde types, with `x-endpoints` from
+    `EndpointKey::on`, the table the loader's misplaced-key check reads.
   - `env::VARS` lists every variable `.env.example` carries as a secret or a
     setting. A value reaches the page only through a `Setting`. A secret, a
     variable the list does not know, or a hidden setting is reported as set or
@@ -274,7 +274,7 @@ Three interfaces share this pipeline through the same composition root
     Discord or web thread, and their inputs are bounded (question, spans,
     concepts, lookup ids, answer length). A persisted call is keyed by session
     (`calls.session_id`, unique), so persisting twice cannot file two calls. It
-    is excluded from the prior-call leg: nothing can rate it, and it is history
+    is excluded from the prior-call query: nothing can rate it, and it is history
     for its own thread only.
   - Over HTTP, `judge` runs are also capped per window (`MCP_JUDGE_LIMIT`) so a
     leaked token cannot take the public page's slots and spend cap with it.
@@ -337,8 +337,8 @@ models, chosen by `[models.embed]` in `judge.toml`.
 
 Every embedder carries its `Space` (provider kind, model, width). The one-row
 `embedding_space` table records the space the stored vectors belong to, and
-`ingest embed` refuses to write into another. On a mismatch the adapters' vector legs go
-dark (error log, never mixed). The space is re-checked on every use, and anything that
+`ingest embed` refuses to write into another. On a mismatch the adapters turn vector search
+off (error log, never mixed). The space is re-checked on every use, and anything that
 writes a vector holds it under a shared advisory lock. `ingest reembed --yes` switches the
 database in one transaction after probing the new embedder (`docs/PROVIDERS.md` §4.3).
 
@@ -388,7 +388,7 @@ The build was eval-first: retrieval was measured before any synthesis existed.
 4. Retrieval, behind a **gate of ≥ 90% of gold rule ids present in the Context**.
 5. Synthesis with citation validation, scored against the gold answers.
 6. The Discord adapter with rating buttons.
-7. The prior-call leg, which needs rated data to exist.
+7. The prior-call query, which needs rated data to exist.
 
 `judge-eval recall` still runs that gate for free on every retrieval change.
 
