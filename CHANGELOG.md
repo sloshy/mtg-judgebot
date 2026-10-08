@@ -17,6 +17,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-08
+
 ### Added
 
 - **Claude Haiku 5.5 is measured and priced.** The built-in price table knows
@@ -52,6 +54,35 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   variables it describes. No variable's meaning or default changed. Its
   `API_INTERFACES` example is quoted: uncommented as it was (`--api --web` bare),
   every `cargo run` binary refused the `.env` at startup. Compose was unaffected.
+- **The image builds the web page and the docs on Node 26** (was 24). CI and the
+  contributor setup moved with it. The site holds TypeScript at 6 until
+  `@astrojs/check` accepts 7.
+- **Dependencies are current.** Cargo, the web page and the docs site take the pending
+  Dependabot updates, and `yoke-derive` moves past a yanked release that `cargo deny`
+  refused.
+- **Contributor tooling.** The pre-push hook runs only the groups the pre-commit hook
+  leaves out (`sqlx`, `test` and `lint`), and `scripts/clean-target.sh` trims a
+  `target/` directory that has grown large. Neither affects a deployment.
+
+### Fixed
+
+- **A local image build no longer copies `.env` into a layer.** `COPY . .` took the
+  operator's `.env`, and a `.env.deploy` if present, into the builder stage. The build
+  context now leaves out both and keeps only `.env.example`, which `judge-config`
+  compiles in. Images published from CI were not affected, since a clone has no `.env`.
+
+### Upgrading
+
+Nothing is required: `docker compose pull && docker compose up -d` is the whole upgrade,
+and no migration is involved.
+
+- **`judge-config` needs a 1.2 image.** `scripts/config.sh` runs the editor from the
+  image, so a deployment with `JUDGE_IMAGE_TAG` pinned to `1.1` or `1.1.0` has to move
+  to `1.2` (or `latest`) first.
+- **A log query on `rung=` or `vector legs`** needs the new wording (`step=`, `vector
+  search off` / `on`), as described above.
+- **A copy of `.env.example` kept as a `.env`** with `API_INTERFACES` uncommented bare
+  (`--api --web`) should quote it, as the file now does.
 
 ## [1.1.0] - 2026-09-29
 
@@ -235,6 +266,7 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
 - **The documentation site**, organised around running your own judgebot, from the
   canonical files in `docs/`.
 
-[Unreleased]: https://github.com/sloshy/mtg-judgebot/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/sloshy/mtg-judgebot/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/sloshy/mtg-judgebot/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/sloshy/mtg-judgebot/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/sloshy/mtg-judgebot/releases/tag/v1.0.0

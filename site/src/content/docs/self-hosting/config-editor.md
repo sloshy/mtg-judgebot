@@ -45,7 +45,7 @@ scripts/config.sh
 - It runs the editor from the image (`docker compose run` on the `config` service), so it
   needs no Rust toolchain and works before `.env` exists. Run `docker compose pull`
   first, or `docker compose build config` for your own checkout.
-- The editor is not in 1.1.x images. With `JUDGE_IMAGE_TAG` pinned to one, the script
+- The editor is not in images before 1.2.0. With `JUDGE_IMAGE_TAG` pinned to one, the script
   says so: use `latest` or a later release, or run it from source (below).
 - It prints a URL ending in `#token=…`. Open that URL; the page needs the token.
 - Ctrl-C stops it.

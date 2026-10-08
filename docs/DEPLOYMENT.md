@@ -648,7 +648,7 @@ exactly the image that has been running as `latest`, down to the platform digest
 update on releases rather than on every push, pin one:
 
 ```ini
-JUDGE_IMAGE_TAG=1.1    # in .env: follows 1.1.x patch releases; 1.1.0 pins one exactly
+JUDGE_IMAGE_TAG=1.2    # in .env: follows 1.2.x patch releases; 1.2.0 pins one exactly
 ```
 
 `CONTRIBUTING.md` says how a release is cut. The ordinary deploy:
@@ -727,7 +727,7 @@ Every build leaves an immutable tag, so reverting a bad deploy is a one-line cha
 `sha-<short>` from the workflow run summary, or the version of the last good release:
 
 ```ini
-JUDGE_IMAGE_TAG=sha-abc1234    # in .env; or a release, e.g. 1.1.0
+JUDGE_IMAGE_TAG=sha-abc1234    # in .env; or a release, e.g. 1.2.0
 ```
 
 ```sh

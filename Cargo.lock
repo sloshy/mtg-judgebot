@@ -1830,7 +1830,7 @@ dependencies = [
 
 [[package]]
 name = "judge-agent"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "dotenvy",
@@ -1851,7 +1851,7 @@ dependencies = [
 
 [[package]]
 name = "judge-anthropic"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "judge-api"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1898,7 +1898,7 @@ dependencies = [
 
 [[package]]
 name = "judge-bot"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "judge-configure"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "judge-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1972,7 +1972,7 @@ dependencies = [
 
 [[package]]
 name = "judge-embed"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "judge-eval"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2008,7 +2008,7 @@ dependencies = [
 
 [[package]]
 name = "judge-ingest"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2035,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "judge-llm"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "judge-openai"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "async-trait",
  "judge-core",
