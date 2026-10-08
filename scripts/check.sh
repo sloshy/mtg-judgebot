@@ -397,6 +397,18 @@ for g in "${groups[@]}"; do
   esac
 done
 
+# target/ grows without bound (every profile or toolchain change orphans a
+# build), so say so once it is large. `du` on a big tree is slow: give up
+# after 5 s rather than delay the gates.
+warn_target_size() {
+  local kb
+  kb="$(timeout 5 du -sk "${CARGO_TARGET_DIR:-$root/target}" 2> /dev/null | cut -f1)" || return 0
+  if [ "${kb:-0}" -gt 104857600 ]; then
+    echo "note: target/ is over 100 GB; scripts/clean-target.sh reclaims it" >&2
+  fi
+}
+warn_target_size
+
 if ! tools_ready; then
   echo "could not install the linters (scripts/tools.sh install)" >&2
   exit 1

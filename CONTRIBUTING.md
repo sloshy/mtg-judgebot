@@ -76,6 +76,10 @@ Other ways to run the gates and linters:
 - `git commit --no-verify` / `git push --no-verify` skip a hook once.
 - `npm --prefix web run fix` (or `site`) applies Biome's formatting and safe fixes.
   `.tools/bin/taplo fmt` formats the TOML.
+- `scripts/clean-target.sh [--days N] [--dry-run]` reclaims `target/`: it deletes
+  `target/debug/incremental` and, with `cargo install cargo-sweep`, artifacts older than
+  N days (default 14). Run it weekly and after a toolchain bump, a profile change or a
+  large dependency update. `scripts/check.sh` prints a note when `target/` passes 100 GB.
 
 The linters are prebuilt binaries at the versions in `scripts/tools.sh`, which CI installs
 too. They live in `.tools/` (gitignored). Bumping a version there is the whole upgrade.
