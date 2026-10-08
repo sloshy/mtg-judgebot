@@ -46,7 +46,13 @@ fi
 lock="$held"
 
 log "refresh start: ${*:-refresh}"
-# --pull missing: use the image `docker compose pull` already fetched for
-# bot/api, and never fall back to building on the host (docs/DEPLOYMENT.md §1).
-docker compose run --rm --pull missing refresh "$@"
+# Never build on the host (docs/DEPLOYMENT.md §1): `run` builds when an image is
+# missing, so require every image `docker compose pull` fetches to be present.
+# (`run --pull missing` would say the same, but Compose v2.20, which Synology
+# ships, has no such flag.)
+images="$(docker compose --profile refresh config --images)"
+while read -r image; do
+  docker image inspect "$image" >/dev/null 2>&1 || die "image $image is not present; run \`docker compose pull\` first"
+done <<<"$images"
+docker compose run --rm refresh "$@"
 log "refresh done"

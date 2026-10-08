@@ -167,7 +167,7 @@ Docker (`run` starts `db` if it is not up):
 
 ```sh
 docker compose pull
-docker compose run --rm --pull missing refresh migrate   # never falls back to building on the host
+docker compose run --rm refresh migrate   # the image `pull` fetched; build only if it is missing, so pull first
 ```
 
 You can also run `sqlx migrate run --source crates/bot/migrations` from a workstation,
@@ -500,8 +500,8 @@ from `JUDGE_CONFIG`, §4). Its `embed` step writes vectors in the space the bot 
 and refuses when the configured space and the database's disagree.
 
 `scripts/refresh-data.sh` is the cron entry point. It takes a lock so two runs never
-overlap, then runs `docker compose run --rm --pull missing refresh`. That reuses the
-image `docker compose pull` already fetched and never builds on the host. Any argument
+overlap, checks that the image `docker compose pull` fetched is present, then runs
+`docker compose run --rm refresh`. It never builds on the host. Any argument
 is passed through as the `judge-ingest` subcommand. For example,
 `scripts/refresh-data.sh rules latest` checks only the CR.
 
@@ -703,7 +703,7 @@ pick it up when next recreated, which `up -d` does because the env file changed.
 ```sh
 docker compose pull
 docker compose stop bot api                              # only when the migration rewrites rows
-docker compose run --rm --pull missing refresh migrate   # prints what it applies; refuses a changed file
+docker compose run --rm refresh migrate   # prints what it applies; refuses a changed file
 docker compose up -d
 ```
 
