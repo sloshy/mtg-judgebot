@@ -68,6 +68,11 @@ proposals live in git history only.
   running deployment referenced anywhere in the repository or the site. That includes a
   hostname and "the maintainer's instance". The reader's own instance is the only one
   that exists.
+- Section headings are short noun phrases, a few words, never a clause or a
+  "X, and what Y" pair ("Validation", not "What it checks, and what it leaves to
+  startup"). Detail belongs in the first sentence under the heading. A `DECISIONS.md`
+  title names the decision in the same spirit. Check that no link anchors on a heading
+  before renaming it (`#d16-one-judgebot-per-community` is one).
 - The prose is reference documentation, so it opens on the subject, never on a greeting
   ("Thanks for looking at this", "We hope…", "Feel free to…").
 - Internal links are relative (`../../using/discord/`) so `SITE_BASE` can change. The

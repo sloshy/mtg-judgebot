@@ -154,7 +154,7 @@ The config editor (`scripts/config.sh`) edits both files from a page on localhos
 [The config editor](https://mtg-judgebot.rpeters.dev/self-hosting/config-editor/) has the
 details.
 
-### The web page and the HTTP API
+### Web page and HTTP API
 
 `docker compose up -d api` serves an anonymous page on <http://localhost:8787> with the
 same pipeline, citations and "did you mean…?" flow, and no rating buttons because nobody

@@ -420,7 +420,7 @@ hours there) and cross-compiling inside the Dockerfile (a second toolchain and l
 keep working for `aws-lc-sys` and `ring`, on a build that would then run twice on one
 runner).
 
-## D19. A budget period beside the cap, not inside it
+## D19. Budget period beside the cap
 
 *Decided 2026-09-19.*
 
@@ -494,7 +494,7 @@ passes, and a rule number is not covered by citing a prior call that mentions it
   rule citations. The pinned digest and the golden fixtures were updated on purpose, and
   the published runs were redone on the new prompt.
 
-## D21. A citation that quotes nothing is dropped, not held against the answer
+## D21. Empty citations are dropped
 
 *Decided 2026-09-20.*
 
@@ -536,7 +536,7 @@ still true when nothing else is cited, and it costs nothing as a deterrent.
 - *Dropping any citation that fails*, not only stubs. A failed citation with a real quote
   is a claim about a source, and the answer may rest on it.
 
-## D22. Stray escapes in the answer are decoded, not rejected
+## D22. Stray escapes are decoded
 
 *Decided 2026-09-29.*
 
@@ -567,7 +567,7 @@ no rules answer means those two characters.
 - *Decoding at display time.* Each interface would need it, and the stored call would
   still carry the escapes into later prompts.
 
-## D23. A config editor generated from the loader, run on localhost
+## D23. A generated config editor on localhost
 
 *Decided 2026-10-07.*
 

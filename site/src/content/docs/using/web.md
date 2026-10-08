@@ -27,7 +27,7 @@ visitor is stored beyond a random session id that groups their questions. The fo
 names the source repository, the commit the instance was built from and the operator's
 support address (`JUDGE_OPERATOR_EMAIL`, which `judge-api` does not start without).
 
-## Turning it on and off
+## Enabling
 
 Each of `judge-api`'s interfaces is a launch option. With no flags it serves
 `POST /api/judge`, plus `GET /api/health` and `GET /api/about`, which are always on. The page needs `--web`, and the MCP transport needs

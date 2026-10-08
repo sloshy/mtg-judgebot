@@ -106,7 +106,7 @@ Run with the switch already made, `reembed` only fills rows that are still empty
 `judge-cli config` prints the resolved setup with secrets redacted. Every binary logs the
 same summary line at startup.
 
-## What a cheaper model costs
+## Cheaper models
 
 The default is the expensive model. It and two cheaper ones were measured on the
 21-question gold set, Opus and Sonnet on 2026-09-29 and Haiku on 2026-10-07

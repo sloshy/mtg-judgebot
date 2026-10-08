@@ -79,7 +79,7 @@ install link) does the same job. If you use it instead, choose:
 - The same two scopes.
 - No permissions.
 
-## 4. Command registration and `GUILD_ID`
+## 4. Command registration
 
 The bot registers its own slash commands when it starts. It registers them either:
 
@@ -146,7 +146,7 @@ application, not to any server, and need no emoji permission
 Without them, answers show the literal `{W}`. The command is safe to rerun, reads
 `DISCORD_TOKEN` and needs no database.
 
-## Keeping it to one channel
+## One channel
 
 The bot answers wherever its commands can be used. That is a Discord setting, not the
 bot's. In *Server Settings → Integrations*, open your application and restrict `/judge`
@@ -182,7 +182,7 @@ and register commands globally. The servers then share one process, with one spe
 A community that wants its own budget runs its own instance: a second copy of the same
 compose file, with a second application's token.
 
-## Discord's rules for the bot
+## Discord's rules
 
 Your application is bound by the [Discord Developer Policy](https://support-dev.discord.com/hc/articles/8563934450327-Discord-Developer-Policy)
 and Terms of Service like any other. Two points matter for a judgebot:

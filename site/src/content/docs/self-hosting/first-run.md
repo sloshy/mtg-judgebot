@@ -67,7 +67,7 @@ touch Discord. The bot is the last thing to add.
 6. Schedule `scripts/refresh-data.sh` nightly and `scripts/backup-db.sh` weekly. The
    [deployment runbook](../../self-hosting/deployment/) has the cron lines.
 
-## One step at a time
+## Single steps
 
 `init` is these, in this order, and each can be run by itself:
 

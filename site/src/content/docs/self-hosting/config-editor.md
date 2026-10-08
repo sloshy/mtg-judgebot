@@ -72,7 +72,7 @@ With Rust installed, the same editor runs without Docker:
 cargo run --release -p judge-configure
 ```
 
-## What it checks, and what it leaves to startup
+## Validation
 
 | Panel entry | Runs | Fails on, for example |
 | --- | --- | --- |

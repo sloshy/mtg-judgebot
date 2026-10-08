@@ -330,7 +330,7 @@ after Scryfall adds one. Skipping it is safe: the bot logs a warning at startup
 and falls back to writing `{W}` as text. The web page needs none of this, because it
 loads the symbols from Scryfall's CDN.
 
-### Client address for rate limiting
+### Client address
 
 The per-IP limiter needs an address the caller cannot choose, because `/api/judge` is
 anonymous and every request costs Anthropic tokens.

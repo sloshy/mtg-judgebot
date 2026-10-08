@@ -22,7 +22,7 @@ offline data in `.sqlx/`).
 | `card_aliases` | Nicknames from `data/aliases.yaml`, lowercased. |
 | `card_notes` | Hand-written notes from `data/notes.yaml`. |
 
-## Rules (from the Comprehensive Rules)
+## Rules
 
 | Table | Contents |
 | --- | --- |

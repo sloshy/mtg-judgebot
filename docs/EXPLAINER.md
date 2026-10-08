@@ -35,7 +35,7 @@ The system is one Postgres database, a handful of Rust binaries, two paid APIs
 
 ---
 
-## 2. Limits of asking the model directly
+## 2. Limits of a bare model
 
 A large language model already "knows" a lot about Magic. Asking it directly fails in
 three ways that matter for a judge bot:
@@ -200,7 +200,7 @@ linked to a CR mirror, card symbols drawn as emoji, and 1/2/3 rating buttons.
 
 ---
 
-## 4. The data and where it comes from
+## 4. The data
 
 Everything lives in one Postgres 16 database with two extensions: `pgvector` (vector
 columns and indexes) and `pg_trgm` (trigram similarity). Migrations are in
@@ -496,7 +496,7 @@ handling lives, so you can read further.
 
 ---
 
-## 8. Feedback loop and stale answers
+## 8. Feedback and stale answers
 
 Stored answers are an asset (examples for future questions) and a liability (they go
 stale). Two mechanisms keep them current without a human curator.
@@ -692,7 +692,7 @@ to R2. `docs/DEPLOYMENT.md` is the runbook.
 - **Oracle text**: a Magic card's current official wording, as opposed to what is printed.
 - **CR**: the Comprehensive Rules. **MTR / IPG**: tournament policy documents, out of scope.
 
-## 15. Where to go next
+## 15. Next
 
 - The pipeline: `crates/core/src/judge.rs`, then `verdict.rs` and `quote.rs`.
 - Retrieval SQL: `crates/bot/src/db/retrieve.rs` and `rules.rs`.
