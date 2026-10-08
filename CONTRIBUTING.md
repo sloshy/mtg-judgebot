@@ -11,6 +11,7 @@ so `rustup` installs it on first use) and Node 24 for the web page.
 
 ```sh
 cp .env.example .env            # DATABASE_URL already points at the compose database
+                                # (later edits: cargo run -p judge-configure, the config editor)
 docker compose up -d db         # pgvector Postgres on localhost:5432
 set -a; source .env; set +a     # optional: the binaries read .env themselves; this puts it in your shell too
 cargo build --workspace

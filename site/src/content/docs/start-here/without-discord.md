@@ -15,9 +15,10 @@ other two sources: the rules for the question's category, and full-text search. 
 
 ```sh
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
-cp .env.example .env                    # set ANTHROPIC_API_KEY (and VOYAGE_API_KEY if you have one)
-                                        # and JUDGE_OPERATOR_EMAIL, which judge-api requires
 docker compose pull                     # the published image
+scripts/config.sh                       # the config editor: open the URL it prints, set ANTHROPIC_API_KEY
+                                        # (and VOYAGE_API_KEY if you have one) and JUDGE_OPERATOR_EMAIL,
+                                        # which judge-api requires; save, then Ctrl-C
 docker compose up -d db                 # pgvector Postgres on localhost:5432
 docker compose run --rm refresh init    # the whole first load, in one command
 ```
@@ -35,8 +36,11 @@ Without embeddings it takes about a minute on a fast connection, nearly all of i
 Scryfall download. It stops at the first failure. Every step is idempotent, so the fix for a
 failed `init` is to run it again.
 
-If port 5432 is already taken on your machine, set `DB_PORT` in `.env` and change the port
-in `DATABASE_URL` to match before starting the database.
+If port 5432 is already taken on your machine, set `DB_PORT` and change the port in
+`DATABASE_URL` to match before starting the database.
+
+The [config editor](../../self-hosting/config-editor/) checks each change with the
+binaries' own loaders. To edit by hand instead, `cp .env.example .env` and fill it in.
 
 ## The web page
 

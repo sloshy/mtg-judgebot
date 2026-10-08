@@ -5,16 +5,17 @@ sidebar:
   order: 3
 ---
 
-All configuration is environment variables. `.env.example` is the annotated template.
+All configuration is environment variables, kept in `.env`. The
+[config editor](../config-editor/) (`scripts/config.sh`) is the way to set them: it lists
+every variable below with its documentation and checks each change with the binaries' own
+loaders. Editing `.env` by hand works too, starting from the annotated `.env.example`.
 
 - Every binary reads `.env` from its working directory. Exporting it into your shell
   (`set -a; source .env; set +a`) is optional.
 - The containers get theirs through compose's `env_file`.
 - A [`judge.toml`](../models/) chooses providers and models. It names environment variables
   for its secrets and never holds one.
-- [`judge-config`](../config-editor/) edits the settings below, and `judge.toml`, from a
-  page on localhost, checking each draft with the binaries' own loaders. It never shows
-  a secret, and can replace one with a value you type.
+- The config editor never shows a secret, and can replace one with a value you type.
 
 ## Database and models
 

@@ -169,6 +169,29 @@ services:
       db:
         condition: service_healthy
 
+  # judge-config, the config editor: a page on localhost for .env and
+  # judge.toml (site: self-hosting/config-editor). Run `scripts/config.sh`,
+  # which is `docker compose run --rm --service-ports` as your own user so the
+  # files it saves stay yours. It reads the files it edits from the checkout
+  # mounted at /work and has no env_file, so it runs before .env exists: the
+  # first save creates .env from .env.example. A relative JUDGE_CONFIG resolves
+  # inside the mount; an absolute one needs `scripts/config.sh --config ...`.
+  config:
+    build: *build
+    image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
+    profiles: ["config"]
+    entrypoint: ["judge-config", "--listen", "0.0.0.0:8790"]
+    environment:
+      # Where the port below is published: what the editor prints, and why it
+      # does not warn about listening on 0.0.0.0 inside the container.
+      JUDGE_CONFIG_PUBLISHED: 127.0.0.1:8790
+    working_dir: /work
+    volumes:
+      - .:/work
+    ports:
+      # Loopback only: the page edits your settings.
+      - "127.0.0.1:8790:8790"
+
   # Public entry point. Dials out to Cloudflare's edge, so the host needs no
   # open inbound port, no public IPv4 and no dynamic DNS. Off by default;
   # deployments opt in with COMPOSE_PROFILES=tunnel in .env.

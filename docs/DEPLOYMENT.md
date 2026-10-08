@@ -111,10 +111,17 @@ Copy the connector token into `.env.deploy` as `TUNNEL_TOKEN`.
 Configuration lives in two separate files:
 
 ```sh
-cp .env.example .env               # app config: API keys, DISCORD_TOKEN, GUILD_ID,
-                                   # JUDGE_OPERATOR_DISCORD and JUDGE_OPERATOR_EMAIL (both required here)
+docker compose pull                # the image, which also carries the config editor
+scripts/config.sh                  # app config (.env) in the config editor: API keys, DISCORD_TOKEN,
+                                   # GUILD_ID, JUDGE_OPERATOR_DISCORD and JUDGE_OPERATOR_EMAIL (both
+                                   # required here), and judge.toml. Over SSH, forward the port first:
+                                   # ssh -L 8790:127.0.0.1:8790 <host>
 cp .env.deploy.example .env.deploy # deploy credentials: TUNNEL_TOKEN, R2_*
 ```
+
+The editor saves `.env`, creating it from `.env.example` the first time, and checks each
+change with the binaries' loaders. To edit by hand instead, `cp .env.example .env` and fill
+it in. `.env.deploy` is edited by hand: the editor never reads it.
 
 Both files are gitignored.
 
@@ -127,7 +134,7 @@ Model credentials belong in `.env`: `ANTHROPIC_API_KEY`, every `api_key_env` a
 `judge.toml` names, and the cloud endpoints' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS`.
 `bot`, `api` and `refresh` read them, and nothing else does.
 
-In `.env`, set:
+In the editor's Settings tab (or `.env`), set:
 
 ```ini
 COMPOSE_PROFILES=tunnel     # `docker compose up -d` now includes cloudflared

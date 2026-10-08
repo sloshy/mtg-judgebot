@@ -1,7 +1,9 @@
 # judge.toml: which models the judge runs on, and through which providers.
 #
-# Copy to ./judge.toml (gitignored: per host, not secret) or point JUDGE_CONFIG
-# at it. Under Docker always set JUDGE_CONFIG=./judge.toml in .env. The
+# The config editor, `scripts/config.sh` (Models tab), writes this file from
+# forms and checks it with the loader. By hand: copy to ./judge.toml
+# (gitignored: per host, not secret) or point JUDGE_CONFIG at it. Under
+# Docker always set JUDGE_CONFIG=./judge.toml in .env (the editor offers it). The
 # containers see only the file compose mounts, never the repo root, so a
 # ./judge.toml with JUDGE_CONFIG blank is read by `cargo run` and by nothing
 # in `docker compose up`. With no file at all, the binaries build the default

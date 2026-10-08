@@ -22,6 +22,10 @@ use anyhow::{Context as _, Result};
 use judge_configure::{env::DotEnv, server};
 use tokio::sync::Mutex;
 
+/// Where a container publishes the port, set by the compose service: the
+/// address to print, and whether to warn about a non-loopback listener.
+const PUBLISHED_ENV: &str = "JUDGE_CONFIG_PUBLISHED";
+
 const USAGE: &str = "\
 usage: judge-config [--env FILE] [--config FILE] [--listen ADDR] [--allow-host NAME]...
 
@@ -145,7 +149,7 @@ async fn run() -> Result<()> {
     };
     let (toml_path, spelled) = toml_path(&args.env, args.config);
     let editor = Arc::new(server::Editor {
-        env_path: args.env,
+        env_path: absolute(&args.env),
         toml_path,
         token: token(),
         allowed_hosts: args.allow_hosts,
@@ -156,17 +160,23 @@ async fn run() -> Result<()> {
         .await
         .with_context(|| format!("listening on {}", args.listen))?;
     let addr = listener.local_addr()?;
-    if !addr.ip().is_loopback() {
+    // In a container the listener is 0.0.0.0 by necessity; the compose
+    // service says where the port is really published.
+    let published = std::env::var(PUBLISHED_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<SocketAddr>().ok());
+    let reachable = published.unwrap_or(addr);
+    if !reachable.ip().is_loopback() {
         eprintln!(
             "judge-config: listening on {addr}, not loopback. Publish the port on 127.0.0.1 only \
              (docker run -p 127.0.0.1:{0}:{0}) or anyone who can reach it and learns the token can edit your settings.",
             addr.port()
         );
     }
-    let shown = if addr.ip().is_unspecified() {
-        SocketAddr::from(([127, 0, 0, 1], addr.port()))
+    let shown = if reachable.ip().is_unspecified() {
+        SocketAddr::from(([127, 0, 0, 1], reachable.port()))
     } else {
-        addr
+        reachable
     };
     println!(
         "editing {} and {}",

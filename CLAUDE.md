@@ -290,6 +290,9 @@ judge-cli begin "<q>" [--thread T] | prompt <s> | status <s> | extract <s> <file
 judge-cli verdict <s> <file|-> [--persist] | persist <s>   # the agent-driven session, step by step
 judge-cli card <name> | card-info <uuid> | get-rules <id>.. | search "<q>" [--limit N] | glossary <term>
 judge-cli config                                        # the resolved provider/model setup, secrets redacted
+scripts/config.sh                                       # judge-config from the image (compose service `config`,
+                                                        # no env_file, so it runs before .env exists): the way
+                                                        # the docs tell operators to configure
 cargo run --release -p judge-configure                  # judge-config: edit judge.toml + .env on 127.0.0.1:8790
                                                         # (prints a #token= URL; secrets write-only, never shown)
 judge-mcp                                               # the MCP server on stdio (.mcp.json starts it)

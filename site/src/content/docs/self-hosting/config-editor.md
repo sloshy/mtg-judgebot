@@ -6,8 +6,10 @@ sidebar:
 ---
 
 `judge-config` serves a page on `127.0.0.1` for editing [`judge.toml`](../models/) and
-`.env`. It is optional: both files stay plain text, and the editor writes them the way
-you would.
+`.env`, and is the way to set a judgebot's configuration.
+
+- Both files stay plain text, so editing them by hand remains possible.
+- The editor writes them the way you would: only the lines you change.
 
 - **Forms from the loader's types.** The `judge.toml` form is generated from the types the
   loader parses into, and the help text is their documentation. A setting's help is its
@@ -34,34 +36,41 @@ you would.
 
 ## Running it
 
-From the directory holding `.env` (the repository checkout):
+From the repository checkout:
+
+```bash
+scripts/config.sh
+```
+
+- It runs the editor from the image (`docker compose run` on the `config` service), so it
+  needs no Rust toolchain and works before `.env` exists. Run `docker compose pull`
+  first, or `docker compose build config` for your own checkout.
+- The editor is not in 1.1.x images. With `JUDGE_IMAGE_TAG` pinned to one, the script
+  says so: use `latest` or a later release, or run it from source (below).
+- It prints a URL ending in `#token=…`. Open that URL; the page needs the token.
+- Ctrl-C stops it.
+- It runs as your user, so the files it saves keep their owner.
+- From another machine, forward the port over SSH first
+  (`ssh -L 8790:127.0.0.1:8790 <host>`) and open the printed URL there.
+- Under rootless Docker or Podman, `--user` maps to another id, and under SELinux the
+  bind mount needs relabelling, so saving fails. Run it from source there.
+
+Arguments after `scripts/config.sh` go to the editor:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--config FILE` | `JUDGE_CONFIG` from `.env`, else `judge.toml` beside it | The `judge.toml` to edit. With no file, the page offers to create one or to stay on the zero-config setup. Under the script, an absolute `JUDGE_CONFIG` names a path outside the mounted checkout, so pass a path inside it. |
+| `--allow-host NAME` | | A `Host` header to accept besides `localhost`, `127.0.0.1` and `[::1]`. |
+| `--env FILE` | `./.env` | The `.env` to edit. When it does not exist, the first save creates it from `.env.example`, readable by its owner only. |
+| `--listen ADDR` | `127.0.0.1:8790` | Where to listen. The script listens inside the container and publishes on `127.0.0.1:8790`. |
+
+### From source
+
+With Rust installed, the same editor runs without Docker:
 
 ```bash
 cargo run --release -p judge-configure
 ```
-
-It prints a URL ending in `#token=…`. Open that URL; the page needs the token. Ctrl-C
-stops the editor.
-
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--env FILE` | `./.env` | The `.env` to edit. When it does not exist, the first save creates it from `.env.example`, readable by its owner only. |
-| `--config FILE` | `JUDGE_CONFIG` from that `.env`, else `judge.toml` beside it | The `judge.toml` to edit. With no file, the page offers to create one or to stay on the zero-config setup. |
-| `--listen ADDR` | `127.0.0.1:8790` | Where to listen. |
-| `--allow-host NAME` | | A `Host` header to accept besides `localhost`, `127.0.0.1` and `[::1]`. |
-
-### On a deployment host
-
-The published image carries `judge-config`. Run it with the checkout mounted and the port
-published on loopback only, as your own user so the files keep their owner:
-
-```bash
-docker compose run --rm --no-deps --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work -p 127.0.0.1:8790:8790 --entrypoint judge-config api --listen 0.0.0.0:8790
-```
-
-From another machine, forward the port over SSH (`ssh -L 8790:127.0.0.1:8790 <host>`) and
-open the printed URL there. A relative `JUDGE_CONFIG` resolves inside the mount. An
-absolute one names a path in the container, so pass `--config` instead.
 
 ## What it checks, and what it leaves to startup
 

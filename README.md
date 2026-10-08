@@ -69,9 +69,10 @@ You need Docker with the compose plugin, and a model API key.
 
 ```sh
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
-cp .env.example .env               # set ANTHROPIC_API_KEY and JUDGE_OPERATOR_EMAIL (a support address
-                                   # the page shows); VOYAGE_API_KEY turns on semantic search
 docker compose pull                # the published image, amd64 and arm64
+scripts/config.sh                  # the config editor: open the URL it prints, set ANTHROPIC_API_KEY and
+                                   # JUDGE_OPERATOR_EMAIL (a support address the page shows), save, Ctrl-C.
+                                   # VOYAGE_API_KEY turns on semantic search
 docker compose up -d db            # Postgres with pgvector, on localhost:5432
 docker compose run --rm refresh init   # the whole first load: schema, cards, rules, aliases, notes,
                                        # embeddings if keyed. Safe to run again. The nightly
@@ -80,8 +81,12 @@ docker compose up -d api           # the web page
 ```
 
 Open <http://localhost:8787> and ask a question. By default the page allows each address
-4 questions per 5 minutes (`API_RATE_LIMIT` in `.env`). If port 5432 is taken on your
-machine, set `DB_PORT` in `.env` and change `DATABASE_URL` to match.
+4 questions per 5 minutes (`API_RATE_LIMIT`). If port 5432 is taken on your machine, set
+`DB_PORT` and change `DATABASE_URL` to match.
+
+The config editor checks every change with the binaries' own loaders and shows which part
+would refuse to start, and why. To edit by hand instead, `cp .env.example .env` and fill it
+in: every variable is documented in the file.
 
 Every model call is metered against a hard cap, `JUDGE_MAX_USD` (default $5):
 
@@ -141,10 +146,11 @@ embeddings. `judge.example.toml` documents every knob, and
 Under Docker, also set `JUDGE_CONFIG=./judge.toml` in `.env`. The containers see only the
 file compose mounts from that path.
 
-`judge-config` (`cargo run --release -p judge-configure`, also in the image) edits both
-files from a page on localhost. Its forms come from the loader's own types, and every
-draft is checked by the loaders the binaries run. Secrets are write-only: it never shows
-one, and can replace one with a value you type.
+The config editor (`scripts/config.sh`) edits both files from a page on localhost:
+
+- Its forms come from the loader's own types.
+- Every draft is checked by the loaders the binaries run.
+- Secrets are write-only: it never shows one, and can replace one with a value you type.
 [The config editor](https://mtg-judgebot.rpeters.dev/self-hosting/config-editor/) has the
 details.
 

@@ -36,14 +36,22 @@ touch Discord. The bot is the last thing to add.
 
 ## Order of operations
 
-1. `cp .env.example .env` and fill in the keys. Every knob is documented in the file and in
-   the [configuration reference](../../self-hosting/configuration/). Two required values
-   are contacts, not keys:
-   - `JUDGE_OPERATOR_DISCORD` (your Discord username), required by the bot.
-   - `JUDGE_OPERATOR_EMAIL` (a support address), required by `judge-api`.
+1. Configure with the [config editor](../../self-hosting/config-editor/):
+   1. `docker compose pull`
+   2. `scripts/config.sh`, then open the URL it prints.
+   3. Set your model key (`ANTHROPIC_API_KEY`, or a provider in the Models tab), and
+      `VOYAGE_API_KEY` for semantic search if you have one.
+   4. Set `JUDGE_OPERATOR_DISCORD` (your Discord username, required by the bot) and
+      `JUDGE_OPERATOR_EMAIL` (a support address, required by `judge-api`).
+   5. Check the side panel, which shows whether each part would start. Save on the Review
+      tab, then Ctrl-C.
+
+   To edit by hand instead, `cp .env.example .env` and fill it in. Every variable is
+   documented in the file and in the
+   [configuration reference](../../self-hosting/configuration/).
 2. `docker compose up -d db`. Postgres publishes on **localhost:5432** (loopback only). If
-   something on the host already has that port, set `DB_PORT` in `.env` and change the
-   port in `DATABASE_URL` to match.
+   something on the host already has that port, set `DB_PORT` and change the port in
+   `DATABASE_URL` to match.
 3. `docker compose run --rm refresh init` loads everything: the schema, the cards, the
    current rules, the alias and note lists, embeddings if you have an embedder, and the
    emoji if `DISCORD_TOKEN` is already set. `init` is safe to run again.

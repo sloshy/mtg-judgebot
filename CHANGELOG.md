@@ -35,9 +35,10 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   binaries run at startup, and the panel says whether the database settings, the models,
   the Discord bot and the HTTP API would start, naming the key to fix if not. Only changed
   lines are written, after a diff. Secrets are write-only: never shown, and replaced from a
-  masked input. It is in the image
-  (`docker compose run … --entrypoint judge-config api`) and runs with
-  `cargo run -p judge-configure`. See the Config editor page.
+  masked input. `scripts/config.sh` runs it from the image (a `config` compose service
+  that needs no `.env`, so it is the first setup step), and `cargo run -p judge-configure`
+  from source. The setup guides now use it, with hand-editing `.env` as the alternative.
+  See the Config editor page.
 
 ### Changed
 

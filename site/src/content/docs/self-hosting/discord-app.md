@@ -39,11 +39,15 @@ shown there ends up in the install link in step 3.
 
 Under **Bot**:
 
-1. Choose **Reset Token** and copy the result into `.env` as `DISCORD_TOKEN`. Discord
-   shows a token once. If you lose it, reset again. The token is a credential for the
-   application, and every binary that reads it keeps it redacted.
-   At the same time, set `JUDGE_OPERATOR_DISCORD` in `.env` to your own Discord username.
-   The bot does not start without it, and `/help` and `/license` show it.
+1. Choose **Reset Token** and copy the result. Discord shows a token once. If you lose it,
+   reset again. The token is a credential for the application, and every binary that reads
+   it keeps it redacted. Then, in the [config editor](../../self-hosting/config-editor/)
+   (`scripts/config.sh`), Settings tab:
+   - `DISCORD_TOKEN`: **Set…**, paste the token
+   - `JUDGE_OPERATOR_DISCORD`: your own Discord username. The bot does not start without
+     it, and `/help` and `/license` show it.
+
+   By hand, the same two lines go in `.env`.
 2. Leave all three **Privileged Gateway Intents** (*Presence*, *Server Members*, *Message
    Content*) **off**. The bot connects with no intents
    ([Gateway Intents](https://docs.discord.com/developers/events/gateway#privileged-intents)
