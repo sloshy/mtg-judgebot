@@ -58,13 +58,16 @@ your development one.
   `cargo machete`, `taplo`, `typos`, `shellcheck`, `actionlint`, `hadolint`, a check
   that the icon's copies match, and the compose file. It takes seconds unless clippy has
   a lot to recompile.
-- **pre-push** checks the tip of each ref being pushed, with the groups the push
-  changes since the remote's commit. Changed Rust, compiled-in data, `eval/` or the
-  compose file also runs `cargo test`, the migrations and the `.sqlx` freshness check,
-  which need the database up (`docker compose up -d db`) and `sqlx-cli`. A change to
-  `scripts/check.sh`, `scripts/tools.sh` or a workflow, a new branch, or a remote
-  commit your clone has not fetched gets every group. CI runs the same script, so a
-  push that passes this hook, on top of a commit that passed CI, passes CI too.
+- **pre-push** checks the tip of each ref being pushed against the remote's commit. It
+  runs the repository lints, and, when Rust, compiled-in data, `eval/` or the compose
+  file changed, `cargo test`, the migrations and the `.sqlx` freshness check
+  (fmt, clippy, web and site already ran at commit). These need the database up
+  (`docker compose up -d db`) and `sqlx-cli`. A change to `scripts/check.sh`,
+  `scripts/tools.sh` or a workflow, a new branch, or a remote commit your clone has
+  not fetched gets every group. CI runs the same script. Commits that skipped
+  pre-commit (`--no-verify`, or replayed by a rebase or cherry-pick) get their fmt,
+  clippy, web and site checks only in CI, so run `scripts/check.sh` before pushing
+  after a rebase.
 
 Other ways to run the gates and linters:
 

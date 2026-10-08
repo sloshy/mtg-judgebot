@@ -86,3 +86,12 @@ result_large_err = "allow"
 # Counts physical lines, so rustfmt's line breaking decides it; the functions
 # it flags are a CLI dispatcher, a loader and a few table-driven tests.
 too_many_lines = "allow"
+
+# Debug info dominates build time, link time and target/ size (hundreds of GB
+# across the check worktree's and the working tree's builds). Line tables keep
+# backtraces readable; dependencies carry none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The CI gates on the tip of each ref being pushed (scripts/check.sh --at
-# <sha>), whatever the working tree holds. Only the groups the push changes
-# run (--since the remote's sha): the remote's commit got past these gates
-# already. Changed Rust brings the tests and the .sqlx check, which need
-# Postgres up (`docker compose up -d db`). A new branch, or a remote commit
+# <sha>), whatever the working tree holds. Only what pre-commit leaves out
+# runs (--since the remote's sha): the tests and the .sqlx check when Rust
+# changed, which need Postgres up (`docker compose up -d db`). A new branch,
+# or a remote commit
 # this clone lacks (fetch first), gets every group. Skip once with
 # `git push --no-verify`.
 root="$(git rev-parse --show-toplevel)"

@@ -6,8 +6,9 @@
 #   scripts/check.sh --at <rev> [group...]   exactly <rev> (a commit or a tree)
 #   scripts/check.sh --at <rev> --staged     the groups the index touches
 #   scripts/check.sh --at <rev> --since <base>
-#                                            the groups <base>..<rev> touches,
-#                                            with sqlx and test beside rust
+#                                            sqlx and test if <base>..<rev>
+#                                            touches Rust, and lint; every
+#                                            group if the gates changed
 #
 # With no groups, every group runs. The hooks use --at: pre-commit checks the
 # staged tree (`git write-tree`), pre-push the tip of each ref being pushed,
@@ -171,9 +172,14 @@ if [ "${1:-}" = "--at" ]; then
     if [ $all = 1 ]; then
       groups=("${ALL_GROUPS[@]}")
     else
+      # rust, web and site already ran in pre-commit on each commit's own
+      # staged tree (not on rebased or --no-verify ones; CI covers those), so a push only adds what pre-commit leaves out: sqlx and
+      # test (when Rust changed) and lint. CI still runs everything.
       while IFS= read -r g; do
-        groups+=("$g")
-        if [ "$g" = rust ]; then groups+=(sqlx test); fi
+        case "$g" in
+          rust) groups+=(sqlx test) ;;
+          lint) groups+=(lint) ;;
+        esac
       done < <(groups_for <<< "$changed")
     fi
     set -- "${groups[@]}"
