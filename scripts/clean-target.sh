@@ -11,7 +11,10 @@
 # - Artifacts older than N days (default 14) are dropped with cargo-sweep, when
 #   installed (`cargo install cargo-sweep`). Without it, only the first step
 #   runs and the script says so.
-# - Stale entries of the check worktree (.git/judgebot-check) are pruned.
+# - Git worktree entries whose directory is gone are pruned (the check worktree's,
+#   among any others).
+#
+# Do not run it during a build: nothing takes cargo's lock.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,6 +43,10 @@ case "$days" in '' | *[!0-9]*)
   exit 2
   ;;
 esac
+if [ $((10#$days)) -eq 0 ]; then
+  echo "--days 0 would sweep every artifact: use rm -rf target for a cold rebuild" >&2
+  exit 2
+fi
 
 target="${CARGO_TARGET_DIR:-$root/target}"
 size() { du -sh "$target" 2> /dev/null | cut -f1; }
@@ -52,11 +59,11 @@ else
 fi
 
 if cargo sweep --version > /dev/null 2>&1; then
-  if [ $dry = 1 ]; then
-    cargo sweep --time "$days" --dry-run "$root"
-  else
-    cargo sweep --time "$days" "$root"
-  fi
+  # No path argument: this project alone, not every Cargo.toml beneath it. A
+  # failure is reported but does not skip the prune and the size line.
+  sweep=(cargo sweep --time "$days")
+  if [ $dry = 1 ]; then sweep+=(--dry-run); fi
+  "${sweep[@]}" || echo "cargo sweep failed" >&2
 else
   echo "cargo-sweep is not installed: stale deps/ output stays (cargo install cargo-sweep)" >&2
 fi
