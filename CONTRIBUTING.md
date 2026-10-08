@@ -7,7 +7,7 @@ works end to end. `docs/ARCHITECTURE.md` is the design reference.
 ## Development setup
 
 You need Docker (with the compose plugin), Rust 1.98 (`rust-toolchain.toml` pins it,
-so `rustup` installs it on first use) and Node 24 for the web page.
+so `rustup` installs it on first use) and Node 26 for the web page.
 
 ```sh
 cp .env.example .env            # DATABASE_URL already points at the compose database
