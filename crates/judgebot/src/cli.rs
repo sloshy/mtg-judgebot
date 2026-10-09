@@ -1,7 +1,8 @@
 //! The command line: which program the binary was invoked as, and what it
 //! was asked to do. Pure, so the dispatch is tested without a process.
 //!
-//! `judgebot` answers to four names. Its own takes role flags or `ingest`;
+//! `judgebot` answers to four names. Its own takes role flags, `ingest` or
+//! `backup`;
 //! the other three are the binaries it replaced, kept as links to it in the
 //! image so a compose file or a script written for them keeps working:
 //!
@@ -9,6 +10,7 @@
 //! |---|---|
 //! | `judgebot --discord --api …` | those roles (none: [`ROLES_ENV`]) |
 //! | `judgebot ingest <cmd> …` | the ingest command line |
+//! | `judgebot backup <cmd> …` | the database backup |
 //! | `judge-bot` | `judgebot --discord --jobs` |
 //! | `judge-api [--api] [--web] [--mcp]` | those interfaces (none: `--api`) and `--jobs` |
 //! | `judge-ingest <cmd> …` | `judgebot ingest <cmd> …` |
@@ -115,6 +117,11 @@ pub enum Invocation {
         /// The name invoked.
         name: Name,
     },
+    /// The backup command line, over these arguments.
+    Backup {
+        /// The arguments after `backup`.
+        args: Vec<OsString>,
+    },
     /// Run roles.
     Serve {
         /// The roles, or `None` to read them from [`ROLES_ENV`].
@@ -128,6 +135,7 @@ pub enum Invocation {
 pub const USAGE: &str = "\
 usage: judgebot <role>...
        judgebot ingest <command> [args]   (judgebot ingest --help)
+       judgebot backup <command> [args]   (judgebot backup --help)
 
 Roles: at least one, named on the command line or, with none there, in
 JUDGE_ROLES (the same flags separated by spaces).
@@ -181,6 +189,11 @@ pub fn parse(argv0: &OsStr, args: impl IntoIterator<Item = OsString>) -> Result<
                 return Ok(Invocation::Ingest {
                     args: args.into_iter().skip(1).collect(),
                     name,
+                });
+            }
+            if args.first().is_some_and(|a| a == "backup") {
+                return Ok(Invocation::Backup {
+                    args: args.into_iter().skip(1).collect(),
                 });
             }
             if args.iter().any(help) {
@@ -350,6 +363,23 @@ mod tests {
             ingest("judge-ingest", &["--api"]),
             Some((os(&["--api"]), Name::JudgeIngest))
         );
+    }
+
+    #[test]
+    fn backup_is_a_subcommand_of_judgebot_only() {
+        let os = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
+        assert!(matches!(
+            run("judgebot", &["backup", "fetch", "x.dump.gz"]),
+            Ok(Invocation::Backup { args }) if args == os(&["fetch", "x.dump.gz"])
+        ));
+        assert!(matches!(
+            run("judgebot", &["backup", "--help"]),
+            Ok(Invocation::Backup { args }) if args == os(&["--help"])
+        ));
+        // Not a role, and not a command of the compatibility names.
+        assert!(run("judgebot", &["--api", "backup"]).is_err());
+        assert!(run("judge-bot", &["backup"]).is_err());
+        assert!(run("judge-api", &["backup"]).is_err());
     }
 
     #[test]

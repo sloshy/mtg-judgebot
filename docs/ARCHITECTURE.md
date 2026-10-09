@@ -229,12 +229,20 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   `judge-ingest`, the binaries it replaced, are links to it in the image: it reads the
   name it was invoked as, runs what that binary ran (`judge-bot` is `--discord --jobs`,
   `judge-api` its interfaces plus `--jobs`) and logs a warning naming the replacement.
-- `docker-compose.yml` runs one long-running service, `judgebot`, whose command is
+- `judgebot backup <run|list|fetch|serve>` is the database backup (`judge_bot::backup`,
+  D26): `pg_dump -Fc` over the network, gzipped, uploaded to R2 by a `SigV4` client of
+  four requests, pruned past `BACKUP_KEEP_DAYS` after the upload. `serve` checks the
+  bucket hourly and takes a backup when the newest `judgebot-<stamp>.dump.gz` is
+  `BACKUP_EVERY_DAYS` old. It writes what `scripts/backup-db.sh` writes, so each reads
+  the other's backups.
+- `docker-compose.yml` runs the application as one long-running service, `judgebot`, whose command is
   `JUDGE_ROLES` or, unset, `--discord --jobs` plus the deprecated `API_INTERFACES`
   (default `--api --web`): `roles::COMPOSE_COMMAND`, which a test holds the file to.
   `roles::compose_roles` is the same rule in Rust, so `judge-config` checks only the
   roles the service would run. The service keeps the network alias `api` for tunnels
-  configured with the old service name. `refresh` runs `judgebot ingest` on demand.
+  configured with the old service name. `refresh` runs `judgebot ingest` on demand,
+  and `backup` (profile `backup`, `.env.deploy` and no `.env`) runs `judgebot backup
+  serve`.
 
 Three interfaces share this pipeline through the same composition root
 (`judge_bot::build_deps`):

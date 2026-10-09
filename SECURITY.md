@@ -33,7 +33,8 @@ Operators should know these properties. The reasoning behind each is in
   the token, change the variable and recreate `judgebot` (`docker compose up -d`).
 - **Secrets never live in tracked files.** `judge.toml` names environment variables.
   `.env` holds the keys `judgebot` reads. `.env.deploy` holds the tunnel and backup
-  credentials that only `cloudflared` and the backup script read. Every credential type
+  credentials that only `cloudflared`, the `backup` service and the backup script read;
+  the `backup` service reads nothing of `.env`. Every credential type
   in the code redacts itself in `Debug`.
 - **Postgres and the API bind to loopback** in `docker-compose.yml`. The compose
   database uses a default password (`judgebot`), which is fine only while that binding

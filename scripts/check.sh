@@ -25,7 +25,8 @@
 #   web    Biome (web/ and judge-config's page), then tsc + vite build
 #   site   Biome, astro check, the build, lychee over its internal links
 #   lint   cargo deny, cargo machete, taplo, typos, shellcheck, actionlint,
-#          hadolint, the icon's copies, docker compose config
+#          hadolint, the icon's copies, pg_dump's major vs the db image's,
+#          docker compose config
 # sqlx and test need Postgres (DATABASE_URL, else the one in .env).
 #
 # Every step in the chosen groups runs even when an earlier one fails, and the
@@ -119,6 +120,7 @@ run_at() {
     fi
   done
   if [ -f "$wt/.env.example" ]; then cp "$wt/.env.example" "$wt/.env"; fi
+  if [ -f "$wt/.env.deploy.example" ]; then cp "$wt/.env.deploy.example" "$wt/.env.deploy"; fi
   if [ ! -x "$wt/scripts/check.sh" ]; then
     echo "$rev has no scripts/check.sh (it predates the gates); nothing to run" >&2
     exit 1
@@ -328,6 +330,25 @@ png_size() {
 # byte-identical and of the size it is meant to be. Whether a copy was scaled from the original by
 # whole multiples is left to the regeneration procedure; checking it needs a
 # PNG decoder.
+# The image's pg_dump (Dockerfile ARG PG_MAJOR) must be the major of the
+# compose `db` image (pgvector/pgvector:pgNN): pg_dump refuses a newer server,
+# so a db bumped alone makes every backup fail, and the backup service only
+# finds out at runtime, on the operator's host. Equal rather than "at least",
+# so the two are bumped together on purpose.
+check_pg_major() {
+  local built served
+  built="$(sed -nE 's/^ARG PG_MAJOR=([0-9]+)$/\1/p' Dockerfile)"
+  served="$(sed -nE 's#^ *image: pgvector/pgvector:pg([0-9]+)$#\1#p' docker-compose.yml)"
+  if [ -z "$built" ] || [ -z "$served" ]; then
+    echo "PG_MAJOR in Dockerfile (${built:-not found}) or the db image in docker-compose.yml (${served:-not found}) is missing" >&2
+    return 1
+  fi
+  if [ "$built" != "$served" ]; then
+    echo "Dockerfile PG_MAJOR=$built, but docker-compose.yml's db is pgvector/pgvector:pg$served: bump them together" >&2
+    return 1
+  fi
+}
+
 check_icons() {
   local ok=0 set size files first f
   for set in \
@@ -371,14 +392,21 @@ group_lint() {
   step "actionlint" actionlint
   step "hadolint" hadolint Dockerfile
   step "icons" check_icons
-  # docker-compose.yml names .env as an env_file. The --at worktree has the
-  # example there, as CI's compose job does; a plain run uses yours.
+  step "pg_dump major" check_pg_major
+  # docker-compose.yml names .env as an env_file, and the tunnel and backup
+  # profiles .env.deploy. The --at worktree has the examples there, as CI's
+  # compose job does; a plain run uses yours.
   if ! command -v docker > /dev/null; then
     echo "docker not found: compose config not checked" >&2
   elif [ ! -f .env ]; then
     echo "no .env: compose config not checked" >&2
   else
     step "compose config" docker compose config --quiet
+    if [ -f .env.deploy ]; then
+      step "compose config (profiles)" docker compose --profile tunnel --profile backup config --quiet
+    else
+      echo "no .env.deploy: the tunnel and backup profiles not checked" >&2
+    fi
   fi
 }
 

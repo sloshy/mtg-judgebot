@@ -69,8 +69,9 @@ Discord. The bot is the last thing to add.
    add `--discord` to it), then `docker compose up -d`. Then run
    `docker compose run --rm refresh emoji` once, so answers show mana symbols as pictures
    instead of `{W}`.
-6. Schedule `scripts/backup-db.sh` weekly. The
-   [deployment runbook](../../self-hosting/deployment/) has the cron line. The data
+6. Turn on the weekly backup to R2: add `backup` to `COMPOSE_PROFILES` and fill in
+   `.env.deploy`. The [deployment runbook](../../self-hosting/deployment/) has the
+   steps, the restore drill, and the cron line for `scripts/backup-db.sh` instead. The data
    refresh needs no schedule of yours: `judgebot`'s `--jobs` role runs it every
    `JUDGE_REFRESH_HOURS` (default 24), once step 3 has loaded the data. Until then it
    waits for it, with one warning naming `init`.

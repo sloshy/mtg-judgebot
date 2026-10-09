@@ -197,6 +197,50 @@ services:
       # Loopback only: the page edits your settings.
       - "127.0.0.1:8790:8790"
 
+  # The weekly database backup to Cloudflare R2, with no host cron: `judgebot
+  # backup serve` takes one whenever the newest in the bucket is
+  # BACKUP_EVERY_DAYS old (default 7), checked hourly, so a restart does not
+  # reset the schedule and a cron'd scripts/backup-db.sh run counts. Off by
+  # default; deployments opt in with `backup` in COMPOSE_PROFILES in .env
+  # (COMPOSE_PROFILES=tunnel,backup). Same image as judgebot, which carries a
+  # pg_dump matched to `db` above (Dockerfile, PG_MAJOR); it reaches Postgres
+  # over the compose network, so it needs no Docker socket.
+  #
+  # Its settings are .env.deploy's (R2_*, BACKUP_*, and JUDGE_ALERT_WEBHOOK
+  # for its failure and recovery alerts) and DATABASE_URL below. It has no
+  # env_file .env: the R2 keys can delete every backup, so they stay out of
+  # the internet-facing judgebot, and this container needs nothing of .env's
+  # (D15). The same service runs the restore drill's commands:
+  #   docker compose run --rm --no-deps backup list
+  #   docker compose run --rm --no-deps -T backup fetch judgebot-<stamp>.dump.gz > judgebot-<stamp>.dump.gz
+  #   docker compose run --rm backup run       # one now, whatever the schedule
+  # (--no-deps: listing and fetching need only the bucket, not a running db)
+  # No healthcheck: what matters is the age of the newest backup, which is in
+  # the bucket, and a failure is posted to the webhook rather than left in a
+  # status nobody reads on an unattended host.
+  backup:
+    build: *build
+    image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
+    container_name: judgebot-backup
+    restart: unless-stopped
+    profiles: ["backup"]
+    logging: *bounded-logs
+    entrypoint: ["judgebot", "backup"]
+    command: ["serve"]
+    # Short form, as cloudflared's: Synology's Compose predates `required:`.
+    # Only machines running the backup or tunnel profile need the file.
+    env_file:
+      - .env.deploy
+    environment:
+      DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
+      RUST_LOG: info
+      # .env.deploy also holds the tunnel's token, which is not this
+      # container's business; `environment` overrides `env_file`.
+      TUNNEL_TOKEN: ""
+    depends_on:
+      db:
+        condition: service_healthy
+
   # Public entry point. Dials out to Cloudflare's edge, so the host needs no
   # open inbound port, no public IPv4 and no dynamic DNS. Off by default;
   # deployments opt in with COMPOSE_PROFILES=tunnel in .env.
@@ -213,6 +257,14 @@ services:
     # running the tunnel profile need .env.deploy to exist.
     env_file:
       - .env.deploy
+    # The backup's keys and settings share that file; the tunnel needs none
+    # of them (it reads TUNNEL_TOKEN), so they are blanked here.
+    environment:
+      R2_BUCKET: ""
+      R2_ENDPOINT: ""
+      R2_ACCESS_KEY_ID: ""
+      R2_SECRET_ACCESS_KEY: ""
+      JUDGE_ALERT_WEBHOOK: ""
     logging: *bounded-logs
     depends_on:
       judgebot:

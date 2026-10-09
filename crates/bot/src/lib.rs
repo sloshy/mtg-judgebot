@@ -4,11 +4,13 @@
 //! the one composition shared by the `judgebot`, `eval` and `agent`
 //! binaries, [`serving`], what `judgebot`'s serving roles share, the
 //! [`discord`] adapter, [`ingest`], the data steps `judgebot ingest` runs,
-//! [`jobs`], the schedule `judgebot --jobs` runs them on, and [`lease`], the
+//! [`jobs`], the schedule `judgebot --jobs` runs them on, [`lease`], the
 //! advisory leases that keep a refresh run and the Discord gateway to one
-//! process at a time.
+//! process at a time, and [`backup`], the database backup `judgebot backup`
+//! takes.
 
 pub mod alert;
+pub mod backup;
 pub mod budget;
 pub mod config;
 pub mod db;

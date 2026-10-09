@@ -237,7 +237,7 @@ to `ALTER` and re-run `embed` by hand. The command is safer.
 Writers hold the space under the shared side of an advisory lock. The switch takes the
 exclusive side, so it waits for in-flight writes. `reembed` probes the new embedder
 before clearing anything, because re-embedding pays the provider per row. That is also
-why `scripts/backup-db.sh` exists.
+why the weekly backup exists (D26).
 
 ## D10. Ratings and retrieval
 
@@ -346,7 +346,8 @@ rate limiter stay single-process values.
 CI publishes the image and the host pulls it, because a release build wants about 4 GB of
 RAM and real CPU, which a NAS does not have. The data refresh runs inside the `judgebot`
 process (its `--jobs` role, D25) on a schedule kept in the database (D24). The one-shot
-`refresh` container stays for the first load and for manual runs.
+`refresh` container stays for the first load and for manual runs. The weekly backup is
+an opt-in container of its own (D26).
 
 **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP` is
 `peer` or `cloudflare` (`CF-Connecting-IP`), never `X-Forwarded-For`. Cloudflare *appends*
@@ -748,7 +749,7 @@ What follows:
   already shared (D19).
 - **The backup and `judge-config` stay separate containers.** The backup reads R2
   credentials from `.env.deploy`, which must stay out of the internet-facing process
-  (D15). `judge-config` edits `.env` and `judge.toml` on localhost and has no business in
+  (D15), so it is the `backup` service rather than a role (D26). `judge-config` edits `.env` and `judge.toml` on localhost and has no business in
   a process the public reaches.
 - **Safe to run twice.** The refresh lease makes a second `--jobs` process safe, and the
   gateway lease (`GATEWAY_LOCK`, `judge_bot::discord::gateway`) a second `--discord`
@@ -775,6 +776,86 @@ What follows:
   holder offered.
   `pick_claims`, a row per prompt with no text, keeps a double click from running the
   question twice.
+
+## D26. Backup as an opt-in service
+
+*Decided 2026-10-09.*
+
+The weekly backup was the last host cron job: `scripts/backup-db.sh` ran `pg_dump` in the
+`db` container through the Docker socket and uploaded with an `rclone` container. It is
+now also `judgebot backup serve`, the `backup` compose service, behind the `backup`
+profile. The service reaches `db:5432` over the compose network like any client, so it
+needs neither the socket nor a host scheduler.
+
+- **The schedule is the bucket.** A backup is due when the newest object named like
+  one (`judgebot-<UTC stamp>.dump.gz`) is `BACKUP_EVERY_DAYS` old. Nothing else is
+  recorded, so a restart does not reset it and a backup the script took counts.
+  Failures back off in memory (an hour, doubling, at most a day). The webhook hears the
+  first failure of a streak, a failure at a different step than the last (so a
+  pruning failure that recurs weekly cannot hide a dump that starts failing), and the
+  recovery. A listing that works again ends a streak of listing failures.
+- **Pruning keeps a floor.** Past `BACKUP_KEEP_DAYS` only, only backup-named objects,
+  and never the `KEEP_NEWEST` (2) newest, so a lapse longer than the retention followed
+  by one success, perhaps of a re-initialised database, cannot leave one restore point.
+  The script's `rclone delete --min-age` has no such floor; the difference is
+  documented rather than ported to the script.
+- **Indistinguishable from the script.** The same `.env.deploy` settings and defaults,
+  the same names under the same prefix, the same bytes (`pg_dump -Fc`, gzipped), the
+  same size floor, pruning only after an upload. `list`, `fetch` and the restore drill
+  work across both, and either can be dropped.
+- **Settings are types.** `backup::settings` parses every variable once at start into
+  validated values (an `https` endpoint with nothing after the host, or `http` with a
+  warning for a local stand-in, an S3 bucket name,
+  a prefix of plain segments, day counts in range, the `DATABASE_URL` as libpq
+  variables) and reports every problem at once, naming the variable and never quoting
+  the value. Keys and the database password are `ApiKey`s, redacted in `Debug`.
+- **Credentials stay separated (D15).** The service reads `.env.deploy` and is given
+  `DATABASE_URL` by the compose file. It has no `env_file: .env`, so it holds no model
+  or Discord keys, and the internet-facing `judgebot` still holds no R2 keys.
+  `pg_dump` gets the database password in its environment, never its arguments.
+
+**`pg_dump` comes from PGDG, binary only.** Debian bookworm's client is 15, and `pg_dump`
+refuses a server newer than itself. The runtime stage adds the PostgreSQL project's apt
+repository and installs `libpq5`; a build stage installs `postgresql-client-16` there
+and only its `pg_dump` is copied out, and `pg_dump --version` in the runtime stage fails
+the build on either platform when a library is missing. That adds about 6 MB unpacked.
+The repository's key is pinned by checksum (`ADD --checksum`), so a swapped key fails
+the build. `pg_dump` runs with a cleared environment: the connection's `PG*` variables
+and `PATH`, `HOME`, `TMPDIR`, nothing else of the process's.
+
+*Rejected:*
+
+- *The whole `postgresql-client-16` package.* It depends on Perl through
+  `postgresql-client-common`'s wrapper: about 100 MB on disk for a binary that never
+  runs Perl.
+- *Copying `pg_dump` and `libpq` out of the `pgvector/pgvector:pg16` image.* libpq's
+  own libraries (Kerberos, LDAP) would have to be matched by hand, under a lib path that
+  differs per architecture.
+- *A second image for the backup* (built `FROM postgres:16`). Another tag to publish,
+  pin and roll back in step with the first, for a few megabytes.
+- *A role of `judgebot`.* The R2 keys can delete every backup; they would sit in the
+  internet-facing process.
+
+**The S3 client is four signed requests.** List (`ListObjectsV2`), put, get and delete,
+signed with `aws-sigv4` and sent with reqwest, the response XML read with `roxmltree`.
+All three were already in the dependency graph (the Anthropic AWS endpoints, resvg), so
+the change adds no crate that is built (the lockfile gains a wasm-only `wasm-streams`
+entry, from reqwest's `stream` feature). An upload is one `PUT` streamed from the file, with its SHA-256
+signed in `x-amz-content-sha256`, so R2 refuses bytes that differ from the dump.
+
+*Rejected:*
+
+- *`aws-sdk-s3`.* The standard client, but a very large generated crate for four calls,
+  and its default request checksums have needed configuration to suit R2 and
+  S3-compatible stand-ins.
+- *`object_store`.* A good abstraction, but it brings its own reqwest and TLS stack
+  beside ours.
+- *Keeping `rclone` in a container.* That needs the Docker socket, which is root on the
+  host, handed to a container.
+
+**No healthcheck.** What matters is the age of the newest backup, which is in the
+bucket, and a failure goes to the webhook rather than into a status nobody reads on an
+unattended host.
 
 ## D27. Failed calls are kept, private ones included
 

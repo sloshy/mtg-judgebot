@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "sqlx repos, model adapters over judge-llm, the judge.toml loader and build_deps composition, serenity/poise Discord adapter, the ingest steps and the refresh schedule (lib; the binary is judgebot)."
+description = "sqlx repos, model adapters over judge-llm, the judge.toml loader and build_deps composition, serenity/poise Discord adapter, the ingest steps, the refresh schedule and the database backup (lib; the binary is judgebot)."
 
 [lib]
 name = "judge_bot"
@@ -32,12 +32,13 @@ nonempty.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time", "process", "fs", "io-util", "io-std"] }
 tracing.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 nutype.workspace = true
-reqwest.workspace = true
+# `stream`: `backup::s3` uploads a dump from its file rather than from memory.
+reqwest = { workspace = true, features = ["stream"] }
 toml.workspace = true
 url.workspace = true
 sqlx = { version = "0.9", default-features = false, features = [
@@ -68,8 +69,20 @@ serde_yaml_ng = "0.10"
 # these symbols, so resvg's font machinery is left out.
 resvg = { version = "0.48", default-features = false }
 base64 = "0.23"
-# `discord::pick::Digest`: ties a "did you mean?" button to its prompt.
+# `discord::pick::Digest`: ties a "did you mean?" button to its prompt;
+# `backup`: the dump's payload hash, which the object store verifies.
 sha2.workspace = true
+# `backup::s3`: SigV4 for the S3 API (R2), the request signing the AWS SDK
+# does, without the SDK. Already in the graph for the Anthropic AWS endpoints.
+aws-sigv4.workspace = true
+aws-credential-types.workspace = true
+# `backup::s3`: the ListObjectsV2 and error bodies. Already in the graph
+# (resvg's SVG parser).
+roxmltree = "0.21"
+# `backup::name`: the UTC stamp in a backup's object name.
+time = "0.3"
+# `backup::settings`: the user and password in DATABASE_URL, handed to pg_dump.
+percent-encoding = "2"
 
 [dev-dependencies]
 wiremock.workspace = true

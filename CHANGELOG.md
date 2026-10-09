@@ -73,6 +73,25 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   reconnecting, up to ten minutes, to keep within Discord's daily login limit. `DATABASE_URL` must be a direct connection, not a
   pooler in transaction mode. The old `bot` image does not take the lease, so the
   upgrade below still needs `--remove-orphans`.
+- **The weekly backup can run with no host cron.** The new `backup` compose service,
+  off by default behind the `backup` profile (`COMPOSE_PROFILES=tunnel,backup`), dumps
+  the database, uploads it to R2 and prunes old copies, the same backup
+  `scripts/backup-db.sh` takes, with the same `.env.deploy` settings, object names and
+  format. It takes one whenever the newest backup in the bucket is `BACKUP_EVERY_DAYS`
+  old (new, default 7), checking hourly, so a restart does not reset the schedule and a
+  cron'd script run counts. A failed attempt is retried after an hour, then less often,
+  and `JUDGE_ALERT_WEBHOOK` hears the first failure of a streak, a failure at a
+  different step, and the recovery. It
+  reaches Postgres over the compose network with the image's own `pg_dump` 16 (new in
+  the image, about 6 MB unpacked), so it needs no Docker socket, and it reads `.env.deploy` and
+  nothing of `.env`. The upload carries the dump's SHA-256, which R2 checks. Its
+  pruning deletes only backup-named objects directly under the prefix, and never the
+  two newest, however old, so a lapse longer than `BACKUP_KEEP_DAYS` cannot leave a
+  single restore point (the script's pruning has no such floor).
+- **`judgebot backup run | list | fetch <name> [file] | serve`.** The service's commands
+  by hand: `docker compose run --rm backup run` takes one now, `list` prints the
+  objects, and `docker compose run --rm --no-deps -T backup fetch <name> > <name>` downloads one
+  for the restore drill. Each works on the script's backups too.
 - **`judgebot ingest init` is recorded as a refresh run** of the steps it shares with one
   (it now runs the retirement pass too). The schedule counts a first load as fresh data,
   and the steps it did not reach after a failure are recorded as skipped.
@@ -250,6 +269,14 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **"Did you mean…?" buttons sent before the upgrade answer "That choice has
   expired".** They held their question in the old process's memory, as a restart always
   lost it. Ask the question again.
+- **To move the backup off cron**, add `backup` to `COMPOSE_PROFILES` in `.env`, add
+  `JUDGE_ALERT_WEBHOOK` to `.env.deploy` if you want its alerts (the service reads only
+  that file), and `docker compose up -d`. Then remove the cron entry for
+  `scripts/backup-db.sh`, or keep it: the service counts the script's backups, so the
+  two can run side by side, and the script keeps working unchanged. A
+  `BACKUP_KEEP_LOCAL` the script used is a host path, which the container does not see:
+  mount a directory for the service (`docs/DEPLOYMENT.md` §6) or leave it to the
+  script.
 - The `pick_claims` migration applies at startup unless `JUDGE_AUTO_MIGRATE=false`. Until
   it is applied, a click on a "did you mean…?" button logs the failed claim and answers
   "I couldn't take that pick just now".

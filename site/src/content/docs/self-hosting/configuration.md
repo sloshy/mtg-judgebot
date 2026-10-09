@@ -43,7 +43,7 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 | `JUDGE_MAX_USD` | `5` | judgebot, eval, agent | Spend cap in USD, across every provider. Each call reserves its worst-case cost before it is sent. A question is refused once the money left is less than that, so values under about $0.36 refuse synthesis outright. `JUDGE_BUDGET_PERIOD` says what the cap covers. |
 | `JUDGE_BUDGET_PERIOD` | `process` | judgebot | What `JUDGE_MAX_USD` caps. `process`: each process, all its roles together, for its lifetime, in memory. A restart counts from zero. `day` or `month`: the current UTC day or month, shared by every process through the `spend_days` table and kept across restarts. The processes sync every 10 seconds, so together they can overshoot by what they spend in that time. `judge-cli` and `judge-eval` always cap per process. |
 | `JUDGE_REFRESH_HOURS` | `24` | `--jobs` | Hours between data refreshes (Scryfall cards and rulings, a new Comprehensive Rules release, embeddings, emoji), which the `--jobs` role runs. 1 to 720, or `0` for off (keep a cron'd `scripts/refresh-data.sh` instead). Every process and a cron run take turns through a lock in the database, so a refresh runs once however many processes there are. A failed refresh is retried after an hour, then less often while it keeps failing. It waits for the first load (`init`) on an empty database. A scheduled run never embeds more than 800 rows; above that it skips the step and alerts. A value out of range stops every binary that loads the configuration (`judge-cli`, `judge-mcp`, `judge-eval` and `judgebot ingest` too), as `JUDGE_BUDGET_PERIOD` does. Set `0` in a development `.env`, or `cargo run` with `--jobs` refreshes your local database for real. |
-| `JUDGE_ALERT_WEBHOOK` | | judgebot, scripts | An `https` webhook (Discord, Slack or compatible). It is called the first time the cap refuses a question in a period (once per process). It is also called when a scheduled refresh fails (once per streak of failures, saying when it timed out), succeeds again, first skips embedding at the 800-row ceiling or crashes, and when `scripts/refresh-data.sh` or `scripts/backup-db.sh` fails. The URL is a credential. Without it, a tripped cap or a failed refresh is only a line in the log. |
+| `JUDGE_ALERT_WEBHOOK` | | judgebot, scripts, backup | An `https` webhook (Discord, Slack or compatible). It is called the first time the cap refuses a question in a period (once per process). It is also called when a scheduled refresh fails (once per streak of failures, saying when it timed out), succeeds again, first skips embedding at the 800-row ceiling or crashes, and when `scripts/refresh-data.sh` or `scripts/backup-db.sh` fails. The `backup` service reads its own copy from `.env.deploy` and posts the first failure of a streak, a failure at another step, and the recovery. The URL is a credential. Without it, a tripped cap or a failed refresh is only a line in the log. |
 | `JUDGE_USER_LIMIT`, `JUDGE_USER_WINDOW_SECS` | `6`, `600` | `--discord` | `/judge` questions per Discord member per window. `0` turns the limit off. A "busy" reply does not count. Held in memory. `/card` and `/rule` are not limited. |
 | `JUDGE_CONCURRENCY` | `2` | judgebot | Judge runs in flight at once, per interface. Further ones get a "busy" reply. The MCP transport shares the API's slots. Discord has slots of its own, so one process with `--discord` and `--api` runs up to twice this many. |
 | `JUDGE_AUTO_MIGRATE` | `true` | judgebot | Apply pending schema migrations at startup. Set `false` to manage the schema yourself with `judgebot ingest migrate` or sqlx-cli. |
@@ -77,6 +77,21 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 | --- | --- | --- |
 | `INGEST_CACHE_DIR` | `.cache` (image: `/var/cache/judgebot`) | Where Scryfall bulk files and the CR text are cached. |
 | `RUST_LOG` | `info` in compose | Tracing filter. The containers use `info,sqlx=warn` (`serenity=warn` for the bot). |
-| `JUDGE_IMAGE`, `JUDGE_IMAGE_TAG` | upstream package, `latest` | Which image `judgebot` and `refresh` run (amd64 and arm64). A fork sets its own package. A release version (`1`, `1.2`, `1.2.0`) or a `sha-<short>` tag pins or rolls back. |
-| `COMPOSE_PROFILES` | | Set `tunnel` on a deploy host so `up -d` also starts `cloudflared`. |
-| `TUNNEL_TOKEN`, `R2_*` | | In `.env.deploy`, read only by `cloudflared` and the backup script, never by the internet-facing containers. |
+| `JUDGE_IMAGE`, `JUDGE_IMAGE_TAG` | upstream package, `latest` | Which image `judgebot`, `refresh` and `backup` run (amd64 and arm64). A fork sets its own package. A release version (`1`, `1.2`, `1.2.0`) or a `sha-<short>` tag pins or rolls back. |
+| `COMPOSE_PROFILES` | | Set `tunnel` on a deploy host so `up -d` also starts `cloudflared`, and `backup` for the weekly database backup (`tunnel,backup` for both). |
+| `TUNNEL_TOKEN`, `R2_*` | | In `.env.deploy`, read only by `cloudflared`, the `backup` service and the backup script, never by the internet-facing containers. |
+
+## Backup
+
+These live in `.env.deploy`, beside `R2_*`. The `backup` service and `scripts/backup-db.sh` read the same ones, with the same defaults, and blank means the default. The [deployment runbook](../../self-hosting/deployment/) has the setup and the restore drill.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `R2_ENDPOINT`, `R2_BUCKET` | | `https://<account-id>.r2.cloudflarestorage.com` and the bucket. Required. |
+| `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | | An R2 API token scoped to Object Read & Write on that bucket. Required. |
+| `BACKUP_PREFIX` | `db` | The key prefix the backups live under. |
+| `BACKUP_KEEP_DAYS` | `60` | Backups older than this are pruned after a successful upload. The service never prunes the two newest. |
+| `BACKUP_MIN_BYTES` | `20000000` | A smaller dump is refused, never uploaded. |
+| `BACKUP_KEEP_LOCAL` | | A directory to copy each dump into. For the service, a path inside its container (mount one there). |
+| `BACKUP_EVERY_DAYS` | `7` | The service takes a backup whenever the newest in the bucket is this many days old (1 to 365). The script's schedule is cron. |
+| `DATABASE_URL` | set by compose | The service reaches `db:5432` over the compose network; compose sets it, as for `judgebot`. |

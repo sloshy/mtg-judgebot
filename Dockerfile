@@ -66,13 +66,47 @@ RUN cargo build --release -p judgebot -p judge-agent -p judge-configure --featur
     && cp target/release/judgebot target/release/judge-cli target/release/judge-mcp target/release/judge-config /out/ \
     && rm -rf target
 
-FROM debian:bookworm-slim
+# pg_dump for `judgebot backup` (the `backup` compose service), from the
+# PostgreSQL project's own Debian repository (PGDG): bookworm's own client is
+# 15, and pg_dump refuses a server newer than itself. PG_MAJOR is the major of
+# docker-compose.yml's `db` image (pgvector/pgvector:pg16); `scripts/check.sh
+# lint` fails when the two differ.
+# The repository's signing key is pinned by checksum, so a key swapped on
+# the server (or in transit) fails the build instead of being trusted. It is
+# the key with fingerprint B97B 0AFC AA1A 47F0 44F2 44A0 7FCC 7D46 ACCC 4CF8,
+# which has no expiry date; if PGDG ever re-issues the file, check the new
+# one's fingerprint (`gpg --show-keys`) and update the sum. `--checksum` needs
+# BuildKit, which `docker build` uses by default and CI's buildx provides.
+FROM debian:bookworm-slim AS pgdg
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 \
+    https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
+RUN chmod 644 /etc/apt/keyrings/pgdg.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list
+
+# The whole client package depends on Perl (postgresql-client-common's
+# wrapper), about 85 MB the backup never runs. Only the pg_dump binary is
+# taken from this stage; the runtime installs the libraries it links
+# (libpq5 from the same repository) and checks that it runs.
+FROM pgdg AS pgdump
+ARG PG_MAJOR=16
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client-${PG_MAJOR} \
+    && rm -rf /var/lib/apt/lists/* \
+    && cp /usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump /pg_dump
+
+FROM pgdg
 # The ingest cache is owned by the runtime user so that a named volume mounted
 # there (compose service `refresh`) inherits writable ownership on first use.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 liblz4-1 libzstd1 && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/cache/judgebot && chown nobody /var/cache/judgebot
+# `pg_dump --version` fails the build when a library it links is missing, on
+# each platform the image is built for.
+COPY --from=pgdump /pg_dump /usr/local/bin/pg_dump
+RUN pg_dump --version
 # The one long-running binary: its roles (`--discord --api --web --mcp
-# --jobs`) are launch options, and `judgebot ingest` is the data command line.
+# --jobs`) are launch options, `judgebot ingest` is the data command line and
+# `judgebot backup` the database backup.
 # judge-bot, judge-api and judge-ingest are the binaries it replaced, kept as
 # links to it so a compose file or script written for them still runs: it
 # reads the name it was invoked as (crates/judgebot/src/cli.rs) and logs a

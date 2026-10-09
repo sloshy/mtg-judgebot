@@ -32,8 +32,8 @@ Hostnames, paths and the image name below are placeholders (`judge.example.com`,
   that a NAS does not have.
 - The compose file uses only syntax that older bundled Compose versions accept.
   Synology's Container Manager ships v2.20, which predates the `env_file` long form.
-  As a result, `.env.deploy` must exist on any machine running the `tunnel` profile,
-  and should exist only there. The `judgebot` service's roles default nests one
+  As a result, `.env.deploy` must exist on any machine running the `tunnel` or
+  `backup` profile, and should exist only there. The `judgebot` service's roles default nests one
   variable's default inside another's (`${JUDGE_ROLES:-… ${API_INTERFACES:-…}}`). That
   template was checked against compose-go v1.16.0, the interpolation library Compose
   v2.20.0 pins, compiled and run on each case. The v2.20 binary itself was not run.
@@ -131,9 +131,10 @@ it in. `.env.deploy` is edited by hand: the editor never reads it.
 Both files are gitignored.
 
 - `.env` is the `env_file` for `judgebot` and `refresh`.
-- `.env.deploy` is read only by `cloudflared` and `scripts/backup-db.sh`. A token that
-  can rewrite the tunnel or delete every backup therefore never reaches the
-  internet-facing API.
+- `.env.deploy` is read only by `cloudflared`, the `backup` service and
+  `scripts/backup-db.sh`. A token that can rewrite the tunnel or delete every backup
+  therefore never reaches the internet-facing API. The `backup` service in turn reads
+  nothing of `.env`.
 
 Model credentials belong in `.env`: `ANTHROPIC_API_KEY`, every `api_key_env` a
 `judge.toml` names, and the cloud endpoints' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS`.
@@ -147,6 +148,7 @@ API_CLIENT_IP=cloudflare    # rate-limit on CF-Connecting-IP
 JUDGE_MAX_USD=...           # the backstop for anonymous traffic
 JUDGE_BUDGET_PERIOD=month   # one budget for the month, kept across restarts
 JUDGE_ALERT_WEBHOOK=...     # told when the cap trips, or a refresh or backup fails
+                            # (the backup service reads it from .env.deploy, §6)
 ```
 
 Set a budget period on a host that runs unattended. Without `JUDGE_BUDGET_PERIOD` the
@@ -436,10 +438,95 @@ in the database, so the restart does not reset it.
 
 ## 6. Weekly backups to R2
 
+The database is cheap to dump and expensive to rebuild (§2). The `backup` compose
+service dumps it, uploads the dump to Cloudflare R2 and prunes old copies on its own
+schedule, with no host cron and no Docker socket. `scripts/backup-db.sh` does the same
+from a host cron. Both write the same objects under the same names, so `list`, `fetch`
+and the restore drill work on either's backups, and the two can run side by side.
+
 1. Create an R2 bucket.
 2. Create an API token scoped to **Object Read & Write on that bucket only**.
 3. Fill in the `R2_*` values in `.env.deploy`.
-4. Install the cron entry:
+4. Add `backup` to `COMPOSE_PROFILES` in `.env` and bring it up:
+
+```ini
+COMPOSE_PROFILES=tunnel,backup
+```
+
+```sh
+docker compose up -d
+docker compose logs backup          # the settings it read, then each check
+```
+
+Then **do a restore drill** (below). An untested backup is not a backup.
+
+### Service
+
+`judgebot backup serve` lists the bucket a few minutes after it starts, then hourly. A
+backup is due when the newest `judgebot-<stamp>.dump.gz` under `BACKUP_PREFIX` is
+`BACKUP_EVERY_DAYS` old (default 7), or there is none. The schedule is the bucket, so a
+fresh install takes its first backup within minutes, a restart does not reset it, and a
+backup the cron'd script took counts as that week's. Each backup works in this order:
+
+1. It dumps the database (`pg_dump -Fc`, gzipped) over the compose network.
+2. It refuses to upload anything under `BACKUP_MIN_BYTES`, so a stub never becomes the
+   newest restore point.
+3. It uploads, with the file's SHA-256 signed into the request. R2 refuses an upload
+   whose bytes do not match.
+4. Only then does it prune past `BACKUP_KEEP_DAYS`. It deletes only objects named like
+   a backup, directly under the prefix, and never the two newest (the one just uploaded
+   among them), however old: after a lapse longer than the retention, one success does
+   not delete every earlier restore point.
+5. It copies the dump to `BACKUP_KEEP_LOCAL`, when that is set.
+
+Weekly backups at the default 60 days keep about eight restore points, far inside R2's
+10 GB free tier.
+
+A failed attempt is retried after an hour, then less often while it keeps failing, at
+least once a day. `JUDGE_ALERT_WEBHOOK` hears the first failure of a streak, a failure
+at a different step than the one before (pruning failing every week does not hide a dump
+that starts failing), and the recovery, never each retry. A streak of listing failures
+ends, with a note, when the bucket can be listed again and no backup is due. The container reads `.env.deploy` and not `.env`, so the
+webhook goes in `.env.deploy` for the backup's alerts and in `.env` for `judgebot`'s:
+set it in both to hear from both.
+
+The settings are read once, at start. A missing or malformed one stops the container
+with a line naming each, and `restart: unless-stopped` retries it, so `docker compose
+ps` shows it restarting. After editing `.env.deploy`, `docker compose up -d` recreates
+it.
+
+The image carries `pg_dump` 16, the major version of the `db` service. `pg_dump` refuses
+a server newer than itself, so moving `db` to a newer PostgreSQL major needs an image
+built with a newer client (`PG_MAJOR` in the `Dockerfile`). Until then every attempt
+fails, and the alert names both versions.
+
+`BACKUP_KEEP_LOCAL` is a path inside the container. To keep local copies, mount a
+directory the container's user (`nobody`, uid 65534) can write, and point the variable
+at the mount:
+
+```yaml
+# docker-compose.override.yml
+services:
+  backup:
+    volumes:
+      - /volume1/backups/judgebot:/backups
+```
+
+```ini
+BACKUP_KEEP_LOCAL=/backups
+```
+
+The script reads the same variable as a host path. If both run, give the mount the
+same path on both sides, or leave the variable blank.
+
+### Cron
+
+`scripts/backup-db.sh` is the same backup from the host's scheduler, for a deployment
+without the `backup` profile. It runs `pg_dump` inside the `db` container and uploads
+with an `rclone/rclone` container. A cron entry from an earlier release keeps working
+beside the service. The service counts the script's backups as its own, so beside a
+weekly entry it seldom takes one itself, and an occasional second backup in a week is
+pruned with the rest. Remove the entry whenever convenient.
 
 ```sh
 crontab -e
@@ -463,25 +550,20 @@ the scheduler runs with a minimal environment:
 If `docker` isn't found, prefix the task with `PATH=/usr/local/bin:$PATH`. Tick the
 task's email-on-error option so a failing backup is noisy rather than silent.
 
-`scripts/backup-db.sh` works in this order:
+The script works in the service's order: dump, size check, upload, prune past
+`BACKUP_KEEP_DAYS`, local copy. Its pruning (`rclone delete --min-age`) removes every
+object under the prefix older than that, not only backups, and keeps no minimum number. It posts to
+`JUDGE_ALERT_WEBHOOK` when it fails.
 
-1. It dumps and gzips the database.
-2. It refuses to upload anything under `BACKUP_MIN_BYTES`, so a stub never becomes the
-   newest restore point.
-3. It uploads.
-4. Only then does it prune past `BACKUP_KEEP_DAYS`.
+### Restore drill
 
-Weekly runs at the default 60 days keep about eight restore points, far inside R2's
-10 GB free tier.
-
-Run it once by hand to confirm credentials, then **do a restore drill**. An untested
-backup is not a backup. The drill restores the object that landed in R2, not
-a local copy:
+Run one backup by hand to confirm the credentials, then restore it into a scratch
+database. The drill restores the object that landed in R2, not a local copy:
 
 ```sh
-scripts/backup-db.sh                       # take one
-scripts/backup-db.sh list                  # newest last
-scripts/backup-db.sh fetch judgebot-<stamp>.dump.gz
+docker compose run --rm backup run         # take one now, whatever the schedule
+docker compose run --rm --no-deps backup list        # newest last
+docker compose run --rm --no-deps -T backup fetch judgebot-<stamp>.dump.gz > judgebot-<stamp>.dump.gz
 
 docker compose exec -T db createdb -U judgebot restoretest
 gunzip -c judgebot-<stamp>.dump.gz \
@@ -490,6 +572,14 @@ docker compose exec -T db psql -U judgebot -d restoretest -c "select count(*) fr
 docker compose exec -T db dropdb -U judgebot restoretest
 rm judgebot-<stamp>.dump.gz
 ```
+
+`fetch` writes to standard output, which must not be a terminal: `-T` keeps
+`docker compose run` from allocating one, which would also mangle the bytes. `--no-deps`
+lets `list` and `fetch` run with the database down, as when it is the thing being
+restored. Without
+the `backup` profile, the script's forms are `scripts/backup-db.sh`,
+`scripts/backup-db.sh list` and `scripts/backup-db.sh fetch judgebot-<stamp>.dump.gz`,
+which downloads into the repository root.
 
 The card count should match section 2. `*.dump.gz` is gitignored.
 
@@ -613,8 +703,8 @@ exits non-zero if any step failed, and posts to `JUDGE_ALERT_WEBHOOK` when it do
 A cron entry from an earlier release keeps working. It takes the same lease and writes
 the same record, so the schedule counts its run as that day's and never overlaps it.
 Remove the entry whenever convenient. To keep cron in charge instead, set
-`JUDGE_REFRESH_HOURS=0` and install the entry beside the backup, on the same scheduler
-(§6 has the Synology notes: run as root, absolute paths, tick email-on-error):
+`JUDGE_REFRESH_HOURS=0` and install the entry on the host's scheduler (§6, Cron, has the
+Synology notes: run as root, absolute paths, tick email-on-error):
 
 ```sh
 crontab -e
@@ -716,7 +806,8 @@ embed every rule, glossary entry and stored call again. So it is a dry run by de
 and you should take a backup first.
 
 ```sh
-scripts/backup-db.sh                          # a restore point holding the old vectors (§6)
+docker compose run --rm backup run            # a restore point holding the old vectors (§6;
+                                              # or scripts/backup-db.sh)
 $EDITOR judge.toml                            # [models.embed]: the new provider/model/dimensions
 scripts/refresh-data.sh reembed               # dry run: what is stored, what would be cleared,
                                               # rows, a rough cost; probes the new model once;
@@ -1037,8 +1128,9 @@ and does not migrate. Whether it then works depends on the migration:
 
 - An additive one (a new table, a nullable column) is harmless to the old binary.
 - One that changed a column the old queries use is not. Rolling back across it means
-  restoring the pre-release dump too (`scripts/backup-db.sh fetch`, §6). Run the
-  weekly backup by hand right before such a deploy.
+  restoring the pre-release dump too (`docker compose run --rm --no-deps -T backup fetch`, §6).
+  Take a backup by hand right before such a deploy (`docker compose run --rm backup
+  run`, or `scripts/backup-db.sh`).
 
 `judgebot ingest migrate` refuses a database that is ahead rather than guessing, and the
 scheduled refresh stays paused while it is (§7): the data is not refreshed until the
@@ -1071,11 +1163,15 @@ own if the connector restarts.
 | `judgebot` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact a role must show is unset or malformed in `.env` (`--discord` needs the first, `--api`/`--web`/`--mcp` the second); set it and `docker compose up -d` |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
 | Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and `docker compose up -d`, or wait for the period to turn |
-| A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`. A scheduled refresh posts there on the first failure of a streak and on recovery; both scripts post on a non-zero exit |
+| A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`, and in `.env.deploy` for the `backup` service, which reads only that file. A scheduled refresh and the service post there on the first failure of a streak and on recovery; both scripts post on a non-zero exit |
 | When was the data last refreshed? | `/help`, the web footer or `GET /api/about` (`freshness`) for the age of the last success; `judge-cli stats` for the last five runs (§7) |
 | The data is days old and `refresh_runs` has no recent row | `JUDGE_REFRESH_HOURS=0` with no cron entry, or the `judgebot` log says `scheduled refresh paused` (a container on an older image than the schema, migrations pending with `JUDGE_AUTO_MIGRATE=false`, or no rules loaded yet: `docker compose run --rm refresh init`). `docker compose logs judgebot \| grep 'scheduled'` shows which |
 | `refresh step skipped` for `embed`, `rows to embed, over the 800` | the spend guard: a scheduled run found more empty vectors than a CR release leaves. Run `scripts/refresh-data.sh embed` if that spend is expected (§7) |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |
+| `docker compose up -d` stops at `env file .env.deploy not found` | the `backup` or `tunnel` profile is in `COMPOSE_PROFILES` and `.env.deploy` does not exist (`cp .env.deploy.example .env.deploy`) |
+| `backup` keeps restarting | a setting in `.env.deploy` is missing or malformed; `docker compose logs backup` names each one (`R2_*`, `BACKUP_*`, `JUDGE_ALERT_WEBHOOK`) |
+| The backup alert says `pg_dump` is older than the server | `db` runs a newer PostgreSQL major than the image's `pg_dump` (16); the image needs a newer client (§6) |
+| No backup in the bucket for over a week, and no alert | the `backup` profile is not in `COMPOSE_PROFILES` (`docker compose ps backup` lists nothing) and there is no cron entry; or `JUDGE_ALERT_WEBHOOK` is not in `.env.deploy` |
 | Refresh logs `waiting for it to finish` and sits there | another refresh or ingest step holds the refresh lease (a scheduled or cron run and a manual one overlapped); it proceeds when that one ends, or fails after an hour. The log line names the holder; `select pid, application_name, query_start, state from pg_stat_activity where application_name like 'judgebot refresh lease%';` lists it (`… since <UTC time>`) and any waiters (`… waiting`, waiting since `query_start`). A hung holder can be ended with `select pg_terminate_backend(<pid>);`. A killed run's lock is dropped by Postgres, so there is nothing to remove |
 | Refresh loads the CR on every run | `rules.cr_version` disagrees with the file name on Wizards' page — check the `current comprehensive rules release` log line for `published` vs `stored` |
 | Refresh runs but the bot still cites the old CR | it does not: retrieval reads the database live; check the run actually finished (`refresh step ok` for `rules` and `embed`) |

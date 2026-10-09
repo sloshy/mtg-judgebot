@@ -2,8 +2,9 @@
 //! launch as a set of roles ([`roles::Role`]): `--discord` (the bot),
 //! `--api`, `--web` and `--mcp` (the HTTP interfaces, on one listener) and
 //! `--jobs` (the scheduled data refresh). `judgebot ingest <cmd>` is the data
-//! command line ([`ingest`]), and the binaries this one replaced answer as
-//! links to it ([`cli`]).
+//! command line ([`ingest`]), `judgebot backup <cmd>` the database backup
+//! ([`backup`], the `backup` compose service), and the binaries this one
+//! replaced answer as links to it ([`cli`]).
 //!
 //! One process, one composition: one pool, one configuration, one set of
 //! models behind one spend meter and one ledger, one `Vectors`, the schema
@@ -21,6 +22,7 @@
 //! `JUDGE_ROLE`, `JUDGE_CONCURRENCY` and `JUDGE_USER_*` under `--discord`;
 //! `API_*`, `WEB_DIST` and `MCP_*` under the network roles; `RUST_LOG`.
 
+mod backup;
 mod cli;
 mod ingest;
 
@@ -55,6 +57,16 @@ async fn main() -> Result<()> {
             }
             ingest::run(cmd).await
         }
+        Invocation::Backup { args } => match backup::parse(args)? {
+            backup::Launch::Help => {
+                println!("{}", backup::USAGE);
+                Ok(())
+            }
+            backup::Launch::Run(cmd) => {
+                backup::setup()?;
+                backup::run(cmd).await
+            }
+        },
         Invocation::Serve { roles, name } => {
             setup()?;
             let (roles, origin) = cli::resolve(roles, std::env::var(ROLES_ENV).ok().as_deref())?;

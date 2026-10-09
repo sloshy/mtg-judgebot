@@ -168,5 +168,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      # docker-compose.yml reads .env through env_file; the example stands in.
-      - run: cp .env.example .env && docker compose config --quiet
+      # docker-compose.yml reads .env through env_file, and the tunnel and
+      # backup profiles .env.deploy; the examples stand in.
+      - run: |
+          cp .env.example .env && cp .env.deploy.example .env.deploy
+          docker compose config --quiet
+          docker compose --profile tunnel --profile backup config --quiet

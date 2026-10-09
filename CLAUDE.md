@@ -124,8 +124,9 @@ container started by a step (after a Docker Hub login, when the secrets exist), 
 lychee over the built site's internal links. A `lint` job runs `cargo deny check`
 (`deny.toml`), `cargo machete`, `taplo fmt --check` (`.taplo.toml`, which leaves out
 `judge.example.toml`'s hand-aligned comments), `typos` (`_typos.toml`), shellcheck,
-actionlint, hadolint (`.hadolint.yaml`) and `check_icons` (the icon's copies are
-byte-identical and the right size). Every tool's config records why each
+actionlint, hadolint (`.hadolint.yaml`), `check_icons` (the icon's copies are
+byte-identical and the right size) and `check_pg_major` (the `Dockerfile`'s `PG_MAJOR`
+equals the compose `db` image's major, so the backup's `pg_dump` can dump it). Every tool's config records why each
 ignore is there. `publish-image.yml` calls it before it
 builds.
 
@@ -287,11 +288,15 @@ containers always reach it at `db:5432`.
 docker compose up -d                 # db (pgvector/pg16) + judgebot (JUDGE_ROLES, default
                                      # --discord --api --web --jobs); both restart with Docker
 docker compose up -d --build judgebot  # redeploy after code changes
-                                     # COMPOSE_PROFILES=tunnel also starts cloudflared (docs/DEPLOYMENT.md)
+                                     # COMPOSE_PROFILES=tunnel also starts cloudflared, `backup` the
+                                     # backup service (docs/DEPLOYMENT.md)
 docker compose pull && docker compose up -d --remove-orphans  # deploy host: pulls the CI-built
                                      # GHCR image, never builds; --remove-orphans drops the
                                      # pre-judgebot `bot`/`api` containers (D25)
-scripts/backup-db.sh                 # weekly pg_dump -> Cloudflare R2; cron'd on the server
+docker compose run --rm backup run  # one backup now (judgebot backup; the service's command by hand)
+docker compose run --rm --no-deps backup list          # --no-deps: works with db down
+docker compose run --rm --no-deps -T backup fetch <name> > <name>   # -T: bytes to stdout, no tty
+scripts/backup-db.sh [list|fetch NAME]   # the same backup from a host cron, without the profile
 cargo build --workspace
 cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwrap/expect/indexing/panic,
                                          # and bare #[allow]: suppress with #[expect(lint, reason = "…")]
@@ -426,11 +431,13 @@ and `bot` ← the other bins):
   the serenity/poise Discord layer with pure `render.rs` (`discord::serve`, the
   `--discord` role), `serving.rs` (`Serving`: what the serving roles of one process
   share), and `ingest.rs`, the data steps (Scryfall, CR, curated lists, embedding, emoji,
-  `init`, `refresh`), which `jobs.rs` schedules.
+  `init`, `refresh`), which `jobs.rs` schedules, and `backup.rs`, the database backup
+  (settings, `pg_dump`, a SigV4 S3 client over reqwest for R2, the bucket-kept schedule).
 - `api` (lib `judge_api`): the network roles. `Network` (made only by passing
   `ApiConfig::check`) and `run`.
 - `judgebot`: the binary. `roles.rs` (`Role`, `plan`), `cli.rs` (the `argv[0]` dispatch),
-  `ingest.rs` (argument parsing over `judge_bot::ingest`).
+  `ingest.rs` (argument parsing over `judge_bot::ingest`), `backup.rs` (over
+  `judge_bot::backup`).
 - `eval`: a bin.
 - `agent`: lib + `judge-cli` / `judge-mcp` bins. `judgebot --mcp` mounts its MCP handler.
 - `configure`: `judge-config`, the localhost editor for `judge.toml` and `.env` (D23).
@@ -774,9 +781,14 @@ runbook. `db` and `judgebot` publish on `127.0.0.1` only. Public traffic reaches
 `judgebot:8787` (network alias `api`, the old service name a tunnel may still point at)
 over the compose network from the `cloudflared` service, which the `tunnel` compose
 profile starts (`COMPOSE_PROFILES=tunnel` in `.env`). Deploy credentials live in
-`.env.deploy` (`TUNNEL_TOKEN`, `R2_*`). Only `cloudflared` and `scripts/backup-db.sh` read
-it, never the internet-facing `judgebot`. Weekly `scripts/backup-db.sh` dumps to R2 and
-has `list`/`fetch` subcommands for the restore drill. Restoring is far cheaper than
+`.env.deploy` (`TUNNEL_TOKEN`, `R2_*`, `BACKUP_*`). Only `cloudflared`, the `backup`
+service and `scripts/backup-db.sh` read it, never the internet-facing `judgebot` (D15).
+The weekly backup is the `backup` compose service (`judgebot backup serve`, profile
+`backup`, D26): it reaches `db:5432` over the compose network with the image's `pg_dump`
+16 (PGDG, `PG_MAJOR` in the `Dockerfile`), has no `env_file: .env`, and takes a backup
+whenever the newest `judgebot-<stamp>.dump.gz` in the bucket is `BACKUP_EVERY_DAYS` old.
+`scripts/backup-db.sh` is the cron alternative and writes the same objects, so `list`,
+`fetch` and the restore drill work across both. Restoring is far cheaper than
 re-ingesting, which re-pays the embedder per row, so take a backup before
 `ingest reembed --yes` (runbook in `docs/DEPLOYMENT.md` §7).
 

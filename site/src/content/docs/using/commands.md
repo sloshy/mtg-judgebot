@@ -1,13 +1,13 @@
 ---
 title: Command reference
-description: The judgebot roles, every subcommand of judgebot ingest, judge-eval and judge-cli, and the compose and script entry points.
+description: The judgebot roles, every subcommand of judgebot ingest and judgebot backup, judge-eval and judge-cli, and the compose and script entry points.
 sidebar:
   order: 5
 ---
 
 Each binary prints its usage with `--help`. Every binary reads `.env` from the working
-directory. A missing file is fine, and a malformed one is an error. The containers get
-theirs through compose.
+directory, and `judgebot backup` reads `.env.deploy` before it. A missing file is fine,
+and a malformed one is an error. The containers get theirs through compose.
 
 ## `judgebot`
 
@@ -79,6 +79,23 @@ up to an hour for a command that holds it, so two never overlap. `migrate` (its 
 | `retire` | Retire calls whose citations no longer hold against current rules, rulings and Oracle text. Restore those that hold again. |
 | `refresh` | `cards`, `rules latest`, `retire`, `embed`, `emoji`. Every step runs even if one fails, and the exit code is ≠ 0 if any did. `embed` with no embedder and `emoji` with no `DISCORD_TOKEN` are skipped, not failed. Each run is recorded in `refresh_runs`. `judgebot --jobs` runs the same steps every `JUDGE_REFRESH_HOURS`, taking turns with this command through the lease. |
 
+## `judgebot backup`
+
+The database backup to Cloudflare R2 (or any S3-compatible store). In the image, run
+`docker compose run --rm backup <command>`. The settings are `.env.deploy`'s (`R2_*`,
+`BACKUP_*`, `JUDGE_ALERT_WEBHOOK`), plus `DATABASE_URL` for `run` and `serve`; the
+[configuration reference](../../self-hosting/configuration/) lists them. A missing or
+malformed one is an error naming each. Logs go to standard error.
+
+| Command | What it does |
+| --- | --- |
+| `run` | Dump the database (`pg_dump -Fc`, gzipped), refuse a dump under `BACKUP_MIN_BYTES`, upload it as `judgebot-<UTC stamp>.dump.gz`, then prune backups older than `BACKUP_KEEP_DAYS` (never the two newest) and copy it to `BACKUP_KEEP_LOCAL` when set. Exits non-zero and posts to `JUDGE_ALERT_WEBHOOK` on a failure. |
+| `list` | The objects under `BACKUP_PREFIX`, oldest first. |
+| `fetch <name> [file]` | Download one to `file`, or to standard output, which must not be a terminal (`docker compose run --rm --no-deps -T backup fetch <name> > <name>`). |
+| `serve` | The `backup` compose service: a backup whenever the newest in the bucket is `BACKUP_EVERY_DAYS` old, checked hourly. Retries a failure after an hour, then less often, and posts the first failure of a streak, a failure at a different step, and the recovery. |
+
+`scripts/backup-db.sh` writes the same objects, so each reads the other's backups.
+
 ## `judge-eval`
 
 `cargo run -p judge-eval -- <command>`.
@@ -115,11 +132,13 @@ JSON goes to stdout and logs to stderr.
 
 | Entry point | What it does |
 | --- | --- |
-| `docker compose up -d` | `db` and `judgebot`, plus `cloudflared` with `COMPOSE_PROFILES=tunnel`. |
+| `docker compose up -d` | `db` and `judgebot`, plus `cloudflared` with `tunnel` in `COMPOSE_PROFILES` and `backup` with `backup`. |
 | `docker compose up -d --build judgebot` | Rebuild and redeploy after code changes. |
 | `docker compose pull && docker compose up -d --remove-orphans` | Deploy host: pull the CI-built image, never build. `--remove-orphans` removes the `bot` and `api` containers of a compose file from before `judgebot`, which would otherwise keep running. |
 | `docker compose logs judgebot` | The process's log: the roles it runs, then each role's lines. |
 | `docker compose run --rm --entrypoint judge-cli judgebot <command>` | `judge-cli` from the image. |
 | `scripts/refresh-data.sh` | A refresh now, or from your own cron with `JUDGE_REFRESH_HOURS=0`: `docker compose run --rm refresh`. Arguments pass through to `judgebot ingest`. A failed run posts to `JUDGE_ALERT_WEBHOOK` when that is set. |
-| `scripts/backup-db.sh [list\|fetch]` | Weekly `pg_dump` to Cloudflare R2. `list` and `fetch` serve the restore drill. A failed backup posts to `JUDGE_ALERT_WEBHOOK` (from `.env.deploy`, else `.env`). |
-| `scripts/alert.sh` | Sourced by the two above: posts one line to the webhook, passing the URL on stdin so it never shows in `ps`. |
+| `docker compose run --rm backup run\|list` | The `backup` service's commands by hand: a backup now, or the objects in the bucket. `docker compose logs backup` shows the scheduled ones. |
+| `docker compose run --rm --no-deps -T backup fetch <name> > <name>` | Download one backup for the restore drill. `-T` keeps the bytes off a terminal. |
+| `scripts/backup-db.sh [list\|fetch]` | The same backup from a host cron, without the `backup` profile: `pg_dump` to Cloudflare R2. `list` and `fetch` serve the restore drill. A failed backup posts to `JUDGE_ALERT_WEBHOOK` (from `.env.deploy`, else `.env`). |
+| `scripts/alert.sh` | Sourced by `scripts/refresh-data.sh` and `scripts/backup-db.sh`: posts one line to the webhook, passing the URL on stdin so it never shows in `ps`. |

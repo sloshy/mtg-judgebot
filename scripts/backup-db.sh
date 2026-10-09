@@ -11,6 +11,11 @@
 # Config comes from .env.deploy (see .env.deploy.example), kept separate from
 # .env so these credentials never reach the internet-facing containers.
 #
+# The `backup` compose service (`judgebot backup serve`, COMPOSE_PROFILES=backup)
+# takes the same backup on its own schedule with no cron, and writes the same
+# objects: each lists, fetches and counts the other's backups
+# (docs/DEPLOYMENT.md §6). This script is for a host that keeps cron instead.
+#
 #   scripts/backup-db.sh              dump, upload, prune
 #   scripts/backup-db.sh list         list stored backups, newest last
 #   scripts/backup-db.sh fetch NAME   download one into the repo root
