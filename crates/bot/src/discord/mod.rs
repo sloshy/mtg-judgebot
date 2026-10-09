@@ -6,8 +6,10 @@
 //! custom emoji), [`ids`] (typed `custom_id`s), [`pending`] (questions waiting
 //! on a card pick), [`question`] (span replacement) and [`capture`] (keeps the
 //! retrieval `Context` so a call can be persisted). [`symbols`] lists the
-//! card-symbol emoji and keeps the table current while the bot runs. This
-//! file is the glue: serenity types in, those modules out.
+//! card-symbol emoji and keeps the table current while the bot runs.
+//! [`gateway`] keeps the gateway connection to one process of all those
+//! running `--discord` on a database. This file is the glue: serenity types
+//! in, those modules out.
 //!
 //! Flows:
 //! * `/judge question:<text>` → defer → `judge()` with the thread's last N
@@ -32,6 +34,7 @@
 
 pub mod capture;
 pub mod cooldown;
+pub mod gateway;
 pub mod ids;
 pub mod mana;
 pub mod pending;
@@ -41,7 +44,10 @@ pub mod symbols;
 
 use std::{
     num::{NonZeroU32, NonZeroU64},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -242,6 +248,9 @@ pub struct Data {
     /// Rulings for `/card`. The resolver and retriever in `deps` serve the
     /// rest of the lookups.
     library: PgLibrary,
+    /// Whether a connection of this role has registered the slash commands,
+    /// so a reconnect after a lost lease does not register them again.
+    registered: AtomicBool,
 }
 
 impl std::fmt::Debug for Data {
@@ -256,7 +265,7 @@ impl std::fmt::Debug for Data {
 }
 
 type Error = anyhow::Error;
-type Ctx<'a> = poise::Context<'a, Data, Error>;
+type Ctx<'a> = poise::Context<'a, Arc<Data>, Error>;
 
 impl Data {
     /// Wire the shared state. `meter` must be the one the models inside
@@ -287,6 +296,7 @@ impl Data {
             operator,
             cooldowns: cfg.user_limit.map(Cooldowns::new),
             library,
+            registered: AtomicBool::new(false),
         }
     }
 
@@ -872,7 +882,7 @@ async fn forget_command(ctx: Ctx<'_>) -> Result<(), Error> {
 }
 
 async fn event_handler(
-    framework: poise::FrameworkContext<'_, Data, Error>,
+    framework: poise::FrameworkContext<'_, Arc<Data>, Error>,
     event: &FullEvent,
 ) -> Result<(), Error> {
     let (ctx, data) = (framework.serenity_context, framework.user_data);
@@ -888,7 +898,7 @@ async fn event_handler(
     Ok(())
 }
 
-async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
+async fn on_error(error: poise::FrameworkError<'_, Arc<Data>, Error>) {
     match error {
         poise::FrameworkError::Command { error, ctx, .. } => {
             tracing::error!(
@@ -919,12 +929,13 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
 }
 
 /// The `--discord` role: build the adapter's [`Data`] over the process's
-/// shared composition and [`run`] it. `cfg` holds the token and `operator`
-/// is the contact the bot must name, so a process that reaches this has
-/// passed both requirements.
+/// shared composition and [`run`] it while this process holds the gateway
+/// lease ([`gateway::hold`]: it stands by while another process holds it).
+/// `cfg` holds the token and `operator` is the contact the bot must name, so
+/// a process that reaches this has passed both requirements.
 ///
 /// # Errors
-/// As [`run`].
+/// As [`run`], or the gateway lease was lost.
 pub async fn serve(
     serving: &Serving,
     cfg: Config,
@@ -933,7 +944,10 @@ pub async fn serve(
     let judge = serving.judge();
     // `/card` reads rulings by card id only, so its library needs no vectors.
     let library = PgLibrary::new(serving.pool().clone());
-    let data = Data::new(
+    // One `Data` for the role, whichever connection serves it: the concurrency
+    // slots, the per-user windows, the parked "did you mean?" picks and the
+    // symbol table outlive a reconnect after a lost lease.
+    let data = Arc::new(Data::new(
         serving.deps(),
         serving.store(),
         serving.models().meter().clone(),
@@ -941,7 +955,7 @@ pub async fn serve(
         judge.source_offer().clone(),
         operator,
         library,
-    );
+    ));
     tracing::info!(
         guild = ?cfg.guild_id,
         judge_role = %cfg.judge_role,
@@ -949,15 +963,33 @@ pub async fn serve(
         user_limit = ?cfg.user_limit,
         "starting Discord adapter"
     );
-    run(cfg, data).await
+    gateway::hold(
+        serving.pool(),
+        serving.process(),
+        gateway::Timing::DEFAULT,
+        |stop| run(cfg.clone(), Arc::clone(&data), stop),
+    )
+    .await
 }
 
-/// Connect to the gateway and serve until the connection ends.
+/// Connect to the gateway and serve until the connection ends, or until
+/// `stop` resolves, which closes it. Called once per connection: the lease
+/// hand-off ([`gateway::hold`]) calls it again after a lost lease.
+///
+/// On a stop it returns only once serenity says every shard is shut down.
+/// The wait is not bounded here: [`gateway::hold`] gives it
+/// [`gateway::Timing::shutdown_limit`], then ends the role, and the process
+/// exits, which closes any shard still open.
 ///
 /// # Errors
 /// Building the client (bad token) or a fatal gateway error.
-pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
+pub async fn run(cfg: Config, data: Arc<Data>, mut stop: gateway::Stop) -> anyhow::Result<()> {
     let guild = cfg.guild_id;
+    // The symbol watcher this connection starts, aborted when the connection
+    // ends (however `run` returns, or is dropped), so reconnects never stack
+    // watchers.
+    let (watcher_tx, watcher_rx) = tokio::sync::oneshot::channel();
+    let _watcher = AbortOnDrop(watcher_rx);
     let options = poise::FrameworkOptions {
         commands: vec![
             judge_command(),
@@ -974,38 +1006,138 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
     let framework = poise::Framework::builder()
         .options(options)
         .setup(move |ctx, _ready, framework| {
+            // Nothing in here fails: an error from `setup` would leave poise
+            // connected with no user data, answering nothing while this
+            // process keeps the lease. Registration is bounded and only
+            // logged on failure, and the watcher is a task of its own.
             Box::pin(async move {
-                let commands = &framework.options().commands;
-                if let Some(g) = guild {
-                    poise::builtins::register_in_guild(ctx, commands, g).await?;
-                    tracing::info!(guild = %g, "registered /judge, /card, /rule, /help, /license and /forget in one guild");
-                } else {
-                    poise::builtins::register_globally(ctx, commands).await?;
-                    tracing::info!(
-                        "registered /judge, /card, /rule, /help, /license and /forget globally (propagation can take up to an hour)"
-                    );
-                }
+                register(ctx, &framework.options().commands, guild, &data).await;
                 // The application id arrives with `Ready`, which is what got us
                 // here, so `ctx.http` can list the emoji now. The watcher does
                 // it as a task of its own, so a slow database or Discord never
                 // delays the bot's readiness: symbols render as text until its
                 // first listing lands.
-                tokio::spawn(symbols::watch(
+                let watcher = tokio::spawn(symbols::watch(
                     Arc::clone(&ctx.http),
                     data.library.pool().clone(),
                     Arc::clone(&data.symbols),
                 ));
+                if watcher_tx.send(watcher.abort_handle()).is_err() {
+                    // The connection is already over.
+                    watcher.abort();
+                }
                 Ok(data)
             })
         })
         .build();
     // Slash commands and button presses arrive without any gateway intent.
-    let mut client = serenity::ClientBuilder::new(cfg.token.expose(), GatewayIntents::empty())
-        .framework(framework)
-        .await
-        .context("build Discord client")?;
-    client.start().await.context("Discord gateway")?;
-    Ok(())
+    let building = serenity::ClientBuilder::new(cfg.token.expose(), GatewayIntents::empty())
+        .framework(framework);
+    // `biased`: a stop that came first wins, so nothing starts after it.
+    let mut client = tokio::select! {
+        biased;
+        () = stop.requested() => return Ok(()),
+        built = building => built.context("build Discord client")?,
+    };
+    let shards = Arc::clone(&client.shard_manager);
+    // One case the loop below cannot see: when a shard's shutdown reports a
+    // stray id, serenity queues a restart, and `start` can return before the
+    // queued start is processed. That costs at worst one IDENTIFY that
+    // dispatches nothing, inside the slack between the shutdown limit and
+    // the grace.
+    let mut connected = std::pin::pin!(client.start());
+    tokio::select! {
+        biased;
+        () = stop.requested() => {}
+        ended = &mut connected => return ended.context("Discord gateway"),
+    }
+    tracing::info!("closing the Discord gateway connection");
+    // `shutdown_all` closes the shards registered so far and then makes
+    // `start` return. It returns at once, doing nothing, while none is
+    // registered (the shard is still connecting), so it is asked again until
+    // `start` returns: a shard that registers later is closed on the next
+    // round.
+    loop {
+        shards.shutdown_all().await;
+        tokio::select! {
+            ended = &mut connected => return ended.context("Discord gateway"),
+            () = tokio::time::sleep(SHUTDOWN_RETRY) => {}
+        }
+    }
+}
+
+/// How long registering the slash commands may take on a connection before
+/// it goes on without them (the ones registered before stay in force).
+const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Register the slash commands, once per role: in `guild`, or globally.
+/// Never fails: Discord keeps the commands registered earlier, so a failure
+/// (or no answer in [`REGISTER_TIMEOUT`]) is a warning, and the next
+/// connection tries again.
+async fn register(
+    ctx: &serenity::Context,
+    commands: &[poise::Command<Arc<Data>, Error>],
+    guild: Option<GuildId>,
+    data: &Data,
+) {
+    if data.registered.load(Ordering::Acquire) {
+        tracing::debug!("slash commands already registered by this process");
+        return;
+    }
+    let done = match guild {
+        Some(g) => {
+            tokio::time::timeout(
+                REGISTER_TIMEOUT,
+                poise::builtins::register_in_guild(ctx, commands, g),
+            )
+            .await
+        }
+        None => {
+            tokio::time::timeout(
+                REGISTER_TIMEOUT,
+                poise::builtins::register_globally(ctx, commands),
+            )
+            .await
+        }
+    };
+    match (done, guild) {
+        (Ok(Ok(())), Some(g)) => {
+            data.registered.store(true, Ordering::Release);
+            tracing::info!(guild = %g, "registered /judge, /card, /rule, /help, /license and /forget in one guild");
+        }
+        (Ok(Ok(())), None) => {
+            data.registered.store(true, Ordering::Release);
+            tracing::info!(
+                "registered /judge, /card, /rule, /help, /license and /forget globally (propagation can take up to an hour)"
+            );
+        }
+        (Ok(Err(e)), _) => tracing::warn!(
+            error = %e,
+            "registering the slash commands failed; those registered before stay, and the next connection tries again"
+        ),
+        (Err(_), _) => tracing::warn!(
+            secs = REGISTER_TIMEOUT.as_secs(),
+            "registering the slash commands got no answer in time; those registered before stay, and the next connection tries again"
+        ),
+    }
+}
+
+/// How often [`run`] asks serenity again to shut its shards down while a
+/// shard is still connecting.
+const SHUTDOWN_RETRY: Duration = Duration::from_millis(50);
+
+/// Aborts the task whose handle arrives on the channel, when dropped.
+struct AbortOnDrop(tokio::sync::oneshot::Receiver<tokio::task::AbortHandle>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        // Closed first, so a handle sent from now on fails to send and its
+        // sender aborts the task itself.
+        self.0.close();
+        if let Ok(handle) = self.0.try_recv() {
+            handle.abort();
+        }
+    }
 }
 
 #[cfg(test)]

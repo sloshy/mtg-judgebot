@@ -163,6 +163,25 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
 - `/card` and `/rule` are model-free lookups, rendered by pure `render::card` / `rules`.
 - An *Incorrect* rating's ephemeral reply names the operator and, when the source offer
   is a GitHub repository, links its `wrong_answer.yml` issue form (`render::report_url`).
+- **One gateway holder** (`discord/gateway.rs`). `discord::serve` runs `run` inside
+  `gateway::hold`, in a loop: take a `GatewayLease` or stand by for it (unbounded, INFO
+  `standing by: …` naming the holder, reconnecting with backoff if the waiting
+  connection drops; the process's HTTP roles serve meanwhile), wait `Timing::grace`,
+  check, connect. The holder checks every `CHECK_INTERVAL` (5 s, `check_timeout` 4 s);
+  a lost lease sends `Stop` (`run` repeats `ShardManager::shutdown_all` until `start`
+  returns, since it is a no-op before a shard registers) and waits `shutdown_limit`
+  (1 s). Closed in time: stand by again. Not: return an error so the process exits.
+  `grace` (15 s) > `worst_disconnect` (10 s) is a `const` assertion. The gateway is an
+  `FnMut(Stop)`, called per connection over one `Arc<Data>` (poise's user data is
+  `Arc<Data>`); `symbols::watch` is spawned per connection and aborted with it
+  (`AbortOnDrop`). `setup` cannot fail (an error there leaves poise connected with no
+  user data, answering nothing): commands register once per role (`Data::registered`),
+  bounded by `REGISTER_TIMEOUT`, and a failure is a WARN. A loss within
+  `Timing::healthy_hold` (30 min) of the last connection pauses before standing by
+  (`reconnect_pause`: 30 s doubling to 10 min, ERROR), for Discord's 1000 IDENTIFYs a
+  day per token. `Timing::every` returns `None` for a zero interval. A holder in a paused VM that loses its session can overlap until its
+  next check. The old `bot` image takes no lease, hence `--remove-orphans` on the
+  upgrade. Tests inject the gateway as a closure; never open a real gateway in one.
 
 **The source offer** (`judge_core::source`, AGPL §13). Every remote interface names the
 repository the instance's source is in, the commit it was built from and the
@@ -797,13 +816,29 @@ embedder a few hundred rules. `aliases` and `notes` are not part of refresh. The
 data, compiled into `judgebot` (`include_str!`) and loaded by `init`, or by `aliases` /
 `notes` with no argument after an upgrade that changed them.
 
-**Ingest runs take the refresh lease** (`judge_bot::ingest::lease`).
+**Ingest runs take the refresh lease** (`judge_bot::lease`).
 
+- `judge_bot::lease` is a `Lease<K>` over a sealed `LeaseKey`: `Refresh`
+  (`RefreshLease`, `REFRESH_LOCK`) and `Gateway` (`GatewayLease`, `GATEWAY_LOCK`). The
+  key carries the lock, the `application_name` label and the error noun; the wait is
+  per key (`RefreshLease::acquire`, bounded; `GatewayLease::stand_by`, unbounded), so
+  neither lease can stand in for the other. The module docs list all three advisory
+  keys (with `CALLS_REWRITE_LOCK`), and a `const` assertion keeps them distinct. A new
+  key is a new marker type there.
+- Every lease session (holding or waiting) gets `lease::SESSION_SETTINGS`: server-side
+  TCP keepalives (10 s idle, 5 s × 3) and `tcp_user_timeout` 15 s, so a vanished
+  client's lock is freed in ~25 s rather than the kernel's 2 h, and
+  `statement_timeout`, `idle_session_timeout` (PG14) and `transaction_timeout` (PG17)
+  0 (waits are bounded by `lock_timeout` and the client; an idle holder must not be
+  ended). A `Setting` with `since` tolerates 42704 on an older server. A
+  `try_acquire` miss leaves its pooled connection untouched. Bookkeeping queries are
+  bounded by `lease::QUICK`. Session-level locks need a direct connection, never a
+  transaction-mode pooler.
 - `RefreshLease` holds the session-level advisory lock `REFRESH_LOCK` on a connection
   detached from the pool, labelled `judgebot refresh lease (<process>) since <UTC minute>` in
-  `pg_stat_activity`. Only `try_lease` (no wait; a miss keeps the pooled connection)
-  and `lease` make one. `lease` waits at most `LEASE_WAIT` (1 h), then fails naming the
-  holder.
+  `pg_stat_activity`. Only `ingest::try_lease` (no wait; a miss keeps the pooled
+  connection) and `ingest::lease` (`Lease::try_acquire`, `RefreshLease::acquire`) make
+  one. `lease` waits at most `LEASE_WAIT` (1 h), then fails naming the holder.
 - Every data-writing step takes `&mut RefreshLease` and reads its pool from it, so an
   unlocked step does not compile and two steps cannot run under one lease at once.
   `init` migrates first, then takes it. `migrate` (its own lock) and `emoji` (no

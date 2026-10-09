@@ -53,6 +53,18 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   checks every ten minutes, so the first `judgebot ingest emoji` after starting it is seen
   too, and every bot lists them hourly regardless. A listing that failed at startup is
   retried the same way, and connecting no longer waits for it.
+- **One process answers Discord, however many run.** A `judgebot --discord` takes a
+  gateway lease in the database before it connects. A second one on the same database
+  (a replica, a new container started before the old one stopped) logs
+  `standing by: another instance holds the Discord gateway`, naming the holder, serves
+  its HTTP roles meanwhile, and connects 15 seconds after the holder exits, or about
+  25 seconds more when the holder vanished without closing its connection (power loss,
+  a partition). The holder checks every 5 seconds; when its lease is lost (a database
+  restart) it disconnects and stands by again instead of restarting the process, so the
+  two never answer the same question. Losses in quick succession pause before
+  reconnecting, up to ten minutes, to keep within Discord's daily login limit. `DATABASE_URL` must be a direct connection, not a
+  pooler in transaction mode. The old `bot` image does not take the lease, so the
+  upgrade below still needs `--remove-orphans`.
 - **`judgebot ingest init` is recorded as a refresh run** of the steps it shares with one
   (it now runs the retirement pass too). The schedule counts a first load as fresh data,
   and the steps it did not reach after a failure are recorded as skipped.
@@ -145,7 +157,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   fails to start because `judgebot-api` holds port 8787. With only `judgebot-bot`
   running (a Discord-only deployment that started `bot` alone, or a stopped or
   crash-looping `api`), `up -d` exits 0 and `judgebot-bot` keeps answering Discord beside
-  the new container on the same token, so every question is answered twice.
+  the new container on the same token, so every question is answered twice: the old
+  image does not take the gateway lease.
   `--remove-orphans` removes both before the new one starts. Pull the image straight
   after `git pull`: a cron'd `scripts/refresh-data.sh` in between would run the new
   compose file's `judgebot ingest` on the old local image, which has no `judgebot`.

@@ -6,7 +6,7 @@
 //! scheduled job ([`crate::jobs`] runs it on a timer). `judgebot ingest` is
 //! argument parsing over this module.
 //!
-//! Every step that writes data takes `&mut` [`RefreshLease`] ([`lease`]), so
+//! Every step that writes data takes `&mut` [`RefreshLease`] ([`crate::lease`]), so
 //! two runs never overlap, in one process or several, and a step run without
 //! it, or beside another step under the same lease, does not compile. The exceptions say why: [`schema::migrate`] has its own
 //! lock and must run before any table exists, and [`emoji::run`] writes no
@@ -26,7 +26,6 @@ pub mod aliases;
 pub mod cr;
 pub mod embed;
 pub mod emoji;
-pub mod lease;
 pub mod notes;
 pub mod reembed;
 mod renumber;
@@ -34,7 +33,26 @@ pub mod runs;
 pub mod schema;
 pub mod scryfall;
 
-pub use lease::{REFRESH_LOCK, RefreshLease, lease, try_lease};
+pub use crate::lease::{REFRESH_LOCK, RefreshLease};
+
+/// The refresh lease if no other run holds it, else `None` at once
+/// ([`RefreshLease::try_acquire`]).
+///
+/// # Errors
+/// When the database cannot be reached.
+pub async fn try_lease(pool: &PgPool, process: &'static str) -> Result<Option<RefreshLease>> {
+    RefreshLease::try_acquire(pool, process).await
+}
+
+/// The refresh lease, waiting up to [`LEASE_WAIT`](crate::lease::LEASE_WAIT)
+/// for a run that holds it ([`RefreshLease::acquire`]).
+///
+/// # Errors
+/// When the database cannot be reached, or the lease is still held after
+/// the wait (the error names the holder).
+pub async fn lease(pool: &PgPool, process: &'static str) -> Result<RefreshLease> {
+    RefreshLease::acquire(pool, process).await
+}
 
 use std::{
     path::{Path, PathBuf},
@@ -498,7 +516,7 @@ where
 
 /// The longest a [`refresh`] runs before abandoning its remaining steps. A
 /// healthy run takes minutes and a first full load on a NAS well under an
-/// hour ([`lease::LEASE_WAIT`] is sized the same way); three hours is that with
+/// hour ([`crate::lease::LEASE_WAIT`] is sized the same way); three hours is that with
 /// room for a slow Scryfall day and a full re-embed after a new embedder, and
 /// still far less than the daily interval, so a hang costs one day's refresh
 /// at most.

@@ -16,7 +16,9 @@ as flags: `cargo run --release -p judgebot -- --api --web`. With no flags it rea
 `JUDGE_ROLES`, the same flags separated by spaces. Every role's requirements are checked
 before anything connects or binds, and every unmet one is reported at once. The serving
 roles also need a chat model that builds (`ANTHROPIC_API_KEY` or a `judge.toml`). The
-HTTP listener is bound before the Discord gateway is contacted.
+HTTP listener is bound before the Discord gateway is contacted. Of the processes running
+`--discord` on one database, only the one holding the gateway lease connects; the others
+stand by and take over when it goes.
 
 | Role | What it runs | Requires |
 | --- | --- | --- |

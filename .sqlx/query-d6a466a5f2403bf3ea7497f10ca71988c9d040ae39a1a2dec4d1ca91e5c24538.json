@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT set_config('lock_timeout', '0', false) AS \"set!\"",
+  "query": "SELECT set_config($1, $2, false) AS \"set!\"",
   "describe": {
     "columns": [
       {
@@ -11,11 +11,14 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Text",
+        "Text"
+      ]
     },
     "nullable": [
       null
     ]
   },
-  "hash": "07a153d0385261e432f1ad2c37615b7bfe0d6fbc3af9d57842d3a196f8e66ed6"
+  "hash": "d6a466a5f2403bf3ea7497f10ca71988c9d040ae39a1a2dec4d1ca91e5c24538"
 }

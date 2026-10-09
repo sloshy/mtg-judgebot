@@ -27,7 +27,7 @@
 //! is recorded in `refresh_runs` as `manual`.
 //!
 //! Every command that writes data first takes the refresh lease (a database
-//! advisory lock, `judge_bot::ingest::lease`), waiting for a run in progress, so
+//! advisory lock, `judge_bot::lease`), waiting for a run in progress, so
 //! a manual step or a cron run never overlaps another; [`Leased`] lists them.
 //! `init` takes it itself after migrating; `migrate` has its own lock; `emoji`
 //! writes no database.

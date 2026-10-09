@@ -198,7 +198,28 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   pool, one `Models` behind one `SpendMeter` and one budget ledger, one `Vectors`, one
   migration at startup. Each role keeps its own concurrency slots and limits. The HTTP
   listener is bound before the Discord gateway is contacted, then both run side by side,
-  and the first to stop ends the process with a non-zero status. The scheduler's thread
+  and the first to stop ends the process with a non-zero status.
+- Of the processes running `--discord` on one database, one holds the gateway
+  (`judge_bot::discord::gateway`). The Discord role takes a `GatewayLease` before it
+  connects, or stands by until the holder lets go, with no bound on the wait and
+  reconnecting if its own connection drops; its HTTP roles serve meanwhile. Having taken
+  it, it waits `Timing::grace` (15 s), checks it still holds it, and connects. The holder
+  checks every 5 s (4 s timeout). A failed or unanswered check closes the gateway
+  (serenity's `ShardManager::shutdown_all`, asked again until a still-connecting shard
+  registers) and, if it closed within 1 s, stands by again inside the role; otherwise the
+  role ends with an error and the process exits. The grace exceeds the check interval,
+  the check's timeout and the shutdown limit together (10 s), a relation checked at
+  compile time, so an old and a new holder never answer side by side. A holder in a
+  paused VM that loses its session is the case it cannot cover (`docs/DEPLOYMENT.md` §8).
+  Every lease session sets server-side TCP keepalives (`lease::SESSION_SETTINGS`), so a
+  vanished holder's lock is freed in about 25 s, and turns `statement_timeout`,
+  `idle_session_timeout` and `transaction_timeout` off. A loss soon after the last one
+  pauses before standing by again (30 s doubling to 10 min) to stay inside Discord's
+  1000 logins a day per token, and a failed command registration is a warning, never a
+  connection left serving nothing. The
+  role's `Data` is one `Arc` across reconnects, and the symbol watcher a connection
+  starts is aborted with it. `hold` takes the gateway as a closure handed a `Stop`, so
+  the hand-off is tested without Discord. The scheduler's thread
   is different: beside serving roles its end is logged as an error and the process keeps
   answering, while a process whose only role is `--jobs` exits non-zero.
 - `judgebot ingest <cmd>` is the data command line. `judge-bot`, `judge-api` and
@@ -379,6 +400,19 @@ pictures, from one set of names:
 The loaders in the table (cards, rulings, the CR, symbols, nicknames, notes) and the
 embedding step are `judge_bot::ingest` (`crates/bot/src/ingest/`), beside the other
 Postgres adapters. `judgebot ingest` is the command line over them.
+
+The database has three advisory lock keys, listed together in `judge_bot::lease` with a
+compile-time check that they differ:
+
+| Key | Scope | Held by |
+| --- | --- | --- |
+| `REFRESH_LOCK` | session | a data-writing run (`RefreshLease`) |
+| `GATEWAY_LOCK` | session | the process connected to the Discord gateway (`GatewayLease`) |
+| `CALLS_REWRITE_LOCK` | transaction, shared or exclusive; session for a migration | a persist that writes a vector and each embed batch (shared); the CR load, the retirement pass, a space switch (exclusive); a migration, for its whole run |
+
+The two session locks are a `Lease<K>`, typed by what they guard (`K` is `Refresh` or
+`Gateway`, a sealed `LeaseKey` carrying the key, the `application_name` label and, in its
+own `impl`, the wait), so one lease cannot stand in for the other.
 
 Every loader that writes the database takes a `RefreshLease`, a session-level advisory
 lock (`REFRESH_LOCK`) held on a connection of its own, so two runs never overlap, in one

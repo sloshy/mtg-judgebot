@@ -743,7 +743,23 @@ What follows:
   credentials from `.env.deploy`, which must stay out of the internet-facing process
   (D15). `judge-config` edits `.env` and `judge.toml` on localhost and has no business in
   a process the public reaches.
-- **Several replicas are deferred** (issue 17). The refresh lease already makes a second
-  `--jobs` process safe. Two `--discord` processes on one token would both answer, and a
-  "did you mean?" pick is held in the memory of the process that asked. Until those are
-  solved, an instance runs one `judgebot`.
+- **Safe to run twice.** The refresh lease makes a second `--jobs` process safe, and the
+  gateway lease (`GATEWAY_LOCK`, `judge_bot::discord::gateway`) a second `--discord`
+  process: one holds the gateway and any other stands by, serving its HTTP roles. A
+  holder that exits is replaced within the grace period (15 s) plus a gateway login,
+  and one that vanished without closing its connection within about 25 s more, the
+  TCP keepalives every lease session sets. The holder checks its lease every 5 s (4 s
+  timeout) and on a loss closes the gateway (1 s limit) and stands by again, so a
+  database restart costs the bot a reconnect and the HTTP roles nothing. Losses in
+  quick succession pause before reconnecting (up to 10 min), because each connection
+  spends one of Discord's 1000 daily logins per token. The grace
+  exceeds the interval, the check timeout and the shutdown together (10 s), so the two
+  never answer side by side. A holder in a paused VM that loses its session is the
+  exception (`docs/DEPLOYMENT.md` §8). The lease is in the database and is
+  session-level, so it covers processes sharing one database over direct connections,
+  and the old `bot` image never takes it: the upgrade to `judgebot` still needs
+  `--remove-orphans`.
+- **Several replicas are still deferred** (issue 17). Safe is not supported: a
+  "did you mean?" pick is held in the memory of the process that asked, and the
+  per-user and per-IP limits are per process. Until those are solved, an instance runs
+  one `judgebot`, and a second is a deploy overlap or a standby.

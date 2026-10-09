@@ -171,7 +171,8 @@ waits for it to pass. It probes only when the roles include `--api`, `--web` or
 command line names none. With no HTTP role (`JUDGE_ROLES='--discord --jobs'`) nothing
 listens, so the check passes without probing rather than marking the container
 unhealthy forever. The Discord gateway is not visible from outside the process; a
-fatal disconnect exits it, and `restart: unless-stopped` brings it back.
+fatal disconnect exits it, and `restart: unless-stopped` brings it back. A process
+standing by for the gateway (§8, Gateway holder) is healthy: it is waiting by design.
 
 An *empty* database also needs only `docker compose up -d`: `judgebot` creates the
 schema at startup. Use the explicit form below to see what is about to be applied, or
@@ -824,7 +825,9 @@ names. What happens next depends on what was running:
 - With only `judgebot-bot` running (a Discord-only deployment that started `bot` alone,
   or an `api` that was stopped or crash-looping), `up -d` succeeds and exits 0.
   `judgebot-bot` keeps answering Discord beside the new process on the same token, and
-  every question is answered twice. Nothing in the output says so.
+  every question is answered twice. Nothing in the output says so. The new process
+  takes the gateway lease (below), but the old `bot` image does not know it exists, so
+  the lease cannot keep it off the gateway.
 
 Stopping `judgebot-api` by hand to free the port leads to the second case.
 `--remove-orphans` removes both before the new container starts. The flag is harmless on
@@ -868,6 +871,83 @@ What else that upgrade changes:
 
 `docker compose up -d --build` still works on a machine with the CPU and RAM for it.
 The compose file keeps `build: .` for local development.
+
+### Gateway holder
+
+Only one process connects to the Discord gateway: the one holding the gateway lease, a
+Postgres advisory lock. Any other `judgebot --discord` on the same database (a second
+container, one on another host, a new container started before the old one stopped)
+logs this and waits, while its HTTP roles serve:
+
+```text
+standing by: another instance holds the Discord gateway; this one connects when it lets go holder=pid 4242 ("judgebot gateway (judgebot) since 2026-10-09 14:02Z", …)
+```
+
+- **Takeover.** When the holder exits or crashes, its database connection closes and a
+  standby takes the lease, waits a grace period of 15 seconds and connects. A holder
+  that vanishes without closing its connection (power loss, a network partition, a
+  container network torn down) is noticed by the database's TCP keepalives, which every
+  lease session turns on: its session ends within about 25 seconds, so the standby
+  connects about 25 seconds plus the grace later. Questions asked in that gap, the
+  grace plus Discord's login, get Discord's "The application did not respond". A
+  "did you mean?" pick offered by the old holder is gone with its process.
+- **A lost lease.** The holder checks every 5 seconds that its session still holds the
+  lock. When the check fails (the database restarted, the session was ended with
+  `pg_terminate_backend`) or gets no answer in 4 seconds, it closes its gateway
+  connection and stands by again, while the process's HTTP roles keep serving. A
+  restart of the database therefore costs the bot a grace period and a login, and
+  costs the page nothing. If the gateway does not close within 1 second, the process
+  exits non-zero instead, which closes it, and `restart: unless-stopped` brings it
+  back. The grace (15 seconds) is longer than the slowest disconnect (a 5-second
+  interval, a 4-second check and a 1-second shutdown), so the old and new holders
+  never answer side by side.
+- **Repeated losses.** Every connection spends one of the 1000 logins a day Discord
+  allows a token before it resets it. A lease lost again within 30 minutes of the
+  last connection (a database restarting in a loop) makes the holder pause before
+  standing by again, 30 seconds and doubling to 10 minutes, with an ERROR line
+  `the Discord gateway lease was lost again soon after the last loss`. Half an hour
+  connected resets it.
+- **A standby's own connection.** A standby whose database connection drops reconnects
+  with a backoff (1 second, doubling to 30) and keeps standing by. It never exits for
+  that alone.
+- **A frozen holder.** A holder whose process is suspended (`docker pause`, SIGSTOP, a
+  paused VM) cannot run its check. A paused container or a stopped process still has a
+  running kernel, which keeps its database session and its lock alive: the bot is
+  offline until it resumes, with no overlap. A paused VM stops answering the
+  keepalives and loses its session in about 25 seconds, and a standby takes over. The
+  resumed holder then answers beside the new one until its next check disconnects it,
+  within 10 seconds of resuming. Unpausing a VM that held the gateway is the one case to
+  watch.
+- **A frozen standby.** A standby paused while it waits can be granted the lock during
+  its current request (up to 60 seconds each). The bot is then offline until the
+  standby resumes and waits out its grace, with no overlap.
+- **A holder cut off from the database** fails its next check and disconnects
+  within the check timeout plus the shutdown (5 seconds) of it, and stands by. Postgres frees its lock
+  when the keepalives give up on the session, so the standby takes over about 25
+  seconds plus the grace later, never earlier.
+- **One database.** The lease lives in the database, so it protects only processes
+  that share one. Two instances with separate databases and one token both answer.
+- **Older images.** An image from before the single `judgebot` service never takes the
+  lease, so the upgrade to it still needs `--remove-orphans` (above), and so does a
+  rollback that far. Any number of `--discord` processes on this image or later are safe.
+- **A direct connection.** The gateway and refresh leases are session-level advisory
+  locks, held by one database connection for as long as it lives. `DATABASE_URL` must
+  reach Postgres directly, or through a pooler in session mode. A pooler in transaction
+  mode (PgBouncer's `pool_mode = transaction`) hands that connection to other clients
+  between statements, and the lock with it. Each lease session turns off
+  `statement_timeout`, `idle_session_timeout` and (Postgres 17) `transaction_timeout`
+  for itself, so a server- or role-wide setting of those cannot end it either; the
+  other connections keep them.
+
+The holder and any standbys, by `application_name`:
+
+```sql
+select pid, application_name, backend_start, query_start, state
+from pg_stat_activity where application_name like 'judgebot gateway%';
+```
+
+The holder reads `judgebot gateway (<process>) since <UTC minute>`, a standby
+`judgebot gateway (<process>) waiting`, waiting since `query_start`.
 
 ### Releases with a migration
 
@@ -982,7 +1062,8 @@ own if the connector restarts.
 | The page 404s but `/api/health` is fine | `--web` is not in `JUDGE_ROLES`; the `judgebot roles` startup line lists what is on and what is off |
 | `judgebot` restarts with `DISCORD_TOKEN is not set` on a deployment without Discord (often right after the upgrade to one service) | the default roles include `--discord`; add `JUDGE_ROLES='--api --web --jobs'` to `.env` and `docker compose up -d` |
 | The log warns that `API_INTERFACES` is deprecated | replace it in `.env` with the `JUDGE_ROLES` line the warning names |
-| Every Discord question is answered twice | a second process holds the same token: the old `judgebot-bot` container left by an upgrade without `--remove-orphans` (§8; `docker rm -f judgebot-bot judgebot-api`), or a `judgebot` on another host |
+| Every Discord question is answered twice | a second process uses the same token without the gateway lease: the old `judgebot-bot` container left by an upgrade without `--remove-orphans` (§8; `docker rm -f judgebot-bot judgebot-api`), or a `judgebot` on another host with a database of its own |
+| The bot is offline and the log says `standing by: another instance holds the Discord gateway` | another `judgebot --discord` on the same database holds the gateway lease; the line names its pid and `application_name` (§8, Gateway holder). Stop that process (`docker rm -f` a leftover container), and this one connects 15 seconds later |
 | `judgebot` reads healthy but nothing answers on 8787 | the roles have no `--api`, `--web` or `--mcp`, so the healthcheck passes without probing (§4) |
 | Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the tunnel — every request looks like the cloudflared container |
 | Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied |

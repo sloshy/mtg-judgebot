@@ -26,6 +26,7 @@ pub struct Serving {
     models: Models,
     vectors: Option<Arc<Vectors>>,
     store: Arc<dyn CallStore>,
+    process: &'static str,
 }
 
 impl Serving {
@@ -80,7 +81,14 @@ impl Serving {
             models,
             vectors,
             store,
+            process,
         })
+    }
+
+    /// The process's name, for alerts, the log and its leases.
+    #[must_use]
+    pub const fn process(&self) -> &'static str {
+        self.process
     }
 
     /// The pool every adapter of the process shares.

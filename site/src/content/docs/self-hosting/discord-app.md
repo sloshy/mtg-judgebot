@@ -132,8 +132,18 @@ docker compose up -d               # or: cargo run --release -p judgebot -- --di
 The compose service runs `--discord` unless `JUDGE_ROLES` in `.env` leaves it out. If you
 set `JUDGE_ROLES='--api --web --jobs'` to try the page first, clear it or add `--discord`.
 
+The bot connects about 15 seconds after it starts. It first takes the gateway lease, a
+lock in the database that keeps a second `judgebot` from answering beside it, and waits
+out a grace period. A log line `standing by: another instance holds the Discord gateway`
+means another `judgebot --discord` on the same database is connected. That is usually a
+container left from a previous deploy; the line names it
+([Deployment](../deployment/#gateway-holder)).
+
 The log line `registered /judge, /card, /rule, /help, /license and /forget in one guild` (or `… globally`)
-confirms registration. Running `/help` in the server confirms it end to end. Another
+confirms registration. A warning `registering the slash commands failed` instead means
+the bot is connected with whatever commands were registered before (none, on a first
+start); restarting it tries again. Running `/help` in the server confirms it end
+to end. Another
 bot's `/judge` in the same server does not conflict with yours: Discord's command picker
 shows each bot's icon beside its commands.
 
