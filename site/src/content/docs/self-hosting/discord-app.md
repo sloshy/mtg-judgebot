@@ -83,8 +83,11 @@ install link) does the same job. If you use it instead, choose:
 
 The bot registers its own slash commands when it starts. It registers them either:
 
-- in one server, where they appear instantly, or
+- in one server, where they appear instantly. Other servers the bot is in, and DMs with
+  the bot, get no commands. Or:
 - globally, in every server the bot is in, where they take up to an hour to appear.
+  `/card`, `/rule`, `/help`, `/license` and `/forget` then work in a DM with the bot too.
+  `/judge` is server-only either way.
 
 See [Registering a command](https://docs.discord.com/developers/interactions/application-commands#registering-a-command).
 For a bot in one or two servers, register in the server:

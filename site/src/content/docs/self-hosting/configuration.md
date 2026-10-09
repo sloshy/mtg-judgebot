@@ -45,7 +45,7 @@ loaders. Editing `.env` by hand works too, starting from the annotated `.env.exa
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DISCORD_TOKEN` | (required by `bot`) | The bot token. Also read by `judge-ingest emoji`, which uploads symbols to the same application. |
-| `GUILD_ID` | | Register commands in this one guild (instant). Unset: globally (up to an hour). |
+| `GUILD_ID` | | Register commands in this one server only (instant). Other servers the bot is in, and DMs with it, get none. Unset: globally, in every server and in DMs for all but `/judge` (up to an hour). Switching leaves the other set registered until you [clear it](../discord-app/#4-command-registration). |
 | `JUDGE_ROLE` | `Judge` | Members holding a role with this exact name rate as judges: their rating overrides the crowd's. |
 
 ## HTTP API and web page

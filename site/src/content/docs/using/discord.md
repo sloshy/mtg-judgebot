@@ -5,6 +5,11 @@ sidebar:
   order: 1
 ---
 
+The commands work in the one server the operator registered them in, or in every server
+the bot is in when they are registered globally. Registered globally, `/card`, `/rule`,
+`/help`, `/license` and `/forget` also work in a DM with the bot. `/judge` works only in a
+server.
+
 ## `/judge question:`
 
 Ask in plain language. Nicknames work ("bob", "goyf", "snappy", "t3feri"). The alias list

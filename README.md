@@ -120,8 +120,9 @@ covers the portal. Then:
    generated URL to add the bot to your server. You need *Manage Server* there.
 3. For instant command registration, put your server's id in `.env` as `GUILD_ID`
    (*User Settings → Advanced → Developer Mode*, then right-click the server → *Copy
-   Server ID*). Without it the commands register globally. That can take up to an hour
-   to appear but works in every server the bot joins.
+   Server ID*). Other servers the bot is in, and DMs with it, then get no commands.
+   Without it the commands register globally. That can take up to an hour to appear but
+   works in every server the bot joins, and in DMs for all but `/judge`.
 4. `docker compose up -d bot`. The log line `registered /judge, /card, /rule, /help,
    /license and /forget` confirms it, and `/help` in the server confirms it end to end.
 
