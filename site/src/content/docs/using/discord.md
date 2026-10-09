@@ -54,9 +54,12 @@ question does, answered or not. Picking a card from a "did you mean…?" row doe
 can see this" message. A private answer stands by itself:
 
 - It reads no channel history, so it cannot be a follow-up, and nothing can follow it up.
-- It is not saved to the database, so it has no rating buttons and never becomes an
+- An answered question is not saved to the database, so it has no rating buttons and never becomes an
   example for a later question. It is still sent to the model provider and leaves the
   same log lines as any question.
+- If the call fails, the question and what the model sent are kept for the operator
+  (`failed_calls`, flagged private; rows older than 30 days are deleted when a later failure is recorded). Nothing is kept for a private
+  question that was answered.
 - "Did you mean…?" still works, privately.
 
 Discord fixes who sees a reply when the bot acknowledges the command, so a private answer

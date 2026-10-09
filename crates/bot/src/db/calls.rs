@@ -4,8 +4,8 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    CallId, CallStore, Context, InputKind, JudgeError, Qa, Question, Score, Validated, Verdict,
-    oracle_fingerprint,
+    CallId, CallStore, Context, FailedCall, InputKind, JudgeError, Qa, Question, Score, Validated,
+    Verdict, oracle_fingerprint,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
@@ -54,6 +54,24 @@ impl PgCallStore {
             .embed(text, InputKind::Document)
             .await
     }
+}
+
+/// Characters kept of a failed call's question, of each attempt's answer and
+/// of the error text, and how long and how many rows `failed_calls` holds.
+const FAILED_QUESTION_CHARS: usize = 2_000;
+const FAILED_ATTEMPT_CHARS: usize = 8_000;
+const FAILED_ERROR_CHARS: usize = 4_000;
+const FAILED_KEEP_DAYS: i32 = 30;
+const FAILED_KEEP_ROWS: i64 = 500;
+
+/// `s` cut to `max` characters, marked when cut.
+fn cut(s: &str, max: usize) -> String {
+    // Postgres `text` cannot hold a NUL, and a model's text may.
+    let mut out: String = s.chars().filter(|&c| c != '\0').take(max).collect();
+    if s.chars().filter(|&c| c != '\0').count() > max {
+        out.push('…');
+    }
+    out
 }
 
 /// The serde name of a unit-variant enum (`Source::Cr` → `cr`).
@@ -192,6 +210,47 @@ impl CallStore for PgCallStore {
         .await
         .map_err(upstream("upsert rating"))?;
         Ok(())
+    }
+
+    async fn record_failure(&self, failed: &FailedCall) -> Result<(), JudgeError> {
+        let attempts: Vec<String> = failed
+            .attempts
+            .iter()
+            .map(|a| cut(a, FAILED_ATTEMPT_CHARS))
+            .collect();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(upstream("begin failure record"))?;
+        sqlx::query!(
+            r#"
+            INSERT INTO failed_calls (thread_id, private, question, error, first_rejection, attempts)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+            failed.thread_id,
+            failed.private,
+            cut(&failed.question, FAILED_QUESTION_CHARS),
+            cut(&failed.error, FAILED_ERROR_CHARS),
+            failed.first_rejection.as_deref().map(|r| cut(r, FAILED_ERROR_CHARS)),
+            &attempts,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(upstream("insert failed call"))?;
+        sqlx::query!(
+            r#"
+            DELETE FROM failed_calls
+            WHERE created_at < now() - make_interval(days => $1::int)
+               OR id NOT IN (SELECT id FROM failed_calls ORDER BY id DESC LIMIT $2)
+            "#,
+            FAILED_KEEP_DAYS,
+            FAILED_KEEP_ROWS,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(upstream("prune failed calls"))?;
+        tx.commit().await.map_err(upstream("commit failure record"))
     }
 
     async fn forget_user(&self, user_id: &str) -> Result<u64, JudgeError> {

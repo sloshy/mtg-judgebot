@@ -17,7 +17,7 @@ use judge_bot::{
 use judge_core::{
     About, Ambiguous, CallId, Card, CardId, CardNote, CardRef, Citation, Confidence, Context,
     Extraction, GlossaryEntry, JudgeError, Question, Rejection, Resolution, RuleChunk, RuleId,
-    Ruling, Source, Unvalidated, Validated, Verdict, judge,
+    Ruling, Source, Unvalidated, Validated, Verdict, judge_traced,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -352,6 +352,13 @@ pub struct StatsInput {
     pub days: Option<u32>,
 }
 
+/// How many failed calls `failures` lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FailuresInput {
+    /// The newest this many. Default 10, at most 100.
+    pub limit: Option<u32>,
+}
+
 /// A glossary term.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TermInput {
@@ -414,8 +421,17 @@ impl Toolbox {
         };
         let history = self.history(&q.thread_id).await;
         let (t0, usd0, calls0) = (Instant::now(), p.meter.spent_usd(), p.meter.calls());
-        let result = judge(&p.deps, &q, &history).await;
+        let traced = judge_traced(&p.deps, &q, &history).await;
         let captured = p.capture.take(&q);
+        if let Some(failed) = traced.failure(&q, false)
+            && let Err(e) = self.calls.record_failure(&failed).await
+        {
+            tracing::warn!(
+                error = format_args!("{e:#}"),
+                "could not record the failed call"
+            );
+        }
+        let result = traced.result;
         tracing::info!(
             thread = %q.thread_id,
             elapsed_ms = t0.elapsed().as_millis(),
@@ -700,6 +716,19 @@ impl Toolbox {
     /// The store.
     pub async fn stats(&self, input: StatsInput) -> Result<judge_bot::db::stats::Usage, OpError> {
         Ok(self.library.usage(input.days.unwrap_or(30)).await?)
+    }
+
+    /// The newest failed calls with the question and what the model sent. On
+    /// the CLI only, like `stats`: the questions are the asker's text, kept
+    /// for troubleshooting (`failed_calls`).
+    ///
+    /// # Errors
+    /// The store.
+    pub async fn failures(
+        &self,
+        input: FailuresInput,
+    ) -> Result<Vec<judge_bot::db::stats::FailedRow>, OpError> {
+        Ok(self.library.failures(input.limit.unwrap_or(10)).await?)
     }
 
     /// Glossary lookup.

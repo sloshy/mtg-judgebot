@@ -1472,3 +1472,44 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
     );
     Ok(())
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failed_call_is_kept_cut_to_size_and_pruned(pool: PgPool) -> Result<(), JudgeError> {
+    let store = PgCallStore::new(pool.clone());
+    let failed = |n: usize| judge_core::FailedCall {
+        thread_id: format!("t{n}"),
+        question: "q".repeat(5_000),
+        private: n == 0,
+        error: "empty verdict".to_owned(),
+        first_rejection: Some("the answer names 111.10 without citing it".to_owned()),
+        attempts: vec!["a".repeat(20_000), String::new()],
+    };
+    store.record_failure(&failed(0)).await?;
+    let row =
+        sqlx::query!("SELECT private, char_length(question) AS \"q!\", attempts FROM failed_calls")
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| JudgeError::Upstream(e.into()))?;
+    assert!(row.private);
+    assert_eq!(row.q, 2_001, "cut to 2000 characters and marked");
+    assert_eq!(
+        row.attempts
+            .iter()
+            .map(|a| a.chars().count())
+            .collect::<Vec<_>>(),
+        [8_001, 0]
+    );
+
+    // Rows older than 30 days go on the next insert.
+    sqlx::query!("UPDATE failed_calls SET created_at = now() - interval '31 days'")
+        .execute(&pool)
+        .await
+        .map_err(|e| JudgeError::Upstream(e.into()))?;
+    store.record_failure(&failed(1)).await?;
+    let left = sqlx::query_scalar!("SELECT count(*) AS \"n!\" FROM failed_calls")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| JudgeError::Upstream(e.into()))?;
+    assert_eq!(left, 1);
+    Ok(())
+}

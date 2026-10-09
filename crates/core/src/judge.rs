@@ -6,8 +6,8 @@ use futures::future::try_join_all;
 use nonempty::NonEmpty;
 
 use crate::{
-    Ambiguous, Card, Extractor, JudgeError, MatchedVia, Qa, Question, RejectedAttempt, Rejection,
-    Resolution, Resolver, Retriever, Synthesizer, Validated, Verdict,
+    Ambiguous, Card, Extractor, FailedCall, JudgeError, MatchedVia, Qa, Question, RejectedAttempt,
+    Rejection, Resolution, Resolver, Retriever, Synthesizer, Validated, Verdict,
 };
 
 /// The ports `judge()` needs. `CallStore` is deliberately absent: persisting
@@ -44,6 +44,33 @@ pub struct Traced {
     /// Why the first synthesis attempt was rejected, when it was. Its
     /// presence means the one retry ran; `result` is the retry's outcome.
     pub first_rejection: Option<Rejection>,
+    /// The answer text of each synthesis attempt that returned one, in the
+    /// order tried (an attempt rejected for tool misuse, or truncated, has
+    /// none): what the model sent, before validation. A failed call
+    /// is stored with these (`CallStore::record_failure`).
+    pub attempts: Vec<String>,
+}
+
+impl Traced {
+    /// What a failed call is stored as, when `result` is a failure an
+    /// operator needs the cause of ([`JudgeError::is_operator_failure`]).
+    /// `private` is the asker's audience, kept as a flag on the row.
+    #[must_use]
+    pub fn failure(&self, q: &Question, private: bool) -> Option<FailedCall> {
+        let e = self
+            .result
+            .as_ref()
+            .err()
+            .filter(|e| e.is_operator_failure())?;
+        Some(FailedCall {
+            thread_id: q.thread_id.clone(),
+            question: q.text.clone(),
+            private,
+            error: format!("{e:#}"),
+            first_rejection: self.first_rejection.as_ref().map(ToString::to_string),
+            attempts: self.attempts.clone(),
+        })
+    }
 }
 
 /// [`judge`], also reporting the first attempt's rejection. For the eval
@@ -51,10 +78,12 @@ pub struct Traced {
 /// call [`judge`].
 pub async fn judge_traced(deps: &Deps, q: &Question, history: &[Qa]) -> Traced {
     let mut first_rejection = None;
-    let result = run(deps, q, history, &mut first_rejection).await;
+    let mut attempts = Vec::new();
+    let result = run(deps, q, history, &mut first_rejection, &mut attempts).await;
     Traced {
         result,
         first_rejection,
+        attempts,
     }
 }
 
@@ -63,6 +92,7 @@ async fn run(
     q: &Question,
     history: &[Qa],
     first_rejection: &mut Option<Rejection>,
+    attempts: &mut Vec<String>,
 ) -> Result<Verdict<Validated>, JudgeError> {
     let e = deps.extractor.extract(q, history).await?;
     // The verdict's source is stamped from here, not reported by the synthesis
@@ -84,6 +114,7 @@ async fn run(
             // Kept before `validate` consumes the verdict: the retry is a fresh
             // conversation, and it is shown what it is asked to correct.
             let answer = first.answer().to_owned();
+            attempts.push(answer.clone());
             let rejection = match first.validate(&ctx, source) {
                 Err(JudgeError::BadCitation(c)) => Rejection::BadCitation(c),
                 Err(JudgeError::MalformedCitation(m)) => Rejection::Malformed(m),
@@ -101,10 +132,12 @@ async fn run(
     // At INFO, not DEBUG: when the retry also fails, the *first* rejection is
     // usually what explains the second, and production runs at INFO.
     tracing::info!(%rejected, "verdict rejected; retrying synthesis once");
-    deps.synthesizer
+    let retry = deps
+        .synthesizer
         .answer(q, &mut ctx, Some(&rejected))
-        .await?
-        .validate(&ctx, source)
+        .await?;
+    attempts.push(retry.answer().to_owned());
+    retry.validate(&ctx, source)
 }
 
 /// Turn per-span resolutions into cards, or the first blocking error.
@@ -689,6 +722,26 @@ mod tests {
             Err(JudgeError::EmptyVerdict(EmptyVerdict::NoCitations))
         ));
         Ok(())
+    }
+
+    /// A call that fails twice is reported with what the model sent each time.
+    #[test]
+    fn a_double_failure_is_traced_with_each_attempts_answer() {
+        let (d, _) = deps(vec!["", ""]);
+        let traced = futures::executor::block_on(judge_traced(&d, &q(), &[]));
+        assert_eq!(traced.attempts.len(), 2);
+        let failed = traced.failure(&q(), true);
+        assert!(
+            failed.as_ref().is_some_and(|f| f.private
+                && f.attempts.len() == 2
+                && f.first_rejection.is_some()
+                && f.question == q().text),
+            "{failed:?}"
+        );
+        // An answered call is not a failure.
+        let (d, _) = deps(vec!["gain that much life"]);
+        let ok = futures::executor::block_on(judge_traced(&d, &q(), &[]));
+        assert!(ok.failure(&q(), false).is_none());
     }
 
     /// The regression: an unreadable citation must behave like a bad one — one

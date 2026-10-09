@@ -834,6 +834,7 @@ mod tests {
     fn untraced(result: Result<judge_core::Verdict<judge_core::Validated>, JudgeError>) -> Traced {
         Traced {
             result,
+            attempts: vec![],
             first_rejection: None,
         }
     }
@@ -1027,6 +1028,7 @@ mod tests {
             &Traced {
                 result: Ok(v),
                 first_rejection: Some(first.clone()),
+                attempts: vec![],
             },
             1,
             1,

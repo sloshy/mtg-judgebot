@@ -19,7 +19,7 @@ use judge_bot::discord::{capture::CapturingRetriever, render};
 use judge_bot::ingest::runs::FreshnessReader;
 use judge_core::{
     About, CallStore, Deps, Freshness, JudgeError, NetworkOperator, Question, Retriever,
-    SourceOffer, Validated, Verdict, judge,
+    SourceOffer, Validated, Verdict, judge_traced,
 };
 use judge_llm::SpendMeter;
 use tokio::sync::{Semaphore, SemaphorePermit};
@@ -191,8 +191,17 @@ impl App {
             }
         };
         let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
-        let result = judge(&self.deps, q, &history).await;
+        let traced = judge_traced(&self.deps, q, &history).await;
         let captured = self.capture.take(q);
+        if let Some(failed) = traced.failure(q, false)
+            && let Err(e) = self.store.record_failure(&failed).await
+        {
+            tracing::warn!(
+                error = format_args!("{e:#}"),
+                "could not record the failed call"
+            );
+        }
+        let result = traced.result;
         tracing::info!(
             %ip,
             thread = %q.thread_id,
@@ -582,6 +591,9 @@ mod tests {
         }
         async fn forget_user(&self, _user: &str) -> Result<u64, JudgeError> {
             Ok(0)
+        }
+        async fn record_failure(&self, _failed: &judge_core::FailedCall) -> Result<(), JudgeError> {
+            Ok(())
         }
     }
 

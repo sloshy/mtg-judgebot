@@ -1552,3 +1552,23 @@ mod tests {
         assert!((m - 2.5).abs() < 1e-6, "{m}");
     }
 }
+
+/// A call that failed for a reason the operator needs (see
+/// [`crate::JudgeError::is_operator_failure`]), with what the model sent, for
+/// `CallStore::record_failure`. Unlike a persisted call it is kept for a
+/// private question too, flagged, since a failure cannot be read without it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailedCall {
+    /// The thread the question was asked in.
+    pub thread_id: String,
+    /// The question as the pipeline got it.
+    pub question: String,
+    /// Whether the asker chose a private audience (`/judge private:True`).
+    pub private: bool,
+    /// The error, in full.
+    pub error: String,
+    /// Why the first synthesis attempt was rejected, if it was.
+    pub first_rejection: Option<String>,
+    /// The answer text of each synthesis attempt that returned one, in order.
+    pub attempts: Vec<String>,
+}

@@ -17,6 +17,7 @@
 //! judge-cli glossary <term>
 //! judge-cli config                             # the resolved model configuration, secrets redacted
 //! judge-cli stats [--days N]                   # usage, spend, worst-rated calls, recent refreshes
+//! judge-cli failures [--limit N]               # the newest failed calls: question, error, what the model sent
 //! judge-cli about                              # the source offer: repository, commit, licence,
 //!                                              #  and the data's freshness
 //! ```
@@ -35,8 +36,8 @@ use anyhow::{Context as _, Result};
 use judge_agent::{
     Toolbox,
     ops::{
-        BeginInput, CardInput, ExtractionInput, IdsInput, JudgeInput, LookupInput, NameInput, Pin,
-        SearchInput, SessionInput, StatsInput, TermInput, VerdictInput,
+        BeginInput, CardInput, ExtractionInput, FailuresInput, IdsInput, JudgeInput, LookupInput,
+        NameInput, Pin, SearchInput, SessionInput, StatsInput, TermInput, VerdictInput,
     },
 };
 use judge_bot::{
@@ -51,7 +52,7 @@ const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span
 | begin <question> [--thread T] | prompt <session> | status <session> \
 | extract <session> <file|-> | rules <session> <id>... | verdict <session> <file|-> [--persist] \
 | persist <session> | card <name> | card-info <uuid> | get-rules <id>... | search <query> [--limit N] \
-| glossary <term> | stats [--days N] | config | about>";
+| glossary <term> | stats [--days N] | failures [--limit N] | config | about>";
 
 #[derive(Debug)]
 enum Command {
@@ -86,6 +87,7 @@ enum Command {
     Glossary(TermInput),
     /// Usage, spend and the worst-rated calls.
     Stats(StatsInput),
+    Failures(FailuresInput),
     /// The resolved `judge.toml` (or environment) setup; needs no database.
     Config,
     /// The source offer; needs no database.
@@ -214,7 +216,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
         "judge" => uses(true, false, true, false)?,
         "begin" => uses(true, false, false, false)?,
         "verdict" => uses(false, false, false, true)?,
-        "search" => uses(false, true, false, false)?,
+        "search" | "failures" => uses(false, true, false, false)?,
         _ => uses(false, false, false, false)?,
     }
     Ok(match cmd.as_str() {
@@ -331,6 +333,16 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
                     .transpose()?,
             })
         }
+        "failures" => {
+            no_extra(0)?;
+            Command::Failures(FailuresInput {
+                limit: a
+                    .limit
+                    .as_deref()
+                    .map(|d| d.parse::<u32>().context("--limit must be an integer"))
+                    .transpose()?,
+            })
+        }
         "about" => {
             no_extra(0)?;
             Command::About
@@ -435,6 +447,7 @@ async fn run(cmd: Command) -> Result<()> {
         Command::Search(i) => print(&toolbox.search_rules(i).await?),
         Command::Glossary(i) => print(&toolbox.glossary(i).await?),
         Command::Stats(i) => print(&toolbox.stats(i).await?),
+        Command::Failures(i) => print(&toolbox.failures(i).await?),
         Command::Config | Command::About => anyhow::bail!("unreachable: handled above"),
     }
 }
@@ -580,6 +593,11 @@ mod tests {
             Command::Stats(StatsInput { days: None })
         ));
         assert!(parse(&["stats", "--days", "week"]).is_err());
+        assert!(matches!(
+            parse(&["failures", "--limit", "3"])?,
+            Command::Failures(FailuresInput { limit: Some(3) })
+        ));
+        assert!(parse(&["failures", "--limit", "x"]).is_err());
         assert!(parse(&["about", "extra"]).is_err());
         assert!(parse(&["config", "extra"]).is_err());
         assert!(parse(&["config", "--thread", "agent:x"]).is_err());

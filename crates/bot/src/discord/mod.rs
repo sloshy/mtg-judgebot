@@ -59,7 +59,7 @@ use std::{
 use anyhow::Context as _;
 use judge_core::{
     Ambiguous, CallId, CallStore, Card, Deps, DiscordOperator, JudgeError, Question, Resolution,
-    Retriever, RuleId, Score, SourceOffer, Validated, Verdict, judge,
+    Retriever, RuleId, Score, SourceOffer, Validated, Verdict, judge_traced,
 };
 use judge_llm::{ApiKey, SpendMeter};
 use nonempty::NonEmpty;
@@ -343,8 +343,19 @@ impl Data {
             },
         };
         let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
-        let result = judge(&self.deps, q, &history).await;
+        let traced = judge_traced(&self.deps, q, &history).await;
         let captured = self.capture.take(q);
+        // Kept for a private question too, flagged: this is the one place
+        // such a question is stored, and only because the call failed.
+        if let Some(failed) = traced.failure(q, audience.is_private())
+            && let Err(e) = self.store.record_failure(&failed).await
+        {
+            tracing::warn!(
+                error = format_args!("{e:#}"),
+                "could not record the failed call"
+            );
+        }
+        let result = traced.result;
         tracing::info!(
             user = %asker,
             thread = %q.thread_id,
@@ -1358,6 +1369,11 @@ mod tests {
         }
         async fn forget_user(&self, _: &str) -> Result<u64, JudgeError> {
             Err(JudgeError::Upstream(anyhow::anyhow!("forget reached")))
+        }
+        async fn record_failure(&self, _: &judge_core::FailedCall) -> Result<(), JudgeError> {
+            Err(JudgeError::Upstream(anyhow::anyhow!(
+                "record_failure reached"
+            )))
         }
     }
 

@@ -43,10 +43,12 @@ For every question answered, an instance stores:
 - the channel or web session it was asked in
 - the ids of the rules, rulings and cards it was answered from.
 
-A Discord question asked with `private: True` is not saved. When someone presses a rating
+A Discord question asked with `private: True` is not saved unless the call fails. A failed
+call (any question) is kept with what the model sent, until a later failure finds it older than 30 days, so the operator can
+diagnose it, and it is marked private when the asker chose that. When someone presses a rating
 button, the instance stores their Discord user id and the score. It stores nothing else.
 The bot receives only its own slash commands and button presses, never channel messages.
-Ratings are the only data tied to a user, and `/forget` deletes them.
+Ratings are the only data tied to a user id, and `/forget` deletes them. A failed call stores no user id, but its question text is kept as asked.
 
 [Sample answers](../../start-here/sample-answers/) shows what comes back, and
 [Evaluation](../../how-it-works/evaluation/#results) how it scored on a hard question set.

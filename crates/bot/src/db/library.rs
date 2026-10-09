@@ -132,6 +132,14 @@ impl PgLibrary {
         super::stats::usage(&self.pool, days).await
     }
 
+    /// The newest failed calls (`failed_calls`), newest first.
+    ///
+    /// # Errors
+    /// `Upstream` from sqlx.
+    pub async fn failures(&self, limit: u32) -> Result<Vec<super::stats::FailedRow>, JudgeError> {
+        super::stats::failures(&self.pool, limit).await
+    }
+
     /// The nightmare-card notes for a card.
     ///
     /// # Errors

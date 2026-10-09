@@ -19,6 +19,12 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Failed calls are kept for troubleshooting.** A call that fails for a reason the
+  operator has to diagnose is stored in `failed_calls` with the question, the error and
+  the answer text of each synthesis attempt (each cut to a fixed length; the newest 500
+  rows, 30 days). A question asked with `private: True` is stored too, flagged, but only
+  when the call failed. `judge-cli failures` reads it.
+
 - **The long-running process refreshes the data itself** (the `--jobs` role, which the
   compose `judgebot` service runs). Every `JUDGE_REFRESH_HOURS` (default
   24, 1 to 720, `0` = off) one of them runs the steps of `judgebot ingest refresh`: cards
@@ -153,6 +159,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   still does not fit (emoji and some other characters can count twice toward the
   message limit) gets the choices as a list, without buttons, and asks you to ask again
   with the card written as `[[Full Card Name]]`.
+
+### Fixed
+
+- A retry after a rejected answer now tells the model to send the whole answer. A retry
+  that came back with an empty `answer` ended the call as "empty verdict".
 
 ### Upgrading
 

@@ -732,6 +732,12 @@ fn render_rejected_answer(s: &mut String, answer: &str) {
     for line in kept.split('\n') {
         let _ = writeln!(s, "> {line}");
     }
+    // The retry is a fresh conversation that sends one whole verdict. Told to
+    // "keep the rest", a model has answered with only the change, or nothing.
+    s.push_str(
+        "Send the complete verdict again: `answer` must hold the whole answer (the ruling, then the \
+         reasoning), as the reader will see it, not only what you changed.\n",
+    );
 }
 
 /// The material part of the user turn. `pinned` chunks bypass the CR budget.

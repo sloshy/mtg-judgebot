@@ -239,7 +239,9 @@ Three interfaces share this pipeline through the same composition root
 - **Discord adapter** (`crates/bot`, the `--discord` role): `/judge` slash command, rating buttons,
   "did you mean…?" buttons, thread history.
   - `/judge private:True` is `Audience::Private`: acknowledged ephemerally, no history
-    read, never persisted, so no rating buttons. The audience rides in the pick button's
+    read, never persisted, so no rating buttons. A call that *fails* is recorded in
+    `failed_calls` for any audience, flagged `private`, through `CallStore::record_failure`
+    (D27); that is the one place a private question is stored. The audience rides in the pick button's
     custom-id through a card pick.
   - A card pick is answered from Discord alone, so any process holding the gateway
     answers it, after any restart. The prompt message restates the question verbatim

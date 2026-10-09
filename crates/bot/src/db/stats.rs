@@ -22,6 +22,58 @@ pub const LOWEST_RATED: i64 = 10;
 /// Characters of a question shown in [`RatedCall`].
 const QUESTION_CHARS: usize = 200;
 
+/// Most failed calls [`failures`] returns.
+pub const MAX_FAILURES: u32 = 100;
+
+/// A call that failed, as `failed_calls` kept it (already cut to size).
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct FailedRow {
+    /// When it failed, RFC 3339 UTC.
+    pub at: String,
+    /// The thread it was asked in.
+    pub thread: String,
+    /// Asked with `private: True`.
+    pub private: bool,
+    /// The question.
+    pub question: String,
+    /// The error.
+    pub error: String,
+    /// Why the first synthesis attempt was rejected, if it was.
+    pub first_rejection: Option<String>,
+    /// What the model sent on each synthesis attempt that returned an answer, in order.
+    pub attempts: Vec<String>,
+}
+
+/// The newest `limit` (at most [`MAX_FAILURES`]) failed calls, newest first.
+///
+/// # Errors
+/// `Upstream` from sqlx.
+pub async fn failures(pool: &PgPool, limit: u32) -> Result<Vec<FailedRow>, JudgeError> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "at!",
+               thread_id, private, question, error, first_rejection, attempts
+        FROM failed_calls ORDER BY id DESC LIMIT $1
+        "#,
+        i64::from(limit.min(MAX_FAILURES)),
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(upstream("read failed calls"))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| FailedRow {
+            at: r.at,
+            thread: r.thread_id,
+            private: r.private,
+            question: r.question,
+            error: r.error,
+            first_rejection: r.first_rejection,
+            attempts: r.attempts,
+        })
+        .collect())
+}
+
 /// One UTC day.
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct Day {

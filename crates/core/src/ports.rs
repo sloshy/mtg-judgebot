@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    CallId, Card, Context, Extraction, JudgeError, Qa, Question, RejectedAttempt, Resolution,
-    RuleChunk, RuleId, Score, Validated, Verdict, verdict::Unvalidated,
+    CallId, Card, Context, Extraction, FailedCall, JudgeError, Qa, Question, RejectedAttempt,
+    Resolution, RuleChunk, RuleId, Score, Validated, Verdict, verdict::Unvalidated,
 };
 
 /// Pipeline steps 1 + 3: entity extraction and classification (one LLM call).
@@ -98,4 +98,7 @@ pub trait CallStore: Send + Sync {
     /// records the thread it was asked in, not who asked), so this is the
     /// whole of "forget me".
     async fn forget_user(&self, user_id: &str) -> Result<u64, JudgeError>;
+    /// Keep a failed call for troubleshooting. The store bounds the size of
+    /// every field and the number of rows it keeps.
+    async fn record_failure(&self, failed: &FailedCall) -> Result<(), JudgeError>;
 }

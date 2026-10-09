@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM failed_calls\n            WHERE created_at < now() - make_interval(days => $1::int)\n               OR id NOT IN (SELECT id FROM failed_calls ORDER BY id DESC LIMIT $2)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "99fd31c7e213151eeb4723ea34d47252116617d644e70b18a65adc797b473e35"
+}

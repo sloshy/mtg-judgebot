@@ -106,6 +106,7 @@ JSON goes to stdout and logs to stderr.
 | `persist <session>` | Persist an admitted verdict (idempotent). |
 | `card <name>` / `card-info <uuid>` | Resolve a name / a card by id. |
 | `get-rules <id>...` / `search <query> [--limit N]` / `glossary <term>` | Rules text, full-text search, glossary. |
+| `failures [--limit N]` | The newest failed calls (default 10, at most 100), newest first: when, thread, whether it was asked privately, the question, the error, why the first attempt was rejected and the answer text of each attempt. Read from `failed_calls`. CLI only. |
 | `stats [--days N]` | The operator's view, over the last N UTC days (default 30): stored questions per day by interface, estimated model spend and model calls per day (from the `spend_days` ledger every serving process keeps), ratings by score, retired calls, the ten worst-rated calls, and the last five data refresh runs (started, trigger, process, outcome `ok`/`failed`/`stopped`/`running`/`abandoned`, CR version before and after, failed steps; on a schema without the run table, none and a `refresh_runs_note`). A Discord question asked with `private: True` is in the spend and not in the questions. CLI only. |
 | `config` | The resolved provider setup, secrets redacted. |
 | `about` | The source offer: the repository holding this instance's source, the commit it was built from, the licence and copyright, and the data's `freshness` (the Comprehensive Rules release loaded and the last refresh). Without a database `freshness` is `null` and the rest still prints. |

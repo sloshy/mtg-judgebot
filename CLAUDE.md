@@ -60,7 +60,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D25),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D27),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -154,7 +154,9 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
 `CallStore::forget_user`.
 
 - `/judge private:True` is `discord::Audience::Private`: ephemeral, no thread history
-  read, never persisted, so no rating buttons and no prior call. `Data::answer` reaches the
+  read, never persisted, so no rating buttons and no prior call. A *failed* call is the exception (D27): `CallStore::record_failure` stores
+  its question and the model's answer text in `failed_calls` (flagged `private`, capped,
+  30 days / 500 rows; `judge-cli failures`), reached directly, not through `Audience::record`. `Data::answer` reaches the
   store only through `Audience::record`, which is `None` for it. The audience is carried
   in the "did you mean?" button's custom-id through a pick.
 - A "did you mean?" pick keeps no state in memory. The question is read back from the

@@ -768,3 +768,28 @@ What follows:
   holder offered.
   `pick_claims`, a row per prompt with no text, keeps a double click from running the
   question twice.
+
+## D27. Failed calls are kept, private ones included
+
+A log line says "empty verdict" and not what the model wrote or what was asked, so a
+failure could not be diagnosed after the fact. A failed call is now a row in `failed_calls`
+(`CallStore::record_failure`): the question, the error, why the first attempt was rejected
+and the answer text of each attempt. It is written for the operator failures of
+`JudgeError::is_operator_failure` only, from every interface (Discord, HTTP API, agent
+`judge`).
+
+- **Table, not logs.** A log carries the text unbounded, across lines, and is gone with
+  the container. Rejected: logging the text at INFO.
+- **Gaps.** Only the `answer` text is stored, not citations (the error and first
+  rejection name the failing one). A truncated or tool-misuse attempt returns no answer, so
+  it has no text.
+- **Bounded on write.** The question (2000 characters), each attempt (8000) and the error
+  (4000) are cut, and an insert deletes rows older than 30 days or past the newest 500.
+- **Private questions are stored when the call fails**, flagged `private`: a failure cannot
+  be read without its question, and the operator decided that a private question is private
+  from the channel, not from them. An answered private question is still never stored, and
+  `Audience::record` still hides the store from the answering path. The Discord adapter
+  reaches `record_failure` directly, which is the one exception.
+- **No user id.** The row has no asker, so `/forget` has nothing to delete here; rows age
+  out. Rejected: storing the asker to make `/forget` cover it.
+- **Read on the CLI only** (`judge-cli failures`), like `stats`, and not an MCP tool.
