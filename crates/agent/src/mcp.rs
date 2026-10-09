@@ -59,7 +59,8 @@ to store it as history for follow-ups in the same `thread` (it is never shown to
 
 Lookups that need no session: `resolve_card` (name → card, or candidates), `card_info` (Oracle text, \
 rulings, notes by oracle id), `get_rules` (by id, at most 10), `search_rules` (free text), `glossary`. \
-`about` returns the notice below as data.";
+`about` returns the notice below as data, with the Comprehensive Rules version loaded and when the data \
+was last refreshed.";
 
 /// [`INSTRUCTIONS`] with the source offer and the operator's contact
 /// appended: the notice reaches every MCP client at initialization, whatever
@@ -282,10 +283,10 @@ impl JudgeMcp {
 
     #[tool(
         name = "about",
-        description = "Where this server's source code is (repository and commit), its licence (AGPL-3.0-or-later) and copyright, and how to contact whoever runs it; the same notice the initialization instructions carry. No database access."
+        description = "Where this server's source code is (repository and commit), its licence (AGPL-3.0-or-later) and copyright, and how to contact whoever runs it (the same notice the initialization instructions carry), plus what its data is: the Comprehensive Rules version loaded and how long ago the data was last refreshed (`freshness`, null when the database does not answer)."
     )]
-    fn about(&self) -> Json<judge_core::About> {
-        Json(self.toolbox.about())
+    async fn about(&self) -> Json<judge_core::About> {
+        Json(self.toolbox.about().await)
     }
 
     #[tool(

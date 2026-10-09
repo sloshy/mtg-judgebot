@@ -207,6 +207,15 @@ Three interfaces share this pipeline through the same composition root
     `/help` and `/license`, and the MCP server in its initialization
     instructions and an `about` tool. `JUDGE_SOURCE_URL` points all of them at
     a fork.
+  - `About` also carries the data's freshness (`judge_core::Freshness`): the
+    CR release loaded and the age of the last successful refresh, and whether
+    the latest one failed. It is read from `refresh_runs` and `rules`
+    (`ingest::runs::freshness`, within 2 s, `null` and a WARN otherwise; a
+    missing run table leaves the CR version alone). It is cached for a
+    minute, single-flight, by a `FreshnessReader`: `/api/about` has one, and
+    every `PgLibrary` another (`/help` in the bot, the MCP `about` tool), so
+    `judge-api --mcp` holds two. `/help` lists it, the page footer shows it as
+    one line, and `/api/health` ignores it.
   - The same places name who runs the instance (`judge_core::operator`). The
     bot takes a `DiscordOperator` and the HTTP layer a `NetworkOperator`. The
     only way to make either is `Operator::for_discord` / `for_network`. So the
@@ -298,6 +307,16 @@ pictures, from one set of names:
     a half-written tag is unrepresentable rather than tested against.
   - An application with no emoji uploaded gets an empty table and the literal
     `{W}`, unchanged.
+  - The table sits behind a swappable `mana::SharedSymbols`; a render takes
+    a snapshot. `discord::symbols::watch`, a task spawned on `Ready` so
+    connecting never waits on it, reads the run record's mark, lists the emoji,
+    then every ten minutes reads `refresh_runs` for a run finished since the
+    mark whose `emoji` step may have uploaded (`runs::emoji_since`: anything
+    but skipped or `uploaded: 0`). It lists them again after such a run, after
+    a failed listing, while the table is empty, and hourly regardless, which
+    catches uploads and deletions the record does not show. So a refresh by
+    any process (bot, api, cron) or an upload by hand reaches a running bot
+    without a restart.
 - **Web** renders Scryfall's SVGs inline from their CDN (`web/src/symbols.ts`
   is the generated table, `Symbols.tsx` the component).
   - A symbol the table does not know, or an image that fails to load, falls
@@ -360,7 +379,8 @@ A cron run has the same effect.
 
 Every ten minutes or so the scheduler reads the migration ledger (a schema ahead of or
 behind the binary pauses it), then `refresh_runs`; a database with no rules waits for
-`init`. The pure `jobs::due` decides on the database's clock: due when the last success
+`init`, which records itself as a manual run, so the first scheduled refresh comes one
+interval after it. The pure `jobs::due` decides on the database's clock: due when the last success
 is older than `JUDGE_REFRESH_HOURS` and the last attempt older than `jobs::backoff` (1 h,
 doubling per failure in a row, capped at the interval). When due it tries the lease
 without waiting, re-reads the record under it and runs `ingest::refresh` with
@@ -369,6 +389,11 @@ without waiting, re-reads the record under it and runs `ingest::refresh` with
 (`judge_bot::alert`, shared with the spend cap) hears the first failure of a streak, the
 recovery, a new ceiling skip and a panicking check. D24 records why the schedule is in
 the process and not in cron.
+
+The record is also what users and the operator see of it. `About` carries the CR release
+loaded and the age of the last successful run (see the HTTP adapter above), and
+`judge-cli stats` lists the last five runs (`runs::recent`) with their outcome and failed
+steps.
 
 Database: **Postgres 16 + pgvector + pg_trgm**. Scale: ~30k cards, ~2k rule
 chunks, <10k calls.

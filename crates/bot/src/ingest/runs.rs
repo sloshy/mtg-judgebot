@@ -31,6 +31,10 @@
 //!  {"step": "emoji",  "outcome": "failed", "error": "GET https://api.scryfall.com/symbology: …"}]
 //! ```
 //!
+//! `judge-ingest init` records the refresh steps it ran the same way, and
+//! the ones it did not reach after a failure as skipped with
+//! `"reason": "init_stopped"`.
+//!
 //! A scheduled run that finds more empty vectors than it may embed
 //! unattended skips `embed` with
 //! `{"reason": {"embed_ceiling": {"rows": 1912, "ceiling": 800}}}`.
@@ -40,9 +44,14 @@
 //! (`{"rules": 12, "glossary": 0, "calls": 3}`); an emoji summary is
 //! `{"uploaded", "skipped", "unusable", "failed"}` counts.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result};
+use judge_core::{CrVersion, Freshness};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -162,6 +171,9 @@ pub enum Skip {
     /// An earlier step passed the run's time limit ([`super::RUN_TIMEOUT`]),
     /// so this one was not started.
     RunTimedOut,
+    /// `judge-ingest init` stops at its first failure (each step needs the
+    /// one before it), so this one was not started.
+    InitStopped,
 }
 
 impl Skip {
@@ -184,6 +196,7 @@ impl std::fmt::Display for Skip {
             }
             Self::SchemaBehind => "migrations are pending: run `judge-ingest migrate`",
             Self::RunTimedOut => "not run: the refresh timed out at an earlier step",
+            Self::InitStopped => "not run: init stops at its first failure",
             Self::EmbedCeiling { rows, ceiling } => {
                 return write!(
                     f,
@@ -365,6 +378,9 @@ pub struct RunReport {
     /// Whether the run passed [`super::RUN_TIMEOUT`] and its remaining steps
     /// were abandoned.
     pub timed_out: bool,
+    /// Whether the run stopped at a failure outside its recorded steps, which
+    /// fails it: `init`'s aliases or notes, or its lease lost between steps.
+    pub aborted: bool,
 }
 
 impl RunReport {
@@ -377,6 +393,7 @@ impl RunReport {
             cr_after: None,
             recorded: true,
             timed_out: false,
+            aborted: false,
         }
     }
 
@@ -393,7 +410,7 @@ impl RunReport {
     /// How the run ended; see [`RunOutcome`].
     #[must_use]
     pub fn outcome(&self) -> RunOutcome {
-        if self.timed_out || self.steps.iter().any(StepReport::failed) {
+        if self.timed_out || self.aborted || self.steps.iter().any(StepReport::failed) {
             RunOutcome::Failed
         } else if self
             .steps
@@ -429,6 +446,9 @@ impl RunReport {
             }
             RunOutcome::Failed => {
                 let names: Vec<&str> = self.failed().iter().map(|s| s.name()).collect();
+                if names.is_empty() && self.aborted {
+                    anyhow::bail!("refresh: stopped at a failure outside its steps");
+                }
                 let timed_out = if self.timed_out { ", timed out" } else { "" };
                 anyhow::bail!(
                     "refresh: {} step(s) failed{timed_out}: {}",
@@ -615,6 +635,258 @@ pub async fn history(pool: &PgPool) -> Result<RunHistory> {
     })
 }
 
+impl RunHistory {
+    /// What the record says about the data, for [`judge_core::About`]. A
+    /// stored CR version that is not eight digits (none is ever written) is
+    /// left out rather than shown.
+    #[must_use]
+    pub fn freshness(&self) -> Freshness {
+        Freshness {
+            cr_version: self
+                .stored_cr_version
+                .clone()
+                .and_then(|v| CrVersion::try_new(v).ok()),
+            refreshed_secs_ago: self.last_ok_age_secs.map(|s| u64::try_from(s).unwrap_or(0)),
+            last_refresh_failed: self.last_finished_ok == Some(false),
+        }
+    }
+}
+
+/// The longest [`freshness`] waits for the database, pool acquisition
+/// included: `/help` answers inside Discord's interaction deadline and
+/// `GET /api/about` must not hang on an outage.
+pub const FRESHNESS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// [`RunHistory::freshness`], read within [`FRESHNESS_TIMEOUT`]. `None`
+/// (logged at WARN) when it cannot be read: an interface shows "unknown",
+/// never an error, for want of it.
+///
+/// A schema without `refresh_runs` (migrations pending with
+/// `JUDGE_AUTO_MIGRATE=false`) still has its rules: the CR version is read
+/// alone and no run is reported, logged at DEBUG (the startup log already
+/// says the schema is behind).
+pub async fn freshness(pool: &PgPool) -> Option<Freshness> {
+    match tokio::time::timeout(FRESHNESS_TIMEOUT, history(pool)).await {
+        Ok(Ok(h)) => Some(h.freshness()),
+        Ok(Err(e)) if is_missing_table(&e) => {
+            tracing::debug!(
+                error = format_args!("{e:#}"),
+                "no run record: the data's freshness is the CR version alone"
+            );
+            let cr = tokio::time::timeout(FRESHNESS_TIMEOUT, stored_cr(pool))
+                .await
+                .ok()??;
+            Some(Freshness {
+                cr_version: CrVersion::try_new(cr).ok(),
+                ..Freshness::default()
+            })
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(
+                error = format_args!("{e:#}"),
+                "reading the data's freshness"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_secs = FRESHNESS_TIMEOUT.as_secs(),
+                "reading the data's freshness: no answer in time"
+            );
+            None
+        }
+    }
+}
+
+/// How long a [`FreshnessReader`] reuses what it read.
+pub const FRESHNESS_TTL: Duration = Duration::from_mins(1);
+
+/// [`freshness`] at most once per [`FRESHNESS_TTL`], for an endpoint anyone
+/// can call (`GET /api/about`, the page's footer, on every page load). A
+/// cached age is advanced by the time since it was read, so it stays exact; a
+/// failed read is cached too, so an outage costs one [`FRESHNESS_TIMEOUT`]
+/// per TTL rather than one per request.
+///
+/// Single-flight: the lock is held across a read, so callers arriving while
+/// one is in flight wait for it (at most [`FRESHNESS_TIMEOUT`]) and are then
+/// served its result. A flood at expiry is one query, never one per
+/// connection in the pool.
+#[derive(Debug)]
+pub struct FreshnessReader {
+    pool: PgPool,
+    cached: tokio::sync::Mutex<Option<(Instant, Option<Freshness>)>>,
+}
+
+impl FreshnessReader {
+    /// A reader over `pool`, with nothing cached.
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self {
+            pool,
+            cached: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// The data's freshness, read again once the cached read is
+    /// [`FRESHNESS_TTL`] old; one read at a time.
+    pub async fn read(&self) -> Option<Freshness> {
+        let mut cached = self.cached.lock().await;
+        if let Some((at, f)) = cached
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < FRESHNESS_TTL)
+        {
+            return f.clone().map(|f| aged(f, at.elapsed()));
+        }
+        let read = freshness(&self.pool).await;
+        *cached = Some((Instant::now(), read.clone()));
+        read
+    }
+}
+
+/// `f` as it reads `elapsed` after it was read.
+fn aged(f: Freshness, elapsed: Duration) -> Freshness {
+    Freshness {
+        refreshed_secs_ago: f
+            .refreshed_secs_ago
+            .map(|s| s.saturating_add(elapsed.as_secs())),
+        ..f
+    }
+}
+
+/// Runs [`recent`] lists for `judge-cli stats`.
+pub const RECENT_RUNS: i64 = 5;
+
+/// Where a run stands, as `judge-cli stats` shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// Finished, every step ok or skipped for want of configuration.
+    Ok,
+    /// Finished with a failed step, or timed out, or dropped at its limit.
+    Failed,
+    /// Stopped before writing: the schema is not its binary's.
+    Stopped,
+    /// Not finished, and younger than [`ABANDONED_AFTER`]: in progress.
+    Running,
+    /// Not finished, and older than [`ABANDONED_AFTER`]: its process died.
+    Abandoned,
+}
+
+impl RunState {
+    /// From a row: whether it finished, its `ok`, and whether an unfinished
+    /// one is past [`ABANDONED_AFTER`].
+    #[must_use]
+    pub const fn of(finished: bool, ok: Option<bool>, past_limit: bool) -> Self {
+        match (finished, ok) {
+            (true, Some(true)) => Self::Ok,
+            (true, Some(false)) => Self::Failed,
+            (true, None) => Self::Stopped,
+            (false, _) if past_limit => Self::Abandoned,
+            (false, _) => Self::Running,
+        }
+    }
+}
+
+/// One run of the record, for `judge-cli stats`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct RecentRun {
+    /// When it started, UTC, to the minute (`2026-10-09 03:12Z`).
+    pub started_at: String,
+    /// What started it: `schedule` or `manual`.
+    pub trigger: String,
+    /// The process that ran it: `bot`, `api` or `ingest`.
+    pub process: String,
+    /// Where it stands.
+    pub outcome: RunState,
+    /// The stored CR version before it.
+    pub cr_before: Option<String>,
+    /// The same after it (`None` while it runs).
+    pub cr_after: Option<String>,
+    /// The steps that failed, in the order run.
+    pub failed_steps: Vec<String>,
+}
+
+/// The latest `limit` runs, newest first.
+///
+/// # Errors
+/// On a database failure, including a schema without `refresh_runs`.
+pub async fn recent(pool: &PgPool, limit: i64) -> Result<Vec<RecentRun>> {
+    let abandoned_after = f64::from(u32::try_from(ABANDONED_AFTER.as_secs()).unwrap_or(u32::MAX));
+    let rows = sqlx::query!(
+        r#"
+        SELECT to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI"Z"') AS "started_at!",
+               trigger, process, ok, cr_before, cr_after,
+               finished_at IS NOT NULL AS "finished!",
+               started_at < now() - make_interval(secs => $2) AS "past_limit!",
+               ARRAY(SELECT s->>'step' FROM jsonb_array_elements(steps) WITH ORDINALITY AS e(s, n)
+                     WHERE s->>'outcome' = 'failed' ORDER BY n) AS "failed_steps!: Vec<String>"
+        FROM refresh_runs
+        ORDER BY started_at DESC, id DESC
+        LIMIT $1
+        "#,
+        limit,
+        abandoned_after
+    )
+    .fetch_all(pool)
+    .await
+    .context("reading refresh_runs")?;
+    Ok(rows
+        .into_iter()
+        .map(|r| RecentRun {
+            started_at: r.started_at,
+            trigger: r.trigger,
+            process: r.process,
+            outcome: RunState::of(r.finished, r.ok, r.past_limit),
+            cr_before: r.cr_before,
+            cr_after: r.cr_after,
+            failed_steps: r.failed_steps,
+        })
+        .collect())
+}
+
+/// What [`emoji_since`] found.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EmojiCheck {
+    /// The latest `finished_at` among the runs it read, as text a later call
+    /// takes back; `None` when none finished after the mark.
+    pub latest: Option<String>,
+    /// Whether one of those runs may have uploaded emoji.
+    pub uploaded: bool,
+}
+
+/// The runs that finished after `seen` (a [`EmojiCheck::latest`]; `None`:
+/// every run), and whether any of them may have uploaded emoji, so the bot
+/// reloads its table ([`crate::discord`]).
+///
+/// A run may have uploaded unless its `emoji` step is recorded as skipped or
+/// as ok with `uploaded: 0`. A failed step, a run dropped at its limit (no
+/// steps recorded) and a timed-out one all may have, and a reload costs one
+/// Discord call, so they count.
+///
+/// # Errors
+/// On a database failure, including a schema without `refresh_runs`.
+pub async fn emoji_since(pool: &PgPool, seen: Option<&str>) -> Result<EmojiCheck> {
+    let r = sqlx::query!(
+        r#"
+        SELECT max(finished_at)::text AS "latest?",
+               COALESCE(bool_or(NOT (
+                 steps @> '[{"step": "emoji", "outcome": "skipped"}]'
+                 OR steps @> '[{"step": "emoji", "outcome": "ok", "summary": {"uploaded": 0}}]'
+               )), false) AS "uploaded!"
+        FROM refresh_runs
+        WHERE finished_at > COALESCE($1::text::timestamptz, '-infinity')
+        "#,
+        seen
+    )
+    .fetch_one(pool)
+    .await
+    .context("reading refresh_runs for emoji uploads")?;
+    Ok(EmojiCheck {
+        latest: r.latest,
+        uploaded: r.uploaded,
+    })
+}
+
 /// The database's clock now, as text a later [`close_dropped`] takes.
 ///
 /// # Errors
@@ -701,6 +973,7 @@ mod tests {
             {"step": "emoji", "outcome": "ok",
              "summary": {"uploaded": 1, "skipped": 80, "unusable": 0, "failed": 0}},
             {"step": "emoji", "outcome": "skipped", "reason": "no_discord_token"},
+            {"step": "retire", "outcome": "skipped", "reason": "init_stopped"},
             {"step": "embed", "outcome": "skipped",
              "reason": {"embed_ceiling": {"rows": 1912, "ceiling": 800}}},
         ]);
@@ -889,6 +1162,261 @@ mod tests {
         assert!(
             later.last_attempt_age_secs.is_some_and(|s| s <= 65),
             "{later:?}"
+        );
+        Ok(())
+    }
+
+    /// A finished run `hours_ago`, with `ok` and `steps`.
+    async fn finished(
+        pool: &PgPool,
+        hours_ago: i32,
+        ok: Option<bool>,
+        steps: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO refresh_runs (started_at, finished_at, trigger, process, ok, steps)
+             VALUES (now() - make_interval(hours => $1), now() - make_interval(hours => $1),
+                     'schedule', 'bot', $2, $3)",
+        )
+        .bind(hours_ago)
+        .bind(ok)
+        .bind(steps)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// No runs and no rules; an ok run; a failure after it; rules loaded.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn freshness_reads_the_rules_and_the_last_runs(pool: PgPool) -> Result<()> {
+        assert_eq!(
+            freshness(&pool).await,
+            Some(Freshness::default()),
+            "nothing yet"
+        );
+
+        finished(&pool, 3, Some(true), json!([])).await?;
+        let f = freshness(&pool).await.context("read")?;
+        assert!(
+            f.refreshed_secs_ago
+                .is_some_and(|s| (3 * 3600 - 5..=3 * 3600 + 5).contains(&s)),
+            "{f:?}"
+        );
+        assert!(!f.last_refresh_failed);
+        assert_eq!(f.cr_version, None, "no rules loaded");
+
+        // A failure after the success: the success's age stands, and the
+        // failure is said. A stopped run after that changes neither.
+        finished(&pool, 1, Some(false), json!([])).await?;
+        finished(&pool, 0, None, json!([])).await?;
+        sqlx::query!(
+            "INSERT INTO rules (id, subsection, body, cr_version) VALUES ('100.1', '100', 'x', '20260925')"
+        )
+        .execute(&pool)
+        .await?;
+        let f = freshness(&pool).await.context("read")?;
+        assert!(f.last_refresh_failed, "{f:?}");
+        assert!(
+            f.refreshed_secs_ago.is_some_and(|s| s >= 3 * 3600 - 5),
+            "{f:?}"
+        );
+        assert_eq!(
+            f.cr_version.as_ref().map(CrVersion::date).as_deref(),
+            Some("2026-09-25")
+        );
+
+        // A later success clears the failure.
+        finished(&pool, 0, Some(true), json!([])).await?;
+        let f = freshness(&pool).await.context("read")?;
+        assert!(
+            !f.last_refresh_failed && f.refreshed_secs_ago.is_some_and(|s| s <= 5),
+            "{f:?}"
+        );
+
+        // A schema without the run table still reports its rules; with
+        // nothing readable it is None, never an error, and the cached
+        // reader says the same.
+        sqlx::query("DROP TABLE refresh_runs")
+            .execute(&pool)
+            .await?;
+        let rules_only = freshness(&pool).await.context("read")?;
+        assert_eq!(
+            (
+                rules_only
+                    .cr_version
+                    .as_ref()
+                    .map(CrVersion::date)
+                    .as_deref(),
+                rules_only.refreshed_secs_ago,
+                rules_only.last_refresh_failed
+            ),
+            (Some("2026-09-25"), None, false)
+        );
+        sqlx::query("DROP TABLE rules CASCADE")
+            .execute(&pool)
+            .await?;
+        assert_eq!(freshness(&pool).await, None);
+        assert_eq!(FreshnessReader::new(pool.clone()).read().await, None);
+        Ok(())
+    }
+
+    /// Within the TTL the reader answers from its cache, whatever the
+    /// database does meanwhile.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn the_reader_serves_its_cache_within_the_ttl(pool: PgPool) -> Result<()> {
+        finished(&pool, 1, Some(true), json!([])).await?;
+        let reader = FreshnessReader::new(pool.clone());
+        let first = reader.read().await.context("read")?;
+        sqlx::query("DROP TABLE refresh_runs")
+            .execute(&pool)
+            .await?;
+        let (a, b) = tokio::join!(reader.read(), reader.read());
+        assert_eq!(a.as_ref(), Some(&first));
+        assert_eq!(b.as_ref(), Some(&first));
+        Ok(())
+    }
+
+    /// The cache serves what it read, advanced by the time since.
+    #[test]
+    fn a_cached_age_is_advanced_by_the_time_since_the_read() {
+        let f = Freshness {
+            refreshed_secs_ago: Some(100),
+            ..Freshness::default()
+        };
+        assert_eq!(
+            aged(f, Duration::from_secs(30)).refreshed_secs_ago,
+            Some(130)
+        );
+        assert_eq!(
+            aged(Freshness::default(), Duration::from_secs(30)).refreshed_secs_ago,
+            None
+        );
+    }
+
+    #[test]
+    fn a_run_state_comes_from_its_row() {
+        assert_eq!(RunState::of(true, Some(true), false), RunState::Ok);
+        assert_eq!(RunState::of(true, Some(false), true), RunState::Failed);
+        assert_eq!(RunState::of(true, None, false), RunState::Stopped);
+        assert_eq!(RunState::of(false, None, false), RunState::Running);
+        assert_eq!(RunState::of(false, None, true), RunState::Abandoned);
+    }
+
+    /// Newest first, at most `limit`, each with its state and failed steps.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn recent_runs_list_the_latest_with_their_failed_steps(pool: PgPool) -> Result<()> {
+        assert!(recent(&pool, RECENT_RUNS).await?.is_empty());
+        finished(&pool, 50, Some(true), json!([])).await?;
+        finished(&pool, 30, Some(false), serde_json::to_value(sample())?).await?;
+        sqlx::query(
+            "INSERT INTO refresh_runs (started_at, trigger, process, cr_before)
+             VALUES (now() - interval '10 hours', 'manual', 'ingest', '20260101'),
+                    (now() - interval '1 minute', 'schedule', 'api', '20260101')",
+        )
+        .execute(&pool)
+        .await?;
+        let runs = recent(&pool, 3).await?;
+        let got: Vec<(RunState, &str, &str)> = runs
+            .iter()
+            .map(|r| (r.outcome, r.trigger.as_str(), r.process.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (RunState::Running, "schedule", "api"),
+                (RunState::Abandoned, "manual", "ingest"),
+                (RunState::Failed, "schedule", "bot"),
+            ]
+        );
+        assert_eq!(
+            runs.get(2).map(|r| r.failed_steps.clone()),
+            Some(vec!["emoji".to_owned()])
+        );
+        assert_eq!(
+            runs.first().and_then(|r| r.cr_before.as_deref()),
+            Some("20260101")
+        );
+        assert!(
+            runs.first()
+                .is_some_and(|r| r.started_at.ends_with('Z') && r.started_at.len() == 17),
+            "{runs:?}"
+        );
+        assert_eq!(
+            serde_json::to_value(runs.first())?.get("outcome"),
+            Some(&json!("running"))
+        );
+        Ok(())
+    }
+
+    /// A run that uploaded emoji is seen once, after the mark; one that
+    /// uploaded none, or skipped the step, is not a reason to reload.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn emoji_since_finds_the_runs_that_may_have_uploaded(pool: PgPool) -> Result<()> {
+        let emoji = |uploaded: u32| {
+            json!([{"step": "emoji", "outcome": "ok",
+                    "summary": {"uploaded": uploaded, "skipped": 84, "unusable": 0, "failed": 0}}])
+        };
+        assert_eq!(
+            emoji_since(&pool, None).await?,
+            EmojiCheck::default(),
+            "no runs"
+        );
+
+        finished(&pool, 5, Some(true), emoji(3)).await?;
+        let first = emoji_since(&pool, None).await?;
+        assert!(first.uploaded && first.latest.is_some(), "{first:?}");
+        let mark = first.latest;
+
+        // Nothing since the mark: nothing to do, and no new mark.
+        assert_eq!(
+            emoji_since(&pool, mark.as_deref()).await?,
+            EmojiCheck::default()
+        );
+
+        // Newer runs that uploaded nothing or skipped the step.
+        finished(&pool, 4, Some(true), emoji(0)).await?;
+        finished(
+            &pool,
+            3,
+            Some(true),
+            json!([{"step": "emoji", "outcome": "skipped", "reason": "no_discord_token"}]),
+        )
+        .await?;
+        let quiet = emoji_since(&pool, mark.as_deref()).await?;
+        assert!(
+            !quiet.uploaded && quiet.latest.is_some() && quiet.latest != mark,
+            "{quiet:?}"
+        );
+
+        // An older run that uploaded, behind the mark, stays seen.
+        finished(&pool, 6, Some(true), emoji(1)).await?;
+        let still = emoji_since(&pool, quiet.latest.as_deref()).await?;
+        assert_eq!(still, EmojiCheck::default());
+
+        // A newer upload, and a failed step (it may have uploaded first),
+        // and a run dropped with no steps recorded, each count.
+        for steps in [
+            emoji(2),
+            json!([{"step": "emoji", "outcome": "failed", "error": "boom"}]),
+            json!([]),
+        ] {
+            let mark = emoji_since(&pool, None).await?.latest;
+            sqlx::query(
+                "INSERT INTO refresh_runs (started_at, finished_at, trigger, process, ok, steps)
+                 VALUES (now(), clock_timestamp(), 'schedule', 'bot', false, $1)",
+            )
+            .bind(&steps)
+            .execute(&pool)
+            .await?;
+            let c = emoji_since(&pool, mark.as_deref()).await?;
+            assert!(c.uploaded && c.latest > mark, "{steps}: {c:?}");
+        }
+        // An unfinished run is not looked at.
+        let mark = emoji_since(&pool, None).await?.latest;
+        begin(&pool, Trigger::Schedule, "api", None).await;
+        assert_eq!(
+            emoji_since(&pool, mark.as_deref()).await?,
+            EmojiCheck::default()
         );
         Ok(())
     }

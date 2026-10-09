@@ -1,4 +1,4 @@
-import { createResource, createSignal, For, Match, Show, Switch } from "solid-js";
+import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { createStore } from "solid-js/store";
 import {
   type About,
@@ -6,6 +6,7 @@ import {
   askJudge,
   crDate,
   fetchAbout,
+  freshnessLine,
   type Pin,
   sessionId,
 } from "./api";
@@ -44,7 +45,17 @@ export default function App() {
   const session = sessionId();
   // `null` while GET /api/about is pending or after it failed; the footer
   // then says so rather than naming a repository this instance may not be.
-  const [about] = createResource(fetchAbout);
+  // When /api/about answered, and a clock ticking each minute, so the
+  // footer's "refreshed … ago" ages with the page instead of freezing.
+  let aboutAt = Date.now();
+  const [about] = createResource(async () => {
+    const a = await fetchAbout();
+    aboutAt = Date.now();
+    return a;
+  });
+  const [now, setNow] = createSignal(Date.now());
+  const tick = setInterval(() => setNow(Date.now()), 60_000);
+  onCleanup(() => clearInterval(tick));
 
   async function ask(question: string, pins: Pin[], index?: number) {
     const i = index ?? entries.length;
@@ -169,6 +180,13 @@ export default function App() {
           with this project. Rule links go to the{" "}
           <a href="https://yawgatog.com/resources/magic-rules/">Yawgatog</a> mirror.
         </p>
+        <Show when={about()}>
+          {(a) => (
+            <p>
+              {freshnessLine(a().freshness, Math.max(0, Math.floor((now() - aboutAt) / 1000)))}.
+            </p>
+          )}
+        </Show>
         <SourceOffer about={about() ?? null} />
       </footer>
     </main>

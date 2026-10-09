@@ -39,6 +39,22 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   for a vector it skips `embed`, logs the count and alerts. `judge-ingest embed` (or
   `scripts/refresh-data.sh embed`) does it when that spend is expected. A manual or
   cron'd `judge-ingest refresh` has no ceiling.
+- **Every interface says how fresh the data is.** `GET /api/about`, the MCP `about` tool
+  and `judge-cli about` carry `freshness`: the Comprehensive Rules release loaded, the
+  seconds since the last successful refresh, and whether the latest one failed. It is
+  `null` when the database does not answer, and the rest is served regardless. The web
+  footer shows it as one line and `/help` as a **Data.** list. `/api/health` ignores it.
+- **`judge-cli stats` lists the last five refresh runs**: when each started, what started
+  it and where, its outcome (`ok`, `failed`, `stopped`, `running` or `abandoned`), the CR
+  version before and after, and the steps that failed.
+- **The bot picks up new card-symbol emoji without a restart.** When a refresh run, by
+  any process, uploads emoji, the bot lists them again within ten minutes. A bot with none
+  checks every ten minutes, so the first `judge-ingest emoji` after starting it is seen
+  too, and every bot lists them hourly regardless. A listing that failed at startup is
+  retried the same way, and connecting no longer waits for it.
+- **`judge-ingest init` is recorded as a refresh run** of the steps it shares with one
+  (it now runs the retirement pass too). The schedule counts a first load as fresh data,
+  and the steps it did not reach after a failure are recorded as skipped.
 
 ### Changed
 

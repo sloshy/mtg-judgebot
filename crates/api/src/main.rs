@@ -25,7 +25,10 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use judge_agent::{Options, Quota, Toolbox};
 use judge_api::{ApiConfig, App, Launch, interfaces, router, serve};
-use judge_bot::{build_deps_with, config::Config as JudgeConfig, db::PgCallStore, synth::Harness};
+use judge_bot::{
+    build_deps_with, config::Config as JudgeConfig, db::PgCallStore, ingest::runs::FreshnessReader,
+    synth::Harness,
+};
 use judge_core::CallStore;
 use judge_llm::ApiKey;
 
@@ -135,7 +138,10 @@ async fn main() -> Result<()> {
             judge.source_offer().clone(),
             operator.clone(),
         )
-        .with_probe(Arc::new(pool.clone())),
+        .with_probe(Arc::new(pool.clone()))
+        // /api/about reads the run record for the data's freshness, cached
+        // for a minute: the page asks on every load.
+        .with_data_status(Arc::new(FreshnessReader::new(pool.clone()))),
     );
     let mut routes = router(Arc::clone(&app), &interfaces, &cfg.web_dist);
     // The MCP transport shares the judge slots (one JUDGE_CONCURRENCY for

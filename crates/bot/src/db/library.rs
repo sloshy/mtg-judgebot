@@ -1,8 +1,8 @@
 //! [`PgLibrary`]: direct, read-only lookups over the same tables the
 //! retriever draws on, for an agent that wants to consult the data rather
 //! than run the pipeline: search the CR, read a card's rulings or notes, look
-//! a glossary term up, fetch a card by id. Nothing here is a pipeline step
-//! and nothing here writes.
+//! a glossary term up, fetch a card by id, or ask how fresh the data is.
+//! Nothing here is a pipeline step and nothing here writes.
 
 use std::{fmt, sync::Arc};
 
@@ -11,6 +11,7 @@ use pgvector::Vector;
 use sqlx::PgPool;
 
 use super::{Vectors, cards, retrieve, rules, upstream};
+use crate::ingest::runs::FreshnessReader;
 
 /// Glossary entries returned for one term lookup at most.
 pub const GLOSSARY_LIMIT: i64 = 10;
@@ -22,6 +23,7 @@ pub const MAX_SEARCH: usize = 25;
 pub struct PgLibrary {
     pool: PgPool,
     vectors: Option<Arc<Vectors>>,
+    freshness: Arc<FreshnessReader>,
 }
 
 impl fmt::Debug for PgLibrary {
@@ -37,9 +39,22 @@ impl PgLibrary {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self {
+            freshness: Arc::new(FreshnessReader::new(pool.clone())),
             pool,
             vectors: None,
         }
+    }
+
+    /// The pool, for the Discord layer's own reads of the run record.
+    pub(crate) const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// What the data is: the CR release loaded and the last refresh
+    /// ([`FreshnessReader`]: cached for a minute). `None`, logged, when the
+    /// database does not answer in time; never an error.
+    pub async fn freshness(&self) -> Option<judge_core::Freshness> {
+        self.freshness.read().await
     }
 
     /// Add the vector search to `search_rules`, subject to the space check in [`Vectors`].

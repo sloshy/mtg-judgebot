@@ -25,7 +25,9 @@ answer spends the operator's money and one of the visitor's rate-limited questio
 Nobody is logged in there, so the page has **no rating buttons**, and nothing about the
 visitor is stored beyond a random session id that groups their questions. The footer
 names the source repository, the commit the instance was built from and the operator's
-support address (`JUDGE_OPERATOR_EMAIL`, which `judge-api` does not start without).
+support address (`JUDGE_OPERATOR_EMAIL`, which `judge-api` does not start without). A
+line above it gives the Comprehensive Rules release loaded and how long ago the data was
+last refreshed, for example `Comprehensive Rules 2026-09-25 · refreshed 3 hours ago`.
 
 ## Enabling
 

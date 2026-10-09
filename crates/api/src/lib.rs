@@ -30,5 +30,5 @@ pub mod mcp;
 pub mod shape;
 
 pub use config::ApiConfig;
-pub use http::{App, router, serve};
+pub use http::{App, DataStatus, router, serve};
 pub use interfaces::{Interface, Interfaces, Launch};

@@ -101,9 +101,12 @@ the text is restored.
 
 ## `/help`
 
-Two replies: what the bot does, how to ask and what it stores, then the same notice as
-`/license` (where the source is and who runs this instance). Both are ephemeral, so only
-you see them.
+Two replies, both ephemeral, so only you see them:
+
+- what the bot does, how to ask and what it stores, ending with a **Data.** list: the
+  Comprehensive Rules release loaded, when the data was last refreshed, and whether the
+  latest refresh failed
+- the same notice as `/license`: where the source is and who runs this instance.
 
 ## `/license`
 

@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use judge_core::{
     Ambiguous, Card, CardId, Citation, Confidence, Context, DiscordOperator, EXAMPLE_PREFIX,
-    JudgeError, RuleChunk, RuleId, Ruling, Score, SourceOffer, Validated, Verdict, source,
+    Freshness, JudgeError, RuleChunk, RuleId, Ruling, Score, SourceOffer, Validated, Verdict,
+    source,
 };
 use nonempty::NonEmpty;
 
@@ -91,15 +92,38 @@ rate. Nothing else is read: the bot sees only its slash commands. `/forget` dele
 Answers are AI-generated; verify anything important with a human judge. Unofficial Fan Content under the \
 Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.\n\n";
 
-/// `/help`, as the two messages it is sent in: [`HELP_BODY`], then what
-/// `/license` says — where this instance's code is, at which commit, under
-/// which licence, so the AGPL's network clause is met on the bot's own
-/// surface, and who runs it. Two because the body and the longest offer and
-/// contact together pass [`CONTENT_LIMIT`]; each is under it by a wide
-/// margin. Ephemeral, so neither clutters a channel.
+/// `/help`, as the two messages it is sent in: [`HELP_BODY`] and what the
+/// data is ([`data`]), then what `/license` says — where this instance's code
+/// is, at which commit, under which licence, so the AGPL's network clause is
+/// met on the bot's own surface, and who runs it. Two because the body and
+/// the longest offer and contact together pass [`CONTENT_LIMIT`]; each is
+/// under it by a wide margin. Ephemeral, so neither clutters a channel.
 #[must_use]
-pub fn help(offer: &SourceOffer, operator: &DiscordOperator) -> [String; 2] {
-    [HELP_BODY.trim_end().to_owned(), license(offer, operator)]
+pub fn help(
+    offer: &SourceOffer,
+    operator: &DiscordOperator,
+    freshness: Option<&Freshness>,
+) -> [String; 2] {
+    [
+        format!("{}\n\n{}", HELP_BODY.trim_end(), data(freshness)),
+        license(offer, operator),
+    ]
+}
+
+/// What the data is, as `/help` lists it: the CR release and the last
+/// refresh ([`Freshness::lines`]), or a line saying it could not be read.
+#[must_use]
+pub fn data(freshness: Option<&Freshness>) -> String {
+    match freshness {
+        Some(f) => {
+            let mut out = "**Data.**".to_owned();
+            for line in f.lines() {
+                let _ = write!(out, "\n- {line}");
+            }
+            out
+        }
+        None => "**Data.** Unknown: the database did not answer.".to_owned(),
+    }
 }
 
 /// Who runs this instance. The username is in a code span: `_` is legal in
@@ -1381,7 +1405,13 @@ mod info_tests {
             )?),
         )
         .for_discord()?;
-        let parts = help(&offer, &operator);
+        // …and the longest data section: every line, the oldest age.
+        let freshness = Freshness {
+            cr_version: Some(judge_core::CrVersion::try_new("20260925".to_owned())?),
+            refreshed_secs_ago: Some(u64::MAX),
+            last_refresh_failed: true,
+        };
+        let parts = help(&offer, &operator, Some(&freshness));
         for part in &parts {
             assert!(
                 !part.is_empty() && part.chars().count() <= CONTENT_LIMIT,
@@ -1401,6 +1431,8 @@ mod info_tests {
             "[commit a37d495, built with uncommitted changes](<https://gitlab.example-hosting-company.com/some-organisation/some-team/mtg-judgebot-fork/commit/a37d495c937819de39a30ba0624f9bffbfc494d2>)",
             "`@a_judge.with_the_longest_name_32` on Discord",
             "`judgebot-support@some-organisation.example-hosting-company.com`",
+            "**Data.**\n- Comprehensive Rules: 2026-09-25\n- Last successful refresh: ",
+            " days ago\n- Latest refresh: failed",
         ] {
             assert!(help.contains(needle), "{needle}\n{help}");
         }
@@ -1420,6 +1452,28 @@ mod info_tests {
         let unknown = license(&SourceOffer::upstream(judge_core::Commit::Unknown), &alone);
         assert!(unknown.contains("(commit unknown)"), "{unknown}");
         assert!(!unknown.contains("/commit/"), "{unknown}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_data_section_lists_what_was_read_or_says_it_was_not() -> anyhow::Result<()> {
+        let fresh = Freshness {
+            cr_version: Some(judge_core::CrVersion::try_new("20260925".to_owned())?),
+            refreshed_secs_ago: Some(3 * 3600 + 120),
+            last_refresh_failed: false,
+        };
+        assert_eq!(
+            data(Some(&fresh)),
+            "**Data.**\n- Comprehensive Rules: 2026-09-25\n- Last successful refresh: 3 hours ago"
+        );
+        assert_eq!(
+            data(Some(&Freshness::default())),
+            "**Data.**\n- Comprehensive Rules: none loaded\n- Last successful refresh: no refresh run recorded yet"
+        );
+        assert_eq!(
+            data(None),
+            "**Data.** Unknown: the database did not answer."
+        );
         Ok(())
     }
 

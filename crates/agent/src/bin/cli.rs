@@ -16,7 +16,9 @@
 //! judge-cli search <query> [--limit N]
 //! judge-cli glossary <term>
 //! judge-cli config                             # the resolved model configuration, secrets redacted
-//! judge-cli about                              # the source offer: repository, commit, licence
+//! judge-cli stats [--days N]                   # usage, spend, worst-rated calls, recent refreshes
+//! judge-cli about                              # the source offer: repository, commit, licence,
+//!                                              #  and the data's freshness
 //! ```
 //!
 //! Flags may appear anywhere after the subcommand; `--` ends them so a
@@ -38,6 +40,7 @@ use judge_agent::{
     },
 };
 use judge_bot::{
+    ingest::runs,
     session::{AgentThread, SessionId},
     synth::Harness,
 };
@@ -375,14 +378,19 @@ async fn run(cmd: Command) -> Result<()> {
         other => other,
     };
     if matches!(cmd, Command::Config | Command::About) {
-        // No database needed: load .env as the toolbox would, then resolve.
+        // No toolbox (models, pool) needed: load .env as the toolbox would,
+        // then resolve. `about` reads the data's freshness on a connection of
+        // its own, and prints the offer without it when there is no database.
         match dotenvy::dotenv() {
             Ok(_) | Err(dotenvy::Error::Io(_)) => {}
             Err(e) => return Err(anyhow::Error::from(e).context("load .env")),
         }
         let config = judge_bot::config::Config::load()?;
         return match cmd {
-            Command::About => print(&config.source_offer().about(config.operator())),
+            Command::About => {
+                let freshness = about_freshness().await;
+                print(&config.source_offer().about(config.operator(), freshness))
+            }
             _ => print(&config.report()),
         };
     }
@@ -428,6 +436,35 @@ async fn run(cmd: Command) -> Result<()> {
         Command::Glossary(i) => print(&toolbox.glossary(i).await?),
         Command::Stats(i) => print(&toolbox.stats(i).await?),
         Command::Config | Command::About => anyhow::bail!("unreachable: handled above"),
+    }
+}
+
+/// The data's freshness for `about`, read on a connection of its own:
+/// `None` (logged) when `DATABASE_URL` is unset or the database does not
+/// answer within [`runs::FRESHNESS_TIMEOUT`], and `about` prints the offer
+/// regardless, as it did before it read anything.
+async fn about_freshness() -> Option<judge_core::Freshness> {
+    let Some(url) = std::env::var("DATABASE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    else {
+        tracing::warn!("DATABASE_URL is not set: the data's freshness is unknown");
+        return None;
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(runs::FRESHNESS_TIMEOUT)
+        .connect(&url);
+    match tokio::time::timeout(runs::FRESHNESS_TIMEOUT, pool).await {
+        Ok(Ok(pool)) => runs::freshness(&pool).await,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "connecting to Postgres: the data's freshness is unknown");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("connecting to Postgres timed out: the data's freshness is unknown");
+            None
+        }
     }
 }
 

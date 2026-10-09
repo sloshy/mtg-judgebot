@@ -5,8 +5,9 @@
 //! [`render`] (verdict / error → text), [`mana`] (card symbols → the bot's
 //! custom emoji), [`ids`] (typed `custom_id`s), [`pending`] (questions waiting
 //! on a card pick), [`question`] (span replacement) and [`capture`] (keeps the
-//! retrieval `Context` so a call can be persisted). This file is the glue:
-//! serenity types in, those modules out.
+//! retrieval `Context` so a call can be persisted). [`symbols`] lists the
+//! card-symbol emoji and keeps the table current while the bot runs. This
+//! file is the glue: serenity types in, those modules out.
 //!
 //! Flows:
 //! * `/judge question:<text>` → defer → `judge()` with the thread's last N
@@ -36,6 +37,7 @@ pub mod mana;
 pub mod pending;
 pub mod question;
 pub mod render;
+pub mod symbols;
 
 use std::{
     num::{NonZeroU32, NonZeroU64},
@@ -62,7 +64,7 @@ use crate::db::PgLibrary;
 use capture::CapturingRetriever;
 use cooldown::{Cooldowns, UserLimit};
 use ids::ButtonAction;
-use mana::SymbolTable;
+use mana::{SharedSymbols, SymbolTable};
 use pending::{Pending, PendingId, PendingSpan, PendingStore, TakeError};
 
 /// How long a `/judge` (or a card pick) waits for a free slot before replying
@@ -235,9 +237,10 @@ pub struct Data {
     permits: Semaphore,
     judge_role: String,
     history_len: usize,
-    /// Card-symbol emoji, filled in on `Ready` by [`run`]; empty until then
-    /// (and for good, if this application has none uploaded).
-    symbols: SymbolTable,
+    /// Card-symbol emoji, listed after `Ready` and kept current by
+    /// [`symbols::watch`]; empty until its first listing (and for as long as
+    /// this application has none uploaded).
+    symbols: Arc<SharedSymbols>,
     /// What `/help` and `/license` say about where this instance's source is.
     offer: SourceOffer,
     /// Whom `/help` and `/license` tell users to contact.
@@ -287,7 +290,7 @@ impl Data {
             permits: Semaphore::new(cfg.max_concurrent),
             judge_role: cfg.judge_role.clone(),
             history_len: cfg.history_len,
-            symbols: SymbolTable::empty(),
+            symbols: Arc::new(SharedSymbols::default()),
             offer,
             operator,
             cooldowns: cfg.user_limit.map(Cooldowns::new),
@@ -357,7 +360,14 @@ impl Data {
                         None
                     }
                 };
-                Outgoing::answer(&v, captured.as_ref(), call, asker, &q.text, &self.symbols)
+                Outgoing::answer(
+                    &v,
+                    captured.as_ref(),
+                    call,
+                    asker,
+                    &q.text,
+                    &self.symbols.get(),
+                )
             }
             Err(JudgeError::AmbiguousCards(spans)) => {
                 let dym = render::did_you_mean(&spans);
@@ -369,7 +379,12 @@ impl Data {
                     audience,
                 });
                 Outgoing {
-                    content: render::with_header(asker.get(), &q.text, &dym.content, &self.symbols),
+                    content: render::with_header(
+                        asker.get(),
+                        &q.text,
+                        &dym.content,
+                        &self.symbols.get(),
+                    ),
                     embed: None,
                     components: vec![pick_row(token, &dym.choices)],
                 }
@@ -391,7 +406,7 @@ impl Data {
                         asker.get(),
                         &q.text,
                         &render::error(&e),
-                        &self.symbols,
+                        &self.symbols.get(),
                     ),
                     embed: None,
                     components: vec![],
@@ -729,7 +744,7 @@ async fn card_command(
                 tracing::warn!(error = format_args!("{e:#}"), "/card rulings unavailable");
                 vec![]
             });
-            let view = render::card(&card, &rulings, &data.symbols);
+            let view = render::card(&card, &rulings, &data.symbols.get());
             let embed = lookup_embed(view);
             ctx.send(
                 poise::CreateReply::default()
@@ -773,7 +788,7 @@ async fn rule_command(
             return say(ctx, render::LOOKUP_FAILED, true).await;
         }
     };
-    let Some(view) = render::rules(&rule, &chunks, &data.symbols) else {
+    let Some(view) = render::rules(&rule, &chunks, &data.symbols.get()) else {
         return say(ctx, &render::rule_not_found(&rule), true).await;
     };
     let embed = lookup_embed(view);
@@ -824,8 +839,13 @@ async fn say(ctx: Ctx<'_>, text: &str, ephemeral: bool) -> Result<(), Error> {
 /// What the bot does, how to ask, what it stores, and where its source is.
 #[poise::command(slash_command, rename = "help", ephemeral)]
 async fn help_command(ctx: Ctx<'_>) -> Result<(), Error> {
+    // Deferred first: the data's freshness is a database read, and the reply
+    // must not miss Discord's 3 s deadline waiting on it.
+    ctx.defer_ephemeral().await?;
+    let data = ctx.data();
+    let freshness = data.library.freshness().await;
     // Two ephemeral messages: the second is a follow-up to the first.
-    for part in render::help(&ctx.data().offer, &ctx.data().operator) {
+    for part in render::help(&data.offer, &data.operator, freshness.as_ref()) {
         ctx.say(part).await?;
     }
     Ok(())
@@ -906,36 +926,6 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
     }
 }
 
-/// The application's card-symbol emoji, for [`render::answer`].
-///
-/// Never fails the startup: Discord being unreachable or the emoji never
-/// having been uploaded (see the `judge-ingest emoji` subcommand) both leave an
-/// empty table, and symbols then render as the literal `{W}` Scryfall writes.
-async fn load_symbols(http: &serenity::Http) -> SymbolTable {
-    match http.get_application_emojis().await {
-        Ok(emojis) => {
-            let table = SymbolTable::new(emojis.into_iter().map(|e| (e.name, e.id.get())));
-            if table.is_empty() {
-                tracing::warn!(
-                    "no `{}…` application emoji found; card symbols will render as text \
-                     (run `judge-ingest emoji` to upload them)",
-                    judge_core::symbol::NAME_PREFIX
-                );
-            } else {
-                tracing::info!(symbols = table.len(), "loaded card-symbol emoji");
-            }
-            table
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "could not list application emoji; card symbols will render as text"
-            );
-            SymbolTable::empty()
-        }
-    }
-}
-
 /// Connect to the gateway and serve until the connection ends.
 ///
 /// # Errors
@@ -959,7 +949,6 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
         .options(options)
         .setup(move |ctx, _ready, framework| {
             Box::pin(async move {
-                let mut data = data;
                 let commands = &framework.options().commands;
                 if let Some(g) = guild {
                     poise::builtins::register_in_guild(ctx, commands, g).await?;
@@ -971,8 +960,15 @@ pub async fn run(cfg: Config, data: Data) -> anyhow::Result<()> {
                     );
                 }
                 // The application id arrives with `Ready`, which is what got us
-                // here, so `ctx.http` can answer this now.
-                data.symbols = load_symbols(&ctx.http).await;
+                // here, so `ctx.http` can list the emoji now. The watcher does
+                // it as a task of its own, so a slow database or Discord never
+                // delays the bot's readiness: symbols render as text until its
+                // first listing lands.
+                tokio::spawn(symbols::watch(
+                    Arc::clone(&ctx.http),
+                    data.library.pool().clone(),
+                    Arc::clone(&data.symbols),
+                ));
                 Ok(data)
             })
         })

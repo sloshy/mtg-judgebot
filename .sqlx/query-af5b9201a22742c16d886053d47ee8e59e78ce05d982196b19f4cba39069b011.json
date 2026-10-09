@@ -1,0 +1,105 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI\"Z\"') AS \"started_at!\",\n               trigger, process, ok, cr_before, cr_after,\n               finished_at IS NOT NULL AS \"finished!\",\n               started_at < now() - make_interval(secs => $2) AS \"past_limit!\",\n               ARRAY(SELECT s->>'step' FROM jsonb_array_elements(steps) WITH ORDINALITY AS e(s, n)\n                     WHERE s->>'outcome' = 'failed' ORDER BY n) AS \"failed_steps!: Vec<String>\"\n        FROM refresh_runs\n        ORDER BY started_at DESC, id DESC\n        LIMIT $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "started_at!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "trigger",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "refresh_runs",
+            "name": "trigger"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "process",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "refresh_runs",
+            "name": "process"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "ok",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "refresh_runs",
+            "name": "ok"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "cr_before",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "refresh_runs",
+            "name": "cr_before"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "cr_after",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "refresh_runs",
+            "name": "cr_after"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "finished!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "past_limit!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "failed_steps!: Vec<String>",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      true,
+      true,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "af5b9201a22742c16d886053d47ee8e59e78ce05d982196b19f4cba39069b011"
+}

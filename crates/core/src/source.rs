@@ -11,7 +11,8 @@
 //! the program that answered. This module is pure: reading the environment
 //! and the build stamp is the loader's job (`judge_bot::config`), rendering
 //! for Discord, the MCP instructions, the CLI and `GET /api/about` all start
-//! from [`SourceOffer::about`].
+//! from [`SourceOffer::about`]. [`About`] also carries what the instance's
+//! data is ([`Freshness`]), read by the caller and handed in.
 
 use std::{borrow::Cow, fmt, sync::LazyLock};
 
@@ -20,7 +21,10 @@ use regex::Regex;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
-use crate::operator::{DiscordUsername, Operator, SupportEmail};
+use crate::{
+    freshness::Freshness,
+    operator::{DiscordUsername, Operator, SupportEmail},
+};
 
 /// The upstream repository: the default offer for an unmodified build.
 pub const DEFAULT_REPOSITORY: &str = "https://github.com/sloshy/mtg-judgebot";
@@ -188,6 +192,10 @@ pub struct About {
     /// The whole offer as one paragraph of plain text, followed by the
     /// operator's contact when there is one.
     pub notice: String,
+    /// What the instance's data is: the CR release loaded and when it was
+    /// last refreshed. `null` when it was not read: the database did not
+    /// answer, or the caller reads none (`judge-cli config`).
+    pub freshness: Option<Freshness>,
 }
 
 impl SourceOffer {
@@ -269,9 +277,10 @@ impl SourceOffer {
         }
     }
 
-    /// The offer as data, beside who runs the instance.
+    /// The offer as data, beside who runs the instance and what its data is
+    /// (`None`: not read).
     #[must_use]
-    pub fn about(&self, operator: &Operator) -> About {
+    pub fn about(&self, operator: &Operator, freshness: Option<Freshness>) -> About {
         About {
             program: PROGRAM.to_owned(),
             repository: self.repository.clone(),
@@ -285,6 +294,7 @@ impl SourceOffer {
             operator_discord: operator.discord().cloned(),
             operator_email: operator.email().cloned(),
             notice: self.notice_with(operator),
+            freshness,
         }
     }
 }
@@ -387,7 +397,13 @@ mod tests {
             Some(DiscordUsername::try_new("somejudge")?),
             Some(SupportEmail::try_new("judge@example.org")?),
         );
-        let a = offer.about(&operator);
+        let freshness = crate::Freshness {
+            cr_version: Some(crate::CrVersion::try_new("20260925".to_owned())?),
+            refreshed_secs_ago: Some(10_800),
+            last_refresh_failed: false,
+        };
+        let a = offer.about(&operator, Some(freshness.clone()));
+        assert_eq!(a.freshness.as_ref(), Some(&freshness));
         assert_eq!(a.license, LICENSE_SPDX);
         assert_eq!(a.copyright, COPYRIGHT);
         assert!(a.dirty);
@@ -404,9 +420,45 @@ mod tests {
             Some("somejudge")
         );
         // A local process with no contact set says nothing about one.
-        let bare = offer.about(&Operator::default());
+        let bare = offer.about(&Operator::default(), None);
         assert_eq!(bare.notice, offer.notice());
         assert_eq!(bare.operator_email, None);
+        // The fields a client reads: the earlier ones stay, `freshness` is
+        // added beside them, null when it was not read.
+        let keys: Vec<String> = match serde_json::to_value(&bare)? {
+            serde_json::Value::Object(m) => m.keys().cloned().collect(),
+            other => anyhow::bail!("not an object: {other}"),
+        };
+        assert_eq!(
+            keys,
+            [
+                "program",
+                "repository",
+                "commit",
+                "commit_url",
+                "dirty",
+                "license",
+                "license_name",
+                "license_url",
+                "copyright",
+                "operator_discord",
+                "operator_email",
+                "notice",
+                "freshness",
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&bare)?.get("freshness"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            serde_json::to_value(&a)?.get("freshness"),
+            Some(&serde_json::json!({
+                "cr_version": "20260925",
+                "refreshed_secs_ago": 10_800,
+                "last_refresh_failed": false,
+            }))
+        );
         let json = serde_json::to_string(&a)?;
         let back: About = serde_json::from_str(&json)?;
         assert_eq!(back, a);

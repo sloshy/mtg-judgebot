@@ -684,10 +684,12 @@ impl Toolbox {
     }
 
     /// The source offer: where this instance's code is, at which commit,
-    /// under which licence. Needs nothing from the database.
-    #[must_use]
-    pub fn about(&self) -> About {
-        self.offer().about(self.operator())
+    /// under which licence, and what its data is. The data is read from the
+    /// database (cached for a minute); `freshness` is null when it does not
+    /// answer, and the rest is served regardless.
+    pub async fn about(&self) -> About {
+        let freshness = self.library.freshness().await;
+        self.offer().about(self.operator(), freshness)
     }
 
     /// Usage, spend and the worst-rated calls: the operator's view. On the

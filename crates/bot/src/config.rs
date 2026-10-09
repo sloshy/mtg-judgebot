@@ -2000,7 +2000,8 @@ impl Config {
         }
         serde_json::json!({
             "source": self.source.to_string(),
-            "source_offer": self.offer.about(&self.operator),
+            // The data is not read here: `freshness` is null.
+            "source_offer": self.offer.about(&self.operator, None),
             "spend_cap_usd": self.meter.max_spend_usd(),
             "providers": providers,
             "models": {

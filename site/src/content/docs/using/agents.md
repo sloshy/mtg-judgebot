@@ -49,8 +49,11 @@ Discord thread id cannot have, so a session cannot read a channel's history.
 `glossary <term>` query the database directly and cost nothing. `config` prints the
 resolved provider and model setup with secrets redacted. `about` prints the source offer:
 the repository holding this instance's source, the commit it was built from, the licence
-and copyright. Over MCP the same offer is the tail of the server's initialization
-instructions and the `about` tool, so a client sees it before calling anything.
+and copyright. Beside it, `freshness` gives the Comprehensive Rules release loaded and
+when the data was last refreshed (`null` without a database). Over MCP the same offer is
+the tail of the server's initialization instructions and the `about` tool, so a client
+sees it before calling anything. The tool also returns `freshness`, which the
+instructions, fixed at startup, do not carry.
 
 ## Connecting an MCP client
 

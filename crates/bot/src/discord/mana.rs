@@ -16,7 +16,11 @@
 //!   yet gets [`SymbolTable::empty`], and every symbol stays the literal `{W}`
 //!   Scryfall writes. That is the pre-emoji behaviour, so nothing breaks.
 
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{Arc, PoisonError, RwLock},
+};
 
 use judge_core::symbol::{self, MAX_BODY_CHARS};
 
@@ -77,6 +81,29 @@ impl SymbolTable {
                     .and_then(|n| self.tags.get(&n))
             })
             .map(String::as_str)
+    }
+}
+
+/// The table the bot renders with, replaced whole when the application's
+/// emoji change ([`super::symbols`] reloads it after a refresh uploaded some),
+/// so a running bot picks new symbols up without a restart.
+///
+/// Rendering takes a snapshot ([`Self::get`]) and stays pure over it; the
+/// lock is held only to clone or swap the `Arc`, never across a render.
+#[derive(Debug, Default)]
+pub struct SharedSymbols(RwLock<Arc<SymbolTable>>);
+
+impl SharedSymbols {
+    /// The current table.
+    #[must_use]
+    pub fn get(&self) -> Arc<SymbolTable> {
+        // A panic while holding the lock cannot leave a half-written `Arc`.
+        Arc::clone(&self.0.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Replace the table; renders already holding the old one finish with it.
+    pub fn set(&self, table: SymbolTable) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(table);
     }
 }
 

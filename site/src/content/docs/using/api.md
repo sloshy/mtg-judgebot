@@ -82,6 +82,26 @@ The source offer and the operator contact as JSON: `program`, `repository`, `com
 `operator_email`, `operator_discord` and a ready-to-show `notice`. The page footer is
 built from it.
 
+`freshness` says what the instance's data is:
+
+- `cr_version`: the Comprehensive Rules release loaded, as `YYYYMMDD`, or `null` with no
+  rules loaded.
+- `refreshed_secs_ago`: seconds since the latest successful data refresh finished, or
+  `null` when none is recorded.
+- `last_refresh_failed`: whether the latest refresh failed.
+
+`freshness` itself is `null` when the database does not answer within two seconds. The
+rest of the reply is served regardless, and the endpoint never fails over it. On a schema
+without the run table (migrations pending) only `cr_version` is read: `refreshed_secs_ago`
+is `null` and `last_refresh_failed` is `false`. The read is cached for a minute, so the
+answer can trail a refresh, or an outage, by up to 60 seconds. The age is advanced to the
+moment of the reply. `GET /api/health` does not look at freshness: stale data is not an
+outage.
+
+```json
+"freshness": {"cr_version": "20260925", "refreshed_secs_ago": 10800, "last_refresh_failed": false}
+```
+
 ## MCP
 
 `/mcp` is a separate interface with its own credential. See [Agents](../../using/agents/).

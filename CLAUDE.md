@@ -178,6 +178,14 @@ Dockerfile build args. CI sets `JUDGE_COMMIT` to the sha, and a non-hash fails t
 Without `JUDGE_COMMIT` it uses `git rev-parse HEAD` plus a dirty flag. An unstamped build says
 "commit unknown" rather than guessing.
 
+`About` also carries `freshness` (`judge_core::Freshness`: the CR release loaded, the age
+of the last successful refresh, whether the latest failed), read from `refresh_runs` by
+`ingest::runs::freshness` within 2 s. Unreadable is `null` plus a WARN, never an error;
+a missing run table degrades to the CR version alone. `FreshnessReader` caches it for a
+minute, single-flight.
+`SourceOffer::about` takes it as an argument, so every caller decides. `/api/health`
+ignores it.
+
 **The operator contact** (`judge_core::operator`) travels beside the source offer.
 `JUDGE_OPERATOR_DISCORD` (a `DiscordUsername`) is required by the bot, and
 `JUDGE_OPERATOR_EMAIL` (a `SupportEmail`) by `judge-api` whichever interfaces it opens.
@@ -253,7 +261,8 @@ cargo run --release -p judge-ingest -- migrate          # apply pending migratio
                                                         # bot/api do this at startup unless JUDGE_AUTO_MIGRATE=false
 ~/.cargo/bin/sqlx migrate run --source crates/bot/migrations   # the same thing with sqlx-cli
 cargo run --release -p judge-ingest -- init             # the whole first load: migrate, cards, rules latest,
-                                                        # aliases, notes, embed, emoji; fail-fast, idempotent
+                                                        # aliases, notes, retire, embed, emoji; fail-fast,
+                                                        # idempotent; recorded as a manual refresh run
                                                         # (in the image: docker compose run --rm refresh init)
 cargo run --release -p judge-ingest -- cards            # Scryfall bulk sync (cached in .cache/)
 cargo run --release -p judge-ingest -- rules <url|path> # CR parse from a given file or URL
@@ -571,6 +580,11 @@ Key cross-file facts that aren't obvious from any one file:
     of Discord's 2000/4096 characters and must never be cut in half, so plain text is the
     only cuttable segment.
   - An application with no emoji uploaded renders the literal `{W}`.
+  - The table sits behind `mana::SharedSymbols`. `discord::symbols::watch`, a task
+    spawned on `Ready`, lists the emoji and then checks every ten minutes. It lists them
+    again after a refresh run whose `emoji` step may have uploaded (`runs::emoji_since`),
+    after a failed listing, while the table is empty, and hourly regardless. No restart
+    is needed.
   - The web page does the same job with Scryfall's SVGs (`web/src/Symbols.tsx`).
 - **Providers are configuration, not code.** `judge_bot::config` loads `judge.toml` into
   typed structs.

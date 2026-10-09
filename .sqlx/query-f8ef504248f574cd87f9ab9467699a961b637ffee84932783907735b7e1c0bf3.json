@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT max(finished_at)::text AS \"latest?\",\n               COALESCE(bool_or(NOT (\n                 steps @> '[{\"step\": \"emoji\", \"outcome\": \"skipped\"}]'\n                 OR steps @> '[{\"step\": \"emoji\", \"outcome\": \"ok\", \"summary\": {\"uploaded\": 0}}]'\n               )), false) AS \"uploaded!\"\n        FROM refresh_runs\n        WHERE finished_at > COALESCE($1::text::timestamptz, '-infinity')\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "latest?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "uploaded!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "f8ef504248f574cd87f9ab9467699a961b637ffee84932783907735b7e1c0bf3"
+}

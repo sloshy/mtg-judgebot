@@ -249,6 +249,19 @@ impl JsonSchema for CrVersion {
     }
 }
 
+impl CrVersion {
+    /// The effective date as `YYYY-MM-DD`: `20260819` → `2026-08-19`.
+    #[must_use]
+    pub fn date(&self) -> String {
+        let v = self.as_ref();
+        // Eight ASCII digits by the validator, so every slice is there.
+        match (v.get(0..4), v.get(4..6), v.get(6..8)) {
+            (Some(y), Some(m), Some(d)) => format!("{y}-{m}-{d}"),
+            _ => v.to_owned(),
+        }
+    }
+}
+
 /// Scryfall card layout (variant names mirror Scryfall's `layout` values).
 #[expect(
     missing_docs,

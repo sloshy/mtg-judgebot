@@ -55,7 +55,8 @@ touch Discord. The bot is the last thing to add.
    `DATABASE_URL` to match.
 3. `docker compose run --rm refresh init` loads everything: the schema, the cards, the
    current rules, the alias and note lists, embeddings if you have an embedder, and the
-   emoji if `DISCORD_TOKEN` is already set. `init` is safe to run again.
+   emoji if `DISCORD_TOKEN` is already set. `init` is safe to run again. It counts as a
+   refresh, so the first scheduled one comes a day later.
    The first embed pays the embedder once for every rule and glossary entry, a few cents
    on Voyage. After that, only changed rules are re-embedded.
 4. `docker compose up -d api`. Open <http://localhost:8787> and ask a question. This runs

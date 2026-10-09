@@ -1,6 +1,8 @@
 //! What an operator asks of a running instance: how much is it used, what
-//! does it cost, and which answers did people think were wrong. Read-only,
-//! over `calls`, `ratings` and the `spend_days` ledger (`crate::budget`).
+//! does it cost, which answers did people think were wrong, and how did the
+//! last data refreshes go. Read-only, over `calls`, `ratings`, the
+//! `spend_days` ledger (`crate::budget`) and `refresh_runs`
+//! (`crate::ingest::runs`).
 //!
 //! Counts are of *stored* calls, so a Discord question asked with
 //! `private: True` is in the spend and not in the questions.
@@ -11,6 +13,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use super::upstream;
+use crate::ingest::runs::{self, RECENT_RUNS, RecentRun};
 
 /// Most days [`usage`] looks back.
 pub const MAX_DAYS: u32 = 366;
@@ -68,6 +71,12 @@ pub struct Usage {
     pub retired_calls: i64,
     /// The rated calls with the lowest effective score, worst first.
     pub lowest_rated: Vec<RatedCall>,
+    /// The latest data refresh runs ([`RECENT_RUNS`]), newest first,
+    /// whatever the window.
+    pub refresh_runs: Vec<RecentRun>,
+    /// Why `refresh_runs` is empty when it could not be read: the schema
+    /// predates the table (migrations pending). `None` when it was read.
+    pub refresh_runs_note: Option<String>,
 }
 
 /// Usage over the last `days` UTC days (clamped to `1..=`[`MAX_DAYS`]).
@@ -162,6 +171,20 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
     })
     .collect();
 
+    // A schema behind this binary (`JUDGE_AUTO_MIGRATE=false` with
+    // migrations pending) has no run table; the rest of the view stands.
+    let (refresh_runs, refresh_runs_note) = match runs::recent(pool, RECENT_RUNS).await {
+        Ok(r) => (r, None),
+        Err(e) if runs::is_missing_table(&e) => (
+            Vec::new(),
+            Some(
+                "refresh_runs does not exist: migrations are pending (`judge-ingest migrate`)"
+                    .to_owned(),
+            ),
+        ),
+        Err(e) => return Err(JudgeError::Upstream(e)),
+    };
+
     Ok(Usage {
         days,
         questions: by_day.iter().map(|d| d.discord + d.web + d.agent).sum(),
@@ -170,6 +193,8 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
         ratings: [ratings.incorrect, ratings.partial, ratings.correct],
         retired_calls,
         lowest_rated,
+        refresh_runs,
+        refresh_runs_note,
     })
 }
 

@@ -330,6 +330,13 @@ after Scryfall adds one. Skipping it is safe: the bot logs a warning at startup
 and falls back to writing `{W}` as text. The web page needs none of this, because it
 loads the symbols from Scryfall's CDN.
 
+The refresh (§7) runs the same upload. A running bot lists the emoji again:
+
+- within ten minutes of a refresh run that uploaded any, whichever process ran it
+- every ten minutes while it has none, so the first upload by hand needs no restart
+- every hour regardless, so any other upload by hand, or an emoji deleted by hand, is
+  seen within the hour.
+
 ### Client address
 
 The per-IP limiter needs an address the caller cannot choose, because `/api/judge` is
@@ -624,9 +631,17 @@ it: `migrate` has its own lock, and `emoji` writes no database.
 ### Run record
 
 Each run is recorded in `refresh_runs`: when it started and finished, what started it
-(`schedule` or `manual`) and in which process, the CR version before and after, and each
+(`schedule` or `manual`; `init` records itself as a manual run of the steps it shares
+with a refresh) and in which process, the CR version before and after, and each
 step's outcome. A row with no `finished_at` is a run in progress or one that died. A
 run that loads a new CR also logs `CR <old> → <new>`.
+
+`judge-cli stats` lists the last five runs (`refresh_runs` in its JSON): outcome, CR
+before and after, and the steps that failed. On a schema without the table (migrations
+pending) the list is empty and `refresh_runs_note` says why. Users see the result: `/help`, the web
+footer and `GET /api/about` show the CR release loaded and how long ago the last
+successful refresh finished, and say when the latest one failed. The full record is in
+SQL:
 
 ```sql
 select started_at, finished_at, trigger, process, ok, cr_before, cr_after from refresh_runs order by id desc limit 5;
@@ -899,6 +914,7 @@ own if the connector restarts.
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
 | Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and `docker compose up -d`, or wait for the period to turn |
 | A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`. A scheduled refresh posts there on the first failure of a streak and on recovery; both scripts post on a non-zero exit |
+| When was the data last refreshed? | `/help`, the web footer or `GET /api/about` (`freshness`) for the age of the last success; `judge-cli stats` for the last five runs (§7) |
 | The data is days old and `refresh_runs` has no recent row | `JUDGE_REFRESH_HOURS=0` with no cron entry, or every `bot`/`api` log says `scheduled refresh paused` (a container on an older image than the schema, migrations pending with `JUDGE_AUTO_MIGRATE=false`, or no rules loaded yet: `docker compose run --rm refresh init`). `docker compose logs bot api \| grep 'scheduled'` shows which |
 | `refresh step skipped` for `embed`, `rows to embed, over the 800` | the spend guard: a scheduled run found more empty vectors than a CR release leaves. Run `scripts/refresh-data.sh embed` if that spend is expected (§7) |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |

@@ -16,9 +16,10 @@ use axum::{
     routing::{get, post},
 };
 use judge_bot::discord::{capture::CapturingRetriever, render};
+use judge_bot::ingest::runs::FreshnessReader;
 use judge_core::{
-    About, CallStore, Deps, JudgeError, NetworkOperator, Question, Retriever, SourceOffer,
-    Validated, Verdict, judge,
+    About, CallStore, Deps, Freshness, JudgeError, NetworkOperator, Question, Retriever,
+    SourceOffer, Validated, Verdict, judge,
 };
 use judge_llm::SpendMeter;
 use tokio::sync::{Semaphore, SemaphorePermit};
@@ -69,6 +70,23 @@ impl Probe for sqlx::PgPool {
     }
 }
 
+/// What `GET /api/about` reports about the data: the CR release loaded and
+/// the last refresh. A trait for the same reason as [`Probe`]: the routes are
+/// tested without a database.
+#[async_trait::async_trait]
+pub trait DataStatus: Send + Sync {
+    /// The data's freshness, or `None` when it cannot be read; never an
+    /// error, so the source offer is served whatever the database does.
+    async fn freshness(&self) -> Option<Freshness>;
+}
+
+#[async_trait::async_trait]
+impl DataStatus for FreshnessReader {
+    async fn freshness(&self) -> Option<Freshness> {
+        self.read().await
+    }
+}
+
 /// Shared state behind every route.
 pub struct App {
     deps: Deps,
@@ -84,6 +102,8 @@ pub struct App {
     offer: SourceOffer,
     /// Whom `GET /api/about` (and so the page) tells users to write to.
     operator: NetworkOperator,
+    /// What `GET /api/about` says about the data; `None` serves it as null.
+    data: Option<Arc<dyn DataStatus>>,
 }
 
 impl std::fmt::Debug for App {
@@ -121,6 +141,7 @@ impl App {
             probe: None,
             offer,
             operator,
+            data: None,
         }
     }
 
@@ -129,6 +150,14 @@ impl App {
     #[must_use]
     pub fn with_probe(mut self, probe: Arc<dyn Probe>) -> Self {
         self.probe = Some(probe);
+        self
+    }
+
+    /// Make `GET /api/about` report the data's freshness from `data` (the
+    /// run record, in production) instead of null.
+    #[must_use]
+    pub fn with_data_status(mut self, data: Arc<dyn DataStatus>) -> Self {
+        self.data = Some(data);
         self
     }
 
@@ -287,10 +316,15 @@ async fn health(State(app): State<Arc<App>>) -> (StatusCode, String) {
 }
 
 /// The source offer as JSON (`judge_core::About`): repository, commit,
-/// licence, copyright, the operator's support address and the notice in one
-/// string.
+/// licence, copyright, the operator's support address, the notice in one
+/// string, and the data's freshness (null when it cannot be read: the offer
+/// is served whatever the database does).
 async fn about(State(app): State<Arc<App>>) -> Json<About> {
-    Json(app.offer.about(app.operator.operator()))
+    let freshness = match &app.data {
+        Some(d) => d.freshness().await,
+        None => None,
+    };
+    Json(app.offer.about(app.operator.operator(), freshness))
 }
 
 /// The peer address, when the server was started with connect info (tests
@@ -881,6 +915,61 @@ mod tests {
                         && n.contains("judge@example.org")),
                 "{j}"
             );
+        }
+        Ok(())
+    }
+
+    /// `freshness` is what the data status read, and null when it read
+    /// nothing; the offer around it is served either way.
+    #[tokio::test]
+    async fn about_carries_the_freshness_or_null() -> Res {
+        struct Fixed(Option<Freshness>);
+        #[async_trait]
+        impl DataStatus for Fixed {
+            async fn freshness(&self) -> Option<Freshness> {
+                self.0.clone()
+            }
+        }
+        let fresh = Freshness {
+            cr_version: Some(judge_core::CrVersion::try_new("20260925".to_owned())?),
+            refreshed_secs_ago: Some(10_800),
+            last_refresh_failed: true,
+        };
+        for (status, want) in [
+            (
+                Some(fresh),
+                serde_json::json!({
+                    "cr_version": "20260925",
+                    "refreshed_secs_ago": 10_800,
+                    "last_refresh_failed": true,
+                }),
+            ),
+            (None, serde_json::Value::Null),
+        ] {
+            let app = Arc::new(
+                App::new(
+                    stub_deps(),
+                    Arc::new(StubStore::default()),
+                    SpendMeter::new(),
+                    &test_cfg(10, Path::new("does-not-exist")),
+                    SourceOffer::upstream(judge_core::Commit::Unknown),
+                    test_operator(),
+                )
+                .with_data_status(Arc::new(Fixed(status))),
+            );
+            let router = router(
+                app,
+                &Interfaces::of(&nonempty![Interface::Api]),
+                Path::new("does-not-exist"),
+            );
+            let res = router
+                .oneshot(Request::get("/api/about").body(Body::empty())?)
+                .await?;
+            assert_eq!(res.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(res.into_body(), 4096).await?;
+            let j: serde_json::Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(j.get("freshness"), Some(&want), "{j}");
+            assert!(j.get("notice").is_some(), "{j}");
         }
         Ok(())
     }

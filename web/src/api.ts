@@ -85,6 +85,20 @@ export interface About {
   operator_discord: string | null;
   operator_email: string | null;
   notice: string;
+  /** What the data is (crates/core/src/freshness.rs `Freshness`); null when
+   * the server could not read it. */
+  freshness: Freshness | null;
+}
+
+/** The Comprehensive Rules release loaded and the last refresh. */
+export interface Freshness {
+  /** `YYYYMMDD`; null when no rules are loaded. */
+  cr_version: string | null;
+  /** Seconds since the latest successful refresh finished, on the server's
+   * clock when it answered; null when none is recorded. */
+  refreshed_secs_ago: number | null;
+  /** Whether the latest refresh failed. */
+  last_refresh_failed: boolean;
 }
 
 /** The source offer, or null when the server did not answer: the footer
@@ -104,7 +118,21 @@ export async function fetchAbout(): Promise<About | null> {
 function isAbout(v: unknown): v is About {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
-  return typeof o.repository === "string" && typeof o.notice === "string";
+  return (
+    typeof o.repository === "string" &&
+    typeof o.notice === "string" &&
+    (o.freshness === null || isFreshness(o.freshness))
+  );
+}
+
+function isFreshness(v: unknown): v is Freshness {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    (o.cr_version === null || typeof o.cr_version === "string") &&
+    (o.refreshed_secs_ago === null || typeof o.refreshed_secs_ago === "number") &&
+    typeof o.last_refresh_failed === "boolean"
+  );
 }
 
 /** The session id questions share history under; kept per browser tab. */
@@ -119,6 +147,42 @@ export function sessionId(): string {
   } catch {
     return crypto.randomUUID();
   }
+}
+
+/** An age as words, as the server's `judge_core::freshness::ago` writes it:
+ * `under a minute ago`, `5 minutes ago`, `3 hours ago`, `2 days ago`. */
+export function ago(secs: number): string {
+  const minute = 60;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (secs < minute) return "under a minute ago";
+  const [n, unit] =
+    secs < hour
+      ? [Math.floor(secs / minute), "minute"]
+      : secs < 2 * day
+        ? [Math.floor(secs / hour), "hour"]
+        : [Math.floor(secs / day), "day"];
+  return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+}
+
+/** The footer's data line: `Comprehensive Rules 2026-09-25 · refreshed 3
+ * hours ago`, with `· latest refresh failed` when it did; the facts the
+ * server could not read are said to be unknown. `elapsed` is the seconds
+ * since the server answered, added to its age so the line stays current. */
+export function freshnessLine(f: Freshness | null, elapsed = 0): string {
+  if (f === null) return "Data freshness unknown";
+  const parts = [
+    f.cr_version === null
+      ? "No Comprehensive Rules loaded"
+      : `Comprehensive Rules ${crDate(f.cr_version)}`,
+    f.refreshed_secs_ago !== null
+      ? `refreshed ${ago(f.refreshed_secs_ago + elapsed)}`
+      : f.last_refresh_failed
+        ? "no successful refresh yet"
+        : "no refresh run recorded yet",
+  ];
+  if (f.last_refresh_failed) parts.push("latest refresh failed");
+  return parts.join(" · ");
 }
 
 /** `20260819` → `2026-08-19` (matching the Discord footer). */

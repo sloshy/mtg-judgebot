@@ -1438,5 +1438,37 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
     assert_eq!((worst.call, worst.ratings), (first, 2));
     assert_eq!(worst.question, "does it work?");
     assert!(worst.effective_score < 2.0);
+    assert!(u.refresh_runs.is_empty(), "no refresh recorded");
+
+    // The latest refresh runs, whatever the window, at most five.
+    for days_ago in [400, 3, 2, 1, 0, 0] {
+        sqlx::query(
+            "INSERT INTO refresh_runs (started_at, finished_at, trigger, process, ok)
+             VALUES (now() - make_interval(days => $1), now() - make_interval(days => $1), 'schedule', 'bot', true)",
+        )
+        .bind(days_ago)
+        .execute(&pool)
+        .await?;
+    }
+    let u = crate::db::stats::usage(&pool, 1).await?;
+    assert_eq!(
+        u.refresh_runs.len(),
+        usize::try_from(crate::ingest::runs::RECENT_RUNS)?
+    );
+    assert_eq!(u.refresh_runs_note, None);
+
+    // A schema without the table: no runs and a note, not an error.
+    sqlx::query("DROP TABLE refresh_runs")
+        .execute(&pool)
+        .await?;
+    let u = crate::db::stats::usage(&pool, 1).await?;
+    assert!(u.refresh_runs.is_empty());
+    assert!(
+        u.refresh_runs_note
+            .as_deref()
+            .is_some_and(|n| n.contains("judge-ingest migrate")),
+        "{:?}",
+        u.refresh_runs_note
+    );
     Ok(())
 }

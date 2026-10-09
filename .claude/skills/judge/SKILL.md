@@ -144,7 +144,8 @@ Build once with `cargo build --release -p judge-agent`, then run
 - `VOYAGE_API_KEY` is optional.
 
 `judge-cli config` prints what resolved, secrets redacted. `judge-cli about` prints the
-source offer: repository, commit, licence. Logs go to stderr, JSON to stdout. Flags can go
+source offer (repository, commit, licence) and the data's freshness (CR release, last
+refresh). Logs go to stderr, JSON to stdout. Flags can go
 anywhere after the subcommand, and `--` ends them if a question starts with `--`. Write
 extraction and verdict JSON to a file and pass its path, or pipe it with `-`. Each
 invocation is its own process, so `judge` there has its own `JUDGE_MAX_USD` counter.

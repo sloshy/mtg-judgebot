@@ -130,7 +130,13 @@ fn load_config() -> Result<crate::config::Config> {
 }
 
 /// The whole first load, in dependency order: the schema, the cards the
-/// curated lists name, the rules, then the vectors over both and the emoji.
+/// curated lists name, the rules, the retirement pass (nothing to retire in a
+/// fresh database), then the vectors over both and the emoji.
+///
+/// It is recorded in `refresh_runs` as a [`Trigger::Manual`] run of the
+/// refresh steps it runs, so the schedule, `/help` and the
+/// page count a first load as fresh data rather than refreshing right after
+/// it.
 ///
 /// Unlike [`refresh`] it stops at the first failure, because each step needs
 /// the one before it (aliases resolve against cards, embeddings read rules).
@@ -161,7 +167,27 @@ pub async fn init(pool: &PgPool, cache_dir: &Path, process: &'static str) -> Res
     let mut held = lease(pool, process)
         .await
         .context("init: the refresh lease")?;
-    let result = init_data(&mut held, cache_dir, embedder.as_deref(), &mut steps).await;
+    // Recorded as a manual refresh run of the steps it shares with one, so
+    // the schedule, `/help` and the page count a fresh load as fresh data.
+    let cr_before = runs::stored_cr(pool).await;
+    let record = runs::begin(pool, Trigger::Manual, process, cr_before.as_deref()).await;
+    let mut reports = Vec::with_capacity(Step::ALL.len());
+    let result = init_data(
+        &mut held,
+        cache_dir,
+        embedder.as_deref(),
+        &mut steps,
+        &mut reports,
+    )
+    .await;
+    let report = init_report(
+        reports,
+        result.is_err(),
+        cr_before,
+        runs::stored_cr(pool).await,
+        record.is_some(),
+    );
+    runs::finish(pool, record, &report).await;
     held.release().await;
     result?;
     tracing::info!(
@@ -178,7 +204,7 @@ struct InitSteps(u8);
 impl InitSteps {
     fn begin(&mut self, name: &'static str) -> Instant {
         self.0 = self.0.saturating_add(1);
-        tracing::info!(step = name, "init step {} of 7", self.0);
+        tracing::info!(step = name, "init step {} of 8", self.0);
         Instant::now()
     }
 
@@ -196,22 +222,72 @@ impl InitSteps {
     }
 }
 
-/// `init` after the migration, under the lease.
+/// What `init` ran of the refresh steps, as the run record stores it: each
+/// step it reached, then every one it did not reach as skipped
+/// ([`Skip::InitStopped`]), in [`Step::ALL`] order (`init` runs them in that
+/// order). A failure outside those steps (`aliases`, `notes`, the lease)
+/// fails the run all the same ([`RunReport::aborted`]).
+fn init_report(
+    mut steps: Vec<StepReport>,
+    failed: bool,
+    cr_before: Option<String>,
+    cr_after: Option<String>,
+    recorded: bool,
+) -> RunReport {
+    for step in Step::ALL {
+        if !steps.iter().any(|s| s.step() == step) {
+            steps.push(step.skipped(Skip::InitStopped));
+        }
+    }
+    let aborted = failed && !steps.iter().any(StepReport::failed);
+    RunReport {
+        steps,
+        cr_before,
+        cr_after,
+        recorded,
+        timed_out: false,
+        aborted,
+    }
+}
+
+/// A step's result as its record, keeping the result for `?`.
+fn noted<T: Clone>(result: &Result<T>) -> Outcome<T> {
+    match result {
+        Ok(summary) => Outcome::Ok {
+            summary: summary.clone(),
+        },
+        Err(e) => Outcome::Failed {
+            error: format!("{e:#}"),
+        },
+    }
+}
+
+/// Rows embedded per table as the record stores them.
+fn embedded(counts: impl IntoIterator<Item = (&'static str, usize)>) -> runs::Embedded {
+    counts
+        .into_iter()
+        .map(|(table, n)| (table.to_owned(), n))
+        .collect()
+}
+
+/// `init` after the migration, under the lease. Each refresh step it runs
+/// is pushed to `reports` as it ends.
 async fn init_data(
     lease: &mut RefreshLease,
     cache_dir: &Path,
     embedder: Option<&dyn WithSpace>,
     steps: &mut InitSteps,
+    reports: &mut Vec<StepReport>,
 ) -> Result<()> {
     let t = steps.next(lease, "cards").await?;
-    scryfall::run(lease, cache_dir)
-        .await
-        .context("init: cards")?;
+    let r = scryfall::run(lease, cache_dir).await;
+    reports.push(StepReport::Cards(noted(&r)));
+    r.context("init: cards")?;
     InitSteps::done("cards", t);
     let t = steps.next(lease, "rules").await?;
-    cr::run_latest(lease, cache_dir)
-        .await
-        .context("init: rules latest")?;
+    let r = cr::run_latest(lease, cache_dir).await;
+    reports.push(StepReport::Rules(noted(&r)));
+    r.context("init: rules latest")?;
     InitSteps::done("rules", t);
     let t = steps.next(lease, "aliases").await?;
     aliases::run(lease, aliases::BUILTIN)
@@ -223,6 +299,13 @@ async fn init_data(
         .await
         .context("init: notes")?;
     InitSteps::done("notes", t);
+    // Nothing to retire in a fresh database; a re-run over a used one does
+    // what a refresh would after loading the same data.
+    let t = steps.next(lease, "retire").await?;
+    let r = retire(lease).await;
+    reports.push(StepReport::Retire(noted(&r)));
+    r.context("init: retire")?;
+    InitSteps::done("retire", t);
     let t = steps.next(lease, "embed").await?;
     // A database that holds no vectors has nothing to lose, so it takes the
     // configured embedder's space whatever that is: `reembed` retypes the
@@ -234,21 +317,47 @@ async fn init_data(
         .await?
         .iter()
         .any(|(_, n)| *n > 0);
-    match (embedder, holds_vectors) {
-        (Some(e), false) => reembed::run(lease, Some(e), true, false)
+    // `None`: no embedder, the step skipped (`embed::run` logs it).
+    let r: Result<Option<runs::Embedded>> = match (embedder, holds_vectors) {
+        // The switch reports nothing itself; what the columns hold after it
+        // is what it embedded, the database having held no vectors before.
+        (Some(e), false) => {
+            async {
+                reembed::run(lease, Some(e), true, false).await?;
+                let held = crate::db::space::stored_counts(lease.pool()).await?;
+                Ok(Some(embedded(
+                    held.into_iter()
+                        .map(|(t, n)| (t, usize::try_from(n).unwrap_or(0))),
+                )))
+            }
             .await
-            .context("init: embed")?,
-        (e, _) => embed::run(lease, e)
-            .await
-            .map(drop)
-            .context("init: embed")?,
-    }
+        }
+        (Some(e), true) => embed::run(lease, Some(e)).await.map(|c| Some(embedded(c))),
+        (None, _) => embed::run(lease, None).await.map(|_| None),
+    };
+    reports.push(StepReport::Embed(match &r {
+        Ok(Some(summary)) => Outcome::Ok {
+            summary: summary.clone(),
+        },
+        Ok(None) => Outcome::Skipped {
+            reason: Skip::NoEmbedder,
+        },
+        Err(e) => Outcome::Failed {
+            error: format!("{e:#}"),
+        },
+    }));
+    r.context("init: embed")?;
     InitSteps::done("embed", t);
     let t = steps.next(lease, "emoji").await?;
     if has_discord_token() {
-        emoji::run(cache_dir).await.context("init: emoji")?;
+        let r = emoji::run(cache_dir).await;
+        reports.push(StepReport::Emoji(noted(&r)));
+        r.context("init: emoji")?;
         InitSteps::done("emoji", t);
     } else {
+        reports.push(StepReport::Emoji(Outcome::Skipped {
+            reason: Skip::NoDiscordToken,
+        }));
         tracing::warn!(
             step = "emoji",
             "init step skipped: DISCORD_TOKEN is not set; run `judge-ingest emoji` once the Discord app exists"
@@ -380,6 +489,7 @@ where
         cr_after,
         recorded: record.is_some(),
         timed_out,
+        aborted: false,
     };
     runs::finish(&pool, record, &report).await;
     report
@@ -498,6 +608,61 @@ async fn over_ceiling(lease: &mut RefreshLease, trigger: Trigger) -> Result<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `init`'s record has every refresh step, in order: those it reached,
+    /// then the rest as skipped because it stopped; a failure outside them
+    /// fails the run all the same.
+    #[test]
+    fn an_init_run_is_recorded_with_every_step() {
+        let ok = |step: Step| match step {
+            Step::Cards => StepReport::Cards(Outcome::Ok { summary: () }),
+            other => other.skipped(Skip::NoEmbedder),
+        };
+        let all = vec![
+            ok(Step::Cards),
+            Step::Rules.skipped(Skip::NoEmbedder),
+            Step::Retire.skipped(Skip::NoEmbedder),
+            Step::Embed.skipped(Skip::NoEmbedder),
+            Step::Emoji.skipped(Skip::NoDiscordToken),
+        ];
+        let done = init_report(all.clone(), false, None, Some("20260925".into()), true);
+        assert_eq!(done.steps, all);
+        assert_eq!(done.outcome(), runs::RunOutcome::Ok);
+
+        // Stopped at aliases, after cards and rules: the rest are skipped,
+        // and the run failed although no recorded step did.
+        let reached = vec![ok(Step::Cards), Step::Rules.skipped(Skip::NoEmbedder)];
+        let stopped = init_report(reached, true, None, None, true);
+        let order: Vec<Step> = stopped.steps.iter().map(StepReport::step).collect();
+        assert_eq!(order, Step::ALL.to_vec());
+        assert!(
+            stopped
+                .steps
+                .iter()
+                .skip(2)
+                .all(|s| s.skipped() == Some(Skip::InitStopped)),
+            "{:?}",
+            stopped.steps
+        );
+        assert!(stopped.aborted);
+        assert_eq!(stopped.outcome(), runs::RunOutcome::Failed);
+        assert_eq!(
+            stopped.ensure_ok().err().map(|e| e.to_string()).as_deref(),
+            Some("refresh: stopped at a failure outside its steps")
+        );
+
+        // A failed step names itself; the run is not also "aborted".
+        let failed = init_report(
+            vec![ok(Step::Cards), Step::Rules.failed("boom".into())],
+            true,
+            None,
+            None,
+            true,
+        );
+        assert!(!failed.aborted);
+        assert_eq!(failed.failed(), vec![Step::Rules]);
+        assert_eq!(failed.steps.len(), Step::ALL.len());
+    }
 
     /// `init` loads these with no file to fall back on, so a list that stopped
     /// parsing must fail here rather than on an operator's first run.
