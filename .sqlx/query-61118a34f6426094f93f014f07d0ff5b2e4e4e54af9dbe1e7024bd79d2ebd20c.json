@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n          (SELECT extract(epoch FROM now() - max(finished_at))::bigint\n             FROM refresh_runs WHERE ok) AS \"last_ok_age_secs?\",\n          (SELECT extract(epoch FROM now() - max(started_at))::bigint\n             FROM refresh_runs) AS \"last_attempt_age_secs?\",\n          (SELECT ok FROM refresh_runs WHERE finished_at IS NOT NULL\n             ORDER BY finished_at DESC, id DESC LIMIT 1) AS \"last_finished_ok?\",\n          (SELECT max(cr_version) FROM rules) AS \"stored_cr_version?\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "last_ok_age_secs?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_attempt_age_secs?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_finished_ok?",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "stored_cr_version?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "61118a34f6426094f93f014f07d0ff5b2e4e4e54af9dbe1e7024bd79d2ebd20c"
+}

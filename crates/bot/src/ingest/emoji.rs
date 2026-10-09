@@ -23,7 +23,7 @@ use std::{
 use anyhow::{Context as _, Result};
 use base64::Engine as _;
 use judge_core::symbol;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serenity::http::Http;
 
 /// Every card symbol Magic uses, with a link to its SVG.
@@ -41,6 +41,11 @@ const USER_AGENT: &str = concat!(
 ///
 /// Scryfall asks for 50–100 ms between requests.
 const SCRYFALL_DELAY: Duration = Duration::from_millis(100);
+/// The longest one Discord call may take. serenity's HTTP client sets no
+/// timeout of its own (and is built on another `reqwest` major than ours, so
+/// [`super::http_client`] cannot be handed to it), and a hung call would hold
+/// the refresh lease for good.
+const DISCORD_TIMEOUT: Duration = Duration::from_mins(2);
 /// Breathing room between uploads, on top of serenity's rate limiter.
 const UPLOAD_DELAY: Duration = Duration::from_millis(250);
 /// Pixels per side of the uploaded PNG. Discord displays emoji far smaller and
@@ -63,7 +68,9 @@ struct Symbology {
 }
 
 /// What a run did, so the caller can log one line and tests can assert on it.
-#[derive(Debug, Default, PartialEq, Eq)]
+/// Stored in a refresh run's record ([`super::runs`]), so its field names
+/// are a stored shape.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Summary {
     /// Emoji created on this run.
     pub uploaded: usize,
@@ -165,14 +172,26 @@ async fn cached_get(client: &reqwest::Client, url: &str, path: &Path) -> Result<
     Ok(bytes)
 }
 
+/// A Discord call, failed after [`DISCORD_TIMEOUT`].
+async fn bounded<T>(
+    what: &'static str,
+    call: impl Future<Output = serenity::Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(DISCORD_TIMEOUT, call)
+        .await
+        .map_err(|_| anyhow::anyhow!("{what}: no answer from Discord in {DISCORD_TIMEOUT:?}"))?
+        .context(what)
+}
+
 /// An authenticated Discord client that knows its own application id, which
 /// the emoji routes need and `Http::new` cannot know on its own.
 async fn discord(token: &str) -> Result<Http> {
     let http = Http::new(token);
-    let app = http
-        .get_current_application_info()
-        .await
-        .context("asking Discord which application this token belongs to")?;
+    let app = bounded(
+        "asking Discord which application this token belongs to",
+        http.get_current_application_info(),
+    )
+    .await?;
     tracing::info!(application = %app.name, id = %app.id, "authenticated");
     http.set_application_id(app.id);
     Ok(http)
@@ -193,19 +212,17 @@ pub async fn run(cache_dir: &Path) -> Result<Summary> {
         .filter(|t| !t.is_empty())
         .context("DISCORD_TOKEN is not set: the emoji belong to the bot's own application")?;
     let http = discord(&token).await?;
-    let mut existing: HashSet<String> = http
-        .get_application_emojis()
-        .await
-        .context("listing the application's emoji")?
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
+    let mut existing: HashSet<String> = bounded(
+        "listing the application's emoji",
+        http.get_application_emojis(),
+    )
+    .await?
+    .into_iter()
+    .map(|e| e.name)
+    .collect();
     tracing::info!(existing = existing.len(), "current application emoji");
 
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .context("building the HTTP client")?;
+    let client = super::http_client(USER_AGENT)?;
     // Never cached: a frozen index could not show a symbol Scryfall has added,
     // which is the whole reason to run this again.
     let index = get(&client, SYMBOLOGY_URL).await?;
@@ -289,9 +306,11 @@ async fn upload(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&png)
     );
-    http.create_application_emoji(&serde_json::json!({ "name": name, "image": image }))
-        .await
-        .context("creating the emoji")?;
+    bounded(
+        "creating the emoji",
+        http.create_application_emoji(&serde_json::json!({ "name": name, "image": image })),
+    )
+    .await?;
     Ok(png.len())
 }
 

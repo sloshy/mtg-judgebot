@@ -29,6 +29,7 @@ use judge_core::InputKind;
 use judge_embed::{Space, WithSpace};
 use sqlx::{PgPool, Row as _};
 
+use super::RefreshLease;
 use crate::db::space::{VECTOR_TABLES, column_width, stored_counts, stored_space, switch_space};
 
 /// A rough all-in price per million tokens for the estimate below: the top
@@ -153,11 +154,12 @@ async fn probe(embedder: &dyn WithSpace) -> anyhow::Result<usize> {
 /// fails (nothing changed), or when the switch or the embed loop fails. A
 /// failed switch leaves the database as it was.
 pub async fn run(
-    pool: &PgPool,
+    lease: &mut RefreshLease,
     embedder: Option<&dyn WithSpace>,
     yes: bool,
     clear: bool,
 ) -> anyhow::Result<()> {
+    let pool = lease.pool();
     let Some(embedder) = embedder else {
         anyhow::bail!("reembed: no embedder configured (set VOYAGE_API_KEY or [models.embed])");
     };
@@ -228,7 +230,7 @@ pub async fn run(
             "switched to {target}: columns retyped, indexes rebuilt, vectors cleared; running processes re-read the space on their next request"
         );
     }
-    let counts = super::embed::run(pool, Some(embedder)).await?;
+    let counts = super::embed::run(lease, Some(embedder)).await?;
     let total: usize = counts.iter().map(|(_, n)| n).sum();
     let breakdown = counts
         .iter()
@@ -324,6 +326,7 @@ mod tests {
     async fn a_failed_probe_or_a_dry_run_changes_nothing_and_yes_switches_then_embeds(
         pool: PgPool,
     ) -> anyhow::Result<()> {
+        let mut lease = crate::ingest::lease(&pool, "test").await?;
         let voyage = Space {
             provider: Provider::Voyage,
             model: "voyage-3.5".into(),
@@ -346,7 +349,7 @@ mod tests {
 
         // A model that does not produce the configured width: refused with --yes, before the switch.
         let wrong = Fake::new(Provider::OpenAi, "nomic-embed-text", 768).replying(1024);
-        let err = run(&pool, Some(&wrong), true, false)
+        let err = run(&mut lease, Some(&wrong), true, false)
             .await
             .err()
             .map(|e| format!("{e:#}"))
@@ -361,7 +364,7 @@ mod tests {
 
         // The dry run probes (so the endpoint is known to work) and stops.
         let nomic = Fake::new(Provider::OpenAi, "nomic-embed-text", 768);
-        let err = run(&pool, Some(&nomic), false, false)
+        let err = run(&mut lease, Some(&nomic), false, false)
             .await
             .err()
             .map(|e| format!("{e:#}"))
@@ -374,7 +377,7 @@ mod tests {
         unchanged(&pool).await?;
 
         // --yes: the switch, then the embed loop over every row.
-        run(&pool, Some(&nomic), true, false).await?;
+        run(&mut lease, Some(&nomic), true, false).await?;
         assert_eq!(stored_space(&pool).await?, Some(nomic.space.clone()));
         assert_eq!(column_width(&pool, "glossary").await?, 768);
         assert_eq!(
@@ -408,6 +411,7 @@ mod tests {
     async fn the_same_space_is_a_refill_not_a_switch_unless_clear(
         pool: PgPool,
     ) -> anyhow::Result<()> {
+        let mut lease = crate::ingest::lease(&pool, "test").await?;
         let nomic = Fake::new(Provider::OpenAi, "nomic-embed-text", 768);
         // The database already holds nomic's space: one embedded row (a marker
         // the fake would never produce) and one still empty, as an interrupted
@@ -421,7 +425,7 @@ mod tests {
         sqlx::query("INSERT INTO glossary (term, text, cr_version) VALUES ('Trample', 'Another.', '20260819')").execute(&pool).await?;
 
         // Dry run says so, and what it would embed is the one empty row.
-        let err = run(&pool, Some(&nomic), false, false)
+        let err = run(&mut lease, Some(&nomic), false, false)
             .await
             .err()
             .map(|e| format!("{e:#}"))
@@ -430,7 +434,7 @@ mod tests {
         assert!(holds(&pool, "Lifelink", &marker).await?);
 
         // --yes without --clear: no switch, the marker survives, the empty row is filled.
-        run(&pool, Some(&nomic), true, false).await?;
+        run(&mut lease, Some(&nomic), true, false).await?;
         assert!(
             holds(&pool, "Lifelink", &marker).await?,
             "the stored vector was re-embedded"
@@ -442,16 +446,16 @@ mod tests {
             "two probes and one batch of the single empty row"
         );
         // Idempotent: nothing left to embed, nothing paid; the dry run says so too.
-        run(&pool, Some(&nomic), true, false).await?;
+        run(&mut lease, Some(&nomic), true, false).await?;
         assert_eq!(nomic.calls(), 4, "the probe only");
-        let err = run(&pool, Some(&nomic), false, false)
+        let err = run(&mut lease, Some(&nomic), false, false)
             .await
             .err()
             .map(|e| format!("{e:#}"))
             .unwrap_or_default();
         assert!(err.contains("do nothing: no row is empty"), "{err}");
         // --clear without --yes is a dry run that says what it would clear.
-        let err = run(&pool, Some(&nomic), false, true)
+        let err = run(&mut lease, Some(&nomic), false, true)
             .await
             .err()
             .map(|e| format!("{e:#}"))
@@ -460,7 +464,7 @@ mod tests {
         assert!(holds(&pool, "Lifelink", &marker).await?);
 
         // --clear: the switch clears everything and both rows are re-embedded.
-        run(&pool, Some(&nomic), true, true).await?;
+        run(&mut lease, Some(&nomic), true, true).await?;
         assert!(
             holds(&pool, "Lifelink", &vec![0.5; 768]).await?,
             "--clear did not clear the stored vector"
@@ -475,7 +479,7 @@ mod tests {
             .execute(&pool)
             .await?;
         let wide = Fake::new(Provider::OpenAi, "nomic-embed-text", 1536);
-        run(&pool, Some(&wide), true, false).await?;
+        run(&mut lease, Some(&wide), true, false).await?;
         assert_eq!(column_width(&pool, "glossary").await?, 1536);
         assert!(holds(&pool, "Trample", &vec![0.5; 1536]).await?);
         Ok(())

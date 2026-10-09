@@ -325,10 +325,21 @@ pictures, from one set of names:
 | Categories → subsections | YAML (single source of truth; the enum is generated from it) | `categories` |
 | Calls | continuous; `retired_at`/`retired_reason` recomputed nightly from citation validity | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding) |
 | Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |
+| Refresh runs | one row per `ingest refresh` | `refresh_runs` (started_at, finished_at, trigger, process, cr_before, cr_after, steps jsonb, ok) |
 
 The loaders in the table (cards, rulings, the CR, symbols, nicknames, notes) and the
 embedding step are `judge_bot::ingest` (`crates/bot/src/ingest/`), beside the other
 Postgres adapters. `judge-ingest` is the command line over them.
+
+Every loader that writes the database takes a `RefreshLease`, a session-level advisory
+lock (`REFRESH_LOCK`) held on a connection of its own, so two runs never overlap, in one
+process or several, and a step without it does not compile. Steps take it as
+`&mut RefreshLease`, so two cannot run at once under one lease either. Waiting for it is
+bounded (an hour), and a run checks before each step that its session still holds it. Postgres drops the lock with
+the session, so a crashed run leaves nothing to clean up. It is separate from
+`CALLS_REWRITE_LOCK`, the short transaction-scoped lock the CR load, the retirement pass
+and vector writes take inside a run (and a migration for its whole run). A run takes the
+lease first and the calls lock inside it, never the other way round.
 
 Database: **Postgres 16 + pgvector + pg_trgm**. Scale: ~30k cards, ~2k rule
 chunks, <10k calls.

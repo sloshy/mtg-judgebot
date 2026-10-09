@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO refresh_runs (trigger, process) VALUES ('cron', 'ingest')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "daeafd9bdc3987665ec5e26fb9ba0f209ca03285f1b67a7a605b09bd16a96b78"
+}

@@ -106,10 +106,12 @@ pub async fn stored_space(exec: impl sqlx::PgExecutor<'_>) -> Result<Option<Spac
 
 /// Record `space` as the stored one: the first `ingest embed`. Fails when a
 /// row exists (the primary key), so only [`switch_space`] ever replaces one.
+/// Crate-private, like [`switch_space`]: both write, and run only inside
+/// `ingest` steps, under the refresh lease.
 ///
 /// # Errors
 /// `Upstream` from sqlx, including the existing-row conflict.
-pub async fn record_space(
+pub(crate) async fn record_space(
     exec: impl sqlx::PgExecutor<'_>,
     space: &Space,
 ) -> Result<(), JudgeError> {
@@ -217,7 +219,7 @@ pub async fn stored_counts(
 ///
 /// # Errors
 /// `Upstream` from sqlx; the transaction is rolled back.
-pub async fn switch_space(pool: &PgPool, space: &Space) -> Result<(), JudgeError> {
+pub(crate) async fn switch_space(pool: &PgPool, space: &Space) -> Result<(), JudgeError> {
     let dimensions = i32::try_from(space.dimensions)
         .map_err(|_| bad_row(format!("dimensions {} out of range", space.dimensions)))?;
     let mut tx = pool.begin().await.map_err(upstream("begin reembed"))?;

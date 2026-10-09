@@ -26,7 +26,10 @@ pub(crate) mod tests;
 pub use calls::PgCallStore;
 pub use library::{GLOSSARY_LIMIT, MAX_SEARCH, PgLibrary};
 pub use resolve::PgResolver;
-pub use retire::{CALLS_REWRITE_LOCK, RetireSummary, retire_unsupported};
+/// Writes `calls`, so outside the crate it runs only under the refresh lease,
+/// as `ingest::retire`.
+pub(crate) use retire::retire_unsupported;
+pub use retire::{CALLS_REWRITE_LOCK, RetireSummary};
 pub use retrieve::PgRetriever;
 pub use sessions::{MAX_TTL, PgSessionStore, Saved, Version};
 pub use space::Vectors;

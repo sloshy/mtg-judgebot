@@ -26,6 +26,7 @@ use judge_embed::{Space, WithSpace};
 use pgvector::Vector;
 use sqlx::{PgPool, Row as _};
 
+use super::RefreshLease;
 use crate::db::space::{
     VECTOR_TABLES, column_width, hold_space, record_space, stored_counts, stored_space,
 };
@@ -80,9 +81,10 @@ const TARGETS: [Target; 3] = [
 /// When the embedder's space is not the database's (see `check_space`), or on
 /// embedding or database failure. Returns the rows embedded per table.
 pub async fn run(
-    pool: &PgPool,
+    lease: &mut RefreshLease,
     embedder: Option<&dyn WithSpace>,
 ) -> anyhow::Result<Vec<(&'static str, usize)>> {
+    let pool = lease.pool();
     let Some(embedder) = embedder else {
         tracing::warn!(
             "ingest embed: skipped, no embedder configured (set VOYAGE_API_KEY or [models.embed])"
@@ -352,29 +354,31 @@ mod tests {
     async fn first_embed_records_the_space_and_later_runs_only_fill_nulls(
         pool: PgPool,
     ) -> anyhow::Result<()> {
+        let mut lease = crate::ingest::lease(&pool, "test").await?;
         glossary_row(&pool).await?;
         assert_eq!(stored_space(&pool).await?, None);
         let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024);
-        run(&pool, Some(&fake)).await?;
+        run(&mut lease, Some(&fake)).await?;
         assert_eq!(stored_space(&pool).await?, Some(fake.space.clone()));
         assert_eq!(embedded_glossary(&pool).await?, 1);
         assert_eq!(fake.calls(), 1);
-        run(&pool, Some(&fake)).await?;
+        run(&mut lease, Some(&fake)).await?;
         assert_eq!(fake.calls(), 1, "nothing left to embed");
         Ok(())
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn a_run_that_writes_nothing_leaves_no_label(pool: PgPool) -> anyhow::Result<()> {
+        let mut lease = crate::ingest::lease(&pool, "test").await?;
         // Nothing to embed: the row is written with the first vector, not before it.
         let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024);
-        run(&pool, Some(&fake)).await?;
+        run(&mut lease, Some(&fake)).await?;
         assert_eq!((stored_space(&pool).await?, fake.calls()), (None, 0));
         // A first batch that fails (the wrong width comes back) leaves no label either,
         // so the corrected run is a first embed, not a "mismatch" pointing at reembed.
         glossary_row(&pool).await?;
         let wrong = Fake::new(Provider::OpenAi, "nomic-embed-text:v1.5", 1024).replying(768);
-        let err = run(&pool, Some(&wrong))
+        let err = run(&mut lease, Some(&wrong))
             .await
             .err()
             .map(|e| format!("{e:#}"))
@@ -385,7 +389,7 @@ mod tests {
             (None, 0)
         );
         let fixed = Fake::new(Provider::OpenAi, "nomic-embed-text", 1024);
-        run(&pool, Some(&fixed)).await?;
+        run(&mut lease, Some(&fixed)).await?;
         assert_eq!(
             (stored_space(&pool).await?, embedded_glossary(&pool).await?),
             (Some(fixed.space.clone()), 1)
@@ -397,6 +401,7 @@ mod tests {
     async fn a_different_space_is_refused_before_anything_is_embedded(
         pool: PgPool,
     ) -> anyhow::Result<()> {
+        let mut lease = crate::ingest::lease(&pool, "test").await?;
         glossary_row(&pool).await?;
         let voyage = Space {
             provider: Provider::Voyage,
@@ -405,7 +410,7 @@ mod tests {
         };
         record_space(&pool, &voyage).await?;
         let fake = Fake::new(Provider::OpenAi, "nomic-embed-text", 1024);
-        let err = run(&pool, Some(&fake))
+        let err = run(&mut lease, Some(&fake))
             .await
             .err()
             .map(|e| format!("{e:#}"))
@@ -426,6 +431,7 @@ mod tests {
     async fn a_switch_that_lands_mid_batch_is_seen_by_the_write(
         pool: PgPool,
     ) -> anyhow::Result<()> {
+        let mut lease = crate::ingest::lease(&pool, "test").await?;
         glossary_row(&pool).await?;
         let voyage = Space {
             provider: Provider::Voyage,
@@ -443,7 +449,7 @@ mod tests {
         };
         let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024)
             .switching_on_first_call(pool.clone(), nomic.clone());
-        let err = run(&pool, Some(&fake))
+        let err = run(&mut lease, Some(&fake))
             .await
             .err()
             .map(|e| format!("{e:#}"))
@@ -464,9 +470,10 @@ mod tests {
 
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn a_width_the_columns_do_not_have_points_at_reembed(pool: PgPool) -> anyhow::Result<()> {
+        let mut lease = crate::ingest::lease(&pool, "test").await?;
         glossary_row(&pool).await?;
         let fake = Fake::new(Provider::OpenAi, "nomic-embed-text", 768);
-        let err = run(&pool, Some(&fake))
+        let err = run(&mut lease, Some(&fake))
             .await
             .err()
             .map(|e| format!("{e:#}"))
@@ -495,7 +502,7 @@ mod tests {
             dimensions: 1024,
         };
         record_space(&pool, &voyage).await?;
-        let err = run(&pool, Some(&fake))
+        let err = run(&mut lease, Some(&fake))
             .await
             .err()
             .map(|e| format!("{e:#}"))
@@ -511,13 +518,14 @@ mod tests {
 
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn vectors_of_unknown_origin_are_not_labelled(pool: PgPool) -> anyhow::Result<()> {
+        let mut lease = crate::ingest::lease(&pool, "test").await?;
         glossary_row(&pool).await?;
         sqlx::query("UPDATE glossary SET embedding = $1")
             .bind(Vector::from(vec![0.1; 1024]))
             .execute(&pool)
             .await?;
         let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024);
-        let err = run(&pool, Some(&fake))
+        let err = run(&mut lease, Some(&fake))
             .await
             .err()
             .map(|e| format!("{e:#}"))

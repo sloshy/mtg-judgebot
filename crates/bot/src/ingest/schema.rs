@@ -16,7 +16,9 @@ use crate::db::migrate::{Ahead, Report, run};
 /// # Errors
 /// See [`crate::db::migrate::Error`].
 pub async fn migrate(pool: &PgPool) -> Result<Report> {
-    println!("migrating (waits for a running refresh or reembed, if any)");
+    println!(
+        "migrating (waits for a CR load, retirement pass or vector write in progress, if any)"
+    );
     let r = run(pool, Ahead::Refuse).await?;
     if r.applied.is_empty() {
         println!(

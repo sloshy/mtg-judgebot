@@ -17,6 +17,33 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
+### Changed
+
+- **Data refreshes take a lock in the database.** Every `judge-ingest` command that
+  writes data (`refresh`, `init` after its migration, `cards`, `rules`, `aliases`,
+  `notes`, `embed`, `reembed`, `retire`) first takes the refresh lease, a Postgres
+  advisory lock. It waits up to an hour for a run that holds it, logging who holds it,
+  then fails. The cron run, a manual step and a workstation's `judge-ingest` therefore
+  take turns instead of overlapping. Postgres drops the lock with the session, so a
+  killed run leaves nothing behind. `scripts/refresh-data.sh` no longer takes its
+  `.refresh.lock` directory.
+- **Downloads time out.** A step's connection to Scryfall or Wizards gives up after 30
+  seconds without connecting or two minutes without data, so a stalled connection fails
+  that step instead of hanging the run.
+- **Each `refresh` is recorded** in a new `refresh_runs` table: start and finish, the CR
+  version before and after, each step's outcome and whether all succeeded. A run that
+  loads a new CR logs `CR <old> → <new>`.
+- **A refresh with no embedder configured logs `refresh step skipped` for `embed`.** It
+  used to log `refresh step ok`. `emoji` with no `DISCORD_TOKEN` was already logged as
+  skipped.
+
+### Upgrading
+
+- The `refresh_runs` migration applies at startup unless `JUDGE_AUTO_MIGRATE=false`. A
+  refresh that runs before it is applied works and logs that the run went unrecorded.
+- A `.refresh.lock` directory left in the repository root by a killed run is no longer
+  read and can be removed.
+
 ## [1.2.0] - 2026-10-08
 
 ### Added

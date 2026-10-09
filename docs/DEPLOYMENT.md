@@ -493,15 +493,43 @@ order:
    unset.
 
 Each step runs even if an earlier one failed, and the exit status is non-zero if any
-did.
+did. A step that cannot run for want of configuration (`embed` with no embedder,
+`emoji` with no `DISCORD_TOKEN`) logs `refresh step skipped` with the reason and does
+not count as a failure.
+
+Runs never overlap. Every `judge-ingest` command that writes data takes the refresh
+lease first, an advisory lock in the database. If another run holds it, the command logs
+`another refresh or ingest step holds the refresh lease; waiting for it to finish`, naming
+the holder, and waits. So the cron run, `scripts/refresh-data.sh <step>` and a manual
+`judge-ingest` from a workstation take turns. `migrate` and `emoji` do not take it:
+`migrate` has its own lock, and `emoji` writes no database.
+
+- Postgres drops the lock when the holding session ends, so a run that crashed or was
+  killed leaves nothing to clean up.
+- The wait is bounded at an hour. After that the command fails with
+  `the refresh lease is still held after 60 min, by pid …`, so a hung run makes the
+  next night's run fail and alert instead of queueing every later run behind it.
+- Downloads give up after 30 seconds without a connection or two minutes without data,
+  so a stalled Scryfall or Wizards connection fails its step instead of hanging the run.
+- A run checks before each step that it still holds the lease. If the lease's session
+  was ended (a database restart, `pg_terminate_backend`), the run stops and records the
+  remaining steps as failed with `refresh lease lost`.
+
+Each `refresh` is recorded in `refresh_runs`: when it started and finished, the CR
+version before and after, and each step's outcome. A row with no `finished_at` is a run
+in progress or one that died. A run that loads a new CR also logs `CR <old> → <new>`.
+
+```sql
+select started_at, finished_at, ok, cr_before, cr_after from refresh_runs order by id desc limit 5;
+select s from refresh_runs, jsonb_array_elements(steps) s where id = (select max(id) from refresh_runs);
+```
 
 With a `judge.toml`, `refresh` reads the same file `bot`/`api` do (compose mounts it
 from `JUDGE_CONFIG`, §4). Its `embed` step writes vectors in the space the bot queries,
 and refuses when the configured space and the database's disagree.
 
-`scripts/refresh-data.sh` is the cron entry point. It takes a lock so two runs never
-overlap, checks that the image `docker compose pull` fetched is present, then runs
-`docker compose run --rm refresh`. It never builds on the host. Any argument
+`scripts/refresh-data.sh` is the cron entry point. It checks that the image
+`docker compose pull` fetched is present, then runs `docker compose run --rm refresh`. It never builds on the host. Any argument
 is passed through as the `judge-ingest` subcommand. For example,
 `scripts/refresh-data.sh rules latest` checks only the CR.
 
@@ -543,8 +571,11 @@ Between the `rules` and `embed` steps (about a minute), the vector search cannot
 the changed rules. If `embed` fails (the embedder is down or rate-limited), those rules
 stay unembedded until the next night's run, because `embed` always fills every NULL.
 
-Run it once by hand after installing, and expect the log to end with
-`refresh step ok` five times. A one-off manual load also works from a
+Run it once by hand after installing. Expect one line per step, `cards`, `rules`,
+`retire`, `embed` and `emoji` in that order, each `refresh step ok` or `refresh step
+skipped` and none `refresh step failed`. `embed` is skipped with no embedder configured
+and `emoji` with no `DISCORD_TOKEN`. A run that loaded a new CR then logs
+`CR <old> → <new>` last. The command exits 0. A one-off manual load also works from a
 workstation (`cargo run --release -p judge-ingest -- rules <url>`). To force a
 re-parse of an already-loaded version that way, delete the cached txt first.
 
@@ -593,8 +624,8 @@ empty rows and pays for nothing twice.
 so the running bot logs no mismatch, and its vector search finds nothing until the refill
 finishes.
 
-Resume outside the nightly `refresh` window (the cron above). Two refills at once both
-pay for the same batch, and one then fails on rows the other already filled.
+A resumed refill and the nightly `refresh` never overlap: both take the refresh lease,
+so whichever starts second waits for the first.
 
 If only the model *name* differs from the row (same provider, same width), the dry run
 says so. If the configured model did produce the stored vectors,
@@ -770,7 +801,7 @@ own if the connector restarts.
 | Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and `docker compose up -d`, or wait for the period to turn |
 | A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`; both scripts post there on a non-zero exit |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |
-| Refresh exits `another refresh is running` with nothing running | a previous run was killed before removing `.refresh.lock` in the repo root; `rmdir` it |
+| Refresh logs `waiting for it to finish` and sits there | another refresh or ingest step holds the refresh lease (cron and a manual run overlapped); it proceeds when that one ends, or fails after an hour. The log line names the holder; `select pid, application_name, query_start, state from pg_stat_activity where application_name like 'judgebot refresh lease%';` lists it (`… since <UTC time>`) and any waiters (`… waiting`, waiting since `query_start`). A hung holder can be ended with `select pg_terminate_backend(<pid>);`. A killed run's lock is dropped by Postgres, so there is nothing to remove |
 | Refresh loads the CR every night | `rules.cr_version` disagrees with the file name on Wizards' page — check the `current comprehensive rules release` log line for `published` vs `stored` |
 | Refresh runs but the bot still cites the old CR | it does not: retrieval reads the database live; check the run actually finished (`refresh step ok` for `rules` and `embed`) |
 | `JUDGE_CONFIG=/etc/judgebot/judge.toml: file not found` at startup | `JUDGE_CONFIG` in `.env` names a host file that does not exist; Docker mounted an empty directory in its place (and created a root-owned one on the host — `sudo rmdir` it) |

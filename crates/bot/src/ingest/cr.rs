@@ -37,6 +37,7 @@ use anyhow::Context as _;
 use judge_core::{Category, CrVersion, EXAMPLE_PREFIX, GlossaryEntry, RuleChunk, RuleId};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
+use super::RefreshLease;
 use super::renumber::{StoredRule, renumber_map, rewrite_call};
 
 /// Rows per `INSERT` statement.
@@ -59,7 +60,7 @@ const USER_AGENT: &str = concat!(
 ///
 /// # Errors
 /// On download, parse or database failure.
-pub async fn run(pool: &PgPool, source: &str, cache_dir: &Path) -> anyhow::Result<()> {
+pub async fn run(lease: &mut RefreshLease, source: &str, cache_dir: &Path) -> anyhow::Result<()> {
     let text = fetch(source, cache_dir).await?;
     let parsed = parse(&text, source)?;
     tracing::info!(
@@ -72,11 +73,13 @@ pub async fn run(pool: &PgPool, source: &str, cache_dir: &Path) -> anyhow::Resul
     if parsed.rules.is_empty() {
         anyhow::bail!("no rules parsed from {source}");
     }
-    store(pool, &parsed).await
+    store(lease.pool(), &parsed).await
 }
 
-/// What [`run_latest`] found on the rules page and did about it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What [`run_latest`] found on the rules page and did about it. Stored in a
+/// refresh run's record ([`super::runs`]), tagged `"cr"`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "cr", rename_all = "snake_case")]
 pub enum Outcome {
     /// The published release is the one already in `rules`; nothing was downloaded.
     Unchanged {
@@ -101,8 +104,8 @@ pub enum Outcome {
 /// # Errors
 /// If the rules page is unreachable or links no `MagicCompRules*.txt`, or on any
 /// failure of [`run`].
-pub async fn run_latest(pool: &PgPool, cache_dir: &Path) -> anyhow::Result<Outcome> {
-    let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+pub async fn run_latest(lease: &mut RefreshLease, cache_dir: &Path) -> anyhow::Result<Outcome> {
+    let client = super::http_client(USER_AGENT)?;
     let html = client
         .get(RULES_PAGE_URL)
         .send()
@@ -116,7 +119,7 @@ pub async fn run_latest(pool: &PgPool, cache_dir: &Path) -> anyhow::Result<Outco
         .ok_or_else(|| anyhow::anyhow!("no MagicCompRules .txt link found on {RULES_PAGE_URL}"))?;
     let published = version_from_source(&url);
     let current: Option<String> = sqlx::query_scalar!("SELECT max(cr_version) FROM rules")
-        .fetch_one(pool)
+        .fetch_one(lease.pool())
         .await
         .context("reading the stored CR version")?;
     tracing::info!(url, published = ?published, stored = ?current, "current comprehensive rules release");
@@ -126,7 +129,7 @@ pub async fn run_latest(pool: &PgPool, cache_dir: &Path) -> anyhow::Result<Outco
             Ok(Outcome::Unchanged { version })
         }
         (published, _) => {
-            run(pool, &url, cache_dir).await?;
+            run(lease, &url, cache_dir).await?;
             let version = published.unwrap_or_else(|| "unknown".to_owned());
             Ok(Outcome::Updated { version, url })
         }
@@ -178,7 +181,7 @@ async fn fetch(source: &str, cache_dir: &Path) -> anyhow::Result<String> {
         return Ok(cached);
     }
     tracing::info!(url = source, "downloading CR");
-    let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+    let client = super::http_client(USER_AGENT)?;
     let resp = client
         .get(source)
         .header(reqwest::header::ACCEPT, "text/plain, */*")

@@ -279,7 +279,8 @@ cargo run --release -p judge-ingest -- rules latest     # the CR linked from Wiz
 cargo run --release -p judge-ingest -- retire           # retire/restore calls by whether their citations
                                                         # (and their context cards' Oracle text) still hold
 cargo run --release -p judge-ingest -- refresh          # cards + rules latest + retire + embed + emoji; every
-                                                        # step runs even if one fails, exit≠0 if any did
+                                                        # step runs even if one fails, exit≠0 if any did;
+                                                        # recorded in refresh_runs
 scripts/refresh-data.sh              # nightly cron on the deploy host: `docker compose run --rm refresh`
 
 cargo run --release -p judge-api -- [--api] [--web] [--mcp]   # one flag per interface, all opt-in; no
@@ -469,7 +470,7 @@ Key cross-file facts that aren't obvious from any one file:
   *after* CR material as examples.
 - **A call is retired when its citations stop holding, not when the CR changes.**
   - `retire_unsupported` (`db/retire.rs`) is run by `ingest retire` and nightly inside
-    `ingest refresh`. It re-runs `citation_supported` over every stored call against
+    `ingest refresh` (both through `ingest::retire`, under the refresh lease). It re-runs `citation_supported` over every stored call against
     today's rules, rulings and Oracle text. It sets `calls.retired_at`/`retired_reason`
     both ways, so restored text brings a call back.
   - Each call also carries `context_ids.card_text` (an `oracle_fingerprint` per context
@@ -683,3 +684,25 @@ The CR loader nulls embeddings only for rules whose text changed, so a new CR co
 embedder a few hundred rules. `aliases` and `notes` are not part of refresh. They are repo
 data, compiled into `judge-ingest` (`include_str!`) and loaded by `init`, or by `aliases` /
 `notes` with no argument after an upgrade that changed them.
+
+**Ingest runs take the refresh lease** (`judge_bot::ingest::lease`).
+
+- `RefreshLease` holds the session-level advisory lock `REFRESH_LOCK` on a connection
+  detached from the pool, labelled `judgebot refresh lease (<process>) since <UTC minute>` in
+  `pg_stat_activity`. Only `try_lease` (no wait; a miss keeps the pooled connection)
+  and `lease` make one. `lease` waits at most `LEASE_WAIT` (1 h), then fails naming the
+  holder.
+- Every data-writing step takes `&mut RefreshLease` and reads its pool from it, so an
+  unlocked step does not compile and two steps cannot run under one lease at once.
+  `init` migrates first, then takes it. `migrate` (its own lock) and `emoji` (no
+  database) do not. `db::space::{record_space, switch_space}` are `pub(crate)` for the
+  same reason.
+- It is taken outside `CALLS_REWRITE_LOCK`, never while holding it, so the two cannot
+  deadlock. A dropped lease closes its connection and Postgres frees the lock.
+- `refresh` and `init` call `RefreshLease::check` before each step. A lost lease stops
+  the run, and `refresh` records the remaining steps as failed.
+- `ingest::refresh` records each run in `refresh_runs` (`ingest::runs`: a `StepReport`
+  per step as tagged jsonb, ages read on the database's clock by `runs::history`). A
+  failure to record never stops a step.
+- The download clients (`ingest::http_client`) have a connect and a read (idle)
+  timeout, so a stalled connection fails its step instead of holding the lease.

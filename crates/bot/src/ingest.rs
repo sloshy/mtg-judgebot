@@ -5,6 +5,13 @@
 //! sequences built from them: [`init`], the first load, and [`refresh`], the
 //! scheduled job. `judge-ingest` is argument parsing over this module.
 //!
+//! Every step that writes data takes `&mut` [`RefreshLease`] ([`lease`]), so
+//! two runs never overlap, in one process or several, and a step run without
+//! it, or beside another step under the same lease, does not compile. The exceptions say why: [`schema::migrate`] has its own
+//! lock and must run before any table exists, and [`emoji::run`] writes no
+//! database (inside [`refresh`] it runs under the lease the run holds).
+//! [`refresh`] also records each run in `refresh_runs` ([`runs`]).
+//!
 //! They live in the library, beside the other Postgres adapters, so that a
 //! long-running binary can run them too: `judge-ingest` depends on this crate,
 //! so this crate's binaries could not depend on `judge-ingest`.
@@ -18,21 +25,28 @@ pub mod aliases;
 pub mod cr;
 pub mod embed;
 pub mod emoji;
+pub mod lease;
 pub mod notes;
 pub mod reembed;
 mod renumber;
+pub mod runs;
 pub mod schema;
 pub mod scryfall;
+
+pub use lease::{REFRESH_LOCK, RefreshLease, lease, try_lease};
 
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result};
 use judge_embed::WithSpace;
 use sqlx::PgPool;
+
+use crate::db::RetireSummary;
+use runs::{Outcome, RunReport, Skip, Step, StepReport, Trigger};
 
 /// Default download cache, relative to the working directory (gitignored).
 pub const DEFAULT_CACHE_DIR: &str = ".cache";
@@ -57,6 +71,32 @@ pub async fn connect() -> Result<PgPool> {
         .context("connecting to DATABASE_URL")
 }
 
+/// Connect timeout for every download the steps make.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The longest a response may go silent mid-body. An idle bound rather than a
+/// total one: a ~100 MB Scryfall bulk file over a slow NAS link takes minutes
+/// and must not be cut off, but a stalled connection must not hang the run
+/// (and with it the refresh lease) forever.
+const READ_TIMEOUT: Duration = Duration::from_mins(2);
+
+/// The HTTP client the download steps share: `user_agent`, plus
+/// [`CONNECT_TIMEOUT`] and [`READ_TIMEOUT`].
+///
+/// # Errors
+/// When the TLS backend cannot be initialised.
+pub(crate) fn http_client(user_agent: &str) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(user_agent)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        .context("building the HTTP client")
+}
+
+/// An embedder as the configuration builds it.
+pub type Embedder = Arc<dyn WithSpace>;
+
 /// The configured embedder (`judge.toml`, else `VOYAGE_API_KEY`), or `None`
 /// with a warning when neither names one, so an unconfigured environment
 /// degrades instead of failing. A configuration that does not load is an
@@ -64,16 +104,22 @@ pub async fn connect() -> Result<PgPool> {
 ///
 /// # Errors
 /// When the configuration does not load or its embedder cannot be built.
-pub fn embedder_from_config() -> Result<Option<Arc<dyn WithSpace>>> {
-    let config = crate::config::Config::load().context("loading the model configuration")?;
-    tracing::info!("{}", config.summary());
-    let embedder = config.embedder()?;
+pub fn embedder_from_config() -> Result<Option<Embedder>> {
+    let embedder = configured_embedder()?;
     if embedder.is_none() {
         tracing::warn!(
             "no embedder configured (VOYAGE_API_KEY or [models.embed]); embedding steps will be skipped"
         );
     }
     Ok(embedder)
+}
+
+/// [`embedder_from_config`] without the warning, for a caller that reports
+/// the skip itself.
+fn configured_embedder() -> Result<Option<Embedder>> {
+    let config = crate::config::Config::load().context("loading the model configuration")?;
+    tracing::info!("{}", config.summary());
+    Ok(config.embedder()?)
 }
 
 /// The whole first load, in dependency order: the schema, the cards the
@@ -87,75 +133,30 @@ pub fn embedder_from_config() -> Result<Option<Arc<dyn WithSpace>>> {
 /// embedder configured `embed` skips itself with a warning, and with no
 /// `DISCORD_TOKEN` the emoji step is skipped the same way.
 ///
+/// The migration runs first, under its own lock; every later step runs under
+/// the [`RefreshLease`] (taken as `process`), waiting for a refresh in
+/// progress, and stops if the lease is lost. It takes the lease itself (and
+/// only after the migration released its lock, so the two locks are never
+/// taken in the other order), which is why it takes a pool.
+///
 /// # Errors
 /// The first step that failed, named.
-pub async fn init(pool: &PgPool, cache_dir: &Path) -> Result<()> {
+pub async fn init(pool: &PgPool, cache_dir: &Path, process: &'static str) -> Result<()> {
     let started = Instant::now();
-    let mut n = 0u8;
-    let mut begin = |name: &'static str| {
-        n = n.saturating_add(1);
-        tracing::info!(step = name, "init step {n} of 7");
-        Instant::now()
-    };
-    let done = |name: &'static str, t: Instant| {
-        tracing::info!(step = name, secs = t.elapsed().as_secs(), "init step ok");
-    };
-
     // Before the download: a judge.toml that does not load should fail in a
     // second, not at step 6.
     let embedder = embedder_from_config().context("init: the model configuration")?;
 
-    let t = begin("migrate");
+    let mut steps = InitSteps::default();
+    let t = steps.begin("migrate");
     schema::migrate(pool).await.context("init: migrate")?;
-    done("migrate", t);
-    let t = begin("cards");
-    scryfall::run(pool, cache_dir)
+    InitSteps::done("migrate", t);
+    let mut held = lease(pool, process)
         .await
-        .context("init: cards")?;
-    done("cards", t);
-    let t = begin("rules");
-    cr::run_latest(pool, cache_dir)
-        .await
-        .context("init: rules latest")?;
-    done("rules", t);
-    let t = begin("aliases");
-    aliases::run(pool, aliases::BUILTIN)
-        .await
-        .context("init: aliases")?;
-    done("aliases", t);
-    let t = begin("notes");
-    notes::run(pool, notes::BUILTIN)
-        .await
-        .context("init: notes")?;
-    done("notes", t);
-    let t = begin("embed");
-    // A database that holds no vectors has nothing to lose, so it takes the
-    // configured embedder's space whatever that is: `reembed` retypes the
-    // columns for a width other than the schema's 1024, where `embed` would
-    // refuse. One that already holds vectors is only ever filled, and a
-    // mismatch there is refused with the way out (`reembed --yes`, which
-    // pays for every row and is therefore never implied).
-    let holds_vectors = crate::db::space::stored_counts(pool)
-        .await?
-        .iter()
-        .any(|(_, n)| *n > 0);
-    match (embedder.as_deref(), holds_vectors) {
-        (Some(e), false) => reembed::run(pool, Some(e), true, false)
-            .await
-            .context("init: embed")?,
-        (e, _) => embed::run(pool, e).await.map(drop).context("init: embed")?,
-    }
-    done("embed", t);
-    let t = begin("emoji");
-    if std::env::var("DISCORD_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
-        emoji::run(cache_dir).await.context("init: emoji")?;
-        done("emoji", t);
-    } else {
-        tracing::warn!(
-            step = "emoji",
-            "init step skipped: DISCORD_TOKEN is not set; run `judge-ingest emoji` once the Discord app exists"
-        );
-    }
+        .context("init: the refresh lease")?;
+    let result = init_data(&mut held, cache_dir, embedder.as_deref(), &mut steps).await;
+    held.release().await;
+    result?;
     tracing::info!(
         secs = started.elapsed().as_secs(),
         "init done: start the api (`docker compose up -d api`) and ask a question"
@@ -163,56 +164,197 @@ pub async fn init(pool: &PgPool, cache_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Every scheduled step, in dependency order: cards and rules first, then the
-/// retirement pass over the calls that cite them, then `embed` so a new CR's rows
-/// are embedded in the same run. A failed step is logged and the rest still run;
-/// the error names every failure.
-///
-/// # Errors
-/// When any step failed, naming each one.
-pub async fn refresh(pool: &PgPool, cache_dir: &Path) -> Result<()> {
-    let mut failed: Vec<&'static str> = Vec::new();
-    let mut step = |name: &'static str, result: Result<()>| match result {
-        Ok(()) => tracing::info!(step = name, "refresh step ok"),
-        Err(err) => {
-            tracing::error!(step = name, error = %format_args!("{err:#}"), "refresh step failed");
-            failed.push(name);
-        }
-    };
-    step("cards", scryfall::run(pool, cache_dir).await);
-    step("rules", cr::run_latest(pool, cache_dir).await.map(drop));
-    step(
-        "retire",
-        crate::db::retire_unsupported(pool)
+/// `init`'s step counter and log lines.
+#[derive(Default)]
+struct InitSteps(u8);
+
+impl InitSteps {
+    fn begin(&mut self, name: &'static str) -> Instant {
+        self.0 = self.0.saturating_add(1);
+        tracing::info!(step = name, "init step {} of 7", self.0);
+        Instant::now()
+    }
+
+    fn done(name: &'static str, t: Instant) {
+        tracing::info!(step = name, secs = t.elapsed().as_secs(), "init step ok");
+    }
+
+    /// [`Self::begin`], after checking the lease is still held.
+    async fn next(&mut self, lease: &mut RefreshLease, name: &'static str) -> Result<Instant> {
+        lease
+            .check()
+            .await
+            .with_context(|| format!("init: before {name}"))?;
+        Ok(self.begin(name))
+    }
+}
+
+/// `init` after the migration, under the lease.
+async fn init_data(
+    lease: &mut RefreshLease,
+    cache_dir: &Path,
+    embedder: Option<&dyn WithSpace>,
+    steps: &mut InitSteps,
+) -> Result<()> {
+    let t = steps.next(lease, "cards").await?;
+    scryfall::run(lease, cache_dir)
+        .await
+        .context("init: cards")?;
+    InitSteps::done("cards", t);
+    let t = steps.next(lease, "rules").await?;
+    cr::run_latest(lease, cache_dir)
+        .await
+        .context("init: rules latest")?;
+    InitSteps::done("rules", t);
+    let t = steps.next(lease, "aliases").await?;
+    aliases::run(lease, aliases::BUILTIN)
+        .await
+        .context("init: aliases")?;
+    InitSteps::done("aliases", t);
+    let t = steps.next(lease, "notes").await?;
+    notes::run(lease, notes::BUILTIN)
+        .await
+        .context("init: notes")?;
+    InitSteps::done("notes", t);
+    let t = steps.next(lease, "embed").await?;
+    // A database that holds no vectors has nothing to lose, so it takes the
+    // configured embedder's space whatever that is: `reembed` retypes the
+    // columns for a width other than the schema's 1024, where `embed` would
+    // refuse. One that already holds vectors is only ever filled, and a
+    // mismatch there is refused with the way out (`reembed --yes`, which
+    // pays for every row and is therefore never implied).
+    let holds_vectors = crate::db::space::stored_counts(lease.pool())
+        .await?
+        .iter()
+        .any(|(_, n)| *n > 0);
+    match (embedder, holds_vectors) {
+        (Some(e), false) => reembed::run(lease, Some(e), true, false)
+            .await
+            .context("init: embed")?,
+        (e, _) => embed::run(lease, e)
             .await
             .map(drop)
-            .map_err(Into::into),
-    );
-    step(
-        "embed",
-        match embedder_from_config() {
-            Ok(embedder) => embed::run(pool, embedder.as_deref()).await.map(drop),
-            Err(e) => Err(e),
-        },
-    );
-    // The emoji belong to the bot's Discord application; a database-only
-    // deployment (no bot) has no token and nothing to upload to.
-    if std::env::var("DISCORD_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
-        step("emoji", emoji::run(cache_dir).await.map(drop));
+            .context("init: embed")?,
+    }
+    InitSteps::done("embed", t);
+    let t = steps.next(lease, "emoji").await?;
+    if has_discord_token() {
+        emoji::run(cache_dir).await.context("init: emoji")?;
+        InitSteps::done("emoji", t);
     } else {
         tracing::warn!(
             step = "emoji",
-            "refresh step skipped: DISCORD_TOKEN is not set"
+            "init step skipped: DISCORD_TOKEN is not set; run `judge-ingest emoji` once the Discord app exists"
         );
     }
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "refresh: {} step(s) failed: {}",
-            failed.len(),
-            failed.join(", ")
+    Ok(())
+}
+
+/// The retirement pass ([`crate::db::retire_unsupported`]) under the lease.
+///
+/// # Errors
+/// On a database failure.
+pub async fn retire(lease: &mut RefreshLease) -> Result<RetireSummary> {
+    Ok(crate::db::retire_unsupported(lease.pool()).await?)
+}
+
+/// Whether `DISCORD_TOKEN` is set, so the emoji step has an application to
+/// upload to.
+fn has_discord_token() -> bool {
+    std::env::var("DISCORD_TOKEN").is_ok_and(|t| !t.trim().is_empty())
+}
+
+/// Every scheduled step ([`Step::ALL`]), in dependency order: cards and rules
+/// first, then the retirement pass over the calls that cite them, then `embed`
+/// so a new CR's rows are embedded in the same run, then the emoji. A failed
+/// step is logged and the rest still run; the report names every failure
+/// ([`RunReport::ensure_ok`]).
+///
+/// Before each step the lease is checked ([`RefreshLease::check`]). A lost
+/// lease means another run may already be writing, so this one stops: that
+/// step and every later one are recorded as failed with the reason, and none
+/// of them runs.
+///
+/// The run is recorded in `refresh_runs` ([`runs`]) as started by `trigger`
+/// in the lease's process. Recording never stops a step: a record that
+/// cannot be written is logged, and the run goes on unrecorded.
+///
+/// A step that cannot run for want of configuration is skipped, not failed:
+/// `embed` with no embedder configured, `emoji` with no `DISCORD_TOKEN` (the
+/// emoji belong to the bot's Discord application, and a database-only
+/// deployment has none).
+pub async fn refresh(lease: &mut RefreshLease, cache_dir: &Path, trigger: Trigger) -> RunReport {
+    let pool = lease.pool().clone();
+    let cr_before = runs::stored_cr(&pool).await;
+    let record = runs::begin(&pool, trigger, lease.process(), cr_before.as_deref()).await;
+    let mut steps = Vec::with_capacity(Step::ALL.len());
+    let mut lost: Option<String> = None;
+    for step in Step::ALL {
+        if lost.is_none()
+            && let Err(e) = lease.check().await
+        {
+            lost = Some(format!("{e:#}"));
+        }
+        let report = match &lost {
+            Some(error) => step.failed(error.clone()),
+            None => refresh_step(lease, step, cache_dir).await,
+        };
+        report.log();
+        steps.push(report);
+    }
+
+    let cr_after = runs::stored_cr(&pool).await;
+    let loaded = steps.iter().any(|s| {
+        matches!(
+            s,
+            StepReport::Rules(Outcome::Ok {
+                summary: cr::Outcome::Updated { .. }
+            })
         )
+    });
+    if loaded {
+        let (before, after) = (
+            cr_before.as_deref().unwrap_or("none"),
+            cr_after.as_deref().unwrap_or("none"),
+        );
+        tracing::info!(before, after, "CR {before} → {after}");
+    }
+    let report = RunReport {
+        steps,
+        cr_before,
+        cr_after,
+    };
+    runs::finish(&pool, record, &report).await;
+    report
+}
+
+/// One step of [`refresh`].
+async fn refresh_step(lease: &mut RefreshLease, step: Step, cache_dir: &Path) -> StepReport {
+    match step {
+        Step::Cards => StepReport::Cards(Outcome::of(scryfall::run(lease, cache_dir).await)),
+        Step::Rules => StepReport::Rules(Outcome::of(cr::run_latest(lease, cache_dir).await)),
+        Step::Retire => StepReport::Retire(Outcome::of(retire(lease).await)),
+        Step::Embed => StepReport::Embed(match configured_embedder() {
+            Ok(Some(embedder)) => {
+                Outcome::of(embed::run(lease, Some(&*embedder)).await.map(|counts| {
+                    counts
+                        .into_iter()
+                        .map(|(table, n)| (table.to_owned(), n))
+                        .collect()
+                }))
+            }
+            Ok(None) => Outcome::Skipped {
+                reason: Skip::NoEmbedder,
+            },
+            Err(e) => Outcome::of(Err(e)),
+        }),
+        Step::Emoji => StepReport::Emoji(if has_discord_token() {
+            Outcome::of(emoji::run(cache_dir).await)
+        } else {
+            Outcome::Skipped {
+                reason: Skip::NoDiscordToken,
+            }
+        }),
     }
 }
 
@@ -226,6 +368,36 @@ mod tests {
     fn the_built_in_lists_parse() -> Result<()> {
         assert!(!scryfall::parse_alias_yaml(aliases::BUILTIN)?.is_empty());
         assert!(!notes::parse_notes_yaml(notes::BUILTIN)?.is_empty());
+        Ok(())
+    }
+
+    /// A run whose lease is gone runs nothing (no download, no write) and
+    /// records every step as failed with the reason.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_lost_lease_stops_the_run_and_is_recorded(pool: PgPool) -> Result<()> {
+        let mut held = lease(&pool, "lost-test").await?;
+        let pid: i32 = sqlx::query_scalar(
+            "SELECT pid FROM pg_stat_activity
+             WHERE datname = current_database() AND application_name LIKE 'judgebot refresh lease (lost-test)%'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        sqlx::query("SELECT pg_terminate_backend($1)")
+            .bind(pid)
+            .execute(&pool)
+            .await?;
+        let report = refresh(&mut held, Path::new("/nonexistent"), Trigger::Manual).await;
+        assert_eq!(report.failed(), Step::ALL.to_vec());
+        assert!(
+            report.steps.iter().all(|s| {
+                serde_json::to_string(s).is_ok_and(|j| j.contains("refresh lease lost"))
+            })
+        );
+        let (process, ok): (String, Option<bool>) =
+            sqlx::query_as("SELECT process, ok FROM refresh_runs")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!((process.as_str(), ok), ("lost-test", Some(false)));
         Ok(())
     }
 }

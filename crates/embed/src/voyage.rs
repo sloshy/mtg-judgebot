@@ -1,6 +1,6 @@
 //! `Embedder` over Voyage AI's HTTP API (`POST /v1/embeddings`).
 
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use async_trait::async_trait;
 use judge_core::{Embedder, InputKind, JudgeError};
@@ -67,7 +67,10 @@ impl VoyageEmbedder {
         model: impl Into<String>,
         dimensions: usize,
     ) -> Result<Self, JudgeError> {
+        // The same bound as the OpenAI-compatible embedder: a stalled request
+        // must not hold a refresh (and its lease) forever.
         let http = reqwest::Client::builder()
+            .timeout(Duration::from_mins(5))
             .build()
             .map_err(anyhow::Error::from)?;
         Ok(Self {

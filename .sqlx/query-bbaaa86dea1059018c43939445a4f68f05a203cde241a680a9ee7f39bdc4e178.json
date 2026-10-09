@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rules (id, subsection, body, cr_version) VALUES ('100.1', '100', 'x', '20261001')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "bbaaa86dea1059018c43939445a4f68f05a203cde241a680a9ee7f39bdc4e178"
+}

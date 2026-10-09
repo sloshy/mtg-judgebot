@@ -46,8 +46,9 @@ use uuid::Uuid;
 use super::{cards, retrieve, rules, upstream};
 
 /// What one pass did. `checked` counts every call; the other three partition
-/// the calls whose state was set or confirmed this run.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// the calls whose state was set or confirmed this run. Stored in a refresh
+/// run's record (`ingest::runs`), so its field names are a stored shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RetireSummary {
     /// Calls examined.
     pub checked: usize,

@@ -38,6 +38,8 @@ use serde::Deserialize;
 use sqlx::{PgPool, Postgres, QueryBuilder};
 use uuid::Uuid;
 
+use super::RefreshLease;
+
 /// Scryfall bulk-data index endpoint.
 const BULK_INDEX_URL: &str = "https://api.scryfall.com/bulk-data";
 /// Scryfall asks every client to identify itself.
@@ -327,10 +329,7 @@ fn key_rulings(raw: HashMap<Uuid, Vec<(String, String)>>) -> Vec<RulingRow> {
 // ---------------------------------------------------------------------------
 
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .context("building HTTP client")
+    super::http_client(USER_AGENT)
 }
 
 /// Fetch the bulk index and return the entries we need, keyed by type.
@@ -597,7 +596,8 @@ async fn insert_rulings(pool: &PgPool, rows: &[RulingRow]) -> Result<()> {
 ///
 /// # Errors
 /// On download, parse or database failure.
-pub async fn run(pool: &PgPool, cache_dir: &Path) -> Result<()> {
+pub async fn run(lease: &mut RefreshLease, cache_dir: &Path) -> Result<()> {
+    let pool = lease.pool();
     let client = client()?;
     let index = bulk_index(&client).await?;
     let entry = |kind: &str| {
@@ -776,7 +776,7 @@ pub(crate) fn parse_alias_yaml(text: &str) -> Result<Vec<(String, String)>> {
 ///
 /// # Errors
 /// On read, parse or database failure.
-pub async fn load_aliases(pool: &PgPool, text: &str) -> Result<()> {
+pub(super) async fn load_aliases(pool: &PgPool, text: &str) -> Result<()> {
     let pairs = parse_alias_yaml(text)?;
     let wanted: Vec<String> = pairs
         .iter()

@@ -2,7 +2,7 @@
 //! The implementation lives in [`super::scryfall::load_aliases`] (shares the card-name
 //! resolution with the Scryfall sync).
 
-use sqlx::PgPool;
+use super::RefreshLease;
 
 /// `data/aliases.yaml` as of this build. The list is a few kilobytes of repo
 /// data, so the binary carries it: a first load needs no checkout, and the
@@ -14,6 +14,6 @@ pub const BUILTIN: &str = include_str!("../../../../data/aliases.yaml");
 ///
 /// # Errors
 /// On parse or database failure.
-pub async fn run(pool: &PgPool, text: &str) -> anyhow::Result<()> {
-    super::scryfall::load_aliases(pool, text).await
+pub async fn run(lease: &mut RefreshLease, text: &str) -> anyhow::Result<()> {
+    super::scryfall::load_aliases(lease.pool(), text).await
 }

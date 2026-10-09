@@ -7,8 +7,10 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
-use sqlx::{PgPool, Postgres, QueryBuilder};
+use sqlx::{Postgres, QueryBuilder};
 use uuid::Uuid;
+
+use super::RefreshLease;
 
 /// Parse the notes file: a flat mapping of card name to note text.
 ///
@@ -37,7 +39,8 @@ pub const BUILTIN: &str = include_str!("../../../../data/notes.yaml");
 ///
 /// # Errors
 /// On parse or database failure.
-pub async fn run(pool: &PgPool, text: &str) -> Result<()> {
+pub async fn run(lease: &mut RefreshLease, text: &str) -> Result<()> {
+    let pool = lease.pool();
     let pairs = parse_notes_yaml(text)?;
     let wanted: Vec<String> = pairs.iter().map(|(n, _)| n.to_lowercase()).collect();
     let rows = sqlx::query!(

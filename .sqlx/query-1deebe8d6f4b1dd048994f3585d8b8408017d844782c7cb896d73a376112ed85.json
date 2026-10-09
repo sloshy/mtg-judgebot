@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT set_config('application_name',\n             $1 || CASE WHEN $2 THEN to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI\"Z\"') ELSE '' END,\n             false) AS \"set!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "set!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1deebe8d6f4b1dd048994f3585d8b8408017d844782c7cb896d73a376112ed85"
+}
