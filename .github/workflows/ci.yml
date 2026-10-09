@@ -34,6 +34,8 @@ jobs:
     timeout-minutes: 45
     env:
       DATABASE_URL: postgres://judgebot:judgebot@localhost:5432/judgebot
+      # At job level because a step's `if` cannot read its own `env`.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       # The database is started here and not as a `services:` container,
       # because a service is pulled before any step can log in, and Docker Hub
@@ -46,8 +48,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
       # The migrations create the `vector` and `pg_trgm` extensions, so this
       # must be the pgvector image, not stock postgres. #[sqlx::test] creates a

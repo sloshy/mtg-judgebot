@@ -132,6 +132,9 @@ jobs:
     needs: meta
     if: needs.meta.outputs.existing == ''
     uses: ./.github/workflows/ci.yml
+    # A called workflow gets no secrets unless they are passed; its Docker Hub
+    # login needs them.
+    secrets: inherit
 
   # One native build per platform, pushed by digest only; `merge` below joins
   # them under the tags. An arm64 build under QEMU would take hours.
