@@ -22,7 +22,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Relevant lines from `docker compose logs bot api` or the command's output. Redact tokens and keys.
+      description: Relevant lines from `docker compose logs judgebot` or the command's output. Redact tokens and keys.
       render: text
   - type: input
     id: version

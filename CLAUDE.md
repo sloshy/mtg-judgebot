@@ -60,7 +60,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D24),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D25),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -212,17 +212,19 @@ pipeline*, not about how much to investigate.
    runs. Almost every report is reproducible here: a rejected citation, a wrong card
    resolution, a thin or missing context, an unhelpful retry notice. Start here and stay
    here. It needs Postgres and nothing else, so check `docker compose ps` first. If the
-   database is down, `docker compose up -d db` is enough. Neither `bot` nor `api` has to
+   database is down, `docker compose up -d db` is enough. `judgebot` does not have to
    be running.
 2. **MCP.** Use `judge-mcp` over `.mcp.json` locally when the tools are connected. Use
    `judgebot --mcp`'s `/mcp` (`MCP_TOKEN`) when the user is away from this machine
    and the local database is not reachable. The operations are the same as the CLI's, so
    prefer whichever transport is available.
-3. **A live instance** (`docker compose up -d bot api`, `judge-cli judge`, `judge-eval
+3. **A live instance** (`docker compose up -d judgebot`, `judge-cli judge`, `judge-eval
    answer`). Use it only when the deployed surface is what's in question (Discord
    rendering, buttons, rate limiting, startup/config, the spend cap) or when step 1 has
    ruled the pipeline out. This spends money on model calls, so say what it will cost
-   before starting it.
+   before starting it. The compose service's default roles include `--jobs`, which
+   refreshes the database it points at for real: against the development database, set
+   `JUDGE_REFRESH_HOURS=0` (or a `JUDGE_ROLES` without `--jobs`) in `.env` first.
 
 **The exception is a question about another model or provider.** When the report is
 "Gemini/GPT/this endpoint answers badly through the bot", the model's own behaviour is the
@@ -248,10 +250,13 @@ Docker on **localhost:5432**. `DB_PORT` in `.env` moves the published port. The
 containers always reach it at `db:5432`.
 
 ```sh
-docker compose up -d                 # db (pgvector/pg16) + bot + api; all restart with Docker
-docker compose up -d --build bot api # redeploy bot/api after code changes (one image, two entrypoints)
+docker compose up -d                 # db (pgvector/pg16) + judgebot (JUDGE_ROLES, default
+                                     # --discord --api --web --jobs); both restart with Docker
+docker compose up -d --build judgebot  # redeploy after code changes
                                      # COMPOSE_PROFILES=tunnel also starts cloudflared (docs/DEPLOYMENT.md)
-docker compose pull && docker compose up -d  # deploy host: pulls the CI-built GHCR image, never builds
+docker compose pull && docker compose up -d --remove-orphans  # deploy host: pulls the CI-built
+                                     # GHCR image, never builds; --remove-orphans drops the
+                                     # pre-judgebot `bot`/`api` containers (D25)
 scripts/backup-db.sh                 # weekly pg_dump -> Cloudflare R2; cron'd on the server
 cargo build --workspace
 cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwrap/expect/indexing/panic,
@@ -285,7 +290,7 @@ cargo run -r -p judgebot -- ingest reembed [--yes] [--clear]  # make the DB hold
                                                         # resume an interrupted refill with it). --clear clears
                                                         # and re-pays every row in the same space. Without --yes:
                                                         # prints rows + rough cost, exit≠0, changes nothing.
-                                                        # `docker compose restart bot api` after a switch
+                                                        # `docker compose restart judgebot` after a switch
                                                         # (`up -d` sees no change: the file is a mount).
 cargo run -r -p judgebot -- ingest emoji                # Scryfall card symbols -> the bot's Discord
                                                         # application emoji; idempotent, no DB needed
@@ -442,6 +447,9 @@ What a `judgebot` process does is a launch option, not a consequence of starting
 - `jobs::start` returns a `Scheduler`, whose `ended()` completes when the thread ends.
   A jobs-only process awaits it and exits non-zero. Beside serving roles it is dropped:
   the thread logs ERROR and the process keeps answering.
+- `roles` is the `judgebot` crate's library (`src/lib.rs`), so `judge-config`'s
+  `check.rs` resolves the compose service's roles with `roles::compose_roles` and checks
+  only the surfaces those roles run (no `DISCORD_TOKEN` needed without `--discord`).
 
 `api` (+ the SolidJS page in `web/`) is the anonymous interface.
 
@@ -666,23 +674,24 @@ Key cross-file facts that aren't obvious from any one file:
   `judge.toml` `[models.embed]` overrides it, including OpenAI-compatible embeddings.
 - `JUDGE_CONFIG`: optional path to a `judge.toml` (see above). It is a *host* path.
   - `cargo run` reads it as is.
-  - `docker-compose.yml` bind-mounts it into `bot`/`api`/`refresh` at
+  - `docker-compose.yml` bind-mounts it into `judgebot` and `refresh` at
     `/etc/judgebot/judge.toml` and points their `JUDGE_CONFIG` there
     (`${JUDGE_CONFIG:+…}`). Blank mounts the tracked example, which nothing reads.
   - So a `./judge.toml` in the repo root is read by `cargo run` but invisible to the
     containers until `JUDGE_CONFIG` names it.
   - Editing the mounted file's content is not a change `up -d` recreates for, so
-    `docker compose restart bot api`.
+    `docker compose restart judgebot`.
   - The `api_key_env` of every provider a stage names lives in `.env` too. A table no
     stage names is parsed, but its key is never read.
   - The cloud endpoints' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS` live in `.env` as well,
-    never in `.env.deploy`, which `bot`/`api` do not read.
+    never in `.env.deploy`, which `judgebot` does not read.
 - `DISCORD_TOKEN`.
 - `GUILD_ID` (instant command registration).
 - `JUDGE_ROLE` (default "Judge").
 - `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`.
-- `JUDGE_ROLES`: `judgebot`'s roles when its command line names none. The compatibility
-  names (`judge-bot`, `judge-api`) ignore it.
+- `JUDGE_ROLES`: `judgebot`'s roles when its command line names none, and the compose
+  service's `command` (below). The compatibility names (`judge-bot`, `judge-api`)
+  ignore it.
 - `JUDGE_AUTO_MIGRATE` (default true). When true, `judgebot` applies pending migrations
   at startup. `judgebot ingest migrate` is the explicit form.
 - `JUDGE_REFRESH_HOURS` (default 24, `1..=720`, `0` = off): how often `--jobs` runs
@@ -696,28 +705,40 @@ For the HTTP API it also holds:
 
 - `API_ADDR` (default `0.0.0.0:8787`).
 - `WEB_DIST` (read only under `--web`).
-- `API_INTERFACES`: the flags the `api` container passes, default `--api --web`. It is
-  read by `docker-compose.yml`, not by the binary.
+- `API_INTERFACES`: deprecated. The interfaces of the old `api` service. The compose
+  service still adds them to `--discord --jobs` while `JUDGE_ROLES` is unset, and the
+  binary only warns about it (`roles::api_interfaces_warning`).
 - `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`.
 - `API_CLIENT_IP` (`peer` or `cloudflare`, see below).
-- `MCP_TOKEN`: the credential for `/mcp`, which also needs the `--mcp` interface. ≥24
+- `MCP_TOKEN`: the credential for `/mcp`, which also needs the `--mcp` role. ≥24
   chars, bearer-checked before the protocol.
 - `MCP_ALLOWED_HOSTS`: the `Host` values the MCP transport accepts, meaning the public
   hostname behind the tunnel.
 - `MCP_JUDGE_LIMIT`/`MCP_JUDGE_WINDOW_SECS`: `judge` runs per window through `/mcp`. This
   is the most a leaked token can spend.
 
-The bot/api containers override `DATABASE_URL` to `db:5432` inside the compose network.
-The image builds the web page and sets `WEB_DIST=/srv/web`. The `api` service's `command`
-is `${API_INTERFACES:---api --web}`, so the page stays on for a compose deployment while
-`judge-api` with no flags serves no page.
+The `judgebot` and `refresh` containers override `DATABASE_URL` to `db:5432` inside the
+compose network. The image builds the web page and sets `WEB_DIST=/srv/web`. The
+`judgebot` service names its entrypoint (the image's default is still `judge-bot`, for
+compose files from before it) and its `command` is
+`${JUDGE_ROLES:---discord --jobs ${API_INTERFACES:---api --web}}`, nested
+interpolation checked against compose-go v1.16.0 (the version Compose v2.20.0 pins;
+the v2.20 binary itself was not run). `roles::COMPOSE_COMMAND` holds that string,
+`roles::compose_roles` is the same rule in Rust (judge-config's check uses it), and
+`roles_match_the_compose_file` holds the file to it. Its healthcheck probes
+`/api/health` only when `/proc/1/cmdline` (or `JUDGE_ROLES`) has an HTTP role, and
+passes otherwise. Upgrading from the two-service file needs `up -d --remove-orphans`.
+Without it, a running `judgebot-api` makes the new container fail on port 8787, and with
+only `judgebot-bot` running `up -d` exits 0 and leaves two bots on one token. The fix
+is `docker rm -f judgebot-bot judgebot-api`.
 
 Deployment is self-hosted behind a Cloudflare Tunnel. `docs/DEPLOYMENT.md` is the
-runbook. `db` and `api` publish on `127.0.0.1` only. Public traffic reaches `api:8787`
+runbook. `db` and `judgebot` publish on `127.0.0.1` only. Public traffic reaches
+`judgebot:8787` (network alias `api`, the old service name a tunnel may still point at)
 over the compose network from the `cloudflared` service, which the `tunnel` compose
 profile starts (`COMPOSE_PROFILES=tunnel` in `.env`). Deploy credentials live in
 `.env.deploy` (`TUNNEL_TOKEN`, `R2_*`). Only `cloudflared` and `scripts/backup-db.sh` read
-it, never the internet-facing `bot`/`api`. Weekly `scripts/backup-db.sh` dumps to R2 and
+it, never the internet-facing `judgebot`. Weekly `scripts/backup-db.sh` dumps to R2 and
 has `list`/`fetch` subcommands for the restore drill. Restoring is far cheaper than
 re-ingesting, which re-pays the embedder per row, so take a backup before
 `ingest reembed --yes` (runbook in `docs/DEPLOYMENT.md` §7).
@@ -730,8 +751,7 @@ allowance against a paid endpoint. `cloudflare` is only sound when nothing can r
 origin except Cloudflare.
 
 **Data refresh runs inside `judgebot --jobs`** (`judge_bot::jobs`, D24), every
-`JUDGE_REFRESH_HOURS`. The compose `bot` and `api` services run it through their
-compatibility names.
+`JUDGE_REFRESH_HOURS`. The compose `judgebot` service runs `--jobs` by default.
 
 - `jobs::start` (after migrations and config load) spawns an OS thread with a
   current-thread runtime and its own `POOL_SIZE` pool, so steps never take a request's
@@ -765,10 +785,10 @@ compatibility names.
 - Development: the schedule is on by default, so `cargo run -p judgebot -- … --jobs`
   against a dev database refreshes it for real (downloads, a new CR, embeddings, emoji
   uploads). Set `JUDGE_REFRESH_HOURS=0` in a development `.env`.
-- compose mounts `judgebot-ingest-cache` into `bot` and `api` too.
+- compose mounts `judgebot-ingest-cache` into `judgebot` too.
 
 `scripts/refresh-data.sh` still runs the `refresh` compose service (profile `refresh`,
-entrypoint `judge-ingest`, the link that runs `judgebot ingest`) for a manual run or an operator's own
+entrypoint `judgebot ingest`) for a manual run or an operator's own
 cron (`JUDGE_REFRESH_HOURS=0`). It shares the lease and the record with the schedule.
 `docker compose run` enables the profile itself, so `up -d` never starts it. CR release detection scrapes Wizards' rules page for
 the `MagicCompRules <date>.txt` link and compares the date to the stored `cr_version`.

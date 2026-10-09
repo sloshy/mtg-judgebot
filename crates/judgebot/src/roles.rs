@@ -77,6 +77,17 @@ impl Role {
         }
     }
 
+    /// The network interface it is, if it is one.
+    #[must_use]
+    pub const fn interface(self) -> Option<Interface> {
+        match self {
+            Self::Api => Some(Interface::Api),
+            Self::Web => Some(Interface::Web),
+            Self::Mcp => Some(Interface::Mcp),
+            Self::Discord | Self::Jobs => None,
+        }
+    }
+
     fn from_flag(arg: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|r| r.flag() == arg)
     }
@@ -178,6 +189,112 @@ pub fn parse<S: AsRef<str>>(
         chosen.push(role);
     }
     Ok(NonEmpty::from_vec(chosen).map(|r| Roles::of(&r)))
+}
+
+/// The variable that chose `judge-api`'s interfaces in the two-service
+/// compose file. Deprecated: `docker-compose.yml` still reads it when
+/// [`ROLES_ENV`] is unset ([`COMPOSE_COMMAND`]), and the binary only warns
+/// about it ([`api_interfaces_warning`]).
+pub const API_INTERFACES_ENV: &str = "API_INTERFACES";
+
+/// The `command:` of `docker-compose.yml`'s `judgebot` service, verbatim
+/// (`roles_match_the_compose_file` holds the file to it). Compose
+/// interpolates it before the binary starts: [`ROLES_ENV`] when it is set and
+/// not empty, else the roles the old `bot` and `api` services ran together,
+/// `--discord --jobs` and [`API_INTERFACES_ENV`] (or the `--api --web` the
+/// `api` service defaulted to). [`compose_roles`] is the same rule in Rust.
+///
+/// The template was compiled against compose-go v1.16.0, the interpolation
+/// library Docker Compose v2.20.0 pins (Synology's Container Manager ships
+/// v2.20), and resolves every case there as [`compose_roles`] does. The v2.20
+/// binary itself was not run.
+pub const COMPOSE_COMMAND: &str = "${JUDGE_ROLES:---discord --jobs ${API_INTERFACES:---api --web}}";
+
+/// What decided the roles [`compose_roles`] returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComposeOrigin {
+    /// [`ROLES_ENV`].
+    Roles,
+    /// [`API_INTERFACES_ENV`], deprecated, after `--discord --jobs`.
+    ApiInterfaces,
+    /// Neither is set: every role but `--mcp`.
+    Default,
+}
+
+impl fmt::Display for ComposeOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Roles => ROLES_ENV,
+            Self::ApiInterfaces => "API_INTERFACES (deprecated)",
+            Self::Default => "the compose file's default",
+        })
+    }
+}
+
+/// The roles the compose `judgebot` service runs, given the two variables'
+/// values in `.env`: [`COMPOSE_COMMAND`] as Compose interpolates it (`:-`,
+/// so an empty value counts as unset) and the binary then reads it.
+///
+/// # Errors
+/// What the binary would refuse: an argument that is not a role flag, a
+/// role named twice (`API_INTERFACES=--discord`), or a [`ROLES_ENV`] of
+/// whitespace alone, which names no role. The message starts with the
+/// variable at fault.
+pub fn compose_roles(
+    judge_roles: Option<&str>,
+    api_interfaces: Option<&str>,
+) -> Result<(Roles, ComposeOrigin)> {
+    let set = |v: Option<&str>| v.filter(|v| !v.is_empty()).map(str::to_owned);
+    let usage = "the roles are --discord --api --web --mcp --jobs";
+    if let Some(flags) = set(judge_roles) {
+        let roles = parse(flags.split_whitespace(), ROLES_ENV, usage)?;
+        return roles
+            .map(|r| (r, ComposeOrigin::Roles))
+            .ok_or_else(|| anyhow::anyhow!("{ROLES_ENV}: names no role\n\n{usage}"));
+    }
+    let (interfaces, origin) = match set(api_interfaces) {
+        Some(v) => (v, ComposeOrigin::ApiInterfaces),
+        None => ("--api --web".to_owned(), ComposeOrigin::Default),
+    };
+    let flags = format!("--discord --jobs {interfaces}");
+    let roles = parse(flags.split_whitespace(), API_INTERFACES_ENV, usage)?;
+    // `--discord --jobs` are always there, so this is never `None`.
+    roles
+        .map(|r| (r, origin))
+        .ok_or_else(|| anyhow::anyhow!("{API_INTERFACES_ENV}: names no role\n\n{usage}"))
+}
+
+/// The warning a `judgebot` launch logs while [`API_INTERFACES_ENV`] is set
+/// (`.env` reaches the container whole, so the compose service sees it):
+/// the variable is deprecated, and the warning names the [`ROLES_ENV`] line
+/// that replaces it. `roles` are the ones this launch runs.
+#[must_use]
+pub fn api_interfaces_warning(
+    api_interfaces: Option<&str>,
+    judge_roles: Option<&str>,
+    roles: &Roles,
+) -> Option<String> {
+    // Set as Compose reads `:-`: anything but empty, whitespace included.
+    let set = |v: Option<&str>| v.is_some_and(|v| !v.is_empty());
+    let api = api_interfaces.filter(|v| !v.is_empty())?;
+    Some(if set(judge_roles) {
+        format!(
+            "{API_INTERFACES_ENV} is deprecated and {ROLES_ENV} overrides it: \
+             remove {API_INTERFACES_ENV} from .env"
+        )
+    } else {
+        let blank = if api.trim().is_empty() {
+            " It names no interface, so the compose service runs no --api, --web or \
+             --mcp role and serves no page."
+        } else {
+            ""
+        };
+        format!(
+            "{API_INTERFACES_ENV} is deprecated, and a later release stops reading it: \
+             replace it in .env with {ROLES_ENV}='{}', the roles this process runs.{blank}",
+            roles.flags()
+        )
+    })
 }
 
 /// Where a launch's roles came from, for the startup log.
@@ -404,9 +521,25 @@ fn discord_role(
 ) -> Result<Discord, Vec<String>> {
     let cfg = discord::Config::from_vars(vars).map_err(|e| format!("{e:#}"));
     let operator = judge.discord_operator().map_err(|e| e.to_string());
+    // No token at all is most often a deployment that never meant to run the
+    // bot: the compose service's default roles include --discord, so an
+    // upgrade from the two-service file lands here. Say how to leave it out.
+    let no_token = vars("DISCORD_TOKEN").is_none_or(|t| t.trim().is_empty());
+    let hint = no_token.then(|| {
+        format!(
+            "to run without Discord, leave --discord out of the roles: \
+             {ROLES_ENV}='--api --web --jobs' in .env (the compose service's default \
+             includes --discord)"
+        )
+    });
     match (cfg, operator) {
         (Ok(cfg), Ok(operator)) => Ok(Discord { cfg, operator }),
-        (cfg, operator) => Err(cfg.err().into_iter().chain(operator.err()).collect()),
+        (cfg, operator) => Err(cfg
+            .err()
+            .into_iter()
+            .chain(operator.err())
+            .chain(hint)
+            .collect()),
     }
 }
 
@@ -558,8 +691,11 @@ mod tests {
                 "a network role is its interface's flag"
             );
             assert!(Role::from(i).serves());
+            assert_eq!(Role::from(i).interface(), Some(i));
         }
         assert!(Role::Discord.serves() && !Role::Jobs.serves());
+        assert_eq!(Role::Discord.interface(), None);
+        assert_eq!(Role::Jobs.interface(), None);
     }
 
     #[test]
@@ -576,9 +712,15 @@ mod tests {
             text.contains("--discord: DISCORD_TOKEN") && text.contains("JUDGE_OPERATOR_DISCORD"),
             "{text}"
         );
+        assert!(
+            text.contains("JUDGE_ROLES='--api --web --jobs'"),
+            "no token names the way to leave Discord out: {text}"
+        );
         let text = error(plan_with("--discord", &[TOKEN]));
         assert!(
-            !text.contains("DISCORD_TOKEN") && text.contains("JUDGE_OPERATOR_DISCORD"),
+            !text.contains("DISCORD_TOKEN")
+                && !text.contains("JUDGE_ROLES")
+                && text.contains("JUDGE_OPERATOR_DISCORD"),
             "{text}"
         );
         let ok = plan_with("--discord", &[TOKEN, DISCORD_OP]);
@@ -712,6 +854,142 @@ mod tests {
             matches!(&ok, Ok(Plan { jobs: Some(j), .. }) if j.refresh == Schedule::Off),
             "{ok:?}"
         );
+    }
+
+    fn compose(judge_roles: Option<&str>, api: Option<&str>) -> Option<(String, ComposeOrigin)> {
+        compose_roles(judge_roles, api)
+            .ok()
+            .map(|(r, o)| (r.flags(), o))
+    }
+
+    /// The three cases an upgrade meets: a `.env` with neither variable
+    /// (every install before roles), one with the deprecated
+    /// `API_INTERFACES`, and one with `JUDGE_ROLES`.
+    #[test]
+    fn the_compose_roles_keep_every_older_env_working() {
+        let all_but_mcp = "--discord --api --web --jobs".to_owned();
+        for blank in [None, Some("")] {
+            assert_eq!(
+                compose(blank, blank),
+                Some((all_but_mcp.clone(), ComposeOrigin::Default))
+            );
+        }
+        assert_eq!(
+            compose(None, Some("--api --mcp")),
+            Some((
+                "--discord --api --mcp --jobs".to_owned(),
+                ComposeOrigin::ApiInterfaces
+            ))
+        );
+        assert_eq!(
+            compose(Some(""), Some("--web")),
+            Some((
+                "--discord --web --jobs".to_owned(),
+                ComposeOrigin::ApiInterfaces
+            ))
+        );
+        // Whitespace is not empty to Compose's `:-`: no interfaces at all.
+        assert_eq!(
+            compose(None, Some("  ")),
+            Some(("--discord --jobs".to_owned(), ComposeOrigin::ApiInterfaces))
+        );
+        for api in [None, Some("--api --mcp")] {
+            assert_eq!(
+                compose(Some("--api --web --jobs"), api),
+                Some(("--api --web --jobs".to_owned(), ComposeOrigin::Roles))
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_compose_role_list_names_its_variable() {
+        for (roles, api, needle) in [
+            (
+                Some("--bot"),
+                None,
+                "JUDGE_ROLES: unknown argument \"--bot\"",
+            ),
+            (Some("   "), None, "JUDGE_ROLES: names no role"),
+            (
+                None,
+                Some("--discord"),
+                "API_INTERFACES: --discord given more than once",
+            ),
+            (
+                None,
+                Some("--jobs"),
+                "API_INTERFACES: --jobs given more than once",
+            ),
+            (
+                None,
+                Some("--help"),
+                "API_INTERFACES: unknown argument \"--help\"",
+            ),
+        ] {
+            let r = compose_roles(roles, api);
+            assert!(
+                r.as_ref()
+                    .is_err_and(|e| format!("{e:#}").starts_with(needle)),
+                "{roles:?} {api:?}: {r:?}"
+            );
+        }
+    }
+
+    /// `docker-compose.yml` hands the binary its roles as a string nobody
+    /// else checks: renaming a flag, or the file drifting from
+    /// [`compose_roles`], would leave every other test green.
+    #[test]
+    fn roles_match_the_compose_file() {
+        let compose = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docker-compose.yml"),
+        )
+        .unwrap_or_default();
+        let commands: Vec<&str> = compose
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("command: "))
+            .collect();
+        assert!(
+            commands.contains(&COMPOSE_COMMAND),
+            "no service passes {COMPOSE_COMMAND:?}: {commands:?}"
+        );
+        // The literal parts are role flags this binary accepts.
+        let literal = COMPOSE_COMMAND
+            .replace("${JUDGE_ROLES:-", "")
+            .replace("${API_INTERFACES:-", "")
+            .replace('}', "");
+        let r = parse(literal.split_whitespace(), "compose", "u");
+        assert_eq!(
+            r.ok().flatten().map(|r| r.flags()),
+            Some("--discord --api --web --jobs".to_owned())
+        );
+    }
+
+    #[test]
+    fn api_interfaces_warns_and_names_its_replacement() -> Result<(), &'static str> {
+        let r = roles("--discord --api --mcp --jobs").ok_or("roles")?;
+        assert_eq!(api_interfaces_warning(None, None, &r), None);
+        assert_eq!(api_interfaces_warning(Some(""), None, &r), None);
+        // Whitespace is set to Compose, and leaves the page off.
+        let w = api_interfaces_warning(Some(" "), None, &r);
+        assert!(
+            w.as_ref()
+                .is_some_and(|w| w.contains("deprecated") && w.contains("serves no page")),
+            "{w:?}"
+        );
+        let w = api_interfaces_warning(Some("--api --mcp"), None, &r);
+        assert!(
+            w.as_ref().is_some_and(|w| w.contains("deprecated")
+                && w.contains("JUDGE_ROLES='--discord --api --mcp --jobs'")),
+            "{w:?}"
+        );
+        let w = api_interfaces_warning(Some("--api"), Some("--api --jobs"), &r);
+        assert!(
+            w.as_ref()
+                .is_some_and(|w| w.contains("JUDGE_ROLES overrides it")
+                    && w.contains("remove API_INTERFACES")),
+            "{w:?}"
+        );
+        Ok(())
     }
 
     #[test]

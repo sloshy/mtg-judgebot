@@ -126,8 +126,11 @@ again at every start.
 ## 5. Start it
 
 ```sh
-docker compose up -d bot           # or: cargo run --release -p judgebot -- --discord --jobs
+docker compose up -d               # or: cargo run --release -p judgebot -- --discord --jobs
 ```
+
+The compose service runs `--discord` unless `JUDGE_ROLES` in `.env` leaves it out. If you
+set `JUDGE_ROLES='--api --web --jobs'` to try the page first, clear it or add `--discord`.
 
 The log line `registered /judge, /card, /rule, /help, /license and /forget in one guild` (or `… globally`)
 confirms registration. Running `/help` in the server confirms it end to end. Another

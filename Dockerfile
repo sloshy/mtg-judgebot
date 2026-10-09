@@ -84,7 +84,7 @@ RUN ln -s judgebot /usr/local/bin/judge-bot \
 # The agent surface: `judge-cli` (one subcommand per operation, JSON out) and
 # `judge-mcp` (the MCP server over stdio). The same tools are served over HTTP
 # by `judgebot --mcp` at /mcp (MCP_TOKEN); these two are for a shell on the
-# host (`docker compose run --rm --entrypoint judge-cli api ...`).
+# host (`docker compose run --rm --entrypoint judge-cli judgebot ...`).
 COPY --from=builder /out/judge-cli /usr/local/bin/judge-cli
 COPY --from=builder /out/judge-mcp /usr/local/bin/judge-mcp
 # The config editor, a page on localhost for judge.toml and .env; run with the
@@ -94,7 +94,9 @@ ENV INGEST_CACHE_DIR=/var/cache/judgebot
 COPY --from=web /web/dist /srv/web
 ENV WEB_DIST=/srv/web
 USER nobody
-# The compose files written for the two-binary image run `bot` on this default
-# and override it with judge-api for `api`; it stays judge-bot until the
-# compose file runs judgebot itself.
+# The compose files written for the two-binary image run their `bot` service
+# on this default (and override it with judge-api for `api`). The current
+# docker-compose.yml names `judgebot` for every service and never relies on
+# it, so it stays judge-bot until the release that removes the compatibility
+# names, when it becomes judgebot.
 ENTRYPOINT ["judge-bot"]

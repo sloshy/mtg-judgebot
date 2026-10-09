@@ -462,6 +462,20 @@ fn warnings(editor: &Editor, r: &Rendered) -> Vec<String> {
             url.port().unwrap_or(5432)
         ));
     }
+    // The deprecated API_INTERFACES, in the words judgebot logs it with.
+    let (roles_env, api_env) = (
+        lookup(judgebot::roles::ROLES_ENV),
+        lookup(judgebot::roles::API_INTERFACES_ENV),
+    );
+    if let Ok((roles, _)) = judgebot::roles::compose_roles(roles_env.as_deref(), api_env.as_deref())
+        && let Some(w) = judgebot::roles::api_interfaces_warning(
+            api_env.as_deref(),
+            roles_env.as_deref(),
+            &roles,
+        )
+    {
+        out.push(w);
+    }
     out
 }
 
@@ -712,6 +726,11 @@ mod tests {
             assert!(!out.contains(secret), "{secret} in {out}");
         }
         assert!(out.contains("<redacted>"), "{out}");
+        assert!(
+            out.contains("API_INTERFACES is deprecated")
+                && out.contains("JUDGE_ROLES='--discord --api --mcp --jobs'"),
+            "{out}"
+        );
         // A hidden setting is not changed through its shown field.
         let through_field = Draft {
             toml: TomlDraft::None,
@@ -759,12 +778,12 @@ mod tests {
         );
         // A loader quoting a value with `{:?}` escapes it: still masked.
         let (_q, quoted) =
-            self::editor("CFG_TEST_TOKEN='old\"disc\\ord'\nJUDGE_SOURCE_URL=${CFG_TEST_TOKEN}\n")?;
-        let fresh = draft(&[("CFG_TEST_TOKEN", "new\"discord\\secret")]);
+            self::editor("CFG_TEST_TOKEN='old\"qzx\\ord'\nJUDGE_SOURCE_URL=${CFG_TEST_TOKEN}\n")?;
+        let fresh = draft(&[("CFG_TEST_TOKEN", "new\"qzxord\\secret")]);
         let out = report(&quoted, &render(&quoted, &fresh)?).to_string();
-        assert!(!out.contains("disc"), "{out}");
+        assert!(!out.contains("qzx"), "{out}");
         let untouched = report(&quoted, &render(&quoted, &draft(&[]))?).to_string();
-        assert!(!untouched.contains("disc"), "{untouched}");
+        assert!(!untouched.contains("qzx"), "{untouched}");
         assert!(r.env_new.contains("DISCORD_TOKEN=NEWSECRETTOKEN\n"));
         assert!(r.env_new.ends_with("LITELLM_KEY=NEWLITELLMKEY\n"));
         // A shown setting goes through its field; a bad name is refused.

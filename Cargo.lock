@@ -1940,6 +1940,7 @@ dependencies = [
  "judge-api",
  "judge-bot",
  "judge-core",
+ "judgebot",
  "nonempty",
  "serde",
  "serde_json",

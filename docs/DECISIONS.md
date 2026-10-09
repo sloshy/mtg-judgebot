@@ -344,9 +344,9 @@ long-lived connection, with no HTTP-interactions rewrite. The spend cap, semapho
 rate limiter stay single-process values.
 
 CI publishes the image and the host pulls it, because a release build wants about 4 GB of
-RAM and real CPU, which a NAS does not have. The data refresh runs inside `bot` and `api`
-on a schedule kept in the database (D24). The one-shot `refresh` container stays for the
-first load and for manual runs.
+RAM and real CPU, which a NAS does not have. The data refresh runs inside the `judgebot`
+process (its `--jobs` role, D25) on a schedule kept in the database (D24). The one-shot
+`refresh` container stays for the first load and for manual runs.
 
 **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP` is
 `peer` or `cloudflare` (`CF-Connecting-IP`), never `X-Forwarded-For`. Cloudflare *appends*
@@ -627,8 +627,9 @@ loopback names, which closes DNS rebinding. Writes are whole-file renames throug
 The data refresh (Scryfall, a new CR release, retirement, embeddings, emoji) needs to run
 about daily on every instance, and it used to depend on the operator installing a cron
 entry for `scripts/refresh-data.sh`. An instance whose operator skipped that step answered
-from data that only got older, and nothing said so. `bot` and `api` now run it themselves
-(`judge_bot::jobs`), every `JUDGE_REFRESH_HOURS` (default 24, `0` = off).
+from data that only got older, and nothing said so. The long-running process now runs it
+itself (`judge_bot::jobs`, the `--jobs` role of D25), every `JUDGE_REFRESH_HOURS`
+(default 24, `0` = off).
 
 The schedule lives in Postgres, not in any one process:
 
@@ -680,5 +681,69 @@ The webhook hears the first failure of a streak and the recovery, never each ret
   the CR or call an embedder.
 - *A separate long-running jobs container.* It isolates the refresh from requests, but it
   is another service to configure and keep running, and the thread already gives the
-  isolation. The planned single binary makes jobs one of its roles (`--jobs`), the same
+  isolation. The single binary (D25) makes jobs one of its roles (`--jobs`), the same
   code in whichever process an operator chooses.
+
+## D25. One binary with roles
+
+*Decided 2026-10-09.*
+
+The Discord bot, the HTTP interfaces and the data command line were three binaries
+(`bot`, `api`, `ingest`) in two long-running compose services. They are now one binary,
+`judgebot`, and one service. What a process does is a set of roles chosen at launch:
+`--discord`, `--api`, `--web`, `--mcp` and `--jobs`, from the command line or, with none
+there, `JUDGE_ROLES`. `judgebot ingest <command>` is the data command line.
+
+- **The set cannot be empty.** `Roles` holds a `NonEmpty<Role>`, as `Interfaces` does
+  for the API's interfaces, so a process that serves nothing is not a value the program
+  can hold.
+- **Requirements are checked before anything connects.** `roles::plan` matches every
+  role exhaustively and returns the types the roles run on, which only their checks can
+  make: `--discord` needs `DISCORD_TOKEN` and `JUDGE_OPERATOR_DISCORD`, the network roles
+  `JUDGE_OPERATOR_EMAIL` (and `--web` a built page, `--mcp` an `MCP_TOKEN`), and any
+  serving role a model that builds. Every unmet requirement is reported at once. A role
+  added later cannot start without saying what it needs.
+- **One process, one composition.** One pool, one configuration, one set of models
+  behind one spend meter, one `Vectors`, the schema migrated once. The first serving
+  role to stop ends the process, non-zero, so the restart policy brings all of it back.
+- **The old names still run.** The image links `judge-bot`, `judge-api` and
+  `judge-ingest` to `judgebot`, which reads the name it was invoked as and runs what that
+  binary ran, plus `--jobs`, with a warning naming the replacement. A compose file
+  written for two services keeps working on the new image. `API_INTERFACES`, which chose
+  the old `api` service's interfaces, is still folded into the compose service's roles
+  while `JUDGE_ROLES` is unset, and logs a warning. A later release removes both.
+
+The reasons:
+
+- **Setup is one service.** An operator configures, starts, reads the logs of and
+  upgrades one container, not two that had to agree on a `.env`. The default
+  (`--discord --api --web --jobs`) is what the two services ran together, and a
+  deployment without Discord is one variable, not a service to leave stopped.
+- **The refresh scheduler is a role.** D24 put the refresh inside the long-running
+  process. As a role it runs wherever an operator says, with no host scheduler and no
+  third container.
+
+**Rejected:**
+
+- *Separate `bot`, `api` and `jobs` containers.* Three processes, three pools and three
+  spend meters that `JUDGE_BUDGET_PERIOD=process` capped separately. The isolation they
+  bought was between components that share one database and one model budget anyway.
+- *A jobs-only container* beside `bot` and `api`. D24 rejects it: the refresh thread
+  already isolates the work, and a container is one more thing to keep running.
+
+What follows:
+
+- **One failure domain.** A crash or a deploy takes the bot and the page down together.
+  The restart policy brings both back, and the HTTP listener is bound before the gateway
+  is contacted, so a taken port fails before the bot logs in.
+- **One spend meter.** With `JUDGE_BUDGET_PERIOD=process` the bot and the page now share
+  one `JUDGE_MAX_USD`, where the two processes had one each. `day` and `month` were
+  already shared (D19).
+- **The backup and `judge-config` stay separate containers.** The backup reads R2
+  credentials from `.env.deploy`, which must stay out of the internet-facing process
+  (D15). `judge-config` edits `.env` and `judge.toml` on localhost and has no business in
+  a process the public reaches.
+- **Several replicas are deferred** (issue 17). The refresh lease already makes a second
+  `--jobs` process safe. Two `--discord` processes on one token would both answer, and a
+  "did you mean?" pick is held in the memory of the process that asked. Until those are
+  solved, an instance runs one `judgebot`.

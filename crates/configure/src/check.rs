@@ -2,15 +2,21 @@
 //! through the binaries' own loaders, one surface at a time. Nothing here
 //! restates a rule; a rule the loaders gain is checked here with no edit.
 //!
+//! The roles are the ones the compose `judgebot` service would run
+//! ([`compose_roles`]: `JUDGE_ROLES`, else every role but `--mcp` with the
+//! deprecated `API_INTERFACES`), and a role it would not run is not checked:
+//! a deployment without Discord needs no `DISCORD_TOKEN`.
+//!
 //! Two things are left to startup, because they depend on the machine that
 //! serves rather than on the files: a cloud endpoint's credential chain
 //! (`Config::probe_auth`, which may touch the network) and `--web`'s
 //! `WEB_DIST` directory (the image sets its own).
 
-use std::{ffi::OsString, path::Path};
+use std::path::Path;
 
-use judge_api::{ApiConfig, Interface, Launch};
+use judge_api::{ApiConfig, Interface};
 use judge_bot::config::{Config, ConfigError, Location};
+use judgebot::roles::{API_INTERFACES_ENV, ROLES_ENV, Role, Roles, compose_roles};
 use nonempty::NonEmpty;
 use serde::Serialize;
 
@@ -23,10 +29,12 @@ pub enum Surface {
     /// `judge.toml` (or the zero-config setup) and the spend settings:
     /// every binary loads these.
     Models,
-    /// The Discord bot (`judge-bot`).
-    Bot,
-    /// `judge-api`, with the interfaces `API_INTERFACES` opens.
-    Api,
+    /// The roles the compose `judgebot` service runs.
+    Roles,
+    /// The `--discord` role.
+    Discord,
+    /// The network roles (`--api`, `--web`, `--mcp`).
+    Http,
     /// The database settings.
     Database,
 }
@@ -80,8 +88,24 @@ pub fn run(toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Chec
         },
         Err(e) => config_error(e),
     };
-    // Each binary reads its own settings before the models (bot: Discord's;
-    // api: its own and the interfaces'), so their errors stand on their own.
+    let (roles, roles_outcome) = match compose_roles(
+        env(ROLES_ENV).as_deref(),
+        env(API_INTERFACES_ENV).as_deref(),
+    ) {
+        Ok((r, origin)) => {
+            let summary = format!("{} (from {origin})", r.flags());
+            (
+                Some(r),
+                Outcome::Ok {
+                    summary: Some(summary),
+                },
+            )
+        }
+        Err(e) => (None, anyhow_error(&e)),
+    };
+    // Each role reads its own settings before the models (--discord:
+    // Discord's; the network roles: the API's and the interfaces'), so their
+    // errors stand on their own.
     let config = config.ok();
     vec![
         Check {
@@ -93,14 +117,29 @@ pub fn run(toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Chec
             outcome: models,
         },
         Check {
-            surface: Surface::Bot,
-            outcome: bot(config.as_ref(), env),
+            surface: Surface::Roles,
+            outcome: roles_outcome,
         },
         Check {
-            surface: Surface::Api,
-            outcome: api(config.as_ref(), env),
+            surface: Surface::Discord,
+            outcome: discord(roles.as_ref(), config.as_ref(), env),
+        },
+        Check {
+            surface: Surface::Http,
+            outcome: http(roles.as_ref(), config.as_ref(), env),
         },
     ]
+}
+
+/// Why a role's surface is not checked: the roles do not parse, or they
+/// leave it out (`what` says which, ending in "is" or "is not").
+fn not_run(roles: Option<&Roles>, what: &str) -> Outcome {
+    Outcome::Skipped {
+        reason: match roles {
+            None => "the roles do not parse".to_owned(),
+            Some(r) => format!("{what} among the roles ({})", r.flags()),
+        },
+    }
 }
 
 /// What a surface says once its own settings passed, given the models.
@@ -180,38 +219,39 @@ fn database(env: &dyn Fn(&str) -> Option<String>) -> Outcome {
     }
 }
 
-fn bot(config: Option<&Config>, env: &dyn Fn(&str) -> Option<String>) -> Outcome {
+fn discord(
+    roles: Option<&Roles>,
+    config: Option<&Config>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Outcome {
+    if !roles.is_some_and(|r| r.iter().any(|r| r == Role::Discord)) {
+        return not_run(roles, "--discord is not");
+    }
     if let Err(e) = judge_bot::discord::Config::from_vars(env) {
         return anyhow_error(&e);
     }
     with_models(config, |c| c.discord_operator().map(|_| ()), None)
 }
 
-fn api(config: Option<&Config>, env: &dyn Fn(&str) -> Option<String>) -> Outcome {
-    let flags = env("API_INTERFACES")
-        .map(|v| v.trim().to_owned())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "--api --web".to_owned());
-    let interfaces =
-        match judge_api::interfaces::parse(flags.split_whitespace().map(OsString::from)) {
-            Ok(Launch::Serve(i)) => i,
-            Ok(Launch::Help) => {
-                return Outcome::Error {
-                    message: "API_INTERFACES asks for --help, which serves nothing".to_owned(),
-                    location: Location::Env {
-                        var: "API_INTERFACES".to_owned(),
-                    },
-                };
-            }
-            Err(e) => {
-                return Outcome::Error {
-                    message: format!("API_INTERFACES: {e:#}"),
-                    location: Location::Env {
-                        var: "API_INTERFACES".to_owned(),
-                    },
-                };
-            }
-        };
+fn http(
+    roles: Option<&Roles>,
+    config: Option<&Config>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Outcome {
+    let interfaces: Vec<Interface> = roles
+        .into_iter()
+        .flat_map(Roles::iter)
+        .filter_map(Role::interface)
+        .collect();
+    let Some(interfaces) = NonEmpty::from_vec(interfaces) else {
+        return not_run(roles, "none of --api, --web and --mcp is");
+    };
+    let interfaces = judge_api::Interfaces::of(&interfaces);
+    let flags = interfaces
+        .iter()
+        .map(Interface::flag)
+        .collect::<Vec<_>>()
+        .join(" ");
     let api = match ApiConfig::from_vars(env) {
         Ok(a) => a,
         Err(e) => return anyhow_error(&e),
@@ -277,7 +317,67 @@ mod tests {
         for (s, o) in &c {
             assert!(matches!(o, Outcome::Ok { .. }), "{s:?}: {o:?}");
         }
-        assert_eq!(c.len(), 4);
+        assert_eq!(c.len(), 5);
+    }
+
+    fn skipped(o: Option<&Outcome>) -> bool {
+        matches!(o, Some(Outcome::Skipped { .. }))
+    }
+
+    /// A role the compose service would not run is not checked, so a
+    /// deployment without Discord needs no Discord settings.
+    #[test]
+    fn only_the_roles_that_run_are_checked() {
+        let without_discord: Vec<(&str, &str)> = OK
+            .iter()
+            .copied()
+            .filter(|(n, _)| !n.contains("DISCORD"))
+            .chain([("JUDGE_ROLES", "--api --web --jobs")])
+            .collect();
+        let c = checks(None, &without_discord);
+        assert!(skipped(c.get(&Surface::Discord)), "{c:?}");
+        assert!(
+            matches!(c.get(&Surface::Http), Some(Outcome::Ok { .. })),
+            "{c:?}"
+        );
+        assert!(
+            matches!(c.get(&Surface::Roles), Some(Outcome::Ok { summary: Some(s) })
+                if s == "--api --web --jobs (from JUDGE_ROLES)"),
+            "{c:?}"
+        );
+
+        let mut bot_only = OK.to_vec();
+        bot_only.retain(|(n, _)| *n != "JUDGE_OPERATOR_EMAIL");
+        bot_only.push(("JUDGE_ROLES", "--discord --jobs"));
+        let c = checks(None, &bot_only);
+        assert!(skipped(c.get(&Surface::Http)), "{c:?}");
+        assert!(
+            matches!(c.get(&Surface::Discord), Some(Outcome::Ok { .. })),
+            "{c:?}"
+        );
+
+        // Neither variable: every role but --mcp, as before roles existed.
+        let c = checks(None, OK);
+        assert!(
+            matches!(c.get(&Surface::Roles), Some(Outcome::Ok { summary: Some(s) })
+                if s.starts_with("--discord --api --web --jobs")),
+            "{c:?}"
+        );
+    }
+
+    #[test]
+    fn a_bad_role_list_points_at_its_variable() {
+        for (var, value) in [
+            ("JUDGE_ROLES", "--discord --bot"),
+            ("API_INTERFACES", "--discord"),
+            ("API_INTERFACES", "--help"),
+        ] {
+            let mut bad = OK.to_vec();
+            bad.push((var, value));
+            let c = checks(None, &bad);
+            assert_eq!(error_at(c.get(&Surface::Roles)), Some(env(var)), "{value}");
+            assert!(skipped(c.get(&Surface::Discord)) && skipped(c.get(&Surface::Http)));
+        }
     }
 
     #[test]
@@ -287,21 +387,24 @@ mod tests {
         };
         let c = checks(None, &without("JUDGE_OPERATOR_EMAIL"));
         assert_eq!(
-            error_at(c.get(&Surface::Api)),
+            error_at(c.get(&Surface::Http)),
             Some(env("JUDGE_OPERATOR_EMAIL"))
         );
-        assert!(matches!(c.get(&Surface::Bot), Some(Outcome::Ok { .. })));
+        assert!(matches!(c.get(&Surface::Discord), Some(Outcome::Ok { .. })));
         let c = checks(None, &without("DISCORD_TOKEN"));
-        assert_eq!(error_at(c.get(&Surface::Bot)), Some(env("DISCORD_TOKEN")));
+        assert_eq!(
+            error_at(c.get(&Surface::Discord)),
+            Some(env("DISCORD_TOKEN"))
+        );
         let mut bad = OK.to_vec();
         bad.push(("JUDGE_USER_WINDOW_SECS", "0"));
         bad.push(("API_INTERFACES", "--api --mcp"));
         let c = checks(None, &bad);
         assert_eq!(
-            error_at(c.get(&Surface::Bot)),
+            error_at(c.get(&Surface::Discord)),
             Some(env("JUDGE_USER_WINDOW_SECS"))
         );
-        assert_eq!(error_at(c.get(&Surface::Api)), Some(env("MCP_TOKEN")));
+        assert_eq!(error_at(c.get(&Surface::Http)), Some(env("MCP_TOKEN")));
         let mut bad = OK.to_vec();
         bad.push(("JUDGE_REFRESH_HOURS", "daily"));
         let c = checks(None, &bad);
@@ -314,10 +417,7 @@ mod tests {
             error_at(c.get(&Surface::Models)),
             Some(env("ANTHROPIC_API_KEY"))
         );
-        assert!(matches!(
-            c.get(&Surface::Bot),
-            Some(Outcome::Skipped { .. })
-        ));
+        assert!(skipped(c.get(&Surface::Discord)));
     }
 
     #[test]

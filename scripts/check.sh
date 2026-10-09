@@ -161,7 +161,7 @@ if [ "${1:-}" = "--at" ]; then
     while IFS= read -r path; do
       case "$path" in
         # Read by tests at run time, not compiled in: gold.rs loads the gold
-        # set, interfaces.rs parses the api service's command line.
+        # set, roles.rs holds the judgebot service's command line to its own.
         eval/* | docker-compose.yml) tests=1 ;;
         # The gates themselves, the tool versions they run (lychee is site's)
         # and CI's calls to them.

@@ -36,6 +36,11 @@ status, so the restart policy brings it back whole. The refresh runs on a thread
 own. If that thread ends beside serving roles, it is logged as an error and the process
 keeps answering. In a process whose only role is `--jobs`, the process exits non-zero.
 
+The compose service `judgebot` runs `JUDGE_ROLES` when it is set in `.env`, else
+`--discord --jobs` plus the deprecated `API_INTERFACES` (default `--api --web`). With
+neither variable set, that is every role but `--mcp`. A process started with
+`API_INTERFACES` set logs a warning naming the `JUDGE_ROLES` line that replaces it.
+
 The image also answers to the names of the binaries `judgebot` replaced, as links to it.
 Each logs a warning naming its replacement, and a later release removes them. They ignore
 `JUDGE_ROLES`.
@@ -99,7 +104,7 @@ JSON goes to stdout and logs to stderr.
 | `persist <session>` | Persist an admitted verdict (idempotent). |
 | `card <name>` / `card-info <uuid>` | Resolve a name / a card by id. |
 | `get-rules <id>...` / `search <query> [--limit N]` / `glossary <term>` | Rules text, full-text search, glossary. |
-| `stats [--days N]` | The operator's view, over the last N UTC days (default 30): stored questions per day by interface, estimated model spend and model calls per day (from the `spend_days` ledger `bot` and `api` keep), ratings by score, retired calls, the ten worst-rated calls, and the last five data refresh runs (started, trigger, process, outcome `ok`/`failed`/`stopped`/`running`/`abandoned`, CR version before and after, failed steps; on a schema without the run table, none and a `refresh_runs_note`). A Discord question asked with `private: True` is in the spend and not in the questions. CLI only. |
+| `stats [--days N]` | The operator's view, over the last N UTC days (default 30): stored questions per day by interface, estimated model spend and model calls per day (from the `spend_days` ledger every serving process keeps), ratings by score, retired calls, the ten worst-rated calls, and the last five data refresh runs (started, trigger, process, outcome `ok`/`failed`/`stopped`/`running`/`abandoned`, CR version before and after, failed steps; on a schema without the run table, none and a `refresh_runs_note`). A Discord question asked with `private: True` is in the spend and not in the questions. CLI only. |
 | `config` | The resolved provider setup, secrets redacted. |
 | `about` | The source offer: the repository holding this instance's source, the commit it was built from, the licence and copyright, and the data's `freshness` (the Comprehensive Rules release loaded and the last refresh). Without a database `freshness` is `null` and the rest still prints. |
 
@@ -107,9 +112,11 @@ JSON goes to stdout and logs to stderr.
 
 | Entry point | What it does |
 | --- | --- |
-| `docker compose up -d` | `db`, `bot` and `api`, plus `cloudflared` with `COMPOSE_PROFILES=tunnel`. |
-| `docker compose up -d --build bot api` | Rebuild and redeploy after code changes. |
-| `docker compose pull && docker compose up -d` | Deploy host: pull the CI-built image, never build. |
+| `docker compose up -d` | `db` and `judgebot`, plus `cloudflared` with `COMPOSE_PROFILES=tunnel`. |
+| `docker compose up -d --build judgebot` | Rebuild and redeploy after code changes. |
+| `docker compose pull && docker compose up -d --remove-orphans` | Deploy host: pull the CI-built image, never build. `--remove-orphans` removes the `bot` and `api` containers of a compose file from before `judgebot`, which would otherwise keep running. |
+| `docker compose logs judgebot` | The process's log: the roles it runs, then each role's lines. |
+| `docker compose run --rm --entrypoint judge-cli judgebot <command>` | `judge-cli` from the image. |
 | `scripts/refresh-data.sh` | A refresh now, or from your own cron with `JUDGE_REFRESH_HOURS=0`: `docker compose run --rm refresh`. Arguments pass through to `judgebot ingest`. A failed run posts to `JUDGE_ALERT_WEBHOOK` when that is set. |
 | `scripts/backup-db.sh [list\|fetch]` | Weekly `pg_dump` to Cloudflare R2. `list` and `fetch` serve the restore drill. A failed backup posts to `JUDGE_ALERT_WEBHOOK` (from `.env.deploy`, else `.env`). |
 | `scripts/alert.sh` | Sourced by the two above: posts one line to the webhook, passing the URL on stdin so it never shows in `ps`. |

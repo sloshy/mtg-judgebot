@@ -8,6 +8,12 @@ repository.workspace = true
 publish.workspace = true
 description = "The judgebot binary: the Discord bot, the HTTP interfaces and the scheduled jobs as roles of one process chosen at launch, and the ingest command line (bin)."
 
+# The launch model (roles, their requirements, the compose role list), shared
+# with judge-config so a draft .env is checked by the binary's own parser.
+[lib]
+name = "judgebot"
+path = "src/lib.rs"
+
 [[bin]]
 name = "judgebot"
 path = "src/main.rs"

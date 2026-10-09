@@ -6,21 +6,21 @@ sidebar:
 ---
 
 Each community runs its own judgebot, with its own Discord application, model key and
-spend cap. A complete instance is three containers from one compose file:
+spend cap. A complete instance is two containers from one compose file:
 
 - `db`: Postgres with pgvector.
-- `api`: the web page and HTTP API.
-- `bot`: Discord.
+- `judgebot`: the Discord bot, the web page and HTTP API, and the daily data refresh.
 
-`bot` and `api` also keep cards and rules current, refreshing them daily by default. A fourth
-service, `refresh`, runs the data loads on demand. An optional
-`cloudflared` publishes the API without opening a port. You can stop after `api` and never
-touch Discord. The bot is the last thing to add.
+What `judgebot` runs is a set of roles, `JUDGE_ROLES` in `.env`: `--discord`, `--api`,
+`--web`, `--mcp` and `--jobs` (the refresh). Unset, it runs every role but `--mcp`. A
+third service, `refresh`, runs the data loads on demand. An optional `cloudflared`
+publishes the API without opening a port. You can stop at the web page and never touch
+Discord. The bot is the last thing to add.
 
 ## Requirements
 
 - A host that stays on, with Docker and the compose plugin. Running takes about 200 MB of
-  RAM across the three containers. **Building** the image takes ~4 GB and a lot of CPU. A
+  RAM across the two containers. **Building** the image takes ~4 GB and a lot of CPU. A
   low-powered host pulls the CI-built image instead (`docker compose pull`).
 - No Rust. The image carries `judgebot ingest` as its `refresh` service, so the data loads
   run in a container. To work from source, see [Development setup](../../contributing/development/).
@@ -42,9 +42,12 @@ touch Discord. The bot is the last thing to add.
    2. `scripts/config.sh`, then open the URL it prints.
    3. Set your model key (`ANTHROPIC_API_KEY`, or a provider in the Models tab), and
       `VOYAGE_API_KEY` for semantic search if you have one.
-   4. Set `JUDGE_OPERATOR_DISCORD` (your Discord username, required by the bot) and
-      `JUDGE_OPERATOR_EMAIL` (a support address, required by the web page and the API).
-   5. Check the side panel, which shows whether each part would start. Save on the Review
+   4. Set `JUDGE_OPERATOR_EMAIL` (a support address, required by the web page and the
+      API), and `JUDGE_OPERATOR_DISCORD` (your Discord username, required by the bot) if
+      you know it already.
+   5. Set `JUDGE_ROLES` to `--api --web --jobs` in the Roles group: the page and the
+      refresh, without Discord until you add the bot.
+   6. Check the side panel, which shows whether each role would start. Save on the Review
       tab, then Ctrl-C.
 
    To edit by hand instead, `cp .env.example .env` and fill it in. Every variable is
@@ -59,18 +62,18 @@ touch Discord. The bot is the last thing to add.
    refresh, so the first scheduled one comes a day later.
    The first embed pays the embedder once for every rule and glossary entry, a few cents
    on Voyage. After that, only changed rules are re-embedded.
-4. `docker compose up -d api`. Open <http://localhost:8787> and ask a question. This runs
+4. `docker compose up -d`. Open <http://localhost:8787> and ask a question. This runs
    the full pipeline, so it checks the model setup before Discord is involved.
-   `api` and `bot` both apply pending migrations at startup unless
-   `JUDGE_AUTO_MIGRATE=false`.
-5. [Create the Discord app](../../self-hosting/discord-app/), then `docker compose up -d
-   bot`. Then run `docker compose run --rm refresh emoji` once, so answers show mana
-   symbols as pictures instead of `{W}`.
+   `judgebot` applies pending migrations at startup unless `JUDGE_AUTO_MIGRATE=false`.
+5. [Create the Discord app](../../self-hosting/discord-app/), clear `JUDGE_ROLES` (or
+   add `--discord` to it), then `docker compose up -d`. Then run
+   `docker compose run --rm refresh emoji` once, so answers show mana symbols as pictures
+   instead of `{W}`.
 6. Schedule `scripts/backup-db.sh` weekly. The
    [deployment runbook](../../self-hosting/deployment/) has the cron line. The data
-   refresh needs no schedule of yours: `bot` and `api` run it every `JUDGE_REFRESH_HOURS`
-   (default 24), once step 3 has loaded the data. Until then they wait for it, with one
-   warning naming `init`.
+   refresh needs no schedule of yours: `judgebot`'s `--jobs` role runs it every
+   `JUDGE_REFRESH_HOURS` (default 24), once step 3 has loaded the data. Until then it
+   waits for it, with one warning naming `init`.
 
 ## Single steps
 
@@ -109,7 +112,7 @@ and runs without vector search.
 
 ## Behind a domain
 
-The deployment runbook publishes `api` through a Cloudflare Tunnel, with rate limiting
+The deployment runbook publishes `judgebot` through a Cloudflare Tunnel, with rate limiting
 at Cloudflare's edge in front of the public page. Any reverse proxy works. Keep
 `API_CLIENT_IP=peer` unless Cloudflare is the only route to the origin. The
 [security page](../../reference/security/) gives the reason.

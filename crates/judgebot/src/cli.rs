@@ -26,7 +26,7 @@ use std::{
 use anyhow::Result;
 use judge_api::{Launch, interfaces};
 
-use crate::roles::{self, Origin, ROLES_ENV, Role, Roles};
+use judgebot::roles::{self, Origin, ROLES_ENV, Role, Roles};
 
 /// The name the binary was invoked as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

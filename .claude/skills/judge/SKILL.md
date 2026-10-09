@@ -156,4 +156,4 @@ is also its own process with its own cap.
 
 Remote database: connect the MCP server over HTTP (`claude mcp add --transport http judge
 https://<host>/mcp --header "Authorization: Bearer <MCP_TOKEN>"`), or run the same
-commands on the deploy host (`docker compose run --rm --entrypoint judge-cli api ...`).
+commands on the deploy host (`docker compose run --rm --entrypoint judge-cli judgebot ...`).

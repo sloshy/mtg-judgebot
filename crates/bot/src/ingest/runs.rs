@@ -794,7 +794,8 @@ pub struct RecentRun {
     pub started_at: String,
     /// What started it: `schedule` or `manual`.
     pub trigger: String,
-    /// The process that ran it: `bot`, `api` or `ingest`.
+    /// The process that ran it: `judgebot`, `ingest`, or `bot`/`api` under
+    /// the compatibility names.
     pub process: String,
     /// Where it stands.
     pub outcome: RunState,

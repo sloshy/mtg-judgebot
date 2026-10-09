@@ -20,6 +20,8 @@ path = "src/main.rs"
 judge-core.workspace = true
 judge-bot.workspace = true
 judge-api.workspace = true
+# The roles the compose service runs, parsed as the binary parses them.
+judgebot.workspace = true
 anyhow.workspace = true
 nonempty.workspace = true
 serde.workspace = true

@@ -239,8 +239,8 @@ jobs:
             echo "$TAGS"
             echo '```'
             echo
-            echo 'Deploy:  `docker compose pull && docker compose up -d`'
-            echo 'Roll back: set `JUDGE_IMAGE_TAG=sha-<short>` (or a release version) in the host'\''s .env, then the same.'
+            echo 'Deploy:  `docker compose pull && docker compose up -d --remove-orphans`'
+            echo 'Roll back: set `JUDGE_IMAGE_TAG=sha-<short>` (or a release version) in the host'\''s .env, then the same (an image from before `judgebot` also needs its own docker-compose.yml).'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # A release of a commit that already has an image: point the version tags

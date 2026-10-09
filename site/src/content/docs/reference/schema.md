@@ -51,7 +51,7 @@ agent session, and calls scoring below 1.5 with at least five votes.
 | Table | Contents |
 | --- | --- |
 | `agent_sessions` | Agent sessions in progress (stage, question, context, rejection). Expired rows are deleted when the next session is created. |
-| `spend_days` | Estimated model spend and model calls of `bot` and `api` per UTC day. Each process adds its own share every ten seconds. `JUDGE_BUDGET_PERIOD=day\|month` sums the current period from it, and `judge-cli stats` reads it. No per-user or per-question data. |
+| `spend_days` | Estimated model spend and model calls of the serving processes per UTC day. Each process adds its own share every ten seconds. `JUDGE_BUDGET_PERIOD=day\|month` sums the current period from it, and `judge-cli stats` reads it. No per-user or per-question data. |
 | `refresh_runs` | One row per `judgebot ingest refresh` or scheduled refresh: when it started and finished, `trigger` (`manual` or `schedule`) and the process that ran it, the stored CR version before and after, each step's outcome (`steps`, JSON) and `ok`. A row with no `finished_at` is a run in progress or one that died. |
 | `embedding_space` | One row naming the embedder whose vectors the database holds (provider kind, model, dimensions). `ingest embed` writes it on first use and refuses to mix embedders. Only `ingest reembed --yes` changes it. |
 | `_sqlx_migrations` | The migration ledger. |

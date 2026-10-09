@@ -30,9 +30,9 @@ Operators should know these properties. The reasoning behind each is in
   The flag alone is refused at startup, and the token alone serves nothing. The token is
   compared in constant time. Its own `judge` quota (`MCP_JUDGE_LIMIT`) bounds what a
   leaked token can spend. `MCP_ALLOWED_HOSTS` must name the public hostname. To rotate
-  the token, change the variable and restart `api`.
+  the token, change the variable and recreate `judgebot` (`docker compose up -d`).
 - **Secrets never live in tracked files.** `judge.toml` names environment variables.
-  `.env` holds the keys the bot and API read. `.env.deploy` holds the tunnel and backup
+  `.env` holds the keys `judgebot` reads. `.env.deploy` holds the tunnel and backup
   credentials that only `cloudflared` and the backup script read. Every credential type
   in the code redacts itself in `Debug`.
 - **Postgres and the API bind to loopback** in `docker-compose.yml`. The compose

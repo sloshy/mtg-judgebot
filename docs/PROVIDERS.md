@@ -392,7 +392,7 @@ synth=anthropic/claude-opus-5-5 embed=voyage/voyage-3.5 cap=$5.00`). `judge-cli 
 prints the same, secrets redacted.
 
 **Under Docker.** `JUDGE_CONFIG` in `.env` is a *host* path (`./judge.toml`, as `cargo run`
-reads it). `docker-compose.yml` bind-mounts that file into `bot`, `api` and `refresh` at
+reads it). `docker-compose.yml` bind-mounts that file into `judgebot` and `refresh` at
 `/etc/judgebot/judge.toml` and sets the containers' `JUDGE_CONFIG` to that path
 (`${JUDGE_CONFIG:+…}`), so one variable serves `cargo run` and compose alike. This has two
 consequences:
@@ -401,7 +401,7 @@ consequences:
   Docker. The containers see only the mounted file, and blank mounts the tracked example,
   which nothing reads.
 - Editing the mounted file's content is not a change `up -d` recreates for, so run
-  `docker compose restart bot api`.
+  `docker compose restart judgebot`.
 
 `judge.toml` is gitignored (per host, not secret). So is `docker-compose.override.yml`,
 the documented home for cloud-credential mounts. `refresh` resolves all three stages of

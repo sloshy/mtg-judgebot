@@ -19,8 +19,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
-- **The long-running processes refresh the data themselves** (the `--jobs` role, which
-  the compose `bot` and `api` services both run). Every `JUDGE_REFRESH_HOURS` (default
+- **The long-running process refreshes the data itself** (the `--jobs` role, which the
+  compose `judgebot` service runs). Every `JUDGE_REFRESH_HOURS` (default
   24, 1 to 720, `0` = off) one of them runs the steps of `judgebot ingest refresh`: cards
   and rulings, a new CR release, retirement, embeddings, emoji. No host cron is needed.
   The schedule is kept in the database, so the processes, a restart and a cron run agree
@@ -71,6 +71,18 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   process with a non-zero status. The data command line is `judgebot ingest <command>`, with the same
   commands and arguments as before. `judgebot --help` and `judgebot ingest --help` list
   them.
+- **One compose service, `judgebot`, in place of `bot` and `api`.** It runs
+  `JUDGE_ROLES` when that is set in `.env`, else `--discord --api --web --jobs`: what the
+  two services ran together. `JUDGE_ROLES='--api --web --jobs'` runs it without Discord.
+  The container is `judgebot` (it was `judgebot-bot` and `judgebot-api`), so the logs are
+  `docker compose logs judgebot`. It keeps the `api` service's port, healthcheck and
+  network name, so a Cloudflare Tunnel pointing at `http://api:8787` needs no change.
+  `refresh` runs `judgebot ingest`, with the same arguments as before.
+- **`API_INTERFACES` is deprecated.** While `JUDGE_ROLES` is unset the compose service
+  still runs `--discord --jobs` plus its interfaces, and logs a warning naming the
+  `JUDGE_ROLES` line that replaces it. `judge-config` shows the same warning and checks
+  only the roles the service would run, so a deployment without Discord needs no
+  `DISCORD_TOKEN` there.
 - **One spend meter per process.** The roles of one `judgebot` process bill to one meter
   and one ledger. With `JUDGE_BUDGET_PERIOD=process`, a process running both the bot and
   the HTTP interfaces has one `JUDGE_MAX_USD` between them, where the separate `bot` and
@@ -118,10 +130,60 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
-- **Nothing to change for a compose deployment.** The compose services run the
-  compatibility names, so `docker compose pull && docker compose up -d` keeps the same
-  processes doing the same work. Each logs one warning naming its `judgebot`
-  replacement.
+- **Without Discord, set `JUDGE_ROLES` first.** The one service runs
+  `--discord --api --web --jobs` by default. A deployment that ran only `api`, with no
+  `DISCORD_TOKEN`, adds this line to `.env` before upgrading, or `judgebot` restarts
+  forever with `DISCORD_TOKEN is not set` (the error names this line too):
+
+  ```ini
+  JUDGE_ROLES='--api --web --jobs'
+  ```
+
+- **Deploy with `--remove-orphans`.** The compose file's `bot` and `api` services are
+  now one `judgebot` service, and `up -d` alone leaves the old `judgebot-bot` and
+  `judgebot-api` containers running. With `judgebot-api` running, the new container
+  fails to start because `judgebot-api` holds port 8787. With only `judgebot-bot`
+  running (a Discord-only deployment that started `bot` alone, or a stopped or
+  crash-looping `api`), `up -d` exits 0 and `judgebot-bot` keeps answering Discord beside
+  the new container on the same token, so every question is answered twice.
+  `--remove-orphans` removes both before the new one starts. Pull the image straight
+  after `git pull`: a cron'd `scripts/refresh-data.sh` in between would run the new
+  compose file's `judgebot ingest` on the old local image, which has no `judgebot`.
+
+  ```sh
+  git pull && docker compose pull            # the new docker-compose.yml and its image
+  docker compose up -d --remove-orphans
+  docker ps -a --filter name=judgebot- --format '{{.Names}} {{.Status}}'
+  ```
+
+  The last command should list `judgebot-db` (and `judgebot-tunnel` with the tunnel)
+  and no `judgebot-bot` or `judgebot-api`. If either is there,
+  `docker rm -f judgebot-bot judgebot-api` removes it.
+- **The roles carry over.** A `.env` with neither `JUDGE_ROLES` nor `API_INTERFACES` runs
+  `--discord --api --web --jobs`, what the two services did. One with `API_INTERFACES`
+  runs `--discord --jobs` plus those interfaces and logs a deprecation warning: replace it
+  with the `JUDGE_ROLES` line the warning names. A deployment without Discord: see the
+  first item (add `--mcp` if it served `/mcp`).
+- **The tunnel needs no edit.** The service answers to the network name `api` as well
+  as `judgebot`, so a public hostname whose service is `http://api:8787` keeps working.
+- **`scripts/refresh-data.sh`, its cron entry and `docker compose run --rm refresh
+  <command>` keep working.** Other commands that named a service change: `docker compose
+  logs judgebot`, `docker compose restart judgebot` after a `judge.toml` edit, `docker
+  compose run --rm --entrypoint judge-cli judgebot …` for `judge-cli`.
+- **A pinned `JUDGE_IMAGE_TAG` moves with the compose file.** `git pull` brings the new
+  `docker-compose.yml`, which runs `judgebot`, a binary older images do not have. With
+  the tag pinned to an earlier release (`1.2`, `1.2.0`, a `sha-` tag from before this
+  one), `up -d` fails with `judgebot` not found: move the pin to this release in the same
+  step, or keep the previous compose file until you do.
+- **Rolling back needs the old compose file too.** An image from before this release has
+  no `judgebot` binary, so the new `docker-compose.yml` cannot start it. Restore both:
+  `git checkout <the previous release's tag or commit> -- docker-compose.yml`, set
+  `JUDGE_IMAGE_TAG` to that release, then `docker compose pull && docker compose up -d
+  --remove-orphans` (without `--remove-orphans`, the `judgebot` container stays up beside
+  the restored `bot`).
+- **Using compatibility names on purpose.** A compose file of your own that runs
+  `judge-bot` or `judge-api` keeps working on the new image: each name runs what it ran,
+  plus `--jobs`, and logs one warning naming its `judgebot` replacement.
 - **Running from source, the binary is `judgebot`.** `cargo run -p judge-bot` becomes
   `cargo run -p judgebot -- --discord --jobs`, `cargo run -p judge-api -- --api --web`
   becomes `cargo run -p judgebot -- --api --web` (add `--jobs` for the schedule), and
@@ -135,9 +197,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   writes the same record, so the schedule counts its run and never overlaps it. Remove
   the cron entry whenever convenient. To keep cron in charge instead, set
   `JUDGE_REFRESH_HOURS=0`.
-- **`bot` and `api` mount the `judgebot-ingest-cache` volume** the `refresh` service
-  already used. `git pull` for the new `docker-compose.yml`, then
-  `docker compose up -d`.
+- **`judgebot` mounts the `judgebot-ingest-cache` volume** the `refresh` service
+  already used.
 - The `refresh_runs` migration applies at startup unless `JUDGE_AUTO_MIGRATE=false`. A
   refresh that runs before it is applied works and logs that the run went unrecorded.
   The schedule waits for it, with one warning naming `judgebot ingest migrate`.

@@ -30,13 +30,13 @@
 //! on a dedicated connection, the key the CR loader, the retirement pass,
 //! `reembed` and every vector write take, so a refresh that fires
 //! mid-migration waits instead of interleaving a `calls` rewrite with a
-//! migration that rewrites `calls` rows. It does not stop the other service:
+//! migration that rewrites `calls` rows. It does not stop another process:
 //! a persist that writes no vector takes no lock, so a migration the release
-//! notes flag as rewriting rows still wants `bot`/`api` stopped first
-//! (docs/DEPLOYMENT.md §8). Two services starting together serialise on that
-//! same lock, taken before sqlx's own migrator lock and in that order by every
-//! caller (`sqlx-cli` takes only the second), so no cycle is possible; the
-//! second finds nothing pending. Both locks live on the one connection, which
+//! notes flag as rewriting rows still wants every other process on the
+//! database stopped first (docs/DEPLOYMENT.md §8). Two processes starting
+//! together serialise on that same lock, taken before sqlx's own migrator
+//! lock and in that order by every caller (`sqlx-cli` takes only the
+//! second), so no cycle is possible; the second finds nothing pending. Both locks live on the one connection, which
 //! is closed rather than returned on failure: sqlx's migrator does not release
 //! its lock on an error, and a pooled connection still holding it would wedge
 //! the next run in the same process.

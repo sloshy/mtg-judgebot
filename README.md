@@ -70,14 +70,15 @@ You need Docker with the compose plugin, and a model API key.
 ```sh
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
 docker compose pull                # the published image, amd64 and arm64
-scripts/config.sh                  # the config editor: open the URL it prints, set ANTHROPIC_API_KEY and
-                                   # JUDGE_OPERATOR_EMAIL (a support address the page shows), save, Ctrl-C.
+scripts/config.sh                  # the config editor: open the URL it prints, set ANTHROPIC_API_KEY,
+                                   # JUDGE_OPERATOR_EMAIL (a support address the page shows) and
+                                   # JUDGE_ROLES to '--api --web --jobs' (no Discord yet), save, Ctrl-C.
                                    # VOYAGE_API_KEY turns on semantic search
 docker compose up -d db            # Postgres with pgvector, on localhost:5432
 docker compose run --rm refresh init   # the whole first load: schema, cards, rules, aliases, notes, retire,
-                                       # embeddings if keyed. Safe to run again. bot and api
-                                       # refresh it daily afterwards (JUDGE_REFRESH_HOURS)
-docker compose up -d api           # the web page
+                                       # embeddings if keyed. Safe to run again. judgebot
+                                       # refreshes it daily afterwards (JUDGE_REFRESH_HOURS)
+docker compose up -d               # judgebot: the web page and the daily refresh
 ```
 
 Open <http://localhost:8787> and ask a question. By default the page allows each address
@@ -90,10 +91,10 @@ in: every variable is documented in the file.
 
 Every model call is metered against a hard cap, `JUDGE_MAX_USD` (default $5):
 
-- By default the cap is a total for the life of each process. `bot` and `api` have one
-  each, and a restart counts from zero.
-- `JUDGE_BUDGET_PERIOD=day` or `month` makes it one budget for the period, shared by both
-  and kept across restarts.
+- By default the cap is a total for the life of the process, the bot and the page
+  together, and a restart counts from zero.
+- `JUDGE_BUDGET_PERIOD=day` or `month` makes it one budget for the period, kept across
+  restarts.
 - Once the budget left is smaller than a call's worst case (about $0.36 for synthesis),
   questions are refused and `JUDGE_ALERT_WEBHOOK` tells you.
 
@@ -123,13 +124,15 @@ covers the portal. Then:
    Server ID*). Other servers the bot is in, and DMs with it, then get no commands.
    Without it the commands register globally. That can take up to an hour to appear but
    works in every server the bot joins, and in DMs for all but `/judge`.
-4. `docker compose up -d bot`. The log line `registered /judge, /card, /rule, /help,
-   /license and /forget` confirms it, and `/help` in the server confirms it end to end.
+4. Clear `JUDGE_ROLES` (unset, the service runs `--discord --api --web --jobs`: the bot,
+   the page and the refresh) and `docker compose up -d`. The log line `registered /judge,
+   /card, /rule, /help, /license and /forget` confirms it, and `/help` in the server
+   confirms it end to end.
 
 Members holding the role named by `JUDGE_ROLE` (default `Judge`) rate as judges: their
 rating overrides the crowd's. Run `docker compose run --rm refresh emoji` once to upload
 the mana symbols as application emoji, so answers show pictures instead of `{W}`. After
-code changes, `docker compose up -d --build bot api` redeploys. The documentation site's
+code changes, `docker compose up -d --build judgebot` redeploys. The documentation site's
 [Run your own judgebot](https://mtg-judgebot.rpeters.dev/self-hosting/first-run/)
 section has the long form, with links into Discord's documentation.
 
@@ -157,11 +160,11 @@ details.
 
 ### Web page and HTTP API
 
-`docker compose up -d api` serves an anonymous page on <http://localhost:8787> with the
-same pipeline, citations and "did you mean…?" flow, and no rating buttons because nobody
-is logged in. The `api` service runs `judge-api`, and with no flags that serves the JSON
-API alone. The flags `--api`, `--web` and `--mcp` choose the set explicitly.
-`API_INTERFACES` in `.env` sets the flags the container passes.
+The compose service serves an anonymous page on <http://localhost:8787> with the same
+pipeline, citations and "did you mean…?" flow, and no rating buttons because nobody is
+logged in. What it serves are roles: `--api` (the JSON route), `--web` (the page) and
+`--mcp` (the MCP transport), beside `--discord` and `--jobs`. `JUDGE_ROLES` in `.env`
+lists them, and unset it is `--discord --api --web --jobs`.
 [The web page](https://mtg-judgebot.rpeters.dev/using/web/) and
 [The HTTP API](https://mtg-judgebot.rpeters.dev/using/api/) have the details, with a
 `curl` example and every reply shape.

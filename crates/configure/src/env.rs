@@ -33,6 +33,7 @@ use judge_core::{
     operator::{OPERATOR_DISCORD_ENV, OPERATOR_EMAIL_ENV},
     source::SOURCE_URL_ENV,
 };
+use judgebot::roles::{API_INTERFACES_ENV, ROLES_ENV};
 use serde::Serialize;
 
 /// The annotated template, the source of every variable's help text.
@@ -44,13 +45,15 @@ pub const EXAMPLE: &str = include_str!("../../../.env.example");
 pub enum Group {
     /// Postgres.
     Database,
+    /// What the `judgebot` process runs.
+    Roles,
     /// The zero-config model setup and the `judge.toml` pointer.
     Models,
     /// The Discord bot.
     Discord,
     /// Spend, concurrency and the schema.
     Pipeline,
-    /// `judge-api`.
+    /// The network roles.
     Http,
     /// `/mcp`.
     Mcp,
@@ -128,6 +131,8 @@ const fn int(min: u64) -> Widget {
 pub const VARS: &[Var] = &[
     secret("DATABASE_URL", Group::Database),
     setting("DB_PORT", Group::Database, int(1)),
+    setting(ROLES_ENV, Group::Roles, TEXT),
+    setting(API_INTERFACES_ENV, Group::Roles, TEXT),
     secret(ANTHROPIC_KEY_ENV, Group::Models),
     secret(VOYAGE_KEY_ENV, Group::Models),
     setting("ANTHROPIC_BASE_URL", Group::Models, TEXT),
@@ -152,7 +157,6 @@ pub const VARS: &[Var] = &[
     // A credential: whoever has the URL can post to the channel.
     secret(ALERT_WEBHOOK_ENV, Group::Pipeline),
     setting(CONFIG_ENV, Group::Models, TEXT),
-    setting("API_INTERFACES", Group::Http, TEXT),
     setting("API_ADDR", Group::Http, TEXT),
     setting("WEB_DIST", Group::Http, TEXT),
     setting("API_RATE_LIMIT", Group::Http, int(1)),

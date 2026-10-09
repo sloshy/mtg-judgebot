@@ -17,8 +17,9 @@ other two sources: the rules for the question's category, and full-text search. 
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
 docker compose pull                     # the published image
 scripts/config.sh                       # the config editor: open the URL it prints, set ANTHROPIC_API_KEY
-                                        # (and VOYAGE_API_KEY if you have one) and JUDGE_OPERATOR_EMAIL,
-                                        # which the page requires; save, then Ctrl-C
+                                        # (and VOYAGE_API_KEY if you have one), JUDGE_OPERATOR_EMAIL,
+                                        # which the page requires, and JUDGE_ROLES to '--api --web --jobs'
+                                        # (no Discord); save, then Ctrl-C
 docker compose up -d db                 # pgvector Postgres on localhost:5432
 docker compose run --rm refresh init    # the whole first load, in one command
 ```
@@ -45,11 +46,15 @@ binaries' own loaders. To edit by hand instead, `cp .env.example .env` and fill 
 ## The web page
 
 ```sh
-docker compose up -d api
+docker compose up -d
 ```
 
+This starts `judgebot` with the roles `JUDGE_ROLES` names: the page, the question route
+and the daily data refresh. Without `JUDGE_ROLES` it would also start the Discord bot, and
+refuse to start for want of a `DISCORD_TOKEN`.
+
 The image you pulled is CI's build of upstream `main`, not of your checkout. To run what
-you cloned or changed, use `docker compose up -d --build api` instead (minutes, about
+you cloned or changed, use `docker compose up -d --build` instead (minutes, about
 4 GB of RAM).
 
 Open <http://localhost:8787>. The page runs the same pipeline as the bot, without the
@@ -59,9 +64,8 @@ By default each address may ask 4 questions per 5 minutes. That suits a public p
 will stop you quickly while testing. To ask more, raise `API_RATE_LIMIT` (or shorten
 `API_RATE_WINDOW_SECS`) in `.env` first.
 
-Each of `judge-api`'s interfaces is a launch option. The compose file passes
-`--api --web`, and `API_INTERFACES` in `.env` changes that list. `--api` alone serves the
-question route with no public page.
+Each role is a launch option. `--api --jobs` alone serves the question route with no
+public page, and `--mcp` adds the MCP transport.
 
 To develop the API without Docker, run `cargo run --release -p judgebot -- --api --web`.
 It serves the built page from `web/dist` (run
@@ -73,7 +77,7 @@ Vite with `/api` proxied to it.
 `judge-cli` runs the same pipeline from a shell and prints JSON:
 
 ```sh
-alias judge-cli='docker compose run --rm --entrypoint judge-cli api'   # from the repository directory
+alias judge-cli='docker compose run --rm --entrypoint judge-cli judgebot'   # from the repository directory
 judge-cli judge "does bob's trigger count goyf's mana value as 0?"
 judge-cli card goyf                                    # resolve a name, no model call
 judge-cli get-rules 702.19 202.3         # rules text by id
@@ -91,11 +95,11 @@ A typical answer costs $0.07 to $0.15 in model calls. Every call is metered agai
 the worst case before sending, so a process cannot overshoot it.
 
 By default the cap is a lifetime total for one process, not a budget per day or month.
-`bot` and `api` are separate processes with a cap each, so a compose deployment can spend
-twice `JUDGE_MAX_USD`, and a restart starts again from zero.
+The compose deployment's `judgebot` is one process, so the bot and the page share it, and
+a restart starts again from zero.
 
 `JUDGE_BUDGET_PERIOD=day` or `month` makes it a budget instead. There is then one cap for
-the current UTC day or month. `bot` and `api` share it through the database, it survives
+the current UTC day or month. Every process shares it through the database, it survives
 restarts, and it resets when the next period starts.
 
 A call is refused once the money left under the cap is less than its worst-case cost.

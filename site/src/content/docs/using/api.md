@@ -7,7 +7,8 @@ sidebar:
 
 The HTTP interfaces serve three routes on `API_ADDR`:
 
-- `POST /api/judge`, on with the `--api` role (or `judge-api` with no flags at all).
+- `POST /api/judge`, on with the `--api` role (the compose service runs it unless
+  `JUDGE_ROLES` leaves it out).
 - `GET /api/health` and `GET /api/about`, served whenever any of `--api`, `--web` and
   `--mcp` is on.
 

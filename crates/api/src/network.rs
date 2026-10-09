@@ -64,8 +64,7 @@ impl Network {
         if self.cfg.mcp_token.is_some() && !self.interfaces.mcp() {
             out.push(
                 "MCP_TOKEN is set but --mcp was not given, so /mcp is not served; \
-                 add --mcp (JUDGE_ROLES, or API_INTERFACES for the compose api service) \
-                 or unset the token",
+                 add --mcp to the roles (JUDGE_ROLES) or unset the token",
             );
         }
         if self.interfaces.web() && !self.interfaces.api() {

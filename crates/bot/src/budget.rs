@@ -269,7 +269,8 @@ resume{}.",
 }
 
 /// Seed the meter from the ledger, then keep the two in step for the life of
-/// the process. `process` names the caller in an alert (`bot`, `api`).
+/// the process. `process` names the caller in an alert (`judgebot`, or
+/// `bot`/`api` under the compatibility names).
 ///
 /// The first sync runs before this returns, so a process restarted into an
 /// exhausted period refuses its first question rather than answering until

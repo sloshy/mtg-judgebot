@@ -304,39 +304,6 @@ mod tests {
         assert!(typed_backwards.api() && typed_backwards.web() && !typed_backwards.mcp());
     }
 
-    /// `docker-compose.yml` passes its interfaces as a string nobody else
-    /// checks: renaming a flag would leave the shipped compose file handing
-    /// the binary an argument it refuses, and every test would stay green.
-    /// Same guard judge.toml gets from `the_example_file_loads_as_shipped`.
-    #[test]
-    fn the_compose_default_is_a_command_line_this_binary_accepts() {
-        use nonempty::nonempty;
-        let compose = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docker-compose.yml"),
-        )
-        .unwrap_or_default();
-        let default = compose
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("command: ${API_INTERFACES:-"))
-            .and_then(|l| l.strip_suffix('}'));
-        assert!(
-            default.is_some(),
-            "the api service does not default API_INTERFACES in docker-compose.yml"
-        );
-        let args = default
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(OsString::from);
-        assert_eq!(
-            parse(args).ok(),
-            Some(Launch::Serve(Interfaces::of(&nonempty![
-                Interface::Api,
-                Interface::Web
-            ]))),
-            "docker-compose.yml passes {default:?}"
-        );
-    }
-
     #[test]
     fn every_interface_has_a_distinct_flag_and_name_and_the_usage_lists_it() {
         for i in Interface::ALL {

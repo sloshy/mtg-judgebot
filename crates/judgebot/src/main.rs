@@ -14,8 +14,8 @@
 //!
 //! Environment (a `.env` in the working directory is loaded first; the
 //! process environment wins): `JUDGE_ROLES` when the command line names no
-//! role; `DATABASE_URL`; the model setup (`JUDGE_CONFIG` or a `./judge.toml`,
-//! else `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY`); `JUDGE_MAX_USD`,
+//! role (`API_INTERFACES`, deprecated, only for a warning); `DATABASE_URL`;
+//! the model setup (`JUDGE_CONFIG` or a `./judge.toml`, else `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY`); `JUDGE_MAX_USD`,
 //! `JUDGE_BUDGET_PERIOD`, `JUDGE_ALERT_WEBHOOK`; `JUDGE_REFRESH_HOURS` and
 //! `INGEST_CACHE_DIR` under `--jobs`; `DISCORD_TOKEN`, `GUILD_ID`,
 //! `JUDGE_ROLE`, `JUDGE_CONCURRENCY` and `JUDGE_USER_*` under `--discord`;
@@ -23,13 +23,12 @@
 
 mod cli;
 mod ingest;
-mod roles;
 
 use anyhow::{Context as _, Result};
 use judge_bot::{config::Config as JudgeConfig, serving::Serving};
 
 use cli::{Invocation, Name};
-use roles::{Adapters, Plan, ROLES_ENV, Roles, Serve};
+use judgebot::roles::{self, Adapters, Plan, ROLES_ENV, Roles, Serve};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -60,6 +59,20 @@ async fn main() -> Result<()> {
             setup()?;
             let (roles, origin) = cli::resolve(roles, std::env::var(ROLES_ENV).ok().as_deref())?;
             if let Some(w) = cli::compat_warning(name, &format!("judgebot {}", roles.flags())) {
+                tracing::warn!("{w}");
+            }
+            // The compose file still folds the deprecated API_INTERFACES into
+            // the role flags; the variable reaches the process through
+            // env_file, so this is where the operator hears about it. The
+            // compatibility names are the old compose file's services, where
+            // the variable is not deprecated yet.
+            if !name.is_compat()
+                && let Some(w) = roles::api_interfaces_warning(
+                    std::env::var(roles::API_INTERFACES_ENV).ok().as_deref(),
+                    std::env::var(ROLES_ENV).ok().as_deref(),
+                    &roles,
+                )
+            {
                 tracing::warn!("{w}");
             }
             tracing::info!(roles = %roles, off = %roles.off(), from = %origin, "judgebot roles");

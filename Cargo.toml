@@ -32,6 +32,7 @@ judge-embed = { path = "crates/embed" }
 judge-bot = { path = "crates/bot" }
 judge-api = { path = "crates/api" }
 judge-agent = { path = "crates/agent" }
+judgebot = { path = "crates/judgebot" }
 
 anyhow = "1"
 async-trait = "0.1"

@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-The web page is a single SolidJS page, built into the image and served by `judge-api` at
+The web page is a single SolidJS page, built into the image and served by `judgebot` at
 <http://localhost:8787>. It runs the same pipeline as the Discord bot and shows the same
 answer:
 
@@ -31,11 +31,12 @@ last refreshed, for example `Comprehensive Rules 2026-09-25 · refreshed 3 hours
 
 ## Enabling
 
-Each of `judge-api`'s interfaces is a launch option. With no flags it serves
-`POST /api/judge`, plus `GET /api/health` and `GET /api/about`, which are always on. The page needs `--web`, and the MCP transport needs
-`--mcp`. The compose file passes `--api --web`, so `docker compose up -d api` serves the
-page. Set `API_INTERFACES` in `.env` to change that list, for example `--api` alone for a
-deployment with no public page.
+The page is the `--web` role of `judgebot`. `--api` serves `POST /api/judge`, the route
+the page asks its questions through, and the MCP transport is `--mcp`. Any of the three
+also serves `GET /api/health` and `GET /api/about`. The compose service runs
+`--discord --api --web --jobs` unless `JUDGE_ROLES` in `.env` says otherwise, so
+`docker compose up -d` serves the page. `JUDGE_ROLES='--discord --api --jobs'`, for
+example, is a deployment with no public page.
 
 ## Limits
 

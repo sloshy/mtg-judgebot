@@ -2,10 +2,11 @@
 # The data refresh, now: Scryfall cards and rulings, the current Comprehensive
 # Rules release, embeddings for whatever changed, and any new card-symbol emoji.
 #
-# bot and api already run it every JUDGE_REFRESH_HOURS (default 24), so this is
-# for a refresh by hand, a single step, or an operator who keeps their own cron
-# with JUDGE_REFRESH_HOURS=0. A cron entry kept alongside the schedule is
-# harmless: the schedule counts its run and never overlaps it.
+# judgebot's --jobs role already runs it every JUDGE_REFRESH_HOURS (default
+# 24), so this is for a refresh by hand, a single step, or an operator who
+# keeps their own cron with JUDGE_REFRESH_HOURS=0. A cron entry kept
+# alongside the schedule is harmless: the schedule counts its run and never
+# overlaps it.
 #
 # Everything happens inside the published image (`judgebot ingest refresh`, the
 # compose service `refresh`); the host needs only Docker. Each step is

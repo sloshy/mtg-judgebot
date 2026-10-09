@@ -214,8 +214,9 @@ async function runCheck() {
 const SURFACES = {
   database: "Database",
   models: "Models",
-  bot: "Discord bot",
-  api: "HTTP API",
+  roles: "Roles",
+  discord: "Discord bot",
+  http: "HTTP API",
 };
 
 function renderChecks(error) {
@@ -821,6 +822,7 @@ function providerPicker(stage, r, entry) {
 
 const GROUPS = {
   instance: "This instance",
+  roles: "Roles",
   models: "Models without a judge.toml",
   pipeline: "Spend and pipeline",
   discord: "Discord bot",
@@ -1201,7 +1203,7 @@ async function doSave(errors) {
     envDiffers &&
       "Docker, `.env` changed: `docker compose up -d` (recreates the containers whose environment changed)",
     tomlDiffers &&
-      "Docker, `judge.toml` changed: `docker compose restart bot api` (`up -d` does not see a mounted file's edit)",
+      "Docker, `judge.toml` changed: `docker compose restart judgebot` (`up -d` does not see a mounted file's edit)",
     "`cargo run`: restart the binaries; they read both files at startup",
   ];
   renderReview();

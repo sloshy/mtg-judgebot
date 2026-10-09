@@ -193,7 +193,7 @@ pub async fn init(pool: &PgPool, cache_dir: &Path, process: &'static str) -> Res
     result?;
     tracing::info!(
         secs = started.elapsed().as_secs(),
-        "init done: start the api (`docker compose up -d api`) and ask a question"
+        "init done: start judgebot (`docker compose up -d`) and ask a question"
     );
     Ok(())
 }

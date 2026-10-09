@@ -13,7 +13,7 @@ x-bounded-logs: &bounded-logs
 # the tree matches it (an image built from edited files must not claim a
 # clean commit):
 #   JUDGE_COMMIT=$(git rev-parse HEAD) JUDGE_DIRTY=$(git diff-index --quiet HEAD || echo 1) \
-#     docker compose up -d --build bot api
+#     docker compose up -d --build judgebot
 # Blank builds an image whose offer says "commit unknown".
 x-build: &build
   context: .
@@ -44,21 +44,36 @@ services:
       timeout: 3s
       retries: 10
 
-  bot:
+  judgebot:
     build: *build
-    # `bot` and `api` are one image, two entrypoints. Naming it after the GHCR
-    # package lets a low-powered host pull a CI-built image instead of building:
-    # `docker compose pull && docker compose up -d`. JUDGE_IMAGE defaults to the
-    # upstream package; a fork whose CI publishes its own sets it in .env. Pin
-    # JUDGE_IMAGE_TAG to a release version or a `sha-<short>` tag to roll back;
-    # the image is amd64 and arm64; `build: .` still works locally.
+    # The one image, named after the GHCR package so a low-powered host pulls
+    # a CI-built image instead of building:
+    # `docker compose pull && docker compose up -d --remove-orphans`.
+    # JUDGE_IMAGE defaults to the upstream package; a fork whose CI publishes
+    # its own sets it in .env. Pin JUDGE_IMAGE_TAG to a release version or a
+    # `sha-<short>` tag to roll back (an image older than the judgebot binary
+    # also needs the docker-compose.yml of its release); the image is amd64
+    # and arm64; `build: .` still works locally.
     image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
-    container_name: judgebot-bot
+    container_name: judgebot
     restart: unless-stopped
     logging: *bounded-logs
+    # Named here, so the image's default entrypoint (judge-bot, kept for
+    # compose files written before this service) is never what runs.
+    entrypoint: ["judgebot"]
+    # The roles: JUDGE_ROLES in .env when it is set, for example
+    # `--api --web --jobs` without Discord or `--discord --jobs` without a
+    # public page. Unset, every role but --mcp: what the `bot` and `api`
+    # services ran together, with the interfaces from API_INTERFACES, the
+    # deprecated variable those services read (the process logs a warning
+    # naming the JUDGE_ROLES line that replaces it). Nested defaults were
+    # checked against compose-go v1.16.0, the version Compose v2.20.0 pins. GET /api/health is served while any of --api,
+    # --web and --mcp is on, so the healthcheck below holds for any of them.
+    command: ${JUDGE_ROLES:---discord --jobs ${API_INTERFACES:---api --web}}
     env_file: .env
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
+      WEB_DIST: /srv/web
       INGEST_CACHE_DIR: /var/cache/judgebot
       RUST_LOG: info,sqlx=warn,serenity=warn
       # JUDGE_CONFIG in .env is a *host* path (./judge.toml, as `cargo run`
@@ -69,53 +84,27 @@ services:
       # reads nothing it was not pointed at.
       JUDGE_CONFIG: ${JUDGE_CONFIG:+/etc/judgebot/judge.toml}
     volumes:
-      # bot and api run the data refresh themselves (JUDGE_REFRESH_HOURS) and
-      # share the download cache with `refresh`. A run holds a lock in the
-      # database, so only one of the three writes it at a time.
+      # The --jobs role runs the data refresh (JUDGE_REFRESH_HOURS) and shares
+      # the download cache with `refresh`. A run holds a lock in the database,
+      # so only one of them writes it at a time.
       - judgebot-ingest-cache:/var/cache/judgebot
       - type: bind
         source: ${JUDGE_CONFIG:-./judge.example.toml}
         target: /etc/judgebot/judge.toml
         read_only: true
-    # `api` and `refresh` carry the same two stanzas: every binary resolves
-    # all three stages of the file (the api_key_env of each provider a stage
-    # names must be set in .env, including for `refresh`, which only embeds),
-    # and `refresh`'s `embed` step writes the vector space the bot queries, so
-    # the three must agree. Editing the file's content changes nothing here,
-    # so `up -d` will not recreate: `docker compose restart bot api`.
-    depends_on:
-      db:
-        condition: service_healthy
-
-  api:
-    build: *build
-    image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
-    container_name: judgebot-api
-    restart: unless-stopped
-    entrypoint: ["judge-api"]
-    # Every interface judge-api can open is opt-in: with no arguments it
-    # serves POST /api/judge and nothing else. This default adds the web page;
-    # drop `--web` for an API-only deployment, and add `--mcp` when MCP_TOKEN
-    # is set. `--mcp` with no token is refused at startup; a token with no
-    # `--mcp` serves no /mcp and logs a warning naming the fix. Override the whole list with
-    # API_INTERFACES in .env so nothing here has to be edited on a deploy host.
-    # GET /api/health is served either way, so the healthcheck below is
-    # unaffected by what is switched off.
-    command: ${API_INTERFACES:---api --web}
-    env_file: .env
-    environment:
-      DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
-      WEB_DIST: /srv/web
-      INGEST_CACHE_DIR: /var/cache/judgebot
-      RUST_LOG: info,sqlx=warn
-      JUDGE_CONFIG: ${JUDGE_CONFIG:+/etc/judgebot/judge.toml}
-    volumes:
-      # The refresh's download cache, as on bot.
-      - judgebot-ingest-cache:/var/cache/judgebot
-      - type: bind
-        source: ${JUDGE_CONFIG:-./judge.example.toml}
-        target: /etc/judgebot/judge.toml
-        read_only: true
+    # `refresh` carries the same two stanzas: every binary resolves all three
+    # stages of the file (the api_key_env of each provider a stage names must
+    # be set in .env, including for `refresh`, which only embeds), and
+    # `refresh`'s `embed` step writes the vector space judgebot queries, so
+    # the two must agree. Editing the file's content changes nothing here,
+    # so `up -d` will not recreate: `docker compose restart judgebot`.
+    networks:
+      default:
+        # The HTTP roles were the `api` service, and a Cloudflare Tunnel set
+        # up then sends its public hostname to http://api:8787. The alias
+        # keeps that address working with no dashboard edit;
+        # http://judgebot:8787 is the same listener.
+        aliases: [api]
     # Loopback-only. Public traffic arrives through the cloudflared tunnel on
     # the compose network, never through a published port. This is also what
     # makes API_CLIENT_IP=cloudflare sound: CF-Connecting-IP is only
@@ -124,16 +113,24 @@ services:
       - "127.0.0.1:8787:8787"
     # /api/health answers 503 until Postgres does. The slim image has no curl,
     # so this is bash's /dev/tcp — invoked as bash explicitly, because CMD-SHELL
-    # would run /bin/sh, which is dash there and has no /dev/tcp. `bot` has no
-    # healthcheck: the gateway connection is not observable from outside the
-    # process, and a fatal disconnect exits it, which `restart: unless-stopped`
-    # already covers.
+    # would run /bin/sh, which is dash there and has no /dev/tcp. It probes
+    # only when the process runs an HTTP role: the roles are read from its
+    # command line (/proc/1/cmdline, NUL-separated: judgebot --discord ...),
+    # or from JUDGE_ROLES when that names none. Without --api, --web or --mcp
+    # (JUDGE_ROLES=--discord --jobs) nothing listens and the check passes, so
+    # the container is not "unhealthy" forever and cloudflared, which waits for
+    # it, still starts. The Discord gateway is not observable from outside the
+    # process; a fatal disconnect exits it, which `restart: unless-stopped`
+    # already covers. `$$` is a literal `$` to Compose.
     healthcheck:
       test:
         - CMD
         - bash
         - -c
         - >-
+          r=" $$(tr '\0' ' ' </proc/1/cmdline) ";
+          case "$$r" in *" --"[a-z]*) ;; *) r=" $${JUDGE_ROLES:-} " ;; esac;
+          case "$$r" in *" --api "*|*" --web "*|*" --mcp "*) ;; *) exit 0 ;; esac;
           exec 3<>/dev/tcp/127.0.0.1/8787 &&
           printf 'GET /api/health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
           head -n1 <&3 | grep -q ' 200 '
@@ -141,24 +138,23 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    logging: *bounded-logs
     depends_on:
       db:
         condition: service_healthy
 
-  # judge-ingest on demand: the first load (`docker compose run --rm refresh
-  # init`), a refresh by hand or from an operator's own cron
-  # (`scripts/refresh-data.sh`), and every other judge-ingest command, with no
-  # Rust on the host. Not a long-running service: bot and api refresh the data
-  # on their own schedule (JUDGE_REFRESH_HOURS), and a run started here takes
-  # turns with theirs through the same lock in the database. `run` enables the
-  # profile by itself, so `up -d` never starts it. Same image as bot/api, third
-  # entrypoint.
+  # `judgebot ingest` on demand: the first load (`docker compose run --rm
+  # refresh init`), a refresh by hand or from an operator's own cron
+  # (`scripts/refresh-data.sh`), and every other ingest command, with no Rust
+  # on the host. Not a long-running service: judgebot's --jobs role refreshes
+  # the data on its own schedule (JUDGE_REFRESH_HOURS), and a run started here
+  # takes turns with it through the same lock in the database. `run` enables
+  # the profile by itself, so `up -d` never starts it. Same image as judgebot;
+  # the arguments after the service name replace `refresh`.
   refresh:
     build: *build
     image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
     profiles: ["refresh"]
-    entrypoint: ["judge-ingest"]
+    entrypoint: ["judgebot", "ingest"]
     command: ["refresh"]
     env_file: .env
     environment:
@@ -211,7 +207,7 @@ services:
     profiles: ["tunnel"]
     command: tunnel --no-autoupdate run
     # Deploy credentials live in their own file so they never enter the env of
-    # `bot`/`api`, which are internet-facing and read neither. Short-form
+    # judgebot, which is internet-facing and reads neither. Short-form
     # string on purpose: the `path:`/`required:` long form needs Compose 2.24+,
     # and Synology's Container Manager ships older than that. Only machines
     # running the tunnel profile need .env.deploy to exist.
@@ -219,7 +215,7 @@ services:
       - .env.deploy
     logging: *bounded-logs
     depends_on:
-      api:
+      judgebot:
         condition: service_healthy
 
 volumes:

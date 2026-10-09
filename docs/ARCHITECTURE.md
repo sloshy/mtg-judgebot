@@ -205,6 +205,12 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   `judge-ingest`, the binaries it replaced, are links to it in the image: it reads the
   name it was invoked as, runs what that binary ran (`judge-bot` is `--discord --jobs`,
   `judge-api` its interfaces plus `--jobs`) and logs a warning naming the replacement.
+- `docker-compose.yml` runs one long-running service, `judgebot`, whose command is
+  `JUDGE_ROLES` or, unset, `--discord --jobs` plus the deprecated `API_INTERFACES`
+  (default `--api --web`): `roles::COMPOSE_COMMAND`, which a test holds the file to.
+  `roles::compose_roles` is the same rule in Rust, so `judge-config` checks only the
+  roles the service would run. The service keeps the network alias `api` for tunnels
+  configured with the old service name. `refresh` runs `judgebot ingest` on demand.
 
 Three interfaces share this pipeline through the same composition root
 (`judge_bot::build_deps`):
@@ -339,8 +345,8 @@ pictures, from one set of names:
     but skipped or `uploaded: 0`). It lists them again after such a run, after
     a failed listing, while the table is empty, and hourly regardless, which
     catches uploads and deletions the record does not show. So a refresh by
-    any process (bot, api, cron) or an upload by hand reaches a running bot
-    without a restart.
+    any process (a `--jobs` role, a cron'd or manual `judgebot ingest`) or an
+    upload by hand reaches a running bot without a restart.
 - **Web** renders Scryfall's SVGs inline from their CDN (`web/src/symbols.ts`
   is the generated table, `Symbols.tsx` the component).
   - A symbol the table does not know, or an image that fails to load, falls

@@ -656,8 +656,9 @@ lock-in.
 for the page. All conventional, well-maintained choices for their niches.
 
 **Docker Compose behind a Cloudflare Tunnel.** One host, no open inbound ports, a
-CI-built image, a daily data refresh that the running processes schedule in the
-database rather than a host cron job (D24), weekly backups to R2. `docs/DEPLOYMENT.md` is the runbook.
+CI-built image run as one `judgebot` service whose roles are launch options (D25), a
+daily data refresh that the running process schedules in the database rather than a
+host cron job (D24), weekly backups to R2. `docs/DEPLOYMENT.md` is the runbook.
 
 ---
 

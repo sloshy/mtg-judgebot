@@ -17,8 +17,9 @@ sidebar:
   any change to it.
 - **Each draft is checked by the binaries' own code.** On every change, the draft runs
   through the same loaders the binaries use at startup. The side panel says whether the
-  database settings, the model configuration, the Discord bot and the HTTP API would
-  start, and which key or variable to fix if not.
+  database settings, the model configuration and the roles would start (the Discord bot
+  and the HTTP API, each when `JUDGE_ROLES` runs it), and which key or variable to fix
+  if not.
 - **Only the lines you change are written.** Comments, blank lines, key order and the
   spelling of every unchanged value survive. The Review tab shows the diff of both
   files before anything is written.
@@ -78,8 +79,9 @@ cargo run --release -p judge-configure
 | --- | --- | --- |
 | Database | `DATABASE_URL` present, `DB_PORT`, `JUDGE_AUTO_MIGRATE` | an unset `DATABASE_URL`, `JUDGE_AUTO_MIGRATE=maybe` |
 | Models | the `judge.toml` loader (or the zero-config setup), the spend settings, the source offer | a misplaced key, an unpriced model on an `openai` provider, an unset `api_key_env` variable |
-| Discord bot | the bot's own settings, then its operator contact | an unset `DISCORD_TOKEN`, a bad `GUILD_ID`, no `JUDGE_OPERATOR_DISCORD` |
-| HTTP API | the API's settings and the interfaces `API_INTERFACES` opens, then its operator contact | `--mcp` with no `MCP_TOKEN`, a bad `API_ADDR`, no `JUDGE_OPERATOR_EMAIL` |
+| Roles | the roles the compose service would run: `JUDGE_ROLES`, else every role but `--mcp` (with the deprecated `API_INTERFACES`) | an unknown flag, a role named twice |
+| Discord bot | under `--discord`: the bot's own settings, then its operator contact | an unset `DISCORD_TOKEN`, a bad `GUILD_ID`, no `JUDGE_OPERATOR_DISCORD` |
+| HTTP API | under `--api`, `--web` or `--mcp`: the API's settings and those roles, then its operator contact | `--mcp` with no `MCP_TOKEN`, a bad `API_ADDR`, no `JUDGE_OPERATOR_EMAIL` |
 
 Two checks depend on the machine that serves rather than on the files, so the editor
 leaves them to startup:
@@ -87,14 +89,16 @@ leaves them to startup:
 - a cloud endpoint's credential chain (`claude-platform-on-aws`, `bedrock`, `vertex`)
 - `--web`'s `WEB_DIST` directory (the image sets its own)
 
-A part that would refuse to start does not block saving. A deployment that never runs
-the bot does not need `DISCORD_TOKEN`.
+A part that would refuse to start does not block saving. A role the service would not
+run is shown as not checked, so a deployment with `JUDGE_ROLES='--api --web --jobs'`
+needs no `DISCORD_TOKEN`.
 
 The panel also warns about the files together:
 
 - a `judge.toml` the containers will not see, because `JUDGE_CONFIG` is blank or names
   another file
 - a `DB_PORT` that differs from the port in `DATABASE_URL`
+- a set `API_INTERFACES`, deprecated, with the `JUDGE_ROLES` line that replaces it
 
 ## After saving
 
@@ -102,7 +106,7 @@ The binaries read both files only when they start.
 
 - Under Docker, after a `.env` change: `docker compose up -d`, which recreates the
   containers whose environment changed.
-- After a `judge.toml` change: `docker compose restart bot api`. The mounted file's
+- After a `judge.toml` change: `docker compose restart judgebot`. The mounted file's
   content is not a change `up -d` sees.
 - A `cargo run` binary picks up both on its next start.
 

@@ -4,10 +4,10 @@
 #
 #   alert "text"     post to JUDGE_ALERT_WEBHOOK, or do nothing if it is unset
 #
-# The webhook is the one the bot and api report a tripped spend cap and their
-# own scheduled refresh to: a Discord or Slack-style incoming webhook. It is
-# read from the environment, else .env.deploy, else .env, by name only: neither
-# file is sourced here, since .env holds values (API_INTERFACES) that are not
+# The webhook is the one judgebot reports a tripped spend cap and its own
+# scheduled refresh to: a Discord or Slack-style incoming webhook. It is read
+# from the environment, else .env.deploy, else .env, by name only: neither
+# file is sourced here, since .env holds values (JUDGE_ROLES) that are not
 # shell syntax.
 #
 # The URL is a credential (whoever holds it can post to the channel), so it goes

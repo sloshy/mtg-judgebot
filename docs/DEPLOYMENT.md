@@ -1,14 +1,14 @@
 # Deployment
 
-The bot and API run on a machine you own, behind a Cloudflare Tunnel. There is no
+judgebot runs on a machine you own, behind a Cloudflare Tunnel. There is no
 public IP, no forwarded port and no cloud compute bill. `cloudflared` dials *out* to
 Cloudflare's edge and traffic returns down that connection.
 
 ```
 Browser ──https──> Cloudflare edge        [TLS, WAF, rate limiting, challenge]
                         ↕ outbound tunnel — no inbound port on the host
-                   cloudflared ──http──> api:8787 ──> db:5432
-                                         bot ──outbound WS──> Discord
+                   cloudflared ──http──> judgebot:8787 ──> db:5432
+                                         judgebot ──outbound WS──> Discord
 ```
 
 This keeps two properties that a serverless split would lose:
@@ -26,16 +26,19 @@ Hostnames, paths and the image name below are placeholders (`judge.example.com`,
 ## 1. Prerequisites
 
 - A host that stays on, with Docker and the compose plugin. The stack *runs* in about
-  200 MB RSS (Postgres ~157 MB, api and bot a few MB each), so 2 GB of RAM is ample.
+  200 MB RSS (Postgres ~157 MB, judgebot a few MB), so 2 GB of RAM is ample.
   The host never *builds*: CI publishes the image and the host pulls it (§8). A build
   (`cargo build --release` across ten crates plus a Vite build) wants ~4 GB and a CPU
   that a NAS does not have.
 - The compose file uses only syntax that older bundled Compose versions accept.
   Synology's Container Manager ships v2.20, which predates the `env_file` long form.
   As a result, `.env.deploy` must exist on any machine running the `tunnel` profile,
-  and should exist only there.
+  and should exist only there. The `judgebot` service's roles default nests one
+  variable's default inside another's (`${JUDGE_ROLES:-… ${API_INTERFACES:-…}}`). That
+  template was checked against compose-go v1.16.0, the interpolation library Compose
+  v2.20.0 pins, compiled and run on each case. The v2.20 binary itself was not run.
 - No Rust toolchain is needed on the host. The image carries its own migrations, and
-  `bot` and `api` apply pending ones at startup (`JUDGE_AUTO_MIGRATE`, on by default).
+  `judgebot` applies pending ones at startup (`JUDGE_AUTO_MIGRATE`, on by default).
   `docker compose run --rm refresh migrate` is the explicit form, for an empty
   database or an operator who opted out. Restoring a dump (§2) brings the schema
   *and* the `_sqlx_migrations` ledger with it.
@@ -97,10 +100,12 @@ and add a public hostname:
 | --- | --- |
 | Subdomain | `judge` |
 | Domain | `example.com` |
-| Service | `http://api:8787` |
+| Service | `http://judgebot:8787` |
 
-`api` is the compose service name. cloudflared resolves it on the compose network, so
-the API never needs a published port. Cloudflare creates the
+`judgebot` is the compose service name. cloudflared resolves it on the compose network,
+so the API never needs a published port. The service also answers to `api`, the name of
+the service that served HTTP before `bot` and `api` became one, so a tunnel set up then
+with `http://api:8787` keeps working. Cloudflare creates the
 `judge CNAME <uuid>.cfargotunnel.com` record for you, proxied. It must stay **proxied**
 (orange cloud), unlike every other record in the zone.
 
@@ -125,14 +130,14 @@ it in. `.env.deploy` is edited by hand: the editor never reads it.
 
 Both files are gitignored.
 
-- `.env` is the `env_file` for `bot`, `api` and `refresh`.
+- `.env` is the `env_file` for `judgebot` and `refresh`.
 - `.env.deploy` is read only by `cloudflared` and `scripts/backup-db.sh`. A token that
   can rewrite the tunnel or delete every backup therefore never reaches the
   internet-facing API.
 
 Model credentials belong in `.env`: `ANTHROPIC_API_KEY`, every `api_key_env` a
 `judge.toml` names, and the cloud endpoints' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS`.
-`bot`, `api` and `refresh` read them, and nothing else does.
+`judgebot` and `refresh` read them, and nothing else does.
 
 In the editor's Settings tab (or `.env`), set:
 
@@ -140,13 +145,13 @@ In the editor's Settings tab (or `.env`), set:
 COMPOSE_PROFILES=tunnel     # `docker compose up -d` now includes cloudflared
 API_CLIENT_IP=cloudflare    # rate-limit on CF-Connecting-IP
 JUDGE_MAX_USD=...           # the backstop for anonymous traffic
-JUDGE_BUDGET_PERIOD=month   # one budget for bot and api, kept across restarts
+JUDGE_BUDGET_PERIOD=month   # one budget for the month, kept across restarts
 JUDGE_ALERT_WEBHOOK=...     # told when the cap trips, or a refresh or backup fails
 ```
 
 Set a budget period on a host that runs unattended. Without `JUDGE_BUDGET_PERIOD` the
-cap is per process and per lifetime: `bot` and `api` can each spend `JUDGE_MAX_USD`,
-and every restart (a redeploy, a crash loop) resets them to zero. `judge-cli stats` shows
+cap is per process and per lifetime: every restart (a redeploy, a crash loop) resets it
+to zero. `judge-cli stats` shows
 what each day cost.
 
 If `COMPOSE_PROFILES` in `.env` doesn't take effect on an older Compose, pass
@@ -160,7 +165,15 @@ docker compose up -d
 curl -s localhost:8787/api/health
 ```
 
-An *empty* database also needs only `docker compose up -d`: `bot` and `api` create the
+The container's healthcheck asks `/api/health` the same question, and `cloudflared`
+waits for it to pass. It probes only when the roles include `--api`, `--web` or
+`--mcp`: it reads them from the process's command line, or from `JUDGE_ROLES` when the
+command line names none. With no HTTP role (`JUDGE_ROLES='--discord --jobs'`) nothing
+listens, so the check passes without probing rather than marking the container
+unhealthy forever. The Discord gateway is not visible from outside the process; a
+fatal disconnect exits it, and `restart: unless-stopped` brings it back.
+
+An *empty* database also needs only `docker compose up -d`: `judgebot` creates the
 schema at startup. Use the explicit form below to see what is about to be applied, or
 when `JUDGE_AUTO_MIGRATE=false`. It runs from the same image and needs nothing but
 Docker (`run` starts `db` if it is not up):
@@ -176,7 +189,7 @@ same checksums. It skips the refresh-job lock and the "database is ahead" check,
 prefer the container form on a live host.
 
 Use a full `docker compose up -d` whenever the compose file's `db` service changes.
-`up -d --build bot api` leaves `db` alone, so it would keep the old port binding or
+`up -d --build judgebot` leaves `db` alone, so it would keep the old port binding or
 healthcheck.
 
 ### Other model providers
@@ -192,7 +205,7 @@ short version. Write the file and name it in `.env`:
 JUDGE_CONFIG=./judge.toml      # a host path: what `cargo run` reads, and what compose mounts
 ```
 
-`docker-compose.yml` bind-mounts that file read-only into `bot`, `api` and `refresh` at
+`docker-compose.yml` bind-mounts that file read-only into `judgebot` and `refresh` at
 `/etc/judgebot/judge.toml` and points the containers' `JUDGE_CONFIG` there. One
 variable serves both the host and the containers. When it is blank, compose mounts the
 tracked `judge.example.toml` only so that the mount has a source. Nothing reads it, and
@@ -204,7 +217,7 @@ the setup stays the `.env` one. Three consequences:
   `refresh`'s `embed` step, even though `refresh` never uses it. That is deliberate:
   it fails rather than run half a configuration. A provider
   table no stage names is parsed but its key is never read. `.env` is the `env_file` for
-  all three containers, so one line there covers them.
+  both services, so one line there covers them.
 - **The cloud endpoints take credentials from the platform chain, not the file.** For
   `claude-platform-on-aws` and `bedrock`, either put `AWS_ACCESS_KEY_ID`,
   `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`) in `.env`, or mount a credentials
@@ -214,35 +227,34 @@ the setup stays the `.env` one. Three consequences:
   ```yaml
   # docker-compose.override.yml (gitignored like judge.toml; compose merges it in by itself)
   services:
-    bot: &aws
+    judgebot:
       volumes: ["/home/you/.aws:/etc/aws:ro"]
       environment:
         AWS_SHARED_CREDENTIALS_FILE: /etc/aws/credentials
         AWS_CONFIG_FILE: /etc/aws/config
         AWS_PROFILE: judgebot
-    api: *aws
   ```
 
   For `vertex`, do the same with a service-account JSON and
   `GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/sa.json`. An IAM role that can only invoke
   the model is enough, because nothing here manages infrastructure. `refresh` needs none
   of this: embeddings are Voyage or OpenAI-compatible, never a cloud endpoint. None of it
-  goes in `.env.deploy`, which `bot`/`api` do not read.
+  goes in `.env.deploy`, which `judgebot` does not read.
 - **The startup log tells you what resolved.**
   - Every binary logs one `config=... extract=... synth=... embed=... cap=$...` line.
-  - `bot`, `api`, `eval` and `judge-cli` make chat calls, so they then log
+  - `judgebot` (with a serving role), `eval` and `judge-cli` make chat calls, so they then log
     `cloud credentials resolved` per cloud provider. The chain is probed once at
     startup, so a host with no credentials exits there, naming the provider and the
     endpoint. `refresh` makes no chat call and never probes.
-  - Those four binaries then log `embedding space matches the database` or
+  - Those three binaries then log `embedding space matches the database` or
     `embedding space mismatch` (below).
-  - `docker compose run --rm --entrypoint judge-cli api config` prints the resolution
+  - `docker compose run --rm --entrypoint judge-cli judgebot config` prints the resolution
     as JSON, secrets redacted.
   - `judge-config` edits `judge.toml` and `.env` from a page on localhost and checks each
     draft with the same loader (site: The config editor, for the `docker compose run`
     line that runs it here).
 
-After editing `judge.toml`, run `docker compose restart bot api`, not `up -d`. The file
+After editing `judge.toml`, run `docker compose restart judgebot`, not `up -d`. The file
 is read only at startup. Compose recreates a container only when its configuration or
 image changed, and a bind-mounted file's content is neither, so `up -d` prints `Running`
 and keeps the old configuration. (Changing `JUDGE_CONFIG` itself in `.env` does change
@@ -252,13 +264,13 @@ moved too (§7).
 
 An older Compose may reject the `${JUDGE_CONFIG:+…}` interpolation in
 `docker-compose.yml` at parse time. If so, set the containers' side by hand in the same
-override file: `environment: {JUDGE_CONFIG: /etc/judgebot/judge.toml}` on `bot`, `api`
+override file: `environment: {JUDGE_CONFIG: /etc/judgebot/judge.toml}` on `judgebot`
 and `refresh`, with the mount left as it is.
 
 ### MCP endpoint
 
-This step is optional. `judge-api` can serve the judge's tools (`crates/agent`) to an
-MCP client over the same tunnel, at `/mcp`. It needs both the `--mcp` interface and an
+This step is optional. `judgebot` can serve the judge's tools (`crates/agent`) to an
+MCP client over the same tunnel, at `/mcp`. It needs both the `--mcp` role and an
 `MCP_TOKEN`:
 
 - `--mcp` without a token is refused at startup.
@@ -274,7 +286,7 @@ a 401 before the protocol sees it. Behind the token are:
 - The read-only lookups.
 
 ```ini
-API_INTERFACES='--api --web --mcp'        # the api container's interfaces; without --mcp the token only warns
+JUDGE_ROLES='--discord --api --web --mcp --jobs'   # the default roles plus --mcp; without it the token only warns
 MCP_TOKEN=<openssl rand -base64 32>       # at least 24 characters, or the API refuses to start
 MCP_ALLOWED_HOSTS=judge.example.com,localhost   # Host values accepted: the tunnel's hostname, plus
                                                    # localhost for curl on the host; the list replaces the default
@@ -283,7 +295,7 @@ MCP_ALLOWED_HOSTS=judge.example.com,localhost   # Host values accepted: the tunn
 Behind the tunnel, `MCP_ALLOWED_HOSTS` must name the public hostname. The MCP transport accepts only the `Host`
 values on its list, which defaults to loopback (a guard against DNS rebinding), and
 cloudflared forwards the public hostname. Without it, every `/mcp` request gets a 403
-while `/api/judge` keeps working. Then run `docker compose up -d api` and, from a workstation:
+while `/api/judge` keeps working. Then run `docker compose up -d` and, from a workstation:
 
 ```sh
 claude mcp add --transport http judge https://judge.example.com/mcp   --header "Authorization: Bearer <MCP_TOKEN>"
@@ -299,7 +311,8 @@ Sessions and lookups make no chat-model call. They do embed the question or sear
 text with the configured embedder, if there is one. That costs fractions of a cent, and
 it is the only paid upstream call with no cap.
 
-To rotate a leaked token, change it in `.env` and restart `api`. Two optional extra
+To rotate a leaked token, change it in `.env` and run `docker compose up -d`, which
+recreates `judgebot` because its environment changed. Two optional extra
 layers:
 
 - Extend the edge rate-limiting rule of §5 to `/mcp`. It costs nothing.
@@ -312,8 +325,8 @@ Nobody can rate it, because there is no Discord message to vote on. The answer t
 the outside agent's, and only its citations were validated.
 
 A shell on the host can use the same tools without the network:
-`docker compose run --rm --entrypoint judge-cli api card "Blood Moon"`. The `api`
-service's entrypoint is `judge-api`, so `run` needs `--entrypoint`.
+`docker compose run --rm --entrypoint judge-cli judgebot card "Blood Moon"`. The
+`judgebot` service's entrypoint is `judgebot`, so `run` needs `--entrypoint`.
 
 ### Card-symbol emoji
 
@@ -357,7 +370,7 @@ Leave `API_CLIENT_IP=peer` for any deployment where Cloudflare is not the sole i
 
 ### Behind another reverse proxy
 
-The tunnel is a choice, not a requirement. `api` publishes on `127.0.0.1:8787`, and any
+The tunnel is a choice, not a requirement. `judgebot` publishes on `127.0.0.1:8787`, and any
 reverse proxy on the host can terminate TLS in front of it. Two things need care.
 
 **Answers take up to a minute**, so the proxy's read timeout must be longer than that.
@@ -481,9 +494,9 @@ The card count should match section 2. `*.dump.gz` is gitignored.
 
 ## 7. Scheduled data refresh
 
-`bot` and `api` keep the data current themselves. Scryfall publishes new bulk data
-daily, and Wizards ships a Comprehensive Rules release with most sets. Every
-`JUDGE_REFRESH_HOURS` (default 24) one of the two runs a refresh: the steps of
+`judgebot` keeps the data current itself, with its `--jobs` role. Scryfall publishes new
+bulk data daily, and Wizards ships a Comprehensive Rules release with most sets. Every
+`JUDGE_REFRESH_HOURS` (default 24) it runs a refresh: the steps of
 `judgebot ingest refresh`, in the same process, with nothing to install on the host. Its
 steps, in order:
 
@@ -511,8 +524,8 @@ the rest.
 
 ### Schedule
 
-The schedule lives in the database, so `bot`, `api`, a restart and a cron job all agree
-on it:
+The schedule lives in the database, so every process with `--jobs`, a restart and a cron
+job all agree on it:
 
 - A run is due when the last *successful* run finished more than `JUDGE_REFRESH_HOURS`
   ago (or none ever has), and the last attempt started long enough ago: an hour after
@@ -526,8 +539,8 @@ on it:
   minutes.
   An instance whose data was loaded but never refreshed catches up within minutes.
 - Only one run happens at a time. A due check takes the refresh lease (below) without
-  waiting. If another process or a cron run holds it, the check does nothing. Whichever
-  of `bot` and `api` wins records itself in `refresh_runs.process`.
+  waiting. If another process or a cron run holds it, the check does nothing. The
+  process that runs it records itself in `refresh_runs.process`.
 - The run has its own thread, async runtime and pool of three database connections,
   so its downloads, file parsing and queries never take a worker or a connection a
   question needs. The database itself is shared. While the CR load or the retirement
@@ -566,7 +579,7 @@ the last success and the stored CR version. A run logs `refresh starting` and
 negative value stops every binary that loads the configuration (`judgebot`,
 `judge-cli`, `judge-mcp`, `judge-eval`) at startup, naming the
 variable, as `JUDGE_BUDGET_PERIOD` does. After changing it, `docker compose up -d`
-recreates `bot` and `api`.
+recreates `judgebot`.
 
 With `JUDGE_ALERT_WEBHOOK` set, a scheduled run posts there:
 
@@ -648,10 +661,10 @@ select started_at, finished_at, trigger, process, ok, cr_before, cr_after from r
 select s from refresh_runs, jsonb_array_elements(steps) s where id = (select max(id) from refresh_runs);
 ```
 
-A run reads the same `judge.toml` `bot`/`api` do (compose mounts it from
+A run reads the same `judge.toml` the serving roles do (compose mounts it from
 `JUDGE_CONFIG`, §4), afresh each time. Its `embed` step writes vectors in the space the
 bot queries, and refuses when the configured space and the database's disagree.
-Downloads are cached in the `judgebot-ingest-cache` volume, which `bot`, `api` and
+Downloads are cached in the `judgebot-ingest-cache` volume, which `judgebot` and
 `refresh` share.
 
 ### Call retirement
@@ -681,7 +694,7 @@ Between the `rules` and `embed` steps (about a minute), the vector search cannot
 the changed rules. If `embed` fails (the embedder is down or rate-limited), those rules
 stay unembedded until the next successful run, because `embed` always fills every NULL.
 
-To watch a run, read `docker compose logs bot api | grep refresh` after the first
+To watch a run, read `docker compose logs judgebot | grep refresh` after the first
 check, or start one now with `scripts/refresh-data.sh`. Expect one line per step,
 `cards`, `rules`, `retire`, `embed` and `emoji` in that order, each `refresh step ok`
 or `refresh step skipped` and none `refresh step failed`. A run that loaded a new CR
@@ -710,17 +723,17 @@ scripts/refresh-data.sh reembed               # dry run: what is stored, what wo
 scripts/refresh-data.sh reembed --yes         # one transaction: retype vector(N), rebuild the
                                               # HNSW indexes, clear every vector, rewrite the
                                               # row — then the ordinary embed loop
-docker compose restart bot api                # bot/api read judge.toml once, at startup;
+docker compose restart judgebot               # judgebot reads judge.toml once, at startup;
                                               # `up -d` would see nothing to do (§4)
 ```
 
-The running `bot`/`api` keep the `[models.embed]` they started with, so they must be
-restarted at some point. They re-read the space row on every request. Their vector search
-turns off as soon as the row disagrees with their configuration and back on as soon as
+The running `judgebot` keeps the `[models.embed]` it started with, so it must be
+restarted at some point. It re-reads the space row on every request. Its vector search
+turns off as soon as the row disagrees with its configuration and back on as soon as
 it agrees. Either order works:
 
-- Restarting before `--yes` turns them off from the restart until the switch.
-- Restarting after `--yes` turns them off from the switch until the restart.
+- Restarting before `--yes` turns it off from the restart until the switch.
+- Restarting after `--yes` turns it off from the switch until the restart.
 
 Either way there is one window without vectors, and no mixing. The order above keeps it short.
 
@@ -778,7 +791,7 @@ reads "commit unknown":
 
 ```sh
 JUDGE_COMMIT=$(git rev-parse HEAD) JUDGE_DIRTY=$(git diff-index --quiet HEAD || echo 1) \
-  docker compose up -d --build bot api
+  docker compose up -d --build judgebot
 ```
 
 A `JUDGE_COMMIT` that is not a commit id (a branch name, a tag) fails the build rather
@@ -798,8 +811,60 @@ JUDGE_IMAGE_TAG=1.2    # in .env: follows 1.2.x patch releases; 1.2.0 pins one e
 ```sh
 git pull                                # runbook + compose changes
 docker compose pull
-docker compose up -d
+docker compose up -d --remove-orphans
 ```
+
+**`--remove-orphans` is required on the upgrade that replaced the `bot` and `api`
+services with `judgebot`.** Without it the old `judgebot-bot` and `judgebot-api`
+containers keep running, because they belong to services the compose file no longer
+names. What happens next depends on what was running:
+
+- With `judgebot-api` running, the new container cannot start, because `judgebot-api`
+  still holds port 8787 and `up -d` fails.
+- With only `judgebot-bot` running (a Discord-only deployment that started `bot` alone,
+  or an `api` that was stopped or crash-looping), `up -d` succeeds and exits 0.
+  `judgebot-bot` keeps answering Discord beside the new process on the same token, and
+  every question is answered twice. Nothing in the output says so.
+
+Stopping `judgebot-api` by hand to free the port leads to the second case.
+`--remove-orphans` removes both before the new container starts. The flag is harmless on
+every other deploy, so keep it.
+
+Check afterwards:
+
+```sh
+docker ps -a --filter name=judgebot- --format '{{.Names}} {{.Status}}'
+```
+
+It should list `judgebot-db` (and `judgebot-tunnel` with the tunnel) and nothing else:
+`judgebot` itself does not match the filter, and a `judgebot-bot` or `judgebot-api` is
+left over. If either is still
+there, `docker rm -f judgebot-bot judgebot-api` removes it.
+
+What else that upgrade changes:
+
+- **Roles.** A `.env` with neither `JUDGE_ROLES` nor `API_INTERFACES` runs
+  `--discord --api --web --jobs`, what the two services ran together. `API_INTERFACES`
+  still works while `JUDGE_ROLES` is unset (`--discord --jobs` plus its interfaces), and
+  the log warns with the `JUDGE_ROLES` line that replaces it.
+- **A deployment without Discord** (one that ran only `api`, with no `DISCORD_TOKEN`)
+  adds this line to `.env` before `up -d`, or `judgebot` restarts forever with
+  `DISCORD_TOKEN is not set`:
+
+  ```ini
+  JUDGE_ROLES='--api --web --jobs'
+  ```
+- **The image tag.** The new compose file runs the `judgebot` binary, which older images
+  do not have. A `JUDGE_IMAGE_TAG` pinned to an earlier release moves to this one in the
+  same deploy, or `up -d` fails with `judgebot` not found. For the same reason, run
+  `docker compose pull` straight after `git pull`: a cron'd `scripts/refresh-data.sh`
+  between the two runs the new compose file on the old local image and fails.
+- **The tunnel.** The service answers to `api` on the compose network as well as
+  `judgebot`, so a public hostname pointing at `http://api:8787` needs no edit.
+- **Commands.** `scripts/refresh-data.sh`, its cron entry and
+  `docker compose run --rm refresh <command>` work as before. The logs are
+  `docker compose logs judgebot`, and a `judge.toml` edit takes
+  `docker compose restart judgebot`.
 
 `docker compose up -d --build` still works on a machine with the CPU and RAM for it.
 The compose file keeps `build: .` for local development.
@@ -807,15 +872,14 @@ The compose file keeps `build: .` for local development.
 ### Releases with a migration
 
 The ordinary deploy above is complete for a release that adds a file under
-`crates/bot/migrations/`. `bot` and `api` apply pending migrations at startup, before
-anything else touches the database. The first of the two to start migrates, and the
-other finds nothing pending. The calls-rewrite advisory lock keeps them from running at
-once, and sqlx's own migrator lock is a second layer against a concurrent
-`sqlx migrate run`. The log says `schema migrated` with the versions.
+`crates/bot/migrations/`. `judgebot` applies pending migrations at startup, before
+anything else touches the database. The calls-rewrite advisory lock keeps it from
+running beside a refresh's CR load, and sqlx's own migrator lock is a second layer
+against a concurrent `sqlx migrate run`. The log says `schema migrated` with the versions.
 
 A failed migration exits the process. Under `restart: unless-stopped` that is a
-crash-loop, with the reason in `docker compose logs bot`. This is loud on purpose: a
-bot running against the wrong schema would answer questions and quietly fail to save
+crash-loop, with the reason in `docker compose logs judgebot`. This is loud on purpose:
+a bot running against the wrong schema would answer questions and quietly fail to save
 them.
 
 The refresh job's CR load, retirement pass and embedding writes take the same advisory
@@ -823,28 +887,23 @@ lock, so the migration and those steps wait for each other. (The Scryfall card/r
 upsert takes no lock and needs none: it is one transaction and touches no `calls`
 rows.) A deploy during a refresh therefore waits at startup until the CR load
 finishes, which is minutes on a NAS. It logs one warning line,
-`another job holds the calls rewrite lock ... waiting`, in `docker compose logs bot`.
+`another job holds the calls rewrite lock ... waiting`, in `docker compose logs judgebot`.
 That is a wait, not a hang.
 
-The lock does not stop the *other* service, because compose recreates `bot` and `api`
-independently. So stop both first for a migration that is not additive. A migration
-that rewrites `calls` rows (20260902000001 did, moving ruling citations to content
-keys) must not race the old binary saving a call, and `ALTER TABLE` waits on any
-in-flight query. The release notes in the commit say when this applies:
+Compose stops the old `judgebot` container before it starts the new one, so the old
+binary is not saving calls while the new one migrates. Nothing stops another process on
+the same database: a `judgebot` or `judge-mcp` on another machine, a `judge-cli` session.
+Stop those first for a migration that is not additive. A migration that rewrites `calls`
+rows (20260902000001 did, moving ruling citations to content keys) must not race an old
+binary saving a call, and `ALTER TABLE` waits on any in-flight query. The release notes
+in the commit say when this applies.
 
-```sh
-git pull
-docker compose pull
-docker compose stop bot api      # only when the release notes say the migration rewrites rows
-docker compose up -d
-```
-
-To migrate by hand instead, set `JUDGE_AUTO_MIGRATE=false` in `.env`. `bot`/`api`
-pick it up when next recreated, which `up -d` does because the env file changed. Then run the explicit form from the *new* image:
+To migrate by hand instead, set `JUDGE_AUTO_MIGRATE=false` in `.env`. `judgebot`
+picks it up when next recreated, which `up -d` does because the env file changed. Then run the explicit form from the *new* image:
 
 ```sh
 docker compose pull
-docker compose stop bot api                              # only when the migration rewrites rows
+docker compose stop judgebot              # only when the migration rewrites rows
 docker compose run --rm refresh migrate   # prints what it applies; refuses a changed file
 docker compose up -d
 ```
@@ -873,10 +932,24 @@ JUDGE_IMAGE_TAG=sha-abc1234    # in .env; or a release, e.g. 1.2.0
 ```
 
 ```sh
-docker compose pull && docker compose up -d
+docker compose pull && docker compose up -d --remove-orphans
 ```
 
 Clear `JUDGE_IMAGE_TAG` to return to `latest`.
+
+An image from before `judgebot` (the release that ran `bot` and `api` as two services)
+has no `judgebot` binary, so the current `docker-compose.yml` cannot start it. Rolling
+back that far takes that release's compose file as well as its image:
+
+```sh
+git checkout <previous release tag or commit> -- docker-compose.yml
+# JUDGE_IMAGE_TAG=<that release> in .env
+docker compose pull && docker compose up -d --remove-orphans
+```
+
+`--remove-orphans` matters here too: the `judgebot` container is an orphan of the old
+file, and left running it answers Discord beside the restored `bot`.
+`git checkout HEAD -- docker-compose.yml` undoes it when you upgrade again.
 
 An older tag starting against a newer schema logs `database is ahead of this binary`
 and does not migrate. Whether it then works depends on the migration:
@@ -898,24 +971,27 @@ own if the connector restarts.
 
 | Symptom | Cause |
 | --- | --- |
-| 502 from the public hostname | `api` is down, or the tunnel's service is not `http://api:8787` |
+| 502 from the public hostname | `judgebot` is down or runs no network role, or the tunnel's service is not `http://judgebot:8787` (or `http://api:8787`) |
 | Tunnel healthy, hostname NXDOMAIN | the `judge` record is grey-clouded; it must be proxied |
 | `/mcp` answers 401 | wrong or missing `Authorization: Bearer <MCP_TOKEN>` |
 | `/mcp` answers 403 while `/api/health` is fine | the public hostname is not in `MCP_ALLOWED_HOSTS` |
-| `/mcp` answers 405 (a browser GET shows the web page) | `--mcp` is not in `API_INTERFACES`, so `/mcp` is just another page path |
-| `api` exits naming `--mcp` and `MCP_TOKEN` | `--mcp` with no token to gate it; set `MCP_TOKEN` or drop the flag |
-| `/mcp` 404s and the log warns about `MCP_TOKEN` | the token is set but `--mcp` is not in `API_INTERFACES` |
-| `api` exits naming `--web` and `index.html` | `--web` with no built page at `WEB_DIST`; drop `--web` or rebuild the image |
-| The page 404s but `/api/health` is fine | `--web` is not in `API_INTERFACES`; the startup log line lists what is on and what is off |
+| `/mcp` answers 405 (a browser GET shows the web page) | `--mcp` is not in `JUDGE_ROLES`, so `/mcp` is just another page path |
+| `judgebot` exits naming `--mcp` and `MCP_TOKEN` | `--mcp` with no token to gate it; set `MCP_TOKEN` or drop the flag |
+| `/mcp` 404s and the log warns about `MCP_TOKEN` | the token is set but `--mcp` is not in `JUDGE_ROLES` |
+| `judgebot` exits naming `--web` and `index.html` | `--web` with no built page at `WEB_DIST`; drop `--web` or rebuild the image |
+| The page 404s but `/api/health` is fine | `--web` is not in `JUDGE_ROLES`; the `judgebot roles` startup line lists what is on and what is off |
+| `judgebot` restarts with `DISCORD_TOKEN is not set` on a deployment without Discord (often right after the upgrade to one service) | the default roles include `--discord`; add `JUDGE_ROLES='--api --web --jobs'` to `.env` and `docker compose up -d` |
+| The log warns that `API_INTERFACES` is deprecated | replace it in `.env` with the `JUDGE_ROLES` line the warning names |
+| Every Discord question is answered twice | a second process holds the same token: the old `judgebot-bot` container left by an upgrade without `--remove-orphans` (§8; `docker rm -f judgebot-bot judgebot-api`), or a `judgebot` on another host |
+| `judgebot` reads healthy but nothing answers on 8787 | the roles have no `--api`, `--web` or `--mcp`, so the healthcheck passes without probing (§4) |
 | Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the tunnel — every request looks like the cloudflared container |
 | Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied |
-| `bot` or `api` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact that surface must show is unset or malformed in `.env`; set it and `docker compose up -d` |
-| Bot online, web page dead | expected if only `api` failed — the gateway is a separate outbound connection |
+| `judgebot` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact a role must show is unset or malformed in `.env` (`--discord` needs the first, `--api`/`--web`/`--mcp` the second); set it and `docker compose up -d` |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
 | Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and `docker compose up -d`, or wait for the period to turn |
 | A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`. A scheduled refresh posts there on the first failure of a streak and on recovery; both scripts post on a non-zero exit |
 | When was the data last refreshed? | `/help`, the web footer or `GET /api/about` (`freshness`) for the age of the last success; `judge-cli stats` for the last five runs (§7) |
-| The data is days old and `refresh_runs` has no recent row | `JUDGE_REFRESH_HOURS=0` with no cron entry, or every `bot`/`api` log says `scheduled refresh paused` (a container on an older image than the schema, migrations pending with `JUDGE_AUTO_MIGRATE=false`, or no rules loaded yet: `docker compose run --rm refresh init`). `docker compose logs bot api \| grep 'scheduled'` shows which |
+| The data is days old and `refresh_runs` has no recent row | `JUDGE_REFRESH_HOURS=0` with no cron entry, or the `judgebot` log says `scheduled refresh paused` (a container on an older image than the schema, migrations pending with `JUDGE_AUTO_MIGRATE=false`, or no rules loaded yet: `docker compose run --rm refresh init`). `docker compose logs judgebot \| grep 'scheduled'` shows which |
 | `refresh step skipped` for `embed`, `rows to embed, over the 800` | the spend guard: a scheduled run found more empty vectors than a CR release leaves. Run `scripts/refresh-data.sh embed` if that spend is expected (§7) |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |
 | Refresh logs `waiting for it to finish` and sits there | another refresh or ingest step holds the refresh lease (a scheduled or cron run and a manual one overlapped); it proceeds when that one ends, or fails after an hour. The log line names the holder; `select pid, application_name, query_start, state from pg_stat_activity where application_name like 'judgebot refresh lease%';` lists it (`… since <UTC time>`) and any waiters (`… waiting`, waiting since `query_start`). A hung holder can be ended with `select pg_terminate_backend(<pid>);`. A killed run's lock is dropped by Postgres, so there is nothing to remove |
@@ -923,7 +999,7 @@ own if the connector restarts.
 | Refresh runs but the bot still cites the old CR | it does not: retrieval reads the database live; check the run actually finished (`refresh step ok` for `rules` and `embed`) |
 | `JUDGE_CONFIG=/etc/judgebot/judge.toml: file not found` at startup | `JUDGE_CONFIG` in `.env` names a host file that does not exist; Docker mounted an empty directory in its place (and created a root-owned one on the host — `sudo rmdir` it) |
 | `providers.X: NAME (api_key_env) is not set` at startup | the key was exported in the shell that ran `cargo run` but never written to `.env`, which is all the containers read; or, from `refresh` alone, only the embed provider's key was set because "refresh only embeds" — `refresh` resolves the chat stages too, so the extract/synth providers' keys must be in `.env` as well |
-| Edited `judge.toml`, `docker compose up -d`, nothing changed | `up -d` recreates only on a configuration or image change and a bind-mounted file's content is neither; `docker compose restart bot api` (§4) |
+| Edited `judge.toml`, `docker compose up -d`, nothing changed | `up -d` recreates only on a configuration or image change and a bind-mounted file's content is neither; `docker compose restart judgebot` (§4) |
 | `providers.X (...): no credentials` at startup | a cloud endpoint with an empty chain: no `AWS_*` in `.env`, no mounted credentials file, or a mounted file the `nobody` user cannot read |
 | `embedding space mismatch; vector search off` | `[models.embed]` names a model or width other than the one the database holds; `reembed` (§7) to move the data, or change the file back |
 | `no price for X/Y` at startup | a model on an `openai` provider without `[models.<stage>.pricing]`; add one (USD per million tokens) or `pricing = "free"` on the provider |
