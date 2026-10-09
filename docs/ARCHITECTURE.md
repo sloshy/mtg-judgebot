@@ -237,10 +237,35 @@ Three interfaces share this pipeline through the same composition root
 (`judge_bot::build_deps`):
 
 - **Discord adapter** (`crates/bot`, the `--discord` role): `/judge` slash command, rating buttons,
-  stateful "did you mean…?" buttons (pending store), thread history.
+  "did you mean…?" buttons, thread history.
   - `/judge private:True` is `Audience::Private`: acknowledged ephemerally, no history
-    read, never persisted, so no rating buttons. The audience rides in the pending entry
-    through a card pick.
+    read, never persisted, so no rating buttons. The audience rides in the pick button's
+    custom-id through a card pick.
+  - A card pick is answered from Discord alone, so any process holding the gateway
+    answers it, after any restart. The prompt message restates the question verbatim
+    above a body with no blank line in it: the lead line, the numbered choices (names cut
+    to 60 characters) and up to two notes (`render::PickPrompt`, whose `parse` must
+    re-render the content exactly). Each button's custom-id (`ids::Pick`) carries the
+    asker, the audience, the ambiguous span's byte range in the question, a digest of
+    the prompt's content (`pick::Digest`, 8 bytes of SHA-256) and the card's oracle id.
+  - A click does not rely on Discord to check the custom-id against the message. It is
+    refused (as expired) unless the message's content has the button's digest, so a
+    button answers only the prompt it was made for, and unless the message's EPHEMERAL
+    flag agrees with the button's audience. A message whose flags are missing is
+    answered privately (`pick::audience`), never recorded. The card must be on the
+    prompt's list.
+  - The prompt's age is read from the message's last edit, else its snowflake id,
+    against a ten-minute TTL. `pick_claims` makes each prompt single-use: one row per
+    message, prompt time and digest, no text, taken after the judge slot so a "busy"
+    leaves the buttons usable, and given back if the acknowledgement fails. Rows older
+    than a day are deleted by the claims that follow. `/judge`'s question option
+    has a `max_length` (1300) under which the whole question fits the prompt. Longer
+    content (UTF-16-heavy) gets the choices listed without buttons.
+  - The click needs the message's content. Discord's interaction object carries "the
+    message they were attached to" for components, ephemeral ones included as far as
+    the docs say, and the message-content restriction exempts messages the app sends.
+    The docs make no explicit promise for ephemeral messages, so a private prompt whose
+    content arrives empty or altered is answered "expired", never guessed at.
   - A per-user fixed window (`discord/cooldown.rs`, `JUDGE_USER_LIMIT`) is charged once a
     judge slot is held, so a "busy" is free. A card pick is not counted again.
   - `/card` and `/rule` are lookups over the resolver, the retriever's `lookup_rules` and

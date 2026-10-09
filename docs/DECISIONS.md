@@ -759,7 +759,12 @@ What follows:
   session-level, so it covers processes sharing one database over direct connections,
   and the old `bot` image never takes it: the upgrade to `judgebot` still needs
   `--remove-orphans`.
-- **Several replicas are still deferred** (issue 17). Safe is not supported: a
-  "did you mean?" pick is held in the memory of the process that asked, and the
+- **Several replicas are still deferred** (issue 17). Safe is not supported: the
   per-user and per-IP limits are per process. Until those are solved, an instance runs
-  one `judgebot`, and a second is a deploy overlap or a standby.
+  one `judgebot`, and a second is a deploy overlap or a standby. A "did you mean?" pick
+  is no longer one of the obstacles: it is answered from the message its buttons are
+  on (the question) and the button's custom-id (asker, audience, span, a digest of
+  the prompt, card), so a standby that takes the gateway answers the picks the old
+  holder offered.
+  `pick_claims`, a row per prompt with no text, keeps a double click from running the
+  question twice.

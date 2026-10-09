@@ -1,7 +1,8 @@
 //! sqlx adapters for the DB-backed ports: [`PgResolver`] (card resolution
 //! resolution order), [`PgRetriever`] (category map + BM25 + vector, rulings, glossary,
-//! notes, prior calls), [`PgCallStore`] (calls + ratings) and
-//! [`PgSessionStore`] (agent-driven sessions), plus [`Vectors`], the guard
+//! notes, prior calls), [`PgCallStore`] (calls + ratings),
+//! [`PgSessionStore`] (agent-driven sessions) and [`claim_pick`] (a "did you
+//! mean?" prompt's single use), plus [`Vectors`], the guard
 //! every embedder passes through (`space.rs`: the stored vector space), and
 //! [`migrate`], the embedded schema migrations the binaries apply themselves.
 //!
@@ -13,6 +14,7 @@ mod calls;
 mod cards;
 mod library;
 pub mod migrate;
+mod picks;
 mod resolve;
 mod retire;
 mod retrieve;
@@ -25,6 +27,7 @@ pub(crate) mod tests;
 
 pub use calls::PgCallStore;
 pub use library::{GLOSSARY_LIMIT, MAX_SEARCH, PgLibrary};
+pub use picks::{PickKey, claim_pick, release_pick};
 pub use resolve::PgResolver;
 /// Writes `calls`, so outside the crate it runs only under the refresh lease,
 /// as `ingest::retire`.

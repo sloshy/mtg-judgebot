@@ -68,10 +68,11 @@ serde_yaml_ng = "0.10"
 # these symbols, so resvg's font machinery is left out.
 resvg = { version = "0.48", default-features = false }
 base64 = "0.23"
+# `discord::pick::Digest`: ties a "did you mean?" button to its prompt.
+sha2.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
-sha2.workspace = true
 
 [lints]
 workspace = true

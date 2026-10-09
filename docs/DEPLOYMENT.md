@@ -890,7 +890,8 @@ standing by: another instance holds the Discord gateway; this one connects when 
   lease session turns on: its session ends within about 25 seconds, so the standby
   connects about 25 seconds plus the grace later. Questions asked in that gap, the
   grace plus Discord's login, get Discord's "The application did not respond". A
-  "did you mean?" pick offered by the old holder is gone with its process.
+  "did you mean?" pick offered by the old holder still works: the new holder answers it
+  from the message, within ten minutes of the prompt.
 - **A lost lease.** The holder checks every 5 seconds that its session still holds the
   lock. When the check fails (the database restarted, the session was ended with
   `pg_terminate_backend`) or gets no answer in 4 seconds, it closes its gateway

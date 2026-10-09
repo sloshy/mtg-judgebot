@@ -43,6 +43,9 @@ Operators should know these properties. The reasoning behind each is in
   - the question and answer text of every call
   - the Discord thread or web session id it was asked in
   - the Discord user id of anyone who presses a rating button (`/forget` deletes those)
+  - for each "did you mean?" prompt a card is picked from (`pick_claims`): the Discord
+    message id, when the prompt was shown and a short digest of its content. No text and
+    no user id; rows are deleted after a day.
 
   The bot requests no gateway intents, so it never receives message content beyond the
   slash-command input. Process logs at `info` record each rating with the user id. The

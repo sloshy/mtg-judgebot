@@ -559,7 +559,7 @@ All three share one composition root, `judge_bot::build_deps`, so they run the s
 pipeline.
 
 - **Discord** (`crates/bot`): a `/judge` slash command, thread history as context, "did you
-  mean?" buttons backed by a pending store, rating buttons, card mana symbols drawn as
+  mean?" buttons answered from the message they are on, rating buttons, card mana symbols drawn as
   application emoji. The rendering logic is pure and unit-tested. A mana emoji tag is about
   thirty characters and must never be cut in half by Discord's length limit, so rendered
   text is carried as segments where only plain text is cuttable.

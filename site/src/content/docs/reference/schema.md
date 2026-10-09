@@ -52,6 +52,7 @@ agent session, and calls scoring below 1.5 with at least five votes.
 | --- | --- |
 | `agent_sessions` | Agent sessions in progress (stage, question, context, rejection). Expired rows are deleted when the next session is created. |
 | `spend_days` | Estimated model spend and model calls of the serving processes per UTC day. Each process adds its own share every ten seconds. `JUDGE_BUDGET_PERIOD=day\|month` sums the current period from it, and `judge-cli stats` reads it. No per-user or per-question data. |
+| `pick_claims` | One row per "did you mean?" prompt a card was picked from: the Discord message id, when the prompt was shown and a digest of the message (8 bytes of SHA-256, not the text). It makes each prompt answer one click. No question, user or card is stored, so a `private: True` question leaves no text here. Rows older than a day are deleted as new picks are claimed. |
 | `refresh_runs` | One row per `judgebot ingest refresh` or scheduled refresh: when it started and finished, `trigger` (`manual` or `schedule`) and the process that ran it, the stored CR version before and after, each step's outcome (`steps`, JSON) and `ok`. A row with no `finished_at` is a run in progress or one that died. |
 | `embedding_space` | One row naming the embedder whose vectors the database holds (provider kind, model, dimensions). `ingest embed` writes it on first use and refuses to mix embedders. Only `ingest reembed --yes` changes it. |
 | `_sqlx_migrations` | The migration ledger. |

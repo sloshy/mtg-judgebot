@@ -30,7 +30,9 @@ the question was resolved to, so you can check that "bob" was taken to mean Dark
 Confidant. It also gives the model's confidence and the CR version it answered from.
 
 If a name could mean several cards ("Tibalt", "Emrakul") you get a **did you mean…?** row
-of up to five buttons instead of a guess. Only the person who asked can pick. If a name
+of up to five buttons instead of a guess. Only the person who asked can pick, once, within
+ten minutes. A pick still works after the bot restarts, because the message holds the
+question. That is also why a question is at most 1300 characters. If a name
 matches nothing, the reply says which and suggests `[[Full Card Name]]`. Tournament-policy and
 price questions are declined after the cheap classification step, before the expensive
 synthesis call.

@@ -139,6 +139,20 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **A refresh with no embedder configured logs `refresh step skipped` for `embed`.** It
   used to log `refresh step ok`. `emoji` with no `DISCORD_TOKEN` was already logged as
   skipped.
+- **"Did you mean…?" buttons survive a restart and a gateway hand-off.** A click is
+  answered from the message the buttons are on, by whichever process holds the gateway,
+  for ten minutes after the prompt was shown. Nothing about the question is kept in
+  memory. The message restates the question exactly as asked, then lists the choices
+  as before (a card name past 60 characters is shortened in the list, not on its
+  button). A new `pick_claims` table makes each prompt answer one click (a second
+  gets "A card has already been picked"). It stores the message id, when the prompt
+  was shown and a short digest of the message, never the question, so a
+  `private: True` question still leaves no text in the database. Claims older than a day are deleted as new ones are taken.
+- **A `/judge` question is at most 1300 characters.** Discord enforces the limit in its
+  command box, so the whole question fits in a "did you mean…?" message. A question that
+  still does not fit (emoji and some other characters can count twice toward the
+  message limit) gets the choices as a list, without buttons, and asks you to ask again
+  with the card written as `[[Full Card Name]]`.
 
 ### Upgrading
 
@@ -217,6 +231,12 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   The schedule waits for it, with one warning naming `judgebot ingest migrate`.
 - A `.refresh.lock` directory left in the repository root by a killed run is no longer
   read and can be removed.
+- **"Did you mean…?" buttons sent before the upgrade answer "That choice has
+  expired".** They held their question in the old process's memory, as a restart always
+  lost it. Ask the question again.
+- The `pick_claims` migration applies at startup unless `JUDGE_AUTO_MIGRATE=false`. Until
+  it is applied, a click on a "did you mean…?" button logs the failed claim and answers
+  "I couldn't take that pick just now".
 
 ## [1.2.0] - 2026-10-08
 

@@ -61,9 +61,15 @@ pub const FAILED: &str = "Sorry, I couldn't produce a verified answer this time.
 /// The operator's Anthropic spend cap has been reached.
 pub const SPEND_CAP: &str =
     "I've hit my spending cap for now, so I can't answer until the operator raises it.";
-/// A "did you mean…?" was answered too late (or twice).
-pub const EXPIRED: &str =
-    "That question has expired (choices are kept for ten minutes). Please ask it again.";
+/// A "did you mean…?" was answered too late, or its message no longer holds
+/// the question its button was made for (a button sent before the upgrade
+/// that made picks stateless, a client still showing an earlier prompt).
+pub const EXPIRED: &str = "That choice has expired, or the message no longer holds the question. \
+                           Please ask it again.";
+/// A "did you mean…?" whose pick was already taken (a second click).
+pub const ALREADY_PICKED: &str = "A card has already been picked for that question.";
+/// A "did you mean…?" click that could not be checked (the database did not answer).
+pub const PICK_FAILED: &str = "Sorry, I couldn't take that pick just now. Please try again.";
 /// Someone other than the asker pressed a "did you mean…?" button.
 pub const NOT_YOURS: &str = "Only the person who asked can pick a card for that question.";
 /// A button whose `custom_id` did not parse.
@@ -193,15 +199,6 @@ pub struct Answer {
     pub footer: String,
 }
 
-/// A rendered "did you mean…?" for the first ambiguous span.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DidYouMean {
-    /// Message content listing the choices.
-    pub content: String,
-    /// Full card names, at most [`MAX_CHOICES`], in button order.
-    pub choices: Vec<String>,
-}
-
 /// Render a validated verdict. The content restates the question (see
 /// [`with_header`]); citation lines link into `ctx`'s cards where it has them.
 /// Card symbols in the answer, in the restated question and in the quotes
@@ -242,7 +239,9 @@ pub fn header(asker: u64, question: &str) -> String {
 /// the body gets whatever is left of [`CONTENT_LIMIT`], so an over-long body is
 /// cut, never the header — *and* a question made entirely of symbols cannot
 /// crowd the answer out of its own message. Every reply the bot sends composes
-/// through here, so that budget rule has one definition.
+/// through here, so that budget rule has one definition. The one exception is
+/// a [`PickPrompt`], which must restate the question verbatim and whose
+/// question length `/judge` bounds instead.
 #[must_use]
 pub fn with_header(asker: u64, question: &str, body: &str, symbols: &SymbolTable) -> String {
     let head = Rendered::substitute(&header(asker, question), symbols).fit(HEADER_LIMIT);
@@ -370,51 +369,263 @@ pub fn citation_line(c: &Citation, ctx: Option<&Context>, symbols: &SymbolTable)
 /// Closes every citation's quoted span.
 const CLOSING_QUOTE: &str = "”";
 
-/// Render the "did you mean…?" for the *first* ambiguous span; the buttons
-/// carry `choices` in order.
+/// The "did you mean…?" for the *first* ambiguous span when no buttons can
+/// be offered ([`PickPrompt::new`] refused the question): the choices as a
+/// list and how to ask again with one named.
 #[must_use]
-pub fn did_you_mean(spans: &NonEmpty<Ambiguous>) -> DidYouMean {
+pub fn did_you_mean(spans: &NonEmpty<Ambiguous>) -> String {
     let first = spans.first();
-    let choices: Vec<String> = first
-        .candidates
-        .iter()
-        .map(|c| c.name.clone())
-        .take(MAX_CHOICES)
-        .collect();
     let mut content = format!(
         "I'm not sure which card you mean by **{}**. Did you mean…?",
-        first.query
+        display_span(&first.query)
     );
-    for (i, name) in choices.iter().enumerate() {
+    for (i, card) in first.candidates.iter().take(MAX_CHOICES).enumerate() {
         // Writing to a String cannot fail.
-        let _ = write!(content, "\n{}. {name}", i + 1);
+        let _ = write!(content, "\n{}. {}", i + 1, card.name);
     }
-    if first.candidates.len() > MAX_CHOICES {
-        content.push_str(
-            "\n(Showing the first five. If yours isn't here, write its full name as [[Full Card Name]].)",
+    let hidden = first.candidates.len().saturating_sub(MAX_CHOICES);
+    if hidden > 0 {
+        let _ = write!(content, "\n…and {hidden} more.");
+    }
+    content.push_str("\nAsk again with the card you mean written as [[Full Card Name]].");
+    fit(&content, CONTENT_LIMIT)
+}
+
+/// A "did you mean…?" message whose content carries the whole question, so a
+/// click on one of its buttons is answered from the message alone, by any
+/// process, after any restart ([`super::ids::Pick`] carries the rest).
+///
+/// The content is `<@asker> asked: `, the question exactly as asked (not
+/// collapsed, not cut, no emoji substituted), a blank line, then a body: a
+/// lead line, the choices as a numbered list (the same cards, in the same
+/// order, as the buttons), and up to two notes, each on a line of its own:
+///
+/// ```text
+/// <@42> asked: does bob  die?
+///
+/// I'm not sure which card you mean by **bob**. Did you mean…?
+/// 1. Dark Confidant
+/// 2. Bob, the Burger
+/// ```
+///
+/// Every body line is collapsed to one line ([`display_span`],
+/// [`display_name`]) and none is empty, so the body holds no blank line and
+/// the question is everything up to the *last* one, whatever the question
+/// holds. [`Self::parse`] checks that by rendering what it read and
+/// comparing: content it cannot reproduce exactly is refused, so a parse
+/// never recovers a question the bot did not write. The fields are private,
+/// so every value came from [`Self::new`] or [`Self::parse`] and fits the
+/// message limit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickPrompt {
+    asker: u64,
+    question: String,
+    /// The ambiguous span as shown, in [`display_span`] form.
+    span: String,
+    /// The candidates listed, 1 to [`MAX_CHOICES`], in [`display_name`] form.
+    choices: Vec<String>,
+    /// More candidates than buttons.
+    more: bool,
+    /// Ambiguous spans after this one.
+    later: usize,
+}
+
+const PROMPT_MENTION: &str = "<@";
+const PROMPT_ASKED: &str = "> asked: ";
+const PICK_HEAD: &str = "I'm not sure which card you mean by **";
+const PICK_ASK: &str = "**. Did you mean…?";
+const PICK_MORE: &str =
+    "(Showing the first five. If yours isn't here, write its full name as [[Full Card Name]].)";
+const PICK_LATER_ONE: &str = "After that I'll ask about one more name.";
+const PICK_LATER_HEAD: &str = "After that I'll ask about ";
+const PICK_LATER_TAIL: &str = " more names.";
+/// Digits in the largest `u64` (a user id, a count).
+const U64_DIGITS: usize = 20;
+/// `\n5. `: a list line's newline and number ([`MAX_CHOICES`] has one digit).
+const PICK_ITEM_HEAD: usize = "\n5. ".len();
+const _: () = assert!(MAX_CHOICES < 10);
+
+/// Longest ambiguous span a [`PickPrompt`] shows, in characters.
+pub const PICK_SPAN_LIMIT: usize = 100;
+/// Longest card name a [`PickPrompt`] lists, in characters. Most names are
+/// far shorter; the few past it are cut with [`TRUNCATION_MARKER`], and the
+/// button still carries the name (to [`BUTTON_LABEL_LIMIT`]).
+pub const PICK_NAME_LIMIT: usize = 60;
+/// Most characters a [`PickPrompt`] spends before the question. Fixed text is
+/// counted in bytes, which is never less than characters.
+pub const PICK_PREFIX_MAX: usize = PROMPT_MENTION.len() + U64_DIGITS + PROMPT_ASKED.len();
+/// Most characters a [`PickPrompt`] spends after the question, blank line included.
+pub const PICK_BODY_MAX: usize = SEPARATOR.len()
+    + PICK_HEAD.len()
+    + PICK_SPAN_LIMIT
+    + PICK_ASK.len()
+    + MAX_CHOICES * (PICK_ITEM_HEAD + PICK_NAME_LIMIT)
+    + 1
+    + PICK_MORE.len()
+    + 1
+    + PICK_LATER_HEAD.len()
+    + U64_DIGITS
+    + PICK_LATER_TAIL.len();
+/// The longest question, in characters, that a [`PickPrompt`] always holds
+/// within [`CONTENT_LIMIT`]: `/judge`'s `max_length` is held to it.
+pub const PICK_QUESTION_LIMIT: usize = CONTENT_LIMIT - PICK_PREFIX_MAX - PICK_BODY_MAX;
+
+/// A span as a [`PickPrompt`] shows it: whitespace collapsed to single
+/// spaces (so never a line break) and cut to [`PICK_SPAN_LIMIT`].
+#[must_use]
+pub fn display_span(span: &str) -> String {
+    fit(&collapse_whitespace(span), PICK_SPAN_LIMIT)
+}
+
+/// A card name as a [`PickPrompt`] lists it: whitespace collapsed and cut to
+/// [`PICK_NAME_LIMIT`].
+#[must_use]
+pub fn display_name(name: &str) -> String {
+    fit(&collapse_whitespace(name), PICK_NAME_LIMIT)
+}
+
+impl PickPrompt {
+    /// The prompt for `spans`' first span, or `None` when the message would
+    /// not fit [`CONTENT_LIMIT`] (counted as characters and as UTF-16 units,
+    /// whichever Discord counts). A question within [`PICK_QUESTION_LIMIT`]
+    /// characters fits unless it is heavy in characters outside the Basic
+    /// Multilingual Plane; the caller then offers no buttons
+    /// ([`did_you_mean`]) rather than cut the question.
+    #[must_use]
+    pub fn new(asker: u64, question: &str, spans: &NonEmpty<Ambiguous>) -> Option<Self> {
+        let first = spans.first();
+        let p = Self {
+            asker,
+            question: question.to_owned(),
+            span: display_span(&first.query),
+            choices: first
+                .candidates
+                .iter()
+                .take(MAX_CHOICES)
+                .map(|c| display_name(&c.name))
+                .collect(),
+            more: first.candidates.len() > MAX_CHOICES,
+            later: spans.len().saturating_sub(1),
+        };
+        p.fits().then_some(p)
+    }
+
+    /// The asker's Discord user id.
+    #[must_use]
+    pub const fn asker(&self) -> u64 {
+        self.asker
+    }
+
+    /// The question, byte for byte as asked.
+    #[must_use]
+    pub fn question(&self) -> &str {
+        &self.question
+    }
+
+    /// Whether the list offers the card named `name` (compared as listed,
+    /// [`display_name`]): a pick must be for a card its prompt offered.
+    #[must_use]
+    pub fn lists(&self, name: &str) -> bool {
+        let shown = display_name(name);
+        self.choices.contains(&shown)
+    }
+
+    /// The message content.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut out = format!(
+            "{PROMPT_MENTION}{}{PROMPT_ASKED}{}{SEPARATOR}{PICK_HEAD}{}{PICK_ASK}",
+            self.asker, self.question, self.span
         );
+        for (i, name) in self.choices.iter().enumerate() {
+            // Writing to a String cannot fail.
+            let _ = write!(out, "\n{}. {name}", i + 1);
+        }
+        if self.more {
+            let _ = write!(out, "\n{PICK_MORE}");
+        }
+        match self.later {
+            0 => {}
+            1 => {
+                let _ = write!(out, "\n{PICK_LATER_ONE}");
+            }
+            n => {
+                let _ = write!(out, "\n{PICK_LATER_HEAD}{n}{PICK_LATER_TAIL}");
+            }
+        }
+        out
     }
-    if spans.len() > 1 {
-        let rest: Vec<String> = spans
-            .iter()
-            .skip(1)
-            .map(|a| format!("**{}**", a.query))
-            .collect();
-        let _ = write!(content, "\nAfter that I'll ask about {}.", rest.join(", "));
+
+    fn fits(&self) -> bool {
+        let c = self.render();
+        c.chars().count() <= CONTENT_LIMIT && c.encode_utf16().count() <= CONTENT_LIMIT
     }
-    DidYouMean {
-        content: fit(&content, CONTENT_LIMIT),
-        choices,
+
+    /// Read a prompt back from a message's content: `None` unless rendering
+    /// what was read reproduces `content` exactly (and it fits the limit).
+    #[must_use]
+    pub fn parse(content: &str) -> Option<Self> {
+        let rest = content.strip_prefix(PROMPT_MENTION)?;
+        let (asker, rest) = rest.split_once(PROMPT_ASKED)?;
+        if asker.is_empty() || !asker.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let asker: u64 = asker.parse().ok()?;
+        let (question, body) = rest.rsplit_once(SEPARATOR)?;
+        let mut lines = body.split('\n').peekable();
+        let span = lines
+            .next()?
+            .strip_prefix(PICK_HEAD)?
+            .strip_suffix(PICK_ASK)?;
+        let mut choices = Vec::new();
+        while let Some(name) = lines.peek().and_then(|l| {
+            let number = choices.len().saturating_add(1);
+            (number <= MAX_CHOICES)
+                .then(|| l.strip_prefix(&format!("{number}. ")))
+                .flatten()
+        }) {
+            choices.push(name.to_owned());
+            lines.next();
+        }
+        let more = lines.next_if_eq(&PICK_MORE).is_some();
+        let later = match lines.next() {
+            None => 0,
+            Some(PICK_LATER_ONE) => 1,
+            Some(t) => {
+                let n = t
+                    .strip_prefix(PICK_LATER_HEAD)?
+                    .strip_suffix(PICK_LATER_TAIL)?;
+                if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                n.parse().ok()?
+            }
+        };
+        if lines.next().is_some() || choices.is_empty() {
+            return None;
+        }
+        let p = Self {
+            asker,
+            question: question.to_owned(),
+            span: span.to_owned(),
+            choices,
+            more,
+            later,
+        };
+        let displayed =
+            p.span == display_span(&p.span) && p.choices.iter().all(|c| *c == display_name(c));
+        (displayed && p.fits() && p.render() == content).then_some(p)
     }
 }
 
 /// The message for a failed `judge()`. Exhaustive over [`JudgeError`], so a
 /// new variant must be rendered before this compiles. `AmbiguousCards` gives
-/// the "did you mean…?" text; the buttons come from [`did_you_mean`].
+/// the buttonless "did you mean…?" ([`did_you_mean`]); the Discord adapter
+/// offers buttons through [`PickPrompt`] instead whenever it can.
 #[must_use]
 pub fn error(e: &JudgeError) -> String {
     match e {
-        JudgeError::AmbiguousCards(spans) => did_you_mean(spans).content,
+        JudgeError::AmbiguousCards(spans) => did_you_mean(spans),
         JudgeError::CardsNotFound(names) => {
             let listed: Vec<String> = names.iter().map(|n| format!("**{n}**")).collect();
             fit(
@@ -1276,7 +1487,7 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_cards_render_did_you_mean_with_at_most_five_choices() {
+    fn a_buttonless_did_you_mean_lists_five_and_says_how_to_ask_again() {
         let seven = [
             "Urza's Mine",
             "Urza's Tower",
@@ -1290,23 +1501,207 @@ mod tests {
             ambiguous("urza", &seven),
             vec![ambiguous("bob", &["Dark Confidant", "Bob's Burgers"])],
         ));
-        let dym = did_you_mean(&spans);
-        assert_eq!(dym.choices.len(), MAX_CHOICES);
-        assert_eq!(dym.choices.first().map(String::as_str), Some("Urza's Mine"));
-        assert!(dym.content.contains("**urza**") && dym.content.contains("Did you mean"));
-        assert!(dym.content.contains("5. Urza's Bauble") && !dym.content.contains("Urza's Rage"));
-        assert!(dym.content.contains("Showing the first five"));
-        assert!(dym.content.contains("ask about **bob**"), "{}", dym.content);
+        let text = did_you_mean(&spans);
+        assert!(text.contains("**urza**") && text.contains("Did you mean"));
+        assert!(text.contains("\n1. Urza's Mine"), "{text}");
+        assert!(text.contains("5. Urza's Bauble") && !text.contains("Urza's Rage"));
+        assert!(text.contains("…and 2 more."), "{text}");
+        assert!(text.ends_with("written as [[Full Card Name]]."), "{text}");
         // error() renders the same text for the variant.
-        assert_eq!(error(&JudgeError::AmbiguousCards(spans)), dym.content);
-        // A single-span, two-candidate case has no trailer.
+        assert_eq!(error(&JudgeError::AmbiguousCards(spans)), text);
         let one = NonEmpty::new(ambiguous(
             "bruna",
             &["Bruna, the Fading Light", "Bruna, Light of Alabaster"],
         ));
-        let dym = did_you_mean(&one);
-        assert_eq!(dym.choices.len(), 2);
-        assert!(!dym.content.contains("After that") && !dym.content.contains("Showing"));
+        assert!(!did_you_mean(&one).contains("more."));
+    }
+
+    fn prompt_for(question: &str, spans: &NonEmpty<Ambiguous>) -> Option<PickPrompt> {
+        PickPrompt::new(ASKER, question, spans)
+    }
+
+    #[test]
+    fn a_pick_prompt_restates_the_question_verbatim_above_the_list() {
+        let spans = NonEmpty::new(ambiguous("bob", &["Dark Confidant", "Bob's Burgers"]));
+        let p = prompt_for("does  bob\tdie to {W}?", &spans);
+        assert_eq!(
+            p.as_ref().map(PickPrompt::render).as_deref(),
+            Some(
+                "<@1000000000000000042> asked: does  bob\tdie to {W}?\n\n\
+                 I'm not sure which card you mean by **bob**. Did you mean…?\n\
+                 1. Dark Confidant\n\
+                 2. Bob's Burgers"
+            )
+        );
+        let mut seven: Vec<String> = (0..6).map(|i| format!("Card {i}")).collect();
+        seven.insert(1, format!("  Long\n  {}  ", "n".repeat(PICK_NAME_LIMIT)));
+        let seven: Vec<&str> = seven.iter().map(String::as_str).collect();
+        let spans = NonEmpty::from((
+            ambiguous("  urza\n\n  lands ", &seven),
+            vec![ambiguous("bob", &["A", "B"]), ambiguous("x", &["C", "D"])],
+        ));
+        let body = prompt_for("q", &spans)
+            .map(|p| p.render())
+            .and_then(|c| c.split_once("\n\n").map(|(_, b)| b.to_owned()));
+        let long = fit(
+            &format!("Long {}", "n".repeat(PICK_NAME_LIMIT)),
+            PICK_NAME_LIMIT,
+        );
+        assert!(long.ends_with(TRUNCATION_MARKER) && long.chars().count() == PICK_NAME_LIMIT);
+        assert_eq!(
+            body,
+            Some(format!(
+                "I'm not sure which card you mean by **urza lands**. Did you mean…?\n\
+                 1. Card 0\n2. {long}\n3. Card 1\n4. Card 2\n5. Card 3\n\
+                 (Showing the first five. If yours isn't here, write its full name as [[Full Card Name]].)\n\
+                 After that I'll ask about 2 more names."
+            ))
+        );
+        let two = NonEmpty::from((ambiguous("a", &["A", "B"]), vec![ambiguous("b", &["C"])]));
+        assert!(prompt_for("q", &two).is_some_and(|p| {
+            p.render()
+                .ends_with("2. B\nAfter that I'll ask about one more name.")
+        }));
+    }
+
+    #[test]
+    fn a_pick_prompt_round_trips_any_question() {
+        let long_span = "w".repeat(PICK_SPAN_LIMIT * 3);
+        let seven: Vec<String> = (0..7).map(|i| format!("Card {i}")).collect();
+        let seven: Vec<&str> = seven.iter().map(String::as_str).collect();
+        let span_sets = [
+            NonEmpty::new(ambiguous("bob", &["A", "B"])),
+            NonEmpty::from((
+                ambiguous(&long_span, &seven),
+                vec![ambiguous("x", &["C", "D"]); 12],
+            )),
+            NonEmpty::new(ambiguous("**. Did you mean…?", &["A", "B"])),
+            NonEmpty::new(ambiguous(
+                "1. x",
+                &[
+                    "1. A",
+                    "(Showing the first five.",
+                    "After that I'll ask about one more name.",
+                ],
+            )),
+        ];
+        let max_ascii = "q".repeat(PICK_QUESTION_LIMIT);
+        let max_wide = "é".repeat(PICK_QUESTION_LIMIT);
+        let questions = [
+            "",
+            "plain question?",
+            "**bold** `code` > quote\n> more _it_ ~~x~~ ||spoiler||",
+            "two paragraphs\n\nI'm not sure which card you mean by **x**. Did you mean…?",
+            "ends in a blank line\n\n",
+            "trailing whitespace   ",
+            "   leading whitespace",
+            "\n\n\n",
+            "<:mana_w:1> and {W}{U} and <@123> <@&456> @everyone @here",
+            "<@1000000000000000042> asked: nested",
+            "ünïcödé — “quotes” 🃏 日本語",
+            "\r\n windows\r\n",
+            max_ascii.as_str(),
+            max_wide.as_str(),
+        ];
+        for spans in &span_sets {
+            for q in questions {
+                let p = prompt_for(q, spans);
+                assert!(p.is_some(), "{q:?} must fit");
+                let Some(p) = p else { continue };
+                let content = p.render();
+                assert!(content.chars().count() <= CONTENT_LIMIT, "{q:?}");
+                let back = PickPrompt::parse(&content);
+                assert_eq!(back.as_ref(), Some(&p), "{q:?}");
+                assert_eq!(back.as_ref().map(PickPrompt::question), Some(q));
+                assert_eq!(back.as_ref().map(PickPrompt::asker), Some(ASKER));
+            }
+        }
+    }
+
+    #[test]
+    fn a_pick_prompt_fits_at_the_limits_and_refuses_beyond() {
+        // Every variable part at its longest.
+        let seven: Vec<String> = (0..7).map(|i| format!("{i}{}", "ü".repeat(200))).collect();
+        let seven: Vec<&str> = seven.iter().map(String::as_str).collect();
+        let span = "ü".repeat(PICK_SPAN_LIMIT * 2);
+        let spans = NonEmpty::from((
+            ambiguous(&span, &seven),
+            vec![ambiguous("x", &["C", "D"]); 3],
+        ));
+        let mut p = PickPrompt::new(u64::MAX, &"q".repeat(PICK_QUESTION_LIMIT), &spans);
+        if let Some(p) = p.as_mut() {
+            p.later = usize::MAX;
+        }
+        let content = p.as_ref().map(PickPrompt::render);
+        assert!(
+            content
+                .as_ref()
+                .is_some_and(|c| c.chars().count() <= CONTENT_LIMIT),
+            "{:?}",
+            content.map(|c| c.chars().count())
+        );
+        // Characters outside the BMP count twice in UTF-16: refused, not cut.
+        let cards = "🃏".repeat(PICK_QUESTION_LIMIT);
+        assert_eq!(PickPrompt::new(ASKER, &cards, &spans), None);
+        // So is anything past the content limit.
+        assert_eq!(
+            PickPrompt::new(ASKER, &"q".repeat(CONTENT_LIMIT), &spans),
+            None
+        );
+    }
+
+    #[test]
+    fn a_pick_prompt_refuses_content_it_did_not_write() {
+        let spans = NonEmpty::new(ambiguous("bob", &["A", "B"]));
+        let Some(good) = prompt_for("does bob die?", &spans).map(|p| p.render()) else {
+            unreachable!("a short question fits");
+        };
+        assert!(PickPrompt::parse(&good).is_some());
+        let tampered = [
+            String::new(),
+            // What the message says while the pick is judged, and an answer.
+            working("Dark Confidant"),
+            with_header(ASKER, "does bob die?", "Yes, it dies.", &no_symbols()),
+            // The buttonless reply.
+            with_header(ASKER, "does bob die?", &did_you_mean(&spans), &no_symbols()),
+            good.replacen("<@", "<@!", 1),
+            good.replacen("<@1", "<@a", 1),
+            good.replacen("<@1000000000000000042>", "<@>", 1),
+            good.replacen(" asked: ", " asked:", 1),
+            format!("{good} "),
+            format!("{good}\n"),
+            format!(" {good}"),
+            good.replace("**bob**", "**bob  b**"),
+            good.replace("**bob**", "**bob\nb**"),
+            good.replace("Did you mean…?", "Did you mean...?"),
+            format!("{good}\nAfter that I'll ask about 0 more names."),
+            format!("{good}\nAfter that I'll ask about 1 more names."),
+            format!("{good}\nAfter that I'll ask about 02 more names."),
+            format!("{good}\nAfter that I'll ask about +2 more names."),
+            format!("{good}\n{PICK_LATER_ONE}\n{PICK_MORE}"),
+            format!("{good}\n{PICK_LATER_ONE}\n{PICK_LATER_ONE}"),
+            format!("{good}\n\n3. C"),
+            good.replace("\n1. A\n2. B", ""),
+            good.replace("2. B", "3. B"),
+            good.replace("1. A", "1.  A"),
+            good.replace("1. A", "1. A "),
+            good.replace("\n1. A", "\n1. A\n"),
+            good.replace("\n\n", "\n"),
+            good.replace("\n\n", " "),
+        ];
+        for t in &tampered {
+            assert_eq!(PickPrompt::parse(t), None, "{t:?}");
+        }
+        // A second prompt appended after a blank line is a different, valid
+        // prompt whose question is everything before the last blank line.
+        let nested = format!(
+            "<@1> asked: {good}\n\n{}",
+            good.split_once("\n\n").map_or("", |(_, b)| b)
+        );
+        assert_eq!(
+            PickPrompt::parse(&nested).map(|p| p.question().to_owned()),
+            Some(good.clone())
+        );
     }
 
     #[test]

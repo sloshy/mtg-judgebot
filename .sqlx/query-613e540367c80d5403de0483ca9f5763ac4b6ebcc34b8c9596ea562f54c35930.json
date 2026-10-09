@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pick_claims WHERE message_id = $1 AND shown_ms = $2 AND digest = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "613e540367c80d5403de0483ca9f5763ac4b6ebcc34b8c9596ea562f54c35930"
+}

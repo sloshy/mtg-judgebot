@@ -156,7 +156,20 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
 - `/judge private:True` is `discord::Audience::Private`: ephemeral, no thread history
   read, never persisted, so no rating buttons and no prior call. `Data::answer` reaches the
   store only through `Audience::record`, which is `None` for it. The audience is carried
-  in `Pending` through a "did you mean?" pick.
+  in the "did you mean?" button's custom-id through a pick.
+- A "did you mean?" pick keeps no state in memory. The question is read back from the
+  bot's own message (`render::PickPrompt`: `<@asker> asked: ` + the question verbatim +
+  a blank line + a body with no blank line: lead line, numbered choices, notes; `parse`
+  re-renders and compares). The asker, audience, the span's byte range, a digest of the
+  prompt's content (`pick::Digest`) and the card's oracle id are in the custom-id
+  (`ids::Pick`, `card:…`; the old `pick:<uuid>:<n>` parses to `LegacyPick` = expired).
+  A click is refused unless the message's content matches the digest, its EPHEMERAL
+  flag agrees with the audience (`pick::audience`; flags missing = private) and the card
+  is on the prompt's list. The prompt's age comes from the message's last edit or its
+  snowflake (`discord/pick.rs`). `pick_claims` (keyed by message id + that time + the
+  digest, no text) makes each prompt single-use, claimed after the concurrency permit
+  and given back (`release_pick`) if the acknowledgement fails. `/judge`'s question has `max_length = 1300`
+  (`QUESTION_MAX_CHARS`, const-asserted under `render::PICK_QUESTION_LIMIT`).
 - `discord/cooldown.rs` is the per-user `/judge` window (`JUDGE_USER_LIMIT` per
   `JUDGE_USER_WINDOW_SECS`, default 6 per 600 s, `0` = off), charged after the concurrency
   permit so a "busy" is free. Picks are free.
@@ -625,8 +638,9 @@ Key cross-file facts that aren't obvious from any one file:
   after gold edits. Rule ids written unquoted in YAML are rejected, because floats drop
   trailing zeros.
 - **Discord layer:** interaction logic is kept pure and unit-tested (`render.rs`,
-  `ids.rs` typed button custom-ids, `pending.rs` did-you-mean store, `question.rs` span
-  pinning). Replies open with a non-pinging `<@user> asked:` header. Rule citations link
+  `ids.rs` typed button custom-ids, `pick.rs` a pick prompt's age, digest and audience,
+  `question.rs` span pinning, where `find_span` + `pin_at` equal `pin_card`). Replies
+  open with a non-pinging `<@user> asked:` header. Rule citations link
   to the Yawgatog CR mirror (anchor = `R` + id with dots stripped). Rulings and Oracle
   text link to Scryfall search-by-oracleid, because the `/card/<uuid>` route 404s.
 - **Card symbols are pictures on both interfaces.**
@@ -637,6 +651,8 @@ Key cross-file facts that aren't obvious from any one file:
     of Discord's 2000/4096 characters and must never be cut in half, so plain text is the
     only cuttable segment.
   - An application with no emoji uploaded renders the literal `{W}`.
+  - The one exception is a "did you mean?" prompt's question, which is restated
+    verbatim (`{W}` stays literal) because the click reads it back from the message.
   - The table sits behind `mana::SharedSymbols`. `discord::symbols::watch`, a task
     spawned on `Ready`, lists the emoji and then checks every ten minutes. It lists them
     again after a refresh run whose `emoji` step may have uploaded (`runs::emoji_since`),

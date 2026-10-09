@@ -3,8 +3,8 @@
 //!
 //! Everything that does not need the gateway lives in a pure submodule:
 //! [`render`] (verdict / error → text), [`mana`] (card symbols → the bot's
-//! custom emoji), [`ids`] (typed `custom_id`s), [`pending`] (questions waiting
-//! on a card pick), [`question`] (span replacement) and [`capture`] (keeps the
+//! custom emoji), [`ids`] (typed `custom_id`s), [`pick`] (how old a card
+//! pick's prompt is), [`question`] (span replacement) and [`capture`] (keeps the
 //! retrieval `Context` so a call can be persisted). [`symbols`] lists the
 //! card-symbol emoji and keeps the table current while the bot runs.
 //! [`gateway`] keeps the gateway connection to one process of all those
@@ -20,11 +20,16 @@
 //!   the member holds the [`Config::judge_role`] role, looked up over HTTP)
 //!   → ephemeral follow-up. The ack comes first so a slow role lookup or DB
 //!   cannot blow Discord's 3 s deadline.
-//! * `AmbiguousCards` → the question is parked in [`PendingStore`] and up to
-//!   five "did you mean…?" buttons are offered for the first ambiguous span.
-//!   A pick (by the asker only) rewrites that span as `[[Full Name]]` and
-//!   re-runs `judge()`, editing the same message; another ambiguous span
-//!   simply starts the loop again.
+//! * `AmbiguousCards` → up to five "did you mean…?" buttons for the first
+//!   ambiguous span, on a message that restates the question verbatim
+//!   ([`render::PickPrompt`]). Nothing is held in memory: a click is answered
+//!   from that message and the button's `custom_id` ([`ids::Pick`]: asker,
+//!   audience, the span's byte range, the card), so any process holding the
+//!   gateway answers it, after any restart. A pick (by the asker only, within
+//!   [`Config::pick_ttl`], once: `pick_claims`) rewrites that span as
+//!   `[[Full Name]]` and re-runs `judge()`, editing the same message; another
+//!   ambiguous span simply starts the loop again. A question too long for the
+//!   message gets the choices listed and no buttons.
 //! * `/judge … private:True` → the same, shown to the asker alone
 //!   ([`Audience::Private`]): no thread history read, nothing persisted, so
 //!   no rating buttons and no trace in the channel's follow-ups.
@@ -37,7 +42,7 @@ pub mod cooldown;
 pub mod gateway;
 pub mod ids;
 pub mod mana;
-pub mod pending;
+pub mod pick;
 pub mod question;
 pub mod render;
 pub mod symbols;
@@ -53,25 +58,30 @@ use std::{
 
 use anyhow::Context as _;
 use judge_core::{
-    CallId, CallStore, Deps, DiscordOperator, JudgeError, Question, Resolution, Retriever, RuleId,
-    Score, SourceOffer, Validated, Verdict, judge,
+    Ambiguous, CallId, CallStore, Card, Deps, DiscordOperator, JudgeError, Question, Resolution,
+    Retriever, RuleId, Score, SourceOffer, Validated, Verdict, judge,
 };
 use judge_llm::{ApiKey, SpendMeter};
+use nonempty::NonEmpty;
 use poise::serenity_prelude as serenity;
 use serenity::{
     ButtonStyle, ComponentInteraction, CreateActionRow, CreateAllowedMentions, CreateButton,
     CreateEmbed, CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseFollowup,
     CreateInteractionResponseMessage, EditInteractionResponse, FullEvent, GatewayIntents, GuildId,
-    Interaction, Member, UserId,
+    Interaction, Member, MessageFlags, UserId,
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 
-use crate::{db::PgLibrary, serving::Serving};
+use crate::{
+    db::{PgLibrary, PickKey, claim_pick, release_pick},
+    serving::Serving,
+};
 use capture::CapturingRetriever;
 use cooldown::{Cooldowns, UserLimit};
-use ids::ButtonAction;
+use ids::{ButtonAction, ByteSpan, Pick};
 use mana::{SharedSymbols, SymbolTable};
-use pending::{Pending, PendingId, PendingSpan, PendingStore, TakeError};
+use pick::Digest;
+use render::PickPrompt;
 
 /// How long a `/judge` (or a card pick) waits for a free slot before replying
 /// "busy". Under Discord's 3 s initial-response deadline, so short bursts queue
@@ -93,8 +103,9 @@ pub struct Config {
     pub max_concurrent: usize,
     /// Thread Q&A pairs handed to `judge()` as history.
     pub history_len: usize,
-    /// How long a "did you mean…?" stays answerable.
-    pub pending_ttl: Duration,
+    /// How long a "did you mean…?" stays answerable, from when its prompt
+    /// was shown ([`pick`]).
+    pub pick_ttl: Duration,
     /// `/judge` questions one user may ask per window (`JUDGE_USER_LIMIT` per
     /// `JUDGE_USER_WINDOW_SECS`); `None` is no per-user limit.
     pub user_limit: Option<UserLimit>,
@@ -103,8 +114,9 @@ pub struct Config {
 /// Who sees a `/judge` reply.
 ///
 /// Discord fixes this when the command is acknowledged, so it is chosen up
-/// front and carried through a "did you mean…?" pick.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// front and carried through a "did you mean…?" pick in the button's
+/// `custom_id` ([`ids::Pick`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Audience {
     /// The channel: thread history in, the call persisted, rating buttons.
     Channel,
@@ -219,7 +231,7 @@ impl Config {
             judge_role,
             max_concurrent,
             history_len: Self::DEFAULT_HISTORY,
-            pending_ttl: pending::DEFAULT_TTL,
+            pick_ttl: pick::DEFAULT_TTL,
             user_limit,
         })
     }
@@ -231,7 +243,8 @@ pub struct Data {
     capture: Arc<CapturingRetriever>,
     store: Arc<dyn CallStore>,
     meter: SpendMeter,
-    pending: PendingStore,
+    /// How long a "did you mean…?" stays answerable.
+    pick_ttl: Duration,
     permits: Semaphore,
     judge_role: String,
     history_len: usize,
@@ -256,7 +269,7 @@ pub struct Data {
 impl std::fmt::Debug for Data {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Data")
-            .field("pending", &self.pending)
+            .field("pick_ttl", &self.pick_ttl)
             .field("permits", &self.permits.available_permits())
             .field("judge_role", &self.judge_role)
             .field("history_len", &self.history_len)
@@ -287,7 +300,7 @@ impl Data {
             capture,
             store,
             meter,
-            pending: PendingStore::new(cfg.pending_ttl),
+            pick_ttl: cfg.pick_ttl,
             permits: Semaphore::new(cfg.max_concurrent),
             judge_role: cfg.judge_role.clone(),
             history_len: cfg.history_len,
@@ -372,24 +385,24 @@ impl Data {
                 )
             }
             Err(JudgeError::AmbiguousCards(spans)) => {
-                let dym = render::did_you_mean(&spans);
-                let token = self.pending.insert(Pending {
-                    thread_id: q.thread_id.clone(),
-                    user_id: asker.to_string(),
-                    text: q.text.clone(),
-                    spans: spans.map(PendingSpan::from),
-                    audience,
-                });
-                Outgoing {
-                    content: render::with_header(
-                        asker.get(),
-                        &q.text,
-                        &dym.content,
-                        &self.symbols.get(),
-                    ),
-                    embed: None,
-                    components: vec![pick_row(token, &dym.choices)],
-                }
+                Outgoing::pick(asker, audience, &q.text, &spans).unwrap_or_else(|why| {
+                    tracing::info!(
+                        chars = q.text.chars().count(),
+                        bytes = q.text.len(),
+                        why = why.as_str(),
+                        "no pick buttons for this question; listing the choices without them"
+                    );
+                    Outgoing {
+                        content: render::with_header(
+                            asker.get(),
+                            &q.text,
+                            &render::did_you_mean(&spans),
+                            &self.symbols.get(),
+                        ),
+                        embed: None,
+                        components: vec![],
+                    }
+                })
             }
             Err(e) => {
                 // Same classification as the HTTP interface, from the same
@@ -424,9 +437,8 @@ impl Data {
     ) -> anyhow::Result<()> {
         match ButtonAction::parse(&c.data.custom_id) {
             Ok(ButtonAction::Rate { call, score }) => self.on_rate(ctx, c, call, score).await,
-            Ok(ButtonAction::PickCard { token, choice }) => {
-                self.on_pick(ctx, c, token, choice).await
-            }
+            Ok(ButtonAction::Pick(pick)) => self.on_pick(ctx, c, pick).await,
+            Ok(ButtonAction::LegacyPick) => ephemeral(ctx, c, render::EXPIRED).await,
             Err(e) => {
                 tracing::warn!(custom_id = %c.data.custom_id, error = %e, "unparseable button");
                 ephemeral(ctx, c, render::UNKNOWN_BUTTON).await
@@ -467,47 +479,121 @@ impl Data {
         ephemeral_followup(ctx, c, &text).await
     }
 
+    /// A "did you mean…?" click, answered from the button and the message it
+    /// is on. Every check that changes nothing comes first, then the judge
+    /// slot, then the claim, so a "busy" (or a failed check) leaves the
+    /// buttons usable. A claim whose acknowledgement fails is given back, for
+    /// the same reason.
     async fn on_pick(
         &self,
         ctx: &serenity::Context,
         c: &ComponentInteraction,
-        token: PendingId,
-        choice: u8,
+        pick: Pick,
     ) -> anyhow::Result<()> {
-        // Take the permit before the pending entry, so a "busy" leaves the buttons usable.
+        if c.user.id.get() != pick.asker.get() {
+            return ephemeral(ctx, c, render::NOT_YOURS).await;
+        }
+        let message = &c.message;
+        let shown = pick::shown_ms(
+            message.id.get(),
+            message.edited_timestamp.map(|t| t.timestamp_millis()),
+        );
+        if pick::expired(shown, pick::now_ms(), self.pick_ttl) {
+            return ephemeral(ctx, c, render::EXPIRED).await;
+        }
+        // The message is the bot's own, so its content arrives without the
+        // message-content intent. It must be the very prompt the button was
+        // made for (not a later prompt on the same message, nor content the
+        // button was never on), still read as one, and asked by the same user.
+        // Anything else, content that arrived empty included, is treated as
+        // expired.
+        let digest = Digest::of(&message.content);
+        let prompt = (digest == pick.digest)
+            .then(|| PickPrompt::parse(&message.content))
+            .flatten()
+            .filter(|p| p.asker() == pick.asker.get());
+        let Some(prompt) = prompt else {
+            tracing::warn!(
+                message = %message.id,
+                content_chars = message.content.chars().count(),
+                digest_matches = digest == pick.digest,
+                "a pick's message does not hold the prompt it was made for; answering as expired"
+            );
+            return ephemeral(ctx, c, render::EXPIRED).await;
+        };
+        // The answer goes where the message is: a private button on a channel
+        // message, or the reverse, is refused.
+        let ephemeral_flag = message.flags.map(|f| f.contains(MessageFlags::EPHEMERAL));
+        let Some(audience) = pick::audience(pick.audience, ephemeral_flag) else {
+            tracing::warn!(
+                button = ?pick.audience,
+                ephemeral = ?ephemeral_flag,
+                "a pick's audience disagrees with its message; answering as expired"
+            );
+            return ephemeral(ctx, c, render::EXPIRED).await;
+        };
+        let name = match self.library.card(pick.card).await {
+            Ok(Some(card)) if prompt.lists(&card.name) => card.name,
+            Ok(Some(_)) => {
+                tracing::warn!(card = %pick.card, "a pick's card is not on its prompt's list");
+                return ephemeral(ctx, c, render::UNKNOWN_BUTTON).await;
+            }
+            Ok(None) => return ephemeral(ctx, c, render::UNKNOWN_BUTTON).await,
+            Err(e) => {
+                tracing::error!(error = format_args!("{e:#}"), "pick: card lookup failed");
+                return ephemeral(ctx, c, render::PICK_FAILED).await;
+            }
+        };
+        let Some(text) = question::pin_at(prompt.question(), pick.span.map(ByteSpan::range), &name)
+        else {
+            tracing::warn!(span = ?pick.span, "a pick's span is not in its question; answering as expired");
+            return ephemeral(ctx, c, render::EXPIRED).await;
+        };
+        // Take the permit before the claim, so a "busy" leaves the buttons usable.
         let Some(_permit) = self.acquire().await else {
             return ephemeral(ctx, c, render::BUSY).await;
         };
-        let pending = match self.pending.take_for(token, &c.user.id.to_string()) {
-            Ok(p) => p,
-            Err(TakeError::Missing) => return ephemeral(ctx, c, render::EXPIRED).await,
-            Err(TakeError::NotOwner) => return ephemeral(ctx, c, render::NOT_YOURS).await,
+        let key = PickKey {
+            message_id: message.id.get(),
+            shown_ms: shown,
+            digest: digest.as_i64(),
         };
-        let span = pending.spans.first();
-        // Only the first MAX_CHOICES candidates were ever offered as buttons.
-        let name = match usize::from(choice) {
-            i if i < render::MAX_CHOICES => span.candidates.get(i),
-            _ => None,
-        };
-        let Some(name) = name else {
-            return ephemeral(ctx, c, render::UNKNOWN_BUTTON).await;
-        };
+        let pool = self.library.pool();
+        match claim_pick(pool, key).await {
+            Ok(true) => {}
+            Ok(false) => return ephemeral(ctx, c, render::ALREADY_PICKED).await,
+            Err(e) => {
+                tracing::error!(error = format_args!("{e:#}"), "pick: claim failed");
+                return ephemeral(ctx, c, render::PICK_FAILED).await;
+            }
+        }
         // Replace the "did you mean…?" in place, then edit it again with the verdict.
         let working = CreateInteractionResponseMessage::new()
-            .content(render::working(name))
+            .content(render::working(&name))
             .components(vec![])
             .embeds(vec![]);
-        c.create_response(&ctx.http, CreateInteractionResponse::UpdateMessage(working))
+        if let Err(e) = c
+            .create_response(&ctx.http, CreateInteractionResponse::UpdateMessage(working))
             .await
-            .context("acknowledge pick")?;
+        {
+            // The buttons are most likely still there: give the claim back so
+            // the next click is not told the card was already picked.
+            if let Err(released) = release_pick(pool, key).await {
+                tracing::error!(
+                    error = format_args!("{released:#}"),
+                    "pick: could not give the claim back after a failed acknowledgement"
+                );
+            }
+            return Err(anyhow::Error::from(e).context("acknowledge pick"));
+        }
         let q = Question {
-            thread_id: pending.thread_id.clone(),
-            text: question::pin_card(&pending.text, &span.query, name),
+            thread_id: c.channel_id.to_string(),
+            text,
         };
-        let out = self.answer(&q, c.user.id, pending.audience).await;
+        let out = self.answer(&q, c.user.id, audience).await;
         if let Err(e) = c.edit_response(&ctx.http, out.into_edit()).await {
-            // The pending entry is gone and the message shows "Working on it…"
-            // with no buttons: tell the asker (ephemerally) to ask again rather
+            // The pick is claimed and the message shows "Working on it…" with
+            // no buttons: tell the asker (ephemerally) to ask again rather
             // than leave them waiting on a message that will never change.
             tracing::error!(error = %e, "edit picked reply failed; asking the user to re-ask");
             ephemeral_followup(ctx, c, render::EDIT_FAILED)
@@ -516,6 +602,27 @@ impl Data {
             return Err(anyhow::Error::from(e).context("edit picked reply"));
         }
         Ok(())
+    }
+}
+
+/// Why a "did you mean…?" goes out without buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoPick {
+    /// The question does not fit the prompt message.
+    TooLong,
+    /// The span's byte offsets do not fit a pick's `custom_id`.
+    SpanPastU16,
+    /// No asker to give the pick to.
+    NoAsker,
+}
+
+impl NoPick {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::TooLong => "the question does not fit the prompt message",
+            Self::SpanPastU16 => "the span's byte offsets are past u16",
+            Self::NoAsker => "the asker's id is zero",
+        }
     }
 }
 
@@ -554,6 +661,40 @@ impl Outgoing {
         }
     }
 
+    /// The "did you mean…?" with buttons for the first ambiguous span, or
+    /// why there can be none (the caller lists the choices without buttons
+    /// instead).
+    fn pick(
+        asker: UserId,
+        audience: Audience,
+        question: &str,
+        spans: &NonEmpty<Ambiguous>,
+    ) -> Result<Self, NoPick> {
+        let prompt = PickPrompt::new(asker.get(), question, spans).ok_or(NoPick::TooLong)?;
+        let first = spans.first();
+        // A span the question does not contain is appended on the pick, as
+        // `question::pin_card` does; one past `u16` cannot occur under the
+        // option's `max_length` and is offered no buttons.
+        let span = match question::find_span(question, &first.query) {
+            Some(r) => Some(ByteSpan::new(r).ok_or(NoPick::SpanPastU16)?),
+            None => None,
+        };
+        let content = prompt.render();
+        let base = Pick {
+            // A `UserId` is never zero.
+            asker: NonZeroU64::new(asker.get()).ok_or(NoPick::NoAsker)?,
+            audience,
+            span,
+            digest: Digest::of(&content),
+            card: first.candidates.first().id,
+        };
+        Ok(Self {
+            content,
+            embed: None,
+            components: vec![pick_row(base, &first.candidates)],
+        })
+    }
+
     fn into_reply(self) -> poise::CreateReply {
         let mut r = poise::CreateReply::default()
             .content(self.content)
@@ -587,18 +728,20 @@ fn rating_row(call: CallId) -> CreateActionRow {
     ])
 }
 
-fn pick_row(token: PendingId, choices: &[String]) -> CreateActionRow {
-    let buttons = choices
+/// One button per candidate, the first [`render::MAX_CHOICES`]: `base` with
+/// each one's card.
+fn pick_row(base: Pick, candidates: &NonEmpty<Card>) -> CreateActionRow {
+    let buttons = candidates
         .iter()
         .take(render::MAX_CHOICES)
-        .enumerate()
-        .filter_map(|(i, name)| {
-            let choice = u8::try_from(i).ok()?;
-            Some(
-                CreateButton::new(ButtonAction::PickCard { token, choice }.to_custom_id())
-                    .label(render::button_label(name))
-                    .style(ButtonStyle::Primary),
-            )
+        .map(|card| {
+            let pick = Pick {
+                card: card.id,
+                ..base
+            };
+            CreateButton::new(ButtonAction::Pick(pick).to_custom_id())
+                .label(render::button_label(&card.name))
+                .style(ButtonStyle::Primary)
         })
         .collect();
     CreateActionRow::Buttons(buttons)
@@ -668,11 +811,22 @@ async fn has_role(
     }
 }
 
+/// The longest `/judge` question, in characters: the `max_length` of its
+/// `question` option, which the attribute below must repeat as a literal
+/// (poise takes no paths there; a test reads the registered value back). At
+/// most [`render::PICK_QUESTION_LIMIT`], so a "did you mean…?" always has
+/// room for the whole question, and a quarter of `u16::MAX`, so its byte
+/// offsets fit a pick's `custom_id`.
+pub const QUESTION_MAX_CHARS: usize = 1300;
+const _: () = assert!(QUESTION_MAX_CHARS <= render::PICK_QUESTION_LIMIT);
+const _: () = assert!(QUESTION_MAX_CHARS * 4 <= u16::MAX as usize);
+
 /// Ask a Magic rules question; the answer cites the Comprehensive Rules.
 #[poise::command(slash_command, rename = "judge", guild_only)]
 async fn judge_command(
     ctx: Ctx<'_>,
     #[description = "Your rules question. Use brackets like [[Full Card Name]] to avoid ambiguity."]
+    #[max_length = 1300]
     question: String,
     #[description = "Show the answer only to you. A private answer stands alone: no follow-ups, no ratings, not saved."]
     private: Option<bool>,
@@ -945,8 +1099,9 @@ pub async fn serve(
     // `/card` reads rulings by card id only, so its library needs no vectors.
     let library = PgLibrary::new(serving.pool().clone());
     // One `Data` for the role, whichever connection serves it: the concurrency
-    // slots, the per-user windows, the parked "did you mean?" picks and the
-    // symbol table outlive a reconnect after a lost lease.
+    // slots, the per-user windows and the symbol table outlive a reconnect
+    // after a lost lease. A "did you mean?" pick needs none of it: it is
+    // answered from its message, by whichever process holds the gateway.
     let data = Arc::new(Data::new(
         serving.deps(),
         serving.store(),
@@ -1252,7 +1407,7 @@ mod tests {
             cfg.map(|c| c.max_concurrent),
             Some(Config::DEFAULT_CONCURRENCY)
         );
-        assert_eq!(cfg.map(|c| c.pending_ttl), Some(pending::DEFAULT_TTL));
+        assert_eq!(cfg.map(|c| c.pick_ttl), Some(pick::DEFAULT_TTL));
     }
 
     #[test]
@@ -1285,36 +1440,146 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rows_carry_typed_ids_and_at_most_five_picks() {
-        let call = CallId::new(uuid::Uuid::from_u128(5));
-        let CreateActionRow::Buttons(buttons) = rating_row(call) else {
-            unreachable!("rating_row builds a button row");
+    fn card(n: u128, name: &str) -> Card {
+        Card {
+            id: judge_core::CardId::new(uuid::Uuid::from_u128(n)),
+            name: name.into(),
+            layout: judge_core::Layout::Normal,
+            faces: NonEmpty::new(judge_core::Face {
+                name: name.into(),
+                oracle_text: String::new(),
+                mana_cost: String::new(),
+                type_line: String::new(),
+            }),
+        }
+    }
+
+    fn custom_ids(row: CreateActionRow) -> Vec<ButtonAction> {
+        let CreateActionRow::Buttons(buttons) = row else {
+            unreachable!("the rows here are button rows");
         };
-        assert_eq!(buttons.len(), 3);
-        let token = PendingId::random();
-        let names: Vec<String> = (0..7).map(|i| format!("Card {i}")).collect();
-        let CreateActionRow::Buttons(buttons) = pick_row(token, &names) else {
-            unreachable!("pick_row builds a button row");
-        };
-        assert_eq!(buttons.len(), render::MAX_CHOICES);
-        // Serialised shape: custom ids round-trip through the parser.
-        let json = serde_json::to_value(&buttons).unwrap_or_default();
-        let ids: Vec<ButtonAction> = json
+        serde_json::to_value(&buttons)
+            .unwrap_or_default()
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|b| b.get("custom_id").and_then(|s| s.as_str()))
             .filter_map(|s| ButtonAction::parse(s).ok())
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn rows_carry_typed_ids_and_at_most_five_picks() {
+        let call = CallId::new(uuid::Uuid::from_u128(5));
+        assert_eq!(custom_ids(rating_row(call)).len(), 3);
+        let seven = (1..=7).map(|i| card(i, &format!("Card {i}")));
+        let candidates = NonEmpty::collect(seven).unwrap_or_else(|| NonEmpty::new(card(1, "x")));
+        let base = Pick {
+            asker: NonZeroU64::MIN,
+            audience: Audience::Private,
+            span: ByteSpan::new(3..7),
+            digest: Digest::of("prompt"),
+            card: candidates.first().id,
+        };
+        let ids = custom_ids(pick_row(base, &candidates));
         assert_eq!(ids.len(), render::MAX_CHOICES);
-        assert!(
-            matches!(ids.first(), Some(ButtonAction::PickCard { token: t, choice: 0 }) if *t == token)
+        let picked: Vec<u128> = ids
+            .iter()
+            .filter_map(|a| match a {
+                ButtonAction::Pick(p)
+                    if Pick {
+                        card: base.card,
+                        ..*p
+                    } == base =>
+                {
+                    Some(p.card.into_inner().as_u128())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(picked, [1, 2, 3, 4, 5]);
+    }
+
+    fn spans(query: &str) -> NonEmpty<Ambiguous> {
+        NonEmpty::new(Ambiguous {
+            query: query.into(),
+            candidates: NonEmpty::from((card(1, "Dark Confidant"), vec![card(2, "Bob")])),
+        })
+    }
+
+    #[test]
+    fn a_pick_carries_the_span_the_click_pins() {
+        let asker = UserId::new(42);
+        let question = "Does BOB die to bob?";
+        let out = Outgoing::pick(asker, Audience::Channel, question, &spans("bob"));
+        let Ok(out) = out else {
+            unreachable!("a short question fits");
+        };
+        let ids = custom_ids(
+            out.components
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| CreateActionRow::Buttons(vec![])),
         );
-        assert!(matches!(
-            ids.last(),
-            Some(ButtonAction::PickCard { choice: 4, .. })
-        ));
+        let Some(ButtonAction::Pick(p)) = ids.first().copied() else {
+            unreachable!("the first button is a pick");
+        };
+        assert_eq!((p.asker.get(), p.audience), (42, Audience::Channel));
+        // Every button names the prompt it is on.
+        assert_eq!(p.digest, Digest::of(&out.content));
+        let prompt = PickPrompt::parse(&out.content);
+        assert!(
+            prompt
+                .as_ref()
+                .is_some_and(|q| q.lists("Dark Confidant") && q.lists("Bob"))
+        );
+        assert!(prompt.as_ref().is_some_and(|q| !q.lists("Bob's Burgers")));
+        assert_eq!(prompt.as_ref().map(PickPrompt::question), Some(question));
+        // The click, from the message and the button alone, pins as
+        // `pin_card` would have on the question it was asked with.
+        let pinned = prompt.and_then(|q| {
+            question::pin_at(q.question(), p.span.map(ByteSpan::range), "Dark Confidant")
+        });
+        assert_eq!(
+            pinned,
+            Some(question::pin_card(question, "bob", "Dark Confidant"))
+        );
+        // A span the question does not contain travels as "append".
+        let out = Outgoing::pick(asker, Audience::Private, question, &spans("urza"));
+        let ids = out
+            .map(|o| {
+                o.components
+                    .into_iter()
+                    .flat_map(custom_ids)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert!(
+            matches!(ids.first(), Some(ButtonAction::Pick(p)) if p.span.is_none() && p.audience == Audience::Private),
+            "{ids:?}"
+        );
+        // Too long for the message: no buttons, the caller lists the choices.
+        let long = "q".repeat(render::CONTENT_LIMIT);
+        assert_eq!(
+            Outgoing::pick(asker, Audience::Channel, &long, &spans("q")).err(),
+            Some(NoPick::TooLong)
+        );
+    }
+
+    #[test]
+    fn the_question_option_is_registered_with_its_max_length() {
+        let cmd = judge_command().create_as_slash_command();
+        let json = serde_json::to_value(&cmd).unwrap_or_default();
+        let max = json
+            .get("options")
+            .and_then(|o| o.as_array())
+            .and_then(|o| {
+                o.iter()
+                    .find(|o| o.get("name").and_then(|n| n.as_str()) == Some("question"))
+            })
+            .and_then(|o| o.get("max_length"))
+            .and_then(serde_json::Value::as_u64);
+        assert_eq!(max, u64::try_from(QUESTION_MAX_CHARS).ok());
     }
 
     #[test]
