@@ -119,7 +119,7 @@ wide, on a splash page *and* a docs page. Read positions out of
 `getBoundingClientRect()` rather than by eye.
 
 CI is `.github/workflows/ci.yml`: fmt, clippy, `.sqlx` freshness, tests on a pgvector
-service, web and site builds, compose parse. It also runs Biome over `web/` and `site/`
+container started by a step (after a Docker Hub login, when the secrets exist), web and site builds, compose parse. It also runs Biome over `web/` and `site/`
 (`biome.json` at the root, `.astro` files left to `astro check`), `astro check`, and
 lychee over the built site's internal links. A `lint` job runs `cargo deny check`
 (`deny.toml`), `cargo machete`, `taplo fmt --check` (`.taplo.toml`, which leaves out
