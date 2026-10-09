@@ -85,9 +85,10 @@ pub struct Day {
     pub web: i64,
     /// Persisted by an agent session or `judge-cli judge`.
     pub agent: i64,
-    /// Estimated model spend of the `judgebot` processes that day, in USD.
+    /// Estimated model spend of the `judgebot` processes and `judgebot ingest`
+    /// that day, in USD: chat calls and embeddings together.
     pub usd: f64,
-    /// Model calls behind that spend.
+    /// Chat model calls behind that spend (embedding requests are not counted).
     pub llm_calls: i64,
 }
 

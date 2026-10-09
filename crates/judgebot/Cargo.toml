@@ -25,6 +25,8 @@ judge-core.workspace = true
 judge-bot.workspace = true
 # The network roles.
 judge-api.workspace = true
+# The spend meter `judgebot ingest` bills its embeddings to.
+judge-llm.workspace = true
 anyhow.workspace = true
 nonempty.workspace = true
 tokio.workspace = true

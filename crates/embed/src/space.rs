@@ -132,13 +132,25 @@ impl fmt::Display for SpaceMismatch {
     }
 }
 
-/// An [`Embedder`] that knows which space its vectors belong to. Every
-/// embedder in this crate implements it; the adapters that write or query
-/// vector columns take this, not a bare `Embedder`, so an embedder of
-/// unknown space cannot reach a column.
-pub trait WithSpace: Embedder {
+/// An [`Embedder`] that knows which space its vectors belong to and bills
+/// every request to the spend cap. The adapters that write or query vector
+/// columns take this, not a bare `Embedder`, so an embedder of unknown space
+/// cannot reach a column. Sealed: the one implementation is
+/// [`crate::MeteredEmbedder`] over an [`crate::EmbedBackend`], so a
+/// `dyn WithSpace` *is* a capped embedder, as a `dyn ChatModel` is a capped
+/// chat model (`docs/DECISIONS.md` D7).
+pub trait WithSpace: Embedder + sealed::Sealed {
     /// The space `embed` writes into. `space().dimensions` equals `dimensions()`.
     fn space(&self) -> &Space;
+    /// What a request is billed at.
+    fn price(&self) -> crate::EmbedPrice;
+    /// The meter it bills to: the process's, shared with its chat models.
+    fn meter(&self) -> &judge_llm::SpendMeter;
+}
+
+pub(crate) mod sealed {
+    /// Implemented for [`crate::MeteredEmbedder`] only.
+    pub trait Sealed {}
 }
 
 #[cfg(test)]

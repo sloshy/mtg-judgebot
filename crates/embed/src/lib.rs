@@ -10,11 +10,22 @@
 //! writers compare the two before they touch a vector column
 //! (`judge_bot::db::Vectors`, `ingest embed`). The comparison itself is
 //! [`Space::check`], a pure function, so it is the same test everywhere.
+//!
+//! Every request is also behind the spend cap ([`metered`]): the adapters
+//! implement [`EmbedBackend`], and only [`MeteredEmbedder`] — which reserves
+//! a worst case on the process's `judge_llm::SpendMeter` before sending and
+//! settles to the reported usage after — implements the sealed [`WithSpace`]
+//! the database adapters take.
 
+pub mod metered;
 pub mod openai;
 pub mod space;
 pub mod voyage;
 
+pub use metered::{
+    EmbedBackend, EmbedError, EmbedPrice, EmbedUsage, Embedded, MeteredEmbedder, VOYAGE_PRICES,
+    is_spend_cap, table_price, worst_case_tokens,
+};
 pub use openai::{Auth, OpenAiEmbedder};
 pub use space::{Provider, Space, SpaceMismatch, WithSpace};
 pub use voyage::VoyageEmbedder;

@@ -1,4 +1,4 @@
-//! `Embedder` over an OpenAI-compatible `POST {base_url}/embeddings`
+//! [`EmbedBackend`] over an OpenAI-compatible `POST {base_url}/embeddings`
 //! (`docs/PROVIDERS.md` §4.3): `OpenAI` itself, `LiteLLM`, Ollama,
 //! vLLM, llama.cpp, Azure. The request is `input`, `model` and, unless the
 //! server is known to reject it, `dimensions`; the response's `data[].embedding`
@@ -8,14 +8,19 @@
 //! The width is checked on every reply: a server that ignores `dimensions`
 //! (or one told not to receive it) must still produce vectors of the
 //! configured width, because that is the width of the columns.
+//!
+//! The usage is `usage.total_tokens`, else `usage.prompt_tokens` (the two are
+//! equal on `OpenAI`; a compatible server may send either). A server that
+//! sends neither (some local ones) is billed at the spend cap's reservation,
+//! unless its provider is marked free.
 
 use std::{fmt, time::Duration};
 
 use async_trait::async_trait;
-use judge_core::{Embedder, InputKind, JudgeError};
+use judge_core::{InputKind, JudgeError};
 use serde::{Deserialize, Serialize};
 
-use crate::{Provider, Space, WithSpace};
+use crate::{EmbedBackend, EmbedError, EmbedUsage, Embedded, Provider, Space};
 
 /// Attempts per call on 429/5xx (1 initial + 2 retries), as the chat backends do.
 const MAX_ATTEMPTS: u32 = 3;
@@ -47,7 +52,8 @@ impl fmt::Debug for Auth {
     }
 }
 
-/// OpenAI-compatible embedder. Cheap to clone (the connection pool is shared).
+/// OpenAI-compatible embedder. Cheap to clone (the connection pool is
+/// shared). It reaches the pipeline only inside a [`crate::MeteredEmbedder`].
 #[derive(Clone, Debug)]
 pub struct OpenAiEmbedder {
     http: reqwest::Client,
@@ -79,6 +85,31 @@ struct Datum {
     embedding: Vec<f32>,
     #[serde(default)]
     index: Option<usize>,
+}
+
+/// The billed part of a 2xx body, read on its own before [`Resp`] so a body
+/// whose `data` does not decode is still billed.
+#[derive(Deserialize)]
+struct Billed {
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
+#[derive(Deserialize)]
+struct Usage {
+    #[serde(default)]
+    total_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+}
+
+/// What a 2xx `body` says it used.
+fn usage(body: &[u8]) -> EmbedUsage {
+    serde_json::from_slice::<Billed>(body)
+        .ok()
+        .and_then(|b| b.usage)
+        .and_then(|u| u.total_tokens.or(u.prompt_tokens))
+        .map_or(EmbedUsage::Unreported, EmbedUsage::Tokens)
 }
 
 /// `{"error": {"message": ...}}`, the shape every compatible server uses.
@@ -156,8 +187,8 @@ fn retryable(status: reqwest::StatusCode) -> bool {
 }
 
 #[async_trait]
-impl Embedder for OpenAiEmbedder {
-    async fn embed(&self, texts: &[&str], _kind: InputKind) -> Result<Vec<Vec<f32>>, JudgeError> {
+impl EmbedBackend for OpenAiEmbedder {
+    async fn embed(&self, texts: &[&str], _kind: InputKind) -> Result<Embedded, EmbedError> {
         if texts.is_empty() {
             return Err(anyhow::anyhow!(
                 "embed: no texts given (the embeddings API rejects an empty input)"
@@ -203,14 +234,19 @@ impl Embedder for OpenAiEmbedder {
             }
             return Err(anyhow::anyhow!("embeddings {status}: {message}").into());
         };
-        let parsed: Resp = serde_json::from_slice(&body).map_err(anyhow::Error::from)?;
+        // A 2xx was billed whatever its body holds.
+        let usage = usage(&body);
+        let billed = |error: anyhow::Error| EmbedError {
+            error: JudgeError::from(error),
+            billed: Some(usage),
+        };
+        let parsed: Resp = serde_json::from_slice(&body).map_err(|e| billed(e.into()))?;
         if parsed.data.len() != texts.len() {
-            return Err(anyhow::anyhow!(
+            return Err(billed(anyhow::anyhow!(
                 "embeddings returned {} vectors for {} texts",
                 parsed.data.len(),
                 texts.len()
-            )
-            .into());
+            )));
         }
         // Servers answer in input order; `index` is honoured when present in case one
         // does not. Indices that are not exactly 0..n (a proxy answering `[1, 1]`) would
@@ -219,31 +255,29 @@ impl Embedder for OpenAiEmbedder {
         if data.iter().all(|d| d.index.is_some()) {
             data.sort_by_key(|d| d.index);
             if let Some((i, d)) = data.iter().enumerate().find(|(i, d)| d.index != Some(*i)) {
-                return Err(anyhow::anyhow!("embeddings returned index {:?} where {i} was expected: not a permutation of the input", d.index).into());
+                return Err(billed(anyhow::anyhow!(
+                    "embeddings returned index {:?} where {i} was expected: not a permutation of the input",
+                    d.index
+                )));
             }
         }
         let want = self.space.dimensions;
-        data.into_iter()
+        let vectors = data
+            .into_iter()
             .map(|d| {
                 if d.embedding.len() == want {
                     Ok(d.embedding)
                 } else {
-                    Err(anyhow::anyhow!(
+                    Err(billed(anyhow::anyhow!(
                         "embeddings returned a {}-dimensional vector but the configured space is {want}; set models.embed.dimensions to what the model produces",
                         d.embedding.len()
-                    )
-                    .into())
+                    )))
                 }
             })
-            .collect()
+            .collect::<Result<_, _>>()?;
+        Ok(Embedded { vectors, usage })
     }
 
-    fn dimensions(&self) -> usize {
-        self.space.dimensions
-    }
-}
-
-impl WithSpace for OpenAiEmbedder {
     fn space(&self) -> &Space {
         &self.space
     }
@@ -252,6 +286,9 @@ impl WithSpace for OpenAiEmbedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{EmbedPrice, MeteredEmbedder, WithSpace, is_spend_cap};
+    use judge_core::Embedder;
+    use judge_llm::SpendMeter;
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -262,15 +299,20 @@ mod tests {
         vec![v; n]
     }
 
+    /// Behind a meter that never caps, as a `pricing = "free"` provider is.
+    fn free(e: OpenAiEmbedder) -> MeteredEmbedder<OpenAiEmbedder> {
+        MeteredEmbedder::priced(e, SpendMeter::new(), EmbedPrice::Free)
+    }
+
     #[test]
     fn debug_redacts_the_key() -> Result<(), JudgeError> {
-        let e = OpenAiEmbedder::new(
+        let e = free(OpenAiEmbedder::new(
             "http://x/v1",
             Auth::Bearer("sk-secret".into()),
             "m",
             4,
             true,
-        )?;
+        )?);
         let s = format!("{e:?}");
         assert!(!s.contains("sk-secret") && s.contains("<redacted>"), "{s}");
         let s = format!("{:?}", Auth::ApiKeyHeader("sk-secret".into()));
@@ -316,15 +358,15 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let e = OpenAiEmbedder::new(
+        let e = free(OpenAiEmbedder::new(
             &format!("{}/v1", server.uri()),
             Auth::Bearer("sk-test".into()),
             "text-embedding-3-small",
             3,
             true,
-        )?;
+        )?);
         assert_eq!(
-            e.space(),
+            WithSpace::space(&e),
             &Space {
                 provider: Provider::OpenAi,
                 model: "text-embedding-3-small".into(),
@@ -360,13 +402,13 @@ mod tests {
             "{}/openai/deployments/d?api-version=2024-10-21",
             server.uri()
         );
-        let e = OpenAiEmbedder::new(
+        let e = free(OpenAiEmbedder::new(
             &base,
             Auth::ApiKeyHeader("az-key".into()),
             "nomic-embed-text",
             2,
             false,
-        )?;
+        )?);
         assert_eq!(
             e.embed(&["q"], InputKind::Query).await?,
             vec![vec_of(2, 0.5)]
@@ -390,7 +432,13 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 1, true)?;
+        let e = free(OpenAiEmbedder::new(
+            &format!("{}/v1", server.uri()),
+            Auth::None,
+            "m",
+            1,
+            true,
+        )?);
         assert_eq!(e.embed(&["q"], InputKind::Query).await?, vec![vec![1.0]]);
         Ok(())
     }
@@ -420,7 +468,13 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 2, true)?;
+        let e = free(OpenAiEmbedder::new(
+            &format!("{}/v1", server.uri()),
+            Auth::None,
+            "m",
+            2,
+            true,
+        )?);
         let err = e
             .embed(&["a", "b"], InputKind::Document)
             .await
@@ -459,7 +513,13 @@ mod tests {
             ]})))
             .mount(&server)
             .await;
-        let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 2, true)?;
+        let e = free(OpenAiEmbedder::new(
+            &format!("{}/v1", server.uri()),
+            Auth::None,
+            "m",
+            2,
+            true,
+        )?);
         let err = e
             .embed(&["a", "b"], InputKind::Document)
             .await
@@ -479,13 +539,13 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let e = OpenAiEmbedder::new(
+        let e = free(OpenAiEmbedder::new(
             &format!("{}/v1", server.uri()),
             Auth::Bearer("bad".into()),
             "m",
             2,
             true,
-        )?;
+        )?);
         let err = e
             .embed(&["a"], InputKind::Document)
             .await
@@ -516,7 +576,13 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 2, true)?;
+        let e = free(OpenAiEmbedder::new(
+            &format!("{}/v1", server.uri()),
+            Auth::None,
+            "m",
+            2,
+            true,
+        )?);
         assert_eq!(
             e.embed(&["a"], InputKind::Document).await?,
             vec![vec![1.0, 2.0]]
@@ -534,7 +600,13 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let e = OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 2, true)?;
+        let e = free(OpenAiEmbedder::new(
+            &format!("{}/v1", server.uri()),
+            Auth::None,
+            "m",
+            2,
+            true,
+        )?);
         let err = e
             .embed(&["a"], InputKind::Document)
             .await
@@ -545,6 +617,66 @@ mod tests {
         assert_eq!(
             server.received_requests().await.map_or(0, |r| r.len()),
             MAX_ATTEMPTS as usize
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_is_read_and_a_capped_meter_sends_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{"index": 0, "embedding": [1.0]}],
+                "usage": {"prompt_tokens": 500_000, "total_tokens": 500_000}
+            })))
+            .mount(&server)
+            .await;
+        let backend =
+            OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 1, true)?;
+        // No total: the prompt count stands in; neither: unreported.
+        assert_eq!(
+            usage(br#"{"usage": {"prompt_tokens": 7}}"#),
+            EmbedUsage::Tokens(7)
+        );
+        assert_eq!(usage(br#"{"data": []}"#), EmbedUsage::Unreported);
+        let meter = SpendMeter::new().with_max_spend_usd(1.0)?;
+        let e = MeteredEmbedder::priced(backend, meter.clone(), EmbedPrice::PerToken(0.10));
+        e.embed(&["q"], InputKind::Query).await?;
+        assert!(
+            (meter.spent_usd() - 0.05).abs() < 1e-9,
+            "{}",
+            meter.spent_usd()
+        );
+        // The rest of the cap is spent elsewhere: the next request is refused unsent.
+        meter.set_adjustment_micro(950_000);
+        let err = e.embed(&["q"], InputKind::Query).await.err();
+        assert!(err.as_ref().is_some_and(is_spend_cap), "{err:?}");
+        assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_server_that_reports_no_usage_is_billed_at_the_reservation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data": [{"embedding": [1.0]}]})),
+            )
+            .mount(&server)
+            .await;
+        let backend =
+            OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 1, true)?;
+        let meter = SpendMeter::new();
+        let e = MeteredEmbedder::priced(backend, meter.clone(), EmbedPrice::PerToken(1.0));
+        e.embed(&["abcd"], InputKind::Document).await?;
+        let reserved = crate::metered::usd_for(crate::worst_case_tokens(&["abcd"]), 1.0);
+        assert!(
+            (meter.spent_usd() - reserved).abs() < 1e-6,
+            "{}",
+            meter.spent_usd()
         );
         Ok(())
     }

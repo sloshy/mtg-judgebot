@@ -19,7 +19,10 @@
 //!
 //! The embedder comes from `judge.toml` / `VOYAGE_API_KEY` through
 //! [`crate::config`], the same loader the bot uses, so `embed` writes the space
-//! the bot queries. `emoji` needs no database at all, only `DISCORD_TOKEN`.
+//! the bot queries. It is billed to the meter the caller passes: the
+//! process's one (`judgebot --jobs`), or the one `judgebot ingest` makes from
+//! `JUDGE_MAX_USD` and syncs to the spend ledger ([`crate::budget`]), so an
+//! embedding run is capped and recorded like a question. `emoji` needs no database at all, only `DISCORD_TOKEN`.
 //! Downloads are cached under [`cache_dir`].
 
 pub mod aliases;
@@ -63,6 +66,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use judge_embed::WithSpace;
+use judge_llm::SpendMeter;
 use sqlx::PgPool;
 
 use crate::db::RetireSummary;
@@ -117,17 +121,17 @@ pub(crate) fn http_client(user_agent: &str) -> Result<reqwest::Client> {
 /// An embedder as the configuration builds it.
 pub type Embedder = Arc<dyn WithSpace>;
 
-/// The configured embedder (`judge.toml`, else `VOYAGE_API_KEY`), or `None`
-/// with a warning when neither names one, so an unconfigured environment
-/// degrades instead of failing. A configuration that does not load is an
-/// error: a typo must not silently skip the embedding step.
+/// The configured embedder (`judge.toml`, else `VOYAGE_API_KEY`), billed to
+/// `meter`, or `None` with a warning when neither names one, so an
+/// unconfigured environment degrades instead of failing. A configuration that
+/// does not load is an error: a typo must not silently skip the embedding step.
 ///
 /// # Errors
 /// When the configuration does not load or its embedder cannot be built.
-pub fn embedder_from_config() -> Result<Option<Embedder>> {
+pub fn embedder_from_config(meter: &SpendMeter) -> Result<Option<Embedder>> {
     let config = load_config()?;
     tracing::info!("{}", config.summary());
-    let embedder = config.embedder()?;
+    let embedder = config.embedder_billed_to(meter)?;
     if embedder.is_none() {
         tracing::warn!(
             "no embedder configured (VOYAGE_API_KEY or [models.embed]); embedding steps will be skipped"
@@ -139,10 +143,10 @@ pub fn embedder_from_config() -> Result<Option<Embedder>> {
 /// [`embedder_from_config`] without the warning, for a caller that reports
 /// the skip itself, and with the summary at DEBUG: a long-running process
 /// logged it at startup, and reloads it on every scheduled run.
-fn configured_embedder() -> Result<Option<Embedder>> {
+fn configured_embedder(meter: &SpendMeter) -> Result<Option<Embedder>> {
     let config = load_config()?;
     tracing::debug!("{}", config.summary());
-    Ok(config.embedder()?)
+    Ok(config.embedder_billed_to(meter)?)
 }
 
 fn load_config() -> Result<crate::config::Config> {
@@ -174,13 +178,20 @@ fn load_config() -> Result<crate::config::Config> {
 /// only after the migration released its lock, so the two locks are never
 /// taken in the other order), which is why it takes a pool.
 ///
+/// The embedding step bills to `meter`.
+///
 /// # Errors
 /// The first step that failed, named.
-pub async fn init(pool: &PgPool, cache_dir: &Path, process: &'static str) -> Result<()> {
+pub async fn init(
+    pool: &PgPool,
+    cache_dir: &Path,
+    process: &'static str,
+    meter: &SpendMeter,
+) -> Result<()> {
     let started = Instant::now();
     // Before the download: a judge.toml that does not load should fail in a
     // second, not at step 6.
-    let embedder = embedder_from_config().context("init: the model configuration")?;
+    let embedder = embedder_from_config(meter).context("init: the model configuration")?;
 
     let mut steps = InitSteps::default();
     let t = steps.begin("migrate");
@@ -454,9 +465,19 @@ fn has_discord_token() -> bool {
 ///
 /// A [`Trigger::Schedule`] run also skips `embed` when more rows wait than it
 /// may pay for unattended ([`embed::UNATTENDED_CEILING`]); see [`over_ceiling`].
-pub async fn refresh(lease: &mut RefreshLease, cache_dir: &Path, trigger: Trigger) -> RunReport {
+/// The ceiling bounds one run whatever the cap says.
+///
+/// `embed` bills to `meter`, the caller's process meter, so the cap covers
+/// it: a batch the cap cannot fit fails the step naming the cap, which a
+/// scheduled run reports like any failure.
+pub async fn refresh(
+    lease: &mut RefreshLease,
+    cache_dir: &Path,
+    trigger: Trigger,
+    meter: &SpendMeter,
+) -> RunReport {
     let step = async |lease: &mut RefreshLease, step: Step| {
-        refresh_step(lease, step, cache_dir, trigger).await
+        refresh_step(lease, step, cache_dir, trigger, meter).await
     };
     refresh_with(lease, trigger, RUN_TIMEOUT, step).await
 }
@@ -589,13 +610,14 @@ async fn refresh_step(
     step: Step,
     cache_dir: &Path,
     trigger: Trigger,
+    meter: &SpendMeter,
 ) -> StepReport {
     match step {
         Step::Cards => StepReport::Cards(Outcome::of(scryfall::run(lease, cache_dir).await)),
         Step::Rules => StepReport::Rules(Outcome::of(cr::run_latest(lease, cache_dir).await)),
         Step::Lists => StepReport::Lists(lists::refresh(lease).await),
         Step::Retire => StepReport::Retire(Outcome::of(retire(lease).await)),
-        Step::Embed => StepReport::Embed(match configured_embedder() {
+        Step::Embed => StepReport::Embed(match configured_embedder(meter) {
             Ok(Some(embedder)) => match over_ceiling(lease, trigger).await {
                 Ok(Some(reason)) => Outcome::Skipped { reason },
                 Ok(None) => Outcome::of(embed::run(lease, Some(&*embedder)).await.map(|counts| {
@@ -863,7 +885,13 @@ mod tests {
             .bind(pid)
             .execute(&pool)
             .await?;
-        let report = refresh(&mut held, Path::new("/nonexistent"), Trigger::Manual).await;
+        let report = refresh(
+            &mut held,
+            Path::new("/nonexistent"),
+            Trigger::Manual,
+            &SpendMeter::new(),
+        )
+        .await;
         assert_eq!(report.failed(), Step::ALL.to_vec());
         assert!(
             report.steps.iter().all(|s| {

@@ -58,6 +58,7 @@
 
 use std::{num::NonZeroU16, panic::AssertUnwindSafe, time::Duration};
 
+use judge_llm::SpendMeter;
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -621,8 +622,15 @@ impl Scheduler {
 ///
 /// The record is read once here, on the caller's pool, so the startup line
 /// sits beside the configuration summary; everything after runs on the
-/// scheduler's own runtime and pool.
-pub async fn start(pool: &PgPool, jobs: Jobs, process: &'static str) -> Option<Scheduler> {
+/// scheduler's own runtime and pool. The refresh's embedding step bills to
+/// `meter`, the process's one, so `JUDGE_MAX_USD` caps it with the questions
+/// and the spend ledger records it.
+pub async fn start(
+    pool: &PgPool,
+    jobs: Jobs,
+    meter: SpendMeter,
+    process: &'static str,
+) -> Option<Scheduler> {
     let Schedule::Every(every) = jobs.refresh else {
         tracing::info!(
             "scheduled data refresh is off ({REFRESH_HOURS_ENV}=0): run `judgebot ingest refresh` yourself (scripts/refresh-data.sh)"
@@ -656,7 +664,7 @@ pub async fn start(pool: &PgPool, jobs: Jobs, process: &'static str) -> Option<S
     let spawned = std::thread::Builder::new()
         .name(THREAD_NAME.to_owned())
         .spawn(move || {
-            let ended = run_thread(options, every, alert, process);
+            let ended = run_thread(options, every, alert, &meter, process);
             tell(&thread_tx, ended);
         });
     if let Err(e) = spawned {
@@ -685,6 +693,7 @@ fn run_thread(
     options: PgConnectOptions,
     every: Hours,
     alert: Option<AlertWebhook>,
+    meter: &SpendMeter,
     process: &'static str,
 ) -> Ended {
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -699,7 +708,10 @@ fn run_thread(
             }
         };
         let local = tokio::task::LocalSet::new();
-        local.block_on(&runtime, schedule_loop(options, every, alert, process));
+        local.block_on(
+            &runtime,
+            schedule_loop(options, every, alert, meter, process),
+        );
     }));
     let ended = if outcome.is_err() {
         Ended::Panicked
@@ -728,6 +740,7 @@ async fn schedule_loop(
     options: PgConnectOptions,
     every: Hours,
     alert: Option<AlertWebhook>,
+    meter: &SpendMeter,
     process: &'static str,
 ) {
     let pool = PgPoolOptions::new()
@@ -743,10 +756,10 @@ async fn schedule_loop(
     tokio::time::sleep(FIRST_CHECK + jitter()).await;
     loop {
         let check = tokio::task::spawn_local({
-            let (pool, dir) = (pool.clone(), cache_dir.clone());
+            let (pool, dir, meter) = (pool.clone(), cache_dir.clone(), meter.clone());
             async move {
                 let refresh = async move |lease: &mut RefreshLease| {
-                    ingest::refresh(lease, &dir, Trigger::Schedule).await
+                    ingest::refresh(lease, &dir, Trigger::Schedule, &meter).await
                 };
                 let limit = runs::ABANDONED_AFTER;
                 let ticked = tick(&pool, every, process, &mut memory, limit, refresh).await;

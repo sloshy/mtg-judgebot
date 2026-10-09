@@ -66,8 +66,10 @@ impl Serving {
         }
         let store: Arc<dyn CallStore> = Arc::new(store);
         // The period's spend so far is loaded before the first question can
-        // arrive, on any role: they all bill to this one meter.
-        budget::start(
+        // arrive, on any role: they all bill to this one meter. The ledger
+        // syncs on its own task for the life of the process; the handle is
+        // for a process that must flush before it exits, which this is not.
+        let _ledger = budget::start(
             pool.clone(),
             models.meter().clone(),
             judge.budget().clone(),

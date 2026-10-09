@@ -15,11 +15,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   effect tracking, the one thing Rust doesn't give us. Never add reqwest/sqlx/tokio-net
   to core.
 - **The user is cost-sensitive on API spend.** Every model call goes through the
-  spend-capped `judge_llm::Metered` (`JUDGE_MAX_USD`, default $5). `JUDGE_BUDGET_PERIOD`
+  spend-capped `judge_llm::Metered` (`JUDGE_MAX_USD`, default $5), and every embedding
+  through `judge_embed::MeteredEmbedder` on the same meter. `JUDGE_BUDGET_PERIOD`
   (`process` | `day` | `month`) says what the cap covers (D19): `judge_bot::budget` keeps
   the `spend_days` ledger every 10 s and sets the meter's *adjustment*, so every process
   shares one period total that survives restarts. A `judgebot` process has one meter
-  whichever roles it runs. The meter itself stays storage-free.
+  whichever roles it runs. `judgebot ingest` and a `--jobs`-only process write the ledger
+  too. The meter itself stays storage-free.
   `JUDGE_ALERT_WEBHOOK` is told when the cap trips, when the scheduled refresh fails (once
   per streak), recovers or hits its embed ceiling, and when a script fails
   (`scripts/alert.sh`). `judge-cli stats` reads the ledger. The cap *reserves*
@@ -329,7 +331,10 @@ cargo run -r -p judgebot -- ingest reembed [--yes] [--clear]  # make the DB hold
                                                         # it already holds it, only fill empty rows (idempotent;
                                                         # resume an interrupted refill with it). --clear clears
                                                         # and re-pays every row in the same space. Without --yes:
-                                                        # prints rows + rough cost, exit≠0, changes nothing.
+                                                        # prints rows, the cost at the configured price and
+                                                        # what the spend cap has left, exit≠0, changes nothing.
+                                                        # Billed to JUDGE_MAX_USD: raise it for the run if
+                                                        # the dry run says the re-embed may not fit.
                                                         # `docker compose restart judgebot` after a switch
                                                         # (`up -d` sees no change: the file is a mount).
 cargo run -r -p judgebot -- ingest emoji                # Scryfall card symbols -> the bot's Discord
@@ -426,7 +431,13 @@ and `bot` ← the other bins):
 - `openai`: a `Backend` for chat completions. Its own wire types and the strict-schema
   transform (every property `required`, optionals `anyOf [T, null]`). String tool
   arguments are parsed by serde. `choices[0].message` is replayed verbatim.
-- `embed`: Voyage + OpenAI-compatible `/embeddings`, each a `WithSpace`.
+- `embed`: Voyage + OpenAI-compatible `/embeddings`, each an open `EmbedBackend` that
+  reports usage. The sealed `WithSpace` everything downstream takes is implemented only by
+  `MeteredEmbedder<B>` (reserve bytes + 16 tokens per text, settle to usage; prices in
+  `VOYAGE_PRICES`, `EmbedPrice::{Free, Table, PerToken}`), so every embedding is behind
+  the spend cap by type. Its requests and refusals have their own meter counters
+  (`embedding_calls`, `embedding_refusals`): `calls()`, the ledger's `calls` and the
+  questions-refused alert stay chat-only. A dropped `Reservation` keeps its worst case.
 - `bot` (lib `judge_bot`): sqlx adapters, `config.rs` (the `judge.toml` loader),
   `extract.rs`/`synth.rs` over `judge-llm` only, prompts in `crates/bot/src/prompts/`,
   the serenity/poise Discord layer with pure `render.rs` (`discord::serve`, the
@@ -604,8 +615,14 @@ Key cross-file facts that aren't obvious from any one file:
     and `bin/cli.rs` only transport. `.claude/skills/judge/SKILL.md` tells Claude Code how
     to drive it.
 - **Vectors carry their space, and the database records the one it holds.**
-  - Every embedder (`judge_embed::{VoyageEmbedder, OpenAiEmbedder}`) implements
-    `WithSpace`: a `Space` (provider *kind* `voyage|openai`, model, dimensions).
+  - Every embedder (`judge_embed::{VoyageEmbedder, OpenAiEmbedder}`) carries a `Space`
+    (provider *kind* `voyage|openai`, model, dimensions), reached through the metered
+    `WithSpace`. `Config::embedder()`/`vectors()` bill it to the config's meter;
+    `embedder_billed_to(meter)` is for a reloaded config inside a process that has one
+    (the scheduled refresh, `judgebot ingest`).
+  - At the spend cap `Vectors::embed` returns `None` (WARN once per streak): retrieval
+    loses its vector source and persist stores a NULL vector. The ingest embed loop fails
+    naming the cap, keeping what it wrote.
   - The one-row table `embedding_space` names what the stored vectors are. Migration
     `20260904000001` seeds it `voyage/voyage-3.5/1024` for a DB that already held vectors.
     `Space::check` (pure, in `judge_embed::space`) is the only definition of "same space".

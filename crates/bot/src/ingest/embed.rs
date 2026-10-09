@@ -19,6 +19,12 @@
 //! vectors under the new row. The row is written by the first batch that writes a
 //! vector, in the same transaction, so a run that fails before then leaves no label
 //! behind it; vectors it did not write are never relabelled.
+//!
+//! Every request is behind the process's spend cap (the embedder is a
+//! `judge_embed::MeteredEmbedder`): a batch the cap cannot fit is refused
+//! before it is sent and the step fails naming the cap (`refused`), keeping
+//! what it has embedded. The scheduled refresh reports that like any failed
+//! step, to `JUDGE_ALERT_WEBHOOK`.
 
 use anyhow::Context as _;
 use judge_core::InputKind;
@@ -208,7 +214,7 @@ async fn embed_table(pool: &PgPool, embedder: &dyn WithSpace, t: &Target) -> any
         let vectors = embedder
             .embed(&texts, InputKind::Document)
             .await
-            .map_err(|e| anyhow::anyhow!("embedder: {e}"))?;
+            .map_err(|e| refused(&e, total))?;
         if vectors.len() != batch.len() {
             anyhow::bail!(
                 "embedder returned {} vectors for {} texts",
@@ -258,6 +264,21 @@ async fn embed_table(pool: &PgPool, embedder: &dyn WithSpace, t: &Target) -> any
     }
 }
 
+/// An embedding failure as the step reports it. A refusal by the spend cap
+/// says so and how to get past it: the rows embedded so far are kept, so the
+/// same command run again with room under the cap resumes where it stopped.
+fn refused(e: &judge_core::JudgeError, done: usize) -> anyhow::Error {
+    if judge_embed::is_spend_cap(e) {
+        anyhow::anyhow!(
+            "stopped at the spend cap after {done} rows of this table ({e}); the rows embedded so far are kept. \
+             Raise JUDGE_MAX_USD for this run (`JUDGE_MAX_USD=20 judgebot ingest embed`, or with \
+             JUDGE_BUDGET_PERIOD=day|month wait for the next period) and run it again to embed the rest"
+        )
+    } else {
+        anyhow::anyhow!("embedder: {e}")
+    }
+}
+
 /// The longest prefix of `pairs` (at least one) whose texts total ≤ `MAX_BATCH_CHARS`.
 fn fit_chars(pairs: &[(String, String)]) -> &[(String, String)] {
     let mut chars = 0usize;
@@ -276,7 +297,7 @@ fn fit_chars(pairs: &[(String, String)]) -> &[(String, String)] {
 /// counts its calls, can answer at a width other than its space's, and can
 /// stage a concurrent `ingest reembed` by switching the database from inside
 /// its first call (the one moment a switch can land between a batch's request
-/// and its write).
+/// and its write). Behind a free meter, as every embedder is behind one.
 #[cfg(test)]
 pub(crate) mod fake {
     use std::sync::{
@@ -285,62 +306,95 @@ pub(crate) mod fake {
     };
 
     use async_trait::async_trait;
-    use judge_core::{Embedder, InputKind, JudgeError};
-    use judge_embed::{Provider, Space, WithSpace};
+    use judge_core::InputKind;
+    use judge_embed::{
+        EmbedBackend, EmbedError, EmbedPrice, EmbedUsage, Embedded, MeteredEmbedder, Provider,
+        Space,
+    };
+    use judge_llm::SpendMeter;
     use sqlx::PgPool;
 
     use crate::db::space::switch_space;
 
-    pub(crate) struct Fake {
-        pub(crate) space: Space,
+    pub(crate) struct Backend {
+        space: Space,
         calls: AtomicUsize,
         /// Width of the vectors returned; the space's unless overridden.
-        reply_dimensions: usize,
+        reply_dimensions: AtomicUsize,
         /// Performed on the first call, once.
         switch: Mutex<Option<(PgPool, Space)>>,
     }
 
-    impl Fake {
-        pub(crate) fn new(provider: Provider, model: &str, dimensions: usize) -> Self {
-            Self {
+    /// The fake, metered.
+    pub(crate) type Fake = MeteredEmbedder<Backend>;
+
+    /// A fake of `provider`/`model` at `dimensions`, on a free meter.
+    pub(crate) fn fake_embedder(provider: Provider, model: &str, dimensions: usize) -> Fake {
+        billed(
+            provider,
+            model,
+            dimensions,
+            &SpendMeter::new(),
+            EmbedPrice::Free,
+        )
+    }
+
+    /// [`fake_embedder`] billed to `meter` at `price`.
+    pub(crate) fn billed(
+        provider: Provider,
+        model: &str,
+        dimensions: usize,
+        meter: &SpendMeter,
+        price: EmbedPrice,
+    ) -> Fake {
+        MeteredEmbedder::priced(
+            Backend {
                 space: Space {
                     provider,
                     model: model.to_owned(),
                     dimensions,
                 },
                 calls: AtomicUsize::new(0),
-                reply_dimensions: dimensions,
+                reply_dimensions: AtomicUsize::new(dimensions),
                 switch: Mutex::new(None),
-            }
-        }
+            },
+            meter.clone(),
+            price,
+        )
+    }
 
+    pub(crate) trait FakeExt: Sized {
         /// Answer with vectors `n` wide regardless of the space.
-        pub(crate) fn replying(mut self, n: usize) -> Self {
-            self.reply_dimensions = n;
+        fn replying(self, n: usize) -> Self;
+        /// Run `switch_space(pool, to)` inside the first `embed` call.
+        fn switching_on_first_call(self, pool: PgPool, to: Space) -> Self;
+        /// Requests that reached the backend.
+        fn calls(&self) -> usize;
+    }
+
+    impl FakeExt for Fake {
+        fn replying(self, n: usize) -> Self {
+            self.inner().reply_dimensions.store(n, Ordering::SeqCst);
             self
         }
 
-        /// Run `switch_space(pool, to)` inside the first `embed` call.
-        pub(crate) fn switching_on_first_call(self, pool: PgPool, to: Space) -> Self {
+        fn switching_on_first_call(self, pool: PgPool, to: Space) -> Self {
             *self
+                .inner()
                 .switch
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pool, to));
             self
         }
 
-        pub(crate) fn calls(&self) -> usize {
-            self.calls.load(Ordering::SeqCst)
+        fn calls(&self) -> usize {
+            self.inner().calls.load(Ordering::SeqCst)
         }
     }
 
     #[async_trait]
-    impl Embedder for Fake {
-        async fn embed(
-            &self,
-            texts: &[&str],
-            _kind: InputKind,
-        ) -> Result<Vec<Vec<f32>>, JudgeError> {
+    impl EmbedBackend for Backend {
+        async fn embed(&self, texts: &[&str], _kind: InputKind) -> Result<Embedded, EmbedError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let staged = self
                 .switch
@@ -350,17 +404,12 @@ pub(crate) mod fake {
             if let Some((pool, to)) = staged {
                 switch_space(&pool, &to).await?;
             }
-            Ok(texts
-                .iter()
-                .map(|_| vec![0.5; self.reply_dimensions])
-                .collect())
+            let n = self.reply_dimensions.load(Ordering::SeqCst);
+            Ok(Embedded {
+                vectors: texts.iter().map(|_| vec![0.5; n]).collect(),
+                usage: EmbedUsage::Tokens(u64::try_from(texts.len()).unwrap_or(0)),
+            })
         }
-        fn dimensions(&self) -> usize {
-            self.space.dimensions
-        }
-    }
-
-    impl WithSpace for Fake {
         fn space(&self) -> &Space {
             &self.space
         }
@@ -371,7 +420,10 @@ pub(crate) mod fake {
 mod tests {
     use judge_embed::Provider;
 
-    use super::{fake::Fake, *};
+    use super::{
+        fake::{FakeExt as _, fake_embedder},
+        *,
+    };
 
     async fn glossary_row(pool: &PgPool) -> anyhow::Result<()> {
         sqlx::query("INSERT INTO glossary (term, text, cr_version) VALUES ('Lifelink', 'A keyword ability.', '20260819')").execute(pool).await?;
@@ -393,9 +445,9 @@ mod tests {
         let mut lease = crate::ingest::lease(&pool, "test").await?;
         glossary_row(&pool).await?;
         assert_eq!(stored_space(&pool).await?, None);
-        let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024);
+        let fake = fake_embedder(Provider::Voyage, "voyage-3.5", 1024);
         run(&mut lease, Some(&fake)).await?;
-        assert_eq!(stored_space(&pool).await?, Some(fake.space.clone()));
+        assert_eq!(stored_space(&pool).await?, Some(fake.space().clone()));
         assert_eq!(embedded_glossary(&pool).await?, 1);
         assert_eq!(fake.calls(), 1);
         run(&mut lease, Some(&fake)).await?;
@@ -404,16 +456,46 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_batch_the_cap_cannot_fit_fails_the_step_unsent(pool: PgPool) -> anyhow::Result<()> {
+        let mut lease = crate::ingest::lease(&pool, "test").await?;
+        glossary_row(&pool).await?;
+        let meter = judge_llm::SpendMeter::new().with_max_spend_usd(0.0)?;
+        let capped = super::fake::billed(
+            Provider::Voyage,
+            "voyage-3.5",
+            1024,
+            &meter,
+            judge_embed::EmbedPrice::Table(0.06),
+        );
+        let err = run(&mut lease, Some(&capped))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(
+            err.contains("stopped at the spend cap") && err.contains("JUDGE_MAX_USD"),
+            "{err}"
+        );
+        assert_eq!((capped.calls(), embedded_glossary(&pool).await?), (0, 0));
+        // With room, the same embedder fills the row, billed to the meter.
+        meter.set_max_spend_usd(1.0)?;
+        run(&mut lease, Some(&capped)).await?;
+        assert_eq!((capped.calls(), embedded_glossary(&pool).await?), (1, 1));
+        assert_eq!(meter.embedding_calls(), 1);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "../bot/migrations")]
     async fn a_run_that_writes_nothing_leaves_no_label(pool: PgPool) -> anyhow::Result<()> {
         let mut lease = crate::ingest::lease(&pool, "test").await?;
         // Nothing to embed: the row is written with the first vector, not before it.
-        let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024);
+        let fake = fake_embedder(Provider::Voyage, "voyage-3.5", 1024);
         run(&mut lease, Some(&fake)).await?;
         assert_eq!((stored_space(&pool).await?, fake.calls()), (None, 0));
         // A first batch that fails (the wrong width comes back) leaves no label either,
         // so the corrected run is a first embed, not a "mismatch" pointing at reembed.
         glossary_row(&pool).await?;
-        let wrong = Fake::new(Provider::OpenAi, "nomic-embed-text:v1.5", 1024).replying(768);
+        let wrong = fake_embedder(Provider::OpenAi, "nomic-embed-text:v1.5", 1024).replying(768);
         let err = run(&mut lease, Some(&wrong))
             .await
             .err()
@@ -424,11 +506,11 @@ mod tests {
             (stored_space(&pool).await?, embedded_glossary(&pool).await?),
             (None, 0)
         );
-        let fixed = Fake::new(Provider::OpenAi, "nomic-embed-text", 1024);
+        let fixed = fake_embedder(Provider::OpenAi, "nomic-embed-text", 1024);
         run(&mut lease, Some(&fixed)).await?;
         assert_eq!(
             (stored_space(&pool).await?, embedded_glossary(&pool).await?),
-            (Some(fixed.space.clone()), 1)
+            (Some(fixed.space().clone()), 1)
         );
         Ok(())
     }
@@ -445,7 +527,7 @@ mod tests {
             dimensions: 1024,
         };
         record_space(&pool, &voyage).await?;
-        let fake = Fake::new(Provider::OpenAi, "nomic-embed-text", 1024);
+        let fake = fake_embedder(Provider::OpenAi, "nomic-embed-text", 1024);
         let err = run(&mut lease, Some(&fake))
             .await
             .err()
@@ -483,7 +565,7 @@ mod tests {
             model: "nomic-embed-text".into(),
             dimensions: 1024,
         };
-        let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024)
+        let fake = fake_embedder(Provider::Voyage, "voyage-3.5", 1024)
             .switching_on_first_call(pool.clone(), nomic.clone());
         let err = run(&mut lease, Some(&fake))
             .await
@@ -508,7 +590,7 @@ mod tests {
     async fn a_width_the_columns_do_not_have_points_at_reembed(pool: PgPool) -> anyhow::Result<()> {
         let mut lease = crate::ingest::lease(&pool, "test").await?;
         glossary_row(&pool).await?;
-        let fake = Fake::new(Provider::OpenAi, "nomic-embed-text", 768);
+        let fake = fake_embedder(Provider::OpenAi, "nomic-embed-text", 768);
         let err = run(&mut lease, Some(&fake))
             .await
             .err()
@@ -560,7 +642,7 @@ mod tests {
             .bind(Vector::from(vec![0.1; 1024]))
             .execute(&pool)
             .await?;
-        let fake = Fake::new(Provider::Voyage, "voyage-3.5", 1024);
+        let fake = fake_embedder(Provider::Voyage, "voyage-3.5", 1024);
         let err = run(&mut lease, Some(&fake))
             .await
             .err()

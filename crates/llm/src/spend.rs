@@ -26,6 +26,14 @@
 //! costs nothing ([`Price::Free`], a local server) skips the reservation and
 //! is only counted, so an exhausted cap on a paid sibling does not refuse it.
 //!
+//! The embedders (`judge-embed`'s `MeteredEmbedder`) bill to the same meter
+//! through [`SpendMeter::reserve_embedding_usd`] and the [`Reservation`] it
+//! hands back: the same reserve-then-settle, against the same cap, so one
+//! process has one total whatever it calls. Their requests and refusals are
+//! counted apart from the chat calls ([`SpendMeter::embedding_calls`],
+//! [`SpendMeter::embedding_refusals`]), so a chat call count and the
+//! "questions are being refused" alert mean what they always did.
+//!
 //! The worst-case input term is sized from the serialized *neutral* request,
 //! not the wire body the backend builds afterwards; it is a few percent
 //! larger than the body (untransformed schemas, tags), pessimistic either
@@ -211,26 +219,35 @@ pub fn pricing_for(provider: &str, model: &str) -> Option<Rate> {
 struct Spend {
     /// Recorded spend plus in-flight reservations, in micro-dollars.
     micro_usd: AtomicU64,
+    /// Billed chat calls ([`Metered`]).
     calls: AtomicU64,
+    /// Billed embedding requests ([`SpendMeter::reserve_embedding_usd`]),
+    /// kept apart so a chat call count reads as it always did.
+    embedding_calls: AtomicU64,
     /// Cap in micro-dollars; shared, so a change through any handle applies to all.
     cap_micro_usd: AtomicU64,
     /// Added to `micro_usd` before it is compared with the cap (see the
     /// module docs). Zero unless a budget period is configured.
     adjustment_micro_usd: AtomicI64,
-    /// Requests refused by the cap, so a watcher can tell the operator.
+    /// Chat requests refused by the cap, so a watcher can tell the operator
+    /// that questions are being refused.
     refusals: AtomicU64,
+    /// Embedding requests refused by the cap. Not news by themselves: a
+    /// question still answers without its vector search.
+    embedding_refusals: AtomicU64,
 }
 
 impl Spend {
-    /// Reserve `estimate` micro-dollars atomically, or report the cap.
-    fn reserve(&self, estimate: u64) -> Result<(), LlmError> {
+    /// Reserve `estimate` micro-dollars atomically, or report the cap,
+    /// counting the refusal in `refused`.
+    fn reserve(&self, estimate: u64, refused: &AtomicU64) -> Result<(), LlmError> {
         let cap = self.cap_micro_usd.load(Ordering::Relaxed);
         let adjustment = self.adjustment_micro_usd.load(Ordering::Relaxed);
         let mut spent = self.micro_usd.load(Ordering::Relaxed);
         loop {
             let counted = counted(spent, adjustment);
             if counted >= cap || counted.saturating_add(estimate) > cap {
-                self.refusals.fetch_add(1, Ordering::Relaxed);
+                refused.fetch_add(1, Ordering::Relaxed);
                 return Err(LlmError::SpendCapExceeded {
                     spent: from_micro(counted),
                     cap: from_micro(cap),
@@ -299,9 +316,11 @@ impl SpendMeter {
         Self(Arc::new(Spend {
             micro_usd: AtomicU64::new(0),
             calls: AtomicU64::new(0),
+            embedding_calls: AtomicU64::new(0),
             cap_micro_usd: AtomicU64::new(to_micro(DEFAULT_MAX_SPEND_USD)),
             adjustment_micro_usd: AtomicI64::new(0),
             refusals: AtomicU64::new(0),
+            embedding_refusals: AtomicU64::new(0),
         }))
     }
 
@@ -366,10 +385,17 @@ impl SpendMeter {
         from_micro(self.0.micro_usd.load(Ordering::Relaxed))
     }
 
-    /// Billed calls through every model sharing this meter.
+    /// Billed chat calls through every model sharing this meter. Embedding
+    /// requests are [`Self::embedding_calls`].
     #[must_use]
     pub fn calls(&self) -> u64 {
         self.0.calls.load(Ordering::Relaxed)
+    }
+
+    /// Billed embedding requests through every embedder sharing this meter.
+    #[must_use]
+    pub fn embedding_calls(&self) -> u64 {
+        self.0.embedding_calls.load(Ordering::Relaxed)
     }
 
     /// [`Self::spent_usd`] in whole micro-dollars, in-flight reservations
@@ -406,10 +432,107 @@ impl SpendMeter {
         self.0.micro_usd.fetch_add(micro, Ordering::Relaxed);
     }
 
-    /// Requests the cap has refused since the process started.
+    /// Chat requests the cap has refused since the process started: what
+    /// the "questions are being refused" alert watches.
     #[must_use]
     pub fn refusals(&self) -> u64 {
         self.0.refusals.load(Ordering::Relaxed)
+    }
+
+    /// Embedding requests the cap has refused since the process started.
+    #[must_use]
+    pub fn embedding_refusals(&self) -> u64 {
+        self.0.embedding_refusals.load(Ordering::Relaxed)
+    }
+
+    /// What is left under the cap: the cap less [`Self::counted_usd`],
+    /// never below zero.
+    #[must_use]
+    pub fn remaining_usd(&self) -> f64 {
+        (self.max_spend_usd() - self.counted_usd()).max(0.0)
+    }
+
+    /// Take `usd` (a worst case) out of what is left under the cap before an
+    /// embedding request is sent, or refuse it as a chat model's send is
+    /// refused ([`LlmError::SpendCapExceeded`]). For the embedders in
+    /// `judge-embed`; [`Metered`] reserves the same way for chat. A refusal
+    /// counts in [`Self::embedding_refusals`] and a settled request in
+    /// [`Self::embedding_calls`], not in the chat counters.
+    ///
+    /// # Errors
+    /// [`LlmError::SpendCapExceeded`] when the reservation would pass the cap.
+    pub fn reserve_embedding_usd(&self, usd: f64) -> Result<Reservation, LlmError> {
+        let micro = to_micro(usd);
+        self.0.reserve(micro, &self.0.embedding_refusals)?;
+        Ok(Reservation {
+            meter: self.clone(),
+            micro,
+            open: true,
+        })
+    }
+
+    /// Count an embedding request that reserved nothing (a free model).
+    pub fn count_free_embedding(&self) {
+        self.0.embedding_calls.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// A worst case taken out of a [`SpendMeter`] by
+/// [`SpendMeter::reserve_embedding_usd`], to be replaced by what the request
+/// really cost. A request that failed before anything was billed hands it
+/// back with [`Reservation::release`]. Dropped unsettled (its future was
+/// cancelled, perhaps after the provider billed) it is kept whole as the
+/// cost, as [`Metered`] keeps a cancelled chat call's: the cap errs high,
+/// never low.
+#[derive(Debug)]
+#[must_use = "settle a reservation once the request is billed, or release it if it was not"]
+pub struct Reservation {
+    meter: SpendMeter,
+    micro: u64,
+    open: bool,
+}
+
+impl Reservation {
+    /// The amount reserved, in USD.
+    #[must_use]
+    pub fn usd(&self) -> f64 {
+        from_micro(self.micro)
+    }
+
+    /// Replace the reservation by `usd`, the billed cost, and count the
+    /// request. Returns the meter's process total afterwards, in USD.
+    #[must_use = "the total is what the call log line reports"]
+    pub fn settle_usd(mut self, usd: f64) -> f64 {
+        self.open = false;
+        let total = self.meter.0.settle(self.micro, to_micro(usd));
+        self.meter.0.embedding_calls.fetch_add(1, Ordering::Relaxed);
+        from_micro(total)
+    }
+
+    /// Keep the whole reservation as the cost and count the request: for a
+    /// billed response that did not say what it used. Returns the process
+    /// total afterwards, in USD.
+    #[must_use = "the total is what the call log line reports"]
+    pub fn settle_reserved(self) -> f64 {
+        let usd = self.usd();
+        self.settle_usd(usd)
+    }
+
+    /// Hand the reservation back: the request failed before the provider
+    /// billed anything (a transport failure, an error status).
+    pub fn release(mut self) {
+        self.open = false;
+        self.meter.0.settle(self.micro, 0);
+    }
+}
+
+impl Drop for Reservation {
+    /// Unsettled and unreleased: the request's fate is unknown, so the worst
+    /// case stays spent and the request is counted.
+    fn drop(&mut self) {
+        if self.open {
+            self.meter.0.embedding_calls.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -488,15 +611,15 @@ impl<B: Backend> Metered<B> {
     }
 
     /// Reserve the worst case of `req`, or nothing for a free model.
-    fn reserve(&self, req: &ChatRequest) -> Result<Option<Reservation>, LlmError> {
+    fn reserve(&self, req: &ChatRequest) -> Result<Option<ChatReservation>, LlmError> {
         let (rate, from_table) = match self.price {
             Price::Free => return Ok(None),
             Price::Table(rate) => (rate, true),
             Price::PerToken(pricing) => (Rate::flat(pricing), false),
         };
         let micro = estimate_micro(req, &rate);
-        self.meter.0.reserve(micro)?;
-        Ok(Some(Reservation {
+        self.meter.0.reserve(micro, &self.meter.0.refusals)?;
+        Ok(Some(ChatReservation {
             rate,
             from_table,
             micro,
@@ -504,7 +627,7 @@ impl<B: Backend> Metered<B> {
     }
 
     /// Replace `reserved` by the real cost of a billed response in the shared counters and log it.
-    fn record(&self, reserved: Option<Reservation>, model: &str, usage: &Usage) {
+    fn record(&self, reserved: Option<ChatReservation>, model: &str, usage: &Usage) {
         let usd = reserved.map_or(0.0, |r| {
             // Only a table price is re-read for the model the response names;
             // an operator's rate is what the operator pays, whatever the server
@@ -537,7 +660,7 @@ impl<B: Backend> Metered<B> {
 
 /// A worst case taken out of the shared total before a send, to be replaced by the real cost.
 #[derive(Clone, Copy)]
-struct Reservation {
+struct ChatReservation {
     /// The rate reserved at.
     rate: Rate,
     /// Whether `rate` came from the table (settle by the response's model) or the operator (settle at `rate`).
@@ -938,9 +1061,9 @@ mod tests {
         // Nothing spent here, $0.90 spent by another process this period.
         meter.set_adjustment_micro(900_000);
         assert!((clone.counted_usd() - 0.9).abs() < 1e-9, "clones share it");
-        assert!(meter.0.reserve(50_000).is_ok());
+        assert!(meter.0.reserve(50_000, &meter.0.refusals).is_ok());
         assert!(matches!(
-            meter.0.reserve(100_000),
+            meter.0.reserve(100_000, &meter.0.refusals),
             Err(LlmError::SpendCapExceeded { spent, cap })
                 if (spent - 0.95).abs() < 1e-9 && (cap - 1.0).abs() < 1e-9
         ));
@@ -953,7 +1076,7 @@ mod tests {
             50_000,
             "the process total never moves back"
         );
-        assert!(meter.0.reserve(1_000_000).is_ok());
+        assert!(meter.0.reserve(1_000_000, &meter.0.refusals).is_ok());
         // A reservation settled below the discount cannot go negative.
         meter.set_adjustment_micro(i64::MIN);
         assert!(meter.counted_usd().abs() < 1e-9);
@@ -1095,6 +1218,49 @@ mod tests {
         ));
         assert_eq!(meter.calls(), 2);
         assert!((meter.spent_usd() - 8.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn an_embedding_reservation_settles_releases_or_is_kept_when_dropped() -> Result<(), LlmError> {
+        let meter = SpendMeter::new().with_max_spend_usd(1.0)?;
+        let r = meter.reserve_embedding_usd(0.40)?;
+        assert!((r.usd() - 0.40).abs() < 1e-9);
+        assert!(
+            (meter.remaining_usd() - 0.60).abs() < 1e-9,
+            "held while in flight"
+        );
+        // A second worst case that cannot fit beside it is refused, and counted
+        // apart from the chat refusals the questions alert watches.
+        assert!(matches!(
+            meter.reserve_embedding_usd(0.70),
+            Err(LlmError::SpendCapExceeded { .. })
+        ));
+        assert_eq!((meter.embedding_refusals(), meter.refusals()), (1, 0));
+        let total = r.settle_usd(0.01);
+        assert!((total - 0.01).abs() < 1e-9, "{total}");
+        assert_eq!((meter.embedding_calls(), meter.calls()), (1, 0));
+        // Released (nothing billed): handed back, not counted.
+        meter.reserve_embedding_usd(0.5)?.release();
+        assert!((meter.spent_usd() - 0.01).abs() < 1e-9);
+        assert_eq!(meter.embedding_calls(), 1);
+        // Dropped unsettled (a cancelled request, maybe billed): the worst case stays.
+        drop(meter.reserve_embedding_usd(0.1)?);
+        assert!((meter.spent_usd() - 0.11).abs() < 1e-9);
+        assert_eq!(meter.embedding_calls(), 2);
+        // Settled at the reservation: the whole worst case stays as the cost.
+        assert!((meter.reserve_embedding_usd(0.2)?.settle_reserved() - 0.31).abs() < 1e-9);
+        meter.count_free_embedding();
+        assert_eq!(meter.embedding_calls(), 4);
+        assert!(
+            (meter.spent_usd() - 0.31).abs() < 1e-9,
+            "a free request bills nothing"
+        );
+        meter.set_adjustment_micro(2_000_000);
+        assert!(
+            meter.remaining_usd().abs() < f64::EPSILON,
+            "never below zero"
+        );
         Ok(())
     }
 

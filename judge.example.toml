@@ -25,7 +25,8 @@
 #     (`auth` without api_key_env, `effort` on an openai provider with
 #     reasoning_effort = false, a stage price on a pricing = "free" provider,
 #     a cloud-endpoint key on a keyed endpoint and vice versa).
-#   - A model the spend cap cannot price is a startup error (see [models.synth]).
+#   - A model the spend cap cannot price is a startup error (see [models.synth]
+#     and [models.embed.pricing]). The cap covers embeddings too.
 #
 # `judge-cli config` prints the resolved result with secrets redacted. Every
 # binary logs the same one-line summary at startup.
@@ -168,3 +169,12 @@ dimensions = 1024                      # the columns' vector(N), 1..=2000 (pgvec
                                        # Default 1024 on voyage, required on an openai provider
                                        # (text-embedding-3-small: 1536, nomic-embed-text: 768).
                                        # Changing model or width means `ingest reembed --yes`.
+
+# USD per million tokens, which the spend cap reserves and settles every
+# embedding request at (embeddings count toward JUDGE_MAX_USD with the chat
+# calls). Voyage models are priced from Voyage's list, an unknown one as the
+# dearest listed (voyage-3-large, $0.18), so this table only overrides it. A
+# model on an `openai` provider must have this table or the provider must be
+# pricing = "free", or startup fails naming models.embed.
+# [models.embed.pricing]
+# input = 0.06

@@ -17,11 +17,12 @@
 //! non-blank — into an [`ApiKey`], whose `Debug` is redacted; the value is
 //! never in the file and never in a log line. What the loader cannot
 //! express in types it checks by hand, naming the key: a stage naming a
-//! provider that is not there or of the wrong kind, a model on an
-//! `openai` provider with no price (the cap cannot estimate it: the built-in
-//! table knows Anthropic's models and prices unknown ones there as the default, but
-//! an unknown model on an OpenAI-compatible server could be anything, so the
-//! operator must say, or mark the provider `pricing = "free"`), an Anthropic
+//! provider that is not there or of the wrong kind, a model (chat or
+//! embedding) on an `openai` provider with no price (the cap cannot estimate
+//! it: the built-in tables know Anthropic's chat models and Voyage's embedding
+//! models and price unknown ones there high, but an unknown model on an
+//! OpenAI-compatible server could be anything, so the operator must say, or
+//! mark the provider `pricing = "free"`), an Anthropic
 //! endpoint that is not built into this binary, and a key that contradicts
 //! another (`auth` with no `api_key_env`, a stage price on a free provider,
 //! `effort` on a provider that will not send it) — a knob that would be
@@ -39,8 +40,10 @@
 //! The loader is the one place a `judge.toml` is read; every binary calls
 //! it, logs [`Config::summary`] at startup, and takes its models and
 //! embedder from it. The embedder comes with its vector space
-//! ([`judge_embed::WithSpace`]) and, through [`Config::vectors`], behind the
-//! stored-space check, so no binary can write a vector of the wrong model.
+//! ([`judge_embed::WithSpace`]), behind the spend cap on the same meter as
+//! the models ([`judge_embed::MeteredEmbedder`]: the only `WithSpace` there
+//! is) and, through [`Config::vectors`], behind the stored-space check, so no
+//! binary can write a vector of the wrong model or send one uncapped.
 
 use std::{
     collections::BTreeMap,
@@ -55,7 +58,9 @@ use judge_core::{
     operator::{OPERATOR_DISCORD_ENV, OPERATOR_EMAIL_ENV},
     source::SOURCE_URL_ENV,
 };
-use judge_embed::{OpenAiEmbedder, Provider, Space, VoyageEmbedder, WithSpace};
+use judge_embed::{
+    EmbedPrice, MeteredEmbedder, OpenAiEmbedder, Provider, Space, VoyageEmbedder, WithSpace,
+};
 use judge_llm::{
     ApiKey, Backend, Capabilities, ChatRequest, ChatResponse, Effort, LlmError, Price, Pricing,
     SpendMeter, pricing_for,
@@ -95,7 +100,7 @@ pub const MAX_SPEND_ENV: &str = "JUDGE_MAX_USD";
 pub const BUILD_COMMIT: Option<&str> = option_env!("JUDGE_BUILD_COMMIT");
 /// `"1"` when the build's working tree had uncommitted changes.
 const BUILD_DIRTY: Option<&str> = option_env!("JUDGE_BUILD_DIRTY");
-/// Voyage defaults, as `VoyageEmbedder::from_env` has them.
+/// Voyage defaults for the environment setup (`VOYAGE_MODEL`, `VOYAGE_DIMENSIONS`).
 const VOYAGE_DEFAULT_MODEL: &str = "voyage-3.5";
 const VOYAGE_DEFAULT_DIMENSIONS: usize = 1024;
 const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -406,6 +411,14 @@ enum ProviderEntry {
 
 fn yes() -> bool {
     true
+}
+
+/// Voyage's list price for `model`; an unknown model at the dearest listed.
+fn voyage_price(model: &str) -> EmbedPrice {
+    EmbedPrice::Table(
+        judge_embed::table_price(Provider::Voyage, model)
+            .unwrap_or(judge_embed::metered::VOYAGE_UNKNOWN_MODEL_PRICE),
+    )
 }
 
 /// `endpoint` on an `anthropic` provider. The full vocabulary is accepted so
@@ -860,6 +873,22 @@ struct EmbedEntry {
     #[serde(default)]
     #[schemars(with = "Option<u32>", range(min = 1, max = MAX_DIMENSIONS))]
     dimensions: Option<Dimensions>,
+    /// The model's price, which the spend cap reserves and settles every
+    /// embedding request at. Required for a model on an `openai` provider not
+    /// marked free. On Voyage it overrides the built-in list price, which
+    /// prices an unknown Voyage model as the dearest listed.
+    #[serde(default)]
+    pricing: Option<EmbedPricingEntry>,
+}
+
+/// `[models.embed.pricing]`, USD per million tokens. Embeddings bill input
+/// tokens only.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EmbedPricingEntry {
+    /// USD per million input tokens (text-embedding-3-small: 0.02).
+    #[schemars(with = "f64", range(min = 0.0))]
+    input: Usd,
 }
 
 // ---------- errors ----------
@@ -1050,6 +1079,17 @@ pub enum ConfigError {
     /// The embedder's HTTP client could not be built.
     #[error("building the embedder: {0}")]
     Embedder(JudgeError),
+    /// `[models.embed]` on an `openai` provider has no price and the
+    /// provider is not free: the spend cap could not reserve for it.
+    #[error(
+        "models.embed: no price for {provider}/{model}; add [models.embed.pricing] (input = USD per million tokens) or pricing = \"free\" on [providers.{provider}]"
+    )]
+    EmbedUnpriced {
+        /// The provider.
+        provider: String,
+        /// The model.
+        model: String,
+    },
     /// A stage sets `effort` on an `openai` provider that would not send it.
     #[error(
         "models.{stage}.effort: providers.{provider} has reasoning_effort = false, so the model would never see it; set reasoning_effort = true or drop effort"
@@ -1127,6 +1167,7 @@ impl ConfigError {
             Self::Unpriced { stage, .. } | Self::PricedFree { stage, .. } => {
                 toml(format!("models.{stage}.pricing"))
             }
+            Self::EmbedUnpriced { .. } => toml("models.embed.pricing".to_owned()),
             Self::NotBuilt { provider, .. } => toml(format!("providers.{provider}.endpoint")),
             Self::Required { provider, key, .. } | Self::Misplaced { provider, key, .. } => {
                 toml(format!("providers.{provider}.{key}"))
@@ -1393,6 +1434,8 @@ pub struct Embed {
     pub model: String,
     /// Vector width.
     pub dimensions: usize,
+    /// What every request is billed at.
+    pub price: EmbedPrice,
     backend: EmbedProvider,
 }
 
@@ -1431,13 +1474,17 @@ impl Embed {
         format!("{}/{}", self.provider, self.model)
     }
 
-    /// Build the embedder.
-    fn embedder(&self) -> Result<Arc<dyn WithSpace>, ConfigError> {
+    /// Build the embedder, billed to `meter` at [`Self::price`]: the only
+    /// way to one, so every embedding a binary sends is behind the cap.
+    fn embedder(&self, meter: &SpendMeter) -> Result<Arc<dyn WithSpace>, ConfigError> {
+        let meter = meter.clone();
         Ok(match &self.backend {
-            EmbedProvider::Voyage { api_key } => Arc::new(
+            EmbedProvider::Voyage { api_key } => Arc::new(MeteredEmbedder::priced(
                 VoyageEmbedder::new(api_key.expose(), &self.model, self.dimensions)
                     .map_err(ConfigError::Embedder)?,
-            ),
+                meter,
+                self.price,
+            )),
             EmbedProvider::OpenAi {
                 base_url,
                 auth,
@@ -1448,7 +1495,7 @@ impl Embed {
                     Auth::Bearer(k) => judge_embed::Auth::Bearer(k.expose().to_owned()),
                     Auth::ApiKeyHeader(k) => judge_embed::Auth::ApiKeyHeader(k.expose().to_owned()),
                 };
-                Arc::new(
+                Arc::new(MeteredEmbedder::priced(
                     OpenAiEmbedder::new(
                         base_url,
                         auth,
@@ -1457,8 +1504,24 @@ impl Embed {
                         *send_dimensions,
                     )
                     .map_err(ConfigError::Embedder)?,
-                )
+                    meter,
+                    self.price,
+                ))
             }
+        })
+    }
+
+    /// The stage as the report shows it: model, width and price.
+    fn report(&self) -> serde_json::Value {
+        serde_json::json!({
+            "provider": self.provider,
+            "model": self.model,
+            "dimensions": self.dimensions,
+            "pricing": match self.price {
+                EmbedPrice::Free => serde_json::json!("free"),
+                EmbedPrice::Table(usd) => serde_json::json!({"input": usd, "from": "table"}),
+                EmbedPrice::PerToken(usd) => serde_json::json!({"input": usd}),
+            },
         })
     }
 
@@ -1770,9 +1833,11 @@ impl Config {
                         .ok_or(ConfigError::BadDimensions { value: s })?,
                     None => VOYAGE_DEFAULT_DIMENSIONS,
                 };
+                let model = set("VOYAGE_MODEL").unwrap_or_else(|| VOYAGE_DEFAULT_MODEL.to_owned());
                 Ok::<_, ConfigError>(Embed {
                     provider: VOYAGE_PROVIDER.to_owned(),
-                    model: set("VOYAGE_MODEL").unwrap_or_else(|| VOYAGE_DEFAULT_MODEL.to_owned()),
+                    price: voyage_price(&model),
+                    model,
                     dimensions,
                     backend: EmbedProvider::Voyage {
                         api_key: key.into(),
@@ -1943,14 +2008,29 @@ impl Config {
         cfg
     }
 
-    /// The embedder, if one is configured, with its space. `ingest embed`
+    /// The embedder, if one is configured, with its space, billed to this
+    /// config's meter (the one [`Self::models`] bills to). `ingest embed`
     /// takes this; a binary that queries or writes vector columns takes
     /// [`Self::vectors`].
     ///
     /// # Errors
     /// [`ConfigError::Embedder`] when its HTTP client cannot be built.
     pub fn embedder(&self) -> Result<Option<Arc<dyn WithSpace>>, ConfigError> {
-        self.embed.as_ref().map(Embed::embedder).transpose()
+        self.embedder_billed_to(&self.meter)
+    }
+
+    /// [`Self::embedder`] billed to `meter` instead: for a configuration
+    /// loaded again inside a process that already has one meter (the
+    /// scheduled refresh, `judgebot ingest`), so the process keeps one total
+    /// and one cap.
+    ///
+    /// # Errors
+    /// As [`Self::embedder`].
+    pub fn embedder_billed_to(
+        &self,
+        meter: &SpendMeter,
+    ) -> Result<Option<Arc<dyn WithSpace>>, ConfigError> {
+        self.embed.as_ref().map(|e| e.embedder(meter)).transpose()
     }
 
     /// The embedder behind the stored-space check over `pool`, if one is
@@ -2007,7 +2087,7 @@ impl Config {
             "models": {
                 "extract": self.extract().map(Stage::report),
                 "synth": self.synth().map(Stage::report),
-                "embed": self.embed.as_ref().map(|e| serde_json::json!({"provider": e.provider, "model": e.model, "dimensions": e.dimensions})),
+                "embed": self.embed.as_ref().map(Embed::report),
             },
         })
     }
@@ -2327,6 +2407,10 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                 });
             }
         };
+        let priced = entry
+            .pricing
+            .as_ref()
+            .map(|p| EmbedPrice::PerToken(p.input.into_inner()));
         match provider {
             ProviderEntry::Voyage { api_key_env } => Ok(Embed {
                 provider: name.to_owned(),
@@ -2334,6 +2418,8 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                 dimensions: entry
                     .dimensions
                     .map_or(VOYAGE_DEFAULT_DIMENSIONS, Dimensions::into_inner),
+                // An operator's price beats the list; the list prices any Voyage model.
+                price: priced.unwrap_or_else(|| voyage_price(entry.model.as_ref())),
                 backend: EmbedProvider::Voyage {
                     api_key: self.secret(
                         name,
@@ -2346,6 +2432,7 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                 api_key_env,
                 auth,
                 send_dimensions,
+                pricing,
                 ..
             } => {
                 // The width is the columns' vector(N); nothing here can guess it for an arbitrary model.
@@ -2354,10 +2441,29 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                         provider: name.to_owned(),
                     });
                 };
+                // As for a chat stage: free and priced contradict each other, and an
+                // OpenAI-compatible model has no list price to fall back on.
+                let price = match (pricing.is_some(), priced) {
+                    (true, Some(_)) => {
+                        return Err(ConfigError::PricedFree {
+                            stage: "embed",
+                            provider: name.to_owned(),
+                        });
+                    }
+                    (true, None) => EmbedPrice::Free,
+                    (false, Some(p)) => p,
+                    (false, None) => {
+                        return Err(ConfigError::EmbedUnpriced {
+                            provider: name.to_owned(),
+                            model: entry.model.to_string(),
+                        });
+                    }
+                };
                 Ok(Embed {
                     provider: name.to_owned(),
                     model: entry.model.to_string(),
                     dimensions: dimensions.into_inner(),
+                    price,
                     backend: EmbedProvider::OpenAi {
                         base_url: base_url.to_string(),
                         auth: self.openai_auth(name, api_key_env.as_ref(), *auth)?,
@@ -3466,7 +3572,7 @@ model = "qwen3:8b"
         ];
         let on_litellm = FULL.replace(
             "provider = \"voyage\"\nmodel = \"voyage-3.5\"\ndimensions = 1024",
-            "provider = \"litellm\"\nmodel = \"text-embedding-3-small\"\ndimensions = 1536",
+            "provider = \"litellm\"\nmodel = \"text-embedding-3-small\"\ndimensions = 1536\n[models.embed.pricing]\ninput = 0.02",
         );
         assert!(on_litellm != FULL);
         let c = load(&on_litellm, &env)?;
@@ -3509,10 +3615,12 @@ model = "qwen3:8b"
             "kind = \"openai\"\nbase_url = \"http://litellm:4000/v1\"",
             "kind = \"openai\"\nsend_dimensions = false\nbase_url = \"http://litellm:4000/v1\"",
         ) + "\n[providers.vllm]\nkind = \"openai\"\nbase_url = \"http://vllm:8000/v1\"\nsend_dimensions = false\npricing = \"free\"\n";
-        let only_embed = only_embed.replace(
-            "provider = \"litellm\"\nmodel = \"text-embedding-3-small\"",
-            "provider = \"vllm\"\nmodel = \"bge-m3\"",
-        );
+        let only_embed = only_embed
+            .replace(
+                "provider = \"litellm\"\nmodel = \"text-embedding-3-small\"",
+                "provider = \"vllm\"\nmodel = \"bge-m3\"",
+            )
+            .replace("[models.embed.pricing]\ninput = 0.02", "");
         let c = load(&only_embed, &env)?;
         assert_eq!(
             c.report().pointer("/providers/vllm"),
@@ -3541,6 +3649,100 @@ model = "qwen3:8b"
             ),
             "{err}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_embedding_model_is_priced_by_the_list_the_operator_or_not_at_all() -> R {
+        let env = [
+            ("ANTHROPIC_API_KEY", "k"),
+            ("VOYAGE_API_KEY", "v"),
+            ("LITELLM_KEY", "l"),
+        ];
+        let price = |text: &str| load(text, &env).map(|c| c.embed().map(|e| e.price));
+        // Voyage: the list price, an unknown model at the dearest listed, an operator's price over both.
+        assert_eq!(price(FULL)?, Some(EmbedPrice::Table(0.06)));
+        let unknown = FULL.replace("model = \"voyage-3.5\"", "model = \"voyage-9\"");
+        assert_eq!(
+            price(&unknown)?,
+            Some(EmbedPrice::Table(
+                judge_embed::metered::VOYAGE_UNKNOWN_MODEL_PRICE
+            ))
+        );
+        let priced = format!("{FULL}[models.embed.pricing]\ninput = 0.05\n");
+        assert_eq!(price(&priced)?, Some(EmbedPrice::PerToken(0.05)));
+        assert_eq!(
+            load(&priced, &env)?
+                .report()
+                .pointer("/models/embed/pricing/input"),
+            Some(&serde_json::json!(0.05))
+        );
+        // OpenAI-compatible: priced, or free, or a load error naming both keys.
+        let openai = |extra: &str| {
+            FULL.replace(
+                "provider = \"voyage\"\nmodel = \"voyage-3.5\"\ndimensions = 1024",
+                &format!(
+                    "provider = \"ollama\"\nmodel = \"nomic-embed-text\"\ndimensions = 768{extra}"
+                ),
+            )
+        };
+        assert_eq!(
+            price(&openai(""))?,
+            Some(EmbedPrice::Free),
+            "ollama is free"
+        );
+        let unpriced = openai("").replace(
+            "provider = \"ollama\"\nmodel = \"nomic",
+            "provider = \"litellm\"\nmodel = \"nomic",
+        );
+        let err = load(&unpriced, &env).err();
+        assert_eq!(
+            err.as_ref().map(ToString::to_string).as_deref(),
+            Some(
+                "models.embed: no price for litellm/nomic-embed-text; add [models.embed.pricing] (input = USD per million tokens) or pricing = \"free\" on [providers.litellm]"
+            )
+        );
+        assert_eq!(
+            err.map(|e| e.location()),
+            Some(Location::Toml {
+                path: "models.embed.pricing".into()
+            })
+        );
+        let priced = format!("{unpriced}[models.embed.pricing]\ninput = 0.02\n");
+        assert_eq!(
+            load(&priced, &env)?.embed().map(|e| e.price),
+            Some(EmbedPrice::PerToken(0.02))
+        );
+        let both = format!("{}[models.embed.pricing]\ninput = 0.02\n", openai(""));
+        assert_eq!(
+            load(&both, &env).err().map(|e| e.to_string()).as_deref(),
+            Some(
+                "models.embed.pricing: providers.ollama is pricing = \"free\"; remove one or the other"
+            )
+        );
+        // The environment setup prices Voyage from the list too.
+        let c = Config::from_vars(|k| (k == "VOYAGE_API_KEY").then(|| "v".to_owned()))?;
+        assert_eq!(c.embed().map(|e| e.price), Some(EmbedPrice::Table(0.06)));
+        Ok(())
+    }
+
+    #[test]
+    fn the_embedder_bills_to_the_config_meter_or_the_one_it_is_given() -> R {
+        let env = [
+            ("ANTHROPIC_API_KEY", "k"),
+            ("VOYAGE_API_KEY", "v"),
+            ("LITELLM_KEY", "l"),
+        ];
+        let c = load(FULL, &env)?;
+        let e = c.embedder()?.ok_or("embedder")?;
+        c.meter().record_micro(7);
+        assert_eq!(e.meter().spent_micro(), 7, "the config's own meter");
+        let other = SpendMeter::new();
+        let e = c.embedder_billed_to(&other)?.ok_or("embedder")?;
+        assert_eq!(e.meter().spent_micro(), 0);
+        other.record_micro(3);
+        assert_eq!(e.meter().spent_micro(), 3, "the meter it was given");
+        assert_eq!(e.price(), EmbedPrice::Table(0.06));
         Ok(())
     }
 
@@ -4129,7 +4331,8 @@ model = "qwen3:8b"
         assert!(
             text.contains("\n[providers.claude-proxy]\n")
                 && text.contains("\n[providers.vertex]\n")
-                && text.contains("\n[models.synth.pricing]\n"),
+                && text.contains("\n[models.synth.pricing]\n")
+                && text.contains("\n[models.embed.pricing]\n"),
             "{text}"
         );
         assert!(
@@ -4154,6 +4357,11 @@ model = "qwen3:8b"
             c.report().pointer("/providers/voyage/kind"),
             Some(&serde_json::json!("voyage")),
             "the explicit voyage table, not the implied one"
+        );
+        assert_eq!(
+            c.embed().map(|e| e.price),
+            Some(EmbedPrice::PerToken(0.06)),
+            "the example's embed price, uncommented"
         );
         // And each commented endpoint resolves when synth names it (the pricing
         // table makes gpt-5 on litellm priceable; `effort` must go, since the

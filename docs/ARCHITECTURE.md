@@ -43,7 +43,8 @@ Discord message (+ last N Q&A in the same thread)
     cloud account: Claude Platform on AWS and Bedrock (SigV4), Vertex AI
     (ADC). Cloud credentials come from the platform chain and are probed at
     startup.
-    Every model sits behind the process's one spend-capped `Metered`.
+    Every model sits behind the process's one spend-capped `Metered`, and
+    the embedder behind a `MeteredEmbedder` on the same meter.
     A backend reports its `Capabilities`. If it cannot enforce the output
     schema server-side, the adapter appends the schema to the *user turn*.
     The system prompt is pinned by digest and is byte-identical on every
@@ -172,7 +173,8 @@ one seam (`docs/PROVIDERS.md`).
   produced it reads (a thinking signature, a `reasoning_content`, a `tool_calls` array).
   The neutral layer never inspects it.
 - The pipeline's port, `ChatModel`, is sealed and implemented only by `Metered`, so a
-  model that bypasses the cap is unrepresentable.
+  model that bypasses the cap is unrepresentable. The embedders' port, `WithSpace`, is
+  sealed the same way (`judge_embed::MeteredEmbedder`), on the same meter.
 - Each backend declares `Capabilities`. What a server cannot enforce (an output schema,
   strict tools) the adapter moves into the prompt, since decoding and citation validation
   are client-side either way.

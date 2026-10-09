@@ -436,6 +436,13 @@ With a budget period set, a capped instance comes back by itself when the period
 To resume sooner, raise `JUDGE_MAX_USD` and `docker compose up -d`. The period's spend is
 in the database, so the restart does not reset it.
 
+The cap covers embeddings as well as the chat calls: each question's query embedding, a
+stored call's vector, the scheduled refresh's embed step and every `judgebot ingest`
+command that embeds. They bill to the same meter and the same `spend_days` rows, so
+`judge-cli stats` shows them combined. At the cap a question is still answered without
+vector search if its chat calls fit, and its call is stored without a vector for the next
+`embed` to fill.
+
 ## 6. Weekly backups to R2
 
 The database is cheap to dump and expensive to rebuild (§2). The `backup` compose
@@ -692,7 +699,10 @@ it counts the rows waiting for a vector. Above 800 it skips the step
 (1,173 rules, 739 glossary entries and one per stored call), while a new CR release empties
 a few hundred. More than 800 empty vectors means something else emptied them: an
 embedder configured on a database that never had one, or a `reembed --clear` that
-died. Run `scripts/refresh-data.sh embed` when that spend is expected.
+died. Run `scripts/refresh-data.sh embed` when that spend is expected. The ceiling bounds
+a run whatever the spend cap says. Below it, the embed step is billed to the cap like
+everything else, and a cap that cannot fit a batch fails the step, which alerts as any
+failed step does.
 
 ### Cron
 
@@ -846,8 +856,9 @@ docker compose run --rm backup run            # a restore point holding the old 
                                               # or scripts/backup-db.sh)
 $EDITOR judge.toml                            # [models.embed]: the new provider/model/dimensions
 scripts/refresh-data.sh reembed               # dry run: what is stored, what would be cleared,
-                                              # rows, a rough cost; probes the new model once;
-                                              # exits non-zero having changed nothing
+                                              # rows, the cost and what the spend cap has
+                                              # left; probes the new model once; exits
+                                              # non-zero having changed nothing
 scripts/refresh-data.sh reembed --yes         # one transaction: retype vector(N), rebuild the
                                               # HNSW indexes, clear every vector, rewrite the
                                               # row — then the ordinary embed loop
@@ -891,9 +902,27 @@ again or restoring a backup (the restore drill, §6).
 
 `reembed` needs the new `judge.toml` (`JUDGE_CONFIG` in `.env`) and the new provider's
 `api_key_env` in `.env`. `refresh-data.sh` passes its arguments through to
-`judgebot ingest` inside the `refresh` container, which already has both. The dry run's
-cost line is a rough order of magnitude, not a quote. It assumes a generic list price
-of ~$0.15 per million tokens and 4 characters per token.
+`judgebot ingest` inside the `refresh` container, which already has both.
+
+**The spend cap applies to the re-embed.** The dry run prints the estimated cost at the
+configured price (four bytes a token), its worst case (what the cap reserves: a token a
+byte) and what is left under `JUDGE_MAX_USD`. With `JUDGE_BUDGET_PERIOD=day|month`, what
+is left is the period's, the bot's questions included. When the worst case does not fit,
+it names a cap that does, and `--yes` refuses to switch: nothing is cleared until the
+whole refill fits. Raise the cap for that one run, leaving `.env` alone:
+
+```sh
+docker compose run --rm -e JUDGE_MAX_USD=20 refresh reembed --yes
+```
+
+Under `day` or `month` that run spends the period's budget. Its spend reaches the ledger,
+so once the bot's own cap (still the `.env` value) sees the period total, the bot may
+refuse questions for the rest of the day or month. Run a large re-embed early in a
+period, or raise `JUDGE_MAX_USD` in `.env` too and `docker compose up -d` until it turns.
+
+A refill of rows already empty is not refused up front: it stops with `stopped at the
+spend cap`, keeping every row it embedded, and the same command with room resumes it.
+The run's spend is written to the ledger, so `judge-cli stats` shows it.
 
 ## 8. Redeploying
 
@@ -1199,6 +1228,7 @@ own if the connector restarts.
 | `judgebot` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact a role must show is unset or malformed in `.env` (`--discord` needs the first, `--api`/`--web`/`--mcp` the second); set it and `docker compose up -d` |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
 | Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and `docker compose up -d`, or wait for the period to turn |
+| `embedding refused by the spend cap`, or a refresh's `embed` step failing with `stopped at the spend cap` | The cap covers embeddings too. Questions are answered without vector search meanwhile. Raise `JUDGE_MAX_USD` or wait for the period, then `scripts/refresh-data.sh embed` fills the vectors it skipped |
 | A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`, and in `.env.deploy` for the `backup` service, which reads only that file. A scheduled refresh and the service post there on the first failure of a streak and on recovery; both scripts post on a non-zero exit |
 | When was the data last refreshed? | `/help`, the web footer or `GET /api/about` (`freshness`) for the age of the last success; `judge-cli stats` for the last five runs (§7) |
 | The data is days old and `refresh_runs` has no recent row | `JUDGE_REFRESH_HOURS=0` with no cron entry, or the `judgebot` log says `scheduled refresh paused` (a container on an older image than the schema, migrations pending with `JUDGE_AUTO_MIGRATE=false`, or no rules loaded yet: `docker compose run --rm refresh init`). `docker compose logs judgebot \| grep 'scheduled'` shows which |

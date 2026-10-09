@@ -141,9 +141,25 @@ async fn serve(roles: &Roles, name: Name) -> Result<()> {
         None => None,
     };
     // The scheduled data refresh, on a thread and a pool of its own
-    // (JUDGE_REFRESH_HOURS; 0 leaves it to cron).
+    // (JUDGE_REFRESH_HOURS; 0 leaves it to cron). Its embedding step bills to
+    // the process's meter, the one the serving roles' models bill to.
     let scheduler = if let Some(jobs) = jobs {
-        judge_bot::jobs::start(&pool, jobs, process).await
+        if serving.is_none() {
+            // Alone, the jobs still spend (the embed step), so the ledger runs
+            // here too: the period's spend caps the refresh, and the refresh's
+            // spend reaches `judge-cli stats`. A tripped cap fails the embed
+            // step, which the refresh reports itself; the questions alert does
+            // not apply to a process that answers none.
+            let budget = judge_bot::budget::Budget {
+                alert: None,
+                ..judge.budget().clone()
+            };
+            // It syncs on its own task for the life of the process.
+            let _ledger =
+                judge_bot::budget::start(pool.clone(), judge.meter().clone(), budget, process)
+                    .await;
+        }
+        judge_bot::jobs::start(&pool, jobs, judge.meter().clone(), process).await
     } else {
         tracing::info!(
             "scheduled data refresh: not this process's role (add --jobs to run it here)"

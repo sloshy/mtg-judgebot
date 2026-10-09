@@ -86,6 +86,28 @@ Embeddings are chosen the same way: `[models.embed]` on a `voyage` provider or o
 `openai` one (`POST /v1/embeddings`). On an `openai` provider `dimensions` is required.
 It is the width of the `vector(N)` columns.
 
+Embeddings count toward the same cap. Each request reserves its texts' bytes plus a small
+allowance as tokens, and settles to the usage the provider reports. Their price:
+
+- Voyage models are priced from Voyage's list (`voyage-3.5` $0.06, `voyage-3.5-lite`
+  $0.02, `voyage-3-large` $0.18 per million tokens) from the first token. The free
+  allowance is not subtracted. An unknown Voyage model is priced as the dearest listed.
+- A model on an `openai` provider needs `[models.embed.pricing]`, or the provider must say
+  `pricing = "free"`. Otherwise startup fails naming `models.embed`:
+
+  ```toml
+  [models.embed]
+  provider = "openai"
+  model = "text-embedding-3-small"
+  dimensions = 1536
+
+  [models.embed.pricing]
+  input = 0.02                         # USD per million tokens
+  ```
+
+At the cap a question is still answered, without vector search, and its call is stored
+without a vector for the next `ingest embed` to fill.
+
 A fresh database is created 1024 wide, Voyage's width. For an embedder of another width
 (OpenAI's `text-embedding-3-small` is 1536), run `ingest reembed --yes` *instead of*
 `ingest embed` the first time. It retypes the columns before it fills them. `ingest init`
@@ -95,10 +117,14 @@ The database records which model's vectors it holds (`embedding_space`), and not
 mixes two. A bot configured for another model logs an error and runs without vector
 search. To switch models:
 
-1. Run `cargo run --release -p judgebot -- ingest reembed`. It prints the row counts and a
-   rough cost, probes the new model once, and changes nothing.
+1. Run `cargo run --release -p judgebot -- ingest reembed`. It prints the row counts, the
+   cost at the configured price and what is left under the spend cap, probes the new
+   model once, and changes nothing.
 2. Run it again with `--yes`. It retypes the columns, clears every vector and re-embeds
-   them. That is paid per row, which is why it asks first.
+   them. That is paid per row, which is why it asks first. The run is billed to
+   `JUDGE_MAX_USD`, and `--yes` clears nothing unless its worst case fits what is left.
+   When the dry run says it may not fit, set a higher cap for the run alone
+   (`JUDGE_MAX_USD=20 … reembed --yes`).
 
 Run with the switch already made, `reembed` only fills rows that are still empty.
 `--clear` clears and re-pays every row on purpose.

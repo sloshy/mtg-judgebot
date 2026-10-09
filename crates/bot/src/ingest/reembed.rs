@@ -15,8 +15,12 @@
 //!
 //! Re-embedding pays the provider per row, which is why the command is a dry
 //! run without `--yes`: it prints what is stored and what would happen to it,
-//! what would be embedded and a rough cost, and exits non-zero having changed
-//! nothing. Before anything is cleared the configured embedder is probed with
+//! what would be embedded, its estimated cost at the configured price and what
+//! is left under the spend cap, and exits non-zero having changed nothing. The
+//! run is billed to the cap like every embedding (`judge_embed::MeteredEmbedder`),
+//! so a re-embed larger than what is left stops at the cap with the rows so
+//! far kept; the dry run says so beforehand, and how high to set
+//! `JUDGE_MAX_USD` for the run. Before anything is cleared the configured embedder is probed with
 //! one short text (a few tokens): a wrong key, URL or model name, or a model
 //! whose real width is not the configured `dimensions`, fails here with the
 //! old vectors intact — after the switch the only ways back would be paying
@@ -26,38 +30,37 @@ use std::fmt::Write as _;
 
 use anyhow::Context as _;
 use judge_core::InputKind;
-use judge_embed::{Space, WithSpace};
+use judge_embed::{EmbedPrice, Space, WithSpace};
 use sqlx::{PgPool, Row as _};
 
 use super::RefreshLease;
 use crate::db::space::{VECTOR_TABLES, column_width, stored_counts, stored_space, switch_space};
 
-/// A rough all-in price per million tokens for the estimate below: the top
-/// of the common range (`text-embedding-3-large` $0.13, `voyage-3-large`
-/// $0.18 — `voyage-3.5` and `text-embedding-3-small` are a third of that or
-/// less, a local model is free). Chars-to-tokens at 4:1. It is an order of
-/// magnitude, not a quote.
-const ROUGH_USD_PER_MILLION_TOKENS: f64 = 0.15;
-const CHARS_PER_TOKEN: f64 = 4.0;
+/// Characters per token for the estimate: typical of English prose. The cap
+/// reserves at one token per byte, so the estimate is what a run is likely
+/// to cost and the worst case is what the cap can take for it.
+const BYTES_PER_TOKEN: f64 = 4.0;
 /// What the probe embeds. Short, so it costs next to nothing anywhere.
 const PROBE_TEXT: &str = "Lifelink";
 
-/// `(table, rows, characters)` the embed loop would send: the same text each
-/// target in `embed.rs` selects — every row after a switch, only the rows
-/// still empty (`only_missing`) when the space is kept.
+/// `(table, rows, bytes)` the embed loop would send: the UTF-8 bytes of
+/// exactly the text each target in `embed.rs` selects (what the spend cap
+/// reserves from), for every row after a switch, only the rows still empty
+/// (`only_missing`) when the space is kept.
 async fn workload(pool: &PgPool, only_missing: bool) -> anyhow::Result<Vec<(String, i64, i64)>> {
     let rows = sqlx::query(
-        "SELECT 'rules' AS t, count(*) AS rows, coalesce(sum(length(heading) + length(body) + length(array_to_string(examples, ' '))), 0)::bigint AS chars \
+        "SELECT 'rules' AS t, count(*) AS rows, coalesce(sum(octet_length(heading || E'\\n' || body || \
+                CASE WHEN cardinality(examples) > 0 THEN E'\\nExample: ' || array_to_string(examples, E'\\nExample: ') ELSE '' END)), 0)::bigint AS bytes \
            FROM rules WHERE parent_id IS NULL AND (NOT $1 OR embedding IS NULL) \
-         UNION ALL SELECT 'glossary', count(*), coalesce(sum(length(term) + length(text)), 0)::bigint FROM glossary WHERE (NOT $1 OR embedding IS NULL) \
-         UNION ALL SELECT 'calls', count(*), coalesce(sum(length(question) + length(answer)), 0)::bigint FROM calls WHERE (NOT $1 OR embedding IS NULL)",
+         UNION ALL SELECT 'glossary', count(*), coalesce(sum(octet_length(term || E'\\n' || text)), 0)::bigint FROM glossary WHERE (NOT $1 OR embedding IS NULL) \
+         UNION ALL SELECT 'calls', count(*), coalesce(sum(octet_length(question || E'\\n' || answer)), 0)::bigint FROM calls WHERE (NOT $1 OR embedding IS NULL)",
     )
     .bind(only_missing)
     .fetch_all(pool)
     .await
     .context("counting the reembed workload")?;
     rows.iter()
-        .map(|r| Ok((r.try_get("t")?, r.try_get("rows")?, r.try_get("chars")?)))
+        .map(|r| Ok((r.try_get("t")?, r.try_get("rows")?, r.try_get("bytes")?)))
         .collect()
 }
 
@@ -97,26 +100,78 @@ fn plan(
             "keeping {vectors} stored vectors ({breakdown}); embedding only rows still empty"
         );
     }
-    let (mut rows, mut chars) = (0i64, 0i64);
-    for (table, n, c) in workload {
-        let _ = writeln!(out, "  {table:<9} {n:>7} rows  {c:>10} chars");
+    let (mut rows, mut bytes) = (0i64, 0i64);
+    for (table, n, b) in workload {
+        let _ = writeln!(out, "  {table:<9} {n:>7} rows  {b:>10} bytes");
         rows += n;
-        chars += c;
+        bytes += b;
     }
     #[expect(
         clippy::cast_precision_loss,
         reason = "an estimate, printed to two decimals"
     )]
-    let tokens = chars as f64 / CHARS_PER_TOKEN;
-    let usd = tokens / 1e6 * ROUGH_USD_PER_MILLION_TOKENS;
+    let tokens = bytes as f64 / BYTES_PER_TOKEN;
     let _ = writeln!(
         out,
-        "  total     {rows:>7} rows  {chars:>10} chars  ~{tokens:.0} tokens"
+        "  total     {rows:>7} rows  {bytes:>10} bytes  ~{tokens:.0} tokens"
     );
-    let _ = writeln!(
-        out,
-        "rough cost: ~${usd:.2} at ${ROUGH_USD_PER_MILLION_TOKENS}/M tokens (an order of magnitude: check your provider's price; a local model is free)"
+    out
+}
+
+/// The most the embed loop can be charged for `rows` texts of `bytes` in
+/// all at `rate` USD per million tokens: what the spend cap reserves for
+/// them (`judge_embed::worst_case_tokens`, summed).
+fn worst_usd(rows: i64, bytes: i64, rate: f64) -> f64 {
+    let tokens = u64::try_from(bytes).unwrap_or(0).saturating_add(
+        u64::try_from(rows)
+            .unwrap_or(0)
+            .saturating_mul(judge_embed::metered::TOKENS_PER_TEXT),
     );
+    judge_embed::metered::usd_for(tokens, rate)
+}
+
+/// The `JUDGE_MAX_USD` that leaves room for `worst` on top of what is spent.
+fn cap_for(worst: f64, room: Room) -> f64 {
+    (room.cap - room.remaining + worst).ceil().max(1.0)
+}
+
+/// What the spend cap has room for when the dry run is printed.
+#[derive(Clone, Copy, Debug)]
+struct Room {
+    /// USD left under the cap (`JUDGE_MAX_USD`, less what the period has spent).
+    remaining: f64,
+    /// The cap.
+    cap: f64,
+}
+
+/// The cost lines of the dry run: the estimate at `price` (four bytes a
+/// token), the worst case the cap may reserve ([`worst_usd`]), and what is
+/// left under the cap, with the `JUDGE_MAX_USD` that fits the worst case
+/// when it does not. Pure, so it can be read in a test.
+fn cost(rows: i64, bytes: i64, price: EmbedPrice, room: Room) -> String {
+    let Some(rate) = price.per_million() else {
+        return "cost: nothing (the provider is pricing = \"free\"); calls are still counted\n"
+            .to_owned();
+    };
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "an estimate, printed to two decimals"
+    )]
+    let likely = bytes as f64 / BYTES_PER_TOKEN / 1e6 * rate;
+    let worst = worst_usd(rows, bytes, rate);
+    let mut out = format!(
+        "estimated cost: ~${likely:.2} at ${rate}/M tokens (at most ${worst:.2}, what the spend cap reserves)\n\
+         spend cap: ${:.2} left of ${:.2} (JUDGE_MAX_USD)\n",
+        room.remaining, room.cap
+    );
+    if worst > room.remaining {
+        let _ = writeln!(
+            out,
+            "that may not fit: --yes refuses to clear anything unless it does (a refill of rows already \
+             empty stops at the cap instead, keeping what it embedded); run it with JUDGE_MAX_USD={:.2} or more",
+            cap_for(worst, room)
+        );
+    }
     out
 }
 
@@ -178,6 +233,20 @@ pub async fn run(
     let switching = !same || clear;
     let work = workload(pool, !switching).await?;
     print!("{}", plan(stored.as_ref(), &held, target, &work, switching));
+    let (rows, bytes) = work.iter().fold((0, 0), |(r, c), (_, n, b)| (r + n, c + b));
+    let meter = embedder.meter();
+    print!(
+        "{}",
+        cost(
+            rows,
+            bytes,
+            embedder.price(),
+            Room {
+                remaining: meter.remaining_usd(),
+                cap: meter.max_spend_usd(),
+            },
+        )
+    );
     if same && clear {
         let verb = if yes { "clearing" } else { "would clear" };
         println!(
@@ -204,7 +273,6 @@ pub async fn run(
     }
     let width = probe(embedder).await?;
     println!("probe: {target} answered with a {width}-dimensional vector");
-    let rows: i64 = work.iter().map(|(_, n, _)| n).sum();
     if !yes {
         let then = match (switching, same) {
             (true, true) => "clear and re-embed every row",
@@ -213,6 +281,26 @@ pub async fn run(
             (false, _) => "embed the rows still empty",
         };
         anyhow::bail!("reembed: dry run, nothing changed; rerun with --yes to {then}");
+    }
+    // A switch clears every vector before the refill pays for them again: one
+    // the cap cannot see through would leave the vectors gone and too many
+    // empty rows for the scheduled refresh to fill. So it must fit first.
+    if switching && let Some(rate) = embedder.price().per_million() {
+        let worst = worst_usd(rows, bytes, rate);
+        let room = Room {
+            remaining: meter.remaining_usd(),
+            cap: meter.max_spend_usd(),
+        };
+        if worst > room.remaining {
+            anyhow::bail!(
+                "reembed: the re-embed may cost up to ${worst:.2} and the spend cap has ${:.2} left, so nothing was cleared; \
+                 run it with JUDGE_MAX_USD={:.2} or more for this run \
+                 (`docker compose run --rm -e JUDGE_MAX_USD={:.2} refresh reembed --yes`)",
+                room.remaining,
+                cap_for(worst, room),
+                cap_for(worst, room)
+            );
+        }
     }
     if switching && same {
         switch_space(pool, target)
@@ -248,7 +336,7 @@ mod tests {
 
     use super::*;
     use crate::db::space::{column_width, record_space};
-    use crate::ingest::embed::fake::Fake;
+    use crate::ingest::embed::fake::{FakeExt as _, fake_embedder};
 
     #[test]
     fn the_plan_names_both_spaces_the_rows_and_says_the_cost_is_rough() {
@@ -283,7 +371,35 @@ mod tests {
                 && p.contains("~1030000 tokens"),
             "{p}"
         );
-        assert!(p.contains("rough cost: ~$0.15"), "{p}");
+        assert!(!p.contains("cost"), "{p}");
+        let room = Room {
+            remaining: 5.0,
+            cap: 5.0,
+        };
+        // 4M characters at $0.06/M: ~1M tokens, ~$0.06; at most 4M tokens and the per-text allowance.
+        let c = cost(1910, 4_000_000, EmbedPrice::Table(0.06), room);
+        assert!((worst_usd(1910, 4_000_000, 0.06) - 0.241_833_6).abs() < 1e-9);
+        assert!(
+            c.contains("estimated cost: ~$0.06 at $0.06/M tokens (at most $0.24")
+                && c.contains("spend cap: $5.00 left of $5.00")
+                && !c.contains("may stop"),
+            "{c}"
+        );
+        // Less left than the worst case: the dry run names a cap that fits it.
+        let tight = cost(
+            1910,
+            4_000_000,
+            EmbedPrice::Table(0.18),
+            Room {
+                remaining: 0.30,
+                cap: 5.0,
+            },
+        );
+        assert!(
+            tight.contains("may not fit") && tight.contains("JUDGE_MAX_USD=6.00"),
+            "{tight}"
+        );
+        assert!(cost(1, 1, EmbedPrice::Free, room).contains("nothing"));
         assert!(plan(None, &[], &target, &[], true).contains("none (nothing embedded) -> openai"));
         assert!(
             plan(None, &held, &target, &[], true)
@@ -348,7 +464,7 @@ mod tests {
         };
 
         // A model that does not produce the configured width: refused with --yes, before the switch.
-        let wrong = Fake::new(Provider::OpenAi, "nomic-embed-text", 768).replying(1024);
+        let wrong = fake_embedder(Provider::OpenAi, "nomic-embed-text", 768).replying(1024);
         let err = run(&mut lease, Some(&wrong), true, false)
             .await
             .err()
@@ -362,8 +478,32 @@ mod tests {
         assert_eq!(wrong.calls(), 1);
         unchanged(&pool).await?;
 
+        // A switch the spend cap cannot see through is refused before anything
+        // is cleared: probed ($10/M: 24 tokens reserved, 1 billed), then refused,
+        // since the one glossary row's worst case (35 tokens, $0.00035) passes
+        // the $0.00029 left.
+        let meter = judge_llm::SpendMeter::new().with_max_spend_usd(0.0003)?;
+        let capped = crate::ingest::embed::fake::billed(
+            Provider::OpenAi,
+            "nomic-embed-text",
+            768,
+            &meter,
+            EmbedPrice::Table(10.0),
+        );
+        let err = run(&mut lease, Some(&capped), true, false)
+            .await
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(
+            err.contains("nothing was cleared") && err.contains("JUDGE_MAX_USD=1.00"),
+            "{err}"
+        );
+        assert_eq!(capped.calls(), 1, "the probe only");
+        unchanged(&pool).await?;
+
         // The dry run probes (so the endpoint is known to work) and stops.
-        let nomic = Fake::new(Provider::OpenAi, "nomic-embed-text", 768);
+        let nomic = fake_embedder(Provider::OpenAi, "nomic-embed-text", 768);
         let err = run(&mut lease, Some(&nomic), false, false)
             .await
             .err()
@@ -378,7 +518,7 @@ mod tests {
 
         // --yes: the switch, then the embed loop over every row.
         run(&mut lease, Some(&nomic), true, false).await?;
-        assert_eq!(stored_space(&pool).await?, Some(nomic.space.clone()));
+        assert_eq!(stored_space(&pool).await?, Some(nomic.space().clone()));
         assert_eq!(column_width(&pool, "glossary").await?, 768);
         assert_eq!(
             stored_counts(&pool)
@@ -412,11 +552,11 @@ mod tests {
         pool: PgPool,
     ) -> anyhow::Result<()> {
         let mut lease = crate::ingest::lease(&pool, "test").await?;
-        let nomic = Fake::new(Provider::OpenAi, "nomic-embed-text", 768);
+        let nomic = fake_embedder(Provider::OpenAi, "nomic-embed-text", 768);
         // The database already holds nomic's space: one embedded row (a marker
         // the fake would never produce) and one still empty, as an interrupted
         // refill leaves things.
-        switch_space(&pool, &nomic.space).await?;
+        switch_space(&pool, nomic.space()).await?;
         let marker = vec![0.25_f32; 768];
         sqlx::query("INSERT INTO glossary (term, text, cr_version, embedding) VALUES ('Lifelink', 'A keyword.', '20260819', $1)")
             .bind(Vector::from(marker.clone()))
@@ -470,7 +610,7 @@ mod tests {
             "--clear did not clear the stored vector"
         );
         assert!(holds(&pool, "Trample", &vec![0.5; 768]).await?);
-        assert_eq!(stored_space(&pool).await?, Some(nomic.space.clone()));
+        assert_eq!(stored_space(&pool).await?, Some(nomic.space().clone()));
 
         // A row edited by hand to name a width the columns do not have is not
         // "already held": --yes switches (retypes) rather than refilling into
@@ -478,7 +618,7 @@ mod tests {
         sqlx::query("UPDATE embedding_space SET dimensions = 1536")
             .execute(&pool)
             .await?;
-        let wide = Fake::new(Provider::OpenAi, "nomic-embed-text", 1536);
+        let wide = fake_embedder(Provider::OpenAi, "nomic-embed-text", 1536);
         run(&mut lease, Some(&wide), true, false).await?;
         assert_eq!(column_width(&pool, "glossary").await?, 1536);
         assert!(holds(&pool, "Trample", &vec![0.5; 1536]).await?);

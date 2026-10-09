@@ -16,8 +16,8 @@ bot talks to (Discord, Scryfall, model providers, Cloudflare).
 Operators should know these properties. The reasoning behind each is in
 `docs/DEPLOYMENT.md` and the comments in `.env.example`.
 
-- **Spend is the main asset to protect.** Every model call goes through a hard
-  cap (`JUDGE_MAX_USD`) that reserves the worst case before sending. The anonymous API
+- **Spend is the main asset to protect.** Every model call, embeddings included, goes
+  through a hard cap (`JUDGE_MAX_USD`) that reserves the worst case before sending. The anonymous API
   adds a per-IP fixed-window rate limit ahead of the concurrency semaphore, and the
   runbook puts a Cloudflare rate-limiting rule in front of that.
 - **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP`

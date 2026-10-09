@@ -109,6 +109,7 @@ mod tests {
             "StageEntry",
             "PricingEntry",
             "EmbedEntry",
+            "EmbedPricingEntry",
         ] {
             assert!(schema.pointer(&format!("/$defs/{def}")).is_some(), "{def}");
         }

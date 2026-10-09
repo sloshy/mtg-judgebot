@@ -15,14 +15,27 @@
 //! between two syncs, and a crash loses at most that much of the record.
 //! The ledger is written in every mode, since `judge-cli stats` reads it.
 //!
-//! The same task watches [`SpendMeter::refusals`] and tells the operator
+//! The meter bills embeddings as well as chat calls (`judge_embed::MeteredEmbedder`
+//! reserves on it), so the ledger's `micro_usd` is both, combined: a row does
+//! not say which. Its `calls` are the chat calls only
+//! ([`SpendMeter::calls`]), comparable with every row written before. The processes that write it are the long-running
+//! roles (`judgebot`, under any roles, `--jobs` alone included, whose scheduled
+//! refresh embeds) and `judgebot ingest`, whose `embed`, `reembed`, `init` and
+//! `refresh` can spend more than any question. `ingest` writes its share once
+//! more as it exits ([`Syncing::flush`]), since it may not live to the next
+//! tick. `judge-cli`, `judge-mcp` and `judge-eval` keep a per-process cap and
+//! write nothing, as before.
+//!
+//! The same task watches [`SpendMeter::refusals`] (chat requests only: a
+//! refused embedding costs a question its vector search, not its answer, and
+//! a refresh's refused embed step alerts as a failed step) and tells the operator
 //! ([`crate::alert`], `JUDGE_ALERT_WEBHOOK`) the first time the cap refuses a request in a
 //! period: a capped bot is otherwise silent until someone reads the log.
 //!
 //! The arithmetic is [`Ledger`], pure and tested without a database; the
 //! period boundary is Postgres's clock, so processes cannot disagree on it.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
@@ -268,6 +281,30 @@ resume{}.",
     )
 }
 
+/// A process's ledger as [`start`] leaves it running: the handle a
+/// short-lived process (`judgebot ingest`) writes its last spend through
+/// before it exits.
+#[derive(Clone)]
+#[must_use = "a short-lived process flushes it before it exits; a long-running one may let it go"]
+pub struct Syncing {
+    pool: PgPool,
+    meter: SpendMeter,
+    period: Period,
+    ledger: Arc<tokio::sync::Mutex<Ledger>>,
+}
+
+impl Syncing {
+    /// Write what this process has spent since the last sync, now. A
+    /// failure is logged: the spend was capped all the same, only its record
+    /// is short.
+    pub async fn flush(&self) {
+        let mut ledger = self.ledger.lock().await;
+        if let Err(e) = sync(&self.pool, &self.meter, self.period, &mut ledger).await {
+            tracing::warn!(error = %e, "spend ledger: the last write failed; this run's spend is missing from `judge-cli stats`");
+        }
+    }
+}
+
 /// Seed the meter from the ledger, then keep the two in step for the life of
 /// the process. `process` names the caller in an alert (`judgebot`, or
 /// `bot`/`api` under the compatibility names).
@@ -276,7 +313,12 @@ resume{}.",
 /// exhausted period refuses its first question rather than answering until
 /// the first tick. A database error there is logged and retried on the tick:
 /// the cap still holds per process, exactly as with no period configured.
-pub async fn start(pool: PgPool, meter: SpendMeter, budget: Budget, process: &'static str) {
+pub async fn start(
+    pool: PgPool,
+    meter: SpendMeter,
+    budget: Budget,
+    process: &'static str,
+) -> Syncing {
     let mut ledger = Ledger::default();
     let period = budget.period;
     match sync(&pool, &meter, period, &mut ledger).await {
@@ -291,19 +333,35 @@ pub async fn start(pool: PgPool, meter: SpendMeter, budget: Budget, process: &'s
             tracing::error!(error = %e, "spend ledger unavailable; capping per process until it is");
         }
     }
+    let handle = Syncing {
+        pool,
+        meter,
+        period,
+        ledger: Arc::new(tokio::sync::Mutex::new(ledger)),
+    };
     // A webhook that accepts the connection and never answers must not stop
     // the syncing, which is what lifts the cap when the period turns.
     let client = alert::client();
+    let Syncing {
+        pool,
+        meter,
+        ledger,
+        ..
+    } = handle.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(SYNC_EVERY);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         tick.tick().await;
         loop {
             tick.tick().await;
-            if let Err(e) = sync(&pool, &meter, period, &mut ledger).await {
-                tracing::warn!(error = %e, "spend ledger sync failed; will retry");
-            }
-            if ledger.should_alert(meter.refusals()) {
+            let alert_now = {
+                let mut ledger = ledger.lock().await;
+                if let Err(e) = sync(&pool, &meter, period, &mut ledger).await {
+                    tracing::warn!(error = %e, "spend ledger sync failed; will retry");
+                }
+                ledger.should_alert(meter.refusals())
+            };
+            if alert_now {
                 tracing::warn!(
                     %period,
                     spent_usd = format_args!("{:.4}", meter.counted_usd()),
@@ -317,6 +375,7 @@ pub async fn start(pool: PgPool, meter: SpendMeter, budget: Budget, process: &'s
             }
         }
     });
+    handle
 }
 
 fn micro_to_usd(micro: i64) -> f64 {

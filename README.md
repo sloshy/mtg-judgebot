@@ -89,7 +89,8 @@ The config editor checks every change with the binaries' own loaders and shows w
 would refuse to start, and why. To edit by hand instead, `cp .env.example .env` and fill it
 in: every variable is documented in the file.
 
-Every model call is metered against a hard cap, `JUDGE_MAX_USD` (default $5):
+Every model call, embeddings included, is metered against a hard cap, `JUDGE_MAX_USD`
+(default $5):
 
 - By default the cap is a total for the life of the process, the bot and the page
   together, and a restart counts from zero.

@@ -149,7 +149,8 @@ likely to bump into.
   to it. That dependency fence stands in for effect tracking.
 - **Every model call is metered.** The only way to send a request is through
   `judge_llm::Metered`, which reserves the worst-case cost against `JUDGE_MAX_USD`
-  first. Do not add a second path to a provider.
+  first, or, for an embedding, `judge_embed::MeteredEmbedder` on the same meter. Do not
+  add a second path to a provider.
 - **Citations are validated, never trusted.** A quote must be a substring of its source in the
   retrieved context. Only a `Verdict<Validated>` can be persisted or shown.
 - **The resolver never guesses.** Ambiguity in a card name becomes a "did you mean"

@@ -191,6 +191,12 @@ Around the meter:
 - Each call logs an `llm call` line with a `provider` field.
 - `Models::{single, pair, priced}` take the meter and bare backends and meter them
   themselves. The fields are private, so there is no uncapped model and no foreign meter.
+- Embeddings bill to the same meter (§4.3). `SpendMeter::reserve_embedding_usd` hands out
+  the `Reservation` they settle, or `release` when the request was never billed. Dropped
+  unsettled (a cancelled request the provider may have billed) it keeps the worst case, as
+  a cancelled chat call does. Embedding requests and refusals have their own counters
+  (`embedding_calls`, `embedding_refusals`), so `calls()`, the ledger's `calls` and the
+  questions-refused alert stay chat-only.
 
 ## 4. Backends
 
@@ -272,8 +278,45 @@ It ignores `InputKind`, because that API has no query/document distinction.
 `[models.embed]` chooses between them. Without one, `VOYAGE_API_KEY` selects Voyage and a
 blank key turns the vector search off.
 
+**Spend cap.** Both adapters implement the open `EmbedBackend` and report each request's
+usage (Voyage's `usage.total_tokens`; OpenAI-compatible `usage.total_tokens`, else
+`prompt_tokens`). Only `MeteredEmbedder<B>` implements the sealed `WithSpace` that
+everything downstream takes, and `Config::embedder`/`vectors` build it on the process's
+`SpendMeter`, the one the chat stages bill to. Per request:
+
+- It reserves the worst case: every text's UTF-8 bytes plus 16 tokens each, at the
+  model's price. No tokenizer the providers use makes a token of less than a byte, and
+  the 16 cover Voyage's `input_type` prompt and the start and end markers. A request the
+  cap cannot fit is refused (`SpendCapExceeded`) before it is sent. A batch is one request.
+- It settles on the reported usage. A 2xx with no usage, or 0 tokens for texts it was
+  sent, keeps the whole reservation. A 2xx whose body fails afterwards (a vector short,
+  the wrong width) is still billed. A request whose future is dropped keeps the
+  reservation; one that failed before a 2xx releases it.
+- It logs an `embedding call` line and counts the call.
+
+`EmbedPrice` mirrors `Price`, in USD per million input tokens:
+
+- `Table`: Voyage's list price (`judge_embed::VOYAGE_PRICES`, from
+  docs.voyageai.com/docs/pricing, checked 2026-10-09), from the first token. Voyage's free
+  allowance is per account and not subtracted. An unknown Voyage model prices as the
+  dearest listed, `voyage-3-large`'s $0.18.
+- `PerToken`: `[models.embed.pricing] input = …`, which overrides the list on Voyage. A
+  price of 0 reserves nothing but, as for a chat stage, is still refused once the cap is
+  exhausted; only `pricing = "free"` on the provider is never refused.
+- `Free`: `pricing = "free"` on an `openai` provider. Calls are counted, never refused.
+
+An `openai`-kind embedding model has no list. It needs `[models.embed.pricing]` or a free
+provider, else the file does not load (`models.embed: no price for …`).
+
+At the cap the callers degrade rather than fail. A refused query embedding leaves
+retrieval without its vector source (WARN once per streak of refusals). A refused call
+embedding stores the call with a NULL vector for the next `ingest embed`. `ingest embed`,
+`reembed --yes` and the refresh's embed step fail naming the cap and keep what they
+embedded, and the scheduler alerts on the failed step. `reembed --yes` refuses a switch
+whose worst case does not fit what is left before it clears anything.
+
 **Vector space identity.** Vectors from two models cannot share a column, and pgvector's
-HNSW index needs a fixed width, so every embedder implements `WithSpace`: a `Space` of
+HNSW index needs a fixed width, so every embedder carries a `Space` (`WithSpace::space`):
 provider *kind* (`voyage | openai`, not the operator's table name), model and dimensions.
 `Space::check` (pure, in `judge_embed::space`) is the only definition of "same space".
 
@@ -303,8 +346,10 @@ provider *kind* (`voyage | openai`, not the operator's table name), model and di
   - When the database already holds the configured space, it only fills NULL rows. That
     is idempotent, and it is how an interrupted refill resumes.
   - `--clear` re-pays every row in the same space.
-  - Without `--yes` it prints the row counts and a rough cost, exits non-zero and changes
-    nothing.
+  - Without `--yes` it prints the row counts and bytes, the estimated cost at the
+    configured price and its worst case (as the cap reserves it), and what is left under
+    the spend cap (with a `JUDGE_MAX_USD` that
+    fits the run when it does not), exits non-zero and changes nothing.
 - `config::Dimensions` is `1..=2000` (HNSW's limit) at load, and `VOYAGE_DIMENSIONS` has
   the same bound. The migrations create `vector(1024)`, and `reembed` is how it changes.
 
@@ -368,6 +413,8 @@ cache_write = 5.0                  # defaults to 1.25 × `input`, Anthropic's wr
 provider = "voyage"                # kind = "voyage" provider, implied when absent
 model = "voyage-3.5"
 dimensions = 1024
+# [models.embed.pricing]           # USD per million tokens: required on an `openai`
+# input = 0.02                     # provider not marked free; overrides Voyage's list
 ```
 
 The loader enforces these rules at load time, each with a message naming the key:
@@ -380,10 +427,11 @@ The loader enforces these rules at load time, each with a message naming the key
 - A knob that would be silently ignored is an error naming both keys: `auth` without
   `api_key_env`, `effort` on an `openai` provider with `reasoning_effort = false`, a stage
   price on a `pricing = "free"` provider, a cloud-endpoint key on a keyed endpoint.
-- A model on an `openai` provider must be priced or its provider `pricing = "free"`. The
-  built-in table prices unknown *Anthropic* models only, as the default model, so a dearer
-  one is under-counted unless it has a price of its own. An unknown OpenAI-compatible model
-  could be anything.
+- A model on an `openai` provider must be priced or its provider `pricing = "free"`, an
+  embedding model included (`[models.embed.pricing]`). The built-in tables price unknown
+  *Anthropic* chat models (as the default model, so a dearer one is under-counted unless
+  it has a price of its own) and unknown *Voyage* embedding models (as the dearest
+  listed). An unknown OpenAI-compatible model could be anything.
 
 The loader is hermetic: `from_toml`/`from_vars` read `JUDGE_MAX_USD` and the keys through
 an injected environment, so its tests never touch the process environment. Every binary

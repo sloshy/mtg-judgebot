@@ -1,26 +1,29 @@
-//! `Embedder` over Voyage AI's HTTP API (`POST /v1/embeddings`).
+//! [`EmbedBackend`] over Voyage AI's HTTP API (`POST /v1/embeddings`): the
+//! vectors and `usage.total_tokens`, which [`crate::MeteredEmbedder`] settles
+//! the spend cap's reservation to.
 
 use std::{fmt, time::Duration};
 
 use async_trait::async_trait;
-use judge_core::{Embedder, InputKind, JudgeError};
+use judge_core::{InputKind, JudgeError};
 use serde::{Deserialize, Serialize};
 
-use crate::{Provider, Space, WithSpace};
+use crate::{EmbedBackend, EmbedError, EmbedUsage, Embedded, Provider, Space};
 
 /// Voyage's key-only free tier allows 3 requests/min; 429s are retried with a
 /// fixed pause instead of failing a long ingest run.
 const RATE_LIMIT_TRIES: u32 = 8;
 const RATE_LIMIT_PAUSE: std::time::Duration = std::time::Duration::from_secs(25);
 const URL: &str = "https://api.voyageai.com/v1/embeddings";
-const DEFAULT_MODEL: &str = "voyage-3.5";
-const DEFAULT_DIMENSIONS: usize = 1024;
 
-/// Voyage AI embedder. Construct with [`VoyageEmbedder::new`] (the
-/// configuration loader) or [`VoyageEmbedder::from_env`].
+/// Voyage AI embedder, built by the configuration loader
+/// ([`VoyageEmbedder::new`]); it reaches the pipeline only inside a
+/// [`crate::MeteredEmbedder`].
 #[derive(Clone)]
 pub struct VoyageEmbedder {
     http: reqwest::Client,
+    /// [`URL`], except in tests.
+    url: String,
     api_key: String,
     /// Model and width, sent on every request so the vectors are that wide
     /// whatever the model's default.
@@ -51,6 +54,29 @@ struct Resp {
     data: Vec<Datum>,
 }
 
+/// The billed part of a 2xx body, read on its own before [`Resp`] so a body
+/// whose `data` does not decode is still billed.
+#[derive(Deserialize)]
+struct Billed {
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
+#[derive(Deserialize)]
+struct Usage {
+    total_tokens: u64,
+}
+
+/// What a 2xx `body` says it used.
+fn usage(body: &[u8]) -> EmbedUsage {
+    serde_json::from_slice::<Billed>(body)
+        .ok()
+        .and_then(|b| b.usage)
+        .map_or(EmbedUsage::Unreported, |u| {
+            EmbedUsage::Tokens(u.total_tokens)
+        })
+}
+
 #[derive(Deserialize)]
 struct Datum {
     embedding: Vec<f32>,
@@ -75,6 +101,7 @@ impl VoyageEmbedder {
             .map_err(anyhow::Error::from)?;
         Ok(Self {
             http,
+            url: URL.to_owned(),
             api_key: api_key.into(),
             space: Space {
                 provider: Provider::Voyage,
@@ -83,33 +110,11 @@ impl VoyageEmbedder {
             },
         })
     }
-
-    /// Reads `VOYAGE_API_KEY`, optional `VOYAGE_MODEL` (default `voyage-3.5`) and
-    /// optional `VOYAGE_DIMENSIONS` (default 1024).
-    ///
-    /// # Errors
-    /// If the key is unset, `VOYAGE_DIMENSIONS` is not a positive integer or the
-    /// HTTP client cannot be built.
-    pub fn from_env() -> anyhow::Result<Self> {
-        // An empty value (e.g. `VOYAGE_API_KEY=` in .env) counts as unset.
-        let api_key = std::env::var("VOYAGE_API_KEY")
-            .ok()
-            .filter(|k| !k.trim().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("VOYAGE_API_KEY is not set"))?;
-        let model = std::env::var("VOYAGE_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
-        let dimensions = match std::env::var("VOYAGE_DIMENSIONS") {
-            Ok(s) => s.parse::<usize>().ok().filter(|d| *d > 0).ok_or_else(|| {
-                anyhow::anyhow!("VOYAGE_DIMENSIONS must be a positive integer, got {s:?}")
-            })?,
-            Err(_) => DEFAULT_DIMENSIONS,
-        };
-        Ok(Self::new(api_key, model, dimensions)?)
-    }
 }
 
 #[async_trait]
-impl Embedder for VoyageEmbedder {
-    async fn embed(&self, texts: &[&str], kind: InputKind) -> Result<Vec<Vec<f32>>, JudgeError> {
+impl EmbedBackend for VoyageEmbedder {
+    async fn embed(&self, texts: &[&str], kind: InputKind) -> Result<Embedded, EmbedError> {
         if texts.is_empty() {
             return Err(
                 anyhow::anyhow!("embed: no texts given (Voyage rejects an empty input)").into(),
@@ -129,7 +134,7 @@ impl Embedder for VoyageEmbedder {
         let body = loop {
             let resp = self
                 .http
-                .post(URL)
+                .post(&self.url)
                 .bearer_auth(&self.api_key)
                 .json(&req)
                 .send()
@@ -155,24 +160,26 @@ impl Embedder for VoyageEmbedder {
             }
             break body;
         };
-        let parsed: Resp = serde_json::from_slice(&body).map_err(anyhow::Error::from)?;
+        // A 2xx was billed whatever its body holds.
+        let usage = usage(&body);
+        let billed = |error: anyhow::Error| EmbedError {
+            error: JudgeError::from(error),
+            billed: Some(usage),
+        };
+        let parsed: Resp = serde_json::from_slice(&body).map_err(|e| billed(e.into()))?;
         if parsed.data.len() != texts.len() {
-            return Err(anyhow::anyhow!(
+            return Err(billed(anyhow::anyhow!(
                 "voyage returned {} embeddings for {} texts",
                 parsed.data.len(),
                 texts.len()
-            )
-            .into());
+            )));
         }
-        Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
+        Ok(Embedded {
+            vectors: parsed.data.into_iter().map(|d| d.embedding).collect(),
+            usage,
+        })
     }
 
-    fn dimensions(&self) -> usize {
-        self.space.dimensions
-    }
-}
-
-impl WithSpace for VoyageEmbedder {
     fn space(&self) -> &Space {
         &self.space
     }
@@ -181,6 +188,104 @@ impl WithSpace for VoyageEmbedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DEFAULT_MODEL: &str = "voyage-3.5";
+    use crate::{EmbedPrice, MeteredEmbedder, WithSpace, is_spend_cap};
+    use judge_core::Embedder;
+    use judge_llm::SpendMeter;
+    use serde_json::json;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{body_json, header, method, path},
+    };
+
+    fn at(server: &MockServer) -> Result<VoyageEmbedder, JudgeError> {
+        let mut e = VoyageEmbedder::new("pa-test", DEFAULT_MODEL, 2)?;
+        e.url = format!("{}/v1/embeddings", server.uri());
+        Ok(e)
+    }
+
+    #[tokio::test]
+    async fn the_reported_usage_is_what_the_meter_settles_at()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(header("authorization", "Bearer pa-test"))
+            .and(body_json(json!({"input": ["Sample text"], "model": "voyage-3.5", "input_type": "query", "output_dimension": 2})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "object": "list",
+                "data": [{"object": "embedding", "embedding": [0.5, 0.5], "index": 0}],
+                "model": "voyage-3.5",
+                "usage": {"total_tokens": 1_000_000}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let backend = at(&server)?;
+        let meter = SpendMeter::new();
+        let e = MeteredEmbedder::new(backend, meter.clone())?;
+        assert_eq!(e.price(), EmbedPrice::Table(0.06));
+        assert_eq!(
+            e.embed(&["Sample text"], InputKind::Query).await?,
+            vec![vec![0.5, 0.5]]
+        );
+        // 1M tokens of voyage-3.5 is $0.06: the usage, not the byte-count reservation.
+        assert!(
+            (meter.spent_usd() - 0.06).abs() < 1e-9,
+            "{}",
+            meter.spent_usd()
+        );
+        assert_eq!(meter.embedding_calls(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_capped_meter_refuses_before_any_request() -> Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let meter = SpendMeter::new().with_max_spend_usd(0.0)?;
+        let e = MeteredEmbedder::new(at(&server)?, meter.clone())?;
+        let err = e.embed(&["q"], InputKind::Query).await.err();
+        assert!(err.as_ref().is_some_and(is_spend_cap), "{err:?}");
+        assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 0);
+        assert_eq!(meter.embedding_calls(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_billed_body_that_does_not_decode_still_counts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [], "usage": {"total_tokens": 2_000_000}
+            })))
+            .mount(&server)
+            .await;
+        let meter = SpendMeter::new();
+        let e = MeteredEmbedder::new(at(&server)?, meter.clone())?;
+        let err = e
+            .embed(&["a"], InputKind::Document)
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert!(
+            err.as_deref()
+                .is_some_and(|e| e.contains("0 embeddings for 1 texts")),
+            "{err:?}"
+        );
+        assert!(
+            (meter.spent_usd() - 0.12).abs() < 1e-9,
+            "{}",
+            meter.spent_usd()
+        );
+        Ok(())
+    }
 
     #[test]
     fn debug_redacts_api_key() -> Result<(), JudgeError> {

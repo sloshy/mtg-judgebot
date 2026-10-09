@@ -20,6 +20,13 @@
 //! mixing spaces at the old one; the log line fires on the transition, not
 //! on every request.
 //!
+//! Every embedding is also behind the spend cap ([`WithSpace`] is sealed to
+//! `judge_embed::MeteredEmbedder`). A request the cap refuses is a missing
+//! vector, like any other embedding failure: the question is answered without
+//! the vector source and a call is stored with a NULL `embedding` for the
+//! next `ingest embed` to fill. The refusal is logged at WARN once per streak
+//! of refusals, then at DEBUG until an embedding goes through again.
+//!
 //! A read can only be stale by one request; a *write* must not be stale at
 //! all, or a `reembed` committing between the check and the `INSERT` would
 //! store an old-space vector under the new row. So every writer of a vector
@@ -33,7 +40,10 @@
 
 use std::{
     fmt,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use judge_core::{InputKind, JudgeError};
@@ -275,6 +285,8 @@ pub struct Vectors {
     pool: PgPool,
     embedder: Arc<dyn WithSpace>,
     state: Mutex<State>,
+    /// The spend cap refused the last embedding: the next refusal is not news.
+    capped: AtomicBool,
 }
 
 impl fmt::Debug for Vectors {
@@ -298,6 +310,7 @@ impl Vectors {
             pool,
             embedder,
             state: Mutex::new(State::Unchecked),
+            capped: AtomicBool::new(false),
         }
     }
 
@@ -383,7 +396,20 @@ impl Vectors {
             return None;
         }
         let vectors = match self.embedder.embed(&[text], kind).await {
-            Ok(v) => v,
+            Ok(v) => {
+                if self.capped.swap(false, Ordering::Relaxed) {
+                    tracing::info!("the spend cap has room again; embedding resumed");
+                }
+                v
+            }
+            Err(e) if judge_embed::is_spend_cap(&e) => {
+                if self.capped.swap(true, Ordering::Relaxed) {
+                    tracing::debug!(error = %e, "embedding refused by the spend cap");
+                } else {
+                    tracing::warn!(error = %e, "embedding refused by the spend cap; vector search is skipped and calls are stored without a vector (for `ingest embed` to fill) until it has room");
+                }
+                return None;
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "embedding failed; skipping the vector search");
                 return None;

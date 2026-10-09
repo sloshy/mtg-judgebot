@@ -35,6 +35,14 @@
 //! `DATABASE_URL` is read from the environment (a `.env` file is honoured); the
 //! embedder comes from `judge.toml` / `VOYAGE_API_KEY` through `judge_bot::config`,
 //! the same loader the serving roles use, so `embed` writes the space they query.
+//!
+//! Every embedding is behind the spend cap: the command makes one meter from
+//! `JUDGE_MAX_USD` and runs the spend ledger on it (`judge_bot::budget`, with
+//! `JUDGE_BUDGET_PERIOD`) like a serving process, so a re-embed counts toward
+//! the period the bot is capped by and shows in `judge-cli stats`. The ledger
+//! is written once more as the command exits. A run larger than what is left
+//! fails at the cap with what it embedded kept; `JUDGE_MAX_USD=… judgebot
+//! ingest reembed --yes` raises the cap for that run alone.
 //! `emoji` needs no database at all, only `DISCORD_TOKEN`.
 //! Downloads are cached under `INGEST_CACHE_DIR` (default `.cache/`).
 
@@ -44,11 +52,14 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
+use judge_bot::budget::{self, Budget};
 use judge_bot::ingest::{
     Embedder, RefreshLease, aliases, cache_dir, connect, cr, embed, embedder_from_config, emoji,
     ensure_writable, init, lease, lists::ListText, notes, reembed, refresh, retire, runs::Trigger,
     schema, scryfall,
 };
+use judge_llm::SpendMeter;
+use sqlx::PgPool;
 
 #[derive(Debug)]
 pub enum Command {
@@ -203,20 +214,50 @@ pub async fn run(cmd: Command) -> Result<()> {
     // The pool is opened per arm rather than up front: `emoji` talks to
     // Scryfall and Discord only, and must not fail on a missing DATABASE_URL.
     match cmd {
-        Command::Init => init(&connect().await?, &cache_dir, PROCESS).await,
+        Command::Init => {
+            let pool = connect().await?;
+            // The ledger's table first: on an empty database `init` would
+            // create it only after the ledger had failed to read it. `init`
+            // migrates again, finding nothing to do.
+            schema::migrate(&pool).await.context("init: migrate")?;
+            let (meter, ledger) = metered(&pool).await?;
+            let result = init(&pool, &cache_dir, PROCESS, &meter).await;
+            ledger.flush().await;
+            result
+        }
         Command::Migrate => schema::migrate(&connect().await?).await.map(drop),
         Command::Emoji => emoji::run(&cache_dir).await.map(drop),
         Command::Leased(cmd) => {
+            let meter = SpendMeter::from_env()?;
             // Inputs first, so a typo fails now rather than after a wait.
-            let job = Job::prepare(cmd)?;
+            let job = Job::prepare(cmd, &meter)?;
+            let pool = connect().await?;
+            let ledger = budget::start(pool.clone(), meter.clone(), budget()?, PROCESS).await;
             // Waits (with a warning) for a refresh or step in progress, so cron
             // and a manual run take turns instead of failing.
-            let mut held = lease(&connect().await?, PROCESS).await?;
-            let result = job.run(&mut held, &cache_dir).await;
+            let mut held = lease(&pool, PROCESS).await?;
+            let result = job.run(&mut held, &cache_dir, &meter).await;
             held.release().await;
+            ledger.flush().await;
             result
         }
     }
+}
+
+/// The command's spend cap (`JUDGE_MAX_USD`) and period (`JUDGE_BUDGET_PERIOD`).
+/// No alert: the command fails at the cap itself, naming it.
+fn budget() -> Result<Budget> {
+    Ok(Budget {
+        alert: None,
+        ..judge_bot::config::budget(|k| std::env::var(k).ok())?
+    })
+}
+
+/// A meter from `JUDGE_MAX_USD` with the spend ledger running on it.
+async fn metered(pool: &PgPool) -> Result<(SpendMeter, budget::Syncing)> {
+    let meter = SpendMeter::from_env()?;
+    let ledger = budget::start(pool.clone(), meter.clone(), budget()?, PROCESS).await;
+    Ok((meter, ledger))
 }
 
 /// A [`Leased`] command with its inputs read: the list file, the embedder.
@@ -237,16 +278,17 @@ enum Job {
 }
 
 impl Job {
-    fn prepare(cmd: Leased) -> Result<Self> {
+    /// `meter` is what the embedder bills to.
+    fn prepare(cmd: Leased, meter: &SpendMeter) -> Result<Self> {
         Ok(match cmd {
             Leased::Cards => Self::Cards,
             Leased::Rules { source } if source == LATEST => Self::RulesLatest,
             Leased::Rules { source } => Self::Rules(source),
             Leased::Aliases { yaml } => Self::Aliases(yaml.read()?),
             Leased::Notes { yaml } => Self::Notes(yaml.read()?),
-            Leased::Embed => Self::Embed(embedder_from_config()?),
+            Leased::Embed => Self::Embed(embedder_from_config(meter)?),
             Leased::Reembed { yes, clear } => Self::Reembed {
-                embedder: embedder_from_config()?,
+                embedder: embedder_from_config(meter)?,
                 yes,
                 clear,
             },
@@ -257,7 +299,12 @@ impl Job {
         })
     }
 
-    async fn run(self, lease: &mut RefreshLease, cache_dir: &Path) -> Result<()> {
+    async fn run(
+        self,
+        lease: &mut RefreshLease,
+        cache_dir: &Path,
+        meter: &SpendMeter,
+    ) -> Result<()> {
         // `refresh` checks before each of its steps; a single step checks once.
         if !matches!(self, Self::Refresh) {
             ensure_writable(lease).await?;
@@ -275,7 +322,9 @@ impl Job {
                 clear,
             } => reembed::run(lease, embedder.as_deref(), yes, clear).await,
             Self::Retire => retire(lease).await.map(drop),
-            Self::Refresh => refresh(lease, cache_dir, Trigger::Manual).await.ensure_ok(),
+            Self::Refresh => refresh(lease, cache_dir, Trigger::Manual, meter)
+                .await
+                .ensure_ok(),
         }
     }
 }

@@ -543,6 +543,12 @@ The trait the pipeline calls (`ChatModel`) is sealed and `Metered` is its only i
 so a backend that skips the cap cannot be handed to the pipeline. A local model priced
 `Free` is counted but never refused.
 
+Embeddings bill to the same meter. The embedder the retriever, the call store and the
+ingest steps take (`WithSpace`) is sealed too, implemented only by `MeteredEmbedder`. It
+reserves a text's bytes plus a small allowance as tokens, since no tokenizer makes a
+token of less than a byte, and settles to the provider's reported usage. A refused
+embedding costs a question its vector search, never its answer.
+
 Two prompt-caching details cut cost. The system prompts are stable and carry a cache
 breakpoint, so repeated questions reuse the cached prefix. The rendered material in the
 synthesis user turn has its own breakpoint, so the tool-round continuation rereads it at

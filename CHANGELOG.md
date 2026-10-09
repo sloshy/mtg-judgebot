@@ -196,6 +196,24 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   message limit) gets the choices as a list, without buttons, and asks you to ask again
   with the card written as `[[Full Card Name]]`.
 
+- **Embeddings count toward the spend cap.** Every embedding request (a question's query,
+  a stored call's vector, `judgebot ingest embed`/`reembed`/`init`/`refresh` and the
+  scheduled refresh's embed step) now reserves its worst case against `JUDGE_MAX_USD`
+  before it is sent and settles to the provider's reported usage, on the same meter as
+  the chat calls, so one cap covers both. Voyage models are priced from Voyage's list
+  (`voyage-3.5` $0.06, `voyage-3.5-lite` $0.02, `voyage-3-large` $0.18 per million
+  tokens; an unknown Voyage model at the dearest, $0.18), from the first token: the free
+  allowance is not subtracted. `[models.embed.pricing] input = …` overrides the list. At
+  the cap a question is still answered, without vector search, and its call is stored
+  without a vector for the next `embed` to fill; an `ingest` embedding run stops naming
+  the cap and keeps what it embedded. `judgebot ingest` now writes the spend ledger, so a
+  re-embed counts toward `JUDGE_BUDGET_PERIOD` and shows in `judge-cli stats`, combined
+  with the chat spend (the ledger's call count stays chat calls only), and so does a
+  `--jobs`-only process. `reembed`'s dry run prints the cost at the configured price and
+  what is left under the cap, in place of the generic estimate, and `reembed --yes`
+  refuses to clear the vectors when the re-embed's worst case does not fit. A refused
+  embedding does not trigger the "refusing questions" webhook.
+
 ### Fixed
 
 - A retry after a rejected answer now tells the model to send the whole answer. A retry
@@ -305,6 +323,22 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   On a deploy host, mount the file:
   `docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml`. The
   `curated_lists` migration applies at startup unless `JUDGE_AUTO_MIGRATE=false`.
+
+- **An `openai`-kind `[models.embed]` needs a price.** An embedding model on a
+  `kind = "openai"` provider now needs `[models.embed.pricing]` or the provider marked
+  `pricing = "free"`; otherwise `judge.toml` fails to load with
+  `models.embed: no price for <provider>/<model>`. For OpenAI's own
+  `text-embedding-3-small`, add under `[models.embed]`:
+
+  ```toml
+  [models.embed.pricing]
+  input = 0.02          # USD per million tokens
+  ```
+
+  A local server (Ollama, vLLM) takes `pricing = "free"` on its `[providers.<name>]`
+  table instead. Voyage needs nothing. A `reembed` that costs more than what is left
+  under `JUDGE_MAX_USD` now stops at the cap: run it as
+  `docker compose run --rm -e JUDGE_MAX_USD=20 refresh reembed --yes`.
 
 ## [1.2.0] - 2026-10-08
 

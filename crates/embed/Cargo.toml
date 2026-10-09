@@ -12,6 +12,7 @@ description = "Embedder adapters (Voyage AI, OpenAI-compatible) and the vector-s
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 judge-core.workspace = true
+judge-llm.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true

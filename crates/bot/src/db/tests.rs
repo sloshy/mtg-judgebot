@@ -9,11 +9,15 @@ use std::sync::{
 
 use async_trait::async_trait;
 use judge_core::{
-    AnswerableSource, CallStore, Category, CategoryGuess, Confidence, Embedder, Extraction,
-    InputKind, JudgeError, MatchedVia, Qa, Question, Resolution, Resolver, Retriever, RuleId,
-    Score, Source, Verdict,
+    AnswerableSource, CallStore, Category, CategoryGuess, Confidence, Extraction, InputKind,
+    JudgeError, MatchedVia, Qa, Question, Resolution, Resolver, Retriever, RuleId, Score, Source,
+    Verdict,
 };
-use judge_embed::{Provider, Space, WithSpace};
+use judge_embed::{
+    EmbedBackend, EmbedError, EmbedPrice, EmbedUsage, Embedded, MeteredEmbedder, Provider, Space,
+    WithSpace,
+};
+use judge_llm::SpendMeter;
 use pgvector::Vector;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -1035,43 +1039,63 @@ async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::
 
 // ---------- the vector space ----------
 
-/// A fixed-vector embedder of a chosen space that counts its calls.
+/// A fixed-vector embedder of a chosen space that counts its calls, behind a
+/// meter (free unless a test prices it), as every embedder is.
 struct FakeEmbedder {
     space: Space,
     calls: AtomicUsize,
 }
 
 impl FakeEmbedder {
-    fn new(provider: Provider, model: &str, dimensions: usize) -> Arc<Self> {
-        Arc::new(Self {
-            space: Space {
-                provider,
-                model: model.to_owned(),
-                dimensions,
+    fn new(provider: Provider, model: &str, dimensions: usize) -> Arc<MeteredEmbedder<Self>> {
+        Self::billed(
+            provider,
+            model,
+            dimensions,
+            &SpendMeter::new(),
+            EmbedPrice::Free,
+        )
+    }
+
+    fn billed(
+        provider: Provider,
+        model: &str,
+        dimensions: usize,
+        meter: &SpendMeter,
+        price: EmbedPrice,
+    ) -> Arc<MeteredEmbedder<Self>> {
+        Arc::new(MeteredEmbedder::priced(
+            Self {
+                space: Space {
+                    provider,
+                    model: model.to_owned(),
+                    dimensions,
+                },
+                calls: AtomicUsize::new(0),
             },
-            calls: AtomicUsize::new(0),
-        })
+            meter.clone(),
+            price,
+        ))
     }
-    fn calls(&self) -> usize {
-        self.calls.load(Ordering::SeqCst)
-    }
+}
+
+/// Requests that reached the fake (the meter refuses before it).
+fn calls(fake: &MeteredEmbedder<FakeEmbedder>) -> usize {
+    fake.inner().calls.load(Ordering::SeqCst)
 }
 
 #[async_trait]
-impl Embedder for FakeEmbedder {
-    async fn embed(&self, texts: &[&str], _kind: InputKind) -> Result<Vec<Vec<f32>>, JudgeError> {
+impl EmbedBackend for FakeEmbedder {
+    async fn embed(&self, texts: &[&str], _kind: InputKind) -> Result<Embedded, EmbedError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(texts
-            .iter()
-            .map(|_| vec![0.25; self.space.dimensions])
-            .collect())
+        Ok(Embedded {
+            vectors: texts
+                .iter()
+                .map(|_| vec![0.25; self.space.dimensions])
+                .collect(),
+            usage: EmbedUsage::Tokens(1),
+        })
     }
-    fn dimensions(&self) -> usize {
-        self.space.dimensions
-    }
-}
-
-impl WithSpace for FakeEmbedder {
     fn space(&self) -> &Space {
         &self.space
     }
@@ -1104,7 +1128,7 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
     let vectors = Vectors::new(pool.clone(), Arc::clone(&fake) as Arc<dyn WithSpace>);
     assert!(!vectors.enabled().await);
     assert!(vectors.embed("lifelink", InputKind::Query).await.is_none());
-    assert_eq!(fake.calls(), 0);
+    assert_eq!(calls(&fake), 0);
     // The row appears (the first `ingest embed`): the same `Vectors` picks it up without a restart.
     record_space(&pool, &voyage()).await?;
     assert!(vectors.enabled().await);
@@ -1114,7 +1138,7 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
             .await
             .is_some_and(|v| v.as_slice().len() == 1024)
     );
-    assert_eq!(fake.calls(), 1);
+    assert_eq!(calls(&fake), 1);
 
     // Another model at the same width: a mismatch, never mixed.
     let other = FakeEmbedder::new(Provider::OpenAi, "nomic-embed-text", 1024);
@@ -1160,8 +1184,8 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
         !embedded,
         "a call is stored without a vector rather than with one of another space"
     );
-    assert_eq!(other.calls(), 0);
-    assert_eq!(fake.calls(), 1);
+    assert_eq!(calls(&other), 0);
+    assert_eq!(calls(&fake), 1);
 
     // A `reembed` under a running process: the same `Vectors` that was on turns off on its
     // next use (the row is re-read every time), instead of erroring on the new width.
@@ -1174,7 +1198,7 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
     assert!(!vectors.enabled().await);
     assert!(vectors.embed("lifelink", InputKind::Query).await.is_none());
     assert!(format!("{vectors:?}").contains("Mismatch"), "{vectors:?}");
-    assert_eq!(fake.calls(), 1);
+    assert_eq!(calls(&fake), 1);
     // And the writer's check: under the shared lock the same answer, with a matching
     // embedder allowed to write in that transaction.
     let mut tx = pool.begin().await?;
@@ -1238,10 +1262,66 @@ async fn a_persisted_call_carries_a_vector_only_of_the_stored_space(
         .await?;
     assert!(!embedded(id).await?);
     assert_eq!(
-        fake.calls(),
+        calls(&fake),
         1,
         "the mismatch is seen before the request goes out"
     );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn at_the_spend_cap_a_question_is_answered_and_stored_without_a_vector(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    record_space(&pool, &voyage()).await?;
+    // A cap with nothing left: the query embedding and the call's are both refused unsent.
+    let meter = SpendMeter::new().with_max_spend_usd(0.0)?;
+    let fake = FakeEmbedder::billed(
+        Provider::Voyage,
+        "voyage-3.5",
+        1024,
+        &meter,
+        EmbedPrice::Table(0.06),
+    );
+    let vectors = Arc::new(Vectors::new(
+        pool.clone(),
+        Arc::clone(&fake) as Arc<dyn WithSpace>,
+    ));
+    assert!(
+        vectors.enabled().await,
+        "the space matches: only the cap is in the way"
+    );
+    let q = question("Does lifelink work on Dark Confidant's trigger?");
+    let ctx = PgRetriever::new(pool.clone())
+        .with_vectors(Arc::clone(&vectors))
+        .retrieve(&q, &[], &extraction(&[Category::Layers], &["lifelink"]))
+        .await?;
+    assert!(!ctx.rules.is_empty(), "the other sources still answer");
+    let store = PgCallStore::new(pool.clone()).with_vectors(Arc::clone(&vectors));
+    let v = Verdict::new(
+        "Lifelink applies to any damage the creature deals.".into(),
+        Confidence::High,
+        cite_first_rule(&ctx)?,
+        Category::Layers,
+    )
+    .validate(&ctx, AnswerableSource::Cr)?;
+    let id = store.persist(&q, &v, &ctx).await?;
+    let null: bool = sqlx::query_scalar("SELECT embedding IS NULL FROM calls WHERE id = $1")
+        .bind(id.into_inner())
+        .fetch_one(&pool)
+        .await?;
+    assert!(null, "stored, with the vector left for `ingest embed`");
+    assert_eq!(calls(&fake), 0, "nothing was sent");
+    assert_eq!(
+        (meter.embedding_refusals(), meter.refusals()),
+        (2, 0),
+        "not the chat refusals the questions alert watches"
+    );
+    // Room again (a new period, a raised cap): the next embedding goes through.
+    meter.set_max_spend_usd(1.0)?;
+    assert!(vectors.embed("lifelink", InputKind::Query).await.is_some());
+    assert_eq!(calls(&fake), 1);
     Ok(())
 }
 

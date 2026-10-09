@@ -170,19 +170,34 @@ be silently ignored is a load error naming both keys.
 
 *Decided 2026-09-02.*
 
-Every model call is behind the spend cap by type. The operator is cost-sensitive, and the
-model calls are the only thing that costs money per question. The pipeline's `ChatModel`
-port is *sealed*. `Metered<B>` is its only implementation and `Models`' fields are
-private, so there is no way to construct an uncapped model or to meter one against a
-foreign budget.
+Every model call is behind the spend cap by type, embeddings included. The operator is
+cost-sensitive, and the model calls are the only thing that costs money per question. The
+pipeline's `ChatModel` port is *sealed*. `Metered<B>` is its only implementation and
+`Models`' fields are private, so there is no way to construct an uncapped model or to
+meter one against a foreign budget.
+
+Embeddings follow the same shape. The provider adapters implement the open
+`judge_embed::EmbedBackend`. What `Vectors`, the retriever, the call store and the ingest
+embed step take is the sealed `WithSpace`, and `MeteredEmbedder<B>` is its only
+implementation. `Config` hands out only metered embedders, on the meter its models bill
+to, so a process has one total and one cap whatever it calls.
 
 The cap **reserves the worst case before sending** and settles on reported usage. That is
-why caps under about $0.36 refuse synthesis outright rather than overshooting.
+why caps under about $0.36 refuse synthesis outright rather than overshooting. An
+embedding request reserves its texts' UTF-8 bytes plus 16 tokens each, since no tokenizer
+the providers use makes a token of less than a byte, and settles on the provider's
+`usage` (at the reservation when a server reports none). The bound can be beaten by
+fractions of a cent, by a server-side instruction prompt on a very short text or a
+tokenizer that normalises text into more pieces than bytes; settlement records the real
+cost either way. Embedding requests and refusals are counted apart from chat calls, so
+the "questions are being refused" alert and a run's call count mean what they did. A refusal leaves retrieval
+without its vector source and a call stored without a vector for `ingest embed` to fill.
+It never fails a question by itself.
 
 Pricing is a closed sum:
 
 - the built-in table for Anthropic models, re-read for the model the *response* names,
-  since a fallback may route elsewhere,
+  since a fallback may route elsewhere, and Voyage's list price for embedding models,
 - an operator's per-token rate,
 - `free`.
 
@@ -191,8 +206,10 @@ unknown Anthropic model, a refusal fallback's included, prices as the default, t
 in the table. A dearer one (Fable, say) is therefore under-counted: a stage that names one
 needs an operator's rate, and a fallback that lands on one settles low. That is accepted,
 because a fallback happens only on a safety refusal.
-An unpriced model on an OpenAI-compatible provider is a startup error, because it could
-be anything.
+An unknown Voyage model prices as the dearest listed. Voyage's free allowance is per
+account and invisible here, so the cap prices from the first token. An unpriced model on
+an OpenAI-compatible provider, chat or embedding, is a startup error, because it could be
+anything.
 
 Dollars stay per process rather than per user or per server. The meter settles after the
 call, so a finer-grained dollar cap would either over-reserve or overshoot. Question-count
@@ -442,7 +459,9 @@ nothing of storage or time.
 The cost is a bounded overshoot: two processes can together pass the cap by what they
 spend between two syncs. A crash loses at most that much of the record. With no period
 set nothing is summed, but the ledger is still written, because `judge-cli stats` is
-where an operator sees what a day cost.
+where an operator sees what a day cost. The ledger records embedding spend with the chat
+spend, combined in one figure. `judgebot ingest` writes it too, so a `reembed` counts
+toward the period and shows in the stats. `--jobs` alone runs it for its refresh.
 
 **Rejected:**
 
@@ -667,8 +686,9 @@ lease indefinitely. A run stopped by a schema change records neither success nor
 failure. A run whose process died is counted as failed once it is older than any live
 run can be, so a crash loop backs off and alerts once.
 
-**A scheduled run never pays for a mass re-embed.** Embeddings are outside the spend
-cap (D7's `Metered` wraps chat models only). A scheduled run counts the rows waiting for
+**A scheduled run never pays for a mass re-embed.** Embeddings are behind the spend cap
+(D7), billed to the process's meter, but a cap sized for questions would still let a
+timer spend most of it on vectors. A scheduled run counts the rows waiting for
 a vector first, and above `embed::UNATTENDED_CEILING` (800, against about 1,900 for a
 full re-embed and a few hundred for a new CR release) it skips the step and alerts. A
 manual run has no ceiling, because someone decided to pay. That includes a cron'd
