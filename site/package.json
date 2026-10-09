@@ -21,5 +21,10 @@
     "@astrojs/check": "^0.9.10",
     "@biomejs/biome": "2.5.15",
     "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "postcss-nested@6": {
+      "postcss-selector-parser": "^7.1.6"
+    }
   }
 }

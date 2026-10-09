@@ -21,6 +21,10 @@ updates:
     groups:
       site-dependencies:
         patterns: ["*"]
+    # package.json overrides postcss-nested@6's postcss-selector-parser with
+    # ^7.1.6 (GHSA-rj75-hqrm-r3gf has no 6.x fix; postcss-nested 6.2.0, reached
+    # through @expressive-code/core, asks ^6.1.1). The built CSS is unchanged.
+    # Drop the override when @expressive-code/core depends on postcss-nested 7+.
     ignore:
       # @astrojs/check peers typescript ^5 || ^6, so 7 fails `npm ci` (ERESOLVE).
       # Drop this when @astrojs/check accepts 7.
