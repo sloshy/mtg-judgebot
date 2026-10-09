@@ -428,8 +428,9 @@ pictures, from one set of names:
 | Comprehensive Rules txt | on CR release — detected daily from the `.txt` link on Wizards' rules page vs `max(cr_version)` | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
 | CR Glossary | same | `glossary` (term, text, embedding) |
 | Scryfall `/symbology` (84 card symbols) | daily (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web page (`web/src/symbols.ts`) |
-| Nicknames | hand-curated YAML | `card_aliases` (alias, oracle_id) |
-| Nightmare notes | hand-written markdown | `card_notes` (oracle_id, note) |
+| Nicknames | hand-curated YAML, compiled in; the refresh reloads a built-in copy an upgrade changed | `card_aliases` (alias, oracle_id) |
+| Nightmare notes | hand-written markdown, likewise | `card_notes` (oracle_id, note) |
+| Curated list sources | written by each alias or note load, in its transaction | `curated_lists` (list, source `builtin`/`file`, digest, loaded_at): the refresh's `lists` step reloads only a `builtin` list whose digest is not the binary's (`judge_bot::ingest::lists`) |
 | Categories → subsections | YAML (single source of truth; the enum is generated from it) | `categories` |
 | Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding) |
 | Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |

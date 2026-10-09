@@ -2,15 +2,19 @@
 //!
 //! Names are resolved case-insensitively through `printed_names` (so old and face
 //! names work); unresolved names are reported as warnings and skipped. The table is
-//! replaced wholesale, mirroring the alias loader.
+//! replaced wholesale, mirroring the alias loader, and where the list came from
+//! is recorded in the same transaction ([`super::lists`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context as _, Result};
-use sqlx::{Postgres, QueryBuilder};
+use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder};
 use uuid::Uuid;
 
-use super::RefreshLease;
+use super::{
+    RefreshLease,
+    lists::{self, List, ListText, Loaded, Resolved, Source, Warnings},
+};
 
 /// Parse the notes file: a flat mapping of card name to note text.
 ///
@@ -35,12 +39,21 @@ pub(crate) fn parse_notes_yaml(text: &str) -> Result<Vec<(String, String)>> {
 /// `data/notes.yaml` as of this build (see [`super::aliases::BUILTIN`]).
 pub const BUILTIN: &str = include_str!("../../../../data/notes.yaml");
 
-/// Load notes from YAML `text`, replacing the `card_notes` table contents.
+/// Earlier releases' built-in copies (see [`super::aliases::LEGACY`]).
+pub const LEGACY: &[&str] = &[include_str!("../../../../data/legacy/notes-v1.2.0.yaml")];
+
+/// A `card_notes` row: the card and its note.
+pub(super) type Row = (Uuid, String);
+
+/// The rows YAML `text` loads against today's cards, without writing them.
 ///
 /// # Errors
 /// On parse or database failure.
-pub async fn run(lease: &mut RefreshLease, text: &str) -> Result<()> {
-    let pool = lease.pool();
+pub(super) async fn resolve(
+    pool: &PgPool,
+    text: &str,
+    warnings: Warnings,
+) -> Result<Resolved<Row>> {
     let pairs = parse_notes_yaml(text)?;
     let wanted: Vec<String> = pairs.iter().map(|(n, _)| n.to_lowercase()).collect();
     let rows = sqlx::query!(
@@ -65,37 +78,50 @@ pub async fn run(lease: &mut RefreshLease, text: &str) -> Result<()> {
     .context("counting note card names")?;
     let by_name: BTreeMap<String, Uuid> = rows.into_iter().map(|r| (r.name, r.oracle_id)).collect();
 
-    let mut resolved: Vec<(Uuid, String)> = Vec::new();
-    let mut unresolved: Vec<String> = Vec::new();
+    let mut resolved = Resolved::default();
     for (name, note) in pairs {
         let key = name.to_lowercase();
         let n = counts.iter().find(|c| c.name == key).map_or(0, |c| c.n);
         match by_name.get(&key) {
-            Some(id) if n == 1 => resolved.push((*id, note)),
+            Some(id) if n == 1 => resolved.rows.push((*id, note)),
             Some(_) => {
-                tracing::warn!(
-                    name,
-                    candidates = n,
-                    "notes: card name is ambiguous; use the full name"
-                );
-                unresolved.push(name);
+                if warnings == Warnings::Log {
+                    tracing::warn!(
+                        name,
+                        candidates = n,
+                        "notes: card name is ambiguous; use the full name"
+                    );
+                }
+                resolved.unresolved.push(name);
             }
-            None => {
-                tracing::warn!(name, "notes: card name not found in printed_names");
-                unresolved.push(name);
-            }
+            None => resolved.unresolved.push(name),
         }
     }
+    Ok(resolved)
+}
 
-    let mut tx = pool.begin().await?;
+/// What `card_notes` holds now.
+///
+/// # Errors
+/// On a database failure.
+pub(super) async fn loaded(pool: &PgPool) -> Result<BTreeSet<Row>> {
+    let rows: Vec<Row> = sqlx::query_as("SELECT oracle_id, note FROM card_notes")
+        .fetch_all(pool)
+        .await
+        .context("reading card_notes")?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Replace `card_notes` with `rows`, inside the caller's transaction.
+async fn replace(tx: &mut PgConnection, rows: &[Row]) -> Result<()> {
     sqlx::query!("DELETE FROM card_notes")
         .execute(&mut *tx)
         .await
         .context("clearing card_notes")?;
-    if !resolved.is_empty() {
+    if !rows.is_empty() {
         let mut qb: QueryBuilder<Postgres> =
             QueryBuilder::new("INSERT INTO card_notes (oracle_id, note) ");
-        qb.push_values(&resolved, |mut b, (id, note)| {
+        qb.push_values(rows, |mut b, (id, note)| {
             b.push_bind(id).push_bind(note);
         });
         qb.build()
@@ -103,16 +129,36 @@ pub async fn run(lease: &mut RefreshLease, text: &str) -> Result<()> {
             .await
             .context("inserting card_notes")?;
     }
+    Ok(())
+}
+
+/// Load notes from `text` (the built-in copy or an operator's file),
+/// replacing the `card_notes` table contents and recording the source in the
+/// same transaction.
+///
+/// # Errors
+/// On parse or database failure.
+pub async fn run(lease: &mut RefreshLease, text: &ListText) -> Result<Loaded> {
+    let pool = lease.pool();
+    if text.source() == Source::Builtin {
+        lists::ensure_cards(pool, List::Notes).await?;
+    }
+    let resolved = resolve(pool, text.yaml(List::Notes), Warnings::Log).await?;
+    let mut tx = pool.begin().await?;
+    replace(&mut tx, &resolved.rows).await?;
+    lists::record(&mut tx, List::Notes, text).await?;
     tx.commit().await?;
+    let loaded = resolved.loaded();
     tracing::info!(
-        loaded = resolved.len(),
-        unresolved = unresolved.len(),
+        rows = loaded.rows,
+        unresolved = loaded.unresolved,
+        source = text.source().as_str(),
         "card_notes replaced"
     );
-    if !unresolved.is_empty() {
-        tracing::warn!(names = ?unresolved, "notes: unresolved card names (run `ingest cards` first?)");
+    if !resolved.unresolved.is_empty() {
+        tracing::warn!(names = ?resolved.unresolved, "notes: unresolved card names (run `judgebot ingest cards` first?)");
     }
-    Ok(())
+    Ok(loaded)
 }
 
 #[cfg(test)]

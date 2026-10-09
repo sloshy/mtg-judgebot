@@ -66,18 +66,18 @@ up to an hour for a command that holds it, so two never overlap. `migrate` (its 
 
 | Command | What it does |
 | --- | --- |
-| `init` | The whole first load: `migrate`, `cards`, `rules latest`, `aliases`, `notes`, `retire`, `embed`, `emoji`, each logged with its time. It is recorded as a manual refresh run, so the schedule counts the load as a refresh. Stops at the first failure. Every step is idempotent, so run it again. `embed` skips itself with no embedder and `emoji` with no `DISCORD_TOKEN`. On a database holding no vectors it takes the configured embedder's width, as `reembed --yes` would. It loads the built-in alias and note lists, so load your own after it. |
+| `init` | The whole first load: `migrate`, `cards`, `rules latest`, `aliases`, `notes`, `retire`, `embed`, `emoji`, each logged with its time. It is recorded as a manual refresh run, so the schedule counts the load as a refresh. Stops at the first failure. Every step is idempotent, so run it again. `embed` skips itself with no embedder and `emoji` with no `DISCORD_TOKEN`. On a database holding no vectors it takes the configured embedder's width, as `reembed --yes` would. It loads the built-in alias and note lists, recorded as built-in, except a list you loaded from a file, which it keeps. |
 | `migrate` | Apply pending schema migrations. `judgebot` does this at startup unless `JUDGE_AUTO_MIGRATE=false`. |
 | `cards` | Scryfall bulk sync: cards, faces, printed names, rulings. Cached in `INGEST_CACHE_DIR`. |
 | `rules <url\|path>` | Parse a Comprehensive Rules text file into rule-level and leaf rows. Rules whose text changed lose their embedding. |
 | `rules latest` | The CR linked from Wizards' rules page, only if its date differs from the stored `cr_version`. |
-| `aliases [yaml]` | Load the nickname → card list: the copy of `data/aliases.yaml` built into the binary, or the file named. Replaces the table. |
-| `notes [yaml]` | Load the hand-written notes for "nightmare" cards: the built-in copy of `data/notes.yaml`, or the file named. Replaces the table. |
+| `aliases [yaml]` | Load the nickname → card list: the copy of `data/aliases.yaml` built into the binary, or the file named. Replaces the table, and records which: the refresh keeps a built-in list current and leaves a file alone. |
+| `notes [yaml]` | Load the hand-written notes for "nightmare" cards: the built-in copy of `data/notes.yaml`, or the file named. Replaces the table and records which, as `aliases` does. |
 | `embed` | Embed rows with no vector, with the configured embedder. Refuses if the database holds another embedding space or the columns' width differs. |
 | `reembed [--yes] [--clear]` | Make the database hold the configured embedder's space: retype the columns, clear every vector, record the space, then embed all. Without `--yes` it prints the row counts and a rough cost and changes nothing. When the database is already in the right space, it only fills empty rows. `--clear` re-pays every row. |
 | `emoji` | Upload Scryfall's card symbols as the bot's application emoji. Needs only `DISCORD_TOKEN`. |
 | `retire` | Retire calls whose citations no longer hold against current rules, rulings and Oracle text. Restore those that hold again. |
-| `refresh` | `cards`, `rules latest`, `retire`, `embed`, `emoji`. Every step runs even if one fails, and the exit code is ≠ 0 if any did. `embed` with no embedder and `emoji` with no `DISCORD_TOKEN` are skipped, not failed. Each run is recorded in `refresh_runs`. `judgebot --jobs` runs the same steps every `JUDGE_REFRESH_HOURS`, taking turns with this command through the lease. |
+| `refresh` | `cards`, `rules latest`, `lists` (reload a built-in alias or note list an upgrade changed), `retire`, `embed`, `emoji`. Every step runs even if one fails, and the exit code is ≠ 0 if any did. `embed` with no embedder and `emoji` with no `DISCORD_TOKEN` are skipped, not failed. Each run is recorded in `refresh_runs`. `judgebot --jobs` runs the same steps every `JUDGE_REFRESH_HOURS`, taking turns with this command through the lease. |
 
 ## `judgebot backup`
 

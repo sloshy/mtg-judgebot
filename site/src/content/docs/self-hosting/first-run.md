@@ -91,8 +91,10 @@ docker compose run --rm refresh emoji          # once the Discord app exists
 ```
 
 To load your own `aliases` or `notes` list, mount the file and name it, running from the
-repository root. Each command replaces its whole table. `init` does too, with the built-in
-lists, so load your own after any `init`.
+repository root. Each command replaces its whole table and records the list as yours, so
+the daily refresh and a later `init` leave it alone. That also opts it out of updates to
+the built-in list until you run the command again with no file. A built-in list is
+reloaded by the refresh when an upgrade changes it.
 
 ```sh
 docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml

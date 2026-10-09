@@ -30,7 +30,7 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **The long-running process refreshes the data itself** (the `--jobs` role, which the
   compose `judgebot` service runs). Every `JUDGE_REFRESH_HOURS` (default
   24, 1 to 720, `0` = off) one of them runs the steps of `judgebot ingest refresh`: cards
-  and rulings, a new CR release, retirement, embeddings, emoji. No host cron is needed.
+  and rulings, a new CR release, the built-in curated lists, retirement, embeddings, emoji. No host cron is needed.
   The schedule is kept in the database, so the processes, a restart and a cron run agree
   on it, and the refresh lease means a run happens once however many there are. A failed
   run is retried after an hour, then less often while it keeps failing. The run has its
@@ -95,6 +95,21 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **`judgebot ingest init` is recorded as a refresh run** of the steps it shares with one
   (it now runs the retirement pass too). The schedule counts a first load as fresh data,
   and the steps it did not reach after a failure are recorded as skipped.
+- **The refresh keeps the built-in alias and note lists current.** Each load of a curated
+  list records its source in a new `curated_lists` table: `builtin` for `init` and for
+  `judgebot ingest aliases` / `notes` with no file, `file` when you name one, with a
+  digest of the YAML. A new refresh step, `lists` (after `rules`), reloads a built-in
+  list when the binary's copy differs, so a release that improves `data/aliases.yaml` or
+  `data/notes.yaml` no longer needs a manual reload. A list loaded from your own file is
+  never touched, by the refresh or by `init`, which now keeps it with a warning: loading a
+  file opts that list out of built-in updates until you load it again with no file. A
+  built-in list loaded before the cards were, or naming a card added since, fills in by
+  itself. The step's outcome is in `refresh_runs.steps` as each list's `current`,
+  `reloaded`, `adopted`, `kept` (with a reason) or `failed`.
+- **A nickname whose card name several cards share is left unresolved** (and logged), as
+  notes and the card resolver already did, instead of pointing at whichever card the
+  database returned first. A card's own name still beats the same name on another card's
+  face. None of the built-in aliases is affected.
 
 ### Changed
 
@@ -280,6 +295,16 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - The `pick_claims` migration applies at startup unless `JUDGE_AUTO_MIGRATE=false`. Until
   it is applied, a click on a "did you mean…?" button logs the failed claim and answers
   "I couldn't take that pick just now".
+- **The first refresh after upgrading settles the curated lists.** The alias and note
+  lists loaded so far have no record of their source. For each, the `lists` step compares
+  the table with what a built-in copy loads. When they match, the list is recorded as
+  built-in (`adopted`) and kept current from then on. When they differ (you loaded your own
+  file, or edited the table), it is left as it is, and every run logs a warning until you
+  choose: `judgebot ingest aliases <file>` records your list as yours, and
+  `judgebot ingest aliases` with no file takes the built-in copy. Likewise for `notes`.
+  On a deploy host, mount the file:
+  `docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml`. The
+  `curated_lists` migration applies at startup unless `JUDGE_AUTO_MIGRATE=false`.
 
 ## [1.2.0] - 2026-10-08
 

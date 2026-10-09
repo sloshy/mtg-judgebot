@@ -125,8 +125,12 @@ schema, both fail on purpose:
 
 **Taxonomy changes.** `data/categories.yaml` generates the `Category` enum at build
 time (`crates/core/build.rs`), so editing it is a recompile, and every `match` over the
-enum has to be updated. `data/aliases.yaml` and `data/notes.yaml` are loaded into the
-database by `judgebot ingest`, not compiled in.
+enum has to be updated. `data/aliases.yaml` and `data/notes.yaml` are compiled in as
+data and loaded into the database by `judgebot ingest`. A deployment that loaded the
+built-in copy picks up an edit on its first refresh after the upgrade. A change to their
+entries, not only comments, also copies the previous file into `data/legacy/` and appends
+it to `LEGACY` in `crates/bot/src/ingest/aliases.rs` or `notes.rs`, so a database loaded
+before the source record existed is still recognised as built-in.
 
 **Gold set changes.** `eval/gold.yaml` quotes every rule id (unquoted `702.10` is a
 float and is rejected). `cargo run -p judge-eval -- recall` is the free retrieval gate.

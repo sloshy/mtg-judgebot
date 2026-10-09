@@ -1,6 +1,6 @@
 //! The data steps behind `judgebot ingest`: Scryfall sync ([`scryfall`]), the
 //! Comprehensive Rules loader ([`cr`]), the curated lists ([`aliases`],
-//! [`notes`]), embedding ([`embed`], [`reembed`]), the Discord emoji upload
+//! [`notes`], and [`lists`], their record and refresh step), embedding ([`embed`], [`reembed`]), the Discord emoji upload
 //! ([`emoji`]) and the explicit migration ([`schema`]), plus the two
 //! sequences built from them: [`init`], the first load, and [`refresh`], the
 //! scheduled job ([`crate::jobs`] runs it on a timer). `judgebot ingest` is
@@ -26,6 +26,7 @@ pub mod aliases;
 pub mod cr;
 pub mod embed;
 pub mod emoji;
+pub mod lists;
 pub mod notes;
 pub mod reembed;
 mod renumber;
@@ -160,8 +161,10 @@ fn load_config() -> Result<crate::config::Config> {
 /// Unlike [`refresh`] it stops at the first failure, because each step needs
 /// the one before it (aliases resolve against cards, embeddings read rules).
 /// Every step is idempotent, so the fix for a failed `init` is to run it
-/// again. It loads the built-in alias and note lists, replacing the tables,
-/// so an operator who keeps their own list loads that afterwards. With no
+/// again. It loads the built-in alias and note lists, replacing the tables
+/// and recording them as built-in, so the refresh keeps them current
+/// ([`lists`]). A list the operator loaded from a file is kept, with a
+/// warning, so a re-run never replaces it. With no
 /// embedder configured `embed` skips itself with a warning, and with no
 /// `DISCORD_TOKEN` the emoji step is skipped the same way.
 ///
@@ -244,7 +247,7 @@ impl InitSteps {
 /// What `init` ran of the refresh steps, as the run record stores it: each
 /// step it reached, then every one it did not reach as skipped
 /// ([`Skip::InitStopped`]), in [`Step::ALL`] order (`init` runs them in that
-/// order). A failure outside those steps (`aliases`, `notes`, the lease)
+/// order). A failure outside those steps (such as the lease lost between them)
 /// fails the run all the same ([`RunReport::aborted`]).
 fn init_report(
     mut steps: Vec<StepReport>,
@@ -275,9 +278,7 @@ fn noted<T: Clone>(result: &Result<T>) -> Outcome<T> {
         Ok(summary) => Outcome::Ok {
             summary: summary.clone(),
         },
-        Err(e) => Outcome::Failed {
-            error: format!("{e:#}"),
-        },
+        Err(e) => Outcome::failure(format!("{e:#}")),
     }
 }
 
@@ -308,16 +309,19 @@ async fn init_data(
     reports.push(StepReport::Rules(noted(&r)));
     r.context("init: rules latest")?;
     InitSteps::done("rules", t);
-    let t = steps.next(lease, "aliases").await?;
-    aliases::run(lease, aliases::BUILTIN)
-        .await
-        .context("init: aliases")?;
-    InitSteps::done("aliases", t);
-    let t = steps.next(lease, "notes").await?;
-    notes::run(lease, notes::BUILTIN)
-        .await
-        .context("init: notes")?;
-    InitSteps::done("notes", t);
+    // The two lists are logged as two steps and recorded as one, `lists`.
+    // Neither needs the other, so both are tried before init stops.
+    let aliases = init_list(lease, steps, lists::List::Aliases).await;
+    let notes = init_list(lease, steps, lists::List::Notes).await;
+    let outcome = lists::Summary::outcome(aliases, notes);
+    let failed = match &outcome {
+        Outcome::Failed { error, .. } => Some(anyhow::anyhow!("init: {error}")),
+        Outcome::Ok { .. } | Outcome::Skipped { .. } => None,
+    };
+    reports.push(StepReport::Lists(outcome));
+    if let Some(e) = failed {
+        return Err(e);
+    }
     // Nothing to retire in a fresh database; a re-run over a used one does
     // what a refresh would after loading the same data.
     let t = steps.next(lease, "retire").await?;
@@ -361,9 +365,7 @@ async fn init_data(
         Ok(None) => Outcome::Skipped {
             reason: Skip::NoEmbedder,
         },
-        Err(e) => Outcome::Failed {
-            error: format!("{e:#}"),
-        },
+        Err(e) => Outcome::failure(format!("{e:#}")),
     }));
     r.context("init: embed")?;
     InitSteps::done("embed", t);
@@ -385,6 +387,18 @@ async fn init_data(
     Ok(())
 }
 
+/// One of `init`'s two list steps ([`lists::init_list`]), logged as its own.
+async fn init_list(
+    lease: &mut RefreshLease,
+    steps: &mut InitSteps,
+    list: lists::List,
+) -> Result<lists::ListOutcome> {
+    let t = steps.next(lease, list.name()).await?;
+    let r = lists::init_list(lease, list).await?;
+    InitSteps::done(list.name(), t);
+    Ok(r)
+}
+
 /// The retirement pass ([`crate::db::retire_unsupported`]) under the lease.
 ///
 /// # Errors
@@ -400,8 +414,11 @@ fn has_discord_token() -> bool {
 }
 
 /// Every scheduled step ([`Step::ALL`]), in dependency order: cards and rules
-/// first, then the retirement pass over the calls that cite them, then `embed`
-/// so a new CR's rows are embedded in the same run, then the emoji. A failed
+/// first, then the built-in curated lists where an upgrade changed them
+/// ([`lists::refresh`]; they resolve against the cards, and nothing later
+/// reads them), then the retirement pass over the calls that cite the cards
+/// and rules, then `embed` so a new CR's rows are embedded in the same run,
+/// then the emoji. A failed
 /// step is logged and the rest still run; the report names every failure
 /// ([`RunReport::ensure_ok`]).
 ///
@@ -576,6 +593,7 @@ async fn refresh_step(
     match step {
         Step::Cards => StepReport::Cards(Outcome::of(scryfall::run(lease, cache_dir).await)),
         Step::Rules => StepReport::Rules(Outcome::of(cr::run_latest(lease, cache_dir).await)),
+        Step::Lists => StepReport::Lists(lists::refresh(lease).await),
         Step::Retire => StepReport::Retire(Outcome::of(retire(lease).await)),
         Step::Embed => StepReport::Embed(match configured_embedder() {
             Ok(Some(embedder)) => match over_ceiling(lease, trigger).await {
@@ -640,6 +658,7 @@ mod tests {
         let all = vec![
             ok(Step::Cards),
             Step::Rules.skipped(Skip::NoEmbedder),
+            Step::Lists.skipped(Skip::NoEmbedder),
             Step::Retire.skipped(Skip::NoEmbedder),
             Step::Embed.skipped(Skip::NoEmbedder),
             Step::Emoji.skipped(Skip::NoDiscordToken),
@@ -648,8 +667,9 @@ mod tests {
         assert_eq!(done.steps, all);
         assert_eq!(done.outcome(), runs::RunOutcome::Ok);
 
-        // Stopped at aliases, after cards and rules: the rest are skipped,
-        // and the run failed although no recorded step did.
+        // Stopped after cards and rules by a failure outside the steps (the
+        // lease lost): the rest are skipped, and the run failed although no
+        // recorded step did.
         let reached = vec![ok(Step::Cards), Step::Rules.skipped(Skip::NoEmbedder)];
         let stopped = init_report(reached, true, None, None, true);
         let order: Vec<Step> = stopped.steps.iter().map(StepReport::step).collect();
@@ -687,8 +707,10 @@ mod tests {
     /// parsing must fail here rather than on an operator's first run.
     #[test]
     fn the_built_in_lists_parse() -> Result<()> {
-        assert!(!scryfall::parse_alias_yaml(aliases::BUILTIN)?.is_empty());
+        assert!(!aliases::parse_alias_yaml(aliases::BUILTIN)?.is_empty());
         assert!(!notes::parse_notes_yaml(notes::BUILTIN)?.is_empty());
+        assert_eq!(lists::List::Aliases.builtin(), aliases::BUILTIN);
+        assert_eq!(lists::List::Notes.builtin(), notes::BUILTIN);
         Ok(())
     }
 

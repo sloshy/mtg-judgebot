@@ -317,7 +317,8 @@ cargo run -r -p judgebot -- ingest cards                # Scryfall bulk sync (ca
 cargo run -r -p judgebot -- ingest rules <url|path>     # CR parse from a given file or URL
 cargo run -r -p judgebot -- ingest aliases [yaml]       # no file = the data/aliases.yaml built into the binary
 cargo run -r -p judgebot -- ingest notes [yaml]         # likewise data/notes.yaml (include_str!, so the image
-                                                        # needs no data/ directory)
+                                                        # needs no data/ directory); both record the source
+                                                        # (builtin | file) in curated_lists
 cargo run -r -p judgebot -- ingest embed                # only rows with NULL embedding; the configured
                                                         # embedder ([models.embed] or VOYAGE_API_KEY); refuses
                                                         # if embedding_space or the columns' width differ
@@ -337,7 +338,7 @@ cargo run -r -p judgebot -- ingest rules latest         # the CR linked from Wiz
                                                         # its version differs from max(rules.cr_version)
 cargo run -r -p judgebot -- ingest retire               # retire/restore calls by whether their citations
                                                         # (and their context cards' Oracle text) still hold
-cargo run -r -p judgebot -- ingest refresh              # cards + rules latest + retire + embed + emoji; every
+cargo run -r -p judgebot -- ingest refresh              # cards + rules latest + lists + retire + embed + emoji; every
                                                         # step runs even if one fails, exit≠0 if any did;
                                                         # recorded in refresh_runs
 scripts/refresh-data.sh              # a refresh now (or an operator's own cron with JUDGE_REFRESH_HOURS=0):
@@ -842,9 +843,17 @@ cron (`JUDGE_REFRESH_HOURS=0`). It shares the lease and the record with the sche
 `docker compose run` enables the profile itself, so `up -d` never starts it. CR release detection scrapes Wizards' rules page for
 the `MagicCompRules <date>.txt` link and compares the date to the stored `cr_version`.
 The CR loader nulls embeddings only for rules whose text changed, so a new CR costs the
-embedder a few hundred rules. `aliases` and `notes` are not part of refresh. They are repo
-data, compiled into `judgebot` (`include_str!`) and loaded by `init`, or by `aliases` /
-`notes` with no argument after an upgrade that changed them.
+embedder a few hundred rules. `aliases` and `notes` are repo data, compiled into
+`judgebot` (`include_str!`) and loaded by `init`, or by `aliases` / `notes` (no argument:
+the built-in copy; a file: the operator's). Each load records its source and the YAML's
+SHA-256 in `curated_lists`, in the transaction that replaces the table. The refresh's
+`lists` step (`ingest::lists`) reloads a built-in list whose digest is not the binary's,
+or whose table no longer equals what the binary's copy resolves to today, and never
+touches a file-sourced one (nor does `init`). A list with no record (loaded before the
+table existed) is adopted as built-in only when its table equals what the current copy or
+a `LEGACY` copy (`data/legacy/`) resolves to; anything else is kept with a WARN. A change
+to a list's entries appends the previous file to `LEGACY`. A built-in load refuses with
+no cards loaded.
 
 **Ingest runs take the refresh lease** (`judge_bot::lease`).
 

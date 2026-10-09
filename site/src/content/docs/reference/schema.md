@@ -21,6 +21,7 @@ offline data in `.sqlx/`).
 | `rulings` | Scryfall rulings, keyed by content (`ruling_key`, sixteen hex characters) so a reindexed ruling is the same ruling. |
 | `card_aliases` | Nicknames from `data/aliases.yaml`, lowercased. |
 | `card_notes` | Hand-written notes from `data/notes.yaml`. |
+| `curated_lists` | One row per curated list (`aliases`, `notes`): where the loaded copy came from (`builtin` or `file`), the SHA-256 of its YAML and when it was loaded. Written in the transaction that replaces the list. The refresh reloads a `builtin` list whose digest is not the binary's copy's, and never a `file` one. |
 
 ## Rules
 

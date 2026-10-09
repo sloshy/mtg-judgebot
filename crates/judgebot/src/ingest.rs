@@ -7,8 +7,8 @@
 //! judgebot ingest cards                 # Scryfall bulk: cards, card_faces, printed_names, rulings
 //! judgebot ingest rules <path-or-url>   # Comprehensive Rules txt -> rules + glossary
 //! judgebot ingest rules latest          # the release linked from Wizards' rules page, if newer than the DB
-//! judgebot ingest aliases <yaml>        # hand-curated nicknames -> card_aliases
-//! judgebot ingest notes <yaml>          # hand-written nightmare-card notes -> card_notes
+//! judgebot ingest aliases [yaml]        # hand-curated nicknames -> card_aliases (no file: the built-in copy)
+//! judgebot ingest notes [yaml]          # hand-written nightmare-card notes -> card_notes (likewise)
 //! judgebot ingest embed                 # fill NULL embeddings on rules/glossary/calls via the configured embedder
 //! judgebot ingest reembed [--yes] [--clear]  # make the database hold the configured embedder's space: switch
 //!                                       #   and re-embed all when it holds another, else fill what is empty
@@ -17,7 +17,7 @@
 //! judgebot ingest retire                # retire/restore calls by whether their citations still hold
 //! judgebot ingest migrate               # apply the embedded schema migrations (the serving roles do this at
 //!                                       #   startup; this is for an empty database, or JUDGE_AUTO_MIGRATE=false)
-//! judgebot ingest refresh               # cards, rules latest, retire, embed, emoji — the scheduled job
+//! judgebot ingest refresh               # cards, rules latest, lists, retire, embed, emoji — the scheduled job
 //! ```
 //!
 //! `refresh` is what an operator's own cron runs (`scripts/refresh-data.sh`,
@@ -39,7 +39,6 @@
 //! Downloads are cached under `INGEST_CACHE_DIR` (default `.cache/`).
 
 use std::{
-    borrow::Cow,
     ffi::OsString,
     path::{Path, PathBuf},
 };
@@ -47,7 +46,8 @@ use std::{
 use anyhow::{Context as _, Result};
 use judge_bot::ingest::{
     Embedder, RefreshLease, aliases, cache_dir, connect, cr, embed, embedder_from_config, emoji,
-    ensure_writable, init, lease, notes, reembed, refresh, retire, runs::Trigger, schema, scryfall,
+    ensure_writable, init, lease, lists::ListText, notes, reembed, refresh, retire, runs::Trigger,
+    schema, scryfall,
 };
 
 #[derive(Debug)]
@@ -90,7 +90,8 @@ pub enum Leased {
 const PROCESS: &str = "ingest";
 
 /// Where a curated list comes from: the copy of `data/*.yaml` this binary was
-/// built with, or a file the operator edited.
+/// built with, or a file the operator edited. The load records which, so the
+/// refresh keeps a built-in copy current and leaves a file alone.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Yaml {
     Builtin,
@@ -102,11 +103,11 @@ impl Yaml {
         arg.map_or(Self::Builtin, |p| Self::File(PathBuf::from(p)))
     }
 
-    fn text(&self, builtin: &'static str) -> Result<Cow<'static, str>> {
+    fn read(&self) -> Result<ListText> {
         match self {
-            Self::Builtin => Ok(builtin.into()),
+            Self::Builtin => Ok(ListText::Builtin),
             Self::File(path) => std::fs::read_to_string(path)
-                .map(Into::into)
+                .map(ListText::File)
                 .with_context(|| format!("reading {}", path.display())),
         }
     }
@@ -118,7 +119,7 @@ const LATEST: &str = "latest";
 /// The usage `judgebot ingest --help` prints.
 pub const USAGE: &str = "usage: judgebot ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh>\n\
 init: the whole first load (migrate, cards, rules latest, aliases, notes, embed, emoji); safe to run again.\n\
-aliases, notes: with no file, the lists this binary was built with (data/*.yaml).";
+aliases, notes: with no file, the lists this binary was built with (data/*.yaml), which refresh then keeps current; a file is yours, and refresh leaves it alone.";
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     let leased = |l| Ok(Command::Leased(l));
@@ -223,8 +224,8 @@ enum Job {
     Cards,
     RulesLatest,
     Rules(String),
-    Aliases(Cow<'static, str>),
-    Notes(Cow<'static, str>),
+    Aliases(ListText),
+    Notes(ListText),
     Embed(Option<Embedder>),
     Reembed {
         embedder: Option<Embedder>,
@@ -241,8 +242,8 @@ impl Job {
             Leased::Cards => Self::Cards,
             Leased::Rules { source } if source == LATEST => Self::RulesLatest,
             Leased::Rules { source } => Self::Rules(source),
-            Leased::Aliases { yaml } => Self::Aliases(yaml.text(aliases::BUILTIN)?),
-            Leased::Notes { yaml } => Self::Notes(yaml.text(notes::BUILTIN)?),
+            Leased::Aliases { yaml } => Self::Aliases(yaml.read()?),
+            Leased::Notes { yaml } => Self::Notes(yaml.read()?),
             Leased::Embed => Self::Embed(embedder_from_config()?),
             Leased::Reembed { yes, clear } => Self::Reembed {
                 embedder: embedder_from_config()?,
@@ -265,8 +266,8 @@ impl Job {
             Self::Cards => scryfall::run(lease, cache_dir).await,
             Self::RulesLatest => cr::run_latest(lease, cache_dir).await.map(drop),
             Self::Rules(source) => cr::run(lease, &source, cache_dir).await,
-            Self::Aliases(text) => aliases::run(lease, &text).await,
-            Self::Notes(text) => notes::run(lease, &text).await,
+            Self::Aliases(text) => aliases::run(lease, &text).await.map(drop),
+            Self::Notes(text) => notes::run(lease, &text).await.map(drop),
             Self::Embed(embedder) => embed::run(lease, embedder.as_deref()).await.map(drop),
             Self::Reembed {
                 embedder,
@@ -345,13 +346,10 @@ mod tests {
 
     #[test]
     fn a_curated_list_reads_the_built_in_copy_or_the_file() -> Result<()> {
-        assert_eq!(
-            Yaml::Builtin.text(aliases::BUILTIN)?.as_ref(),
-            aliases::BUILTIN
-        );
+        assert_eq!(Yaml::Builtin.read()?, ListText::Builtin);
         assert!(
             Yaml::File("/nonexistent/aliases.yaml".into())
-                .text("")
+                .read()
                 .is_err()
         );
         Ok(())

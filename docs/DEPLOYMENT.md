@@ -596,11 +596,13 @@ steps, in order:
 2. `rules latest`: reads Wizards' rules page, compares the linked
    `MagicCompRules <date>.txt` against `max(rules.cr_version)` and loads it only when
    the version differs.
-3. `retire`: re-checks every stored call's citations against the data just loaded (see
+3. `lists`: reloads the built-in alias and note lists when an upgrade changed them, and
+   leaves a list you loaded from your own file alone (see below).
+4. `retire`: re-checks every stored call's citations against the data just loaded (see
    below).
-4. `embed`: only rows whose text changed. The CR loader nulls the embedding of those
+5. `embed`: only rows whose text changed. The CR loader nulls the embedding of those
    rows alone, so a new CR costs the embedder a few hundred rules, not all of them.
-5. `emoji`: uploads any card symbol Scryfall added. Skipped when `DISCORD_TOKEN` is
+6. `emoji`: uploads any card symbol Scryfall added. Skipped when `DISCORD_TOKEN` is
    unset.
 
 Each step runs even if an earlier one failed. A step that cannot run for want of
@@ -787,11 +789,45 @@ stay unembedded until the next successful run, because `embed` always fills ever
 
 To watch a run, read `docker compose logs judgebot | grep refresh` after the first
 check, or start one now with `scripts/refresh-data.sh`. Expect one line per step,
-`cards`, `rules`, `retire`, `embed` and `emoji` in that order, each `refresh step ok`
+`cards`, `rules`, `lists`, `retire`, `embed` and `emoji` in that order, each `refresh step ok`
 or `refresh step skipped` and none `refresh step failed`. A run that loaded a new CR
 then logs `CR <old> → <new>` last. A one-off manual load also works from a workstation
 (`cargo run --release -p judgebot -- ingest rules <url>`). To force a re-parse of an
 already-loaded version that way, delete the cached txt first.
+
+### Curated lists
+
+The nickname list (`card_aliases`) and the notes on hard cards (`card_notes`) come from
+`data/aliases.yaml` and `data/notes.yaml`, which are compiled into the binary. Each load
+records where its list came from in `curated_lists`: `builtin` for `init` and for
+`judgebot ingest aliases` / `notes` with no file, `file` when you name one. It also
+records the SHA-256 of the YAML loaded. The `lists` step reads that record for each list:
+
+- `builtin`, and the binary's copy is the same: the table is compared with what that
+  copy loads against today's cards. Equal is `current`. Otherwise it is reloaded
+  (`reloaded`): a list loaded before the cards were, or naming a card Scryfall added or
+  restored since, fills in by itself.
+- `builtin`, and the binary's copy differs (an upgrade changed it): reloaded from the
+  binary's copy (`reloaded`).
+- `file`: your own list, never touched (`kept`, reason `file`).
+
+**Loading a file opts that list out of built-in updates**, even a file identical to the
+built-in copy, until you load it again with no file. Each run logs this at INFO.
+
+A list loaded before the record existed has none. The step reloads it, recording it as
+built-in (`adopted`), only when its table holds exactly what the binary's copy, or an
+earlier release's built-in copy, loads. A list with anything added, removed or pointed
+at another card is kept (reason `unrecorded`), and each run logs a warning until you
+settle it:
+
+- `judgebot ingest aliases <file>` (or `notes <file>`) records your list as yours.
+- `judgebot ingest aliases` (or `notes`) with no file loads the built-in copy, which the
+  refresh then keeps current.
+
+The image has no `data/` directory, so on a deploy host mount the file, from the
+repository root: `docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml`. `init`
+keeps a list you loaded from a file, with a warning, and loads the built-in copy of the
+other.
 
 ### Embedding model change
 

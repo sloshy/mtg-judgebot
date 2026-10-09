@@ -632,7 +632,8 @@ loopback names, which closes DNS rebinding. Writes are whole-file renames throug
 
 *Decided 2026-10-09.*
 
-The data refresh (Scryfall, a new CR release, retirement, embeddings, emoji) needs to run
+The data refresh (Scryfall, a new CR release, the built-in curated lists, retirement,
+embeddings, emoji) needs to run
 about daily on every instance, and it used to depend on the operator installing a cron
 entry for `scripts/refresh-data.sh`. An instance whose operator skipped that step answered
 from data that only got older, and nothing said so. The long-running process now runs it

@@ -74,7 +74,23 @@ Extend it when adding capability, and re-verify rule ids on each CR release.
 
 ## Reloading
 
-`aliases` and `notes` are not part of the scheduled refresh. Run their `judgebot ingest`
-commands when the files change. The image carries binaries only, no `data/`, so on a
-deploy host without a Rust toolchain, mount the file in:
+Each load records where its list came from: `builtin` (`init`, or `aliases` / `notes`
+with no file) or `file`, with a digest of the YAML. The scheduled refresh's `lists` step
+reloads a built-in list when the binary's copy differs, so an edit merged here reaches
+every deployment that uses the built-in lists on its first refresh after the upgrade. A
+list loaded from a file is the operator's, and neither the refresh nor `init` touches it.
+Loading a file therefore opts that list out of built-in updates, even a file identical to
+the built-in copy, until `aliases` or `notes` is run again with no file. The image carries
+binaries only, no `data/`, so on a deploy host without a Rust toolchain, mount the file in:
 `docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml`.
+
+A list loaded by a release before the record existed has none. The refresh adopts it as
+built-in only when its table holds exactly what the binary's copy, or an earlier
+release's built-in copy, loads. Otherwise it leaves the list alone and logs a warning
+until the operator runs `aliases <file>` (keep theirs) or `aliases` with no file (take
+the built-in copy), and likewise for `notes`.
+
+The earlier copies are `data/legacy/`, listed in `LEGACY` in
+`crates/bot/src/ingest/aliases.rs` and `notes.rs`. **A change to a list's entries (not
+only its comments) copies the file as it was before the change into `data/legacy/` and
+appends it to `LEGACY`**, so a database still holding that release's rows is recognised.

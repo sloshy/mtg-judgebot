@@ -2,9 +2,6 @@
 //! `printed_names`, `rulings` (bulk, keyed by `oracle_id`) -> `rulings`.
 //! Downloads are cached under `cache_dir`.
 //!
-//! Also hosts the hand-curated alias loader (`aliases.rs` delegates here) since
-//! both resolve against the same `cards` table.
-//!
 //! # Skip rule (which Scryfall objects become `cards` rows)
 //!
 //! A bulk card object is **skipped** when any of the following holds:
@@ -28,7 +25,7 @@
 //! `default_cards` for `printed_names`, and rulings are only stored for
 //! `oracle_id`s that exist in `cards` (foreign key).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead as _, Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -49,7 +46,7 @@ const USER_AGENT: &str = concat!(
     " (https://github.com/sloshy/mtg-judgebot)"
 );
 /// Rows per multi-row INSERT (500 rows × ≤9 columns stays far below the 65535 bind limit).
-const BATCH: usize = 500;
+pub(super) const BATCH: usize = 500;
 
 /// Layouts that never become `cards` rows (see module docs).
 const SKIPPED_LAYOUTS: &[&str] = &[
@@ -745,113 +742,6 @@ async fn remove_stale(pool: &PgPool, known: &HashSet<Uuid>, ruled: &HashSet<Uuid
 }
 
 // ---------------------------------------------------------------------------
-// Aliases
-// ---------------------------------------------------------------------------
-
-/// Parse a flat YAML mapping (`alias: Card Name`). Returns `(alias_lowercased,
-/// canonical_name)` pairs sorted by alias; entries with an empty alias or name
-/// are reported and dropped.
-///
-/// # Errors
-/// If the text is not a YAML mapping of string to string.
-pub(crate) fn parse_alias_yaml(text: &str) -> Result<Vec<(String, String)>> {
-    let map: BTreeMap<String, String> = serde_yaml_ng::from_str(text)
-        .context("aliases: expected a flat `alias: Card Name` mapping")?;
-    Ok(map
-        .into_iter()
-        .filter_map(|(k, v)| {
-            let (alias, name) = (k.trim().to_lowercase(), v.trim().to_owned());
-            if alias.is_empty() || name.is_empty() {
-                tracing::warn!(alias = k, name = v, "aliases: ignoring empty alias or name");
-                return None;
-            }
-            Some((alias, name))
-        })
-        .collect())
-}
-
-/// Load aliases from `path`, replacing the `card_aliases` table contents.
-/// Names are resolved case-insensitively against `cards.name`, then `card_faces.name`.
-/// Unresolved names are reported (warning) and skipped.
-///
-/// # Errors
-/// On read, parse or database failure.
-pub(super) async fn load_aliases(pool: &PgPool, text: &str) -> Result<()> {
-    let pairs = parse_alias_yaml(text)?;
-    let wanted: Vec<String> = pairs
-        .iter()
-        .map(|(_, n)| n.to_lowercase())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    let mut by_name: BTreeMap<String, Uuid> = BTreeMap::new();
-    let rows: Vec<(String, Uuid)> =
-        sqlx::query_as("SELECT lower(name), oracle_id FROM cards WHERE lower(name) = ANY($1)")
-            .bind(&wanted)
-            .fetch_all(pool)
-            .await
-            .context("resolving alias names against cards")?;
-    by_name.extend(rows);
-    let face_rows: Vec<(String, Uuid)> =
-        sqlx::query_as("SELECT lower(name), oracle_id FROM card_faces WHERE lower(name) = ANY($1) ORDER BY face_idx DESC")
-            .bind(&wanted)
-            .fetch_all(pool)
-            .await
-            .context("resolving alias names against card_faces")?;
-    for (name, id) in face_rows {
-        by_name.entry(name).or_insert(id);
-    }
-
-    let mut resolved: Vec<(String, Uuid)> = Vec::new();
-    let mut unresolved: Vec<String> = Vec::new();
-    let mut seen_alias: HashSet<String> = HashSet::new();
-    for (alias, name) in pairs {
-        if !seen_alias.insert(alias.clone()) {
-            tracing::warn!(alias, "aliases: duplicate alias; first wins");
-            continue;
-        }
-        if let Some(id) = by_name.get(&name.to_lowercase()) {
-            resolved.push((alias, *id));
-        } else {
-            tracing::warn!(
-                alias,
-                name,
-                "aliases: card name not found in cards/card_faces"
-            );
-            unresolved.push(name);
-        }
-    }
-
-    let mut tx = pool.begin().await?;
-    sqlx::query!("DELETE FROM card_aliases")
-        .execute(&mut *tx)
-        .await
-        .context("clearing card_aliases")?;
-    for chunk in resolved.chunks(BATCH) {
-        let mut qb: QueryBuilder<Postgres> =
-            QueryBuilder::new("INSERT INTO card_aliases (alias, oracle_id) ");
-        qb.push_values(chunk, |mut b, (alias, id)| {
-            b.push_bind(alias).push_bind(id);
-        });
-        qb.build()
-            .execute(&mut *tx)
-            .await
-            .context("inserting card_aliases")?;
-    }
-    tx.commit().await?;
-    tracing::info!(
-        loaded = resolved.len(),
-        unresolved = unresolved.len(),
-        "card_aliases replaced"
-    );
-    if !unresolved.is_empty() {
-        tracing::warn!(names = ?unresolved, "aliases: unresolved card names (run `ingest cards` first?)");
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1090,20 +980,5 @@ mod tests {
                 .len(),
             3
         );
-    }
-
-    #[test]
-    fn alias_yaml_parses_quotes_and_comments() {
-        let text = "# nicknames\n---\nBob: Dark Confidant\n\"Jace TMS\": 'Jace, the Mind Sculptor'  # comment\nurborg: Urborg, Tomb of Yawgmoth # note\n\"\": Nothing\n";
-        let pairs = parse_alias_yaml(text).expect("parses");
-        assert_eq!(
-            pairs,
-            vec![
-                ("bob".to_owned(), "Dark Confidant".to_owned()),
-                ("jace tms".to_owned(), "Jace, the Mind Sculptor".to_owned()),
-                ("urborg".to_owned(), "Urborg, Tomb of Yawgmoth".to_owned()),
-            ]
-        );
-        assert!(parse_alias_yaml("- not\n- a mapping\n").is_err());
     }
 }

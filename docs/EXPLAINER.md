@@ -212,8 +212,9 @@ columns and indexes) and `pg_trgm` (trigram similarity). Migrations are in
 | `printed_names` | Scryfall bulk `default_cards` | daily | every name ever printed, for old or errata'd names |
 | `rulings` | Scryfall bulk `rulings` | daily | keyed by a hash of the content, so a re-import is the same ruling |
 | `rules`, `glossary` | the CR `.txt` from Wizards | on release, detected daily | see chunking below |
-| `card_aliases` | `data/aliases.yaml` | when edited | nicknames |
-| `card_notes` | `data/notes.yaml` | when edited | nightmare cards |
+| `card_aliases` | `data/aliases.yaml` | when the built-in copy changes, detected daily | nicknames |
+| `card_notes` | `data/notes.yaml` | when the built-in copy changes, detected daily | nightmare cards |
+| `curated_lists` | each alias or note load | with the list | where each list came from (built-in or a file), and its digest |
 | `categories` | `data/categories.yaml`, via the compiled enum | with each CR load | category → CR subsections |
 | `calls`, `ratings` | the bot | continuous | answers and their votes |
 | `embedding_space` | `ingest embed` | on switch | one row: which embedding model the vectors came from |

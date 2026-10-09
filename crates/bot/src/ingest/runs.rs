@@ -26,6 +26,8 @@
 //! ```json
 //! [{"step": "cards",  "outcome": "ok", "summary": null},
 //!  {"step": "rules",  "outcome": "ok", "summary": {"cr": "updated", "version": "20260819", "url": "https://…"}},
+//!  {"step": "lists",  "outcome": "ok", "summary": {"aliases": {"action": "reloaded", "rows": 54, "unresolved": 0},
+//!                                                "notes": {"action": "kept", "reason": "file"}}},
 //!  {"step": "retire", "outcome": "ok", "summary": {"checked": 40, "retired": 1, "restored": 0, "still_retired": 2}},
 //!  {"step": "embed",  "outcome": "skipped", "reason": "no_embedder"},
 //!  {"step": "emoji",  "outcome": "failed", "error": "GET https://api.scryfall.com/symbology: …"}]
@@ -42,7 +44,18 @@
 //! A rules summary is `{"cr": "unchanged", "version"}` when the published
 //! release was already loaded; an embed summary is rows embedded per table
 //! (`{"rules": 12, "glossary": 0, "calls": 3}`); an emoji summary is
-//! `{"uploaded", "skipped", "unusable", "failed"}` counts.
+//! `{"uploaded", "skipped", "unusable", "failed"}` counts. A lists summary has
+//! one entry per list, tagged by `action`: `current`, `reloaded` or `adopted`
+//! (with `rows` and `unresolved`), `kept` with a `reason` (`file`, or
+//! `unrecorded`: [`lists::Keep`]), or `failed` with an `error`. A failed
+//! `lists` step keeps both lists' outcomes beside its `error`, in `summary`;
+//! a failed step of any other kind has no `summary`.
+//!
+//! The readers query the jsonb (`history`, `recent`, `emoji_since`); nothing
+//! outside the tests deserialises `steps` into [`StepReport`]. So a step a
+//! newer release adds is only a name to an older binary reading the same table
+//! (`judge-cli stats` lists it among the failed steps if it failed), and a
+//! row an older binary wrote, lacking a step, reads as before.
 
 use std::{
     collections::BTreeMap,
@@ -55,7 +68,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
-use super::{cr, emoji};
+use super::{cr, emoji, lists};
 use crate::db::RetireSummary;
 
 /// What started a run.
@@ -85,6 +98,9 @@ pub enum Step {
     Cards,
     /// The current Comprehensive Rules release, if new.
     Rules,
+    /// The built-in curated lists, reloaded where an upgrade changed them
+    /// ([`super::lists`]).
+    Lists,
     /// The retirement pass over stored calls.
     Retire,
     /// Vectors for every empty row.
@@ -95,9 +111,10 @@ pub enum Step {
 
 impl Step {
     /// Every step, in the order [`super::refresh`] runs them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Cards,
         Self::Rules,
+        Self::Lists,
         Self::Retire,
         Self::Embed,
         Self::Emoji,
@@ -110,6 +127,7 @@ impl Step {
         match self {
             Self::Cards => StepReport::Cards(Outcome::Skipped { reason }),
             Self::Rules => StepReport::Rules(Outcome::Skipped { reason }),
+            Self::Lists => StepReport::Lists(Outcome::Skipped { reason }),
             Self::Retire => StepReport::Retire(Outcome::Skipped { reason }),
             Self::Embed => StepReport::Embed(Outcome::Skipped { reason }),
             Self::Emoji => StepReport::Emoji(Outcome::Skipped { reason }),
@@ -121,11 +139,12 @@ impl Step {
     #[must_use]
     pub const fn failed(self, error: String) -> StepReport {
         match self {
-            Self::Cards => StepReport::Cards(Outcome::Failed { error }),
-            Self::Rules => StepReport::Rules(Outcome::Failed { error }),
-            Self::Retire => StepReport::Retire(Outcome::Failed { error }),
-            Self::Embed => StepReport::Embed(Outcome::Failed { error }),
-            Self::Emoji => StepReport::Emoji(Outcome::Failed { error }),
+            Self::Cards => StepReport::Cards(Outcome::failure(error)),
+            Self::Rules => StepReport::Rules(Outcome::failure(error)),
+            Self::Lists => StepReport::Lists(Outcome::failure(error)),
+            Self::Retire => StepReport::Retire(Outcome::failure(error)),
+            Self::Embed => StepReport::Embed(Outcome::failure(error)),
+            Self::Emoji => StepReport::Emoji(Outcome::failure(error)),
         }
     }
 
@@ -135,6 +154,7 @@ impl Step {
         match self {
             Self::Cards => "cards",
             Self::Rules => "rules",
+            Self::Lists => "lists",
             Self::Retire => "retire",
             Self::Embed => "embed",
             Self::Emoji => "emoji",
@@ -226,6 +246,10 @@ pub enum Outcome<T> {
     Failed {
         /// The error and its causes (`{:#}`).
         error: String,
+        /// What it did before it failed, for a step made of parts that each
+        /// report (`lists`). Absent from the stored object when `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<T>,
     },
 }
 
@@ -234,9 +258,16 @@ impl<T> Outcome<T> {
     pub fn of(result: Result<T>) -> Self {
         match result {
             Ok(summary) => Self::Ok { summary },
-            Err(e) => Self::Failed {
-                error: format!("{e:#}"),
-            },
+            Err(e) => Self::failure(format!("{e:#}")),
+        }
+    }
+
+    /// `Failed` with `error` and no summary.
+    #[must_use]
+    pub const fn failure(error: String) -> Self {
+        Self::Failed {
+            error,
+            summary: None,
         }
     }
 
@@ -262,7 +293,13 @@ impl<T: Serialize> Outcome<T> {
                 tracing::info!(step, %summary, "refresh step ok");
             }
             Self::Skipped { reason } => tracing::warn!(step, %reason, "refresh step skipped"),
-            Self::Failed { error } => tracing::error!(step, %error, "refresh step failed"),
+            Self::Failed { error, summary } => {
+                let summary = summary
+                    .as_ref()
+                    .and_then(|s| serde_json::to_string(s).ok())
+                    .unwrap_or_default();
+                tracing::error!(step, %error, %summary, "refresh step failed");
+            }
         }
     }
 }
@@ -279,6 +316,8 @@ pub enum StepReport {
     Cards(Outcome<()>),
     /// Whether a new CR was loaded.
     Rules(Outcome<cr::Outcome>),
+    /// What became of each curated list.
+    Lists(Outcome<lists::Summary>),
     /// What the retirement pass changed.
     Retire(Outcome<RetireSummary>),
     /// Rows embedded per table.
@@ -294,6 +333,7 @@ impl StepReport {
         match self {
             Self::Cards(_) => Step::Cards,
             Self::Rules(_) => Step::Rules,
+            Self::Lists(_) => Step::Lists,
             Self::Retire(_) => Step::Retire,
             Self::Embed(_) => Step::Embed,
             Self::Emoji(_) => Step::Emoji,
@@ -306,6 +346,7 @@ impl StepReport {
         match self {
             Self::Cards(o) => o.skip(),
             Self::Rules(o) => o.skip(),
+            Self::Lists(o) => o.skip(),
             Self::Retire(o) => o.skip(),
             Self::Embed(o) => o.skip(),
             Self::Emoji(o) => o.skip(),
@@ -318,6 +359,7 @@ impl StepReport {
         match self {
             Self::Cards(o) => o.failed(),
             Self::Rules(o) => o.failed(),
+            Self::Lists(o) => o.failed(),
             Self::Retire(o) => o.failed(),
             Self::Embed(o) => o.failed(),
             Self::Emoji(o) => o.failed(),
@@ -329,6 +371,7 @@ impl StepReport {
         match self {
             Self::Cards(o) => o.log(step),
             Self::Rules(o) => o.log(step),
+            Self::Lists(o) => o.log(step),
             Self::Retire(o) => o.log(step),
             Self::Embed(o) => o.log(step),
             Self::Emoji(o) => o.log(step),
@@ -379,7 +422,7 @@ pub struct RunReport {
     /// were abandoned.
     pub timed_out: bool,
     /// Whether the run stopped at a failure outside its recorded steps, which
-    /// fails it: `init`'s aliases or notes, or its lease lost between steps.
+    /// fails it, such as its lease lost between steps.
     pub aborted: bool,
 }
 
@@ -933,6 +976,17 @@ mod tests {
                     url: "https://example.test/cr.txt".into(),
                 },
             }),
+            StepReport::Lists(Outcome::Ok {
+                summary: lists::Summary {
+                    aliases: lists::ListOutcome::Reloaded(lists::Loaded {
+                        rows: 54,
+                        unresolved: 0,
+                    }),
+                    notes: lists::ListOutcome::Kept {
+                        reason: lists::Keep::File,
+                    },
+                },
+            }),
             StepReport::Retire(Outcome::Ok {
                 summary: RetireSummary {
                     checked: 40,
@@ -944,9 +998,7 @@ mod tests {
             StepReport::Embed(Outcome::Skipped {
                 reason: Skip::NoEmbedder,
             }),
-            StepReport::Emoji(Outcome::Failed {
-                error: "boom".into(),
-            }),
+            StepReport::Emoji(Outcome::failure("boom".into())),
         ]
     }
 
@@ -962,6 +1014,9 @@ mod tests {
                 {"step": "cards", "outcome": "ok", "summary": null},
                 {"step": "rules", "outcome": "ok",
                  "summary": {"cr": "updated", "version": "20260819", "url": "https://example.test/cr.txt"}},
+                {"step": "lists", "outcome": "ok",
+                 "summary": {"aliases": {"action": "reloaded", "rows": 54, "unresolved": 0},
+                             "notes": {"action": "kept", "reason": "file"}}},
                 {"step": "retire", "outcome": "ok",
                  "summary": {"checked": 40, "retired": 1, "restored": 0, "still_retired": 2}},
                 {"step": "embed", "outcome": "skipped", "reason": "no_embedder"},
@@ -975,6 +1030,16 @@ mod tests {
              "summary": {"uploaded": 1, "skipped": 80, "unusable": 0, "failed": 0}},
             {"step": "emoji", "outcome": "skipped", "reason": "no_discord_token"},
             {"step": "retire", "outcome": "skipped", "reason": "init_stopped"},
+            {"step": "lists", "outcome": "ok",
+             "summary": {"aliases": {"action": "current"},
+                         "notes": {"action": "adopted", "rows": 7, "unresolved": 1}}},
+            {"step": "lists", "outcome": "ok",
+             "summary": {"aliases": {"action": "kept", "reason": "unrecorded"},
+                         "notes": {"action": "current"}}},
+            {"step": "lists", "outcome": "failed", "error": "aliases: no cards are loaded"},
+            {"step": "lists", "outcome": "failed", "error": "aliases: no cards are loaded",
+             "summary": {"aliases": {"action": "failed", "error": "no cards are loaded"},
+                         "notes": {"action": "current"}}},
             {"step": "embed", "outcome": "skipped",
              "reason": {"embed_ceiling": {"rows": 1912, "ceiling": 800}}},
         ]);

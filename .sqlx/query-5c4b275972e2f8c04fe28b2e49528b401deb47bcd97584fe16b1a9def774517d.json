@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO curated_lists (list, source, digest) VALUES ($1, $2, $3)\n         ON CONFLICT (list) DO UPDATE\n         SET source = excluded.source, digest = excluded.digest, loaded_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5c4b275972e2f8c04fe28b2e49528b401deb47bcd97584fe16b1a9def774517d"
+}
