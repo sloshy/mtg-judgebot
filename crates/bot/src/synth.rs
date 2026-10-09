@@ -184,6 +184,54 @@ impl LlmSynthesizer {
         self
     }
 
+    /// Put the rules an answer named without citing into `ctx`, pinned past
+    /// the budget like a tool round's. The retry cannot call `lookup_rules`,
+    /// and a rule the answer reached by a pointer ("see rule 111.10" in a
+    /// glossary entry) is often not in the material, so the notice's "add that
+    /// citation" had nothing to quote and the retry came back empty. A rule
+    /// already shown, or whose parent is, is left alone; a lookup that fails
+    /// leaves the retry as it was.
+    async fn fetch_uncited(&self, u: &judge_core::UncitedRules, ctx: &mut Context) {
+        // What the model was shown, not what the context holds: retrieval
+        // returns several times the budget, so a rule can be in `ctx` and cut.
+        let shown: Vec<RuleId> = shown_rules(ctx, &ctx.tool_round, &self.budget)
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        let mut wanted: Vec<RuleId> = Vec::new();
+        for id in u.ids() {
+            if shown.contains(id) || parent_of(id).is_some_and(|p| shown.contains(&p)) {
+                continue;
+            }
+            if ctx.rule(id).is_some() {
+                // Held but cut: pin it, no lookup needed.
+                if !ctx.tool_round.contains(id) {
+                    ctx.tool_round.push(id.clone());
+                }
+            } else if wanted.len() < crate::session::MAX_LOOKUP_IDS {
+                wanted.push(id.clone());
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        match self.retriever.lookup_rules(&wanted).await {
+            Ok(chunks) => {
+                tracing::info!(requested = ?wanted, found = chunks.len(), "fetching uncited rules for the retry");
+                for c in &chunks {
+                    if !ctx.tool_round.contains(&c.id) {
+                        ctx.tool_round.push(c.id.clone());
+                    }
+                }
+                ctx.extend_rules(chunks);
+            }
+            Err(e) => tracing::warn!(
+                error = format_args!("{e:#}"),
+                "could not fetch the uncited rules; retrying without them"
+            ),
+        }
+    }
+
     /// One synthesis conversation at `effort`. It may run the tool round only
     /// while the round is unspent ([`round_unspent`]): the first attempt, or
     /// the retry after a first call that could not be read. The retry after a
@@ -256,6 +304,9 @@ impl Synthesizer for LlmSynthesizer {
         ctx: &mut Context,
         rejected: Option<&RejectedAttempt>,
     ) -> Result<Verdict<Unvalidated>, JudgeError> {
+        if let Some(Rejection::Uncited(u)) = rejected.map(RejectedAttempt::rejection) {
+            self.fetch_uncited(u, ctx).await;
+        }
         let first = self.converse(q, ctx, rejected, self.cfg.effort).await;
         let truncated = match (&first, self.cfg.effort.truncation_rerun()) {
             (Err(JudgeError::Upstream(e)), Some(lower)) => e
@@ -1755,6 +1806,106 @@ mod tests {
         assert!(
             text.contains("### [702.24] ") && !text.contains("### [702.25] "),
             "one slot went to the pinned chunk: {text}"
+        );
+        Ok(())
+    }
+
+    /// The 2026-10-09 failure: an answer named 111.10 (from a glossary pointer)
+    /// that was not in the material. The retry gets the rule, pinned, and can
+    /// cite it; it does not have to drop the number or answer empty.
+    #[tokio::test]
+    async fn the_retry_after_an_uncited_rule_is_given_that_rule() -> R {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(message(
+                "end_turn",
+                &json!([{"type": "text", "text": verdict_json("613.7", "usually done using a timestamp system")}]),
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (synth, retriever) =
+            synth_against(&server, vec![chunk("613.7", None, TIMESTAMP_RULE)?])?;
+        let mut ctx = Context {
+            rules: vec![chunk("702.1", None, "702.1. x")?],
+            ..Context::default()
+        };
+        let uncited =
+            Rejection::Uncited(judge_core::UncitedRules::new(NonEmpty::new(rid("613.7")?)));
+        let v = synth
+            .answer(&q(), &mut ctx, Some(&attempt(uncited)))
+            .await?;
+        assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
+        assert_eq!(ctx.tool_round, vec![rid("613.7")?]);
+        assert_eq!(
+            retriever
+                .calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+            vec![vec![rid("613.7")?]]
+        );
+        let reqs = bodies(&server).await?;
+        let text = user_text(reqs.first().ok_or("no request")?, 0);
+        assert!(
+            text.contains("### [613.7] "),
+            "the fetched rule is in the material: {text}"
+        );
+
+        // A rule held but cut by the budget is pinned, without a lookup.
+        let held: Vec<RuleChunk> = (1..=30)
+            .map(|i| chunk(&format!("702.{i}"), None, &"x".repeat(100)))
+            .chain(std::iter::once(chunk("111.10", None, "111.10. predefined")))
+            .collect::<Result<_, _>>()?;
+        let mut cut = Context {
+            rules: held,
+            ..Context::default()
+        };
+        let named =
+            Rejection::Uncited(judge_core::UncitedRules::new(NonEmpty::new(rid("111.10")?)));
+        if let Rejection::Uncited(u) = &named {
+            assert!(
+                shown_rules(&cut, &[], &synth.budget)
+                    .iter()
+                    .all(|r| r.id.as_ref() != "111.10"),
+                "setup: 111.10 is cut"
+            );
+            synth.fetch_uncited(u, &mut cut).await;
+        }
+        assert_eq!(cut.tool_round, vec![rid("111.10")?]);
+        assert_eq!(
+            retriever
+                .calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            1,
+            "no lookup for a held rule"
+        );
+
+        // A rule already shown is not fetched again.
+        let mut shown = Context {
+            rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
+            ..Context::default()
+        };
+        let again = Rejection::Uncited(judge_core::UncitedRules::new(NonEmpty::new(rid("613.7")?)));
+        synth
+            .fetch_uncited(
+                match &again {
+                    Rejection::Uncited(u) => u,
+                    _ => return Err("not uncited".into()),
+                },
+                &mut shown,
+            )
+            .await;
+        assert_eq!(
+            retriever
+                .calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            1
         );
         Ok(())
     }

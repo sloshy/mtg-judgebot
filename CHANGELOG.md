@@ -164,6 +164,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 - A retry after a rejected answer now tells the model to send the whole answer. A retry
   that came back with an empty `answer` ended the call as "empty verdict".
+- The retry after an answer named a rule without citing it now gets that rule. A rule
+  reached through a pointer ("see rule 111.10" in a glossary entry) was often not in the
+  material, so the retry had nothing to quote and could not call `lookup_rules`.
 
 ### Upgrading
 
