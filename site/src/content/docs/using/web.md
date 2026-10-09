@@ -25,7 +25,7 @@ answer spends the operator's money and one of the visitor's rate-limited questio
 Nobody is logged in there, so the page has **no rating buttons**, and nothing about the
 visitor is stored beyond a random session id that groups their questions. The footer
 names the source repository, the commit the instance was built from and the operator's
-support address (`JUDGE_OPERATOR_EMAIL`, which `judge-api` does not start without). A
+support address (`JUDGE_OPERATOR_EMAIL`, without which the page does not start). A
 line above it gives the Comprehensive Rules release loaded and how long ago the data was
 last refreshed, for example `Comprehensive Rules 2026-09-25 · refreshed 3 hours ago`.
 
@@ -48,7 +48,7 @@ rate-limiting rule in front of all of it.
 ## Developing the page
 
 ```sh
-cargo run --release -p judge-api -- --api --web   # API + the built page on localhost:8787
+cargo run --release -p judgebot -- --api --web    # API + the built page on localhost:8787
 npm --prefix web ci
 npm --prefix web run dev             # Vite dev server with /api proxied to :8787
 ```

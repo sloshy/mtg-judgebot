@@ -10,7 +10,7 @@ available three ways:
 
 - **`judge-mcp`**: an MCP server on stdio.
 - **`judge-cli`**: one subcommand per operation, printing JSON.
-- **`judge-api --mcp`**: the same MCP tools over HTTP at `/mcp`, for agents that are not
+- **`judgebot --mcp`**: the same MCP tools over HTTP at `/mcp`, for agents that are not
   on the host. It needs an `MCP_TOKEN`, and the flag without a token is refused at
   startup.
 

@@ -850,13 +850,13 @@ struct EmbedEntry {
     #[schemars(with = "Option<String>", length(min = 1), extend("x-provider-kinds" = ["voyage", "openai"]))]
     provider: Option<ProviderName>,
     /// The embedding model (`voyage-3.5`, `text-embedding-3-small`).
-    /// Changing it means `judge-ingest reembed --yes`.
+    /// Changing it means `judgebot ingest reembed --yes`.
     #[schemars(with = "String", length(min = 1))]
     model: ModelId,
     /// The vector width, 1..=2000 (pgvector's HNSW limit). Default 1024 on
     /// Voyage, required on an `openai` provider (text-embedding-3-small:
     /// 1536, nomic-embed-text: 768). Changing it means
-    /// `judge-ingest reembed --yes`.
+    /// `judgebot ingest reembed --yes`.
     #[serde(default)]
     #[schemars(with = "Option<u32>", range(min = 1, max = MAX_DIMENSIONS))]
     dimensions: Option<Dimensions>,
@@ -1965,8 +1965,8 @@ impl Config {
 
     /// The one-line summary every binary logs at startup:
     /// `config=judge.toml extract=ollama/qwen3:8b synth=anthropic/claude-opus-5-5 embed=voyage/voyage-3.5 cap=$5.00`.
-    /// What the cap covers is not in it: only `bot` and `api` run a budget
-    /// period, and they log it themselves (`budget::start`).
+    /// What the cap covers is not in it: only `judgebot`'s serving roles run
+    /// a budget period, and they log it themselves (`budget::start`).
     #[must_use]
     pub fn summary(&self) -> String {
         let stage = |s: Option<&Stage>| s.map_or_else(|| "none".to_owned(), Stage::label);

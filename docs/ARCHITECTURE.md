@@ -181,10 +181,35 @@ records that space in `embedding_space`, and every vector reader and writer chec
 before touching a column. Two models' vectors are therefore never mixed, and switching is
 one explicit, transactional `ingest reembed`. Nothing in `crates/core` knows any of this exists.
 
+One binary, `judgebot` (`crates/judgebot`), runs the long-lived interfaces. What a
+process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, `--mcp`
+and `--jobs`, on the command line or else in `JUDGE_ROLES`.
+
+- `Role` is exhaustive and the set is a `NonEmpty`, so a process that does nothing is
+  unrepresentable.
+- `roles::plan` checks every role's requirements before the pool connects or anything
+  binds, and reports every unmet one at once: `--discord` needs `DISCORD_TOKEN` and
+  `JUDGE_OPERATOR_DISCORD`, the network roles `JUDGE_OPERATOR_EMAIL`, `--web` a built
+  page and `--mcp` an `MCP_TOKEN`. The serving roles' models are built there too, so a
+  missing or unpriced chat model is reported before the database is touched. What it
+  returns is the types the roles run on, so a role cannot start unchecked. `--jobs` on
+  its own with the schedule off is refused, since it would have nothing to do.
+- The roles of one process share one composition (`judge_bot::serving::Serving`): one
+  pool, one `Models` behind one `SpendMeter` and one budget ledger, one `Vectors`, one
+  migration at startup. Each role keeps its own concurrency slots and limits. The HTTP
+  listener is bound before the Discord gateway is contacted, then both run side by side,
+  and the first to stop ends the process with a non-zero status. The scheduler's thread
+  is different: beside serving roles its end is logged as an error and the process keeps
+  answering, while a process whose only role is `--jobs` exits non-zero.
+- `judgebot ingest <cmd>` is the data command line. `judge-bot`, `judge-api` and
+  `judge-ingest`, the binaries it replaced, are links to it in the image: it reads the
+  name it was invoked as, runs what that binary ran (`judge-bot` is `--discord --jobs`,
+  `judge-api` its interfaces plus `--jobs`) and logs a warning naming the replacement.
+
 Three interfaces share this pipeline through the same composition root
 (`judge_bot::build_deps`):
 
-- **Discord adapter** (`crates/bot`): `/judge` slash command, rating buttons,
+- **Discord adapter** (`crates/bot`, the `--discord` role): `/judge` slash command, rating buttons,
   stateful "did you mean…?" buttons (pending store), thread history.
   - `/judge private:True` is `Audience::Private`: acknowledged ephemerally, no history
     read, never persisted, so no rating buttons. The audience rides in the pending entry
@@ -195,10 +220,9 @@ Three interfaces share this pipeline through the same composition root
     `PgLibrary::rulings`. They call no model and touch no meter.
 - **HTTP adapter** (`crates/api` + `web/`): anonymous `POST /api/judge` behind
   a per-IP fixed-window rate limit, and a SolidJS single page.
-  - Each interface is opted into at launch (`crates/api/src/interfaces.rs`).
-    `judge-api` alone serves the JSON route, `--web` adds the page and `--mcp`
-    adds the MCP transport. An interface nobody named is not mounted. The set is a
-    `NonEmpty`, so "serving nothing" is unrepresentable.
+  - Each interface is a role of its own on one listener (`API_ADDR`): `--api`
+    the JSON route, `--web` the page and `--mcp` the MCP transport. An interface
+    nobody named is not mounted.
   - `GET /api/health` and `GET /api/about` are served whatever interfaces are off.
     The container healthcheck needs the first.
   - `/api/about` is the source offer (`judge_core::source`): repository, built
@@ -214,13 +238,13 @@ Three interfaces share this pipeline through the same composition root
     missing run table leaves the CR version alone). It is cached for a
     minute, single-flight, by a `FreshnessReader`: `/api/about` has one, and
     every `PgLibrary` another (`/help` in the bot, the MCP `about` tool), so
-    `judge-api --mcp` holds two. `/help` lists it, the page footer shows it as
+    a process with `--mcp` holds two. `/help` lists it, the page footer shows it as
     one line, and `/api/health` ignores it.
   - The same places name who runs the instance (`judge_core::operator`). The
     bot takes a `DiscordOperator` and the HTTP layer a `NetworkOperator`. The
     only way to make either is `Operator::for_discord` / `for_network`. So the
-    bot cannot start without `JUDGE_OPERATOR_DISCORD`, and `judge-api` cannot
-    start without `JUDGE_OPERATOR_EMAIL`, whichever interfaces it opens. A local
+    bot cannot start without `JUDGE_OPERATOR_DISCORD`, and the network roles
+    cannot start without `JUDGE_OPERATOR_EMAIL`, whichever of them it opens. A local
     `judge-cli` or stdio `judge-mcp` holds a plain `Operator` and needs neither.
   - There are no rating endpoints, because anonymous callers are not
     accountable identities.
@@ -249,7 +273,7 @@ Three interfaces share this pipeline through the same composition root
 - **Agent adapter** (`crates/agent`): the judge as a tool surface for *other*
   agents.
   - Over MCP, `judge-mcp` serves a local client on stdio. For a remote one,
-    `judge-api --mcp` mounts the same handler at `/mcp` behind `MCP_TOKEN`. The
+    `judgebot --mcp` mounts the same handler at `/mcp` behind `MCP_TOKEN`. The
     flag without a token is refused at startup. The token without the flag
     serves nothing and warns.
   - `judge-cli` has one subcommand per operation with JSON out, for a shell
@@ -326,14 +350,14 @@ pictures, from one set of names:
   - Seven symbols (`{E} {P} {PW} {CHAOS} {TK} {L} {D}`) are flat black with no
     disc, invisible on the dark palette. They carry a `flat` flag and are
     inverted in dark mode. The coloured ones must not be.
-  - If a Content-Security-Policy is ever added to `judge-api`, `img-src` must
+  - If a Content-Security-Policy is ever added to the HTTP adapter, `img-src` must
     allow `https://svgs.scryfall.io`.
 
 ## 4. Data
 
 | Source | Refresh | Storage |
 |---|---|---|
-| Scryfall bulk `oracle-cards.json` | daily (the scheduled refresh `bot`/`api` run, `judge_bot::jobs`, every `JUDGE_REFRESH_HOURS` — DEPLOYMENT.md §7) | `cards` (oracle_id, name, layout, type_line, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
+| Scryfall bulk `oracle-cards.json` | daily (the scheduled refresh `judgebot --jobs` runs, `judge_bot::jobs`, every `JUDGE_REFRESH_HOURS` — DEPLOYMENT.md §7) | `cards` (oracle_id, name, layout, type_line, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
 | Scryfall bulk `default-cards.json` (names only) | daily | `printed_names` (printed_name, oracle_id) — old names, errata'd names |
 | Scryfall bulk `rulings.json` | daily (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, key, published_at, text) — `key` = content hash (`judge_core::ruling_key`), so a reindexed ruling keeps its identity |
 | Comprehensive Rules txt | on CR release — detected daily from the `.txt` link on Wizards' rules page vs `max(cr_version)` | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
@@ -344,11 +368,11 @@ pictures, from one set of names:
 | Categories → subsections | YAML (single source of truth; the enum is generated from it) | `categories` |
 | Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding) |
 | Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |
-| Refresh runs | one row per refresh, scheduled or `judge-ingest refresh` | `refresh_runs` (started_at, finished_at, trigger, process, cr_before, cr_after, steps jsonb, ok) |
+| Refresh runs | one row per refresh, scheduled or `judgebot ingest refresh` | `refresh_runs` (started_at, finished_at, trigger, process, cr_before, cr_after, steps jsonb, ok) |
 
 The loaders in the table (cards, rulings, the CR, symbols, nicknames, notes) and the
 embedding step are `judge_bot::ingest` (`crates/bot/src/ingest/`), beside the other
-Postgres adapters. `judge-ingest` is the command line over them.
+Postgres adapters. `judgebot ingest` is the command line over them.
 
 Every loader that writes the database takes a `RefreshLease`, a session-level advisory
 lock (`REFRESH_LOCK`) held on a connection of its own, so two runs never overlap, in one
@@ -364,12 +388,12 @@ Every `ingest::refresh`, whatever started it, checks before each step that it st
 holds the lease and that the migration ledger matches its binary (`migrate::skew`), and
 stops at `ingest::RUN_TIMEOUT` (3 h), abandoning the step in progress. A schema change
 skips the remaining steps and the run is `RunOutcome::Stopped`, stored with `ok` null:
-neither a success nor a failure. A single-step `judge-ingest` command makes the same
+neither a success nor a failure. A single-step `judgebot ingest` command makes the same
 check once (`ingest::ensure_writable`). `runs::history` counts an unfinished row older
 than `runs::ABANDONED_AFTER` as a failed run, so a process that dies mid-run still
 lengthens the failure streak.
 
-The schedule is `judge_bot::jobs`, which `bot` and `api` start after migrating. It runs
+The schedule is `judge_bot::jobs`, which a process with `--jobs` starts after migrating. It runs
 on an OS thread of its own, with a current-thread runtime and a three-connection pool, so
 a run's file I/O, CR parse and queries never take a worker or a pooled connection from
 the request path. The database is shared, though: while the CR load or the retirement

@@ -1,5 +1,5 @@
 //! `ingest migrate` — apply the schema migrations the binary carries, the
-//! explicit form of what `bot` and `api` do at startup
+//! explicit form of what `judgebot` does at startup
 //! ([`crate::db::migrate`]): for an empty database before the first
 //! `docker compose up -d`, and for an operator who set
 //! `JUDGE_AUTO_MIGRATE=false`. Reports on stdout, so a terminal shows it

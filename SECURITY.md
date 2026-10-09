@@ -26,7 +26,7 @@ Operators should know these properties. The reasoning behind each is in
   which would give every request a fresh allowance. `cloudflare` is only sound when
   nothing but Cloudflare can reach the origin.
 - **The MCP endpoint is bearer-token only and off by default.** It mounts only when
-  `judge-api` is launched with `--mcp` *and* `MCP_TOKEN` (at least 24 bytes) is set.
+  `judgebot` is launched with `--mcp` *and* `MCP_TOKEN` (at least 24 bytes) is set.
   The flag alone is refused at startup, and the token alone serves nothing. The token is
   compared in constant time. Its own `judge` quota (`MCP_JUDGE_LIMIT`) bounds what a
   leaked token can spend. `MCP_ALLOWED_HOSTS` must name the public hostname. To rotate

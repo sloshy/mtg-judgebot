@@ -637,7 +637,7 @@ The schedule lives in Postgres, not in any one process:
   nothing to clean up. A scheduled check tries it without waiting and does nothing when it
   is held.
 - **A record.** `refresh_runs` holds each run's start, finish, trigger, process and step
-  outcomes. A cron'd or manual `judge-ingest refresh` writes the same row, so the schedule
+  outcomes. A cron'd or manual `judgebot ingest refresh` writes the same row, so the schedule
   counts it.
 - **Due on the database's clock.** `jobs::due` is pure: the last success older than the
   interval, and the last attempt older than a backoff (an hour, doubling with each

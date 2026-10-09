@@ -22,7 +22,7 @@ touch Discord. The bot is the last thing to add.
 - A host that stays on, with Docker and the compose plugin. Running takes about 200 MB of
   RAM across the three containers. **Building** the image takes ~4 GB and a lot of CPU. A
   low-powered host pulls the CI-built image instead (`docker compose pull`).
-- No Rust. The image carries `judge-ingest` as its `refresh` service, so the data loads
+- No Rust. The image carries `judgebot ingest` as its `refresh` service, so the data loads
   run in a container. To work from source, see [Development setup](../../contributing/development/).
   A binary run on the host checks HTTPS against the system's CA certificates
   (`ca-certificates` on Debian and Ubuntu) and refuses to start without them.
@@ -43,7 +43,7 @@ touch Discord. The bot is the last thing to add.
    3. Set your model key (`ANTHROPIC_API_KEY`, or a provider in the Models tab), and
       `VOYAGE_API_KEY` for semantic search if you have one.
    4. Set `JUDGE_OPERATOR_DISCORD` (your Discord username, required by the bot) and
-      `JUDGE_OPERATOR_EMAIL` (a support address, required by `judge-api`).
+      `JUDGE_OPERATOR_EMAIL` (a support address, required by the web page and the API).
    5. Check the side panel, which shows whether each part would start. Save on the Review
       tab, then Ctrl-C.
 
@@ -101,7 +101,7 @@ produce another width (OpenAI's `text-embedding-3-small` is 1536):
 
 - `init` handles it. On a database with no vectors yet, it takes the configured
   embedder's width.
-- Loading step by step, run `judge-ingest reembed --yes` instead of `embed` the first
+- Loading step by step, run `reembed --yes` instead of `embed` the first
   time. It retypes the columns and records the embedding space before filling them.
 
 The bot never mixes vectors from two embedders. On a mismatch it logs an error naming both

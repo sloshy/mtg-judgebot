@@ -18,7 +18,7 @@ git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
 docker compose pull                     # the published image
 scripts/config.sh                       # the config editor: open the URL it prints, set ANTHROPIC_API_KEY
                                         # (and VOYAGE_API_KEY if you have one) and JUDGE_OPERATOR_EMAIL,
-                                        # which judge-api requires; save, then Ctrl-C
+                                        # which the page requires; save, then Ctrl-C
 docker compose up -d db                 # pgvector Postgres on localhost:5432
 docker compose run --rm refresh init    # the whole first load, in one command
 ```
@@ -63,7 +63,7 @@ Each of `judge-api`'s interfaces is a launch option. The compose file passes
 `--api --web`, and `API_INTERFACES` in `.env` changes that list. `--api` alone serves the
 question route with no public page.
 
-To develop the API without Docker, run `cargo run --release -p judge-api -- --api --web`.
+To develop the API without Docker, run `cargo run --release -p judgebot -- --api --web`.
 It serves the built page from `web/dist` (run
 `npm --prefix web ci && npm --prefix web run build` once). `npm --prefix web run dev` runs
 Vite with `/api` proxied to it.

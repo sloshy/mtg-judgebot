@@ -1,9 +1,10 @@
 //! `judge-bot` as a library: the sqlx adapters for the DB-backed ports, the
 //! model adapters (extraction and synthesis over any `judge_llm::ChatModel`),
 //! the [`config`] loader that picks providers and models, [`build_deps`],
-//! the one composition shared by the `bot`, `api`, `eval` and `agent`
-//! binaries, [`ingest`], the data steps `judge-ingest` runs, and [`jobs`],
-//! the schedule `bot` and `api` run them on.
+//! the one composition shared by the `judgebot`, `eval` and `agent`
+//! binaries, [`serving`], what `judgebot`'s serving roles share, the
+//! [`discord`] adapter, [`ingest`], the data steps `judgebot ingest` runs,
+//! and [`jobs`], the schedule `judgebot --jobs` runs them on.
 
 pub mod alert;
 pub mod budget;
@@ -13,6 +14,7 @@ pub mod discord;
 pub mod extract;
 pub mod ingest;
 pub mod jobs;
+pub mod serving;
 pub mod session;
 pub mod synth;
 
@@ -26,10 +28,10 @@ use db::{PgResolver, PgRetriever, Vectors};
 
 /// The schema migrations (`crates/bot/migrations`), embedded at compile time
 /// so the published image can move a database forward by itself
-/// (`judge-ingest migrate`, run as `docker compose run --rm refresh migrate`):
+/// (`judgebot ingest migrate`, run as `docker compose run --rm refresh migrate`):
 /// the deploy host has no Rust toolchain and no `sqlx-cli`. The `#[sqlx::test]`
 /// suites apply the same directory, so a migration the tests pass against is
-/// the one the binary carries. `bot` and `api` apply it at startup
+/// the one the binary carries. `judgebot` applies it at startup
 /// (`db::migrate::at_startup`, opt-out `JUDGE_AUTO_MIGRATE=false`), so a
 /// pull-and-restart is a complete deploy (`docs/DEPLOYMENT.md` §8).
 /// `build.rs` makes a new file under `migrations/` recompile this crate;

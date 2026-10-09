@@ -281,15 +281,25 @@ pub fn router(app: Arc<App>, interfaces: &Interfaces, web_dist: &Path) -> Router
     router.with_state(app)
 }
 
-/// Bind `cfg.addr` and serve `router` until the listener fails.
+/// Bind `cfg.addr`. Separate from [`serve_on`] so a process binds before it
+/// starts anything else (the Discord gateway), and a taken address fails
+/// first.
 ///
 /// # Errors
-/// Binding the address, or a fatal accept-loop error.
-pub async fn serve(cfg: &ApiConfig, router: Router) -> anyhow::Result<()> {
+/// Binding the address.
+pub async fn bind(cfg: &ApiConfig) -> anyhow::Result<tokio::net::TcpListener> {
     let listener = tokio::net::TcpListener::bind(cfg.addr)
         .await
         .with_context(|| format!("bind {}", cfg.addr))?;
     tracing::info!(addr = %cfg.addr, "HTTP adapter listening");
+    Ok(listener)
+}
+
+/// Serve `router` on `listener` until the accept loop fails.
+///
+/// # Errors
+/// A fatal accept-loop error.
+pub async fn serve_on(listener: tokio::net::TcpListener, router: Router) -> anyhow::Result<()> {
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),

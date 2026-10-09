@@ -1,4 +1,5 @@
-//! `judge-api` — the anonymous HTTP adapter: axum routes over the same
+//! `judge-api` — the anonymous HTTP adapter (`judgebot`'s network roles,
+//! [`network`]): axum routes over the same
 //! `judge()` composition the Discord bot uses, plus static serving of the
 //! `SolidJS` web client (`web/dist`).
 //!
@@ -18,17 +19,19 @@
 //!   mounted at `/mcp` behind that bearer token ([`mcp`]), sharing the judge
 //!   slots and the spend cap with the web route.
 //!
-//! Which of those interfaces this process opens is a launch option, not a
-//! consequence of being started: see [`interfaces`]. The default is the JSON
-//! API alone, so the web page is served only where an operator asked for it.
+//! Which of those interfaces a process opens is a launch option, not a
+//! consequence of being started: see [`interfaces`] and `judgebot`'s roles.
+//! The web page is served only where an operator asked for it.
 
 pub mod config;
 pub mod http;
 pub mod interfaces;
 pub mod limit;
 pub mod mcp;
+pub mod network;
 pub mod shape;
 
-pub use config::ApiConfig;
-pub use http::{App, DataStatus, router, serve};
+pub use config::{ApiConfig, Refused, Unmet};
+pub use http::{App, DataStatus, bind, router, serve_on};
 pub use interfaces::{Interface, Interfaces, Launch};
+pub use network::{Listening, Network};

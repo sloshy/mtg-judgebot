@@ -4,7 +4,7 @@
 //!
 //! Two callers, one behaviour:
 //!
-//! * `bot` and `api` call [`at_startup`] before anything else touches the
+//! * `judgebot` calls [`at_startup`] before anything else touches the
 //!   pool, so `docker compose pull && docker compose up -d` is a complete
 //!   deploy. A failure exits the process, which under `restart:
 //!   unless-stopped` is a crash-loop with the reason in the log — loud, where
@@ -14,7 +14,7 @@
 //!   container runs whatever image `docker compose pull` last fetched, which
 //!   may be newer than the running bot, and a tool (`judge-cli`, `judge-mcp`)
 //!   does not own the schema.
-//! * `judge-ingest migrate` calls [`run`] with [`Ahead::Refuse`]: the
+//! * `judgebot ingest migrate` calls [`run`] with [`Ahead::Refuse`]: the
 //!   explicit form, for an empty database before the first `up -d` and for
 //!   the opted-out operator.
 //!
@@ -247,7 +247,7 @@ pub struct Skew {
     /// migrated the database), as [`Error::Ahead`] names them.
     pub ahead: Vec<i64>,
     /// Versions this binary carries that the ledger lacks (migrations still
-    /// pending: `JUDGE_AUTO_MIGRATE=false` and nobody ran `judge-ingest
+    /// pending: `JUDGE_AUTO_MIGRATE=false` and nobody ran `judgebot ingest
     /// migrate`). A database with no ledger at all lacks every one.
     pub behind: Vec<i64>,
 }
@@ -272,7 +272,7 @@ impl Skew {
         } else if !self.behind.is_empty() {
             Some(format!(
                 "the schema is behind this binary (migrations {:?} are pending, JUDGE_AUTO_MIGRATE=false?): \
-                 run `judge-ingest migrate`",
+                 run `judgebot ingest migrate`",
                 self.behind
             ))
         } else {
@@ -358,7 +358,7 @@ pub fn parse_flag(raw: Option<&str>) -> Result<bool, Error> {
     }
 }
 
-/// What `bot` and `api` do first: migrate unless opted out, tolerating a
+/// What `judgebot` does first: migrate unless opted out, tolerating a
 /// database ahead of the binary (see the module docs).
 ///
 /// # Errors
@@ -366,7 +366,7 @@ pub fn parse_flag(raw: Option<&str>) -> Result<bool, Error> {
 pub async fn at_startup(pool: &PgPool) -> Result<Report, Error> {
     if !auto_migrate_enabled()? {
         tracing::info!(
-            "{AUTO_MIGRATE_ENV} is off; schema left as it is (run `judge-ingest migrate` yourself)"
+            "{AUTO_MIGRATE_ENV} is off; schema left as it is (run `judgebot ingest migrate` yourself)"
         );
         return Ok(Report::default());
     }

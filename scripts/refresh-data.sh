@@ -7,7 +7,7 @@
 # with JUDGE_REFRESH_HOURS=0. A cron entry kept alongside the schedule is
 # harmless: the schedule counts its run and never overlaps it.
 #
-# Everything happens inside the published image (`judge-ingest refresh`, the
+# Everything happens inside the published image (`judgebot ingest refresh`, the
 # compose service `refresh`); the host needs only Docker. Each step is
 # idempotent, a new CR is detected from Wizards' rules page and skipped when the
 # database already has it, and only rules whose text changed are re-embedded,
@@ -15,11 +15,11 @@
 #
 #   scripts/refresh-data.sh                 run every step
 #   scripts/refresh-data.sh cards           run one ingest subcommand instead
-#   scripts/refresh-data.sh rules latest    (anything judge-ingest accepts)
+#   scripts/refresh-data.sh rules latest    (anything judgebot ingest accepts)
 #
 # Cron:  30 5 * * *  /path/to/repo/scripts/refresh-data.sh >> ~/judgebot-refresh.log 2>&1
 #
-# Runs never overlap, with each other or with the schedule: every judge-ingest
+# Runs never overlap, with each other or with the schedule: every judgebot ingest
 # command that writes data takes the refresh lease, an advisory lock in the
 # database, and waits for a run that holds it. Postgres drops the lock with the session, so a run that crashed
 # leaves nothing to clean up.

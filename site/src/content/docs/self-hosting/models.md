@@ -95,7 +95,7 @@ The database records which model's vectors it holds (`embedding_space`), and not
 mixes two. A bot configured for another model logs an error and runs without vector
 search. To switch models:
 
-1. Run `cargo run --release -p judge-ingest -- reembed`. It prints the row counts and a
+1. Run `cargo run --release -p judgebot -- ingest reembed`. It prints the row counts and a
    rough cost, probes the new model once, and changes nothing.
 2. Run it again with `--yes`. It retypes the columns, clears every vector and re-embeds
    them. That is paid per row, which is why it asks first.

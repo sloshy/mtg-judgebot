@@ -19,8 +19,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
-- **`bot` and `api` refresh the data themselves.** Every `JUDGE_REFRESH_HOURS` (default
-  24, 1 to 720, `0` = off) one of them runs the steps of `judge-ingest refresh`: cards
+- **The long-running processes refresh the data themselves** (the `--jobs` role, which
+  the compose `bot` and `api` services both run). Every `JUDGE_REFRESH_HOURS` (default
+  24, 1 to 720, `0` = off) one of them runs the steps of `judgebot ingest refresh`: cards
   and rulings, a new CR release, retirement, embeddings, emoji. No host cron is needed.
   The schedule is kept in the database, so the processes, a restart and a cron run agree
   on it, and the refresh lease means a run happens once however many there are. A failed
@@ -36,9 +37,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   embedding step the spend guard skipped, and a crashed check. Each is posted once, not
   on every retry.
 - **A scheduled refresh never pays for a mass re-embed.** With more than 800 rows waiting
-  for a vector it skips `embed`, logs the count and alerts. `judge-ingest embed` (or
+  for a vector it skips `embed`, logs the count and alerts. `judgebot ingest embed` (or
   `scripts/refresh-data.sh embed`) does it when that spend is expected. A manual or
-  cron'd `judge-ingest refresh` has no ceiling.
+  cron'd `judgebot ingest refresh` has no ceiling.
 - **Every interface says how fresh the data is.** `GET /api/about`, the MCP `about` tool
   and `judge-cli about` carry `freshness`: the Comprehensive Rules release loaded, the
   seconds since the last successful refresh, and whether the latest one failed. It is
@@ -49,20 +50,47 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   version before and after, and the steps that failed.
 - **The bot picks up new card-symbol emoji without a restart.** When a refresh run, by
   any process, uploads emoji, the bot lists them again within ten minutes. A bot with none
-  checks every ten minutes, so the first `judge-ingest emoji` after starting it is seen
+  checks every ten minutes, so the first `judgebot ingest emoji` after starting it is seen
   too, and every bot lists them hourly regardless. A listing that failed at startup is
   retried the same way, and connecting no longer waits for it.
-- **`judge-ingest init` is recorded as a refresh run** of the steps it shares with one
+- **`judgebot ingest init` is recorded as a refresh run** of the steps it shares with one
   (it now runs the retirement pass too). The schedule counts a first load as fresh data,
   and the steps it did not reach after a failure are recorded as skipped.
 
 ### Changed
 
-- **A refresh stops writing when it should.** Before each step `judge-ingest refresh`
+- **One binary, `judgebot`, whose roles are launch options.** `bot`, `api` and `ingest`
+  are now one program. `judgebot --discord --api --web --mcp --jobs` runs any non-empty
+  set of the bot, the JSON route, the web page, the MCP transport and the scheduled
+  refresh in one process; with no flags it reads `JUDGE_ROLES` (the same flags). Each
+  role's requirements are checked before anything connects or binds, and every unmet
+  one is named at once: `--discord` needs `DISCORD_TOKEN` and `JUDGE_OPERATOR_DISCORD`,
+  the network roles `JUDGE_OPERATOR_EMAIL`, `--web` a built page, `--mcp` an
+  `MCP_TOKEN`, and any serving role a chat model that builds. The HTTP listener is bound
+  before the Discord gateway is contacted, and the first serving role to stop ends the
+  process with a non-zero status. The data command line is `judgebot ingest <command>`, with the same
+  commands and arguments as before. `judgebot --help` and `judgebot ingest --help` list
+  them.
+- **One spend meter per process.** The roles of one `judgebot` process bill to one meter
+  and one ledger. With `JUDGE_BUDGET_PERIOD=process`, a process running both the bot and
+  the HTTP interfaces has one `JUDGE_MAX_USD` between them, where the separate `bot` and
+  `api` processes had one each. `day` and `month` budgets were already shared. Each role
+  keeps its own `JUDGE_CONCURRENCY` slots and the API its rate limits.
+- **The scheduled refresh runs only under `--jobs`.** The compatibility names below keep
+  it on, as before. A process whose only role is `--jobs` exits non-zero if the
+  scheduler's thread ends, and refuses to start with `JUDGE_REFRESH_HOURS=0`. Beside a
+  serving role, a scheduler thread that ends is logged as an error and the process
+  keeps answering.
+- **`judge-bot`, `judge-api` and `judge-ingest` are compatibility names.** The image
+  carries them as links to `judgebot`, which runs what each ran (`judge-bot` is
+  `--discord --jobs`, `judge-api` its `--api`/`--web`/`--mcp` rules plus `--jobs`,
+  `judge-ingest` is `judgebot ingest`) and logs a warning naming the replacement. They
+  ignore `JUDGE_ROLES`. A later release removes them.
+- **A refresh stops writing when it should.** Before each step `judgebot ingest refresh`
   checks that the migration ledger matches its binary, and every single-step command
   (`cards`, `rules`, `embed`, …) checks once before it starts. A run between
   `docker compose pull` and `up -d` (schema behind) or on an old image (schema ahead)
-  writes nothing, names `judge-ingest migrate` or the newer image, and exits non-zero.
+  writes nothing, names `judgebot ingest migrate` or the newer image, and exits non-zero.
   It is recorded as stopped, neither a success nor a failure. A run stops after three
   hours, abandoning the step in progress, so a hung download cannot hold the lease.
 - **A truncated CR download is never loaded.** The CR file is cached through a `.part`
@@ -70,11 +98,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   its cached copy removed) instead of being loaded, which would have deleted every rule
   it did not reach.
 
-- **Data refreshes take a lock in the database.** Every `judge-ingest` command that
+- **Data refreshes take a lock in the database.** Every `judgebot ingest` command that
   writes data (`refresh`, `init` after its migration, `cards`, `rules`, `aliases`,
   `notes`, `embed`, `reembed`, `retire`) first takes the refresh lease, a Postgres
   advisory lock. It waits up to an hour for a run that holds it, logging who holds it,
-  then fails. The cron run, a manual step and a workstation's `judge-ingest` therefore
+  then fails. The cron run, a manual step and a workstation's `judgebot ingest` therefore
   take turns instead of overlapping. Postgres drops the lock with the session, so a
   killed run leaves nothing behind. `scripts/refresh-data.sh` no longer takes its
   `.refresh.lock` directory.
@@ -90,6 +118,15 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
+- **Nothing to change for a compose deployment.** The compose services run the
+  compatibility names, so `docker compose pull && docker compose up -d` keeps the same
+  processes doing the same work. Each logs one warning naming its `judgebot`
+  replacement.
+- **Running from source, the binary is `judgebot`.** `cargo run -p judge-bot` becomes
+  `cargo run -p judgebot -- --discord --jobs`, `cargo run -p judge-api -- --api --web`
+  becomes `cargo run -p judgebot -- --api --web` (add `--jobs` for the schedule), and
+  `cargo run -p judge-ingest -- <command>` becomes `cargo run -p judgebot -- ingest
+  <command>`. `target/release/` holds `judgebot` in place of `bot`, `api` and `ingest`.
 - **The schedule is on by default.** An instance with no recorded refresh runs one
   within minutes of starting. An instance that never had cron catches up that way. A
   development `.env` pointing `cargo run` at a local database should set
@@ -103,7 +140,7 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `docker compose up -d`.
 - The `refresh_runs` migration applies at startup unless `JUDGE_AUTO_MIGRATE=false`. A
   refresh that runs before it is applied works and logs that the run went unrecorded.
-  The schedule waits for it, with one warning naming `judge-ingest migrate`.
+  The schedule waits for it, with one warning naming `judgebot ingest migrate`.
 - A `.refresh.lock` directory left in the repository root by a killed run is no longer
   read and can be removed.
 
@@ -133,18 +170,6 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   See the Config editor page.
 
 ### Changed
-
-- **A refresh stops writing when it should.** Before each step `judge-ingest refresh`
-  checks that the migration ledger matches its binary, and every single-step command
-  (`cards`, `rules`, `embed`, …) checks once before it starts. A run between
-  `docker compose pull` and `up -d` (schema behind) or on an old image (schema ahead)
-  writes nothing, names `judge-ingest migrate` or the newer image, and exits non-zero.
-  It is recorded as stopped, neither a success nor a failure. A run stops after three
-  hours, abandoning the step in progress, so a hung download cannot hold the lease.
-- **A truncated CR download is never loaded.** The CR file is cached through a `.part`
-  file and a rename, and a text that ends before its Credits section is refused (and
-  its cached copy removed) instead of being loaded, which would have deleted every rule
-  it did not reach.
 
 - **The eval binary is `judge-eval`**, the name the documentation already used. It was
   built as `eval`.
@@ -189,18 +214,6 @@ and no migration is involved.
 ## [1.1.0] - 2026-09-29
 
 ### Changed
-
-- **A refresh stops writing when it should.** Before each step `judge-ingest refresh`
-  checks that the migration ledger matches its binary, and every single-step command
-  (`cards`, `rules`, `embed`, …) checks once before it starts. A run between
-  `docker compose pull` and `up -d` (schema behind) or on an old image (schema ahead)
-  writes nothing, names `judge-ingest migrate` or the newer image, and exits non-zero.
-  It is recorded as stopped, neither a success nor a failure. A run stops after three
-  hours, abandoning the step in progress, so a hung download cannot hold the lease.
-- **A truncated CR download is never loaded.** The CR file is cached through a `.part`
-  file and a rename, and a text that ends before its Credits section is refused (and
-  its cached copy removed) instead of being loaded, which would have deleted every rule
-  it did not reach.
 
 - **The default model is Claude Opus 5.5** (`claude-opus-5-5`) on both stages, and the
   built-in price table knows its rates ($4 input, $20 output per million tokens). On the

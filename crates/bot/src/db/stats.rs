@@ -33,7 +33,7 @@ pub struct Day {
     pub web: i64,
     /// Persisted by an agent session or `judge-cli judge`.
     pub agent: i64,
-    /// Estimated model spend of `bot` and `api` that day, in USD.
+    /// Estimated model spend of the `judgebot` processes that day, in USD.
     pub usd: f64,
     /// Model calls behind that spend.
     pub llm_calls: i64,
@@ -178,7 +178,7 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
         Err(e) if runs::is_missing_table(&e) => (
             Vec::new(),
             Some(
-                "refresh_runs does not exist: migrations are pending (`judge-ingest migrate`)"
+                "refresh_runs does not exist: migrations are pending (`judgebot ingest migrate`)"
                     .to_owned(),
             ),
         ),

@@ -21,7 +21,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
 /// The variable holding the operator's Discord username; required by the bot.
 pub const OPERATOR_DISCORD_ENV: &str = "JUDGE_OPERATOR_DISCORD";
-/// The variable holding the support address; required by `judge-api`.
+/// The variable holding the support address; required by the network roles
+/// (`judgebot --api`, `--web`, `--mcp`).
 pub const OPERATOR_EMAIL_ENV: &str = "JUDGE_OPERATOR_EMAIL";
 
 /// Regex for [`DiscordUsername`]: Discord's own rule for usernames, 2 to 32

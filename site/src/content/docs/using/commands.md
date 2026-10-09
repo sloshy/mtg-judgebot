@@ -1,6 +1,6 @@
 ---
 title: Command reference
-description: Every subcommand of judge-ingest, judge-eval and judge-cli, and the compose and script entry points.
+description: The judgebot roles, every subcommand of judgebot ingest, judge-eval and judge-cli, and the compose and script entry points.
 sidebar:
   order: 5
 ---
@@ -9,9 +9,46 @@ Each binary prints its usage with `--help`. Every binary reads `.env` from the w
 directory. A missing file is fine, and a malformed one is an error. The containers get
 theirs through compose.
 
-## `judge-ingest`
+## `judgebot`
 
-Run `cargo run --release -p judge-ingest -- <command>`. In the image, run
+The one long-running binary. What a process does is a set of roles, at least one, named
+as flags: `cargo run --release -p judgebot -- --api --web`. With no flags it reads
+`JUDGE_ROLES`, the same flags separated by spaces. Every role's requirements are checked
+before anything connects or binds, and every unmet one is reported at once. The serving
+roles also need a chat model that builds (`ANTHROPIC_API_KEY` or a `judge.toml`). The
+HTTP listener is bound before the Discord gateway is contacted.
+
+| Role | What it runs | Requires |
+| --- | --- | --- |
+| `--discord` | The Discord bot | `DISCORD_TOKEN`, `JUDGE_OPERATOR_DISCORD` |
+| `--api` | `POST /api/judge`, the anonymous question route | `JUDGE_OPERATOR_EMAIL` |
+| `--web` | The built web page, from `WEB_DIST` | `JUDGE_OPERATOR_EMAIL`, a built `index.html` |
+| `--mcp` | The MCP transport at `/mcp` | `JUDGE_OPERATOR_EMAIL`, `MCP_TOKEN` |
+| `--jobs` | The scheduled data refresh, every `JUDGE_REFRESH_HOURS` (`0` turns it off) | a schedule that is on, when it is the only role |
+
+The network roles (`--api`, `--web`, `--mcp`) share one listener on `API_ADDR`, which
+also serves `GET /api/health` and `GET /api/about`. The roles of one process share one
+spend meter, so `JUDGE_MAX_USD` caps them together. `--jobs` against a development
+database refreshes it for real: leave it off there, or set `JUDGE_REFRESH_HOURS=0`.
+
+When two serving roles run together, the first to stop ends the process with a non-zero
+status, so the restart policy brings it back whole. The refresh runs on a thread of its
+own. If that thread ends beside serving roles, it is logged as an error and the process
+keeps answering. In a process whose only role is `--jobs`, the process exits non-zero.
+
+The image also answers to the names of the binaries `judgebot` replaced, as links to it.
+Each logs a warning naming its replacement, and a later release removes them. They ignore
+`JUDGE_ROLES`.
+
+| Name | Runs |
+| --- | --- |
+| `judge-bot` | `judgebot --discord --jobs` |
+| `judge-api [--api] [--web] [--mcp]` | Those roles and `--jobs`. With no flags, `--api` alone. |
+| `judge-ingest <command>` | `judgebot ingest <command>` |
+
+## `judgebot ingest`
+
+Run `cargo run --release -p judgebot -- ingest <command>`. In the image, run
 `docker compose run --rm refresh <command>` for the commands that need no file from the
 repository. The image has the binaries and the cache volume, not `data/`. Mount a file
 with `-v ./data:/data:ro` for `aliases`, `notes` and `rules <path>`.
@@ -23,7 +60,7 @@ up to an hour for a command that holds it, so two never overlap. `migrate` (its 
 | Command | What it does |
 | --- | --- |
 | `init` | The whole first load: `migrate`, `cards`, `rules latest`, `aliases`, `notes`, `retire`, `embed`, `emoji`, each logged with its time. It is recorded as a manual refresh run, so the schedule counts the load as a refresh. Stops at the first failure. Every step is idempotent, so run it again. `embed` skips itself with no embedder and `emoji` with no `DISCORD_TOKEN`. On a database holding no vectors it takes the configured embedder's width, as `reembed --yes` would. It loads the built-in alias and note lists, so load your own after it. |
-| `migrate` | Apply pending schema migrations. `bot` and `api` do this at startup unless `JUDGE_AUTO_MIGRATE=false`. |
+| `migrate` | Apply pending schema migrations. `judgebot` does this at startup unless `JUDGE_AUTO_MIGRATE=false`. |
 | `cards` | Scryfall bulk sync: cards, faces, printed names, rulings. Cached in `INGEST_CACHE_DIR`. |
 | `rules <url\|path>` | Parse a Comprehensive Rules text file into rule-level and leaf rows. Rules whose text changed lose their embedding. |
 | `rules latest` | The CR linked from Wizards' rules page, only if its date differs from the stored `cr_version`. |
@@ -33,7 +70,7 @@ up to an hour for a command that holds it, so two never overlap. `migrate` (its 
 | `reembed [--yes] [--clear]` | Make the database hold the configured embedder's space: retype the columns, clear every vector, record the space, then embed all. Without `--yes` it prints the row counts and a rough cost and changes nothing. When the database is already in the right space, it only fills empty rows. `--clear` re-pays every row. |
 | `emoji` | Upload Scryfall's card symbols as the bot's application emoji. Needs only `DISCORD_TOKEN`. |
 | `retire` | Retire calls whose citations no longer hold against current rules, rulings and Oracle text. Restore those that hold again. |
-| `refresh` | `cards`, `rules latest`, `retire`, `embed`, `emoji`. Every step runs even if one fails, and the exit code is ≠ 0 if any did. `embed` with no embedder and `emoji` with no `DISCORD_TOKEN` are skipped, not failed. Each run is recorded in `refresh_runs`. `bot` and `api` run the same steps every `JUDGE_REFRESH_HOURS`, taking turns with this command through the lease. |
+| `refresh` | `cards`, `rules latest`, `retire`, `embed`, `emoji`. Every step runs even if one fails, and the exit code is ≠ 0 if any did. `embed` with no embedder and `emoji` with no `DISCORD_TOKEN` are skipped, not failed. Each run is recorded in `refresh_runs`. `judgebot --jobs` runs the same steps every `JUDGE_REFRESH_HOURS`, taking turns with this command through the lease. |
 
 ## `judge-eval`
 
@@ -73,6 +110,6 @@ JSON goes to stdout and logs to stderr.
 | `docker compose up -d` | `db`, `bot` and `api`, plus `cloudflared` with `COMPOSE_PROFILES=tunnel`. |
 | `docker compose up -d --build bot api` | Rebuild and redeploy after code changes. |
 | `docker compose pull && docker compose up -d` | Deploy host: pull the CI-built image, never build. |
-| `scripts/refresh-data.sh` | A refresh now, or from your own cron with `JUDGE_REFRESH_HOURS=0`: `docker compose run --rm refresh`. Arguments pass through to `judge-ingest`. A failed run posts to `JUDGE_ALERT_WEBHOOK` when that is set. |
+| `scripts/refresh-data.sh` | A refresh now, or from your own cron with `JUDGE_REFRESH_HOURS=0`: `docker compose run --rm refresh`. Arguments pass through to `judgebot ingest`. A failed run posts to `JUDGE_ALERT_WEBHOOK` when that is set. |
 | `scripts/backup-db.sh [list\|fetch]` | Weekly `pg_dump` to Cloudflare R2. `list` and `fetch` serve the restore drill. A failed backup posts to `JUDGE_ALERT_WEBHOOK` (from `.env.deploy`, else `.env`). |
 | `scripts/alert.sh` | Sourced by the two above: posts one line to the webhook, passing the URL on stdin so it never shows in `ps`. |

@@ -1,24 +1,26 @@
-//! `ingest` — Scryfall bulk sync, CR parser, alias loader, embedding: argument
-//! parsing over the steps in `judge_bot::ingest`, where they live so that a
-//! long-running binary can run them too.
+//! `judgebot ingest` — Scryfall bulk sync, CR parser, alias loader, embedding:
+//! argument parsing over the steps in `judge_bot::ingest`, where they live so
+//! that the long-running roles can run them too. `judge-ingest <cmd>` is the
+//! same command line under its compatibility name.
 //!
 //! ```text
-//! ingest cards                 # Scryfall bulk: cards, card_faces, printed_names, rulings
-//! ingest rules <path-or-url>   # Comprehensive Rules txt -> rules + glossary
-//! ingest rules latest          # the release linked from Wizards' rules page, if newer than the DB
-//! ingest aliases <yaml>        # hand-curated nicknames -> card_aliases
-//! ingest notes <yaml>          # hand-written nightmare-card notes -> card_notes
-//! ingest embed                 # fill NULL embeddings on rules/glossary/calls via the configured embedder
-//! ingest reembed [--yes] [--clear]  # make the database hold the configured embedder's space: switch and
-//!                              #   re-embed all when it holds another, else fill what is empty (--clear: redo all)
-//! ingest emoji                 # Scryfall card symbols -> the bot's Discord application emoji
-//! ingest retire                # retire/restore calls by whether their citations still hold
-//! ingest migrate               # apply the embedded schema migrations (bot/api do this at startup;
-//!                              #   this is for an empty database, or JUDGE_AUTO_MIGRATE=false)
-//! ingest refresh               # cards, rules latest, retire, embed, emoji — the scheduled job
+//! judgebot ingest cards                 # Scryfall bulk: cards, card_faces, printed_names, rulings
+//! judgebot ingest rules <path-or-url>   # Comprehensive Rules txt -> rules + glossary
+//! judgebot ingest rules latest          # the release linked from Wizards' rules page, if newer than the DB
+//! judgebot ingest aliases <yaml>        # hand-curated nicknames -> card_aliases
+//! judgebot ingest notes <yaml>          # hand-written nightmare-card notes -> card_notes
+//! judgebot ingest embed                 # fill NULL embeddings on rules/glossary/calls via the configured embedder
+//! judgebot ingest reembed [--yes] [--clear]  # make the database hold the configured embedder's space: switch
+//!                                       #   and re-embed all when it holds another, else fill what is empty
+//!                                       #   (--clear: redo all)
+//! judgebot ingest emoji                 # Scryfall card symbols -> the bot's Discord application emoji
+//! judgebot ingest retire                # retire/restore calls by whether their citations still hold
+//! judgebot ingest migrate               # apply the embedded schema migrations (the serving roles do this at
+//!                                       #   startup; this is for an empty database, or JUDGE_AUTO_MIGRATE=false)
+//! judgebot ingest refresh               # cards, rules latest, retire, embed, emoji — the scheduled job
 //! ```
 //!
-//! `refresh` is what the deployment runs unattended (`scripts/refresh-data.sh`,
+//! `refresh` is what an operator's own cron runs (`scripts/refresh-data.sh`,
 //! docs/DEPLOYMENT.md). Every step is idempotent and each runs even if an earlier
 //! one failed — a Scryfall outage must not delay a CR release — and the exit status
 //! is non-zero if any step failed, so the scheduler's failure hook fires. The run
@@ -32,12 +34,13 @@
 //!
 //! `DATABASE_URL` is read from the environment (a `.env` file is honoured); the
 //! embedder comes from `judge.toml` / `VOYAGE_API_KEY` through `judge_bot::config`,
-//! the same loader the bot uses, so `embed` writes the space the bot queries.
+//! the same loader the serving roles use, so `embed` writes the space they query.
 //! `emoji` needs no database at all, only `DISCORD_TOKEN`.
 //! Downloads are cached under `INGEST_CACHE_DIR` (default `.cache/`).
 
 use std::{
     borrow::Cow,
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 
@@ -48,7 +51,7 @@ use judge_bot::ingest::{
 };
 
 #[derive(Debug)]
-enum Command {
+pub enum Command {
     /// Migrates under its own lock, then takes the lease for the rest.
     Init,
     /// Its own lock, and runs before any table exists.
@@ -61,7 +64,7 @@ enum Command {
 
 /// The commands that write data, each run under the refresh lease.
 #[derive(Debug)]
-enum Leased {
+pub enum Leased {
     Cards,
     Rules {
         source: String,
@@ -83,13 +86,13 @@ enum Leased {
     Refresh,
 }
 
-/// What `refresh_runs.process` says ran a refresh from this binary.
+/// What `refresh_runs.process` says ran a refresh from this command line.
 const PROCESS: &str = "ingest";
 
 /// Where a curated list comes from: the copy of `data/*.yaml` this binary was
 /// built with, or a file the operator edited.
 #[derive(Debug, PartialEq, Eq)]
-enum Yaml {
+pub enum Yaml {
     Builtin,
     File(PathBuf),
 }
@@ -112,7 +115,8 @@ impl Yaml {
 /// The `rules` argument that means "whatever Wizards currently publishes".
 const LATEST: &str = "latest";
 
-const USAGE: &str = "usage: ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh>\n\
+/// The usage `judgebot ingest --help` prints.
+pub const USAGE: &str = "usage: judgebot ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh>\n\
 init: the whole first load (migrate, cards, rules latest, aliases, notes, embed, emoji); safe to run again.\n\
 aliases, notes: with no file, the lists this binary was built with (data/*.yaml).";
 
@@ -121,9 +125,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     match args.next().as_deref() {
         Some("cards") => leased(Leased::Cards),
         Some("rules") => leased(Leased::Rules {
-            source: args
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("usage: ingest rules <path-or-url | latest>"))?,
+            source: args.next().ok_or_else(|| {
+                anyhow::anyhow!("usage: judgebot ingest rules <path-or-url | latest>")
+            })?,
         }),
         Some("aliases") => leased(Leased::Aliases {
             yaml: Yaml::from_arg(args.next()),
@@ -140,7 +144,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
                     "--yes" => yes = true,
                     "--clear" => clear = true,
                     other => anyhow::bail!(
-                        "usage: ingest reembed [--yes] [--clear] (got {other:?}); --yes: do it, not a dry run; \
+                        "usage: judgebot ingest reembed [--yes] [--clear] (got {other:?}); --yes: do it, not a dry run; \
                          --clear: clear and re-pay every vector even when the database already holds the configured space"
                     ),
                 }
@@ -155,25 +159,44 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // A missing .env is fine; a malformed one is not.
-    match dotenvy::dotenv() {
-        Ok(_) | Err(dotenvy::Error::Io(_)) => {}
-        Err(err) => return Err(err).context("reading .env"),
-    }
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-    let mut args = std::env::args().skip(1).peekable();
+/// What the ingest command line asked for.
+#[derive(Debug)]
+pub enum Launch {
+    /// Print [`USAGE`] and exit successfully.
+    Help,
+    /// Run this command.
+    Run(Command),
+}
+
+/// Parse the arguments after `ingest` (or after `judge-ingest`). Help and a
+/// typo need no database, no `.env` and no logging.
+///
+/// # Errors
+/// An argument that is not UTF-8 (a path must not be altered to fit), or one
+/// this command line does not take, with the usage.
+pub fn parse(args: Vec<OsString>) -> Result<Launch> {
+    let args = args
+        .into_iter()
+        .map(|a| {
+            a.into_string().map_err(|a| {
+                anyhow::anyhow!("argument {:?} is not UTF-8\n\n{USAGE}", a.to_string_lossy())
+            })
+        })
+        .collect::<Result<Vec<String>>>()?;
     if args
-        .peek()
+        .first()
         .is_some_and(|a| ["--help", "-h", "help"].contains(&a.as_str()))
     {
-        println!("{USAGE}");
-        return Ok(());
+        return Ok(Launch::Help);
     }
-    let cmd = parse_args(args)?;
+    parse_args(args.into_iter()).map(Launch::Run)
+}
+
+/// Run `cmd`. The caller has loaded `.env` and started logging.
+///
+/// # Errors
+/// The command's own failure; for `refresh`, any step's.
+pub async fn run(cmd: Command) -> Result<()> {
     let cache_dir = cache_dir();
     tracing::info!(?cmd, cache_dir = %cache_dir.display(), categories = judge_core::Category::ALL.len(), "ingest");
     // The pool is opened per arm rather than up front: `emoji` talks to
@@ -278,6 +301,23 @@ mod tests {
             Command::Leased(Leased::Notes { yaml: Yaml::File(p) }) if p == std::path::Path::new("/data/notes.yaml")
         ));
         assert!(parse(&["nonsense"]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn help_is_asked_for_first_and_needs_nothing_else() -> Result<()> {
+        for help in ["--help", "-h", "help"] {
+            assert!(matches!(
+                super::parse(vec![OsString::from(help)])?,
+                Launch::Help
+            ));
+        }
+        let r = super::parse(vec![]);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| format!("{e:#}").contains("usage: judgebot ingest")),
+            "{r:?}"
+        );
         Ok(())
     }
 

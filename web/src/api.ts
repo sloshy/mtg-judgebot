@@ -80,7 +80,7 @@ export interface About {
   license_name: string;
   license_url: string;
   copyright: string;
-  /** Who runs this instance. judge-api refuses to start without the
+  /** Who runs this instance. The server refuses to start without the
    * address; the Discord username is there when the operator set it too. */
   operator_discord: string | null;
   operator_email: string | null;

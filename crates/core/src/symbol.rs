@@ -5,7 +5,7 @@
 //! Discord renders one as a custom emoji, which is addressed by a name it
 //! allows: `[A-Za-z0-9_]`, 2–32 characters. [`emoji_name`] is the mapping
 //! between the two, and it lives here — pure, no I/O — because two separate
-//! programs must agree on it exactly: `judge-ingest emoji` uploads the emoji
+//! programs must agree on it exactly: `judgebot ingest emoji` uploads the emoji
 //! under these names, and the Discord adapter looks them up by the same names
 //! at startup. A copy in each would be a silent drift waiting to happen.
 

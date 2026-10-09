@@ -28,7 +28,7 @@ A flat mapping of nickname to canonical card name: `bob: Dark Confidant`,
 - The resolver also tries an alias with a trailing possessive stripped ("bob's"), and as
   a suffix.
 
-Load with `judge-ingest aliases data/aliases.yaml`. With no file, `aliases` loads the copy
+Load with `judgebot ingest aliases data/aliases.yaml`. With no file, `aliases` loads the copy
 compiled into the binary. That is what `init` and a container use, so an edit reaches an
 image only through a rebuild, or by mounting the file and naming it.
 
@@ -40,7 +40,7 @@ note's card is recognised in a question, the note is added to what the model rea
 
 Notes are hints. The Comprehensive Rules still govern. A note should cite rule numbers so
 the model can quote the rules rather than the note. Load with
-`judge-ingest notes data/notes.yaml`, or `judge-ingest notes` for the built-in copy.
+`judgebot ingest notes data/notes.yaml`, or `judgebot ingest notes` for the built-in copy.
 
 ## `data/categories.yaml`: the taxonomy
 
@@ -74,7 +74,7 @@ Extend it when adding capability, and re-verify rule ids on each CR release.
 
 ## Reloading
 
-`aliases` and `notes` are not part of the scheduled refresh. Run their `judge-ingest`
+`aliases` and `notes` are not part of the scheduled refresh. Run their `judgebot ingest`
 commands when the files change. The image carries binaries only, no `data/`, so on a
 deploy host without a Rust toolchain, mount the file in:
 `docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml`.

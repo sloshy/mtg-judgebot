@@ -1,7 +1,7 @@
 //! Magic's card symbols (`{W}`, `{2/U}`, `{T}`) as Discord custom emoji.
 //!
 //! Discord has no mana symbols, so the bot uploads one *application* emoji per
-//! Scryfall symbol (see the `judge-ingest emoji` subcommand) and substitutes
+//! Scryfall symbol (see the `judgebot ingest emoji` subcommand) and substitutes
 //! `<:mana_w:123…>` into the text it sends. Application emoji belong to the bot
 //! rather than to a server, so they work in every guild it posts in.
 //!

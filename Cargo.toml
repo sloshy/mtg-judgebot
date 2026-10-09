@@ -6,12 +6,12 @@ members = [
   "crates/anthropic",
   "crates/openai",
   "crates/embed",
-  "crates/ingest",
   "crates/bot",
   "crates/eval",
   "crates/api",
   "crates/agent",
   "crates/configure",
+  "crates/judgebot",
 ]
 
 [workspace.package]
@@ -30,6 +30,7 @@ judge-anthropic = { path = "crates/anthropic", default-features = false }
 judge-openai = { path = "crates/openai" }
 judge-embed = { path = "crates/embed" }
 judge-bot = { path = "crates/bot" }
+judge-api = { path = "crates/api" }
 judge-agent = { path = "crates/agent" }
 
 anyhow = "1"

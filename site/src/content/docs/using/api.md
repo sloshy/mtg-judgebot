@@ -5,10 +5,11 @@ sidebar:
   order: 3
 ---
 
-`judge-api` serves three routes:
+The HTTP interfaces serve three routes on `API_ADDR`:
 
-- `POST /api/judge`, on with `--api` (or with no flags at all).
-- `GET /api/health` and `GET /api/about`, served whatever is switched off.
+- `POST /api/judge`, on with the `--api` role (or `judge-api` with no flags at all).
+- `GET /api/health` and `GET /api/about`, served whenever any of `--api`, `--web` and
+  `--mcp` is on.
 
 There is no authentication. The API is the anonymous interface, bounded by a per-address
 rate limit, the concurrency slots and the spend cap. It sends no CORS headers, so call it

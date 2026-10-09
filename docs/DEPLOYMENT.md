@@ -322,7 +322,7 @@ Discord application rather than to any server, and Discord stores them, so they
 survive redeploys and restores. Upload them once per application, not once per deploy:
 
 ```sh
-cargo run --release -p judge-ingest -- emoji   # needs DISCORD_TOKEN; no database
+cargo run --release -p judgebot -- ingest emoji   # needs DISCORD_TOKEN; no database
 ```
 
 The command is idempotent. It uploads only the symbols that are missing, so re-run it
@@ -484,7 +484,7 @@ The card count should match section 2. `*.dump.gz` is gitignored.
 `bot` and `api` keep the data current themselves. Scryfall publishes new bulk data
 daily, and Wizards ships a Comprehensive Rules release with most sets. Every
 `JUDGE_REFRESH_HOURS` (default 24) one of the two runs a refresh: the steps of
-`judge-ingest refresh`, in the same process, with nothing to install on the host. Its
+`judgebot ingest refresh`, in the same process, with nothing to install on the host. Its
 steps, in order:
 
 1. `cards`: Scryfall oracle cards, printed names and rulings. These are upserts, so
@@ -550,7 +550,7 @@ on it:
   the schema is behind this binary`. Each resumes by itself once the two match. A run
   that meets a schema change part-way (a deploy during a refresh) stops before its next
   step and is recorded as stopped, neither a success nor a failure: no alert, no
-  backoff. A manual or cron `judge-ingest refresh` checks the same before every step,
+  backoff. A manual or cron `judgebot ingest refresh` checks the same before every step,
   and a single-step command (`cards`, `rules`, `embed`, …) once before it starts. Both
   exit non-zero instead of writing.
 - A database with no rules loaded has not had its first load. The schedule waits for
@@ -563,8 +563,8 @@ the last success and the stored CR version. A run logs `refresh starting` and
 `refresh finished` with `trigger=schedule`, and one line per step in between.
 
 `JUDGE_REFRESH_HOURS` takes 1 to 720 hours, and `0` turns the schedule off. A typo or a
-negative value stops every binary that loads the configuration (`bot`, `api`,
-`judge-ingest`, `judge-cli`, `judge-mcp`, `judge-eval`) at startup, naming the
+negative value stops every binary that loads the configuration (`judgebot`,
+`judge-cli`, `judge-mcp`, `judge-eval`) at startup, naming the
 variable, as `JUDGE_BUDGET_PERIOD` does. After changing it, `docker compose up -d`
 recreates `bot` and `api`.
 
@@ -579,7 +579,7 @@ With `JUDGE_ALERT_WEBHOOK` set, a scheduled run posts there:
 - a run that never finished (its process died), once per streak of failures.
 
 **The spend guard.** A scheduled run never pays for a mass re-embed. A manual or cron
-`judge-ingest refresh` (`scripts/refresh-data.sh`) has no such ceiling: whoever installed
+`judgebot ingest refresh` (`scripts/refresh-data.sh`) has no such ceiling: whoever installed
 it chose to run it. Before embedding
 it counts the rows waiting for a vector. Above 800 it skips the step
 (`refresh step skipped`, with the count) and alerts. A full re-embed is about 1,900 rows
@@ -593,7 +593,7 @@ died. Run `scripts/refresh-data.sh embed` when that spend is expected.
 `scripts/refresh-data.sh` runs the same refresh from the host, as
 `docker compose run --rm refresh`. It checks that the image `docker compose pull`
 fetched is present and never builds on the host. Any argument is passed through as the
-`judge-ingest` subcommand: `scripts/refresh-data.sh rules latest` checks only the CR. It
+`judgebot ingest` subcommand: `scripts/refresh-data.sh rules latest` checks only the CR. It
 exits non-zero if any step failed, and posts to `JUDGE_ALERT_WEBHOOK` when it does.
 
 A cron entry from an earlier release keeps working. It takes the same lease and writes
@@ -609,11 +609,11 @@ crontab -e
 
 ### Lease
 
-Runs never overlap. Every `judge-ingest` command that writes data takes the refresh
+Runs never overlap. Every `judgebot ingest` command that writes data takes the refresh
 lease first, an advisory lock in the database. If another run holds it, the command logs
 `another refresh or ingest step holds the refresh lease; waiting for it to finish`, naming
 the holder, and waits. So the scheduled run, `scripts/refresh-data.sh <step>` and a
-manual `judge-ingest` from a workstation take turns. `migrate` and `emoji` do not take
+manual `judgebot ingest` from a workstation take turns. `migrate` and `emoji` do not take
 it: `migrate` has its own lock, and `emoji` writes no database.
 
 - Postgres drops the lock when the holding session ends, so a run that crashed or was
@@ -686,7 +686,7 @@ check, or start one now with `scripts/refresh-data.sh`. Expect one line per step
 `cards`, `rules`, `retire`, `embed` and `emoji` in that order, each `refresh step ok`
 or `refresh step skipped` and none `refresh step failed`. A run that loaded a new CR
 then logs `CR <old> → <new>` last. A one-off manual load also works from a workstation
-(`cargo run --release -p judge-ingest -- rules <url>`). To force a re-parse of an
+(`cargo run --release -p judgebot -- ingest rules <url>`). To force a re-parse of an
 already-loaded version that way, delete the cached txt first.
 
 ### Embedding model change
@@ -697,7 +697,7 @@ every reader and writer checks it first. If a bot's `[models.embed]` names a dif
 model or width, it does not mix them. It logs `embedding space mismatch; vector search off` and
 answers from the curated map and full-text search alone until the two agree.
 
-`judge-ingest reembed` moves the database to a new model. It pays the provider to
+`judgebot ingest reembed` moves the database to a new model. It pays the provider to
 embed every rule, glossary entry and stored call again. So it is a dry run by default,
 and you should take a backup first.
 
@@ -750,7 +750,7 @@ again or restoring a backup (the restore drill, §6).
 
 `reembed` needs the new `judge.toml` (`JUDGE_CONFIG` in `.env`) and the new provider's
 `api_key_env` in `.env`. `refresh-data.sh` passes its arguments through to
-`judge-ingest` inside the `refresh` container, which already has both. The dry run's
+`judgebot ingest` inside the `refresh` container, which already has both. The dry run's
 cost line is a rough order of magnitude, not a quote. It assumes a generic list price
 of ~$0.15 per million tokens and 4 characters per token.
 
@@ -886,7 +886,7 @@ and does not migrate. Whether it then works depends on the migration:
   restoring the pre-release dump too (`scripts/backup-db.sh fetch`, §6). Run the
   weekly backup by hand right before such a deploy.
 
-`judge-ingest migrate` refuses a database that is ahead rather than guessing, and the
+`judgebot ingest migrate` refuses a database that is ahead rather than guessing, and the
 scheduled refresh stays paused while it is (§7): the data is not refreshed until the
 image and the schema match again. An image from before the built-in schedule refreshes
 nothing by itself, so a rollback that far needs the cron entry of §7 until you upgrade.

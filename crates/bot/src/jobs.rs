@@ -1,8 +1,10 @@
 //! What a long-running process does beside answering questions: today, the
 //! scheduled data refresh ([`crate::ingest::refresh`]) every
 //! `JUDGE_REFRESH_HOURS`, so an instance stays current with no host scheduler.
-//! `bot` and `api` both call [`start`]; the record and the lease in Postgres
-//! make them, a cron'd `judge-ingest refresh` and a manual run take turns.
+//! `judgebot --jobs` calls [`start`] (as do the compatibility names
+//! `judge-bot` and `judge-api`); the record and the lease in Postgres make
+//! every such process, a cron'd `judgebot ingest refresh` and a manual run
+//! take turns.
 //!
 //! **When a run is due** is [`due`], pure: the last *successful* run is older
 //! than the interval (or there has been none), and the last attempt of any
@@ -23,7 +25,7 @@
 //! with one warning until it changes. [`ingest::refresh`] checks the same
 //! before every step, for every trigger; this check only saves taking the
 //! lease. Then the record: a database with no rules loaded has not had its
-//! first load (`judge-ingest init`), which a refresh is not, so the schedule
+//! first load (`judgebot ingest init`), which a refresh is not, so the schedule
 //! waits for it. When a run is due it tries the [`RefreshLease`] without
 //! waiting (held: another process or cron is running one, so this check is
 //! done) and, holding it, reads the record again, because the holder before it
@@ -84,7 +86,7 @@ pub const RETRY_AFTER: Duration = Duration::from_hours(1);
 pub const FIRST_CHECK: Duration = Duration::from_secs(90);
 /// The time between checks, before jitter.
 pub const CHECK_EVERY: Duration = Duration::from_mins(10);
-/// At most this is added to each wait, so `bot` and `api` started together do
+/// At most this is added to each wait, so two processes started together do
 /// not check in step.
 pub const JITTER: Duration = Duration::from_mins(2);
 /// `statement_timeout` on the scheduler's connections. The longest single
@@ -145,7 +147,7 @@ const _: () = assert!(Hours::DEFAULT.get() == 24);
 /// Whether, and how often, a long-running process refreshes the data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Schedule {
-    /// Never: the operator runs `judge-ingest refresh` (cron, by hand).
+    /// Never: the operator runs `judgebot ingest refresh` (cron, by hand).
     Off,
     /// Once the last successful run is this old.
     Every(Hours),
@@ -327,7 +329,7 @@ pub fn alerts(process: &str, previous: &RunHistory, report: &RunReport) -> Vec<S
                 out.push(format!(
                     "judgebot `{process}`: a scheduled data refresh did not embed {rows} rows, \
                      more than the {ceiling} it embeds unattended. If that spend is expected (a \
-                     new embedder, an interrupted reembed), run `judge-ingest embed` \
+                     new embedder, an interrupted reembed), run `judgebot ingest embed` \
                      (`docker compose run --rm refresh embed`); vector search misses those rows \
                      until then."
                 ));
@@ -449,7 +451,7 @@ where
         if memory.pause(Pause::Uninitialised) {
             tracing::warn!(
                 "scheduled refresh paused: no rules are loaded, so the first load has not run; run \
-                 `judge-ingest init` (`docker compose run --rm refresh init`) and it resumes by itself"
+                 `judgebot ingest init` (`docker compose run --rm refresh init`) and it resumes by itself"
             );
         }
         return Ticked::Uninitialised;
@@ -544,7 +546,7 @@ async fn read_history(pool: &PgPool, memory: &mut Memory) -> Option<RunHistory> 
         Err(e) if runs::is_missing_table(&e) => {
             if memory.pause(Pause::Missing) {
                 tracing::warn!(
-                    "scheduled refresh paused: refresh_runs does not exist; run `judge-ingest migrate` and it resumes by itself"
+                    "scheduled refresh paused: refresh_runs does not exist; run `judgebot ingest migrate` and it resumes by itself"
                 );
             }
             None
@@ -574,20 +576,58 @@ fn jitter() -> Duration {
     Duration::from_millis(u64::try_from(ms).unwrap_or_default())
 }
 
+/// How the scheduler thread ended. It never ends on its own: each of these
+/// is a failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// The thread could not be started at all.
+    NotStarted,
+    /// Its runtime could not be built, or its loop returned.
+    Stopped,
+    /// It panicked outside a check (a check's own panic is caught and the
+    /// loop goes on).
+    Panicked,
+}
+
+impl std::fmt::Display for Ended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotStarted => "could not be started",
+            Self::Stopped => "stopped",
+            Self::Panicked => "panicked",
+        })
+    }
+}
+
+/// The running scheduler, as its caller holds it. [`Scheduler::ended`]
+/// completes only when the thread has ended, so a process whose only role is
+/// the jobs can exit (and be restarted) instead of idling without them.
+/// Dropping it leaves the thread running.
+#[derive(Debug)]
+pub struct Scheduler(tokio::sync::oneshot::Receiver<Ended>);
+
+impl Scheduler {
+    /// Wait for the scheduler thread to end, and say how.
+    pub async fn ended(self) -> Ended {
+        // A sender dropped without a word is a thread that unwound past it.
+        self.0.await.unwrap_or(Ended::Panicked)
+    }
+}
+
 /// Start the jobs `jobs` asks for on a thread of their own; see the module
 /// docs. `process` names the caller in the record, the lease and an alert
-/// (`bot`, `api`). With the schedule off this logs one line and starts
-/// nothing.
+/// (`judgebot`, or `bot`/`api` under the compatibility names). With the
+/// schedule off this logs one line, starts nothing and returns `None`.
 ///
 /// The record is read once here, on the caller's pool, so the startup line
 /// sits beside the configuration summary; everything after runs on the
 /// scheduler's own runtime and pool.
-pub async fn start(pool: &PgPool, jobs: Jobs, process: &'static str) {
+pub async fn start(pool: &PgPool, jobs: Jobs, process: &'static str) -> Option<Scheduler> {
     let Schedule::Every(every) = jobs.refresh else {
         tracing::info!(
-            "scheduled data refresh is off ({REFRESH_HOURS_ENV}=0): run `judge-ingest refresh` yourself (scripts/refresh-data.sh)"
+            "scheduled data refresh is off ({REFRESH_HOURS_ENV}=0): run `judgebot ingest refresh` yourself (scripts/refresh-data.sh)"
         );
-        return;
+        return None;
     };
     match runs::history(pool).await {
         Ok(h) => tracing::info!(
@@ -608,11 +648,34 @@ pub async fn start(pool: &PgPool, jobs: Jobs, process: &'static str) {
         .clone()
         .application_name(&format!("judgebot jobs ({process})"));
     let alert = jobs.alert;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // The sender goes back if the thread cannot be spawned, so the caller
+    // still hears about it.
+    let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    let thread_tx = std::sync::Arc::clone(&tx);
     let spawned = std::thread::Builder::new()
         .name(THREAD_NAME.to_owned())
-        .spawn(move || run_thread(options, every, alert, process));
+        .spawn(move || {
+            let ended = run_thread(options, every, alert, process);
+            tell(&thread_tx, ended);
+        });
     if let Err(e) = spawned {
         tracing::error!(error = %e, "could not start the scheduler thread; no scheduled refresh in this process");
+        tell(&tx, Ended::NotStarted);
+    }
+    Some(Scheduler(rx))
+}
+
+/// Report how the thread ended, once. Nobody listening is fine.
+fn tell(tx: &std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Ended>>>, ended: Ended) {
+    let sender = match tx.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
+    if let Some(sender) = sender
+        && sender.send(ended).is_err()
+    {
+        tracing::debug!("nobody waits on the scheduler thread");
     }
 }
 
@@ -623,7 +686,7 @@ fn run_thread(
     every: Hours,
     alert: Option<AlertWebhook>,
     process: &'static str,
-) {
+) -> Ended {
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -638,15 +701,16 @@ fn run_thread(
         let local = tokio::task::LocalSet::new();
         local.block_on(&runtime, schedule_loop(options, every, alert, process));
     }));
-    let how = if outcome.is_err() {
-        "panicked"
+    let ended = if outcome.is_err() {
+        Ended::Panicked
     } else {
-        "stopped"
+        Ended::Stopped
     };
     tracing::error!(
-        "the scheduler thread {how}: no scheduled refresh until this process restarts \
-         (it keeps answering; `judge-ingest refresh` still works)"
+        "the scheduler thread {ended}: no scheduled refresh until this process restarts \
+         (serving roles keep answering; `judgebot ingest refresh` still works)"
     );
+    ended
 }
 
 /// `options` with the server-side bounds every scheduler connection carries
@@ -780,6 +844,21 @@ mod tests {
 
     use super::*;
     use crate::ingest::runs::Step;
+
+    /// The caller hears how the thread ended, once, and a sender that went
+    /// away without a word counts as a panic.
+    #[tokio::test]
+    async fn the_scheduler_handle_completes_when_the_thread_ends() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = std::sync::Mutex::new(Some(tx));
+        tell(&tx, Ended::Stopped);
+        tell(&tx, Ended::Panicked);
+        assert_eq!(Scheduler(rx).ended().await, Ended::Stopped);
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<Ended>();
+        drop(tx);
+        assert_eq!(Scheduler(rx).ended().await, Ended::Panicked);
+    }
 
     const DAY: Hours = Hours::DEFAULT;
     const HOUR: u64 = 3600;
@@ -1047,7 +1126,7 @@ mod tests {
         assert_eq!(told.len(), 1, "{told:?}");
         assert!(
             told.iter()
-                .all(|t| t.contains("1912") && t.contains("judge-ingest embed"))
+                .all(|t| t.contains("1912") && t.contains("judgebot ingest embed"))
         );
         let again = RunHistory {
             last_finished_ceiling: true,

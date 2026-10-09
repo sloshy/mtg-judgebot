@@ -101,7 +101,7 @@ Every model call is metered against a hard cap, `JUDGE_MAX_USD` (default $5):
 checkout instead, skip it: `docker compose up -d --build` compiles the image (minutes,
 about 4 GB of RAM). [CONTRIBUTING.md](CONTRIBUTING.md) covers working from source with
 Rust, where every `docker compose run --rm refresh <command>` is
-`cargo run --release -p judge-ingest -- <command>`.
+`cargo run --release -p judgebot -- ingest <command>`.
 
 ### Your own Discord bot
 
@@ -159,9 +159,9 @@ details.
 
 `docker compose up -d api` serves an anonymous page on <http://localhost:8787> with the
 same pipeline, citations and "did you mean…?" flow, and no rating buttons because nobody
-is logged in. With no flags `judge-api` serves the JSON API alone. The flags `--api`, `--web` and
-`--mcp` choose the set explicitly. `API_INTERFACES` in `.env` sets the flags the container
-passes.
+is logged in. The `api` service runs `judge-api`, and with no flags that serves the JSON
+API alone. The flags `--api`, `--web` and `--mcp` choose the set explicitly.
+`API_INTERFACES` in `.env` sets the flags the container passes.
 [The web page](https://mtg-judgebot.rpeters.dev/using/web/) and
 [The HTTP API](https://mtg-judgebot.rpeters.dev/using/api/) have the details, with a
 `curl` example and every reply shape.
@@ -307,10 +307,11 @@ crates/
   openai     OpenAI-compatible chat completions as a judge-llm backend: strict-schema transform, dialect knobs
   embed      Voyage and OpenAI-compatible embeddings, each tagged with its vector Space
   bot        Postgres adapters (resolver / retriever / call store), the Scryfall + Comprehensive Rules loaders
-             and embedder, judge.toml loader, prompts, Discord (serenity/poise)
-  ingest     the command line over those loaders: init, refresh, cards, rules, embed, … (bin)
+             and embedder, the refresh schedule, judge.toml loader, prompts, Discord (serenity/poise)
+  api        anonymous HTTP adapter (axum): the JSON route, the web page and the /mcp transport
+  judgebot   the one long-running binary: --discord --api --web --mcp --jobs as launch-time roles, and
+             `judgebot ingest` (init, refresh, cards, rules, embed, …) over the loaders (bin)
   eval       gold-set harness: recall / answer / rescore / show (bin)
-  api        anonymous HTTP adapter (axum); the web page and the /mcp transport are opt-in flags (bin)
   agent      the judge for other agents: sessions, lookups and the pipeline as judge-cli and judge-mcp
   configure  judge-config: a localhost page editing judge.toml and .env, checked by the loaders (bin)
 web/         SolidJS + TypeScript single page (Vite)
@@ -345,7 +346,7 @@ holding your changes and every interface points there. That is the whole of your
 obligation under section 13.
 
 The same interfaces name whoever runs the instance. The bot requires
-`JUDGE_OPERATOR_DISCORD` (a Discord username) and `judge-api` requires
+`JUDGE_OPERATOR_DISCORD` (a Discord username) and the HTTP interfaces require
 `JUDGE_OPERATOR_EMAIL` (a support address). Each shows the other contact too when it is
 set. `judge-cli` and `judge-mcp` on stdio need neither.
 
@@ -354,7 +355,7 @@ Policy](https://company.wizards.com/en/legal/fancontentpolicy), not approved or
 endorsed by Wizards. Magic: The Gathering, the Comprehensive Rules, card text and
 rulings are © Wizards of the Coast. Card data and rulings come from
 [Scryfall](https://scryfall.com) under its [data guidelines](https://scryfall.com/docs/api).
-An instance downloads both when it loads its data (`judge-ingest`), and the repository carries only a short CR excerpt as
+An instance downloads both when it loads its data (`judgebot ingest`), and the repository carries only a short CR excerpt as
 a parser test fixture. Rule links go to the independent
 [Yawgatog](https://yawgatog.com/resources/magic-rules/) CR mirror. `NOTICE` has the
 full statement. The web page and every page of the documentation site repeat this

@@ -1876,7 +1876,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "dotenvy",
  "http-body-util",
  "judge-agent",
  "judge-bot",
@@ -1892,7 +1891,6 @@ dependencies = [
  "tower-http 0.7.1",
  "tower-service",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -1903,7 +1901,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.23.1",
- "dotenvy",
  "flate2",
  "judge-anthropic",
  "judge-core",
@@ -1928,7 +1925,6 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
- "tracing-subscriber",
  "url",
  "uuid",
  "wiremock",
@@ -2012,19 +2008,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "judge-ingest"
-version = "1.2.0"
-dependencies = [
- "anyhow",
- "dotenvy",
- "judge-bot",
- "judge-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "judge-llm"
 version = "1.2.0"
 dependencies = [
@@ -2055,6 +2038,22 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "judgebot"
+version = "1.2.0"
+dependencies = [
+ "anyhow",
+ "dotenvy",
+ "judge-api",
+ "judge-bot",
+ "judge-core",
+ "nonempty",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

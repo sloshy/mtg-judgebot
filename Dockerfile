@@ -28,7 +28,8 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Packages, features and profile must be the build's own, or cargo recompiles
 # the dependencies with different flags. The Anthropic cloud endpoints (Claude
 # Platform on AWS, Bedrock, Vertex) are judge-bot's default features; named
-# here so the image keeps them if the default ever changes.
+# here so the image keeps them if the default ever changes (judge-bot is a
+# workspace member, so they can be named without building it on its own).
 #
 # The `touch` gives every cooked artifact one timestamp. Cargo compiles a crate
 # as soon as its dependency's metadata exists, so the dependency's library can
@@ -41,12 +42,13 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json \
-    -p judge-bot -p judge-api -p judge-ingest -p judge-agent -p judge-configure --features judge-bot/aws,judge-bot/gcp \
+    -p judgebot -p judge-agent -p judge-configure --features judge-bot/aws,judge-bot/gcp \
     && find target -exec touch -h -d "@$(date +%s)" {} +
 COPY . .
 # The commit the image is built from, for the source offer every remote
 # interface makes (`GET /api/about`, `/license`, the MCP instructions): the
-# context has no `.git` (.dockerignore), so crates/bot/build.rs cannot ask git
+# context has no `.git` (.dockerignore), so crates/bot/build.rs (judge-bot's,
+# which every binary that makes the offer links) cannot ask git
 # and reads JUDGE_COMMIT instead, with JUDGE_DIRTY=1 when the tree copied in
 # does not match that commit. CI passes github.sha from a clean checkout; a
 # local `docker compose build` passes both from the environment (blank commit
@@ -59,9 +61,9 @@ ENV JUDGE_COMMIT=$JUDGE_COMMIT JUDGE_DIRTY=$JUDGE_DIRTY
 # The binaries are copied out and `target/` removed in the same step, so this
 # layer holds megabytes rather than the ~4 GB target directory, which CI would
 # otherwise export to its build cache on every run and never read back.
-RUN cargo build --release -p judge-bot -p judge-api -p judge-ingest -p judge-agent -p judge-configure --features judge-bot/aws,judge-bot/gcp \
+RUN cargo build --release -p judgebot -p judge-agent -p judge-configure --features judge-bot/aws,judge-bot/gcp \
     && mkdir /out \
-    && cp target/release/bot target/release/api target/release/ingest target/release/judge-cli target/release/judge-mcp target/release/judge-config /out/ \
+    && cp target/release/judgebot target/release/judge-cli target/release/judge-mcp target/release/judge-config /out/ \
     && rm -rf target
 
 FROM debian:bookworm-slim
@@ -69,13 +71,19 @@ FROM debian:bookworm-slim
 # there (compose service `refresh`) inherits writable ownership on first use.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/cache/judgebot && chown nobody /var/cache/judgebot
-COPY --from=builder /out/bot /usr/local/bin/judge-bot
-COPY --from=builder /out/api /usr/local/bin/judge-api
-# Third entrypoint: the scheduled data refresh (`judge-ingest refresh`).
-COPY --from=builder /out/ingest /usr/local/bin/judge-ingest
+# The one long-running binary: its roles (`--discord --api --web --mcp
+# --jobs`) are launch options, and `judgebot ingest` is the data command line.
+# judge-bot, judge-api and judge-ingest are the binaries it replaced, kept as
+# links to it so a compose file or script written for them still runs: it
+# reads the name it was invoked as (crates/judgebot/src/cli.rs) and logs a
+# warning naming the command that replaces it.
+COPY --from=builder /out/judgebot /usr/local/bin/judgebot
+RUN ln -s judgebot /usr/local/bin/judge-bot \
+    && ln -s judgebot /usr/local/bin/judge-api \
+    && ln -s judgebot /usr/local/bin/judge-ingest
 # The agent surface: `judge-cli` (one subcommand per operation, JSON out) and
 # `judge-mcp` (the MCP server over stdio). The same tools are served over HTTP
-# by judge-api at /mcp when MCP_TOKEN is set; these two are for a shell on the
+# by `judgebot --mcp` at /mcp (MCP_TOKEN); these two are for a shell on the
 # host (`docker compose run --rm --entrypoint judge-cli api ...`).
 COPY --from=builder /out/judge-cli /usr/local/bin/judge-cli
 COPY --from=builder /out/judge-mcp /usr/local/bin/judge-mcp
@@ -86,5 +94,7 @@ ENV INGEST_CACHE_DIR=/var/cache/judgebot
 COPY --from=web /web/dist /srv/web
 ENV WEB_DIST=/srv/web
 USER nobody
-# The api service overrides this with judge-api.
+# The compose files written for the two-binary image run `bot` on this default
+# and override it with judge-api for `api`; it stays judge-bot until the
+# compose file runs judgebot itself.
 ENTRYPOINT ["judge-bot"]

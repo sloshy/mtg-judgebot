@@ -225,7 +225,7 @@ fn api(config: Option<&Config>, env: &dyn Fn(&str) -> Option<String>) -> Outcome
     if let Some(others) = NonEmpty::from_vec(others)
         && let Err(e) = api.check(&judge_api::Interfaces::of(&others))
     {
-        return anyhow_error(&e);
+        return anyhow_error(&anyhow::Error::from(e));
     }
     with_models(
         config,

@@ -1,0 +1,35 @@
+[package]
+name = "judgebot"
+version = "1.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The judgebot binary: the Discord bot, the HTTP interfaces and the scheduled jobs as roles of one process chosen at launch, and the ingest command line (bin)."
+
+[[bin]]
+name = "judgebot"
+path = "src/main.rs"
+
+[dependencies]
+# Category count in the ingest start-up line; the operator types.
+judge-core.workspace = true
+# The Discord role, the shared composition, the jobs and the ingest steps.
+judge-bot.workspace = true
+# The network roles.
+judge-api.workspace = true
+anyhow.workspace = true
+nonempty.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dotenvy = "0.15"
+sqlx = { version = "0.9", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls",
+  "postgres",
+] }
+
+[lints]
+workspace = true

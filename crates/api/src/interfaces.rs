@@ -1,12 +1,15 @@
-//! Which interfaces this process serves, and the command line that picks them.
+//! Which interfaces a process serves, and the `judge-api` command line that
+//! picks them.
 //!
-//! Every interface is opt-in. `judge-api` with no flags serves the JSON API
-//! alone — the one mode the binary is named for — and the web page and the MCP
-//! transport each need their own flag, so an operator who never asked to
-//! publish a page never gets one. Naming any flag replaces the default rather
-//! than adding to it: `--web` on its own is a page with no question route,
-//! which is a thing an operator may legitimately want in front of a separate
-//! API process.
+//! `judgebot` names its interfaces as roles (`--api`, `--web`, `--mcp`, each
+//! a [`Interface`]); [`parse`] is the command line of `judge-api`, the
+//! compatibility name for the network roles plus `--jobs`. Every interface is
+//! opt-in. `judge-api` with no flags serves the JSON API alone — the one mode
+//! the name stands for — and the web page and the MCP transport each need
+//! their own flag, so an operator who never asked to publish a page never
+//! gets one. Naming any flag replaces the default rather than adding to it:
+//! `--web` on its own is a page with no question route, which is a thing an
+//! operator may legitimately want in front of a separate API process.
 //!
 //! The set is a [`NonEmpty`], so "a listener bound to no interface at all" is
 //! not a state this program can reach: the no-flag case *is* an interface.
@@ -90,6 +93,11 @@ impl Interfaces {
         // part of it, so a variant that went missing from `ALL` would cost the
         // canonical order and nothing else — never an interface dropped or added.
         Self(NonEmpty::from_vec(canonical).unwrap_or_else(|| interfaces.clone()))
+    }
+
+    /// The interfaces, in [`Interface::ALL`]'s order.
+    pub fn iter(&self) -> impl Iterator<Item = Interface> + '_ {
+        self.0.iter().copied()
     }
 
     /// Is `interface` enabled?

@@ -126,7 +126,7 @@ again at every start.
 ## 5. Start it
 
 ```sh
-docker compose up -d bot           # or: cargo run --release -p judge-bot
+docker compose up -d bot           # or: cargo run --release -p judgebot -- --discord --jobs
 ```
 
 The log line `registered /judge, /card, /rule, /help, /license and /forget in one guild` (or `… globally`)
@@ -140,7 +140,7 @@ shows each bot's icon beside its commands.
 once:
 
 ```sh
-docker compose run --rm refresh emoji      # or: cargo run --release -p judge-ingest -- emoji
+docker compose run --rm refresh emoji      # or: cargo run --release -p judgebot -- ingest emoji
 ```
 
 It uploads Scryfall's mana and card symbols as **application emoji**. These belong to the

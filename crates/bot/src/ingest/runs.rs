@@ -13,7 +13,7 @@
 //!
 //! The record is bookkeeping, never a gate: a failure to write it is logged
 //! and the steps run regardless. That includes a database whose schema
-//! predates the table (the new image's `judge-ingest refresh` run before
+//! predates the table (the new image's `judgebot ingest refresh` run before
 //! anything migrated, or `JUDGE_AUTO_MIGRATE=false`): the run warns once and
 //! goes unrecorded.
 //!
@@ -31,7 +31,7 @@
 //!  {"step": "emoji",  "outcome": "failed", "error": "GET https://api.scryfall.com/symbology: …"}]
 //! ```
 //!
-//! `judge-ingest init` records the refresh steps it ran the same way, and
+//! `judgebot ingest init` records the refresh steps it ran the same way, and
 //! the ones it did not reach after a failure as skipped with
 //! `"reason": "init_stopped"`.
 //!
@@ -63,7 +63,7 @@ use crate::db::RetireSummary;
 pub enum Trigger {
     /// A long-running process's own schedule.
     Schedule,
-    /// A command: `judge-ingest refresh`, by hand or from cron.
+    /// A command: `judgebot ingest refresh`, by hand or from cron.
     Manual,
 }
 
@@ -153,7 +153,7 @@ pub enum Skip {
     NoEmbedder,
     /// A scheduled run found more rows to embed than it may pay for unattended
     /// ([`super::embed::UNATTENDED_CEILING`]): that many empty vectors means
-    /// something other than a new CR emptied them, and `judge-ingest embed`
+    /// something other than a new CR emptied them, and `judgebot ingest embed`
     /// by hand is the operator's call.
     EmbedCeiling {
         /// Rows waiting for a vector.
@@ -165,13 +165,13 @@ pub enum Skip {
     /// binary does not write into a schema it does not know. The run stops
     /// ([`RunOutcome::Stopped`]).
     SchemaAhead,
-    /// Migrations this binary carries are pending (`judge-ingest migrate`).
+    /// Migrations this binary carries are pending (`judgebot ingest migrate`).
     /// The run stops ([`RunOutcome::Stopped`]).
     SchemaBehind,
     /// An earlier step passed the run's time limit ([`super::RUN_TIMEOUT`]),
     /// so this one was not started.
     RunTimedOut,
-    /// `judge-ingest init` stops at its first failure (each step needs the
+    /// `judgebot ingest init` stops at its first failure (each step needs the
     /// one before it), so this one was not started.
     InitStopped,
 }
@@ -194,14 +194,14 @@ impl std::fmt::Display for Skip {
                 "a newer release migrated the database, and this binary does not write into a \
                  schema it does not know: run the newer image"
             }
-            Self::SchemaBehind => "migrations are pending: run `judge-ingest migrate`",
+            Self::SchemaBehind => "migrations are pending: run `judgebot ingest migrate`",
             Self::RunTimedOut => "not run: the refresh timed out at an earlier step",
             Self::InitStopped => "not run: init stops at its first failure",
             Self::EmbedCeiling { rows, ceiling } => {
                 return write!(
                     f,
                     "{rows} rows to embed, over the {ceiling} a scheduled run embeds unattended; \
-                     run `judge-ingest embed` by hand"
+                     run `judgebot ingest embed` by hand"
                 );
             }
         })
@@ -498,7 +498,7 @@ pub(super) async fn begin(
         Ok(id) => Some(RunId(id)),
         Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some(UNDEFINED_TABLE) => {
             tracing::warn!(
-                "refresh_runs does not exist (the schema predates this binary; `judge-ingest migrate` adds it): running unrecorded"
+                "refresh_runs does not exist (the schema predates this binary; `judgebot ingest migrate` adds it): running unrecorded"
             );
             None
         }
@@ -566,7 +566,7 @@ pub struct RunHistory {
     /// Whether the latest run with a verdict succeeded.
     pub last_finished_ok: Option<bool>,
     /// `max(rules.cr_version)` now, whatever loaded it: a manual
-    /// `judge-ingest rules` is not a refresh run, so the record alone would
+    /// `judgebot ingest rules` is not a refresh run, so the record alone would
     /// miss it.
     pub stored_cr_version: Option<String>,
     /// Runs with a failed verdict since the latest that succeeded (all of

@@ -2,10 +2,11 @@
 //! it opens comes from the command line instead ([`crate::interfaces`]);
 //! [`ApiConfig::check`] is where the two have to agree.
 
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{fmt, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::Context as _;
 use judge_llm::ApiKey;
+use nonempty::NonEmpty;
 
 use crate::interfaces::{Interface, Interfaces};
 
@@ -82,14 +83,6 @@ impl ApiConfig {
     /// `MCP_JUDGE_WINDOW_SECS` default.
     pub const DEFAULT_MCP_JUDGE_WINDOW: Duration = Duration::from_hours(1);
 
-    /// Read the process environment. See [`Self::from_vars`].
-    ///
-    /// # Errors
-    /// As [`Self::from_vars`].
-    pub fn from_env() -> anyhow::Result<Self> {
-        Self::from_vars(|k| std::env::var(k).ok())
-    }
-
     /// Build from a variable lookup. Blank values count as unset; every
     /// variable has a default, so an empty environment is valid.
     ///
@@ -164,44 +157,92 @@ impl ApiConfig {
     }
 
     /// Refuse a launch the environment cannot satisfy, before anything binds
-    /// a port.
+    /// a port. Every interface is checked, and every requirement it does not
+    /// meet is returned, not just the first.
     ///
     /// Only the interfaces that *cannot work* are refused — an interface the
     /// operator named that has no credential or nothing to serve. The mirror
-    /// cases (an `MCP_TOKEN` with no `--mcp`) are startup warnings in the
-    /// binary instead: refusing there would take a working web page down over
-    /// a variable that exposes nothing.
+    /// cases (an `MCP_TOKEN` with no `--mcp`) are startup warnings instead
+    /// ([`crate::Network::warnings`]): refusing there would take a working
+    /// web page down over a variable that exposes nothing.
     ///
     /// # Errors
-    /// `--mcp` without `MCP_TOKEN`, or `--web` pointed at a directory holding
-    /// no `index.html`.
-    pub fn check(&self, interfaces: &Interfaces) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            !interfaces.mcp() || self.mcp_token.is_some(),
-            "{} was given but MCP_TOKEN is not set. The MCP tools reach the \
-             judge pipeline and the agent sessions, so there is no anonymous \
-             mode: set MCP_TOKEN (`openssl rand -base64 32`, at least {} \
-             characters) or drop {}.",
-            Interface::Mcp.flag(),
-            Self::MIN_MCP_TOKEN_BYTES,
-            Interface::Mcp.flag()
-        );
-        // ServeDir is lazy, so without this a --web launch that cannot find
-        // the build starts cleanly and 404s every page.
-        if interfaces.web() {
-            let index = self.web_dist.join("index.html");
-            anyhow::ensure!(
-                index.is_file(),
+    /// [`Refused`]: `--mcp` without `MCP_TOKEN`, `--web` pointed at a
+    /// directory holding no `index.html`, or both.
+    pub fn check(&self, interfaces: &Interfaces) -> Result<(), Refused> {
+        let mut unmet = vec![];
+        // One arm per interface, so a new one has to say what it requires.
+        for interface in interfaces.iter() {
+            match interface {
+                Interface::Api => {}
+                Interface::Web => {
+                    // ServeDir is lazy, so without this a --web launch that
+                    // cannot find the build starts cleanly and 404s every page.
+                    let index = self.web_dist.join("index.html");
+                    if !index.is_file() {
+                        unmet.push(Unmet::WebBuild { index });
+                    }
+                }
+                Interface::Mcp => {
+                    if self.mcp_token.is_none() {
+                        unmet.push(Unmet::McpToken);
+                    }
+                }
+            }
+        }
+        NonEmpty::from_vec(unmet).map_or(Ok(()), |u| Err(Refused(u)))
+    }
+}
+
+/// One requirement of a named interface that the environment does not meet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unmet {
+    /// `--web` with no built page where `WEB_DIST` points.
+    WebBuild {
+        /// The `index.html` that is missing.
+        index: PathBuf,
+    },
+    /// `--mcp` with no `MCP_TOKEN`.
+    McpToken,
+}
+
+impl fmt::Display for Unmet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WebBuild { index } => write!(
+                f,
                 "{} was given but {} does not exist. Build the page \
                  (`npm --prefix web run build`) or point WEB_DIST at the \
                  built directory.",
                 Interface::Web.flag(),
                 index.display()
-            );
+            ),
+            Self::McpToken => write!(
+                f,
+                "{} was given but MCP_TOKEN is not set. The MCP tools reach the \
+                 judge pipeline and the agent sessions, so there is no anonymous \
+                 mode: set MCP_TOKEN (`openssl rand -base64 32`, at least {} \
+                 characters) or drop {}.",
+                Interface::Mcp.flag(),
+                ApiConfig::MIN_MCP_TOKEN_BYTES,
+                Interface::Mcp.flag()
+            ),
         }
-        Ok(())
     }
 }
+
+/// Every requirement [`ApiConfig::check`] found unmet: at least one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused(pub NonEmpty<Unmet>);
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let lines: Vec<String> = self.0.iter().map(ToString::to_string).collect();
+        f.write_str(&lines.join("\n"))
+    }
+}
+
+impl std::error::Error for Refused {}
 
 /// Parse an optional integer variable, requiring at least `min`.
 fn parse_min<T>(value: Option<String>, name: &str, min: T) -> anyhow::Result<Option<T>>
@@ -409,6 +450,31 @@ mod tests {
         );
     }
 
+    /// Every unmet requirement comes back, not the first.
+    #[test]
+    fn every_unmet_requirement_is_returned() {
+        let cfg = cfg_with(&[("WEB_DIST", "definitely-not-a-directory")]);
+        let r = cfg.as_ref().map(|c| {
+            c.check(&serving(&nonempty![
+                Interface::Mcp,
+                Interface::Web,
+                Interface::Api
+            ]))
+        });
+        let unmet = r
+            .and_then(Result::err)
+            .map(|Refused(u)| u.into_iter().collect::<Vec<_>>());
+        assert_eq!(
+            unmet,
+            Some(vec![
+                Unmet::WebBuild {
+                    index: PathBuf::from("definitely-not-a-directory/index.html")
+                },
+                Unmet::McpToken,
+            ])
+        );
+    }
+
     /// `ServeDir` is lazy, so without this check a `--web` launch pointed at
     /// nothing starts cleanly and 404s every page.
     #[test]
@@ -426,7 +492,7 @@ mod tests {
         );
         // The same configuration is fine when nobody asked for the page: the
         // image sets WEB_DIST unconditionally, so reading it either way would
-        // make `judge-api` refuse to serve the API alone.
+        // make `--api` alone refuse to start.
         assert!(
             missing
                 .as_ref()

@@ -13,9 +13,9 @@
 //! * such a run finished, or the last listing failed: retried on every check
 //!   until one succeeds, keeping the table in use meanwhile;
 //! * the table is empty: the documented first run starts the bot, then runs
-//!   `judge-ingest emoji` by hand, which the record does not show;
+//!   `judgebot ingest emoji` by hand, which the record does not show;
 //! * it has not listed them for [`RELIST_EVERY`] checks (an hour): an upload
-//!   the record does not show (`judge-ingest emoji` or `init` by hand, a run
+//!   the record does not show (`judgebot ingest emoji` or `init` by hand, a run
 //!   that died mid-upload) or emoji deleted by hand are picked up then.
 //!
 //! That is one cheap query per check, and a Discord call only on the checks
@@ -71,7 +71,7 @@ fn report(table: &SymbolTable, before: Option<usize>) {
     match before {
         None if table.is_empty() => tracing::warn!(
             "no `{}…` application emoji found; card symbols will render as text \
-             (run `judge-ingest emoji` to upload them)",
+             (run `judgebot ingest emoji` to upload them)",
             judge_core::symbol::NAME_PREFIX
         ),
         None => tracing::info!(symbols = table.len(), "loaded card-symbol emoji"),

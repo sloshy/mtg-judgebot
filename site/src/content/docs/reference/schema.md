@@ -6,8 +6,8 @@ sidebar:
 ---
 
 The schema is one Postgres database with the `vector` (pgvector) and `pg_trgm` extensions.
-Migrations live in `crates/bot/migrations/` and are embedded in the binaries. `bot` and
-`api` apply pending ones at startup. `judge-ingest migrate` applies them explicitly. Every
+Migrations live in `crates/bot/migrations/` and are embedded in the binaries. `judgebot`
+applies pending ones at startup. `judgebot ingest migrate` applies them explicitly. Every
 SQL query is checked against this schema at compile time (`sqlx`, with the committed
 offline data in `.sqlx/`).
 
@@ -52,12 +52,12 @@ agent session, and calls scoring below 1.5 with at least five votes.
 | --- | --- |
 | `agent_sessions` | Agent sessions in progress (stage, question, context, rejection). Expired rows are deleted when the next session is created. |
 | `spend_days` | Estimated model spend and model calls of `bot` and `api` per UTC day. Each process adds its own share every ten seconds. `JUDGE_BUDGET_PERIOD=day\|month` sums the current period from it, and `judge-cli stats` reads it. No per-user or per-question data. |
-| `refresh_runs` | One row per `judge-ingest refresh`: when it started and finished, `trigger` (`manual` or `schedule`) and the process that ran it, the stored CR version before and after, each step's outcome (`steps`, JSON) and `ok`. A row with no `finished_at` is a run in progress or one that died. |
+| `refresh_runs` | One row per `judgebot ingest refresh` or scheduled refresh: when it started and finished, `trigger` (`manual` or `schedule`) and the process that ran it, the stored CR version before and after, each step's outcome (`steps`, JSON) and `ok`. A row with no `finished_at` is a run in progress or one that died. |
 | `embedding_space` | One row naming the embedder whose vectors the database holds (provider kind, model, dimensions). `ingest embed` writes it on first use and refuses to mix embedders. Only `ingest reembed --yes` changes it. |
 | `_sqlx_migrations` | The migration ledger. |
 
 Writers that depend on the rules or the embedding space share one Postgres advisory lock:
 the CR loader, the retirement pass, `reembed`, and every `persist` and `embed` batch. The
 first three wait for writes in progress, and a write after them sees the new state.
-A second lock, the refresh lease, is held for a whole data-writing `judge-ingest` command,
+A second lock, the refresh lease, is held for a whole data-writing `judgebot ingest` command,
 so two never overlap. Postgres drops either with the session that held it.

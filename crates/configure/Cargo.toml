@@ -19,7 +19,7 @@ path = "src/main.rs"
 [dependencies]
 judge-core.workspace = true
 judge-bot.workspace = true
-judge-api = { path = "../api" }
+judge-api.workspace = true
 anyhow.workspace = true
 nonempty.workspace = true
 serde.workspace = true

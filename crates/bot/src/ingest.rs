@@ -1,9 +1,10 @@
-//! The data steps behind `judge-ingest`: Scryfall sync ([`scryfall`]), the
+//! The data steps behind `judgebot ingest`: Scryfall sync ([`scryfall`]), the
 //! Comprehensive Rules loader ([`cr`]), the curated lists ([`aliases`],
 //! [`notes`]), embedding ([`embed`], [`reembed`]), the Discord emoji upload
 //! ([`emoji`]) and the explicit migration ([`schema`]), plus the two
 //! sequences built from them: [`init`], the first load, and [`refresh`], the
-//! scheduled job ([`crate::jobs`] runs it on a timer). `judge-ingest` is argument parsing over this module.
+//! scheduled job ([`crate::jobs`] runs it on a timer). `judgebot ingest` is
+//! argument parsing over this module.
 //!
 //! Every step that writes data takes `&mut` [`RefreshLease`] ([`lease`]), so
 //! two runs never overlap, in one process or several, and a step run without
@@ -12,9 +13,9 @@
 //! database (inside [`refresh`] it runs under the lease the run holds).
 //! [`refresh`] also records each run in `refresh_runs` ([`runs`]).
 //!
-//! They live in the library, beside the other Postgres adapters, so that a
-//! long-running binary can run them too: `judge-ingest` depends on this crate,
-//! so this crate's binaries could not depend on `judge-ingest`.
+//! They live in the library, beside the other Postgres adapters, so that the
+//! long-running roles (`judgebot --jobs`) run the same code as the command
+//! line.
 //!
 //! The embedder comes from `judge.toml` / `VOYAGE_API_KEY` through
 //! [`crate::config`], the same loader the bot uses, so `embed` writes the space
@@ -360,7 +361,7 @@ async fn init_data(
         }));
         tracing::warn!(
             step = "emoji",
-            "init step skipped: DISCORD_TOKEN is not set; run `judge-ingest emoji` once the Discord app exists"
+            "init step skipped: DISCORD_TOKEN is not set; run `judgebot ingest emoji` once the Discord app exists"
         );
     }
     Ok(())
@@ -394,7 +395,7 @@ fn has_discord_token() -> bool {
 ///   writing. The steps are failed.
 /// * the schema is not this binary's ([`crate::db::migrate::skew`]): ahead
 ///   (a newer release migrated the database, as between `docker compose pull`
-///   and `up -d`) or behind (migrations pending, `judge-ingest migrate`). The
+///   and `up -d`) or behind (migrations pending, `judgebot ingest migrate`). The
 ///   steps are skipped ([`Skip::SchemaAhead`], [`Skip::SchemaBehind`]) and the
 ///   run is [`runs::RunOutcome::Stopped`]: neither a success nor a failure.
 /// * it has run for [`RUN_TIMEOUT`]: the step in progress is abandoned (its
@@ -533,7 +534,7 @@ async fn may_write(lease: &mut RefreshLease) -> std::result::Result<(), Halt> {
     Ok(())
 }
 
-/// What a single-step command (`judge-ingest cards`, `rules`, `embed`, …)
+/// What a single-step command (`judgebot ingest cards`, `rules`, `embed`, …)
 /// checks once after taking the lease, as [`refresh`] does before each step:
 /// the lease is held and the schema is this binary's.
 ///
@@ -754,7 +755,7 @@ mod tests {
         let err = report.ensure_ok().err().map(|e| e.to_string());
         assert!(
             err.as_deref()
-                .is_some_and(|e| e.contains("judge-ingest migrate")),
+                .is_some_and(|e| e.contains("judgebot ingest migrate")),
             "{err:?}"
         );
         held.release().await;

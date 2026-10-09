@@ -17,8 +17,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **The user is cost-sensitive on API spend.** Every model call goes through the
   spend-capped `judge_llm::Metered` (`JUDGE_MAX_USD`, default $5). `JUDGE_BUDGET_PERIOD`
   (`process` | `day` | `month`) says what the cap covers (D19): `judge_bot::budget` keeps
-  the `spend_days` ledger every 10 s and sets the meter's *adjustment*, so `bot` and `api`
-  share one period total that survives restarts. The meter itself stays storage-free.
+  the `spend_days` ledger every 10 s and sets the meter's *adjustment*, so every process
+  shares one period total that survives restarts. A `judgebot` process has one meter
+  whichever roles it runs. The meter itself stays storage-free.
   `JUDGE_ALERT_WEBHOOK` is told when the cap trips, when the scheduled refresh fails (once
   per streak), recovers or hits its embed ceiling, and when a script fails
   (`scripts/alert.sh`). `judge-cli stats` reads the ledger. The cap *reserves*
@@ -187,8 +188,8 @@ minute, single-flight.
 ignores it.
 
 **The operator contact** (`judge_core::operator`) travels beside the source offer.
-`JUDGE_OPERATOR_DISCORD` (a `DiscordUsername`) is required by the bot, and
-`JUDGE_OPERATOR_EMAIL` (a `SupportEmail`) by `judge-api` whichever interfaces it opens.
+`JUDGE_OPERATOR_DISCORD` (a `DiscordUsername`) is required by `--discord`, and
+`JUDGE_OPERATOR_EMAIL` (a `SupportEmail`) by the network roles (`--api`, `--web`, `--mcp`).
 "Required" is a type: `Data::new` takes a `DiscordOperator` and `App::new` a
 `NetworkOperator`, made only by `Operator::for_discord` / `for_network`
 (`Config::discord_operator` / `network_operator`). `judge-cli` and stdio `judge-mcp` hold
@@ -214,7 +215,7 @@ pipeline*, not about how much to investigate.
    database is down, `docker compose up -d db` is enough. Neither `bot` nor `api` has to
    be running.
 2. **MCP.** Use `judge-mcp` over `.mcp.json` locally when the tools are connected. Use
-   `judge-api`'s `/mcp` (`--mcp` + `MCP_TOKEN`) when the user is away from this machine
+   `judgebot --mcp`'s `/mcp` (`MCP_TOKEN`) when the user is away from this machine
    and the local database is not reachable. The operations are the same as the CLI's, so
    prefer whichever transport is available.
 3. **A live instance** (`docker compose up -d bot api`, `judge-cli judge`, `judge-eval
@@ -233,10 +234,14 @@ to anything provider-shaped: wire format, schema dialect, pricing, auth.
 
 ## Commands
 
-Binary names: `judge-eval`, `judge-cli` and `judge-mcp` are what `target/release/` holds.
-`bot`, `api` and `ingest` build as those bare names and become `judge-bot`, `judge-api` and
-`judge-ingest` only in the image (Dockerfile), so locally run them with `cargo run -p
-judge-<name>` or `target/release/<bare name>`.
+Binary names: `judgebot`, `judge-eval`, `judge-cli`, `judge-mcp` and `judge-config` are
+what `target/release/` holds. `judgebot` is the one long-running binary: its roles
+(`--discord --api --web --mcp --jobs`, else `JUDGE_ROLES`) are launch options, and
+`judgebot ingest <cmd>` is the data command line (`crates/judgebot`). `judge-bot`,
+`judge-api` and `judge-ingest` exist only in the image, as links to `judgebot` that it
+dispatches on by `argv[0]` (`cli.rs`, with a WARN): `judge-bot` is `--discord --jobs`,
+`judge-api [--api] [--web] [--mcp]` keeps its old interface rules plus `--jobs`, and
+`judge-ingest` is `judgebot ingest`. Locally run `cargo run -p judgebot -- <roles>`.
 
 Everything needs env from `.env` (`set -a; source .env; set +a`). Postgres runs in
 Docker on **localhost:5432**. `DB_PORT` in `.env` moves the published port. The
@@ -252,27 +257,27 @@ cargo build --workspace
 cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwrap/expect/indexing/panic,
                                          # and bare #[allow]: suppress with #[expect(lint, reason = "…")]
 cargo test --workspace               # includes #[sqlx::test] suites that spin temp DBs off DATABASE_URL
-cargo test -p judge-bot possessive   # run a single test by substring
+cargo test -p judge-bot possessive   # run a single test by substring (judge-bot is the library)
 scripts/check.sh [--staged | group..]   # the CI gates locally (the git hooks run this)
 SQLX_OFFLINE=true cargo build --workspace   # must pass; regenerate .sqlx after SQL changes:
 cargo sqlx prepare --workspace -- --all-targets
 
-cargo run --release -p judge-ingest -- migrate          # apply pending migrations explicitly (judge_bot::MIGRATOR);
-                                                        # bot/api do this at startup unless JUDGE_AUTO_MIGRATE=false
+cargo run -r -p judgebot -- ingest migrate              # apply pending migrations explicitly (judge_bot::MIGRATOR);
+                                                        # judgebot does this at startup unless JUDGE_AUTO_MIGRATE=false
 ~/.cargo/bin/sqlx migrate run --source crates/bot/migrations   # the same thing with sqlx-cli
-cargo run --release -p judge-ingest -- init             # the whole first load: migrate, cards, rules latest,
+cargo run -r -p judgebot -- ingest init                 # the whole first load: migrate, cards, rules latest,
                                                         # aliases, notes, retire, embed, emoji; fail-fast,
                                                         # idempotent; recorded as a manual refresh run
                                                         # (in the image: docker compose run --rm refresh init)
-cargo run --release -p judge-ingest -- cards            # Scryfall bulk sync (cached in .cache/)
-cargo run --release -p judge-ingest -- rules <url|path> # CR parse from a given file or URL
-cargo run --release -p judge-ingest -- aliases [yaml]   # no file = the data/aliases.yaml built into the binary
-cargo run --release -p judge-ingest -- notes [yaml]     # likewise data/notes.yaml (include_str!, so the image
+cargo run -r -p judgebot -- ingest cards                # Scryfall bulk sync (cached in .cache/)
+cargo run -r -p judgebot -- ingest rules <url|path>     # CR parse from a given file or URL
+cargo run -r -p judgebot -- ingest aliases [yaml]       # no file = the data/aliases.yaml built into the binary
+cargo run -r -p judgebot -- ingest notes [yaml]         # likewise data/notes.yaml (include_str!, so the image
                                                         # needs no data/ directory)
-cargo run --release -p judge-ingest -- embed            # only rows with NULL embedding; the configured
+cargo run -r -p judgebot -- ingest embed                # only rows with NULL embedding; the configured
                                                         # embedder ([models.embed] or VOYAGE_API_KEY); refuses
                                                         # if embedding_space or the columns' width differ
-cargo run --release -p judge-ingest -- reembed [--yes] [--clear]  # make the DB hold the configured embedder's
+cargo run -r -p judgebot -- ingest reembed [--yes] [--clear]  # make the DB hold the configured embedder's
                                                         # space: when it holds another (row or column width),
                                                         # retype vector columns, rebuild HNSW, NULL every
                                                         # vector, rewrite embedding_space, then embed all; when
@@ -282,25 +287,29 @@ cargo run --release -p judge-ingest -- reembed [--yes] [--clear]  # make the DB 
                                                         # prints rows + rough cost, exit≠0, changes nothing.
                                                         # `docker compose restart bot api` after a switch
                                                         # (`up -d` sees no change: the file is a mount).
-cargo run --release -p judge-ingest -- emoji            # Scryfall card symbols -> the bot's Discord
+cargo run -r -p judgebot -- ingest emoji                # Scryfall card symbols -> the bot's Discord
                                                         # application emoji; idempotent, no DB needed
-cargo run --release -p judge-ingest -- rules latest     # the CR linked from Wizards' rules page, only if
+cargo run -r -p judgebot -- ingest rules latest         # the CR linked from Wizards' rules page, only if
                                                         # its version differs from max(rules.cr_version)
-cargo run --release -p judge-ingest -- retire           # retire/restore calls by whether their citations
+cargo run -r -p judgebot -- ingest retire               # retire/restore calls by whether their citations
                                                         # (and their context cards' Oracle text) still hold
-cargo run --release -p judge-ingest -- refresh          # cards + rules latest + retire + embed + emoji; every
+cargo run -r -p judgebot -- ingest refresh              # cards + rules latest + retire + embed + emoji; every
                                                         # step runs even if one fails, exit≠0 if any did;
                                                         # recorded in refresh_runs
 scripts/refresh-data.sh              # a refresh now (or an operator's own cron with JUDGE_REFRESH_HOURS=0):
-                                     # `docker compose run --rm refresh`; bot/api run it on their own schedule
+                                     # `docker compose run --rm refresh`; judgebot --jobs runs it on a schedule
 
-cargo run --release -p judge-api -- [--api] [--web] [--mcp]   # one flag per interface, all opt-in; no
-                                                        # flags = POST /api/judge alone, on API_ADDR (:8787).
-                                                        # --web needs a built web/dist and --mcp an MCP_TOKEN
-                                                        # (both startup errors); a token with no --mcp only
-                                                        # warns; GET /api/health is served whatever is off
-npm --prefix web run build           # build the SolidJS page into web/dist (served by judge-api)
-npm --prefix web run dev             # Vite dev server, proxies /api to a local judge-api
+cargo run -r -p judgebot -- --api --web                 # roles: --discord --api --web --mcp --jobs, at least
+                                                        # one (none: JUDGE_ROLES). Requirements are checked
+                                                        # before anything binds: --discord DISCORD_TOKEN +
+                                                        # JUDGE_OPERATOR_DISCORD, the network roles
+                                                        # JUDGE_OPERATOR_EMAIL, --web a built web/dist, --mcp
+                                                        # MCP_TOKEN; a token with no --mcp only warns. The
+                                                        # network roles share API_ADDR (:8787) and GET
+                                                        # /api/health. --jobs refreshes the database it is
+                                                        # pointed at: JUDGE_REFRESH_HOURS=0 in a dev .env
+npm --prefix web run build           # build the SolidJS page into web/dist (served by judgebot --web)
+npm --prefix web run dev             # Vite dev server, proxies /api to a local judgebot --api
 
 cargo build --release -p judge-agent                    # target/release/judge-cli + judge-mcp (build before
                                                         # .mcp.json can start judge-mcp)
@@ -315,7 +324,7 @@ scripts/config.sh                                       # judge-config from the 
 cargo run --release -p judge-configure                  # judge-config: edit judge.toml + .env on 127.0.0.1:8790
                                                         # (prints a #token= URL; secrets write-only, never shown)
 judge-mcp                                               # the MCP server on stdio (.mcp.json starts it)
-                                                        # remote: judge-api --mcp serves /mcp (needs MCP_TOKEN)
+                                                        # remote: judgebot --mcp serves /mcp (needs MCP_TOKEN)
 
 cargo run -p judge-eval -- recall [--vectors]           # retrieval gate, no API keys (--vectors: the configured
                                                         # embedder, ~$0.001), exit≠0 below 90% retrieved or 75%
@@ -353,7 +362,8 @@ Pipeline (`docs/ARCHITECTURE.md` §3 is kept current):
    `lookup_rules` tool round, enforced by typestate.
 5. **Persist** + Discord rating buttons.
 
-Crate graph (`core` ← `llm` ← `anthropic` and `openai` ← `embed` ← `bot` and the bins):
+Crate graph (`core` ← `llm` ← `anthropic` and `openai` ← `embed` ← `bot` ← `api` ← `judgebot`,
+and `bot` ← the other bins):
 
 - `core`: domain ADTs, ports, `judge()`, citation validation. It is pure.
 - `llm`: the provider seam (`docs/PROVIDERS.md`).
@@ -372,14 +382,18 @@ Crate graph (`core` ← `llm` ← `anthropic` and `openai` ← `embed` ← `bot`
   transform (every property `required`, optionals `anyOf [T, null]`). String tool
   arguments are parsed by serde. `choices[0].message` is replayed verbatim.
 - `embed`: Voyage + OpenAI-compatible `/embeddings`, each a `WithSpace`.
-- `bot`: sqlx adapters, `config.rs` (the `judge.toml` loader), `extract.rs`/`synth.rs`
-  over `judge-llm` only, prompts in `crates/bot/src/prompts/`, the serenity/poise
-  Discord layer with pure `render.rs`, and `ingest.rs`, the data steps (Scryfall, CR,
-  curated lists, embedding, emoji, `init`, `refresh`). They live in the library so a
-  long-running binary can run them: `judge-ingest` depends on `judge-bot`, not the
-  reverse.
-- `ingest` / `eval` / `api`: bins. `ingest` is argument parsing over `judge_bot::ingest`.
-- `agent`: lib + `judge-cli` / `judge-mcp` bins. `api` mounts its MCP handler.
+- `bot` (lib `judge_bot`): sqlx adapters, `config.rs` (the `judge.toml` loader),
+  `extract.rs`/`synth.rs` over `judge-llm` only, prompts in `crates/bot/src/prompts/`,
+  the serenity/poise Discord layer with pure `render.rs` (`discord::serve`, the
+  `--discord` role), `serving.rs` (`Serving`: what the serving roles of one process
+  share), and `ingest.rs`, the data steps (Scryfall, CR, curated lists, embedding, emoji,
+  `init`, `refresh`), which `jobs.rs` schedules.
+- `api` (lib `judge_api`): the network roles. `Network` (made only by passing
+  `ApiConfig::check`) and `run`.
+- `judgebot`: the binary. `roles.rs` (`Role`, `plan`), `cli.rs` (the `argv[0]` dispatch),
+  `ingest.rs` (argument parsing over `judge_bot::ingest`).
+- `eval`: a bin.
+- `agent`: lib + `judge-cli` / `judge-mcp` bins. `judgebot --mcp` mounts its MCP handler.
 - `configure`: `judge-config`, the localhost editor for `judge.toml` and `.env` (D23).
   - Its form is `config::file_schema()` (schemars over the loader's serde types), so the
     doc comments on the `File`-shape types in `config.rs` are operator-facing help text.
@@ -404,16 +418,32 @@ Anthropic direct, one model for both stages, one `SpendMeter`.
 byte-for-byte against captured fixtures. `UPDATE_GOLDEN=1` re-captures them after an
 intended prompt/schema change. Review the diff.
 
-`api` (+ the SolidJS page in `web/`) is the anonymous interface. Which of its interfaces a
-process opens is a launch option, not a consequence of starting it
-(`crates/api/src/interfaces.rs`):
+What a `judgebot` process does is a launch option, not a consequence of starting it
+(`crates/judgebot/src/roles.rs`):
 
-- `Interface` is exhaustive, held in a `NonEmpty` set so "serving nothing" is
-  unrepresentable.
-- `ApiConfig::check` refuses `--mcp` with no `MCP_TOKEN` and `--web` with no `index.html`
-  before anything binds.
-- The mirror case, a token with no `--mcp`, is a warning. Refusing there would take a
-  working page down over a variable that exposes nothing.
+- `Role::{Discord, Api, Web, Mcp, Jobs}` is exhaustive, held in a `NonEmpty` set so
+  "doing nothing" is unrepresentable. Flags on the command line win; with none,
+  `JUDGE_ROLES` (the same flags). A compatibility name ignores `JUDGE_ROLES`.
+- `roles::plan` matches every role and checks its requirements, all reported at once
+  (`Unstartable`, a `NonEmpty<Problem>`), before the pool connects or anything binds.
+  Its output is the types the roles run on (`discord::Config` holds the token,
+  `DiscordOperator`, `judge_api::Network`, and for any serving role the `Models`, built
+  there), so a role cannot start unchecked. `--jobs` alone with `JUDGE_REFRESH_HOURS=0`
+  is refused: it would have nothing to do.
+- `ApiConfig::check` matches every `Interface` and returns every `Unmet` (`Refused`):
+  `--mcp` needs `MCP_TOKEN` and `--web` an `index.html`. The mirror case, a token with no `--mcp`, is a warning
+  (`Network::warnings`). Refusing there would take a working page down over a variable
+  that exposes nothing.
+- One process, one composition: one pool, one `Config`, one `Models` (one `SpendMeter`,
+  one `budget::start`), one `Vectors`, one migration. `jobs::start` runs only under
+  `--jobs`. The HTTP listener binds (`Network::bind`) before Discord starts, then both
+  run under `tokio::select!`: the first to stop ends the process non-zero. Each keeps its
+  own `JUDGE_CONCURRENCY` slots.
+- `jobs::start` returns a `Scheduler`, whose `ended()` completes when the thread ends.
+  A jobs-only process awaits it and exits non-zero. Beside serving roles it is dropped:
+  the thread logs ERROR and the process keeps answering.
+
+`api` (+ the SolidJS page in `web/`) is the anonymous interface.
 
 Also true of `api`:
 
@@ -651,11 +681,13 @@ Key cross-file facts that aren't obvious from any one file:
 - `GUILD_ID` (instant command registration).
 - `JUDGE_ROLE` (default "Judge").
 - `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`.
-- `JUDGE_AUTO_MIGRATE` (default true). When true, bot and api apply pending migrations
-  at startup. `judge-ingest migrate` is the explicit form.
-- `JUDGE_REFRESH_HOURS` (default 24, `1..=720`, `0` = off): how often bot and api run
+- `JUDGE_ROLES`: `judgebot`'s roles when its command line names none. The compatibility
+  names (`judge-bot`, `judge-api`) ignore it.
+- `JUDGE_AUTO_MIGRATE` (default true). When true, `judgebot` applies pending migrations
+  at startup. `judgebot ingest migrate` is the explicit form.
+- `JUDGE_REFRESH_HOURS` (default 24, `1..=720`, `0` = off): how often `--jobs` runs
   the data refresh (`jobs::Schedule`, validated at `Config` load). Set it to `0` in a
-  development `.env`: otherwise `cargo run` of bot or api refreshes the dev database
+  development `.env`: otherwise `cargo run` with `--jobs` refreshes the dev database
   for real.
 - `JUDGE_BUDGET_PERIOD`, `JUDGE_ALERT_WEBHOOK` (D19; the webhook also hears the
   scheduled refresh).
@@ -678,7 +710,7 @@ For the HTTP API it also holds:
 The bot/api containers override `DATABASE_URL` to `db:5432` inside the compose network.
 The image builds the web page and sets `WEB_DIST=/srv/web`. The `api` service's `command`
 is `${API_INTERFACES:---api --web}`, so the page stays on for a compose deployment while
-`judge-api` on its own serves no page.
+`judge-api` with no flags serves no page.
 
 Deployment is self-hosted behind a Cloudflare Tunnel. `docs/DEPLOYMENT.md` is the
 runbook. `db` and `api` publish on `127.0.0.1` only. Public traffic reaches `api:8787`
@@ -697,8 +729,9 @@ replacing it. Its first hop is attacker-chosen, which would hand every request a
 allowance against a paid endpoint. `cloudflare` is only sound when nothing can reach the
 origin except Cloudflare.
 
-**Data refresh runs inside `bot` and `api`** (`judge_bot::jobs`, D24), every
-`JUDGE_REFRESH_HOURS`.
+**Data refresh runs inside `judgebot --jobs`** (`judge_bot::jobs`, D24), every
+`JUDGE_REFRESH_HOURS`. The compose `bot` and `api` services run it through their
+compatibility names.
 
 - `jobs::start` (after migrations and config load) spawns an OS thread with a
   current-thread runtime and its own `POOL_SIZE` pool, so steps never take a request's
@@ -716,7 +749,7 @@ origin except Cloudflare.
 - `ingest::refresh` (every trigger) checks the lease and `migrate::skew` before each
   step, and abandons the run at `ingest::RUN_TIMEOUT` (3 h). A skew skips the remaining
   steps (`Skip::SchemaAhead|SchemaBehind`), and the run is `RunOutcome::Stopped`
-  (stored `ok` null): no alert, no backoff. Single-step `judge-ingest` commands call
+  (stored `ok` null): no alert, no backoff. Single-step `judgebot ingest` commands call
   `ingest::ensure_writable` once.
 - `runs::history` counts an unfinished row older than `runs::ABANDONED_AFTER`
   (3 h 10 min) as a failed run (`abandoned_started_at`, alerted once per streak). The
@@ -729,19 +762,19 @@ origin except Cloudflare.
 - `jobs::alerts` posts the first failure of a streak (saying when it timed out), the
   recovery and a ceiling skip the previous run did not also hit, through
   `judge_bot::alert` (shared with `budget`).
-- Development: the schedule is on by default, so `cargo run -p judge-bot`/`judge-api`
+- Development: the schedule is on by default, so `cargo run -p judgebot -- … --jobs`
   against a dev database refreshes it for real (downloads, a new CR, embeddings, emoji
   uploads). Set `JUDGE_REFRESH_HOURS=0` in a development `.env`.
 - compose mounts `judgebot-ingest-cache` into `bot` and `api` too.
 
 `scripts/refresh-data.sh` still runs the `refresh` compose service (profile `refresh`,
-third entrypoint `judge-ingest` in the same image) for a manual run or an operator's own
+entrypoint `judge-ingest`, the link that runs `judgebot ingest`) for a manual run or an operator's own
 cron (`JUDGE_REFRESH_HOURS=0`). It shares the lease and the record with the schedule.
 `docker compose run` enables the profile itself, so `up -d` never starts it. CR release detection scrapes Wizards' rules page for
 the `MagicCompRules <date>.txt` link and compares the date to the stored `cr_version`.
 The CR loader nulls embeddings only for rules whose text changed, so a new CR costs the
 embedder a few hundred rules. `aliases` and `notes` are not part of refresh. They are repo
-data, compiled into `judge-ingest` (`include_str!`) and loaded by `init`, or by `aliases` /
+data, compiled into `judgebot` (`include_str!`) and loaded by `init`, or by `aliases` /
 `notes` with no argument after an upgrade that changed them.
 
 **Ingest runs take the refresh lease** (`judge_bot::ingest::lease`).

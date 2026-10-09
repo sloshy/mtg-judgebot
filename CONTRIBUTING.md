@@ -26,9 +26,15 @@ Nothing in the test suite calls a paid API. HTTP backends are tested against `wi
 Develop against it too, and keep `ANTHROPIC_API_KEY` blank unless you mean to spend.
 
 Card and rules data is needed to run the pipeline, not to build or test.
-`cargo run --release -p judge-ingest -- init` loads all of it from source. The README's
+`cargo run --release -p judgebot -- ingest init` loads all of it from source. The README's
 "Running it" does the same in a container. Every `docker compose run --rm refresh
-<command>` in the docs is `cargo run --release -p judge-ingest -- <command>` here.
+<command>` in the docs is `cargo run --release -p judgebot -- ingest <command>` here.
+
+`judgebot` is the one long-running binary, and what it runs is chosen by its flags:
+`cargo run -p judgebot -- --api --web` serves the page on localhost:8787, `--discord` adds
+the bot, and `--jobs` the scheduled data refresh. Leave `--jobs` off, or set
+`JUDGE_REFRESH_HOURS=0`, against a development database you do not want refreshed.
+`cargo run -p judgebot -- --help` lists the roles and what each requires.
 
 ## The gates
 
@@ -120,7 +126,7 @@ schema, both fail on purpose:
 **Taxonomy changes.** `data/categories.yaml` generates the `Category` enum at build
 time (`crates/core/build.rs`), so editing it is a recompile, and every `match` over the
 enum has to be updated. `data/aliases.yaml` and `data/notes.yaml` are loaded into the
-database by `judge-ingest`, not compiled in.
+database by `judgebot ingest`, not compiled in.
 
 **Gold set changes.** `eval/gold.yaml` quotes every rule id (unquoted `702.10` is a
 float and is rejected). `cargo run -p judge-eval -- recall` is the free retrieval gate.

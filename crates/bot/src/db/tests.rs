@@ -1466,7 +1466,7 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
     assert!(
         u.refresh_runs_note
             .as_deref()
-            .is_some_and(|n| n.contains("judge-ingest migrate")),
+            .is_some_and(|n| n.contains("judgebot ingest migrate")),
         "{:?}",
         u.refresh_runs_note
     );

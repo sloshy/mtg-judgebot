@@ -60,7 +60,7 @@ use serenity::{
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 
-use crate::db::PgLibrary;
+use crate::{db::PgLibrary, serving::Serving};
 use capture::CapturingRetriever;
 use cooldown::{Cooldowns, UserLimit};
 use ids::ButtonAction;
@@ -141,14 +141,6 @@ impl Config {
     pub const DEFAULT_USER_LIMIT: u32 = 6;
     /// `JUDGE_USER_WINDOW_SECS` default.
     pub const DEFAULT_USER_WINDOW: Duration = Duration::from_mins(10);
-
-    /// Read the process environment. See [`Self::from_vars`].
-    ///
-    /// # Errors
-    /// As [`Self::from_vars`].
-    pub fn from_env() -> anyhow::Result<Self> {
-        Self::from_vars(|k| std::env::var(k).ok())
-    }
 
     /// Build from a variable lookup: `DISCORD_TOKEN` (required, non-blank),
     /// `GUILD_ID` (optional, non-zero integer), `JUDGE_ROLE` (default
@@ -924,6 +916,40 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
             }
         }
     }
+}
+
+/// The `--discord` role: build the adapter's [`Data`] over the process's
+/// shared composition and [`run`] it. `cfg` holds the token and `operator`
+/// is the contact the bot must name, so a process that reaches this has
+/// passed both requirements.
+///
+/// # Errors
+/// As [`run`].
+pub async fn serve(
+    serving: &Serving,
+    cfg: Config,
+    operator: DiscordOperator,
+) -> anyhow::Result<()> {
+    let judge = serving.judge();
+    // `/card` reads rulings by card id only, so its library needs no vectors.
+    let library = PgLibrary::new(serving.pool().clone());
+    let data = Data::new(
+        serving.deps(),
+        serving.store(),
+        serving.models().meter().clone(),
+        &cfg,
+        judge.source_offer().clone(),
+        operator,
+        library,
+    );
+    tracing::info!(
+        guild = ?cfg.guild_id,
+        judge_role = %cfg.judge_role,
+        concurrency = cfg.max_concurrent,
+        user_limit = ?cfg.user_limit,
+        "starting Discord adapter"
+    );
+    run(cfg, data).await
 }
 
 /// Connect to the gateway and serve until the connection ends.
