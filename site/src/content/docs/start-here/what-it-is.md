@@ -48,7 +48,10 @@ call (any question) is kept with what the model sent, until a later failure find
 diagnose it, and it is marked private when the asker chose that. When someone presses a rating
 button, the instance stores their Discord user id and the score. It stores nothing else.
 The bot receives only its own slash commands and button presses, never channel messages.
-Ratings are the only data tied to a user id, and `/forget` deletes them. A failed call stores no user id, but its question text is kept as asked.
+Ratings and failed Discord calls are the data tied to a user id. `/forget` deletes the
+ratings and anonymizes the failed calls: the id, question, error and the model's text are
+removed, and only the time, thread and private flag stay. A failed call from the web page
+or an agent has no user id.
 
 [Sample answers](../../start-here/sample-answers/) shows what comes back, and
 [Evaluation](../../how-it-works/evaluation/#results) how it scored on a hard question set.

@@ -1565,10 +1565,22 @@ pub struct FailedCall {
     pub question: String,
     /// Whether the asker chose a private audience (`/judge private:True`).
     pub private: bool,
+    /// The asker's Discord user id, so `/forget` can anonymize the row. `None`
+    /// where the interface does not know a user (HTTP, agent).
+    pub user_id: Option<String>,
     /// The error, in full.
     pub error: String,
     /// Why the first synthesis attempt was rejected, if it was.
     pub first_rejection: Option<String>,
     /// The answer text of each synthesis attempt that returned one, in order.
     pub attempts: Vec<String>,
+}
+
+/// What `/forget` removed ([`crate::CallStore::forget_user`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Forgotten {
+    /// Ratings deleted.
+    pub ratings: u64,
+    /// Failed calls anonymized: user id, question, error and attempt text removed.
+    pub failures: u64,
 }

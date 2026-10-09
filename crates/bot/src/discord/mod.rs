@@ -347,7 +347,7 @@ impl Data {
         let captured = self.capture.take(q);
         // Kept for a private question too, flagged: this is the one place
         // such a question is stored, and only because the call failed.
-        if let Some(failed) = traced.failure(q, audience.is_private())
+        if let Some(failed) = traced.failure(q, audience.is_private(), Some(asker.to_string()))
             && let Err(e) = self.store.record_failure(&failed).await
         {
             tracing::warn!(
@@ -1026,16 +1026,16 @@ async fn license_command(ctx: Ctx<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Delete every rating you have recorded; nothing else is stored about you.
+/// Delete your ratings and anonymize your failed calls; nothing else is stored about you.
 #[poise::command(slash_command, rename = "forget", ephemeral)]
 async fn forget_command(ctx: Ctx<'_>) -> Result<(), Error> {
     let user_id = ctx.author().id.to_string();
     // The id stays out of the log: the point of the command is to stop
     // keeping it.
     let text = match ctx.data().store.forget_user(&user_id).await {
-        Ok(n) => {
-            tracing::info!(ratings = n, "forgot a user's ratings");
-            render::forgotten(n)
+        Ok(f) => {
+            tracing::info!(ratings = f.ratings, failures = f.failures, "forgot a user");
+            render::forgotten(f)
         }
         Err(e) => {
             tracing::error!(error = format_args!("{e:#}"), "forget failed");
@@ -1367,7 +1367,7 @@ mod tests {
         async fn history(&self, _: &str, _: usize) -> Result<Vec<judge_core::Qa>, JudgeError> {
             Err(JudgeError::Upstream(anyhow::anyhow!("history reached")))
         }
-        async fn forget_user(&self, _: &str) -> Result<u64, JudgeError> {
+        async fn forget_user(&self, _: &str) -> Result<judge_core::Forgotten, JudgeError> {
             Err(JudgeError::Upstream(anyhow::anyhow!("forget reached")))
         }
         async fn record_failure(&self, _: &judge_core::FailedCall) -> Result<(), JudgeError> {

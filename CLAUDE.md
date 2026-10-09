@@ -150,12 +150,12 @@ The hooks run on Claude's commits too. Don't bypass them with `--no-verify`. Fix
 failure instead.
 
 Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`,
-`/license` and `/forget`, which deletes the caller's ratings through
-`CallStore::forget_user`.
+`/license` and `/forget`, which deletes the caller's ratings and anonymizes their
+`failed_calls` rows through `CallStore::forget_user` (`Forgotten`).
 
 - `/judge private:True` is `discord::Audience::Private`: ephemeral, no thread history
   read, never persisted, so no rating buttons and no prior call. A *failed* call is the exception (D27): `CallStore::record_failure` stores
-  its question and the model's answer text in `failed_calls` (flagged `private`, capped,
+  its question and the model's answer text in `failed_calls` (flagged `private`, with the Discord asker's id until `/forget`, capped,
   30 days / 500 rows; `judge-cli failures`), reached directly, not through `Audience::record`. `Data::answer` reaches the
   store only through `Audience::record`, which is `None` for it. The audience is carried
   in the "did you mean?" button's custom-id through a pick.

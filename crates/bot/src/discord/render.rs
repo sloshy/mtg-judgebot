@@ -94,7 +94,7 @@ number. Both are free and instant.\n\n\
 which past answers are shown as examples later — the rules themselves always outrank them. Members with the \
 server's judge role rate with an override.\n\n\
 **What is stored.** The question and answer text, the channel it was asked in, and your user id when you \
-rate. Nothing else is read: the bot sees only its slash commands. `/forget` deletes your ratings.\n\n\
+rate. Nothing else is read: the bot sees only its slash commands. `/forget` deletes your ratings and anonymizes any failed call of yours (a call that errored is kept for debugging, with its question).\n\n\
 Answers are AI-generated; verify anything important with a human judge. Unofficial Fan Content under the \
 Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.\n\n";
 
@@ -173,16 +173,30 @@ the same licence. The source code of this instance is at <{}> ({revision}).\n\n{
 
 /// `/forget`'s confirmation, naming how much there was to forget.
 #[must_use]
-pub fn forgotten(ratings: u64) -> String {
-    match ratings {
-        0 => "You had no ratings on record; there is nothing else stored about you.".to_owned(),
-        1 => "Deleted your 1 rating. Nothing else is stored about you.".to_owned(),
-        n => format!("Deleted your {n} ratings. Nothing else is stored about you."),
+pub fn forgotten(f: judge_core::Forgotten) -> String {
+    let rated = match f.ratings {
+        1 => "1 rating".to_owned(),
+        n => format!("{n} ratings"),
+    };
+    let failed = match f.failures {
+        1 => "1 failed call of yours".to_owned(),
+        n => format!("{n} failed calls of yours"),
+    };
+    match (f.ratings, f.failures) {
+        (0, 0) => {
+            "You had no ratings or failed calls on record; there is nothing else stored about you."
+                .to_owned()
+        }
+        (_, 0) => format!("Deleted your {rated}. Nothing else is stored about you."),
+        (0, _) => format!("Anonymized {failed}. Nothing else is stored about you."),
+        _ => format!(
+            "Deleted your {rated} and anonymized {failed}. Nothing else is stored about you."
+        ),
     }
 }
 
 /// `/forget` when the deletion failed.
-pub const FORGET_FAILED: &str = "Sorry, I couldn't delete your ratings just now. Please try again.";
+pub const FORGET_FAILED: &str = "Sorry, I couldn't forget you just now. Please try again.";
 /// A card pick was processed but the message could not be updated with the result.
 pub const EDIT_FAILED: &str =
     "I worked out an answer but couldn't update the message. Please ask the question again.";
@@ -1874,9 +1888,14 @@ mod info_tests {
 
     #[test]
     fn forgotten_counts_in_plain_english() {
-        assert!(forgotten(0).starts_with("You had no ratings"));
-        assert!(forgotten(1).starts_with("Deleted your 1 rating."));
-        assert!(forgotten(7).starts_with("Deleted your 7 ratings."));
+        let f = |ratings, failures| forgotten(judge_core::Forgotten { ratings, failures });
+        assert!(f(0, 0).starts_with("You had no ratings"));
+        assert!(f(1, 0).starts_with("Deleted your 1 rating."));
+        assert!(f(7, 0).starts_with("Deleted your 7 ratings."));
+        assert!(f(0, 2).starts_with("Anonymized 2 failed calls of yours."));
+        assert!(
+            f(1, 1).starts_with("Deleted your 1 rating and anonymized 1 failed call of yours.")
+        );
     }
 }
 

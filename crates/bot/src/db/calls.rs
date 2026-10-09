@@ -4,8 +4,8 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    CallId, CallStore, Context, FailedCall, InputKind, JudgeError, Qa, Question, Score, Validated,
-    Verdict, oracle_fingerprint,
+    CallId, CallStore, Context, FailedCall, Forgotten, InputKind, JudgeError, Qa, Question, Score,
+    Validated, Verdict, oracle_fingerprint,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
@@ -225,11 +225,12 @@ impl CallStore for PgCallStore {
             .map_err(upstream("begin failure record"))?;
         sqlx::query!(
             r#"
-            INSERT INTO failed_calls (thread_id, private, question, error, first_rejection, attempts)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO failed_calls (thread_id, private, user_id, question, error, first_rejection, attempts)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
             failed.thread_id,
             failed.private,
+            failed.user_id,
             cut(&failed.question, FAILED_QUESTION_CHARS),
             cut(&failed.error, FAILED_ERROR_CHARS),
             failed.first_rejection.as_deref().map(|r| cut(r, FAILED_ERROR_CHARS)),
@@ -253,12 +254,28 @@ impl CallStore for PgCallStore {
         tx.commit().await.map_err(upstream("commit failure record"))
     }
 
-    async fn forget_user(&self, user_id: &str) -> Result<u64, JudgeError> {
-        let done = sqlx::query!("DELETE FROM ratings WHERE user_id = $1", user_id)
-            .execute(&self.pool)
+    async fn forget_user(&self, user_id: &str) -> Result<Forgotten, JudgeError> {
+        let mut tx = self.pool.begin().await.map_err(upstream("begin forget"))?;
+        let ratings = sqlx::query!("DELETE FROM ratings WHERE user_id = $1", user_id)
+            .execute(&mut *tx)
             .await
-            .map_err(upstream("delete ratings"))?;
-        Ok(done.rows_affected())
+            .map_err(upstream("delete ratings"))?
+            .rows_affected();
+        let failures = sqlx::query!(
+            r#"
+            UPDATE failed_calls
+            SET user_id = NULL, question = '[removed]', error = '[removed]',
+                first_rejection = NULL, attempts = '{}'
+            WHERE user_id = $1
+            "#,
+            user_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(upstream("anonymize failed calls"))?
+        .rows_affected();
+        tx.commit().await.map_err(upstream("commit forget"))?;
+        Ok(Forgotten { ratings, failures })
     }
 
     async fn history(&self, thread_id: &str, n: usize) -> Result<Vec<Qa>, JudgeError> {

@@ -423,7 +423,7 @@ impl Toolbox {
         let (t0, usd0, calls0) = (Instant::now(), p.meter.spent_usd(), p.meter.calls());
         let traced = judge_traced(&p.deps, &q, &history).await;
         let captured = p.capture.take(&q);
-        if let Some(failed) = traced.failure(&q, false)
+        if let Some(failed) = traced.failure(&q, false, None)
             && let Err(e) = self.calls.record_failure(&failed).await
         {
             tracing::warn!(

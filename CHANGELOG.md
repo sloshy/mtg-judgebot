@@ -23,7 +23,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   operator has to diagnose is stored in `failed_calls` with the question, the error and
   the answer text of each synthesis attempt (each cut to a fixed length; the newest 500
   rows, 30 days). A question asked with `private: True` is stored too, flagged, but only
-  when the call failed. `judge-cli failures` reads it.
+  when the call failed. `judge-cli failures` reads it. A Discord failure stores the asker's user id, and
+  `/forget` anonymizes those rows (id, question, error and text removed) as well as
+  deleting ratings.
 
 - **The long-running process refreshes the data itself** (the `--jobs` role, which the
   compose `judgebot` service runs). Every `JUDGE_REFRESH_HOURS` (default

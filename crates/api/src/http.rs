@@ -193,7 +193,7 @@ impl App {
         let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
         let traced = judge_traced(&self.deps, q, &history).await;
         let captured = self.capture.take(q);
-        if let Some(failed) = traced.failure(q, false)
+        if let Some(failed) = traced.failure(q, false, None)
             && let Err(e) = self.store.record_failure(&failed).await
         {
             tracing::warn!(
@@ -589,8 +589,8 @@ mod tests {
         async fn history(&self, _thread: &str, _n: usize) -> Result<Vec<Qa>, JudgeError> {
             Ok(vec![])
         }
-        async fn forget_user(&self, _user: &str) -> Result<u64, JudgeError> {
-            Ok(0)
+        async fn forget_user(&self, _user: &str) -> Result<judge_core::Forgotten, JudgeError> {
+            Ok(judge_core::Forgotten::default())
         }
         async fn record_failure(&self, _failed: &judge_core::FailedCall) -> Result<(), JudgeError> {
             Ok(())

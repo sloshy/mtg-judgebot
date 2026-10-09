@@ -56,7 +56,12 @@ impl Traced {
     /// operator needs the cause of ([`JudgeError::is_operator_failure`]).
     /// `private` is the asker's audience, kept as a flag on the row.
     #[must_use]
-    pub fn failure(&self, q: &Question, private: bool) -> Option<FailedCall> {
+    pub fn failure(
+        &self,
+        q: &Question,
+        private: bool,
+        user_id: Option<String>,
+    ) -> Option<FailedCall> {
         let e = self
             .result
             .as_ref()
@@ -66,6 +71,7 @@ impl Traced {
             thread_id: q.thread_id.clone(),
             question: q.text.clone(),
             private,
+            user_id,
             error: format!("{e:#}"),
             first_rejection: self.first_rejection.as_ref().map(ToString::to_string),
             attempts: self.attempts.clone(),
@@ -730,9 +736,10 @@ mod tests {
         let (d, _) = deps(vec!["", ""]);
         let traced = futures::executor::block_on(judge_traced(&d, &q(), &[]));
         assert_eq!(traced.attempts.len(), 2);
-        let failed = traced.failure(&q(), true);
+        let failed = traced.failure(&q(), true, Some("u1".to_owned()));
         assert!(
             failed.as_ref().is_some_and(|f| f.private
+                && f.user_id.as_deref() == Some("u1")
                 && f.attempts.len() == 2
                 && f.first_rejection.is_some()
                 && f.question == q().text),
@@ -741,7 +748,7 @@ mod tests {
         // An answered call is not a failure.
         let (d, _) = deps(vec!["gain that much life"]);
         let ok = futures::executor::block_on(judge_traced(&d, &q(), &[]));
-        assert!(ok.failure(&q(), false).is_none());
+        assert!(ok.failure(&q(), false, None).is_none());
     }
 
     /// The regression: an unreadable citation must behave like a bad one — one

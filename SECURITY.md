@@ -43,6 +43,10 @@ Operators should know these properties. The reasoning behind each is in
   - the question and answer text of every call
   - the Discord thread or web session id it was asked in
   - the Discord user id of anyone who presses a rating button (`/forget` deletes those)
+  - for a call that failed (`failed_calls`): the question, the error, the model's answer
+    text and, for a Discord question, the asker's user id and whether it was private.
+    Pruned to 30 days / 500 rows when a later failure is recorded; `/forget` anonymizes the
+    asker's rows.
   - for each "did you mean?" prompt a card is picked from (`pick_claims`): the Discord
     message id, when the prompt was shown and a short digest of its content. No text and
     no user id; rows are deleted after a day.

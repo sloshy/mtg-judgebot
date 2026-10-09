@@ -255,8 +255,8 @@ question.
 Prior calls are always rendered *after* the CR material and labelled as precedent, never
 authority. The CR outranks anything the community has said. The anonymous web page never
 rates, because a rating with no identity behind it is noise. `/forget` deletes a user's
-ratings because they are the only per-user data kept. Questions are stored against the
-channel, not the asker.
+ratings and anonymizes their failed calls (D27), the only per-user data kept. Questions
+are stored against the channel, not the asker.
 
 ## D11. Call retirement
 
@@ -474,6 +474,13 @@ a typed rejection (`UncitedRules`) with one retry, like the others. On the 17 pu
 of the 2026-09-20 gold run the prose named 57 rule numbers and 55 were covered. The two
 misses were in two different answers (`605.3b`, and `903.9a` beside a cited `903.9b`), so
 about one answer in eight would have been retried, at about ten cents a retry.
+
+The retry is given what it needs to comply. A number often comes from a pointer in the
+material ("see rule 111.10" in a glossary entry) to a rule retrieval did not return, and
+the retry cannot call `lookup_rules`. Before it, `LlmSynthesizer::fetch_uncited` looks up
+each uncited rule the model was not shown, or pins one retrieval held but the budget cut,
+so the notice's "add that citation" has something to quote. On 2026-10-09 a retry with no
+way to cite 111.10 came back with an empty answer.
 
 It covers rule numbers only, and only rule citations cover them. A ruling or a card's
 Oracle text has no identifier in prose, so "a ruling says…" with no ruling cited still
@@ -790,6 +797,12 @@ and the answer text of each attempt. It is written for the operator failures of
   from the channel, not from them. An answered private question is still never stored, and
   `Audience::record` still hides the store from the answering path. The Discord adapter
   reaches `record_failure` directly, which is the one exception.
-- **No user id.** The row has no asker, so `/forget` has nothing to delete here; rows age
-  out. Rejected: storing the asker to make `/forget` cover it.
+- **`/forget` anonymizes.** A Discord failure stores the asker's user id, so `/forget` can
+  find the rows. It sets the id to NULL and replaces the question, error, first rejection
+  and attempts, keeping the time, thread and `private` flag (`Forgotten` counts ratings
+  deleted and failed calls anonymized). The HTTP API and agents have no user and store
+  none. A call still running when its asker runs `/forget` can record its failure afterwards,
+  with the id; `/forget` again clears it (a late rating behaves the same). Rejected:
+  deleting the rows, which would also drop the failure counts; and
+  storing no id, which would leave a question the asker cannot take back.
 - **Read on the CLI only** (`judge-cli failures`), like `stats`, and not an MCP tool.

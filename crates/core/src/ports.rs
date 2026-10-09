@@ -3,8 +3,9 @@
 use async_trait::async_trait;
 
 use crate::{
-    CallId, Card, Context, Extraction, FailedCall, JudgeError, Qa, Question, RejectedAttempt,
-    Resolution, RuleChunk, RuleId, Score, Validated, Verdict, verdict::Unvalidated,
+    CallId, Card, Context, Extraction, FailedCall, Forgotten, JudgeError, Qa, Question,
+    RejectedAttempt, Resolution, RuleChunk, RuleId, Score, Validated, Verdict,
+    verdict::Unvalidated,
 };
 
 /// Pipeline steps 1 + 3: entity extraction and classification (one LLM call).
@@ -93,11 +94,11 @@ pub trait CallStore: Send + Sync {
     /// first: the shape [`crate::judge`] takes as thread history. `n == 0`
     /// yields nothing.
     async fn history(&self, thread_id: &str, n: usize) -> Result<Vec<Qa>, JudgeError>;
-    /// Delete every rating `user_id` has recorded and return how many there
-    /// were. Ratings are the only per-user data the store keeps (a call
-    /// records the thread it was asked in, not who asked), so this is the
-    /// whole of "forget me".
-    async fn forget_user(&self, user_id: &str) -> Result<u64, JudgeError>;
+    /// Delete every rating `user_id` has recorded and anonymize the failed
+    /// calls they asked (`record_failure`), returning how many of each. A call
+    /// records the thread it was asked in, not who asked, so ratings and
+    /// failed calls are the whole of "forget me".
+    async fn forget_user(&self, user_id: &str) -> Result<Forgotten, JudgeError>;
     /// Keep a failed call for troubleshooting. The store bounds the size of
     /// every field and the number of rows it keeps.
     async fn record_failure(&self, failed: &FailedCall) -> Result<(), JudgeError>;

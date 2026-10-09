@@ -9,16 +9,22 @@
 --
 -- Bounded on write by PgCallStore::record_failure: the question and each
 -- attempt are cut to a fixed number of characters, and inserting a row deletes
--- the ones older than 30 days or past the newest 500. The user who asked is
--- not stored, so /forget has nothing to delete here; rows age out.
+-- the ones older than 30 days or past the newest 500.
+--
+-- user_id is the Discord user who asked (NULL for the HTTP API and agents).
+-- /forget anonymizes that user's rows: user_id becomes NULL and the question,
+-- error, first rejection and attempts are replaced, leaving the time, thread
+-- and private flag.
 CREATE TABLE failed_calls (
     id              bigserial   PRIMARY KEY,
     created_at      timestamptz NOT NULL DEFAULT now(),
     thread_id       text        NOT NULL,
     private         boolean     NOT NULL,
+    user_id         text,
     question        text        NOT NULL,
     error           text        NOT NULL,
     first_rejection text,
     attempts        text[]      NOT NULL DEFAULT '{}'
 );
 CREATE INDEX failed_calls_created_at ON failed_calls (created_at DESC);
+CREATE INDEX failed_calls_user ON failed_calls (user_id) WHERE user_id IS NOT NULL;

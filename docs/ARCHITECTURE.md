@@ -146,7 +146,10 @@ Discord message (+ last N Q&A in the same thread)
     A misused tool round (ToolMisuse: a second lookup_rules call, or one
     whose ids cannot be read) produces no verdict and is retried the same
     way. The retry may make the one call only if the first could not be
-    read, since nothing was fetched.
+    read, since nothing was fetched. A retry after UncitedRules is given the
+    uncited rules it was not shown (`fetch_uncited`: looked up, or pinned if
+    retrieval held them and the budget cut them), since a number reached through
+    a glossary pointer is often not in the material.
     Always quotes CURRENT Oracle text (errata note if the printed text differs).
   │
   ▼

@@ -204,7 +204,8 @@ Your application is bound by the [Discord Developer Policy](https://support-dev.
 and Terms of Service like any other. Two points matter for a judgebot:
 
 - It must not collect more data than it needs. This one stores questions per channel and
-  ratings per user, and `/forget` deletes a user's ratings.
+  ratings per user, and failed calls with the asker's id. `/forget` deletes a user's
+  ratings and anonymizes their failed calls.
 - Magic content is used under Wizards of the Coast's
   [Fan Content Policy](../../reference/attribution/), which your instance's `/help` already
   states.

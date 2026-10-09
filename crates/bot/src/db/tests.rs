@@ -1356,10 +1356,13 @@ async fn switch_space_retypes_columns_clears_vectors_and_rebuilds_indexes_atomic
     Ok(())
 }
 
-/// `/forget` deletes exactly the caller's ratings: another user's stay, the
+/// `/forget` deletes exactly the caller's ratings and anonymizes their failed
+/// calls: another user's stay, the
 /// call itself stays, and a second call reports nothing left to delete.
 #[sqlx::test(migrator = "crate::MIGRATOR")]
-async fn forget_user_deletes_only_that_users_ratings(pool: PgPool) -> anyhow::Result<()> {
+async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_failures(
+    pool: PgPool,
+) -> anyhow::Result<()> {
     seed(&pool).await?;
     let retriever = PgRetriever::new(pool.clone());
     let store = PgCallStore::new(pool.clone());
@@ -1378,8 +1381,43 @@ async fn forget_user_deletes_only_that_users_ratings(pool: PgPool) -> anyhow::Re
     store.rate(call, "user-a", Score::Correct, false).await?;
     store.rate(call, "user-b", Score::Incorrect, true).await?;
 
-    assert_eq!(store.forget_user("user-a").await?, 1);
-    assert_eq!(store.forget_user("user-a").await?, 0, "idempotent");
+    store
+        .record_failure(&judge_core::FailedCall {
+            thread_id: "t".into(),
+            question: "secret question".into(),
+            private: true,
+            user_id: Some("user-a".into()),
+            error: "boom".into(),
+            first_rejection: Some("r".into()),
+            attempts: vec!["an answer".into()],
+        })
+        .await?;
+    store
+        .record_failure(&judge_core::FailedCall {
+            thread_id: "t".into(),
+            question: "b's question".into(),
+            private: false,
+            user_id: Some("user-b".into()),
+            error: "boom".into(),
+            first_rejection: None,
+            attempts: vec![],
+        })
+        .await?;
+    let gone = store.forget_user("user-a").await?;
+    assert_eq!((gone.ratings, gone.failures), (1, 1));
+    let again = store.forget_user("user-a").await?;
+    assert_eq!((again.ratings, again.failures), (0, 0), "idempotent");
+    let rows: Vec<(Option<String>, String, bool)> =
+        sqlx::query_as("SELECT user_id, question, private FROM failed_calls ORDER BY id")
+            .fetch_all(&pool)
+            .await?;
+    assert_eq!(
+        rows,
+        vec![
+            (None, "[removed]".to_owned(), true),
+            (Some("user-b".to_owned()), "b's question".to_owned(), false)
+        ]
+    );
     let left: Vec<String> = sqlx::query_scalar("SELECT user_id FROM ratings ORDER BY user_id")
         .fetch_all(&pool)
         .await?;
@@ -1480,6 +1518,7 @@ async fn a_failed_call_is_kept_cut_to_size_and_pruned(pool: PgPool) -> Result<()
         thread_id: format!("t{n}"),
         question: "q".repeat(5_000),
         private: n == 0,
+        user_id: None,
         error: "empty verdict".to_owned(),
         first_rejection: Some("the answer names 111.10 without citing it".to_owned()),
         attempts: vec!["a".repeat(20_000), String::new()],

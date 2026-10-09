@@ -58,7 +58,7 @@ can see this" message. A private answer stands by itself:
   example for a later question. It is still sent to the model provider and leaves the
   same log lines as any question.
 - If the call fails, the question and what the model sent are kept for the operator
-  (`failed_calls`, flagged private; rows older than 30 days are deleted when a later failure is recorded). Nothing is kept for a private
+  (`failed_calls`, flagged private, with your user id until `/forget`; rows older than 30 days are deleted when a later failure is recorded). Nothing is kept for a private
   question that was answered.
 - "Did you mean…?" still works, privately.
 
@@ -129,5 +129,9 @@ which the bot does not start without.
 
 ## `/forget`
 
-Deletes every rating you have recorded and tells you how many there were. Ratings are the
-only data tied to your user id. Questions are stored against the channel, not the asker.
+Deletes every rating you have recorded and anonymizes every failed call of yours, and tells
+you how many of each there were.
+- Ratings and failed calls are the only data tied to your user id. Questions are stored
+  against the channel, not the asker.
+- A failed call keeps its time, thread and whether it was private. Its question, error and
+  the model's text are replaced.
