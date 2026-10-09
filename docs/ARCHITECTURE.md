@@ -326,6 +326,10 @@ pictures, from one set of names:
 | Calls | continuous; `retired_at`/`retired_reason` recomputed nightly from citation validity | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding) |
 | Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |
 
+The loaders in the table (cards, rulings, the CR, symbols, nicknames, notes) and the
+embedding step are `judge_bot::ingest` (`crates/bot/src/ingest/`), beside the other
+Postgres adapters. `judge-ingest` is the command line over them.
+
 Database: **Postgres 16 + pgvector + pg_trgm**. Scale: ~30k cards, ~2k rule
 chunks, <10k calls.
 

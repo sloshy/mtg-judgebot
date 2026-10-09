@@ -16,7 +16,7 @@ endorsed by Wizards of the Coast. Magic: The Gathering, the Comprehensive Rules,
 names, Oracle text and card rulings are (C) Wizards of the Coast LLC, a subsidiary of
 Hasbro, Inc. The software downloads the Comprehensive Rules from Wizards' site at run
 time and stores them in the operator's database; the repository itself carries only a
-short excerpt as a parser test fixture (crates/ingest/tests/fixtures/cr_sample.txt),
+short excerpt as a parser test fixture (crates/bot/tests/fixtures/cr_sample.txt),
 which remains Wizards' copyright.
 
 Card data, rulings and card symbol images come from Scryfall (https://scryfall.com),

@@ -9,7 +9,7 @@
 //!   `parent_id = NULL`; `subsection = "702"`; `heading` = the rule's first-line text
 //!   up to its first sentence-ending period (so `702.19. Trample` → `Trample`), or the
 //!   section title (`Interaction of Continuous Effects`) when that first sentence is
-//!   prose longer than [`MAX_HEADING_CHARS`].
+//!   prose longer than `MAX_HEADING_CHARS`.
 //! * One row per lettered sub-rule (`702.19b`): `body` = just that line, `examples` =
 //!   just its own examples, `parent_id = "702.19"`, `heading` = the parent's heading.
 //!   Rows with a `parent_id` are leaves; rows without are rule chunks.
@@ -37,7 +37,7 @@ use anyhow::Context as _;
 use judge_core::{Category, CrVersion, EXAMPLE_PREFIX, GlossaryEntry, RuleChunk, RuleId};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
-use crate::renumber::{StoredRule, renumber_map, rewrite_call};
+use super::renumber::{StoredRule, renumber_map, rewrite_call};
 
 /// Rows per `INSERT` statement.
 const BATCH: usize = 200;
@@ -79,15 +79,23 @@ pub async fn run(pool: &PgPool, source: &str, cache_dir: &Path) -> anyhow::Resul
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// The published release is the one already in `rules`; nothing was downloaded.
-    Unchanged { version: String },
+    Unchanged {
+        /// The stored and published version.
+        version: String,
+    },
     /// A different release is published; it was fetched, parsed and stored.
-    Updated { version: String, url: String },
+    Updated {
+        /// The version in the link's file name, or `"unknown"` when it carries none.
+        version: String,
+        /// Where it was downloaded from.
+        url: String,
+    },
 }
 
 /// Load the CR release currently linked from [`RULES_PAGE_URL`], unless `rules`
 /// already holds that version.
 ///
-/// A link whose file name carries no version is loaded unconditionally: [`store`] is
+/// A link whose file name carries no version is loaded unconditionally: `store` is
 /// idempotent, so the only cost of being unable to tell is a download.
 ///
 /// # Errors
@@ -130,7 +138,7 @@ pub async fn run_latest(pool: &PgPool, cache_dir: &Path) -> anyhow::Result<Outco
 /// highest version wins (ties: first seen). Spaces are percent-encoded so the result
 /// is a valid URL; Wizards links `MagicCompRules 20260819.txt` with a literal space.
 #[must_use]
-pub fn find_cr_txt_url(html: &str) -> Option<String> {
+fn find_cr_txt_url(html: &str) -> Option<String> {
     let mut best: Option<(Option<String>, String)> = None;
     for quote in ['"', '\''] {
         let opener = format!("href={quote}");
@@ -232,7 +240,7 @@ fn percent_decode(s: &str) -> String {
 
 /// Everything the parser extracts from one CR text.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedCr {
+struct ParsedCr {
     /// CR effective date, `YYYYMMDD`.
     pub cr_version: CrVersion,
     /// Rule chunks and leaves, in document order (each rule chunk before its leaves).
@@ -550,7 +558,7 @@ impl Parser {
 ///
 /// # Errors
 /// If no CR version can be determined, or a parsed id is malformed.
-pub fn parse(text: &str, source: &str) -> anyhow::Result<ParsedCr> {
+fn parse(text: &str, source: &str) -> anyhow::Result<ParsedCr> {
     let mut p = Parser::default();
     for raw in text.lines() {
         p.feed(raw);
@@ -665,7 +673,7 @@ fn rule_id(s: &str) -> anyhow::Result<RuleId> {
 
 /// First run of exactly eight ASCII digits in the (percent-decoded) last path segment of `source`.
 #[must_use]
-pub fn version_from_source(source: &str) -> Option<String> {
+fn version_from_source(source: &str) -> Option<String> {
     let last = percent_decode(source.rsplit(['/', '\\']).next().unwrap_or(source));
     let mut run = String::new();
     for c in last.chars().chain(std::iter::once(' ')) {
@@ -683,7 +691,7 @@ pub fn version_from_source(source: &str) -> Option<String> {
 
 /// `These rules are effective as of August 19, 2026.` -> `20260819`.
 #[must_use]
-pub fn version_from_effective_line(line: &str) -> Option<String> {
+fn version_from_effective_line(line: &str) -> Option<String> {
     const MONTHS: [&str; 12] = [
         "january",
         "february",
@@ -729,7 +737,7 @@ async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
     // Serializes with the retirement pass, which rewrites the same rows.
     sqlx::query!(
         "SELECT pg_advisory_xact_lock($1)",
-        judge_bot::db::CALLS_REWRITE_LOCK
+        crate::db::CALLS_REWRITE_LOCK
     )
     .execute(&mut *tx)
     .await
@@ -904,7 +912,7 @@ async fn sync_categories(tx: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Re
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = include_str!("../tests/fixtures/cr_sample.txt");
+    const SAMPLE: &str = include_str!("../../tests/fixtures/cr_sample.txt");
     const SOURCE: &str = "https://media.wizards.com/2026/downloads/MagicCompRules%2020260819.txt";
 
     type R = anyhow::Result<()>;
@@ -1214,7 +1222,7 @@ mod tests {
     /// retirement pass run afterwards keeps the relocated calls live.
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn renumbering_relocates_live_calls(pool: sqlx::PgPool) -> anyhow::Result<()> {
-        use crate::renumber::rewrite_ids;
+        use crate::ingest::renumber::rewrite_ids;
         use std::collections::BTreeMap;
 
         let old = parsed()?;
@@ -1307,7 +1315,7 @@ mod tests {
 
         // Both citations validate against the new rows: the live call stays live
         // and the retired one (retired for a reason that no longer holds) comes back.
-        let s = judge_bot::db::retire_unsupported(&pool).await?;
+        let s = crate::db::retire_unsupported(&pool).await?;
         assert_eq!(
             (s.checked, s.retired, s.restored, s.still_retired),
             (2, 0, 1, 0),

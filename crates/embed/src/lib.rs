@@ -1,5 +1,5 @@
-//! `Embedder` adapters shared by `bot` and `ingest` (a bin crate cannot be a
-//! dependency): Voyage AI and any OpenAI-compatible `/v1/embeddings` server,
+//! `Embedder` adapters for `judge-bot`'s retrieval and its ingest steps
+//! (`judge_bot::ingest`): Voyage AI and any OpenAI-compatible `/v1/embeddings` server,
 //! plus [`Space`], the identity of the vectors an embedder produces.
 //!
 //! Vectors from two models cannot share a column: cosine distance between a

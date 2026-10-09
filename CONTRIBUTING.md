@@ -176,7 +176,7 @@ A release is a GitHub release whose tag is `vX.Y.Z` on a commit of `main`.
    in every `crates/*/Cargo.toml` (then `cargo update --workspace` for `Cargo.lock`), in
    `web/` and `site/`'s `package.json` and `package-lock.json`, and in the image-tag
    examples in `docs/DEPLOYMENT.md` and the configuration page. The binaries report the
-   crate version (the MCP server, `judge-ingest`'s User-Agent), and nothing checks it
+   crate version (the MCP server, the ingest steps' User-Agent), and nothing checks it
    against the tag.
 2. Wait for the push's *Publish image* run to finish. Otherwise the release and that run
    build in parallel.

@@ -9,7 +9,7 @@
 //! symbols hard-coded on either side.
 //!
 //! Scryfall serves the symbols as SVG and Discord only takes raster images, so
-//! each one is rendered to a [`PNG_SIZE`]-pixel PNG on the way through.
+//! each one is rendered to a `PNG_SIZE`-pixel PNG on the way through.
 //!
 //! The run is idempotent: symbols whose emoji already exist are left alone, so
 //! re-running after Scryfall adds a symbol uploads only the new one.

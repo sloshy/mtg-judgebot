@@ -361,9 +361,12 @@ Crate graph (`core` ← `llm` ← `anthropic` and `openai` ← `embed` ← `bot`
   arguments are parsed by serde. `choices[0].message` is replayed verbatim.
 - `embed`: Voyage + OpenAI-compatible `/embeddings`, each a `WithSpace`.
 - `bot`: sqlx adapters, `config.rs` (the `judge.toml` loader), `extract.rs`/`synth.rs`
-  over `judge-llm` only, prompts in `crates/bot/src/prompts/`, and the serenity/poise
-  Discord layer with pure `render.rs`.
-- `ingest` / `eval` / `api`: bins.
+  over `judge-llm` only, prompts in `crates/bot/src/prompts/`, the serenity/poise
+  Discord layer with pure `render.rs`, and `ingest.rs`, the data steps (Scryfall, CR,
+  curated lists, embedding, emoji, `init`, `refresh`). They live in the library so a
+  long-running binary can run them: `judge-ingest` depends on `judge-bot`, not the
+  reverse.
+- `ingest` / `eval` / `api`: bins. `ingest` is argument parsing over `judge_bot::ingest`.
 - `agent`: lib + `judge-cli` / `judge-mcp` bins. `api` mounts its MCP handler.
 - `configure`: `judge-config`, the localhost editor for `judge.toml` and `.env` (D23).
   - Its form is `config::file_schema()` (schemars over the loader's serde types), so the
@@ -476,7 +479,7 @@ Key cross-file facts that aren't obvious from any one file:
     the same ruling. The key lives in core because the ingest writer and every reader
     must agree.
 - **A renumbered rule keeps its calls.**
-  - Inside the CR load transaction, `renumber_map` (`ingest/src/renumber.rs`) matches old
+  - Inside the CR load transaction, `renumber_map` (`bot/src/ingest/renumber.rs`) matches old
     and new rules by body with every rule id masked, because renumbering changes the
     cross-references too. It matches only where the masked body is unique on both sides.
   - It then keeps only entries that reproduce the new rule exactly when the old one is

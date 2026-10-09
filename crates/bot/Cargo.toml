@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "sqlx repos, model adapters over judge-llm, the judge.toml loader and build_deps composition, serenity/poise Discord adapter, main (bin)."
+description = "sqlx repos, model adapters over judge-llm, the judge.toml loader and build_deps composition, serenity/poise Discord adapter, the ingest steps, main (bin)."
 
 [lib]
 name = "judge_bot"
@@ -64,6 +64,16 @@ serenity = { version = "0.12", default-features = false, features = [
   "model",
 ] }
 dotenvy = "0.15"
+# `ingest::renumber`: rule ids in running text.
+regex = "1"
+# `ingest::scryfall`: the bulk files are gzipped.
+flate2 = "1"
+# `ingest::aliases` / `ingest::notes`: the curated lists.
+serde_yaml_ng = "0.10"
+# `ingest::emoji`: Scryfall serves SVG, Discord takes raster only. No text in
+# these symbols, so resvg's font machinery is left out.
+resvg = { version = "0.48", default-features = false }
+base64 = "0.23"
 
 [dev-dependencies]
 wiremock.workspace = true

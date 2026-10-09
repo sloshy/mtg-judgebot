@@ -6,51 +6,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Scryfall sync, CR parser, embedding (bin)."
+description = "Scryfall sync, CR parser, embedding: the CLI over judge_bot::ingest (bin)."
 
 [[bin]]
 name = "ingest"
 path = "src/main.rs"
 
 [dependencies]
+# Category count in the start-up log line.
 judge-core.workspace = true
-judge-embed.workspace = true
-# `retire`: the retirement pass lives beside the other Postgres adapters.
+# The steps themselves (`judge_bot::ingest`): this crate is argument parsing.
 judge-bot.workspace = true
 anyhow.workspace = true
-reqwest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-uuid.workspace = true
-sqlx = { version = "0.9", default-features = false, features = [
-  "runtime-tokio",
-  "tls-rustls",
-  "postgres",
-  "uuid",
-  "json",
-  "macros",
-  "migrate",
-  "chrono",
-] }
-pgvector = { version = "0.4", features = ["sqlx"] }
 dotenvy = "0.15"
-# `renumber`: rule ids in running text.
-regex = "1"
-flate2 = "1"
-serde_yaml_ng = "0.10"
-# `emoji`: Scryfall serves SVG, Discord takes raster only. No text in these
-# symbols, so resvg's font machinery is left out.
-resvg = { version = "0.48", default-features = false }
-base64 = "0.23"
-# Only the REST client: no gateway, no cache.
-serenity = { version = "0.12", default-features = false, features = ["model", "rustls_backend"] }
-
-[dev-dependencies]
-# `embed` tests: a fake `Embedder`.
-async-trait.workspace = true
 
 [lints]
 workspace = true

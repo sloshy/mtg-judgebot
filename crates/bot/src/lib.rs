@@ -1,14 +1,15 @@
 //! `judge-bot` as a library: the sqlx adapters for the DB-backed ports, the
 //! model adapters (extraction and synthesis over any `judge_llm::ChatModel`),
-//! the [`config`] loader that picks providers and models, and
-//! [`build_deps`], the one composition shared by the `bot`, `api`, `eval`
-//! and `agent` binaries.
+//! the [`config`] loader that picks providers and models, [`build_deps`],
+//! the one composition shared by the `bot`, `api`, `eval` and `agent`
+//! binaries, and [`ingest`], the data steps `judge-ingest` runs.
 
 pub mod budget;
 pub mod config;
 pub mod db;
 pub mod discord;
 pub mod extract;
+pub mod ingest;
 pub mod session;
 pub mod synth;
 

@@ -1,6 +1,6 @@
 //! `ingest reembed [--yes] [--clear]`: make the database hold the configured
 //! embedder's space (`docs/PROVIDERS.md` §4.3). When it holds
-//! another, inside one transaction (`judge_bot::db::space::switch_space`)
+//! another, inside one transaction (`crate::db::space::switch_space`)
 //! every `embedding` column is retyped to the new width, its HNSW index
 //! recreated as the migrations define it and every vector cleared, and
 //! `embedding_space` rewritten; then the ordinary embed loop refills every
@@ -25,12 +25,11 @@
 use std::fmt::Write as _;
 
 use anyhow::Context as _;
-use judge_bot::db::space::{
-    VECTOR_TABLES, column_width, stored_counts, stored_space, switch_space,
-};
 use judge_core::InputKind;
 use judge_embed::{Space, WithSpace};
 use sqlx::{PgPool, Row as _};
+
+use crate::db::space::{VECTOR_TABLES, column_width, stored_counts, stored_space, switch_space};
 
 /// A rough all-in price per million tokens for the estimate below: the top
 /// of the common range (`text-embedding-3-large` $0.13, `voyage-3-large`
@@ -242,12 +241,12 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
-    use judge_bot::db::space::{column_width, record_space};
     use judge_embed::Provider;
     use pgvector::Vector;
 
     use super::*;
-    use crate::embed::fake::Fake;
+    use crate::db::space::{column_width, record_space};
+    use crate::ingest::embed::fake::Fake;
 
     #[test]
     fn the_plan_names_both_spaces_the_rows_and_says_the_cost_is_rough() {

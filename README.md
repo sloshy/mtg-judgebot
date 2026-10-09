@@ -306,8 +306,9 @@ crates/
   anthropic  the Messages API as a judge-llm backend: wire types, schema transform, endpoints
   openai     OpenAI-compatible chat completions as a judge-llm backend: strict-schema transform, dialect knobs
   embed      Voyage and OpenAI-compatible embeddings, each tagged with its vector Space
-  bot        Postgres adapters (resolver / retriever / call store), judge.toml loader, prompts, Discord (serenity/poise)
-  ingest     Scryfall + Comprehensive Rules loaders, embedder  (bin)
+  bot        Postgres adapters (resolver / retriever / call store), the Scryfall + Comprehensive Rules loaders
+             and embedder, judge.toml loader, prompts, Discord (serenity/poise)
+  ingest     the command line over those loaders: init, refresh, cards, rules, embed, … (bin)
   eval       gold-set harness: recall / answer / rescore / show (bin)
   api        anonymous HTTP adapter (axum); the web page and the /mcp transport are opt-in flags (bin)
   agent      the judge for other agents: sessions, lookups and the pipeline as judge-cli and judge-mcp

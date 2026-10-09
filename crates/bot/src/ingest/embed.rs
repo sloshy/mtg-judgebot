@@ -4,12 +4,12 @@
 //! vector search returns rule chunks only (leaves are folded into their rule's body), and
 //! the HNSW index is partial over exactly those rows.
 //!
-//! Each table is walked in batches of at most [`MAX_BATCH`] rows (Voyage's per-request
+//! Each table is walked in batches of at most `MAX_BATCH` rows (Voyage's per-request
 //! limit) whose `embedding IS NULL`; texts are embedded with `InputKind::Document` and
 //! written back as `pgvector` vectors. Without an embedder nothing is touched.
 //!
 //! Before the first request the embedder's space is checked against the database
-//! (`judge_bot::db::space`): the columns' actual `vector(N)` must be the embedder's
+//! (`crate::db::space`): the columns' actual `vector(N)` must be the embedder's
 //! width, and `embedding_space`, when present, must name the embedder's provider and
 //! model — a different model is a refusal pointing at `ingest reembed`, because a
 //! vector of another model in the same column is silently wrong at query time. Then
@@ -21,13 +21,14 @@
 //! behind it; vectors it did not write are never relabelled.
 
 use anyhow::Context as _;
-use judge_bot::db::space::{
-    VECTOR_TABLES, column_width, hold_space, record_space, stored_counts, stored_space,
-};
 use judge_core::InputKind;
 use judge_embed::{Space, WithSpace};
 use pgvector::Vector;
 use sqlx::{PgPool, Row as _};
+
+use crate::db::space::{
+    VECTOR_TABLES, column_width, hold_space, record_space, stored_counts, stored_space,
+};
 
 /// Voyage accepts at most 128 texts per request.
 const MAX_BATCH: usize = 128;
@@ -76,7 +77,7 @@ const TARGETS: [Target; 3] = [
 /// logs a warning and does nothing.
 ///
 /// # Errors
-/// When the embedder's space is not the database's (see [`check_space`]), or on
+/// When the embedder's space is not the database's (see `check_space`), or on
 /// embedding or database failure. Returns the rows embedded per table.
 pub async fn run(
     pool: &PgPool,
@@ -109,7 +110,7 @@ pub async fn run(
 /// # Errors
 /// A message naming both spaces or the offending column, and the way out:
 /// configure the stored model, or `ingest reembed --yes`.
-pub async fn check_space(pool: &PgPool, space: &Space) -> anyhow::Result<()> {
+async fn check_space(pool: &PgPool, space: &Space) -> anyhow::Result<()> {
     let stored = stored_space(pool).await?;
     for t in VECTOR_TABLES {
         let width = column_width(pool, t.table).await?;
@@ -246,10 +247,11 @@ pub(crate) mod fake {
     };
 
     use async_trait::async_trait;
-    use judge_bot::db::space::switch_space;
     use judge_core::{Embedder, InputKind, JudgeError};
     use judge_embed::{Provider, Space, WithSpace};
     use sqlx::PgPool;
+
+    use crate::db::space::switch_space;
 
     pub(crate) struct Fake {
         pub(crate) space: Space,

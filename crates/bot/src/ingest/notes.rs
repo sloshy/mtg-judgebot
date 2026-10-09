@@ -30,8 +30,8 @@ pub(crate) fn parse_notes_yaml(text: &str) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
-/// `data/notes.yaml` as of this build (see [`crate::aliases::BUILTIN`]).
-pub const BUILTIN: &str = include_str!("../../../data/notes.yaml");
+/// `data/notes.yaml` as of this build (see [`super::aliases::BUILTIN`]).
+pub const BUILTIN: &str = include_str!("../../../../data/notes.yaml");
 
 /// Load notes from YAML `text`, replacing the `card_notes` table contents.
 ///
