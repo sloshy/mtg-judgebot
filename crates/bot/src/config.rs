@@ -68,8 +68,10 @@ use sqlx::PgPool;
 
 use crate::{
     DepsConfig, Models,
-    budget::{self, AlertWebhook, Budget, Period},
+    alert::{ALERT_WEBHOOK_ENV, AlertWebhook},
+    budget::{self, Budget, Period},
     db::Vectors,
+    jobs::{self, Jobs, Schedule},
 };
 
 /// The environment variable naming the config file.
@@ -1004,6 +1006,17 @@ pub enum ConfigError {
         /// What the variable holds when it is right.
         expected: &'static str,
     },
+    /// `JUDGE_REFRESH_HOURS` is set but is not a whole number of hours in
+    /// range.
+    #[error(
+        "{}={value:?}: not a whole number of hours from 1 to {} (0 turns the scheduled refresh off)",
+        jobs::REFRESH_HOURS_ENV,
+        jobs::MAX_REFRESH_HOURS
+    )]
+    BadSchedule {
+        /// The value as set.
+        value: String,
+    },
     /// A key that does not apply to the provider as configured.
     #[error("providers.{provider}: {key} {reason}")]
     Misplaced {
@@ -1122,6 +1135,7 @@ impl ConfigError {
             Self::Credentials { provider, .. } => toml(format!("providers.{provider}")),
             Self::BadSourceUrl { .. } => env(SOURCE_URL_ENV),
             Self::BadContact { var, .. } | Self::BadBudget { var, .. } => env(var),
+            Self::BadSchedule { .. } => env(jobs::REFRESH_HOURS_ENV),
             Self::MissingContact(MissingContact::Discord) => env(OPERATOR_DISCORD_ENV),
             Self::MissingContact(MissingContact::Email) => env(OPERATOR_EMAIL_ENV),
             Self::EmbedDimensions { .. } => toml("models.embed.dimensions".to_owned()),
@@ -1492,6 +1506,9 @@ pub struct Config {
     /// What the cap covers and where a tripped cap is reported
     /// (`JUDGE_BUDGET_PERIOD`, `JUDGE_ALERT_WEBHOOK`).
     budget: Budget,
+    /// How often the long-running processes refresh the data
+    /// (`JUDGE_REFRESH_HOURS`).
+    refresh: Schedule,
 }
 
 /// The budget settings from `env`, blank meaning unset.
@@ -1508,18 +1525,29 @@ pub fn budget(env: impl Fn(&str) -> Option<String>) -> Result<Budget, ConfigErro
             expected: "process, day or month",
         }
     })?;
-    let alert = env(budget::ALERT_WEBHOOK_ENV)
+    let alert = env(ALERT_WEBHOOK_ENV)
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
         .map(|v| {
             AlertWebhook::parse(&v).map_err(|_| ConfigError::BadBudget {
-                var: budget::ALERT_WEBHOOK_ENV,
+                var: ALERT_WEBHOOK_ENV,
                 value: "<redacted>".to_owned(),
                 expected: "an https:// webhook URL",
             })
         })
         .transpose()?;
     Ok(Budget { period, alert })
+}
+
+/// The refresh schedule from `env` (`JUDGE_REFRESH_HOURS`), blank meaning
+/// the default.
+///
+/// # Errors
+/// [`ConfigError::BadSchedule`] for anything but a whole number from 0 to
+/// [`jobs::MAX_REFRESH_HOURS`].
+pub fn refresh_schedule(env: impl Fn(&str) -> Option<String>) -> Result<Schedule, ConfigError> {
+    Schedule::parse(env(jobs::REFRESH_HOURS_ENV).as_deref())
+        .map_err(|value| ConfigError::BadSchedule { value })
 }
 
 /// The commit stamped into this binary by `build.rs`.
@@ -1662,6 +1690,7 @@ impl Config {
             offer,
             operator,
             budget: budget(&env)?,
+            refresh: refresh_schedule(&env)?,
         })
     }
 
@@ -1759,6 +1788,7 @@ impl Config {
             offer: source_offer(&env)?,
             operator: operator(&env)?,
             budget: budget(&env)?,
+            refresh: refresh_schedule(&env)?,
         })
     }
 
@@ -1779,6 +1809,16 @@ impl Config {
     #[must_use]
     pub fn budget(&self) -> &Budget {
         &self.budget
+    }
+
+    /// What the long-running processes run beside their requests, and where
+    /// a problem with it is reported. They hand this to [`jobs::start`].
+    #[must_use]
+    pub fn jobs(&self) -> Jobs {
+        Jobs {
+            refresh: self.refresh,
+            alert: self.budget.alert.clone(),
+        }
     }
 
     /// Who runs this instance, as far as they said. Either contact may be
@@ -2892,7 +2932,7 @@ model = "qwen3:8b"
         assert_eq!(default.budget(), &Budget::default());
         let set = Config::from_vars(|k| match k {
             budget::PERIOD_ENV => Some("month".to_owned()),
-            budget::ALERT_WEBHOOK_ENV => Some("https://discord.com/api/webhooks/1/tok".to_owned()),
+            ALERT_WEBHOOK_ENV => Some("https://discord.com/api/webhooks/1/tok".to_owned()),
             _ => None,
         })?;
         assert_eq!(set.budget().period, Period::Month);
@@ -2900,12 +2940,54 @@ model = "qwen3:8b"
         let bad = Config::from_vars(|k| (k == budget::PERIOD_ENV).then(|| "weekly".to_owned()));
         assert!(bad.is_err_and(|e| e.to_string().contains("JUDGE_BUDGET_PERIOD=\"weekly\"")));
         let bad = Config::from_vars(|k| {
-            (k == budget::ALERT_WEBHOOK_ENV).then(|| "http://hooks.example/secret-token".to_owned())
+            (k == ALERT_WEBHOOK_ENV).then(|| "http://hooks.example/secret-token".to_owned())
         });
         assert!(bad.is_err_and(|e| {
             let m = e.to_string();
             m.contains("JUDGE_ALERT_WEBHOOK") && !m.contains("secret-token")
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn the_refresh_schedule_defaults_daily_turns_off_at_zero_and_refuses_a_typo() -> R {
+        let hours = |v: &'static str| {
+            Config::from_vars(move |k| (k == jobs::REFRESH_HOURS_ENV).then(|| v.to_owned()))
+        };
+        assert_eq!(
+            Config::from_vars(|_| None)?.jobs().refresh,
+            Schedule::default()
+        );
+        assert_eq!(hours(" ")?.jobs().refresh, Schedule::default());
+        assert_eq!(
+            Schedule::default(),
+            Schedule::Every(jobs::Hours::DEFAULT),
+            "daily"
+        );
+        assert_eq!(hours("0")?.jobs().refresh, Schedule::Off);
+        assert_eq!(
+            hours("6")?.jobs().refresh,
+            Schedule::Every(jobs::Hours::new(6).ok_or("6 h")?)
+        );
+        for bad in ["-1", "721", "24h"] {
+            let e = hours(bad).err().ok_or(bad)?;
+            assert!(
+                e.to_string()
+                    .starts_with(&format!("JUDGE_REFRESH_HOURS={bad:?}")),
+                "{e}"
+            );
+            assert_eq!(
+                e.location(),
+                Location::Env {
+                    var: "JUDGE_REFRESH_HOURS".to_owned()
+                }
+            );
+        }
+        // The webhook it alerts is the budget's.
+        let hooked = Config::from_vars(|k| {
+            (k == ALERT_WEBHOOK_ENV).then(|| "https://discord.com/api/webhooks/1/tok".to_owned())
+        })?;
+        assert!(hooked.jobs().alert.is_some());
         Ok(())
     }
 

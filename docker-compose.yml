@@ -59,6 +59,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
+      INGEST_CACHE_DIR: /var/cache/judgebot
       RUST_LOG: info,sqlx=warn,serenity=warn
       # JUDGE_CONFIG in .env is a *host* path (./judge.toml, as `cargo run`
       # reads it). The file is bind-mounted below and the container is told the
@@ -68,6 +69,10 @@ services:
       # reads nothing it was not pointed at.
       JUDGE_CONFIG: ${JUDGE_CONFIG:+/etc/judgebot/judge.toml}
     volumes:
+      # bot and api run the data refresh themselves (JUDGE_REFRESH_HOURS) and
+      # share the download cache with `refresh`. A run holds a lock in the
+      # database, so only one of the three writes it at a time.
+      - judgebot-ingest-cache:/var/cache/judgebot
       - type: bind
         source: ${JUDGE_CONFIG:-./judge.example.toml}
         target: /etc/judgebot/judge.toml
@@ -101,9 +106,12 @@ services:
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
       WEB_DIST: /srv/web
+      INGEST_CACHE_DIR: /var/cache/judgebot
       RUST_LOG: info,sqlx=warn
       JUDGE_CONFIG: ${JUDGE_CONFIG:+/etc/judgebot/judge.toml}
     volumes:
+      # The refresh's download cache, as on bot.
+      - judgebot-ingest-cache:/var/cache/judgebot
       - type: bind
         source: ${JUDGE_CONFIG:-./judge.example.toml}
         target: /etc/judgebot/judge.toml
@@ -138,13 +146,14 @@ services:
       db:
         condition: service_healthy
 
-  # Scheduled data refresh: Scryfall cards/rulings, the current CR release, new
-  # embeddings, new card-symbol emoji. Not a long-running service — the host's
-  # scheduler runs `scripts/refresh-data.sh`, which is `docker compose run --rm
-  # refresh`; `run` enables the profile by itself, so `up -d` never starts it.
-  # Same image as bot/api, third entrypoint. It is also how every other
-  # judge-ingest command runs without Rust on the host, the first load included:
-  # `docker compose run --rm refresh init`.
+  # judge-ingest on demand: the first load (`docker compose run --rm refresh
+  # init`), a refresh by hand or from an operator's own cron
+  # (`scripts/refresh-data.sh`), and every other judge-ingest command, with no
+  # Rust on the host. Not a long-running service: bot and api refresh the data
+  # on their own schedule (JUDGE_REFRESH_HOURS), and a run started here takes
+  # turns with theirs through the same lock in the database. `run` enables the
+  # profile by itself, so `up -d` never starts it. Same image as bot/api, third
+  # entrypoint.
   refresh:
     build: *build
     image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}

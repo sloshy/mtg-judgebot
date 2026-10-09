@@ -46,11 +46,27 @@ fn max_batch() -> usize {
 /// provider's token budget (voyage-3.5: 320k tokens; ~4 chars/token, with margin).
 const MAX_BATCH_CHARS: usize = 400_000;
 
+/// The most rows a scheduled refresh embeds without a person deciding to:
+/// above it the step is skipped ([`super::runs::Skip::EmbedCeiling`]) and the
+/// operator alerted. Manual runs have no ceiling.
+///
+/// Sized against a full database (CR 20260819): 1,173 rule-level rules, 739
+/// glossary terms and the stored calls, so a full re-embed is about 1,900
+/// rows plus one per call. A new CR release empties only the rules whose text
+/// changed, a few hundred, and a day adds a handful of calls. 800 is twice a
+/// large CR release and well under half a full re-embed: more empty vectors
+/// than that means something else emptied them (a `reembed --clear` that
+/// died, an embedder configured on a database that never had one), and
+/// paying for that is the operator's call, not a timer's.
+pub const UNATTENDED_CEILING: u64 = 800;
+
 /// One embeddable table: how to select unembedded rows and write vectors back.
 /// Keys are selected as `text` so one loop serves `text` and `uuid` primary keys.
 struct Target {
     name: &'static str,
     select: &'static str,
+    /// How many rows `select` would walk, in all.
+    count: &'static str,
     update: &'static str,
 }
 
@@ -60,16 +76,19 @@ const TARGETS: [Target; 3] = [
         select: "SELECT id::text AS key, heading || E'\\n' || body || \
                  CASE WHEN cardinality(examples) > 0 THEN E'\\nExample: ' || array_to_string(examples, E'\\nExample: ') ELSE '' END AS txt \
                  FROM rules WHERE embedding IS NULL AND parent_id IS NULL ORDER BY id LIMIT $1",
+        count: "SELECT count(*) FROM rules WHERE embedding IS NULL AND parent_id IS NULL",
         update: "UPDATE rules SET embedding = $1 WHERE id = $2 AND embedding IS NULL",
     },
     Target {
         name: "glossary",
         select: "SELECT term AS key, term || E'\\n' || text AS txt FROM glossary WHERE embedding IS NULL ORDER BY term LIMIT $1",
+        count: "SELECT count(*) FROM glossary WHERE embedding IS NULL",
         update: "UPDATE glossary SET embedding = $1 WHERE term = $2 AND embedding IS NULL",
     },
     Target {
         name: "calls",
         select: "SELECT id::text AS key, question || E'\\n' || answer AS txt FROM calls WHERE embedding IS NULL ORDER BY id LIMIT $1",
+        count: "SELECT count(*) FROM calls WHERE embedding IS NULL",
         update: "UPDATE calls SET embedding = $1 WHERE id = $2::uuid AND embedding IS NULL",
     },
 ];
@@ -101,6 +120,23 @@ pub async fn run(
         counts.push((t.name, n));
     }
     Ok(counts)
+}
+
+/// How many rows [`run`] would embed now, over every table: what a scheduled
+/// run weighs against [`UNATTENDED_CEILING`] before it pays for any.
+///
+/// # Errors
+/// On a database failure.
+pub async fn pending(pool: &PgPool) -> anyhow::Result<u64> {
+    let mut total = 0u64;
+    for t in &TARGETS {
+        let n: i64 = sqlx::query_scalar(t.count)
+            .fetch_one(pool)
+            .await
+            .with_context(|| format!("counting unembedded {}", t.name))?;
+        total = total.saturating_add(u64::try_from(n).unwrap_or_default());
+    }
+    Ok(total)
 }
 
 /// Refuse unless `space` can be the one the database holds: every `embedding`

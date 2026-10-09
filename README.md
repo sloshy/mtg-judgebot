@@ -75,8 +75,8 @@ scripts/config.sh                  # the config editor: open the URL it prints, 
                                    # VOYAGE_API_KEY turns on semantic search
 docker compose up -d db            # Postgres with pgvector, on localhost:5432
 docker compose run --rm refresh init   # the whole first load: schema, cards, rules, aliases, notes,
-                                       # embeddings if keyed. Safe to run again. The nightly
-                                       # refresh keeps it current afterwards
+                                       # embeddings if keyed. Safe to run again. bot and api
+                                       # refresh it daily afterwards (JUDGE_REFRESH_HOURS)
 docker compose up -d api           # the web page
 ```
 

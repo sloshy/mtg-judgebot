@@ -10,7 +10,7 @@
 //!   unless-stopped` is a crash-loop with the reason in the log — loud, where
 //!   the quiet alternative is a bot that answers but cannot persist.
 //!   `JUDGE_AUTO_MIGRATE=false` opts out for an operator who moves the schema
-//!   by hand. Only the long-lived services do this: the nightly `refresh`
+//!   by hand. Only the long-lived services do this: the one-shot `refresh`
 //!   container runs whatever image `docker compose pull` last fetched, which
 //!   may be newer than the running bot, and a tool (`judge-cli`, `judge-mcp`)
 //!   does not own the schema.
@@ -28,7 +28,7 @@
 //!
 //! For the whole run it holds the exclusive side of [`CALLS_REWRITE_LOCK`]
 //! on a dedicated connection, the key the CR loader, the retirement pass,
-//! `reembed` and every vector write take, so a nightly `refresh` that fires
+//! `reembed` and every vector write take, so a refresh that fires
 //! mid-migration waits instead of interleaving a `calls` rewrite with a
 //! migration that rewrites `calls` rows. It does not stop the other service:
 //! a persist that writes no vector takes no lock, so a migration the release
@@ -135,7 +135,7 @@ pub async fn run(pool: &PgPool, ahead: Ahead) -> Result<Report, Error> {
         .acquire()
         .await
         .map_err(db("connecting for the migration lock"))?;
-    // Say so before blocking: a deploy that lands during the nightly CR load
+    // Say so before blocking: a deploy that lands during a refresh's CR load
     // waits minutes here, and an empty log reads as a hang.
     let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
         .bind(CALLS_REWRITE_LOCK)
@@ -187,11 +187,7 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
         }
     }
     let before: Vec<i64> = ledger.iter().map(|a| a.version).collect();
-    let unknown: Vec<i64> = before
-        .iter()
-        .copied()
-        .filter(|v| !MIGRATOR.version_exists(*v))
-        .collect();
+    let unknown = unknown_to_binary(&before);
     if !unknown.is_empty() {
         match ahead {
             Ahead::Refuse => return Err(Error::Ahead(unknown)),
@@ -233,6 +229,95 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
         ahead: Vec::new(),
     })
 }
+
+/// The ledger's versions this binary does not carry: the database was
+/// migrated by a newer release.
+fn unknown_to_binary(ledger: &[i64]) -> Vec<i64> {
+    ledger
+        .iter()
+        .copied()
+        .filter(|v| !MIGRATOR.version_exists(*v))
+        .collect()
+}
+
+/// How the database's schema stands against this binary's migrations.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Skew {
+    /// Versions in the ledger this binary does not carry (a newer release
+    /// migrated the database), as [`Error::Ahead`] names them.
+    pub ahead: Vec<i64>,
+    /// Versions this binary carries that the ledger lacks (migrations still
+    /// pending: `JUDGE_AUTO_MIGRATE=false` and nobody ran `judge-ingest
+    /// migrate`). A database with no ledger at all lacks every one.
+    pub behind: Vec<i64>,
+}
+
+impl Skew {
+    /// The schema is exactly the one this binary was built against.
+    #[must_use]
+    pub const fn current(&self) -> bool {
+        self.ahead.is_empty() && self.behind.is_empty()
+    }
+
+    /// Why a job must not write, for the operator, or `None` when the schema
+    /// is current.
+    #[must_use]
+    pub fn problem(&self) -> Option<String> {
+        if !self.ahead.is_empty() {
+            Some(format!(
+                "a newer release migrated the database (migrations {:?} are unknown to this binary), and this \
+                 binary does not write into a schema it does not know: run the newer image",
+                self.ahead
+            ))
+        } else if !self.behind.is_empty() {
+            Some(format!(
+                "the schema is behind this binary (migrations {:?} are pending, JUDGE_AUTO_MIGRATE=false?): \
+                 run `judge-ingest migrate`",
+                self.behind
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+/// Read the ledger and compare it with [`MIGRATOR`], changing nothing (no
+/// lock, no ledger table created): what an unattended job checks before it
+/// writes, so a process left running after a newer release migrated the
+/// database never writes into a schema it does not know.
+///
+/// # Errors
+/// [`Error::Db`] / [`Error::Migrate`] when the ledger cannot be read.
+pub async fn skew(pool: &PgPool) -> Result<Skew, Error> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(db("connecting to read the migration ledger"))?;
+    let ledger: Vec<i64> = match conn
+        .list_applied_migrations(MIGRATOR.table_name.as_ref())
+        .await
+    {
+        Ok(applied) => applied.iter().map(|a| a.version).collect(),
+        Err(MigrateError::Execute(sqlx::Error::Database(e)))
+            if e.code().as_deref() == Some(UNDEFINED_TABLE) =>
+        {
+            Vec::new()
+        }
+        Err(e) => return Err(explain(e)),
+    };
+    Ok(Skew {
+        ahead: unknown_to_binary(&ledger),
+        behind: MIGRATOR
+            .iter()
+            .filter(|m| !m.migration_type.is_down_migration())
+            .map(|m| m.version)
+            .filter(|v| !ledger.contains(v))
+            .collect(),
+    })
+}
+
+/// Postgres's SQLSTATE for a missing table.
+const UNDEFINED_TABLE: &str = "42P01";
 
 /// The `_sqlx_migrations` ledger (version + checksum), creating the table if
 /// the database is empty (idempotent, and what the migrator does first anyway).
@@ -294,6 +379,35 @@ mod tests {
 
     fn all_versions() -> Vec<i64> {
         MIGRATOR.iter().map(|m| m.version).collect()
+    }
+
+    /// The read-only check: no ledger is behind everything, a migrated one
+    /// is current, and an unknown version is ahead. It creates nothing.
+    #[sqlx::test(migrations = false)]
+    async fn the_skew_reads_the_ledger_without_touching_it(pool: PgPool) -> anyhow::Result<()> {
+        let none = skew(&pool).await?;
+        assert_eq!(none.behind, all_versions());
+        assert!(none.ahead.is_empty() && !none.current());
+        let created: bool =
+            sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
+                .fetch_one(&pool)
+                .await?;
+        assert!(!created, "reading made no ledger");
+        run(&pool, Ahead::Refuse).await?;
+        assert!(skew(&pool).await?.current());
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES ($1, 'future', true, $2, 0)",
+        )
+        .bind(99_990_101_000_001_i64)
+        .bind(&b"future"[..])
+        .execute(&pool)
+        .await?;
+        let ahead = skew(&pool).await?;
+        assert_eq!(
+            (ahead.ahead, ahead.behind),
+            (vec![99_990_101_000_001], Vec::new())
+        );
+        Ok(())
     }
 
     #[sqlx::test(migrations = false)]

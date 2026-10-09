@@ -74,7 +74,7 @@ Extend it when adding capability, and re-verify rule ids on each CR release.
 
 ## Reloading
 
-`aliases` and `notes` are not part of the nightly `refresh`. Run their `judge-ingest`
+`aliases` and `notes` are not part of the scheduled refresh. Run their `judge-ingest`
 commands when the files change. The image carries binaries only, no `data/`, so on a
 deploy host without a Rust toolchain, mount the file in:
 `docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml`.

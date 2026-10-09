@@ -23,9 +23,11 @@
 use std::collections::BTreeMap;
 
 use judge_bot::{
-    budget::{ALERT_WEBHOOK_ENV, PERIOD_ENV},
+    alert::ALERT_WEBHOOK_ENV,
+    budget::PERIOD_ENV,
     config::{ANTHROPIC_KEY_ENV, CONFIG_ENV, MAX_SPEND_ENV, VOYAGE_KEY_ENV},
     db::migrate::AUTO_MIGRATE_ENV,
+    jobs::REFRESH_HOURS_ENV,
 };
 use judge_core::{
     operator::{OPERATOR_DISCORD_ENV, OPERATOR_EMAIL_ENV},
@@ -146,6 +148,7 @@ pub const VARS: &[Var] = &[
             values: &["process", "day", "month"],
         },
     ),
+    setting(REFRESH_HOURS_ENV, Group::Pipeline, int(0)),
     // A credential: whoever has the URL can post to the channel.
     secret(ALERT_WEBHOOK_ENV, Group::Pipeline),
     setting(CONFIG_ENV, Group::Models, TEXT),

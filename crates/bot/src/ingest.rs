@@ -3,7 +3,7 @@
 //! [`notes`]), embedding ([`embed`], [`reembed`]), the Discord emoji upload
 //! ([`emoji`]) and the explicit migration ([`schema`]), plus the two
 //! sequences built from them: [`init`], the first load, and [`refresh`], the
-//! scheduled job. `judge-ingest` is argument parsing over this module.
+//! scheduled job ([`crate::jobs`] runs it on a timer). `judge-ingest` is argument parsing over this module.
 //!
 //! Every step that writes data takes `&mut` [`RefreshLease`] ([`lease`]), so
 //! two runs never overlap, in one process or several, and a step run without
@@ -105,7 +105,9 @@ pub type Embedder = Arc<dyn WithSpace>;
 /// # Errors
 /// When the configuration does not load or its embedder cannot be built.
 pub fn embedder_from_config() -> Result<Option<Embedder>> {
-    let embedder = configured_embedder()?;
+    let config = load_config()?;
+    tracing::info!("{}", config.summary());
+    let embedder = config.embedder()?;
     if embedder.is_none() {
         tracing::warn!(
             "no embedder configured (VOYAGE_API_KEY or [models.embed]); embedding steps will be skipped"
@@ -115,11 +117,16 @@ pub fn embedder_from_config() -> Result<Option<Embedder>> {
 }
 
 /// [`embedder_from_config`] without the warning, for a caller that reports
-/// the skip itself.
+/// the skip itself, and with the summary at DEBUG: a long-running process
+/// logged it at startup, and reloads it on every scheduled run.
 fn configured_embedder() -> Result<Option<Embedder>> {
-    let config = crate::config::Config::load().context("loading the model configuration")?;
-    tracing::info!("{}", config.summary());
+    let config = load_config()?;
+    tracing::debug!("{}", config.summary());
     Ok(config.embedder()?)
+}
+
+fn load_config() -> Result<crate::config::Config> {
+    crate::config::Config::load().context("loading the model configuration")
 }
 
 /// The whole first load, in dependency order: the schema, the cards the
@@ -270,34 +277,82 @@ fn has_discord_token() -> bool {
 /// step is logged and the rest still run; the report names every failure
 /// ([`RunReport::ensure_ok`]).
 ///
-/// Before each step the lease is checked ([`RefreshLease::check`]). A lost
-/// lease means another run may already be writing, so this one stops: that
-/// step and every later one are recorded as failed with the reason, and none
-/// of them runs.
+/// Before each step the run checks that it may still write, and stops when it
+/// may not; that step and every later one are recorded with the reason, and
+/// none of them runs. It may not write when
+///
+/// * its lease is lost ([`RefreshLease::check`]): another run may already be
+///   writing. The steps are failed.
+/// * the schema is not this binary's ([`crate::db::migrate::skew`]): ahead
+///   (a newer release migrated the database, as between `docker compose pull`
+///   and `up -d`) or behind (migrations pending, `judge-ingest migrate`). The
+///   steps are skipped ([`Skip::SchemaAhead`], [`Skip::SchemaBehind`]) and the
+///   run is [`runs::RunOutcome::Stopped`]: neither a success nor a failure.
+/// * it has run for [`RUN_TIMEOUT`]: the step in progress is abandoned (its
+///   future dropped, so its transaction rolls back unless it was committing)
+///   and failed as timed out, and the rest are skipped
+///   ([`Skip::RunTimedOut`]), so a hung download or query cannot hold the
+///   lease, and so every later refresh, forever. A statement already sent
+///   keeps running on the server until it ends: a scheduled run's
+///   connections carry `statement_timeout` and `lock_timeout`
+///   ([`crate::jobs`]) to bound that.
 ///
 /// The run is recorded in `refresh_runs` ([`runs`]) as started by `trigger`
 /// in the lease's process. Recording never stops a step: a record that
-/// cannot be written is logged, and the run goes on unrecorded.
+/// cannot be written is logged, and the run goes on unrecorded
+/// ([`RunReport::recorded`]).
 ///
 /// A step that cannot run for want of configuration is skipped, not failed:
 /// `embed` with no embedder configured, `emoji` with no `DISCORD_TOKEN` (the
 /// emoji belong to the bot's Discord application, and a database-only
 /// deployment has none).
+///
+/// A [`Trigger::Schedule`] run also skips `embed` when more rows wait than it
+/// may pay for unattended ([`embed::UNATTENDED_CEILING`]); see [`over_ceiling`].
 pub async fn refresh(lease: &mut RefreshLease, cache_dir: &Path, trigger: Trigger) -> RunReport {
+    let step = async |lease: &mut RefreshLease, step: Step| {
+        refresh_step(lease, step, cache_dir, trigger).await
+    };
+    refresh_with(lease, trigger, RUN_TIMEOUT, step).await
+}
+
+/// [`refresh`] with its time limit and its steps as parameters, so a test can
+/// run it without downloading anything.
+async fn refresh_with<F>(
+    lease: &mut RefreshLease,
+    trigger: Trigger,
+    limit: Duration,
+    mut run_step: F,
+) -> RunReport
+where
+    F: AsyncFnMut(&mut RefreshLease, Step) -> StepReport,
+{
+    let deadline = tokio::time::Instant::now() + limit;
     let pool = lease.pool().clone();
     let cr_before = runs::stored_cr(&pool).await;
     let record = runs::begin(&pool, trigger, lease.process(), cr_before.as_deref()).await;
     let mut steps = Vec::with_capacity(Step::ALL.len());
-    let mut lost: Option<String> = None;
+    let mut halted: Option<Halt> = None;
+    let mut timed_out = false;
     for step in Step::ALL {
-        if lost.is_none()
-            && let Err(e) = lease.check().await
-        {
-            lost = Some(format!("{e:#}"));
+        if halted.is_none() {
+            halted = may_write(lease).await.err();
         }
-        let report = match &lost {
-            Some(error) => step.failed(error.clone()),
-            None => refresh_step(lease, step, cache_dir).await,
+        let report = match &halted {
+            Some(Halt::Lost(error)) => step.failed(error.clone()),
+            Some(Halt::Skip(reason)) => step.skipped(*reason),
+            None => {
+                if let Ok(report) = tokio::time::timeout_at(deadline, run_step(lease, step)).await {
+                    report
+                } else {
+                    timed_out = true;
+                    halted = Some(Halt::Skip(Skip::RunTimedOut));
+                    step.failed(format!(
+                        "timed out: the run passed its {} min limit, and the rest of it was abandoned",
+                        limit.as_secs() / 60
+                    ))
+                }
+            }
         };
         report.log();
         steps.push(report);
@@ -323,26 +378,87 @@ pub async fn refresh(lease: &mut RefreshLease, cache_dir: &Path, trigger: Trigge
         steps,
         cr_before,
         cr_after,
+        recorded: record.is_some(),
+        timed_out,
     };
     runs::finish(&pool, record, &report).await;
     report
 }
 
+/// The longest a [`refresh`] runs before abandoning its remaining steps. A
+/// healthy run takes minutes and a first full load on a NAS well under an
+/// hour ([`lease::LEASE_WAIT`] is sized the same way); three hours is that with
+/// room for a slow Scryfall day and a full re-embed after a new embedder, and
+/// still far less than the daily interval, so a hang costs one day's refresh
+/// at most.
+pub const RUN_TIMEOUT: Duration = Duration::from_hours(3);
+
+/// Why a run may not write its next step.
+#[derive(Clone, Debug)]
+enum Halt {
+    /// The lease is lost, or the check could not be made: the steps fail.
+    Lost(String),
+    /// The steps are skipped: the schema is not this binary's
+    /// ([`Skip::stops`]), or the run timed out.
+    Skip(Skip),
+}
+
+/// `Ok` when the run may write its next step: the lease is held and the
+/// schema is this binary's.
+async fn may_write(lease: &mut RefreshLease) -> std::result::Result<(), Halt> {
+    let lost = |e: anyhow::Error| Halt::Lost(format!("{e:#}"));
+    lease.check().await.map_err(lost)?;
+    let skew = crate::db::migrate::skew(lease.pool())
+        .await
+        .context("reading the migration ledger")
+        .map_err(lost)?;
+    if let Some(problem) = skew.problem() {
+        tracing::warn!("not writing: {problem}");
+        return Err(Halt::Skip(if skew.ahead.is_empty() {
+            Skip::SchemaBehind
+        } else {
+            Skip::SchemaAhead
+        }));
+    }
+    Ok(())
+}
+
+/// What a single-step command (`judge-ingest cards`, `rules`, `embed`, …)
+/// checks once after taking the lease, as [`refresh`] does before each step:
+/// the lease is held and the schema is this binary's.
+///
+/// # Errors
+/// Naming why it may not write.
+pub async fn ensure_writable(lease: &mut RefreshLease) -> Result<()> {
+    match may_write(lease).await {
+        Ok(()) => Ok(()),
+        Err(Halt::Lost(error)) => anyhow::bail!(error),
+        Err(Halt::Skip(reason)) => anyhow::bail!("not writing: {reason}"),
+    }
+}
+
 /// One step of [`refresh`].
-async fn refresh_step(lease: &mut RefreshLease, step: Step, cache_dir: &Path) -> StepReport {
+async fn refresh_step(
+    lease: &mut RefreshLease,
+    step: Step,
+    cache_dir: &Path,
+    trigger: Trigger,
+) -> StepReport {
     match step {
         Step::Cards => StepReport::Cards(Outcome::of(scryfall::run(lease, cache_dir).await)),
         Step::Rules => StepReport::Rules(Outcome::of(cr::run_latest(lease, cache_dir).await)),
         Step::Retire => StepReport::Retire(Outcome::of(retire(lease).await)),
         Step::Embed => StepReport::Embed(match configured_embedder() {
-            Ok(Some(embedder)) => {
-                Outcome::of(embed::run(lease, Some(&*embedder)).await.map(|counts| {
+            Ok(Some(embedder)) => match over_ceiling(lease, trigger).await {
+                Ok(Some(reason)) => Outcome::Skipped { reason },
+                Ok(None) => Outcome::of(embed::run(lease, Some(&*embedder)).await.map(|counts| {
                     counts
                         .into_iter()
                         .map(|(table, n)| (table.to_owned(), n))
                         .collect()
-                }))
-            }
+                })),
+                Err(e) => Outcome::of(Err(e)),
+            },
             Ok(None) => Outcome::Skipped {
                 reason: Skip::NoEmbedder,
             },
@@ -358,6 +474,27 @@ async fn refresh_step(lease: &mut RefreshLease, step: Step, cache_dir: &Path) ->
     }
 }
 
+/// The spend guard on an unattended run: a [`Trigger::Schedule`] run with
+/// more rows to embed than [`embed::UNATTENDED_CEILING`] skips the step with
+/// the count. A manual run is someone deciding to pay, so it has no ceiling.
+///
+/// # Errors
+/// When the rows cannot be counted.
+async fn over_ceiling(lease: &mut RefreshLease, trigger: Trigger) -> Result<Option<Skip>> {
+    match trigger {
+        Trigger::Manual => Ok(None),
+        Trigger::Schedule => {
+            let rows = embed::pending(lease.pool()).await?;
+            Ok(
+                (rows > embed::UNATTENDED_CEILING).then_some(Skip::EmbedCeiling {
+                    rows,
+                    ceiling: embed::UNATTENDED_CEILING,
+                }),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +505,140 @@ mod tests {
     fn the_built_in_lists_parse() -> Result<()> {
         assert!(!scryfall::parse_alias_yaml(aliases::BUILTIN)?.is_empty());
         assert!(!notes::parse_notes_yaml(notes::BUILTIN)?.is_empty());
+        Ok(())
+    }
+
+    /// The spend guard counts every embeddable table, and binds a scheduled
+    /// run only: at the ceiling it embeds, one row over it skips.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_scheduled_run_skips_embedding_over_the_ceiling(pool: PgPool) -> Result<()> {
+        let mut held = lease(&pool, "ceiling-test").await?;
+        sqlx::query(
+            "INSERT INTO glossary (term, text, cr_version)
+             SELECT 'term ' || g, 'text', '20260101' FROM generate_series(1, $1) g",
+        )
+        .bind(i32::try_from(embed::UNATTENDED_CEILING)?)
+        .execute(&pool)
+        .await?;
+        assert_eq!(embed::pending(&pool).await?, embed::UNATTENDED_CEILING);
+        assert_eq!(over_ceiling(&mut held, Trigger::Schedule).await?, None);
+        sqlx::query(
+            "INSERT INTO rules (id, subsection, body, cr_version) VALUES ('100.1', '100', 'x', '20260101')",
+        )
+        .execute(&pool)
+        .await?;
+        let rows = embed::UNATTENDED_CEILING + 1;
+        assert_eq!(
+            over_ceiling(&mut held, Trigger::Schedule).await?,
+            Some(Skip::EmbedCeiling {
+                rows,
+                ceiling: embed::UNATTENDED_CEILING
+            })
+        );
+        assert_eq!(over_ceiling(&mut held, Trigger::Manual).await?, None);
+        held.release().await;
+        Ok(())
+    }
+
+    /// A schema from a newer release, or one with migrations pending, is
+    /// never written: every step is skipped with the reason, none runs, and
+    /// the run is stopped (stored `ok` null), not failed.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_run_on_a_schema_it_does_not_know_writes_nothing(pool: PgPool) -> Result<()> {
+        let mut held = lease(&pool, "skew-test").await?;
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES ($1, 'future', true, $2, 0)",
+        )
+        .bind(99_990_101_000_001_i64)
+        .bind(&b"future"[..])
+        .execute(&pool)
+        .await?;
+        let ran = std::cell::Cell::new(0);
+        let count = async |_: &mut RefreshLease, step: Step| {
+            ran.set(ran.get() + 1);
+            step.failed("ran".into())
+        };
+        let report = refresh_with(&mut held, Trigger::Manual, RUN_TIMEOUT, count).await;
+        assert_eq!((ran.get(), report.failed()), (0, Vec::new()));
+        assert_eq!(report.outcome(), runs::RunOutcome::Stopped);
+        assert!(
+            report
+                .steps
+                .iter()
+                .all(|s| s.skipped() == Some(Skip::SchemaAhead))
+        );
+        let err = report.ensure_ok().err().map(|e| e.to_string());
+        assert!(
+            err.as_deref().is_some_and(|e| e.contains("newer release")),
+            "{err:?}"
+        );
+        let ok: Option<bool> = sqlx::query_scalar("SELECT ok FROM refresh_runs")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(ok, None, "stored as neither");
+        assert!(
+            ensure_writable(&mut held).await.is_err(),
+            "nor may a single step"
+        );
+
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 20261008000001")
+            .execute(&pool)
+            .await?;
+        let report = refresh_with(&mut held, Trigger::Manual, RUN_TIMEOUT, count).await;
+        assert_eq!(ran.get(), 0);
+        let err = report.ensure_ok().err().map(|e| e.to_string());
+        assert!(
+            err.as_deref()
+                .is_some_and(|e| e.contains("judge-ingest migrate")),
+            "{err:?}"
+        );
+        held.release().await;
+        Ok(())
+    }
+
+    /// A step that hangs is abandoned at the limit, recorded as timed out,
+    /// and the rest are not started; the row is finished, not left open.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_hung_step_times_the_run_out_and_is_recorded(pool: PgPool) -> Result<()> {
+        let mut held = lease(&pool, "timeout-test").await?;
+        let started = std::cell::Cell::new(Vec::new());
+        let hang = async |_: &mut RefreshLease, step: Step| {
+            let mut seen = started.take();
+            seen.push(step);
+            started.set(seen);
+            if step == Step::Rules {
+                std::future::pending::<()>().await;
+            }
+            StepReport::Cards(Outcome::Ok { summary: () })
+        };
+        let report = refresh_with(
+            &mut held,
+            Trigger::Schedule,
+            Duration::from_millis(300),
+            hang,
+        )
+        .await;
+        assert!(report.timed_out && report.recorded);
+        assert_eq!(report.outcome(), runs::RunOutcome::Failed);
+        assert_eq!(started.take(), vec![Step::Cards, Step::Rules]);
+        assert_eq!(
+            report.failed(),
+            vec![Step::Rules],
+            "only the step that hung"
+        );
+        assert!(
+            report
+                .steps
+                .iter()
+                .skip(2)
+                .all(|s| s.skipped() == Some(Skip::RunTimedOut))
+        );
+        let (ok, finished): (Option<bool>, bool) =
+            sqlx::query_as("SELECT ok, finished_at IS NOT NULL FROM refresh_runs")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!((ok, finished), (Some(false), true));
+        held.release().await;
         Ok(())
     }
 

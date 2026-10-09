@@ -302,6 +302,13 @@ mod tests {
             Some(env("JUDGE_USER_WINDOW_SECS"))
         );
         assert_eq!(error_at(c.get(&Surface::Api)), Some(env("MCP_TOKEN")));
+        let mut bad = OK.to_vec();
+        bad.push(("JUDGE_REFRESH_HOURS", "daily"));
+        let c = checks(None, &bad);
+        assert_eq!(
+            error_at(c.get(&Surface::Models)),
+            Some(env("JUDGE_REFRESH_HOURS"))
+        );
         let c = checks(None, &without("ANTHROPIC_API_KEY"));
         assert_eq!(
             error_at(c.get(&Surface::Models)),

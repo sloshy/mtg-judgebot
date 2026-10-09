@@ -12,7 +12,8 @@ spend cap. A complete instance is three containers from one compose file:
 - `api`: the web page and HTTP API.
 - `bot`: Discord.
 
-A fourth, `refresh`, runs nightly from cron to keep cards and rules current. An optional
+`bot` and `api` also keep cards and rules current, refreshing them daily by default. A fourth
+service, `refresh`, runs the data loads on demand. An optional
 `cloudflared` publishes the API without opening a port. You can stop after `api` and never
 touch Discord. The bot is the last thing to add.
 
@@ -64,8 +65,11 @@ touch Discord. The bot is the last thing to add.
 5. [Create the Discord app](../../self-hosting/discord-app/), then `docker compose up -d
    bot`. Then run `docker compose run --rm refresh emoji` once, so answers show mana
    symbols as pictures instead of `{W}`.
-6. Schedule `scripts/refresh-data.sh` nightly and `scripts/backup-db.sh` weekly. The
-   [deployment runbook](../../self-hosting/deployment/) has the cron lines.
+6. Schedule `scripts/backup-db.sh` weekly. The
+   [deployment runbook](../../self-hosting/deployment/) has the cron line. The data
+   refresh needs no schedule of yours: `bot` and `api` run it every `JUDGE_REFRESH_HOURS`
+   (default 24), once step 3 has loaded the data. Until then they wait for it, with one
+   warning naming `init`.
 
 ## Single steps
 

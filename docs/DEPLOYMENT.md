@@ -201,7 +201,7 @@ the setup stays the `.env` one. Three consequences:
 - **The `api_key_env` of every provider a stage names must be set in `.env`**, including
   for `refresh`. Each binary resolves all three stages (`[models.extract]`,
   `[models.synth]`, `[models.embed]`) at load. A missing chat key therefore fails
-  `refresh`'s nightly `embed` step, even though `refresh` never uses it. That is deliberate:
+  `refresh`'s `embed` step, even though `refresh` never uses it. That is deliberate:
   it fails rather than run half a configuration. A provider
   table no stage names is parsed but its key is never read. `.env` is the `env_file` for
   all three containers, so one line there covers them.
@@ -246,8 +246,8 @@ After editing `judge.toml`, run `docker compose restart bot api`, not `up -d`. T
 is read only at startup. Compose recreates a container only when its configuration or
 image changed, and a bind-mounted file's content is neither, so `up -d` prints `Running`
 and keeps the old configuration. (Changing `JUDGE_CONFIG` itself in `.env` does change
-the configuration, and `up -d` recreates.) The next `refresh` run picks the
-file up on its own. Changing `[models.embed]` is the one edit that needs the database
+the configuration, and `up -d` recreates.) A refresh run, scheduled or from `refresh`,
+reads the file afresh, so it picks the edit up on its own. Changing `[models.embed]` is the one edit that needs the database
 moved too (§7).
 
 An older Compose may reject the `${JUDGE_CONFIG:+…}` interpolation in
@@ -474,11 +474,11 @@ The card count should match section 2. `*.dump.gz` is gitignored.
 
 ## 7. Scheduled data refresh
 
-`judge-ingest refresh` brings the database up to date in one unattended run. Scryfall
-publishes new bulk data daily, and Wizards ships a Comprehensive Rules release with
-most sets. The job uses the same image as `bot` and `api`, with a third entrypoint: the
-compose service `refresh`, off by default behind the `refresh` profile. Its steps, in
-order:
+`bot` and `api` keep the data current themselves. Scryfall publishes new bulk data
+daily, and Wizards ships a Comprehensive Rules release with most sets. Every
+`JUDGE_REFRESH_HOURS` (default 24) one of the two runs a refresh: the steps of
+`judge-ingest refresh`, in the same process, with nothing to install on the host. Its
+steps, in order:
 
 1. `cards`: Scryfall oracle cards, printed names and rulings. These are upserts, so
    cards the bot already knows are refreshed in place.
@@ -492,59 +492,154 @@ order:
 5. `emoji`: uploads any card symbol Scryfall added. Skipped when `DISCORD_TOKEN` is
    unset.
 
-Each step runs even if an earlier one failed, and the exit status is non-zero if any
-did. A step that cannot run for want of configuration (`embed` with no embedder,
-`emoji` with no `DISCORD_TOKEN`) logs `refresh step skipped` with the reason and does
-not count as a failure.
+Each step runs even if an earlier one failed. A step that cannot run for want of
+configuration (`embed` with no embedder, `emoji` with no `DISCORD_TOKEN`) logs
+`refresh step skipped` with the reason and does not count as a failure. Most days a run
+costs one Scryfall download and nothing else. It takes a few minutes on a NAS, mostly
+parsing the `default_cards` file. The CR load is one transaction, so retrieval sees the
+old rules or the new, never a mix. The `cards` step commits in batches: each card
+changes together with its faces, and the rulings change in one transaction after the
+cards. A `cards` step cut short leaves some cards refreshed, and the next run finishes
+the rest.
 
-Runs never overlap. Every `judge-ingest` command that writes data takes the refresh
-lease first, an advisory lock in the database. If another run holds it, the command logs
-`another refresh or ingest step holds the refresh lease; waiting for it to finish`, naming
-the holder, and waits. So the cron run, `scripts/refresh-data.sh <step>` and a manual
-`judge-ingest` from a workstation take turns. `migrate` and `emoji` do not take it:
-`migrate` has its own lock, and `emoji` writes no database.
+### Schedule
 
-- Postgres drops the lock when the holding session ends, so a run that crashed or was
-  killed leaves nothing to clean up.
-- The wait is bounded at an hour. After that the command fails with
-  `the refresh lease is still held after 60 min, by pid …`, so a hung run makes the
-  next night's run fail and alert instead of queueing every later run behind it.
-- Downloads give up after 30 seconds without a connection or two minutes without data,
-  so a stalled Scryfall or Wizards connection fails its step instead of hanging the run.
-- A run checks before each step that it still holds the lease. If the lease's session
-  was ended (a database restart, `pg_terminate_backend`), the run stops and records the
-  remaining steps as failed with `refresh lease lost`.
+The schedule lives in the database, so `bot`, `api`, a restart and a cron job all agree
+on it:
 
-Each `refresh` is recorded in `refresh_runs`: when it started and finished, the CR
-version before and after, and each step's outcome. A row with no `finished_at` is a run
-in progress or one that died. A run that loads a new CR also logs `CR <old> → <new>`.
+- A run is due when the last *successful* run finished more than `JUDGE_REFRESH_HOURS`
+  ago (or none ever has), and the last attempt started long enough ago: an hour after
+  one failure, doubling with each further failure in a row (2, 4, 8 hours…), never more
+  than `JUDGE_REFRESH_HOURS`. Every age is measured on Postgres's clock.
+- A run whose process died (killed, out of memory) leaves its row unfinished. After
+  3 hours 10 minutes the schedule counts it as a failed run: it backs off as for any
+  failure, and the webhook is told once that a refresh never finished, not again on
+  each attempt of a crash loop.
+- Each process first checks 1.5 to 3.5 minutes after it starts, then every 10 to 12
+  minutes.
+  An instance whose data was loaded but never refreshed catches up within minutes.
+- Only one run happens at a time. A due check takes the refresh lease (below) without
+  waiting. If another process or a cron run holds it, the check does nothing. Whichever
+  of `bot` and `api` wins records itself in `refresh_runs.process`.
+- The run has its own thread, async runtime and pool of three database connections,
+  so its downloads, file parsing and queries never take a worker or a connection a
+  question needs. The database itself is shared. While the CR load or the retirement
+  pass holds the calls lock for its transaction, saving an answer with its vector
+  waits for it, and the reply waits with it. A cron run does the same.
+- A run stops after three hours. The step in progress is abandoned and recorded as
+  failed with `timed out`. Its transaction rolls back unless it was committing. The
+  steps after it are skipped, and the lease is released, so a hung download cannot
+  stop every later refresh. A statement the abandoned step had already sent runs on in
+  Postgres until it ends, so the schedule's connections set `statement_timeout` (30
+  minutes) and `lock_timeout` (15 minutes): no statement of a refresh comes near either
+  on a NAS, and either ends a stuck one, with any lock it held.
+- If a run is still going 3 hours 10 minutes after it started, the scheduler drops it,
+  marks its row failed and releases the lease. Only a run stuck outside its steps gets
+  that far.
+- A process whose binary does not match the schema never writes. A container left
+  running on an older image after a newer release migrated the database logs
+  `scheduled refresh paused: a newer release migrated the database`, and one whose
+  migrations are pending (`JUDGE_AUTO_MIGRATE=false`) logs `scheduled refresh paused:
+  the schema is behind this binary`. Each resumes by itself once the two match. A run
+  that meets a schema change part-way (a deploy during a refresh) stops before its next
+  step and is recorded as stopped, neither a success nor a failure: no alert, no
+  backoff. A manual or cron `judge-ingest refresh` checks the same before every step,
+  and a single-step command (`cards`, `rules`, `embed`, …) once before it starts. Both
+  exit non-zero instead of writing.
+- A database with no rules loaded has not had its first load. The schedule waits for
+  `docker compose run --rm refresh init` (`scheduled refresh paused: no rules are
+  loaded`) rather than running a refresh, which would skip embedding every row at the
+  spend guard.
 
-```sql
-select started_at, finished_at, ok, cr_before, cr_after from refresh_runs order by id desc limit 5;
-select s from refresh_runs, jsonb_array_elements(steps) s where id = (select max(id) from refresh_runs);
-```
+At startup each process logs `scheduled data refresh on` with the schedule, the age of
+the last success and the stored CR version. A run logs `refresh starting` and
+`refresh finished` with `trigger=schedule`, and one line per step in between.
 
-With a `judge.toml`, `refresh` reads the same file `bot`/`api` do (compose mounts it
-from `JUDGE_CONFIG`, §4). Its `embed` step writes vectors in the space the bot queries,
-and refuses when the configured space and the database's disagree.
+`JUDGE_REFRESH_HOURS` takes 1 to 720 hours, and `0` turns the schedule off. A typo or a
+negative value stops every binary that loads the configuration (`bot`, `api`,
+`judge-ingest`, `judge-cli`, `judge-mcp`, `judge-eval`) at startup, naming the
+variable, as `JUDGE_BUDGET_PERIOD` does. After changing it, `docker compose up -d`
+recreates `bot` and `api`.
 
-`scripts/refresh-data.sh` is the cron entry point. It checks that the image
-`docker compose pull` fetched is present, then runs `docker compose run --rm refresh`. It never builds on the host. Any argument
-is passed through as the `judge-ingest` subcommand. For example,
-`scripts/refresh-data.sh rules latest` checks only the CR.
+With `JUDGE_ALERT_WEBHOOK` set, a scheduled run posts there:
 
-Install it beside the backup, on the same scheduler. §6 has the Synology notes: run
-as root, absolute paths, tick email-on-error.
+- the first failure of a streak, naming the failed steps and saying so when it timed
+  out (the log has the errors). A retry that fails again is not reposted.
+- the first success after a failure, whoever's run failed.
+- an `embed` step skipped by the spend guard (below), with the command that does it by
+  hand. A run after one that skipped too is not reposted.
+- a check that crashed (a panic), once until a run succeeds.
+- a run that never finished (its process died), once per streak of failures.
+
+**The spend guard.** A scheduled run never pays for a mass re-embed. A manual or cron
+`judge-ingest refresh` (`scripts/refresh-data.sh`) has no such ceiling: whoever installed
+it chose to run it. Before embedding
+it counts the rows waiting for a vector. Above 800 it skips the step
+(`refresh step skipped`, with the count) and alerts. A full re-embed is about 1,900 rows
+(1,173 rules, 739 glossary entries and one per stored call), while a new CR release empties
+a few hundred. More than 800 empty vectors means something else emptied them: an
+embedder configured on a database that never had one, or a `reembed --clear` that
+died. Run `scripts/refresh-data.sh embed` when that spend is expected.
+
+### Cron
+
+`scripts/refresh-data.sh` runs the same refresh from the host, as
+`docker compose run --rm refresh`. It checks that the image `docker compose pull`
+fetched is present and never builds on the host. Any argument is passed through as the
+`judge-ingest` subcommand: `scripts/refresh-data.sh rules latest` checks only the CR. It
+exits non-zero if any step failed, and posts to `JUDGE_ALERT_WEBHOOK` when it does.
+
+A cron entry from an earlier release keeps working. It takes the same lease and writes
+the same record, so the schedule counts its run as that day's and never overlaps it.
+Remove the entry whenever convenient. To keep cron in charge instead, set
+`JUDGE_REFRESH_HOURS=0` and install the entry beside the backup, on the same scheduler
+(§6 has the Synology notes: run as root, absolute paths, tick email-on-error):
 
 ```sh
 crontab -e
 30 5 * * *  /path/to/mtg-judgebot/scripts/refresh-data.sh >> ~/judgebot-refresh.log 2>&1
 ```
 
-Run it daily. Scryfall corrects Oracle text and adds rulings between sets, and a new
-CR is then picked up within a day. Most days it costs one Scryfall download and nothing
-else. The run takes a few minutes on a NAS, mostly parsing the `default_cards` file. It does not disturb the running bot: every
-load is one transaction, so retrieval sees the old data or the new, never a mix.
+### Lease
+
+Runs never overlap. Every `judge-ingest` command that writes data takes the refresh
+lease first, an advisory lock in the database. If another run holds it, the command logs
+`another refresh or ingest step holds the refresh lease; waiting for it to finish`, naming
+the holder, and waits. So the scheduled run, `scripts/refresh-data.sh <step>` and a
+manual `judge-ingest` from a workstation take turns. `migrate` and `emoji` do not take
+it: `migrate` has its own lock, and `emoji` writes no database.
+
+- Postgres drops the lock when the holding session ends, so a run that crashed or was
+  killed leaves nothing to clean up.
+- A command's wait is bounded at an hour. After that it fails with
+  `the refresh lease is still held after 60 min, by pid …`, so a hung run makes the
+  next one fail and alert instead of queueing every later run behind it. The schedule
+  never waits: it checks again ten minutes later.
+- Downloads give up after 30 seconds without a connection or two minutes without data,
+  so a stalled Scryfall or Wizards connection fails its step instead of hanging the run.
+- A run checks before each step that it still holds the lease. If the lease's session
+  was ended (a database restart, `pg_terminate_backend`), the run stops and records the
+  remaining steps as failed with `refresh lease lost`.
+
+### Run record
+
+Each run is recorded in `refresh_runs`: when it started and finished, what started it
+(`schedule` or `manual`) and in which process, the CR version before and after, and each
+step's outcome. A row with no `finished_at` is a run in progress or one that died. A
+run that loads a new CR also logs `CR <old> → <new>`.
+
+```sql
+select started_at, finished_at, trigger, process, ok, cr_before, cr_after from refresh_runs order by id desc limit 5;
+select s from refresh_runs, jsonb_array_elements(steps) s where id = (select max(id) from refresh_runs);
+```
+
+A run reads the same `judge.toml` `bot`/`api` do (compose mounts it from
+`JUDGE_CONFIG`, §4), afresh each time. Its `embed` step writes vectors in the space the
+bot queries, and refuses when the configured space and the database's disagree.
+Downloads are cached in the `judgebot-ingest-cache` volume, which `bot`, `api` and
+`refresh` share.
+
+### Call retirement
 
 Prior calls follow the data they cite. The `retire` step re-runs the check that
 admitted each stored call: does each cited rule, ruling or Oracle text still exist and
@@ -569,15 +664,15 @@ select retired_reason, count(*) from calls where retired_at is not null group by
 
 Between the `rules` and `embed` steps (about a minute), the vector search cannot find
 the changed rules. If `embed` fails (the embedder is down or rate-limited), those rules
-stay unembedded until the next night's run, because `embed` always fills every NULL.
+stay unembedded until the next successful run, because `embed` always fills every NULL.
 
-Run it once by hand after installing. Expect one line per step, `cards`, `rules`,
-`retire`, `embed` and `emoji` in that order, each `refresh step ok` or `refresh step
-skipped` and none `refresh step failed`. `embed` is skipped with no embedder configured
-and `emoji` with no `DISCORD_TOKEN`. A run that loaded a new CR then logs
-`CR <old> → <new>` last. The command exits 0. A one-off manual load also works from a
-workstation (`cargo run --release -p judge-ingest -- rules <url>`). To force a
-re-parse of an already-loaded version that way, delete the cached txt first.
+To watch a run, read `docker compose logs bot api | grep refresh` after the first
+check, or start one now with `scripts/refresh-data.sh`. Expect one line per step,
+`cards`, `rules`, `retire`, `embed` and `emoji` in that order, each `refresh step ok`
+or `refresh step skipped` and none `refresh step failed`. A run that loaded a new CR
+then logs `CR <old> → <new>` last. A one-off manual load also works from a workstation
+(`cargo run --release -p judge-ingest -- rules <url>`). To force a re-parse of an
+already-loaded version that way, delete the cached txt first.
 
 ### Embedding model change
 
@@ -615,7 +710,8 @@ it agrees. Either order works:
 Either way there is one window without vectors, and no mixing. The order above keeps it short.
 
 The refill is resumable. If the embed loop dies (rate limit, a provider outage),
-`scripts/refresh-data.sh embed` or the next nightly run fills whatever is still NULL.
+`scripts/refresh-data.sh embed` or the next scheduled run fills whatever is still NULL
+(up to the spend guard's 800 rows, §7).
 Retrieval degrades to the other sources for the rows not yet embedded. `reembed --yes`
 resumes too: with the row already switched it has nothing to switch, so it fills the
 empty rows and pays for nothing twice.
@@ -624,7 +720,7 @@ empty rows and pays for nothing twice.
 so the running bot logs no mismatch, and its vector search finds nothing until the refill
 finishes.
 
-A resumed refill and the nightly `refresh` never overlap: both take the refresh lease,
+A resumed refill and a scheduled refresh never overlap: both take the refresh lease,
 so whichever starts second waits for the first.
 
 If only the model *name* differs from the row (same provider, same width), the dry run
@@ -710,7 +806,7 @@ them.
 The refresh job's CR load, retirement pass and embedding writes take the same advisory
 lock, so the migration and those steps wait for each other. (The Scryfall card/rulings
 upsert takes no lock and needs none: it is one transaction and touches no `calls`
-rows.) A deploy during the nightly refresh therefore waits at startup until the CR load
+rows.) A deploy during a refresh therefore waits at startup until the CR load
 finishes, which is minutes on a NAS. It logs one warning line,
 `another job holds the calls rewrite lock ... waiting`, in `docker compose logs bot`.
 That is a wait, not a hang.
@@ -775,7 +871,10 @@ and does not migrate. Whether it then works depends on the migration:
   restoring the pre-release dump too (`scripts/backup-db.sh fetch`, §6). Run the
   weekly backup by hand right before such a deploy.
 
-`judge-ingest migrate` refuses a database that is ahead rather than guessing.
+`judge-ingest migrate` refuses a database that is ahead rather than guessing, and the
+scheduled refresh stays paused while it is (§7): the data is not refreshed until the
+image and the schema match again. An image from before the built-in schedule refreshes
+nothing by itself, so a rollback that far needs the cron entry of §7 until you upgrade.
 
 `cloudflared` and `db` are untouched by a code deploy. The tunnel reconnects on its
 own if the connector restarts.
@@ -799,10 +898,12 @@ own if the connector restarts.
 | Bot online, web page dead | expected if only `api` failed — the gateway is a separate outbound connection |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
 | Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and `docker compose up -d`, or wait for the period to turn |
-| A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`; both scripts post there on a non-zero exit |
+| A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`. A scheduled refresh posts there on the first failure of a streak and on recovery; both scripts post on a non-zero exit |
+| The data is days old and `refresh_runs` has no recent row | `JUDGE_REFRESH_HOURS=0` with no cron entry, or every `bot`/`api` log says `scheduled refresh paused` (a container on an older image than the schema, migrations pending with `JUDGE_AUTO_MIGRATE=false`, or no rules loaded yet: `docker compose run --rm refresh init`). `docker compose logs bot api \| grep 'scheduled'` shows which |
+| `refresh step skipped` for `embed`, `rows to embed, over the 800` | the spend guard: a scheduled run found more empty vectors than a CR release leaves. Run `scripts/refresh-data.sh embed` if that spend is expected (§7) |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |
-| Refresh logs `waiting for it to finish` and sits there | another refresh or ingest step holds the refresh lease (cron and a manual run overlapped); it proceeds when that one ends, or fails after an hour. The log line names the holder; `select pid, application_name, query_start, state from pg_stat_activity where application_name like 'judgebot refresh lease%';` lists it (`… since <UTC time>`) and any waiters (`… waiting`, waiting since `query_start`). A hung holder can be ended with `select pg_terminate_backend(<pid>);`. A killed run's lock is dropped by Postgres, so there is nothing to remove |
-| Refresh loads the CR every night | `rules.cr_version` disagrees with the file name on Wizards' page — check the `current comprehensive rules release` log line for `published` vs `stored` |
+| Refresh logs `waiting for it to finish` and sits there | another refresh or ingest step holds the refresh lease (a scheduled or cron run and a manual one overlapped); it proceeds when that one ends, or fails after an hour. The log line names the holder; `select pid, application_name, query_start, state from pg_stat_activity where application_name like 'judgebot refresh lease%';` lists it (`… since <UTC time>`) and any waiters (`… waiting`, waiting since `query_start`). A hung holder can be ended with `select pg_terminate_backend(<pid>);`. A killed run's lock is dropped by Postgres, so there is nothing to remove |
+| Refresh loads the CR on every run | `rules.cr_version` disagrees with the file name on Wizards' page — check the `current comprehensive rules release` log line for `published` vs `stored` |
 | Refresh runs but the bot still cites the old CR | it does not: retrieval reads the database live; check the run actually finished (`refresh step ok` for `rules` and `embed`) |
 | `JUDGE_CONFIG=/etc/judgebot/judge.toml: file not found` at startup | `JUDGE_CONFIG` in `.env` names a host file that does not exist; Docker mounted an empty directory in its place (and created a root-owned one on the host — `sudo rmdir` it) |
 | `providers.X: NAME (api_key_env) is not set` at startup | the key was exported in the shell that ran `cargo run` but never written to `.env`, which is all the containers read; or, from `refresh` alone, only the embed provider's key was set because "refresh only embeds" — `refresh` resolves the chat stages too, so the extract/synth providers' keys must be in `.env` as well |

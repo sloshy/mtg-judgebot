@@ -17,7 +17,42 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
+### Added
+
+- **`bot` and `api` refresh the data themselves.** Every `JUDGE_REFRESH_HOURS` (default
+  24, 1 to 720, `0` = off) one of them runs the steps of `judge-ingest refresh`: cards
+  and rulings, a new CR release, retirement, embeddings, emoji. No host cron is needed.
+  The schedule is kept in the database, so the processes, a restart and a cron run agree
+  on it, and the refresh lease means a run happens once however many there are. A failed
+  run is retried after an hour, then less often while it keeps failing. The run has its
+  own thread, runtime and database connections, so its downloads and parsing take
+  nothing from answering. While a CR load or the retirement pass holds the calls lock,
+  saving an answer still waits for it, as under a cron run. A process whose image does
+  not match the schema pauses its schedule with one warning instead of writing, and a
+  database with no rules loaded waits for `init`. A bad `JUDGE_REFRESH_HOURS` stops
+  every binary that loads the configuration, as `JUDGE_BUDGET_PERIOD` does.
+- **`JUDGE_ALERT_WEBHOOK` hears the scheduled refresh**: the first failure of a streak
+  (saying when it timed out), the recovery after one, a run whose process died, an
+  embedding step the spend guard skipped, and a crashed check. Each is posted once, not
+  on every retry.
+- **A scheduled refresh never pays for a mass re-embed.** With more than 800 rows waiting
+  for a vector it skips `embed`, logs the count and alerts. `judge-ingest embed` (or
+  `scripts/refresh-data.sh embed`) does it when that spend is expected. A manual or
+  cron'd `judge-ingest refresh` has no ceiling.
+
 ### Changed
+
+- **A refresh stops writing when it should.** Before each step `judge-ingest refresh`
+  checks that the migration ledger matches its binary, and every single-step command
+  (`cards`, `rules`, `embed`, …) checks once before it starts. A run between
+  `docker compose pull` and `up -d` (schema behind) or on an old image (schema ahead)
+  writes nothing, names `judge-ingest migrate` or the newer image, and exits non-zero.
+  It is recorded as stopped, neither a success nor a failure. A run stops after three
+  hours, abandoning the step in progress, so a hung download cannot hold the lease.
+- **A truncated CR download is never loaded.** The CR file is cached through a `.part`
+  file and a rename, and a text that ends before its Credits section is refused (and
+  its cached copy removed) instead of being loaded, which would have deleted every rule
+  it did not reach.
 
 - **Data refreshes take a lock in the database.** Every `judge-ingest` command that
   writes data (`refresh`, `init` after its migration, `cards`, `rules`, `aliases`,
@@ -39,8 +74,20 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
+- **The schedule is on by default.** An instance with no recorded refresh runs one
+  within minutes of starting. An instance that never had cron catches up that way. A
+  development `.env` pointing `cargo run` at a local database should set
+  `JUDGE_REFRESH_HOURS=0`, or that database is refreshed for real.
+- **A cron'd `scripts/refresh-data.sh` keeps working.** It takes the same lease and
+  writes the same record, so the schedule counts its run and never overlaps it. Remove
+  the cron entry whenever convenient. To keep cron in charge instead, set
+  `JUDGE_REFRESH_HOURS=0`.
+- **`bot` and `api` mount the `judgebot-ingest-cache` volume** the `refresh` service
+  already used. `git pull` for the new `docker-compose.yml`, then
+  `docker compose up -d`.
 - The `refresh_runs` migration applies at startup unless `JUDGE_AUTO_MIGRATE=false`. A
   refresh that runs before it is applied works and logs that the run went unrecorded.
+  The schedule waits for it, with one warning naming `judge-ingest migrate`.
 - A `.refresh.lock` directory left in the repository root by a killed run is no longer
   read and can be removed.
 
@@ -70,6 +117,18 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   See the Config editor page.
 
 ### Changed
+
+- **A refresh stops writing when it should.** Before each step `judge-ingest refresh`
+  checks that the migration ledger matches its binary, and every single-step command
+  (`cards`, `rules`, `embed`, …) checks once before it starts. A run between
+  `docker compose pull` and `up -d` (schema behind) or on an old image (schema ahead)
+  writes nothing, names `judge-ingest migrate` or the newer image, and exits non-zero.
+  It is recorded as stopped, neither a success nor a failure. A run stops after three
+  hours, abandoning the step in progress, so a hung download cannot hold the lease.
+- **A truncated CR download is never loaded.** The CR file is cached through a `.part`
+  file and a rename, and a text that ends before its Credits section is refused (and
+  its cached copy removed) instead of being loaded, which would have deleted every rule
+  it did not reach.
 
 - **The eval binary is `judge-eval`**, the name the documentation already used. It was
   built as `eval`.
@@ -114,6 +173,18 @@ and no migration is involved.
 ## [1.1.0] - 2026-09-29
 
 ### Changed
+
+- **A refresh stops writing when it should.** Before each step `judge-ingest refresh`
+  checks that the migration ledger matches its binary, and every single-step command
+  (`cards`, `rules`, `embed`, …) checks once before it starts. A run between
+  `docker compose pull` and `up -d` (schema behind) or on an old image (schema ahead)
+  writes nothing, names `judge-ingest migrate` or the newer image, and exits non-zero.
+  It is recorded as stopped, neither a success nor a failure. A run stops after three
+  hours, abandoning the step in progress, so a hung download cannot hold the lease.
+- **A truncated CR download is never loaded.** The CR file is cached through a `.part`
+  file and a rename, and a text that ends before its Credits section is refused (and
+  its cached copy removed) instead of being loaded, which would have deleted every rule
+  it did not reach.
 
 - **The default model is Claude Opus 5.5** (`claude-opus-5-5`) on both stages, and the
   built-in price table knows its rates ($4 input, $20 output per million tokens). On the

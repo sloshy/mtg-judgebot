@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH r AS (\n          SELECT id, started_at, steps, finished_at IS NULL AS unfinished,\n                 CASE WHEN finished_at IS NULL THEN false ELSE ok END AS ok,\n                 COALESCE(finished_at,\n                   CASE WHEN started_at < now() - make_interval(secs => $1)\n                        THEN started_at + make_interval(secs => $1) END) AS ended_at\n          FROM refresh_runs\n        ),\n        verdicts AS (\n          SELECT * FROM r WHERE ended_at IS NOT NULL AND ok IS NOT NULL\n        ),\n        latest AS (\n          SELECT * FROM verdicts ORDER BY ended_at DESC, id DESC LIMIT 1\n        )\n        SELECT\n          (SELECT extract(epoch FROM now() - max(ended_at))::bigint\n             FROM verdicts WHERE ok) AS \"last_ok_age_secs?\",\n          (SELECT extract(epoch FROM now() - max(started_at))::bigint\n             FROM r) AS \"last_attempt_age_secs?\",\n          (SELECT ok FROM latest) AS \"last_finished_ok?\",\n          (SELECT max(cr_version) FROM rules) AS \"stored_cr_version?\",\n          (SELECT count(*) FROM verdicts\n             WHERE NOT ok AND ended_at > COALESCE(\n               (SELECT max(ended_at) FROM verdicts WHERE ok), '-infinity'))\n            AS \"failed_streak!\",\n          (SELECT steps @> '[{\"step\": \"embed\", \"reason\": {\"embed_ceiling\": {}}}]'\n             FROM latest) AS \"last_finished_ceiling?\",\n          (SELECT to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI\"Z\"')\n             FROM latest WHERE unfinished) AS \"abandoned_started_at?\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "last_ok_age_secs?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_attempt_age_secs?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_finished_ok?",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "stored_cr_version?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "failed_streak!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_finished_ceiling?",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "abandoned_started_at?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "09e146cf5a1f584339593a489435421e3f2a89d05dceec7e755491ffe0ae094d"
+}

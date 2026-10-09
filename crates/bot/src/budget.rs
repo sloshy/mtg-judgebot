@@ -16,7 +16,7 @@
 //! The ledger is written in every mode, since `judge-cli stats` reads it.
 //!
 //! The same task watches [`SpendMeter::refusals`] and tells the operator
-//! (`JUDGE_ALERT_WEBHOOK`) the first time the cap refuses a request in a
+//! ([`crate::alert`], `JUDGE_ALERT_WEBHOOK`) the first time the cap refuses a request in a
 //! period: a capped bot is otherwise silent until someone reads the log.
 //!
 //! The arithmetic is [`Ledger`], pure and tested without a database; the
@@ -27,14 +27,12 @@ use std::time::Duration;
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
 
+use crate::alert::{self, AlertWebhook};
+
 /// `JUDGE_BUDGET_PERIOD`.
 pub const PERIOD_ENV: &str = "JUDGE_BUDGET_PERIOD";
-/// `JUDGE_ALERT_WEBHOOK`.
-pub const ALERT_WEBHOOK_ENV: &str = "JUDGE_ALERT_WEBHOOK";
 /// How often the ledger is written and the period total read back.
 pub const SYNC_EVERY: Duration = Duration::from_secs(10);
-/// How long the alert webhook gets to answer.
-pub const ALERT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What `JUDGE_MAX_USD` caps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,37 +85,6 @@ impl Period {
 impl std::fmt::Display for Period {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-/// Where the operator is told about a tripped cap: an `https` webhook that
-/// takes a JSON body. Redacted in `Debug`, because a webhook URL is a
-/// credential: anyone holding it can post to the channel.
-#[derive(Clone, PartialEq, Eq)]
-pub struct AlertWebhook(url::Url);
-
-impl AlertWebhook {
-    /// Parse the variable's value.
-    ///
-    /// # Errors
-    /// Anything that is not an absolute `https` URL with a host.
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        match url::Url::parse(raw.trim()) {
-            Ok(u) if u.scheme() == "https" && u.host_str().is_some() => Ok(Self(u)),
-            _ => Err("an https:// webhook URL".to_owned()),
-        }
-    }
-
-    /// The host, which is safe to log.
-    #[must_use]
-    pub fn host(&self) -> &str {
-        self.0.host_str().unwrap_or_default()
-    }
-}
-
-impl std::fmt::Debug for AlertWebhook {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AlertWebhook(https://{}/<redacted>)", self.host())
     }
 }
 
@@ -301,24 +268,6 @@ resume{}.",
     )
 }
 
-/// Post `text` to the webhook. The body carries both `content` (Discord) and
-/// `text` (Slack and its imitators); each ignores the other's key.
-async fn post_alert(client: &reqwest::Client, hook: &AlertWebhook, text: &str) {
-    let body = serde_json::json!({ "content": text, "text": text });
-    match client.post(hook.0.clone()).json(&body).send().await {
-        Ok(r) if r.status().is_success() => {
-            tracing::info!(host = hook.host(), "spend cap alert sent");
-        }
-        Ok(r) => {
-            tracing::warn!(host = hook.host(), status = %r.status(), "spend cap alert refused");
-        }
-        // `without_url`: the URL is the credential.
-        Err(e) => {
-            tracing::warn!(host = hook.host(), error = %e.without_url(), "spend cap alert failed");
-        }
-    }
-}
-
 /// Seed the meter from the ledger, then keep the two in step for the life of
 /// the process. `process` names the caller in an alert (`bot`, `api`).
 ///
@@ -343,10 +292,7 @@ pub async fn start(pool: PgPool, meter: SpendMeter, budget: Budget, process: &'s
     }
     // A webhook that accepts the connection and never answers must not stop
     // the syncing, which is what lifts the cap when the period turns.
-    let client = reqwest::Client::builder()
-        .timeout(ALERT_TIMEOUT)
-        .build()
-        .unwrap_or_default();
+    let client = alert::client();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(SYNC_EVERY);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -364,7 +310,8 @@ pub async fn start(pool: PgPool, meter: SpendMeter, budget: Budget, process: &'s
                     "spend cap reached; questions are being refused"
                 );
                 if let Some(hook) = &budget.alert {
-                    post_alert(&client, hook, &alert_text(process, period, &meter)).await;
+                    let text = alert_text(process, period, &meter);
+                    alert::post(&client, hook, "spend cap alert", &text).await;
                 }
             }
         }
@@ -436,20 +383,6 @@ mod tests {
         assert_eq!(Period::parse(Some("Day")), Ok(Period::Day));
         assert_eq!(Period::parse(Some(" month ")), Ok(Period::Month));
         assert_eq!(Period::parse(Some("weekly")), Err("weekly".to_owned()));
-    }
-
-    #[test]
-    fn the_webhook_must_be_https_and_never_prints_its_path() -> Result<(), String> {
-        let hook = AlertWebhook::parse("https://discord.com/api/webhooks/1/secret-token")?;
-        let shown = format!("{hook:?}");
-        assert!(
-            shown.contains("discord.com") && !shown.contains("secret"),
-            "{shown}"
-        );
-        for bad in ["http://example.com/hook", "discord.com/api", "", "https://"] {
-            assert!(AlertWebhook::parse(bad).is_err(), "{bad}");
-        }
-        Ok(())
     }
 
     #[test]

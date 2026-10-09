@@ -33,7 +33,7 @@ up to an hour for a command that holds it, so two never overlap. `migrate` (its 
 | `reembed [--yes] [--clear]` | Make the database hold the configured embedder's space: retype the columns, clear every vector, record the space, then embed all. Without `--yes` it prints the row counts and a rough cost and changes nothing. When the database is already in the right space, it only fills empty rows. `--clear` re-pays every row. |
 | `emoji` | Upload Scryfall's card symbols as the bot's application emoji. Needs only `DISCORD_TOKEN`. |
 | `retire` | Retire calls whose citations no longer hold against current rules, rulings and Oracle text. Restore those that hold again. |
-| `refresh` | `cards`, `rules latest`, `retire`, `embed`, `emoji`. Every step runs even if one fails, and the exit code is ≠ 0 if any did. `embed` with no embedder and `emoji` with no `DISCORD_TOKEN` are skipped, not failed. Each run is recorded in `refresh_runs`. The nightly cron runs this. |
+| `refresh` | `cards`, `rules latest`, `retire`, `embed`, `emoji`. Every step runs even if one fails, and the exit code is ≠ 0 if any did. `embed` with no embedder and `emoji` with no `DISCORD_TOKEN` are skipped, not failed. Each run is recorded in `refresh_runs`. `bot` and `api` run the same steps every `JUDGE_REFRESH_HOURS`, taking turns with this command through the lease. |
 
 ## `judge-eval`
 
@@ -73,6 +73,6 @@ JSON goes to stdout and logs to stderr.
 | `docker compose up -d` | `db`, `bot` and `api`, plus `cloudflared` with `COMPOSE_PROFILES=tunnel`. |
 | `docker compose up -d --build bot api` | Rebuild and redeploy after code changes. |
 | `docker compose pull && docker compose up -d` | Deploy host: pull the CI-built image, never build. |
-| `scripts/refresh-data.sh` | Nightly cron: `docker compose run --rm refresh`. A failed run posts to `JUDGE_ALERT_WEBHOOK` when that is set. |
+| `scripts/refresh-data.sh` | A refresh now, or from your own cron with `JUDGE_REFRESH_HOURS=0`: `docker compose run --rm refresh`. Arguments pass through to `judge-ingest`. A failed run posts to `JUDGE_ALERT_WEBHOOK` when that is set. |
 | `scripts/backup-db.sh [list\|fetch]` | Weekly `pg_dump` to Cloudflare R2. `list` and `fetch` serve the restore drill. A failed backup posts to `JUDGE_ALERT_WEBHOOK` (from `.env.deploy`, else `.env`). |
 | `scripts/alert.sh` | Sourced by the two above: posts one line to the webhook, passing the URL on stdin so it never shows in `ps`. |

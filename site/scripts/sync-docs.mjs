@@ -97,7 +97,7 @@ const manifest = [
     title: "Production deployment",
     order: 6,
     description:
-      "The runbook: Cloudflare Tunnel, backups to R2, the nightly refresh, redeploying and rolling back.",
+      "The runbook: Cloudflare Tunnel, backups to R2, the scheduled data refresh, redeploying and rolling back.",
   },
   // Contributing
   {

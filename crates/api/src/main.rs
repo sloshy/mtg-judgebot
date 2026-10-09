@@ -10,7 +10,8 @@
 //! Environment (a `.env` in the working directory is loaded first, like the
 //! other binaries; the process environment wins): `DATABASE_URL`,
 //! `ANTHROPIC_API_KEY`, optional `VOYAGE_API_KEY`, `API_ADDR`,
-//! `JUDGE_CONCURRENCY`, `JUDGE_MAX_USD`, `API_RATE_LIMIT`,
+//! `JUDGE_CONCURRENCY`, `JUDGE_MAX_USD`, `JUDGE_REFRESH_HOURS`,
+//! `INGEST_CACHE_DIR`, `API_RATE_LIMIT`,
 //! `API_RATE_WINDOW_SECS`, `API_CLIENT_IP`, `RUST_LOG`; `WEB_DIST` under
 //! `--web`; `MCP_TOKEN` (required by `--mcp`),
 //! `MCP_ALLOWED_HOSTS`, `MCP_JUDGE_LIMIT` and `MCP_JUDGE_WINDOW_SECS` (a token
@@ -119,6 +120,9 @@ async fn main() -> Result<()> {
         "api",
     )
     .await;
+    // The scheduled data refresh, on a thread and a pool of its own
+    // (JUDGE_REFRESH_HOURS; 0 leaves it to cron).
+    judge_bot::jobs::start(&pool, judge.jobs(), "api").await;
     // /api/health answers 503 when Postgres does not: the compose healthcheck
     // and the tunnel's readiness key off it.
     tracing::info!(source = %judge.source_offer(), "source offer");

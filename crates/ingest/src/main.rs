@@ -44,7 +44,7 @@ use std::{
 use anyhow::{Context as _, Result};
 use judge_bot::ingest::{
     Embedder, RefreshLease, aliases, cache_dir, connect, cr, embed, embedder_from_config, emoji,
-    init, lease, notes, reembed, refresh, retire, runs::Trigger, schema, scryfall,
+    ensure_writable, init, lease, notes, reembed, refresh, retire, runs::Trigger, schema, scryfall,
 };
 
 #[derive(Debug)]
@@ -234,6 +234,10 @@ impl Job {
     }
 
     async fn run(self, lease: &mut RefreshLease, cache_dir: &Path) -> Result<()> {
+        // `refresh` checks before each of its steps; a single step checks once.
+        if !matches!(self, Self::Refresh) {
+            ensure_writable(lease).await?;
+        }
         match self {
             Self::Cards => scryfall::run(lease, cache_dir).await,
             Self::RulesLatest => cr::run_latest(lease, cache_dir).await.map(drop),

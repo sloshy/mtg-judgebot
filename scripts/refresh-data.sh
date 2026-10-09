@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Scheduled data refresh: Scryfall cards and rulings, the current Comprehensive
+# The data refresh, now: Scryfall cards and rulings, the current Comprehensive
 # Rules release, embeddings for whatever changed, and any new card-symbol emoji.
+#
+# bot and api already run it every JUDGE_REFRESH_HOURS (default 24), so this is
+# for a refresh by hand, a single step, or an operator who keeps their own cron
+# with JUDGE_REFRESH_HOURS=0. A cron entry kept alongside the schedule is
+# harmless: the schedule counts its run and never overlaps it.
 #
 # Everything happens inside the published image (`judge-ingest refresh`, the
 # compose service `refresh`); the host needs only Docker. Each step is
@@ -14,9 +19,9 @@
 #
 # Cron:  30 5 * * *  /path/to/repo/scripts/refresh-data.sh >> ~/judgebot-refresh.log 2>&1
 #
-# Runs never overlap: every judge-ingest command that writes data takes the
-# refresh lease, an advisory lock in the database, and waits for a run that
-# holds it. Postgres drops the lock with the session, so a run that crashed
+# Runs never overlap, with each other or with the schedule: every judge-ingest
+# command that writes data takes the refresh lease, an advisory lock in the
+# database, and waits for a run that holds it. Postgres drops the lock with the session, so a run that crashed
 # leaves nothing to clean up.
 #
 # Exits non-zero if any step failed, so a scheduler's on-error hook fires. With

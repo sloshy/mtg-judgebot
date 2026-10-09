@@ -19,7 +19,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   (`process` | `day` | `month`) says what the cap covers (D19): `judge_bot::budget` keeps
   the `spend_days` ledger every 10 s and sets the meter's *adjustment*, so `bot` and `api`
   share one period total that survives restarts. The meter itself stays storage-free.
-  `JUDGE_ALERT_WEBHOOK` is told when the cap trips and when a cron script fails
+  `JUDGE_ALERT_WEBHOOK` is told when the cap trips, when the scheduled refresh fails (once
+  per streak), recovers or hits its embed ceiling, and when a script fails
   (`scripts/alert.sh`). `judge-cli stats` reads the ledger. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop
   against wiremock, not the live API. A full 21-question gold run costs ~$1.70.
@@ -58,7 +59,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D23),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D24),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -281,7 +282,8 @@ cargo run --release -p judge-ingest -- retire           # retire/restore calls b
 cargo run --release -p judge-ingest -- refresh          # cards + rules latest + retire + embed + emoji; every
                                                         # step runs even if one fails, exit≠0 if any did;
                                                         # recorded in refresh_runs
-scripts/refresh-data.sh              # nightly cron on the deploy host: `docker compose run --rm refresh`
+scripts/refresh-data.sh              # a refresh now (or an operator's own cron with JUDGE_REFRESH_HOURS=0):
+                                     # `docker compose run --rm refresh`; bot/api run it on their own schedule
 
 cargo run --release -p judge-api -- [--api] [--web] [--mcp]   # one flag per interface, all opt-in; no
                                                         # flags = POST /api/judge alone, on API_ADDR (:8787).
@@ -469,8 +471,8 @@ Key cross-file facts that aren't obvious from any one file:
   1.5 with ≥5 votes are excluded, as are retired calls. Prior calls are always rendered
   *after* CR material as examples.
 - **A call is retired when its citations stop holding, not when the CR changes.**
-  - `retire_unsupported` (`db/retire.rs`) is run by `ingest retire` and nightly inside
-    `ingest refresh` (both through `ingest::retire`, under the refresh lease). It re-runs `citation_supported` over every stored call against
+  - `retire_unsupported` (`db/retire.rs`) is run by `ingest retire` and inside every
+    refresh (both through `ingest::retire`, under the refresh lease). It re-runs `citation_supported` over every stored call against
     today's rules, rulings and Oracle text. It sets `calls.retired_at`/`retired_reason`
     both ways, so restored text brings a call back.
   - Each call also carries `context_ids.card_text` (an `oracle_fingerprint` per context
@@ -637,6 +639,12 @@ Key cross-file facts that aren't obvious from any one file:
 - `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`.
 - `JUDGE_AUTO_MIGRATE` (default true). When true, bot and api apply pending migrations
   at startup. `judge-ingest migrate` is the explicit form.
+- `JUDGE_REFRESH_HOURS` (default 24, `1..=720`, `0` = off): how often bot and api run
+  the data refresh (`jobs::Schedule`, validated at `Config` load). Set it to `0` in a
+  development `.env`: otherwise `cargo run` of bot or api refreshes the dev database
+  for real.
+- `JUDGE_BUDGET_PERIOD`, `JUDGE_ALERT_WEBHOOK` (D19; the webhook also hears the
+  scheduled refresh).
 
 For the HTTP API it also holds:
 
@@ -675,10 +683,47 @@ replacing it. Its first hop is attacker-chosen, which would hand every request a
 allowance against a paid endpoint. `cloudflare` is only sound when nothing can reach the
 origin except Cloudflare.
 
-**Data refresh is a nightly cron on the deploy host**, not a service.
-`scripts/refresh-data.sh` runs the `refresh` compose service (profile `refresh`, third
-entrypoint `judge-ingest` in the same image). `docker compose run` enables the profile
-itself, so `up -d` never starts it. CR release detection scrapes Wizards' rules page for
+**Data refresh runs inside `bot` and `api`** (`judge_bot::jobs`, D24), every
+`JUDGE_REFRESH_HOURS`.
+
+- `jobs::start` (after migrations and config load) spawns an OS thread with a
+  current-thread runtime and its own `POOL_SIZE` pool, so steps never take a request's
+  worker or pooled connection. Not isolated: the CR load and the retirement pass hold
+  `CALLS_REWRITE_LOCK` exclusively, and a persist that writes a vector (before every
+  reply) waits for it, as under cron. A panicking check is logged, alerted once, and
+  the next one runs; a dead thread logs ERROR.
+- Each check (1.5 to 3.5 min after start, then every 10 to 12 min) reads `migrate::skew` (ahead
+  or behind: warn once, write nothing), then `runs::history` (no rules loaded: pause
+  for `init`). The pure `jobs::due` decides on the DB clock: last success older than
+  the interval and last attempt older than `jobs::backoff` (1 h × 2^(failed_streak−1),
+  capped at the interval; a run that left no row is remembered in memory). Due:
+  `try_lease` (held: skip), re-read under the lease, run
+  `ingest::refresh(…, Trigger::Schedule)` under a timeout.
+- `ingest::refresh` (every trigger) checks the lease and `migrate::skew` before each
+  step, and abandons the run at `ingest::RUN_TIMEOUT` (3 h). A skew skips the remaining
+  steps (`Skip::SchemaAhead|SchemaBehind`), and the run is `RunOutcome::Stopped`
+  (stored `ok` null): no alert, no backoff. Single-step `judge-ingest` commands call
+  `ingest::ensure_writable` once.
+- `runs::history` counts an unfinished row older than `runs::ABANDONED_AFTER`
+  (3 h 10 min) as a failed run (`abandoned_started_at`, alerted once per streak). The
+  scheduler drops a run at that same limit, closes its row as failed
+  (`runs::close_dropped`) and releases the lease with a bound. Its pool carries
+  `statement_timeout` 30 min and `lock_timeout` 15 min (`jobs::bounded`), because sqlx
+  sends no cancel for an abandoned statement.
+- `Trigger::Schedule` skips `embed` above `embed::UNATTENDED_CEILING` (800 rows) with
+  `Skip::EmbedCeiling`. Manual runs have no ceiling.
+- `jobs::alerts` posts the first failure of a streak (saying when it timed out), the
+  recovery and a ceiling skip the previous run did not also hit, through
+  `judge_bot::alert` (shared with `budget`).
+- Development: the schedule is on by default, so `cargo run -p judge-bot`/`judge-api`
+  against a dev database refreshes it for real (downloads, a new CR, embeddings, emoji
+  uploads). Set `JUDGE_REFRESH_HOURS=0` in a development `.env`.
+- compose mounts `judgebot-ingest-cache` into `bot` and `api` too.
+
+`scripts/refresh-data.sh` still runs the `refresh` compose service (profile `refresh`,
+third entrypoint `judge-ingest` in the same image) for a manual run or an operator's own
+cron (`JUDGE_REFRESH_HOURS=0`). It shares the lease and the record with the schedule.
+`docker compose run` enables the profile itself, so `up -d` never starts it. CR release detection scrapes Wizards' rules page for
 the `MagicCompRules <date>.txt` link and compares the date to the stored `cr_version`.
 The CR loader nulls embeddings only for rules whose text changed, so a new CR costs the
 embedder a few hundred rules. `aliases` and `notes` are not part of refresh. They are repo

@@ -5,7 +5,8 @@
 //! Environment (a `.env` in the working directory is loaded first, like the
 //! `eval` and `ingest` binaries; the process environment wins): `DISCORD_TOKEN`
 //! (required), `DATABASE_URL`, `ANTHROPIC_API_KEY`, optional `VOYAGE_API_KEY`,
-//! `GUILD_ID`, `JUDGE_ROLE`, `JUDGE_CONCURRENCY`, `JUDGE_MAX_USD`, `RUST_LOG`;
+//! `GUILD_ID`, `JUDGE_ROLE`, `JUDGE_CONCURRENCY`, `JUDGE_MAX_USD`,
+//! `JUDGE_REFRESH_HOURS`, `INGEST_CACHE_DIR`, `RUST_LOG`;
 //! optional `JUDGE_CONFIG` (or a `./judge.toml`) picks other providers and
 //! models ([`judge_bot::config`]). A missing token is reported before
 //! anything else is touched and exits non-zero.
@@ -76,6 +77,9 @@ async fn main() -> Result<()> {
     let meter = models.meter().clone();
     // The period's spend so far is loaded before the first question can arrive.
     judge_bot::budget::start(pool.clone(), meter.clone(), judge.budget().clone(), "bot").await;
+    // The scheduled data refresh, on a thread and a pool of its own
+    // (JUDGE_REFRESH_HOURS; 0 leaves it to cron).
+    judge_bot::jobs::start(&pool, judge.jobs(), "bot").await;
     // `/card` reads rulings by card id only, so its library needs no vectors.
     let library = PgLibrary::new(pool.clone());
     let deps = build_deps_with(pool, &models, vectors, &judge.deps_config());

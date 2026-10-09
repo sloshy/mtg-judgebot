@@ -55,9 +55,10 @@ const LOCK_CLASSID: i64 = REFRESH_LOCK >> 32;
 const LOCK_OBJID: i64 = REFRESH_LOCK & 0xffff_ffff;
 
 /// How long [`lease`] waits for another run. Longer than any healthy run (a
-/// nightly refresh takes minutes, a first `init` on a NAS well under an
-/// hour) and far shorter than the nightly cron period, so a hung run fails
-/// the next night's run with the holder named instead of blocking it forever.
+/// daily refresh takes minutes, a first `init` on a NAS well under an hour)
+/// and far shorter than a day, so a hung run fails the next command with the
+/// holder named instead of blocking it forever. The schedule ([`crate::jobs`])
+/// never waits: it uses [`try_lease`] and checks again later.
 pub const LEASE_WAIT: Duration = Duration::from_hours(1);
 
 /// The prefix of the lease session's `application_name`.

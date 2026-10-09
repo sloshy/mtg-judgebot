@@ -104,7 +104,7 @@ Discord message (+ last N Q&A in the same thread)
     - Glossary entries for terms in the oracle text
     - Prior calls: vector search filtered by (cards ∩ category), labeled with
       rating and CR version, shown as examples AFTER the CR material.
-      Retired calls are excluded. The nightly pass retires a call when a
+      Retired calls are excluded. The refresh's retirement pass retires a call when a
       citation's source no longer contains its quote, or a context card's
       Oracle text changed. It restores the call when both hold again.
       Renumbered rules carry their calls with them.
@@ -314,18 +314,18 @@ pictures, from one set of names:
 
 | Source | Refresh | Storage |
 |---|---|---|
-| Scryfall bulk `oracle-cards.json` | nightly (`ingest refresh`, cron on the deploy host — DEPLOYMENT.md §7) | `cards` (oracle_id, name, layout, type_line, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
-| Scryfall bulk `default-cards.json` (names only) | nightly | `printed_names` (printed_name, oracle_id) — old names, errata'd names |
-| Scryfall bulk `rulings.json` | nightly (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, key, published_at, text) — `key` = content hash (`judge_core::ruling_key`), so a reindexed ruling keeps its identity |
-| Comprehensive Rules txt | on CR release — detected nightly from the `.txt` link on Wizards' rules page vs `max(cr_version)` | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
+| Scryfall bulk `oracle-cards.json` | daily (the scheduled refresh `bot`/`api` run, `judge_bot::jobs`, every `JUDGE_REFRESH_HOURS` — DEPLOYMENT.md §7) | `cards` (oracle_id, name, layout, type_line, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
+| Scryfall bulk `default-cards.json` (names only) | daily | `printed_names` (printed_name, oracle_id) — old names, errata'd names |
+| Scryfall bulk `rulings.json` | daily (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, key, published_at, text) — `key` = content hash (`judge_core::ruling_key`), so a reindexed ruling keeps its identity |
+| Comprehensive Rules txt | on CR release — detected daily from the `.txt` link on Wizards' rules page vs `max(cr_version)` | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
 | CR Glossary | same | `glossary` (term, text, embedding) |
-| Scryfall `/symbology` (84 card symbols) | nightly (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web page (`web/src/symbols.ts`) |
+| Scryfall `/symbology` (84 card symbols) | daily (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web page (`web/src/symbols.ts`) |
 | Nicknames | hand-curated YAML | `card_aliases` (alias, oracle_id) |
 | Nightmare notes | hand-written markdown | `card_notes` (oracle_id, note) |
 | Categories → subsections | YAML (single source of truth; the enum is generated from it) | `categories` |
-| Calls | continuous; `retired_at`/`retired_reason` recomputed nightly from citation validity | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding) |
+| Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding) |
 | Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |
-| Refresh runs | one row per `ingest refresh` | `refresh_runs` (started_at, finished_at, trigger, process, cr_before, cr_after, steps jsonb, ok) |
+| Refresh runs | one row per refresh, scheduled or `judge-ingest refresh` | `refresh_runs` (started_at, finished_at, trigger, process, cr_before, cr_after, steps jsonb, ok) |
 
 The loaders in the table (cards, rulings, the CR, symbols, nicknames, notes) and the
 embedding step are `judge_bot::ingest` (`crates/bot/src/ingest/`), beside the other
@@ -340,6 +340,35 @@ the session, so a crashed run leaves nothing to clean up. It is separate from
 `CALLS_REWRITE_LOCK`, the short transaction-scoped lock the CR load, the retirement pass
 and vector writes take inside a run (and a migration for its whole run). A run takes the
 lease first and the calls lock inside it, never the other way round.
+
+Every `ingest::refresh`, whatever started it, checks before each step that it still
+holds the lease and that the migration ledger matches its binary (`migrate::skew`), and
+stops at `ingest::RUN_TIMEOUT` (3 h), abandoning the step in progress. A schema change
+skips the remaining steps and the run is `RunOutcome::Stopped`, stored with `ok` null:
+neither a success nor a failure. A single-step `judge-ingest` command makes the same
+check once (`ingest::ensure_writable`). `runs::history` counts an unfinished row older
+than `runs::ABANDONED_AFTER` as a failed run, so a process that dies mid-run still
+lengthens the failure streak.
+
+The schedule is `judge_bot::jobs`, which `bot` and `api` start after migrating. It runs
+on an OS thread of its own, with a current-thread runtime and a three-connection pool, so
+a run's file I/O, CR parse and queries never take a worker or a pooled connection from
+the request path. The database is shared, though: while the CR load or the retirement
+pass holds the exclusive side of `CALLS_REWRITE_LOCK`, a `PgCallStore::persist` that
+writes a vector waits on the shared side, and both interfaces persist before they reply.
+A cron run has the same effect.
+
+Every ten minutes or so the scheduler reads the migration ledger (a schema ahead of or
+behind the binary pauses it), then `refresh_runs`; a database with no rules waits for
+`init`. The pure `jobs::due` decides on the database's clock: due when the last success
+is older than `JUDGE_REFRESH_HOURS` and the last attempt older than `jobs::backoff` (1 h,
+doubling per failure in a row, capped at the interval). When due it tries the lease
+without waiting, re-reads the record under it and runs `ingest::refresh` with
+`Trigger::Schedule`. That trigger also caps `embed` at `embed::UNATTENDED_CEILING` rows
+(`Skip::EmbedCeiling`), so no timer pays for a mass re-embed. The webhook
+(`judge_bot::alert`, shared with the spend cap) hears the first failure of a streak, the
+recovery, a new ceiling skip and a panicking check. D24 records why the schedule is in
+the process and not in cron.
 
 Database: **Postgres 16 + pgvector + pg_trgm**. Scale: ~30k cards, ~2k rule
 chunks, <10k calls.

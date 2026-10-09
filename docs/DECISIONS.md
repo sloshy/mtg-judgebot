@@ -344,8 +344,9 @@ long-lived connection, with no HTTP-interactions rewrite. The spend cap, semapho
 rate limiter stay single-process values.
 
 CI publishes the image and the host pulls it, because a release build wants about 4 GB of
-RAM and real CPU, which a NAS does not have. Data refresh is a nightly cron job running a
-one-shot container, not a service.
+RAM and real CPU, which a NAS does not have. The data refresh runs inside `bot` and `api`
+on a schedule kept in the database (D24). The one-shot `refresh` container stays for the
+first load and for manual runs.
 
 **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP` is
 `peer` or `cloudflare` (`CF-Connecting-IP`), never `X-Forwarded-For`. Cloudflare *appends*
@@ -618,3 +619,66 @@ loopback names, which closes DNS rebinding. Writes are whole-file renames throug
 - *Leaving secrets to the file.* The first version did, but a new provider's
   `api_key_env` then meant leaving the page to finish the job. Write-only keeps what that
   protected: the page holds no secret it was not just given.
+
+## D24. Refresh inside the running process
+
+*Decided 2026-10-09.*
+
+The data refresh (Scryfall, a new CR release, retirement, embeddings, emoji) needs to run
+about daily on every instance, and it used to depend on the operator installing a cron
+entry for `scripts/refresh-data.sh`. An instance whose operator skipped that step answered
+from data that only got older, and nothing said so. `bot` and `api` now run it themselves
+(`judge_bot::jobs`), every `JUDGE_REFRESH_HOURS` (default 24, `0` = off).
+
+The schedule lives in Postgres, not in any one process:
+
+- **A lease.** Every run, scheduled or not, holds `REFRESH_LOCK`, a session-level advisory
+  lock on a connection of its own. Postgres drops it with the session, so a crash leaves
+  nothing to clean up. A scheduled check tries it without waiting and does nothing when it
+  is held.
+- **A record.** `refresh_runs` holds each run's start, finish, trigger, process and step
+  outcomes. A cron'd or manual `judge-ingest refresh` writes the same row, so the schedule
+  counts it.
+- **Due on the database's clock.** `jobs::due` is pure: the last success older than the
+  interval, and the last attempt older than a backoff (an hour, doubling with each
+  failure in a row, capped at the interval). Ages come from `now()` in SQL, so every
+  process and host agrees, a restart does not reset the schedule, and a failing refresh
+  is retried soon, then less often, never on every check.
+
+Any number of processes, plus cron, plus a person at a terminal, take turns through the
+one lease. The run has its own OS thread, current-thread runtime and small pool, so its
+blocking file I/O, a CR parse and its queries cannot take a worker or a pooled
+connection from the request path. The database is not partitioned: while the CR load or
+the retirement pass holds the calls lock, persisting an answer's vector waits, and the
+reply with it, exactly as under a cron run. Every run, whatever started it, checks before
+each step that the migration ledger matches its binary, ahead or behind, and stops after
+three hours, so neither a stale container nor a hung download can write or hold the
+lease indefinitely. A run stopped by a schema change records neither success nor
+failure. A run whose process died is counted as failed once it is older than any live
+run can be, so a crash loop backs off and alerts once.
+
+**A scheduled run never pays for a mass re-embed.** Embeddings are outside the spend
+cap (D7's `Metered` wraps chat models only). A scheduled run counts the rows waiting for
+a vector first, and above `embed::UNATTENDED_CEILING` (800, against about 1,900 for a
+full re-embed and a few hundred for a new CR release) it skips the step and alerts. A
+manual run has no ceiling, because someone decided to pay. That includes a cron'd
+`scripts/refresh-data.sh`, which is unattended but was installed by an operator who
+chose cron over the schedule.
+
+The webhook hears the first failure of a streak and the recovery, never each retry.
+
+**Rejected:**
+
+- *Host cron, or the NAS's task scheduler.* It is host-specific (DSM's Task Scheduler,
+  systemd timers, crontab), needs root or the `docker` group to run `docker compose`, and
+  fails silently when it was never installed. Nothing in the stack can tell that it is
+  missing. It stays available: `JUDGE_REFRESH_HOURS=0` and the cron line of
+  `docs/DEPLOYMENT.md` §7.
+- *A scheduler container with the Docker socket*, starting the `refresh` service on a
+  timer. The socket is root on the host, handed to a container.
+- *`pg_cron`.* Postgres can schedule, but it cannot download a Scryfall bulk file, parse
+  the CR or call an embedder.
+- *A separate long-running jobs container.* It isolates the refresh from requests, but it
+  is another service to configure and keep running, and the thread already gives the
+  isolation. The planned single binary makes jobs one of its roles (`--jobs`), the same
+  code in whichever process an operator chooses.

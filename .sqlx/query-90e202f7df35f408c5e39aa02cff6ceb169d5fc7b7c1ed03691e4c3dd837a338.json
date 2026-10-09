@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE refresh_runs SET finished_at = now(), steps = '[]', ok = false\n         WHERE finished_at IS NULL AND started_at >= $1::text::timestamptz",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "90e202f7df35f408c5e39aa02cff6ceb169d5fc7b7c1ed03691e4c3dd837a338"
+}

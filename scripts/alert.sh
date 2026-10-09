@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Tell the operator a scheduled job failed. Sourced by refresh-data.sh and
-# backup-db.sh, which run from cron where nobody is watching the exit code.
+# Tell the operator a job failed. Sourced by refresh-data.sh and backup-db.sh,
+# which run from cron or by hand, where nobody may be watching the exit code.
 #
 #   alert "text"     post to JUDGE_ALERT_WEBHOOK, or do nothing if it is unset
 #
-# The webhook is the one the bot and api report a tripped spend cap to: a
-# Discord or Slack-style incoming webhook. It is read from the environment,
-# else .env.deploy, else .env, by name only: neither file is sourced here, since
-# .env holds values (API_INTERFACES) that are not shell syntax.
+# The webhook is the one the bot and api report a tripped spend cap and their
+# own scheduled refresh to: a Discord or Slack-style incoming webhook. It is
+# read from the environment, else .env.deploy, else .env, by name only: neither
+# file is sourced here, since .env holds values (API_INTERFACES) that are not
+# shell syntax.
 #
 # The URL is a credential (whoever holds it can post to the channel), so it goes
 # to curl or (GNU) wget on stdin and never into argv, where `ps` would show it.

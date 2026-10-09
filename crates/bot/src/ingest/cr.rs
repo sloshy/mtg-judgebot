@@ -62,7 +62,13 @@ const USER_AGENT: &str = concat!(
 /// On download, parse or database failure.
 pub async fn run(lease: &mut RefreshLease, source: &str, cache_dir: &Path) -> anyhow::Result<()> {
     let text = fetch(source, cache_dir).await?;
-    let parsed = parse(&text, source)?;
+    let parsed = match parse(&text, source) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            forget_cached(source, cache_dir);
+            return Err(e);
+        }
+    };
     tracing::info!(
         cr_version = %parsed.cr_version,
         rules = parsed.rules.iter().filter(|r| r.parent_id.is_none()).count(),
@@ -194,8 +200,24 @@ async fn fetch(source: &str, cache_dir: &Path) -> anyhow::Result<String> {
     let text = String::from_utf8_lossy(&bytes).into_owned();
     std::fs::create_dir_all(cache_dir)
         .with_context(|| format!("creating {}", cache_dir.display()))?;
-    std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
+    // Written whole, then renamed, so a process killed mid-write leaves a
+    // `.part` file a later run ignores, never a short file it trusts.
+    let part = cache_dir.join(format!("{name}.part"));
+    std::fs::write(&part, &text).with_context(|| format!("writing {}", part.display()))?;
+    std::fs::rename(&part, &path).with_context(|| format!("renaming {}", part.display()))?;
     Ok(text)
+}
+
+/// Remove the cached copy of a downloaded `source` that did not parse, so the
+/// next run downloads it again instead of failing on it forever.
+fn forget_cached(source: &str, cache_dir: &Path) {
+    if !(source.starts_with("http://") || source.starts_with("https://")) {
+        return;
+    }
+    let path = cache_dir.join(cache_file_name(source));
+    if std::fs::remove_file(&path).is_ok() {
+        tracing::warn!(path = %path.display(), "removed a cached CR that did not parse; the next run downloads it again");
+    }
 }
 
 /// `…/MagicCompRules%2020260819.txt` -> `MagicCompRules 20260819.txt`.
@@ -567,6 +589,13 @@ fn parse(text: &str, source: &str) -> anyhow::Result<ParsedCr> {
         p.feed(raw);
     }
     p.rules.extend(p.current.take());
+    // The file ends with its Credits, after the glossary. A text that stops
+    // before them was cut short (a download or a write that died), and
+    // loading it would delete every rule it does not reach.
+    anyhow::ensure!(
+        p.mode == Mode::Done,
+        "the CR text from {source} ends before its Credits section; it is incomplete (a truncated download?)"
+    );
 
     let cr_version = version_from_source(source)
         .or_else(|| {
@@ -1161,6 +1190,15 @@ mod tests {
         );
         // Fallback to the effective-as-of line when the name carries no date.
         let p = parse(SAMPLE, "rules.txt")?;
+        // Cut anywhere before the Credits, the same text is refused.
+        let cut = SAMPLE.find("Glossary\n").unwrap_or(SAMPLE.len() / 2) + 200;
+        let short = SAMPLE.get(..cut).unwrap_or_default();
+        assert!(
+            parse(short, "rules.txt")
+                .err()
+                .is_some_and(|e| e.to_string().contains("ends before its Credits")),
+            "a truncated CR is refused"
+        );
         assert_eq!(p.cr_version.as_ref(), "20260807");
         Ok(())
     }

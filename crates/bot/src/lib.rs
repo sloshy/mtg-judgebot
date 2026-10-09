@@ -2,14 +2,17 @@
 //! model adapters (extraction and synthesis over any `judge_llm::ChatModel`),
 //! the [`config`] loader that picks providers and models, [`build_deps`],
 //! the one composition shared by the `bot`, `api`, `eval` and `agent`
-//! binaries, and [`ingest`], the data steps `judge-ingest` runs.
+//! binaries, [`ingest`], the data steps `judge-ingest` runs, and [`jobs`],
+//! the schedule `bot` and `api` run them on.
 
+pub mod alert;
 pub mod budget;
 pub mod config;
 pub mod db;
 pub mod discord;
 pub mod extract;
 pub mod ingest;
+pub mod jobs;
 pub mod session;
 pub mod synth;
 

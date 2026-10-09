@@ -31,7 +31,7 @@ Discord users rate each answer 1 to 3. Ratings never make the bot "learn" in the
 sense. They decide which old answers the model sees later as examples, and nothing else.
 
 The system is one Postgres database, a handful of Rust binaries, two paid APIs
-(a chat model for reasoning, an embedding model for search), and a nightly refresh job.
+(a chat model for reasoning, an embedding model for search), and a daily data refresh the long-running processes run themselves.
 
 ---
 
@@ -208,10 +208,10 @@ columns and indexes) and `pg_trgm` (trigram similarity). Migrations are in
 
 | Table | Source | Refreshed | Notes |
 |---|---|---|---|
-| `cards`, `card_faces` | Scryfall bulk `oracle_cards` | nightly | one row per Oracle identity, and faces hold the Oracle text |
-| `printed_names` | Scryfall bulk `default_cards` | nightly | every name ever printed, for old or errata'd names |
-| `rulings` | Scryfall bulk `rulings` | nightly | keyed by a hash of the content, so a re-import is the same ruling |
-| `rules`, `glossary` | the CR `.txt` from Wizards | on release, detected nightly | see chunking below |
+| `cards`, `card_faces` | Scryfall bulk `oracle_cards` | daily | one row per Oracle identity, and faces hold the Oracle text |
+| `printed_names` | Scryfall bulk `default_cards` | daily | every name ever printed, for old or errata'd names |
+| `rulings` | Scryfall bulk `rulings` | daily | keyed by a hash of the content, so a re-import is the same ruling |
+| `rules`, `glossary` | the CR `.txt` from Wizards | on release, detected daily | see chunking below |
 | `card_aliases` | `data/aliases.yaml` | when edited | nicknames |
 | `card_notes` | `data/notes.yaml` | when edited | nightmare cards |
 | `categories` | `data/categories.yaml`, via the compiled enum | with each CR load | category → CR subsections |
@@ -318,7 +318,7 @@ question as a query.
 
 **Cost and storage.** Embedding is paid per token, once per rule, at ingest time. A new CR
 release re-embeds only the rules whose text changed. The loader nulls those embeddings and
-the nightly `ingest embed` fills them. Each question costs one small embedding call.
+the next refresh's `embed` step fills them. Each question costs one small embedding call.
 
 The vector search's failures are instructive too. It is fuzzy by design, so it returns rules
 that are *about* the same theme without being the one that decides the question. It cannot
@@ -488,8 +488,8 @@ handling lives, so you can read further.
 
 | Problem | Handling |
 |---|---|
-| New CR release | nightly scrape of Wizards' page, version compared before download |
-| Scryfall data drift | nightly bulk re-sync, with content-hashed ruling keys that keep identity |
+| New CR release | daily scrape of Wizards' page, version compared before download |
+| Scryfall data drift | daily bulk re-sync, with content-hashed ruling keys that keep identity |
 | Prompt or schema drift breaking the wire format | golden request fixtures pinned byte-for-byte, and the system prompt SHA pinned |
 | Losing the database (re-embedding costs money) | weekly `pg_dump` to R2 with a restore drill |
 | Unknown config keys silently ignored | `deny_unknown_fields` and "this knob would be ignored" errors at load |
@@ -502,7 +502,7 @@ Stored answers are an asset (examples for future questions) and a liability (the
 stale). Two mechanisms keep them current without a human curator.
 
 **Retirement.** Every call's citations are its declared dependencies on the world. The
-nightly pass re-runs the same substring check that admitted each citation, against today's
+refresh's retirement pass re-runs the same substring check that admitted each citation, against today's
 rules, rulings and Oracle text. If any check fails, the call is retired and leaves the
 prior-call query. If the text comes back, the call is restored. Each call also stores a
 fingerprint of the Oracle text of every card in its context, so an erratum retires calls
@@ -656,8 +656,8 @@ lock-in.
 for the page. All conventional, well-maintained choices for their niches.
 
 **Docker Compose behind a Cloudflare Tunnel.** One host, no open inbound ports, a
-CI-built image, nightly data refresh as a cron job rather than a service, weekly backups
-to R2. `docs/DEPLOYMENT.md` is the runbook.
+CI-built image, a daily data refresh that the running processes schedule in the
+database rather than a host cron job (D24), weekly backups to R2. `docs/DEPLOYMENT.md` is the runbook.
 
 ---
 
