@@ -315,8 +315,9 @@ rate limiter are per process by design (see D16).
 The build order was chosen so retrieval was measured before any synthesis existed:
 
 1. A gold set of adversarially verified questions with expected rule ids
-   (`eval/gold.yaml`, 21 today). Per-question *equivalence lists* make the metric track
-   correctness rather than one author's citation taste.
+   (`eval/gold.yaml`, 22 today, one of them a human correction). Per-question
+   *equivalence lists* make the metric track correctness rather than one author's
+   citation taste.
 2. Ingest.
 3. Extraction and resolution on the gold set's card mentions.
 4. Retrieval, behind a gate of at least 90 % of gold rule ids present in the context.

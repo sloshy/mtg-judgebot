@@ -28,9 +28,11 @@ A flat mapping of nickname to canonical card name: `bob: Dark Confidant`,
 - The resolver also tries an alias with a trailing possessive stripped ("bob's"), and as
   a suffix.
 
-Load with `judgebot ingest aliases data/aliases.yaml`. With no file, `aliases` loads the copy
-compiled into the binary. That is what `init` and a container use, so an edit reaches an
-image only through a rebuild, or by mounting the file and naming it.
+The list is compiled into the binary. After an edit, rebuild and run
+`judgebot ingest aliases` with no file, which loads the built-in copy (as `init` and the
+scheduled refresh do). Naming a file (`judgebot ingest aliases data/aliases.yaml`) loads
+that file as the operator's own list, which opts it out of built-in updates
+([Reloading](#reloading)).
 
 ## `data/notes.yaml`: nightmare cards
 
@@ -38,9 +40,13 @@ Hand-written Markdown notes keyed by card name. They cover cards whose interacti
 rules text alone explains badly: Blood Moon, Urborg, Humility, and their kind. Whenever a
 note's card is recognised in a question, the note is added to what the model reads.
 
-Notes are hints. The Comprehensive Rules still govern. A note should cite rule numbers so
-the model can quote the rules rather than the note. Load with
-`judgebot ingest notes data/notes.yaml`, or `judgebot ingest notes` for the built-in copy.
+Notes are hints. The Comprehensive Rules still govern, and a note cannot be cited. A note
+should cite rule numbers so the model can quote the rules rather than the note. A note can
+also settle a card the rules text and rulings leave open, such as Academy Manufactor's
+"one of each".
+
+Loading works as for aliases: rebuild, then `judgebot ingest notes` with no file. Naming a
+file opts the list out of built-in updates ([Reloading](#reloading)).
 
 ## `data/categories.yaml`: the taxonomy
 
@@ -53,7 +59,8 @@ model's output schema. The primary category's sections lead the retrieved materi
 
 ## `eval/gold.yaml`: the gold set
 
-Adversarially verified rules questions. Each question has:
+Rules questions, adversarially verified except one, whose reference answer is a human
+correction of a reported wrong answer. Each question has:
 
 - The cards it mentions and the categories expected.
 - The rule ids a correct answer must cite (`decisive_rule_ids`), which recall is scored

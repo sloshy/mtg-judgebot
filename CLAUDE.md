@@ -26,7 +26,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   per streak), recovers or hits its embed ceiling, and when a script fails
   (`scripts/alert.sh`). `judge-cli stats` reads the ledger. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop
-  against wiremock, not the live API. A full 21-question gold run costs ~$1.70.
+  against wiremock, not the live API. A full 22-question gold run costs ~$1.70.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
   Never commit `.env`, `.cache/`, or `eval/runs/`. A run worth publishing is copied to
   `eval/published/` on purpose, and the README's Results table and the site's Sample
@@ -385,7 +385,7 @@ judge-mcp                                               # the MCP server on stdi
 cargo run -p judge-eval -- recall [--vectors]           # retrieval gate, no API keys (--vectors: the configured
                                                         # embedder, ~$0.001), exit≠0 below 90% retrieved or 75%
                                                         # shown under the synthesis budget
-cargo run -p judge-eval -- answer --label L --limit 21 --max-usd 6.00   # full live gold run (~$1.70)
+cargo run -p judge-eval -- answer --label L --limit 22 --max-usd 6.00   # full live gold run (~$1.70)
                                                         # --config judge.toml runs it on other providers
 cargo run -p judge-eval -- rescore eval/runs/<run>.json # re-score a stored run, zero API cost
 cargo run -p judge-eval -- show eval/runs/<run>.json    # bot vs gold answers side by side
@@ -661,15 +661,15 @@ Key cross-file facts that aren't obvious from any one file:
   `crates/core/build.rs` generates the `Category` enum from it, so taxonomy edits are
   recompiles and matches stay exhaustive. The extractor's schema makes the primary
   category a required field, so an empty classification is an API-level schema violation.
-- **Gold eval set** (`eval/gold.yaml`): 21 adversarially verified questions with
-  `decisive_rule_ids` (what a correct answer must cite; `answer` scores recall on these),
-  `supporting_rule_ids` (background, reported when cited, never a miss; `recall` gates on
-  both) and per-question `equivalent_rule_ids` (alternate rule ids stating the same fact).
-  The loader builds a validated `GoldQuestion` (`gold::Expected`): unknown keys are
-  errors, the two lists are disjoint, and every equivalent key names an id in one of
-  them. Extend the set when adding capability. `rescore` re-grades old runs
-  after gold edits. Rule ids written unquoted in YAML are rejected, because floats drop
-  trailing zeros.
+- **Gold eval set** (`eval/gold.yaml`): 22 questions (21 adversarially verified, one a
+  human correction of a reported wrong answer) with `decisive_rule_ids` (what a correct
+  answer must cite; `answer` scores recall on these), `supporting_rule_ids` (background,
+  reported when cited, never a miss; `recall` gates on both) and per-question
+  `equivalent_rule_ids` (alternate rule ids stating the same fact). The loader builds a
+  validated `GoldQuestion` (`gold::Expected`): unknown keys are errors, the two lists
+  are disjoint, and every equivalent key names an id in one of them. Extend the set when
+  adding capability. `rescore` re-grades old runs after gold edits. Rule ids written
+  unquoted in YAML are rejected, because floats drop trailing zeros.
 - **Discord layer:** interaction logic is kept pure and unit-tested (`render.rs`,
   `ids.rs` typed button custom-ids, `pick.rs` a pick prompt's age, digest and audience,
   `question.rs` span pinning, where `find_span` + `pin_at` equal `pin_card`). Replies

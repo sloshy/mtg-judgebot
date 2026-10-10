@@ -180,13 +180,14 @@ the weekly R2 backup.
 
 ## Evaluation
 
-`eval/gold.yaml` holds 21 adversarially verified questions (layers nightmares,
-multi-face cards, errata traps, Commander, out-of-scope) with expected rule ids and
-reference answers.
+`eval/gold.yaml` holds 22 questions (layers nightmares, multi-face cards, errata traps,
+Commander, out-of-scope, a card ruling corrected from a reported wrong answer) with
+expected rule ids and reference answers. All but the corrected one are adversarially
+verified.
 
 ```sh
 cargo run -p judge-eval -- recall            # retrieval gate: expected rules present in context? (free)
-cargo run -p judge-eval -- answer --label x --limit 21 --max-usd 6   # full live run (~$1.70)
+cargo run -p judge-eval -- answer --label x --limit 22 --max-usd 6   # full live run (~$1.70)
 cargo run -p judge-eval -- rescore eval/runs/x.json                  # re-grade a stored run (free)
 cargo run -p judge-eval -- show eval/runs/x.json                     # bot vs. gold, side by side
 ```

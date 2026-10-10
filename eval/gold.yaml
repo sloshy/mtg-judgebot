@@ -1,9 +1,9 @@
 _meta:
   version: 0
-  count: 21
+  count: 22
   generated: '2026-08-29'
   note: |-
-    Authored and adversarially verified by judge-persona agents against the current Comprehensive Rules and Oracle text, and audited against Oracle text, rulings and CR text on 2026-09-20. No human judge has reviewed it. Rule IDs must be re-verified on each CR release. decisive_rule_ids are the rules a correct answer must cite, and recall is scored on them; supporting_rule_ids are background rules a good answer may leave out, reported when cited and never counted as a miss. Both feed the retrieval gate.
+    Authored and adversarially verified by judge-persona agents against the current Comprehensive Rules and Oracle text, and audited against Oracle text, rulings and CR text on 2026-09-20. No human judge has reviewed it, except tokens-manufactor-shelob-food-copy, whose expected answer is a human correction of a reported wrong answer. Rule IDs must be re-verified on each CR release. decisive_rule_ids are the rules a correct answer must cite, and recall is scored on them; supporting_rule_ids are background rules a good answer may leave out, reported when cited and never counted as a miss. Both feed the retrieval gate.
 questions:
 - id: layers-ballista-scales-season-replacement
   question: |-
@@ -495,3 +495,24 @@ questions:
     That is a tournament-policy question (IPG Missed Trigger), not a Comprehensive Rules question, so I don't cover it. Ask a judge at the event or consult the Infraction Procedure Guide at the current Magic tournament rules/IPG documents.
   rationale: |-
     Out-of-scope check: a nickname resolves to a real card, but the question is about IPG penalties. The bot must classify Source = Tournament and decline with a pointer rather than answering from the CR. expected_rule_ids must be empty.
+- id: tokens-manufactor-shelob-food-copy
+  question: |-
+    i have [[Academy Manufactor]] and [[Shelob, Child of Ungoliant]] out. a creature my spider hit dies and shelob makes a token copy of it that's a food. with manufactor out do i get the food copy plus a clue and a treasure, or what happens?
+  cards:
+  - Academy Manufactor
+  - Shelob, Child of Ungoliant
+  nicknames_used: []
+  categories:
+  - replacement-effects
+  - tokens
+  - copy-effects
+  source: CR
+  decisive_rule_ids:
+  - '614.6'
+  - '111.10'
+  supporting_rule_ids:
+  - 614.1a
+  expected_answer: |-
+    No copy. Academy Manufactor's "instead" makes it a replacement effect (614.1a), and Shelob's trigger would create a Food token, so Manufactor applies. The replaced event never happens (614.6): instead of the Food that would be a copy of the creature, you create one Clue, one Food and one Treasure token. Those are predefined tokens with only their standard characteristics (111.10a, 111.10b, 111.10f). 111.10 lets the effect that creates a predefined token modify it, but Shelob's modifications belonged to the replaced event, and Manufactor's own effect modifies nothing. You end up with a plain Food, a plain Clue and a plain Treasure, and the creature is not copied.
+  rationale: |-
+    From a reported wrong answer: the bot read 111.10 and Manufactor's shorthand "one of each" as keeping Shelob's Food copy alongside a Clue and a Treasure. Neither card has a ruling on it, so data/notes.yaml carries an Academy Manufactor note giving the operator's ruling. Not adversarially verified like the rest of the set.
