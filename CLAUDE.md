@@ -56,7 +56,7 @@ the one list, and the sync script deletes copies whose manifest entry is gone.
 Pages with no canonical file are authored directly under `site/src/content/docs/`: what
 the judge is, trying it without Discord, requirements and first run, Discord app setup,
 configuration reference, model choice (`judge.toml`), the config editor, Discord commands, the
-web page, the HTTP API, agents, command reference, data files, attribution, schema. The README carries
+web app, the HTTP API, agents, command reference, data files, attribution, schema. The README carries
 short versions of the model, web and API material and links to those pages.
 
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
@@ -102,7 +102,7 @@ menu button.
 `components.Footer` is overridden by `site/src/components/Footer.astro`: Starlight's own
 footer, then the Fan Content Policy statement and the data sources (Wizards, Scryfall,
 Yawgatog). Starlight renders the footer on splash pages too, so it is on every page. The
-web page's footer (`web/src/App.tsx`) carries the same text; change them together.
+web app's footer (`web/src/App.tsx`) carries the same text; change them together.
 
 **The icon** is 32x32 pixel art and must stay pixelated, so it is a PNG, never an SVG or a
 smoothed resize. `assets/icon.png` is the 512px original (the README, a Discord app's
@@ -694,7 +694,7 @@ Key cross-file facts that aren't obvious from any one file:
     again after a refresh run whose `emoji` step may have uploaded (`runs::emoji_since`),
     after a failed listing, while the table is empty, and hourly regardless. No restart
     is needed.
-  - The web page does the same job with Scryfall's SVGs (`web/src/Symbols.tsx`).
+  - The web app does the same job with Scryfall's SVGs (`web/src/Symbols.tsx`).
 - **Providers are configuration, not code.** `judge_bot::config` loads `judge.toml` into
   typed structs.
   - The file is `JUDGE_CONFIG`, else `./judge.toml` if present, else the default setup from
@@ -789,7 +789,7 @@ For the HTTP API it also holds:
   is the most a leaked token can spend.
 
 The `judgebot` and `refresh` containers override `DATABASE_URL` to `db:5432` inside the
-compose network. The image builds the web page and sets `WEB_DIST=/srv/web`. The
+compose network. The image builds the web app and sets `WEB_DIST=/srv/web`. The
 `judgebot` service names its entrypoint (the image's default is still `judge-bot`, for
 compose files from before it) and its `command` is
 `${JUDGE_ROLES:---discord --jobs ${API_INTERFACES:---api --web}}`, nested

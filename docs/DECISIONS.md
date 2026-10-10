@@ -213,7 +213,7 @@ anything.
 
 Dollars stay per process rather than per user or per server. The meter settles after the
 call, so a finer-grained dollar cap would either over-reserve or overshoot. Question-count
-limits are the tool for finer grain, and the MCP transport, the web page and the Discord
+limits are the tool for finer grain, and the MCP transport, the web app and the Discord
 bot have them. D19 makes the cap a budget over time without changing any of this.
 
 ## D8. Native cloud auth for Anthropic
@@ -270,7 +270,7 @@ question.
 - A member holding the operator's judge role overrides the crowd (`effective_score`).
 
 Prior calls are always rendered *after* the CR material and labelled as precedent, never
-authority. The CR outranks anything the community has said. The anonymous web page never
+authority. The CR outranks anything the community has said. The anonymous web app never
 rates, because a rating with no identity behind it is noise. `/forget` deletes a user's
 ratings and anonymizes their failed calls (D27), the only per-user data kept. Questions
 are stored against the channel, not the asker.
@@ -402,7 +402,7 @@ What follows for the code and the docs:
 - The setup experience is organised around creating your own Discord application and
   instance (the README's "Running it" and the site's "Run your own judgebot" section).
 - `GUILD_ID` keeps its meaning as a registration shortcut rather than an allowlist.
-- An instance's anonymous web page is a second public interface to the instance its operator
+- An instance's anonymous web app is a second public interface to the instance its operator
   runs. It is public in the sense that it needs no login. It is not a shared service
   other communities are meant to depend on.
 - One bot in several servers you administer works today. What is shared between them is
@@ -410,7 +410,7 @@ What follows for the code and the docs:
 
 ## D17. Non-goals
 
-Tournament policy (MTR/IPG). Accounts or ratings on the web page. Streaming responses.
+Tournament policy (MTR/IPG). Accounts or ratings on the web app. Streaming responses.
 A plugin system for providers (they are workspace crates chosen by configuration).
 Retraining or fine-tuning of any kind. Automatic detection of "nightmare" cards (the
 notes are curated by hand). Multi-server tenancy (D16).
@@ -573,7 +573,7 @@ With structured output the answer is a JSON string, and Sonnet 5.5 sometimes esc
 level too many: it writes `\\n` for a line break, which reads back as a backslash and an
 `n`. Five answers across four Sonnet runs had it, and no Opus answer. Nothing caught it,
 because a stray escape in a citation fails the verbatim check but the prose is only
-checked for its length and its rule numbers. Discord and the web page showed the
+checked for its length and its rule numbers. Discord and the web app showed the
 backslashes, and a stored call carried them into later prompts as a prior example.
 
 The answer is now an `Answer` newtype whose construction decodes a literal `\n`, `\t` or
@@ -730,7 +730,7 @@ there, `JUDGE_ROLES`. `judgebot ingest <command>` is the data command line.
 - **Requirements are checked before anything connects.** `roles::plan` matches every
   role exhaustively and returns the types the roles run on, which only their checks can
   make: `--discord` needs `DISCORD_TOKEN` and `JUDGE_OPERATOR_DISCORD`, the network roles
-  `JUDGE_OPERATOR_EMAIL` (and `--web` a built page, `--mcp` an `MCP_TOKEN`), and any
+  `JUDGE_OPERATOR_EMAIL` (and `--web` a built web app, `--mcp` an `MCP_TOKEN`), and any
   serving role a model that builds. Every unmet requirement is reported at once. A role
   added later cannot start without saying what it needs.
 - **One process, one composition.** One pool, one configuration, one set of models
@@ -763,10 +763,10 @@ The reasons:
 
 What follows:
 
-- **One failure domain.** A crash or a deploy takes the bot and the page down together.
+- **One failure domain.** A crash or a deploy takes the bot and the web app down together.
   The restart policy brings both back, and the HTTP listener is bound before the gateway
   is contacted, so a taken port fails before the bot logs in.
-- **One spend meter.** With `JUDGE_BUDGET_PERIOD=process` the bot and the page now share
+- **One spend meter.** With `JUDGE_BUDGET_PERIOD=process` the bot and the web app now share
   one `JUDGE_MAX_USD`, where the two processes had one each. `day` and `month` were
   already shared (D19).
 - **The backup and `judge-config` stay separate containers.** The backup reads R2

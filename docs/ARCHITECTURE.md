@@ -286,15 +286,15 @@ Three interfaces share this pipeline through the same composition root
   - `/card` and `/rule` are lookups over the resolver, the retriever's `lookup_rules` and
     `PgLibrary::rulings`. They call no model and touch no meter.
 - **HTTP adapter** (`crates/api` + `web/`): anonymous `POST /api/judge` behind
-  a per-IP fixed-window rate limit, and a SolidJS single page.
+  a per-IP fixed-window rate limit, and a SolidJS web app.
   - Each interface is a role of its own on one listener (`API_ADDR`): `--api`
-    the JSON route, `--web` the page and `--mcp` the MCP transport. An interface
+    the JSON route, `--web` the web app and `--mcp` the MCP transport. An interface
     nobody named is not mounted.
   - `GET /api/health` and `GET /api/about` are served whatever interfaces are off.
     The container healthcheck needs the first.
   - `/api/about` is the source offer (`judge_core::source`): repository, built
     commit, licence and copyright. The AGPL requires every remote interface to
-    offer it. The page's footer reads it from there. Discord gives the same in
+    offer it. The web app's footer reads it from there. Discord gives the same in
     `/help` and `/license`, and the MCP server in its initialization
     instructions and an `about` tool. `JUDGE_SOURCE_URL` points all of them at
     a fork.
@@ -305,7 +305,7 @@ Three interfaces share this pipeline through the same composition root
     missing run table leaves the CR version alone). It is cached for a
     minute, single-flight, by a `FreshnessReader`: `/api/about` has one, and
     every `PgLibrary` another (`/help` in the bot, the MCP `about` tool), so
-    a process with `--mcp` holds two. `/help` lists it, the page footer shows it as
+    a process with `--mcp` holds two. `/help` lists it, the web app's footer shows it as
     one line, and `/api/health` ignores it.
   - The same places name who runs the instance (`judge_core::operator`). The
     bot takes a `DiscordOperator` and the HTTP layer a `NetworkOperator`. The
@@ -377,7 +377,7 @@ Three interfaces share this pipeline through the same composition root
     is excluded from the prior-call query: nothing can rate it, and it is history
     for its own thread only.
   - Over HTTP, `judge` runs are also capped per window (`MCP_JUDGE_LIMIT`) so a
-    leaked token cannot take the public page's slots and spend cap with it.
+    leaked token cannot take the public web app's slots and spend cap with it.
   - Read-only lookups (resolve a card, rules by id or search, rulings, notes,
     glossary) round the surface out (`PgLibrary`).
 
@@ -429,7 +429,7 @@ pictures, from one set of names:
 | Scryfall bulk `rulings.json` | daily (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, key, published_at, text) — `key` = content hash (`judge_core::ruling_key`), so a reindexed ruling keeps its identity |
 | Comprehensive Rules txt | on CR release — detected daily from the `.txt` link on Wizards' rules page vs `max(cr_version)` | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
 | CR Glossary | same | `glossary` (term, text, embedding) |
-| Scryfall `/symbology` (84 card symbols) | daily (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web page (`web/src/symbols.ts`) |
+| Scryfall `/symbology` (84 card symbols) | daily (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web app (`web/src/symbols.ts`) |
 | Nicknames | hand-curated YAML, compiled in; the refresh reloads a built-in copy an upgrade changed | `card_aliases` (alias, oracle_id) |
 | Nightmare notes | hand-written markdown, likewise | `card_notes` (oracle_id, note) |
 | Curated list sources | written by each alias or note load, in its transaction | `curated_lists` (list, source `builtin`/`file`, digest, loaded_at): the refresh's `lists` step reloads only a `builtin` list whose digest is not the binary's (`judge_bot::ingest::lists`) |
@@ -569,7 +569,7 @@ The build was eval-first: retrieval was measured before any synthesis existed.
 ## 7. Non-goals
 
 - Tournament policy (MTR/IPG). The bot declines those questions rather than winging them.
-- Accounts or ratings on the web page. The anonymous page never rates.
+- Accounts or ratings on the web app. Its visitors are anonymous, so it never rates.
 - Retraining of any kind.
 - Automatic detection of "nightmare" cards (the notes are curated by hand).
 - Multi-server tenancy. The bot is meant to be run by each community for itself

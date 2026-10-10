@@ -284,7 +284,7 @@ There is no anonymous mode. A request without `Authorization: Bearer <MCP_TOKEN>
 a 401 before the protocol sees it. Behind the token are:
 
 - `judge`: the full pipeline with model spend, under the same `JUDGE_MAX_USD` and
-  `JUDGE_CONCURRENCY` as the web page.
+  `JUDGE_CONCURRENCY` as the web app.
 - The agent-driven sessions: no model calls, database work only.
 - The read-only lookups.
 
@@ -343,7 +343,7 @@ cargo run --release -p judgebot -- ingest emoji   # needs DISCORD_TOKEN; no data
 
 The command is idempotent. It uploads only the symbols that are missing, so re-run it
 after Scryfall adds one. Skipping it is safe: the bot logs a warning at startup
-and falls back to writing `{W}` as text. The web page needs none of this, because it
+and falls back to writing `{W}` as text. The web app needs none of this, because it
 loads the symbols from Scryfall's CDN.
 
 The refresh (§7) runs the same upload. A running bot lists the emoji again:
@@ -425,7 +425,7 @@ first line of defence, and the in-process limiter is the backstop.
   plan includes one rule.
 - **Managed Challenge** as a WAF custom rule on the HTML document request, *not* on
   `/api/judge`. `fetch` cannot solve a challenge served to an `XHR`, so challenging the
-  API path breaks the page. Challenging the document checks a visitor once, and later
+  API path breaks the web app. Challenging the document checks a visitor once, and later
   `/api/judge` calls carry the `cf_clearance` cookie.
 
 Full Turnstile with server-side `siteverify` is stronger. It needs a token in the POST
@@ -1053,7 +1053,7 @@ standing by: another instance holds the Discord gateway; this one connects when 
   `pg_terminate_backend`) or gets no answer in 4 seconds, it closes its gateway
   connection and stands by again, while the process's HTTP roles keep serving. A
   restart of the database therefore costs the bot a grace period and a login, and
-  costs the page nothing. If the gateway does not close within 1 second, the process
+  costs the web app nothing. If the gateway does not close within 1 second, the process
   exits non-zero instead, which closes it, and `restart: unless-stopped` brings it
   back. The grace (15 seconds) is longer than the slowest disconnect (a 5-second
   interval, a 4-second check and a 1-second shutdown), so the old and new holders
@@ -1213,7 +1213,7 @@ own if the connector restarts.
 | Tunnel healthy, hostname NXDOMAIN | the `judge` record is grey-clouded; it must be proxied |
 | `/mcp` answers 401 | wrong or missing `Authorization: Bearer <MCP_TOKEN>` |
 | `/mcp` answers 403 while `/api/health` is fine | the public hostname is not in `MCP_ALLOWED_HOSTS` |
-| `/mcp` answers 405 (a browser GET shows the web page) | `--mcp` is not in `JUDGE_ROLES`, so `/mcp` is just another page path |
+| `/mcp` answers 405 (a browser GET shows the web app) | `--mcp` is not in `JUDGE_ROLES`, so `/mcp` is just another page path |
 | `judgebot` exits naming `--mcp` and `MCP_TOKEN` | `--mcp` with no token to gate it; set `MCP_TOKEN` or drop the flag |
 | `/mcp` 404s and the log warns about `MCP_TOKEN` | the token is set but `--mcp` is not in `JUDGE_ROLES` |
 | `judgebot` exits naming `--web` and `index.html` | `--web` with no built page at `WEB_DIST`; drop `--web` or rebuild the image |

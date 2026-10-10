@@ -1,5 +1,5 @@
 name: Feature request
-description: Something the bot, the web page, the API or the tooling should do.
+description: Something the bot, the web app, the API or the tooling should do.
 labels: ["enhancement"]
 body:
   - type: textarea

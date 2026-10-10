@@ -1,11 +1,11 @@
 ---
-title: The web page
+title: The web app
 description: The anonymous interface, with the same pipeline, no ratings, and a rate limit per address.
 sidebar:
   order: 2
 ---
 
-The web page is a single SolidJS page, built into the image and served by `judgebot` at
+The web app is a SolidJS single-page app, built into the image and served by `judgebot` at
 <http://localhost:8787>. It runs the same pipeline as the Discord bot and shows the same
 answer:
 
@@ -15,27 +15,27 @@ answer:
 - the confidence and the CR version.
 
 Answers are written in the light Markdown Discord renders (bold card names, rule numbers
-in backticks). The page renders the same three marks and nothing else.
+in backticks). The web app renders the same three marks and nothing else.
 
 A name that could mean several cards gets a "did you mean…?" choice. Questions asked in
 one browser session share history, so a follow-up works. Before the first question the
 page offers four examples. Choosing one fills the box but does not send it, because an
 answer spends the operator's money and one of the visitor's rate-limited questions.
 
-Nobody is logged in there, so the page has **no rating buttons**, and nothing about the
+Nobody is logged in there, so the web app has **no rating buttons**, and nothing about the
 visitor is stored beyond a random session id that groups their questions. The footer
 names the source repository, the commit the instance was built from and the operator's
-support address (`JUDGE_OPERATOR_EMAIL`, without which the page does not start). A
+support address (`JUDGE_OPERATOR_EMAIL`, without which the web app does not start). A
 line above it gives the Comprehensive Rules release loaded and how long ago the data was
 last refreshed, for example `Comprehensive Rules 2026-09-25 · refreshed 3 hours ago`.
 
 ## Enabling
 
-The page is the `--web` role of `judgebot`. `--api` serves `POST /api/judge`, the route
-the page asks its questions through, and the MCP transport is `--mcp`. Any of the three
+The web app is the `--web` role of `judgebot`. `--api` serves `POST /api/judge`, the route
+the web app asks its questions through, and the MCP transport is `--mcp`. Any of the three
 also serves `GET /api/health` and `GET /api/about`. The compose service runs
 `--discord --api --web --jobs` unless `JUDGE_ROLES` in `.env` says otherwise, so
-`docker compose up -d` serves the page. `JUDGE_ROLES='--discord --api --jobs'`, for
+`docker compose up -d` serves the web app. `JUDGE_ROLES='--discord --api --jobs'`, for
 example, is a deployment with no public page.
 
 ## Limits
@@ -46,7 +46,7 @@ and the spend cap. The [HTTP API](../../using/api/) page has the request and rep
 shapes, and the [deployment runbook](../../self-hosting/deployment/) puts a Cloudflare
 rate-limiting rule in front of all of it.
 
-## Developing the page
+## Developing the web app
 
 ```sh
 cargo run --release -p judgebot -- --api --web    # API + the built page on localhost:8787

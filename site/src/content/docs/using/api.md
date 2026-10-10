@@ -14,7 +14,7 @@ The HTTP interfaces serve three routes on `API_ADDR`:
 
 There is no authentication. The API is the anonymous interface, bounded by a per-address
 rate limit, the concurrency slots and the spend cap. It sends no CORS headers, so call it
-from a server or from the bundled page, not from a browser page on another origin.
+from a server or from the bundled web app, not from a browser page on another origin.
 
 ## `POST /api/judge`
 
@@ -81,7 +81,7 @@ does not. The compose healthcheck and the tunnel's start condition use it.
 
 The source offer and the operator contact as JSON: `program`, `repository`, `commit`,
 `commit_url`, `dirty`, `license`, `license_name`, `license_url`, `copyright`,
-`operator_email`, `operator_discord` and a ready-to-show `notice`. The page footer is
+`operator_email`, `operator_discord` and a ready-to-show `notice`. The web app's footer is
 built from it.
 
 `freshness` says what the instance's data is:

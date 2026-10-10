@@ -465,7 +465,7 @@ the file as the others do, so every named provider's key must be in `.env` for i
 - The agent surface (`crates/agent`, sessions, MCP, CLI, the skill). The calling agent is
   the model there, so providers do not apply. The built-in `judge` tool reports which
   model it is running in its replies, nothing more.
-- Retrieval, ratings, retirement, renumbering, the HTTP API, the web page, deployment.
+- Retrieval, ratings, retirement, renumbering, the HTTP API, the web app, deployment.
 
 ## 7. Eval
 

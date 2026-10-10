@@ -24,7 +24,7 @@ stand by and take over when it goes.
 | --- | --- | --- |
 | `--discord` | The Discord bot | `DISCORD_TOKEN`, `JUDGE_OPERATOR_DISCORD` |
 | `--api` | `POST /api/judge`, the anonymous question route | `JUDGE_OPERATOR_EMAIL` |
-| `--web` | The built web page, from `WEB_DIST` | `JUDGE_OPERATOR_EMAIL`, a built `index.html` |
+| `--web` | The built web app, from `WEB_DIST` | `JUDGE_OPERATOR_EMAIL`, a built `index.html` |
 | `--mcp` | The MCP transport at `/mcp` | `JUDGE_OPERATOR_EMAIL`, `MCP_TOKEN` |
 | `--jobs` | The scheduled data refresh, every `JUDGE_REFRESH_HOURS` (`0` turns it off) | a schedule that is on, when it is the only role |
 

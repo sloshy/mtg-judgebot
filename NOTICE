@@ -3,7 +3,7 @@ mtg-judgebot
 Copyright (C) 2026 Ryan Peters.
 Licensed under the GNU Affero General Public License, version 3 or later (LICENSE).
 
-Every remote interface of a running instance (the web page and GET /api/about, the
+Every remote interface of a running instance (the web app and GET /api/about, the
 Discord /help and /license commands, the MCP server's instructions and `about` tool)
 states this licence and copyright and names the repository holding the instance's
 source, with the commit it was built from. An operator running a modified version sets

@@ -13,7 +13,7 @@ Where the two disagree, the code wins, then ARCHITECTURE.md.
 
 ## 1. What it does
 
-A user in a Discord server (or on a small web page, or an AI agent over MCP) asks a
+A user in a Discord server (or in a web app, or an AI agent over MCP) asks a
 Magic: The Gathering rules question:
 
 > Does bob's trigger still happen if he dies in response to it?
@@ -570,7 +570,7 @@ pipeline.
   application emoji. The rendering logic is pure and unit-tested. A mana emoji tag is about
   thirty characters and must never be cut in half by Discord's length limit, so rendered
   text is carried as segments where only plain text is cuttable.
-- **Web** (`crates/api` + `web/`, a SolidJS page): anonymous, so no ratings. Ambiguity comes
+- **Web** (`crates/api` + `web/`, a SolidJS web app): anonymous, so no ratings. Ambiguity comes
   back as data. The client re-asks with pins that the server rewrites to
   `[[Full Card Name]]`. Session history keys on a client UUID. Rate-limited per IP.
 - **Agent** (`crates/agent`, `judge-cli` and `judge-mcp`): the judge as a tool for other AI
@@ -667,7 +667,7 @@ matters for the large synthesis turn. The provider seam means this is a default,
 lock-in.
 
 **serenity + poise** for Discord, **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite**
-for the page. All conventional, well-maintained choices for their niches.
+for the web app. All conventional, well-maintained choices for their niches.
 
 **Docker Compose behind a Cloudflare Tunnel.** One host, no open inbound ports, a
 CI-built image run as one `judgebot` service whose roles are launch options (D25), a

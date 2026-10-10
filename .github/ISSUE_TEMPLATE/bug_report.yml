@@ -1,5 +1,5 @@
 name: Bug
-description: Something other than the ruling itself misbehaved (a crash, an error message, a button, the web page, ingest).
+description: Something other than the ruling itself misbehaved (a crash, an error message, a button, the web app, ingest).
 labels: ["bug"]
 body:
   - type: textarea

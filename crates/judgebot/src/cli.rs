@@ -142,7 +142,7 @@ JUDGE_ROLES (the same flags separated by spaces).
 
   --discord  the Discord bot (requires DISCORD_TOKEN and JUDGE_OPERATOR_DISCORD)
   --api      POST /api/judge, the anonymous question route
-  --web      the built web page, from WEB_DIST (requires its index.html)
+  --web      the built web app, from WEB_DIST (requires its index.html)
   --mcp      the MCP transport at /mcp (requires MCP_TOKEN)
   --jobs     the scheduled data refresh (JUDGE_REFRESH_HOURS; 0 turns it off)
 

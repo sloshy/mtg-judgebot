@@ -1,12 +1,12 @@
 ---
 title: Try it without Discord
-description: Bring up the database, load the data, and ask questions from the web page or the command line. No bot token needed.
+description: Bring up the database, load the data, and ask questions from the web app or the command line. No bot token needed.
 sidebar:
   order: 2
 ---
 
 Nothing in the pipeline depends on Discord. The quickest way to see the judge work is the
-web page on your own machine, and the cheapest is the command line. Both need the database
+web app on your own machine, and the cheapest is the command line. Both need the database
 and the data. The model provider is the only paid part.
 
 You need Docker with the compose plugin and an Anthropic API key. A Voyage AI key is
@@ -18,7 +18,7 @@ git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
 docker compose pull                     # the published image
 scripts/config.sh                       # the config editor: open the URL it prints, set ANTHROPIC_API_KEY
                                         # (and VOYAGE_API_KEY if you have one), JUDGE_OPERATOR_EMAIL,
-                                        # which the page requires, and JUDGE_ROLES to '--api --web --jobs'
+                                        # which the web app requires, and JUDGE_ROLES to '--api --web --jobs'
                                         # (no Discord); save, then Ctrl-C
 docker compose up -d db                 # pgvector Postgres on localhost:5432
 docker compose run --rm refresh init    # the whole first load, in one command
@@ -43,13 +43,13 @@ If port 5432 is already taken on your machine, set `DB_PORT` and change the port
 The [config editor](../../self-hosting/config-editor/) checks each change with the
 binaries' own loaders. To edit by hand instead, `cp .env.example .env` and fill it in.
 
-## The web page
+## The web app
 
 ```sh
 docker compose up -d
 ```
 
-This starts `judgebot` with the roles `JUDGE_ROLES` names: the page, the question route
+This starts `judgebot` with the roles `JUDGE_ROLES` names: the web app, the question route
 and the daily data refresh. Without `JUDGE_ROLES` it would also start the Discord bot, and
 refuse to start for want of a `DISCORD_TOKEN`.
 
@@ -57,7 +57,7 @@ The image you pulled is CI's build of upstream `main`, not of your checkout. To 
 you cloned or changed, use `docker compose up -d --build` instead (minutes, about
 4 GB of RAM).
 
-Open <http://localhost:8787>. The page runs the same pipeline as the bot, without the
+Open <http://localhost:8787>. The web app runs the same pipeline as the bot, without the
 rating buttons.
 
 By default each address may ask 4 questions per 5 minutes. That suits a public page but
@@ -65,7 +65,7 @@ will stop you quickly while testing. To ask more, raise `API_RATE_LIMIT` (or sho
 `API_RATE_WINDOW_SECS`) in `.env` first.
 
 Each role is a launch option. `--api --jobs` alone serves the question route with no
-public page, and `--mcp` adds the MCP transport.
+public web app, and `--mcp` adds the MCP transport.
 
 To develop the API without Docker, run `cargo run --release -p judgebot -- --api --web`.
 It serves the built page from `web/dist` (run
@@ -95,7 +95,7 @@ A typical answer costs $0.07 to $0.15 in model calls. Every call is metered agai
 the worst case before sending, so a process cannot overshoot it.
 
 By default the cap is a lifetime total for one process, not a budget per day or month.
-The compose deployment's `judgebot` is one process, so the bot and the page share it, and
+The compose deployment's `judgebot` is one process, so the bot and the web app share it, and
 a restart starts again from zero.
 
 `JUDGE_BUDGET_PERIOD=day` or `month` makes it a budget instead. There is then one cap for

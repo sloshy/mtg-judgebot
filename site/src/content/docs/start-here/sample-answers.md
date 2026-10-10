@@ -1,17 +1,17 @@
 ---
 title: Sample answers
-description: What the judge's answers look like, as screenshots of the web page and five answers copied verbatim from a published evaluation run.
+description: What the judge's answers look like, as screenshots of the web app and five answers copied verbatim from a published evaluation run.
 sidebar:
   order: 3
 ---
 
 The following are sample answers given by the bot so you can see how it works without running it yourself.
 
-![The web page answering a question about Dark Confidant and Tarmogoyf: the ruling, six linked citations, the cards the question was resolved to, and the confidence.](../../../assets/screenshots/web-answer-light.png)
+![The web app answering a question about Dark Confidant and Tarmogoyf: the ruling, six linked citations, the cards the question was resolved to, and the confidence.](../../../assets/screenshots/web-answer-light.png)
 
 A nickname that could mean several cards gets a question back instead of a guess:
 
-![The web page asking which Tibalt was meant, with three cards to choose from.](../../../assets/screenshots/web-did-you-mean.png)
+![The web app asking which Tibalt was meant, with three cards to choose from.](../../../assets/screenshots/web-did-you-mean.png)
 
 On Discord the answer arrives as a message, with the citations in an embed and the rating
 buttons beneath it. The "did you mean…?" choices are buttons too.
@@ -139,6 +139,6 @@ Confidence: High · CR 2026-08-19 · 14 s · 2 model calls · $0.09
 > I only answer Comprehensive Rules and Commander rules questions. Tournament policy (MTR/IPG) and questions that aren't about the rules are out of my scope: for policy, see the Magic Tournament Rules or ask a tournament judge.
 
 (The run file records this outcome as `OutOfScope`. The sentence above is what Discord
-and the web page show for it.)
+and the web app show for it.)
 
 Declined after the classification call, before synthesis · 2 s · 1 model call · $0.002

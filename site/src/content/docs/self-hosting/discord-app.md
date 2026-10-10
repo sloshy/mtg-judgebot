@@ -17,7 +17,7 @@ through the interaction. You never grant it the ability to read messages.
 
 ## Before you start
 
-- The [first run](../first-run/) done up to the point where the web page answers: the
+- The [first run](../first-run/) done up to the point where the web app answers: the
   database is up and the data is loaded. Nothing on this page spends money.
 - The *Manage Server* permission in the Discord server you are adding the bot to. Adding
   an app to a server requires it
@@ -130,7 +130,7 @@ docker compose up -d               # or: cargo run --release -p judgebot -- --di
 ```
 
 The compose service runs `--discord` unless `JUDGE_ROLES` in `.env` leaves it out. If you
-set `JUDGE_ROLES='--api --web --jobs'` to try the page first, clear it or add `--discord`.
+set `JUDGE_ROLES='--api --web --jobs'` to try the web app first, clear it or add `--discord`.
 
 The bot connects about 15 seconds after it starts. It first takes the gateway lease, a
 lock in the database that keeps a second `judgebot` from answering beside it, and waits

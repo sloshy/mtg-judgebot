@@ -826,7 +826,7 @@ const GROUPS = {
   models: "Models without a judge.toml",
   pipeline: "Spend and pipeline",
   discord: "Discord bot",
-  http: "HTTP API and web page",
+  http: "HTTP API and web app",
   mcp: "MCP over HTTP",
   database: "Database",
   deployment: "Deployment",

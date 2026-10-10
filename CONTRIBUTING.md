@@ -7,7 +7,7 @@ works end to end. `docs/ARCHITECTURE.md` is the design reference.
 ## Development setup
 
 You need Docker (with the compose plugin), Rust 1.98 (`rust-toolchain.toml` pins it,
-so `rustup` installs it on first use) and Node 26 for the web page.
+so `rustup` installs it on first use) and Node 26 for the web app.
 
 ```sh
 cp .env.example .env            # DATABASE_URL already points at the compose database
@@ -31,7 +31,7 @@ Card and rules data is needed to run the pipeline, not to build or test.
 <command>` in the docs is `cargo run --release -p judgebot -- ingest <command>` here.
 
 `judgebot` is the one long-running binary, and what it runs is chosen by its flags:
-`cargo run -p judgebot -- --api --web` serves the page on localhost:8787, `--discord` adds
+`cargo run -p judgebot -- --api --web` serves the web app on localhost:8787, `--discord` adds
 the bot, and `--jobs` the scheduled data refresh. Leave `--jobs` off, or set
 `JUDGE_REFRESH_HOURS=0`, against a development database you do not want refreshed.
 `cargo run -p judgebot -- --help` lists the roles and what each requires.

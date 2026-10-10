@@ -9,12 +9,12 @@ Each community runs its own judgebot, with its own Discord application, model ke
 spend cap. A complete instance is two containers from one compose file:
 
 - `db`: Postgres with pgvector.
-- `judgebot`: the Discord bot, the web page and HTTP API, and the daily data refresh.
+- `judgebot`: the Discord bot, the web app and HTTP API, and the daily data refresh.
 
 What `judgebot` runs is a set of roles, `JUDGE_ROLES` in `.env`: `--discord`, `--api`,
 `--web`, `--mcp` and `--jobs` (the refresh). Unset, it runs every role but `--mcp`. A
 third service, `refresh`, runs the data loads on demand. An optional `cloudflared`
-publishes the API without opening a port. You can stop at the web page and never touch
+publishes the API without opening a port. You can stop at the web app and never touch
 Discord. The bot is the last thing to add.
 
 ## Requirements
@@ -42,10 +42,10 @@ Discord. The bot is the last thing to add.
    2. `scripts/config.sh`, then open the URL it prints.
    3. Set your model key (`ANTHROPIC_API_KEY`, or a provider in the Models tab), and
       `VOYAGE_API_KEY` for semantic search if you have one.
-   4. Set `JUDGE_OPERATOR_EMAIL` (a support address, required by the web page and the
+   4. Set `JUDGE_OPERATOR_EMAIL` (a support address, required by the web app and the
       API), and `JUDGE_OPERATOR_DISCORD` (your Discord username, required by the bot) if
       you know it already.
-   5. Set `JUDGE_ROLES` to `--api --web --jobs` in the Roles group: the page and the
+   5. Set `JUDGE_ROLES` to `--api --web --jobs` in the Roles group: the web app and the
       refresh, without Discord until you add the bot.
    6. Check the side panel, which shows whether each role would start. Save on the Review
       tab, then Ctrl-C.

@@ -1,6 +1,6 @@
 ---
 title: MTG Judgebot
-description: A Discord bot and web page that answers Magic rules questions like a judge, with every claim backed by a validated citation.
+description: A Discord bot and web app that answers Magic rules questions like a judge, with every claim backed by a validated citation.
 template: splash
 hero:
   tagline: Rules questions answered like a judge. Every claim cites the Comprehensive Rules, an official ruling or the card's Oracle text, and the citation is checked before you see it.
@@ -32,8 +32,8 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   </Card>
   <Card title="Spend is capped" icon="seti:lock">
     Every model call is metered against a spend cap, per process or per day or month. The
-    worst-case cost is reserved before each call. The anonymous web page is also rate
-    limited per IP.
+    worst-case cost is reserved before each call. The web app is also rate limited
+    per IP.
   </Card>
   <Card title="Models are configuration" icon="setting">
     Anthropic direct, through a proxy, on AWS or Vertex, or any OpenAI-compatible server
@@ -44,7 +44,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 ## Self-hosting
 
 Each community runs its own judgebot, so the spend cap, the judge role and the Discord
-application are yours. The web page and the command line work before you have a bot
+application are yours. The web app and the command line work before you have a bot
 token. Read
 [what the judge is](./start-here/what-it-is/), or go straight to
 [requirements and first run](./self-hosting/first-run/).

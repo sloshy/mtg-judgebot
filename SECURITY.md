@@ -7,7 +7,7 @@ Report security problems privately, not in a public issue. Use GitHub's
 vulnerability reporting). If that is unavailable, contact the maintainer at the address
 on the project's commits. You should hear back within a week.
 
-In scope: the bot, the HTTP API and web page, the MCP transport, the ingest tooling,
+In scope: the bot, the HTTP API and web app, the MCP transport, the ingest tooling,
 and the deployment files in this repository. Out of scope: the third-party services the
 bot talks to (Discord, Scryfall, model providers, Cloudflare).
 

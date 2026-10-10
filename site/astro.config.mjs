@@ -22,7 +22,7 @@ export default defineConfig({
     starlight({
       title: "MTG Judgebot",
       description:
-        "A Discord bot and web page that answers Magic: The Gathering rules questions with validated citations.",
+        "A Discord bot and web app that answers Magic: The Gathering rules questions with validated citations.",
       // The icon is 32x32 pixel art (assets/icon.png at the repository root is the
       // 512px original). The favicon is that grid at native size, so a tab never
       // smooths it, and custom.css keeps the header logo's pixels hard.

@@ -24,7 +24,7 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `JUDGE_ROLES` | compose: `--discord --api --web --jobs` | What `judgebot` runs: `--discord` (the bot), `--api` (`POST /api/judge`), `--web` (the page), `--mcp` (the MCP transport), `--jobs` (the scheduled refresh), at least one, separated by spaces and quoted. The compose service passes it as its command; `judgebot` itself reads it when its command line names no role. `'--api --web --jobs'` runs without Discord. |
+| `JUDGE_ROLES` | compose: `--discord --api --web --jobs` | What `judgebot` runs: `--discord` (the bot), `--api` (`POST /api/judge`), `--web` (the web app), `--mcp` (the MCP transport), `--jobs` (the scheduled refresh), at least one, separated by spaces and quoted. The compose service passes it as its command; `judgebot` itself reads it when its command line names no role. `'--api --web --jobs'` runs without Discord. |
 | `API_INTERFACES` | `--api --web` | Deprecated. The interfaces of the `api` service that `judgebot` replaced. While `JUDGE_ROLES` is unset the compose service runs `--discord --jobs` plus these, and logs a warning naming the `JUDGE_ROLES` line to use instead. A later release stops reading it. |
 
 ## Database and models
@@ -49,7 +49,7 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 | `JUDGE_AUTO_MIGRATE` | `true` | judgebot | Apply pending schema migrations at startup. Set `false` to manage the schema yourself with `judgebot ingest migrate` or sqlx-cli. |
 | `JUDGE_SOURCE_URL` | the upstream repository | all | Where your instance's source code is. Every remote interface shows it with the commit the binary was built from and the AGPL-3.0-or-later notice: the web footer and `GET /api/about`, Discord `/help` and `/license`, the MCP instructions and `about` tool, `judge-cli about`. Set it to your fork if you run a modified version. It must be an http(s) URL, or startup fails. |
 | `JUDGE_OPERATOR_DISCORD` | (required by `--discord`) | all | The Discord username of whoever runs the instance, shown by `/help` and `/license`, and by the other interfaces when set. A username, not a display name or a `name#1234` tag. A leading `@` is dropped. Every binary refuses to start on a malformed value. |
-| `JUDGE_OPERATOR_EMAIL` | (required by `--api`, `--web`, `--mcp`) | all | A support address, shown by `GET /api/about`, the page footer, and the MCP instructions and `about` tool. Discord shows it too when set. The web page, the API and the MCP transport (`--web`, `--api`, `--mcp`) do not start without it. Only letters, digits and `._+-` before the `@`. `judge-cli` and `judge-mcp` on stdio need neither contact, and show them when set. |
+| `JUDGE_OPERATOR_EMAIL` | (required by `--api`, `--web`, `--mcp`) | all | A support address, shown by `GET /api/about`, the web app's footer, and the MCP instructions and `about` tool. Discord shows it too when set. The web app, the API and the MCP transport (`--web`, `--api`, `--mcp`) do not start without it. Only letters, digits and `._+-` before the `@`. `judge-cli` and `judge-mcp` on stdio need neither contact, and show them when set. |
 
 ## Discord
 
@@ -59,12 +59,12 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 | `GUILD_ID` | | Register commands in this one server only (instant). Other servers the bot is in, and DMs with it, get none. Unset: globally, in every server and in DMs for all but `/judge` (up to an hour). Switching leaves the other set registered until you [clear it](../discord-app/#4-command-registration). |
 | `JUDGE_ROLE` | `Judge` | Members holding a role with this exact name rate as judges: their rating overrides the crowd's. |
 
-## HTTP API and web page
+## HTTP API and web app
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `API_ADDR` | `0.0.0.0:8787` | Listen address of the network roles (`--api`, `--web`, `--mcp`), which also serves `GET /api/health` and `GET /api/about` whichever of them is on. Keep `0.0.0.0` in Docker so `cloudflared` can reach it. Access is restricted by the published port (loopback only). |
-| `WEB_DIST` | `web/dist` | The built web page, read only under `--web`. The image sets `/srv/web`. A `--web` launch with no `index.html` there is refused at startup. |
+| `WEB_DIST` | `web/dist` | The built web app, read only under `--web`. The image sets `/srv/web`. A `--web` launch with no `index.html` there is refused at startup. |
 | `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS` | `4`, `300` | Questions per IP per window, checked before the concurrency semaphore and the spend cap. |
 | `API_CLIENT_IP` | `peer` | `peer` (socket address) or `cloudflare` (`CF-Connecting-IP`). Never `X-Forwarded-For`. See [Security](../../reference/security/). |
 | `MCP_TOKEN` | | The bearer token for `/mcp` (24+ printable ASCII bytes). The endpoint also needs `--mcp`. `--mcp` without a token fails at startup. A token without `--mcp` serves nothing and logs a warning. |

@@ -168,7 +168,7 @@ Interfaces are opt-in, and naming any replaces the default rather than adding
 to it. With no flags the JSON API is served alone.
 
   --api   POST /api/judge, the anonymous question route
-  --web   the built web page, from WEB_DIST
+  --web   the built web app, from WEB_DIST
   --mcp   the MCP transport at /mcp (requires MCP_TOKEN)
 
 GET /api/health and GET /api/about (the source offer) are always served.

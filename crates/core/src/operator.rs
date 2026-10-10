@@ -129,7 +129,7 @@ pub enum MissingContact {
     Discord,
     /// A network surface without [`OPERATOR_EMAIL_ENV`].
     #[error(
-        "{OPERATOR_EMAIL_ENV} is not set: the HTTP API, the web page and /mcp must name a support \
+        "{OPERATOR_EMAIL_ENV} is not set: the HTTP API, the web app and /mcp must name a support \
          email address for whoever runs them (shown by GET /api/about, the page footer and the MCP \
          instructions)"
     )]

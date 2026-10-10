@@ -31,7 +31,7 @@ body:
     id: surface
     attributes:
       label: Where
-      options: [Discord, Web page, judge-cli or MCP]
+      options: [Discord, Web app, judge-cli or MCP]
     validations:
       required: true
   - type: input
