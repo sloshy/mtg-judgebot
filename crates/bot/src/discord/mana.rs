@@ -166,13 +166,9 @@ impl Rendered {
             plain.push_str(before);
             // Past the '{', which is one byte, so this is a char boundary.
             let after = at_brace.get(1..).unwrap_or_default();
-            // Only the next MAX_BODY_CHARS characters can be a symbol body, so
-            // a stray `{` can neither pair with a distant `}` nor make the scan
-            // quadratic on text full of braces.
-            let close = after
-                .char_indices()
-                .take(MAX_BODY_CHARS.saturating_add(1))
-                .find_map(|(i, c)| (c == '}').then_some(i));
+            // The look ahead is bounded there, which keeps the whole scan
+            // linear on text full of braces.
+            let close = closing_brace(after.char_indices());
             let hit = close.and_then(|end| {
                 let tag = table.tag(after.get(..end)?)?.to_owned();
                 let tail = after.get(end.saturating_add(1)..).unwrap_or_default();
@@ -308,6 +304,16 @@ impl fmt::Display for Rendered {
     }
 }
 
+/// The byte offset of the `}` closing a symbol body that starts at the front
+/// of `after`, if one comes within [`MAX_BODY_CHARS`] characters. Only that
+/// far can be a body, so it reads no further: a stray `{` can neither pair
+/// with a distant `}` nor make the scan quadratic on text full of braces.
+fn closing_brace(after: impl Iterator<Item = (usize, char)>) -> Option<usize> {
+    after
+        .take(MAX_BODY_CHARS.saturating_add(1))
+        .find_map(|(i, c)| (c == '}').then_some(i))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,20 +334,22 @@ mod tests {
     }
 
     /// A brace that opens nothing must not make the scan walk the rest of the
-    /// text looking for a partner.
+    /// text looking for a partner: it reads at most a body's length past each
+    /// `{`, so text full of braces costs a bounded look per brace.
     #[test]
     fn many_open_braces_stay_linear() {
+        let far = format!("{}}}", "x".repeat(10_000));
+        let mut read = 0_usize;
+        let found = closing_brace(far.char_indices().inspect(|_| read += 1));
+        assert_eq!((found, read), (None, MAX_BODY_CHARS + 1));
+        let longest = format!("{}}}", "x".repeat(MAX_BODY_CHARS));
+        assert_eq!(closing_brace(longest.char_indices()), Some(MAX_BODY_CHARS));
         let t = full();
         for n in [1_000usize, 20_000] {
             let text = format!("{}{{W}}", "{".repeat(n));
-            let started = std::time::Instant::now();
             let out = Rendered::substitute(&text, &t).to_string();
             assert!(out.starts_with('{') && out.ends_with('>'), "n={n}");
-            assert!(
-                started.elapsed() < std::time::Duration::from_millis(200),
-                "n={n} took {:?}",
-                started.elapsed()
-            );
+            assert_eq!(out.matches('{').count(), n, "every stray brace is kept");
         }
     }
 

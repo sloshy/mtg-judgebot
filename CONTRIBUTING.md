@@ -79,6 +79,10 @@ Other ways to run the gates and linters:
 
 - `scripts/check.sh rust test` runs chosen groups on the working tree (any of `rust sqlx
   test web site lint`). `scripts/check.sh --at <rev>` runs them on a commit.
+- `sqlx` and `test` wait for any other `sqlx` or `test` run on the same Postgres server.
+  `#[sqlx::test]` names its throwaway databases after each test's path, so two `cargo
+  test` runs on one server at once break each other: while a hook may be testing, run
+  the suite as `scripts/check.sh test`.
 - `git commit --no-verify` / `git push --no-verify` skip a hook once.
 - `npm --prefix web run fix` (or `site`) applies Biome's formatting and safe fixes.
   `.tools/bin/taplo fmt` formats the TOML.

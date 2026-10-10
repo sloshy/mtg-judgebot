@@ -1513,12 +1513,20 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_failur
 async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_rated(
     pool: PgPool,
 ) -> anyhow::Result<()> {
+    // Everything happened at noon yesterday (UTC), one date read once: the
+    // window ends today by the database's clock, so a test run that crosses
+    // midnight still finds it all in one day of the window.
+    let yesterday: String =
+        sqlx::query_scalar("SELECT ((now() AT TIME ZONE 'utc')::date - 1)::text")
+            .fetch_one(&pool)
+            .await?;
     let mut ids = Vec::new();
     for thread in ["123456789", "web:0b0e", "agent:77aa", "987654321"] {
         let id: Uuid = sqlx::query_scalar(
-            "INSERT INTO calls (thread_id, question, answer, category, source, confidence, citations,              context_ids, cr_version) VALUES ($1, 'does  it\nwork?', 'yes', 'combat', 'cr', 'high',              '[]', '{}', '20260819') RETURNING id",
+            "INSERT INTO calls (thread_id, question, answer, category, source, confidence, citations,              context_ids, cr_version, created_at) VALUES ($1, 'does  it\nwork?', 'yes', 'combat', 'cr', 'high',              '[]', '{}', '20260819', ($2::date + time '12:00') AT TIME ZONE 'utc') RETURNING id",
         )
         .bind(thread)
+        .bind(&yesterday)
         .fetch_one(&pool)
         .await?;
         ids.push(id);
@@ -1529,8 +1537,9 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
         .execute(&pool)
         .await?;
     sqlx::query(
-        "INSERT INTO spend_days (day, micro_usd, calls) VALUES          ((now() AT TIME ZONE 'utc')::date, 1250000, 9),          ((now() AT TIME ZONE 'utc')::date - 400, 9000000, 1)",
+        "INSERT INTO spend_days (day, micro_usd, calls) VALUES          ($1::date, 1250000, 9), ($1::date - 399, 9000000, 1)",
     )
+    .bind(&yesterday)
     .execute(&pool)
     .await?;
 
@@ -1541,9 +1550,10 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
         1,
         "the row 400 days back is outside the window"
     );
-    let today = u.by_day.first().ok_or_else(|| anyhow::anyhow!("no day"))?;
-    assert_eq!((today.discord, today.web, today.agent), (2, 1, 1));
-    assert_eq!(today.llm_calls, 9);
+    let day = u.by_day.first().ok_or_else(|| anyhow::anyhow!("no day"))?;
+    assert_eq!(day.day, yesterday);
+    assert_eq!((day.discord, day.web, day.agent), (2, 1, 1));
+    assert_eq!(day.llm_calls, 9);
     assert!((u.usd - 1.25).abs() < 1e-9);
     assert_eq!(u.questions, 4);
     assert_eq!(u.ratings, [2, 0, 0]);

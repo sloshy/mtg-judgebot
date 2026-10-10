@@ -11,6 +11,7 @@
 //! Debian repository (`Dockerfile`), matched to the compose file's server.
 
 use std::{
+    ffi::OsString,
     io::Write as _,
     path::{Path, PathBuf},
     process::Stdio,
@@ -75,6 +76,9 @@ pub enum DumpError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PgDump {
     program: PathBuf,
+    /// Arguments before `pg_dump`'s own: none for the real one; a test's
+    /// stand-in is `/bin/sh` and its script.
+    leading: Vec<OsString>,
     major: u16,
     version: String,
 }
@@ -169,6 +173,7 @@ impl PgDump {
         match major_version(&text) {
             Some(major) if out.status.success() => Ok(Self {
                 program: PathBuf::from(PG_DUMP),
+                leading: Vec::new(),
                 major,
                 version: text,
             }),
@@ -176,11 +181,13 @@ impl PgDump {
         }
     }
 
-    /// A stand-in program, for tests that need no PostgreSQL.
+    /// A stand-in, `/bin/sh` running `script`, for tests that need no
+    /// PostgreSQL.
     #[cfg(test)]
-    fn stand_in(program: PathBuf) -> Self {
+    fn stand_in(script: PathBuf) -> Self {
         Self {
-            program,
+            program: PathBuf::from("/bin/sh"),
+            leading: vec![script.into_os_string()],
             major: 16,
             version: "stand-in".to_owned(),
         }
@@ -214,6 +221,7 @@ impl PgDump {
         limit: Duration,
     ) -> Result<Dumped, DumpError> {
         let mut child = tokio::process::Command::new(&self.program)
+            .args(&self.leading)
             .args(["--format=custom", "--no-password"])
             // Nothing inherited but what a program needs to run: an ambient
             // PGSERVICE or PGSSLMODE must not change what is dumped, and the
@@ -328,39 +336,35 @@ impl PgDump {
 mod tests {
     use super::*;
 
-    /// A directory holding an executable `pg_dump` stand-in running `body`.
+    /// A directory holding a `pg_dump` stand-in script running `body`. The
+    /// shell reads it rather than the kernel executing it: a file just
+    /// written can fail to execute (ETXTBSY) while another test thread's
+    /// child, forked in between, still holds it open for writing.
     fn stand_in(body: &str) -> std::io::Result<(PathBuf, PgDump)> {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = std::env::temp_dir().join(format!("judgebot-dump-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir)?;
-        let program = dir.join("pg_dump");
-        std::fs::write(&program, format!("#!/bin/sh\n{body}\n"))?;
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))?;
-        Ok((dir, PgDump::stand_in(program)))
+        let script = dir.join("pg_dump.sh");
+        std::fs::write(&script, format!("{body}\n"))?;
+        Ok((dir, PgDump::stand_in(script)))
     }
 
     fn db() -> Result<Database, String> {
         Database::parse("postgres://judgebot:pw@db.local:5432/judgebot")
     }
 
-    /// A full disk fails the dump at once with the write error, not after
-    /// the time limit with `pg_dump` blocked on its pipe.
+    /// A full disk fails the dump with the write error, not after the time
+    /// limit with `pg_dump` blocked on its pipe: that dump would end
+    /// [`DumpError::TimedOut`].
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_failed_write_stops_the_dump_and_says_why() -> Result<(), Box<dyn std::error::Error>>
     {
         let (dir, pg_dump) = stand_in("exec head -c 50000000 /dev/urandom")?;
-        let started = std::time::Instant::now();
         let r = pg_dump
             .dump(&db()?, Path::new("/dev/full"), Duration::from_secs(60))
             .await;
         std::fs::remove_dir_all(dir)?;
         assert!(matches!(r, Err(DumpError::Io(_))), "{r:?}");
-        assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "{:?}",
-            started.elapsed()
-        );
         Ok(())
     }
 

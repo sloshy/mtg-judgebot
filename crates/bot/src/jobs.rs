@@ -67,6 +67,7 @@ use tokio::time::Instant;
 
 use crate::{
     alert::{self, AlertWebhook},
+    clock::{Clock, Tokio},
     db::migrate,
     ingest::{
         self, RefreshLease,
@@ -414,8 +415,9 @@ enum Ticked {
 
 /// One check; see the module docs. `run` is the refresh itself, handed the
 /// lease, so a test can count runs without downloading anything; `limit` is
-/// how long it may take ([`runs::ABANDONED_AFTER`]).
+/// how long it may take ([`runs::ABANDONED_AFTER`]), on `clock`.
 async fn tick<F>(
+    clock: &impl Clock,
     pool: &PgPool,
     every: Hours,
     process: &'static str,
@@ -458,11 +460,36 @@ where
         return Ticked::Uninitialised;
     }
     memory.paused = None;
-    let since = memory.unrecorded.map(|t| t.elapsed());
+    let since = memory
+        .unrecorded
+        .map(|t| clock.now().saturating_duration_since(t));
     if let Due::NotYet { in_secs } = due(every, &with_unrecorded(history, since)) {
         tracing::debug!(in_secs, "scheduled refresh not due");
         return Ticked::NotDue;
     }
+    run_due(clock, pool, every, process, memory, since, limit, run).await
+}
+
+/// The rest of a [`tick`] that found a run due: take the lease, read the
+/// record again under it, and run. `since` is how long ago the latest
+/// unrecorded run ended, as [`tick`] read it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "tick's own parameters, and what it read before the lease"
+)]
+async fn run_due<F>(
+    clock: &impl Clock,
+    pool: &PgPool,
+    every: Hours,
+    process: &'static str,
+    memory: &mut Memory,
+    since: Option<Duration>,
+    limit: Duration,
+    run: F,
+) -> Ticked
+where
+    F: AsyncFnOnce(&mut RefreshLease) -> RunReport,
+{
     let mut lease = match ingest::try_lease(pool, process).await {
         Ok(Some(lease)) => lease,
         Ok(None) => {
@@ -493,10 +520,10 @@ where
         last_ok = %ago(previous.last_ok_age_secs),
         "refresh starting"
     );
-    let started = Instant::now();
+    let started = clock.now();
     // The database's clock at the start, so a dropped run's row can be found.
     let since = runs::db_now(pool).await.ok();
-    let report = if let Ok(report) = tokio::time::timeout(limit, run(&mut lease)).await {
+    let report = if let Ok(report) = clock.timeout(limit, run(&mut lease)).await {
         lease.release().await;
         report
     } else {
@@ -505,26 +532,24 @@ where
         // failed, so the record does not read as a process that died; then
         // the lease goes, bounded, because its connection may be what hung.
         let closed = match &since {
-            Some(since) => tokio::time::timeout(AFTER_DROP, runs::close_dropped(pool, since))
+            Some(since) => clock
+                .timeout(AFTER_DROP, runs::close_dropped(pool, since))
                 .await
                 .is_ok_and(|r| r.unwrap_or(false)),
             None => false,
         };
-        if tokio::time::timeout(AFTER_DROP, lease.release())
-            .await
-            .is_err()
-        {
+        if clock.timeout(AFTER_DROP, lease.release()).await.is_err() {
             tracing::warn!("releasing the lease after a dropped run timed out; dropping it");
         }
         timed_out(closed)
     };
     if !report.recorded {
-        memory.unrecorded = Some(Instant::now());
+        memory.unrecorded = Some(clock.now());
     }
     Ticked::Ran {
         previous,
         report,
-        secs: started.elapsed().as_secs(),
+        secs: clock.now().saturating_duration_since(started).as_secs(),
     }
 }
 
@@ -762,7 +787,7 @@ async fn schedule_loop(
                     ingest::refresh(lease, &dir, Trigger::Schedule, &meter).await
                 };
                 let limit = runs::ABANDONED_AFTER;
-                let ticked = tick(&pool, every, process, &mut memory, limit, refresh).await;
+                let ticked = tick(&Tokio, &pool, every, process, &mut memory, limit, refresh).await;
                 (ticked, memory)
             }
         });
@@ -856,7 +881,7 @@ mod tests {
     use anyhow::{Context as _, Result};
 
     use super::*;
-    use crate::ingest::runs::Step;
+    use crate::{clock::manual::Manual, ingest::runs::Step, lease::testing::HANG};
 
     /// The caller hears how the thread ended, once, and a sender that went
     /// away without a word counts as a panic.
@@ -1179,6 +1204,7 @@ mod tests {
         let (mut a, mut b) = (Memory::default(), Memory::default());
         let (x, y) = tokio::join!(
             tick(
+                &Tokio,
                 &pool,
                 DAY,
                 "a",
@@ -1187,6 +1213,7 @@ mod tests {
                 async |_: &mut RefreshLease| { fake(&pool, &ran).await }
             ),
             tick(
+                &Tokio,
                 &pool,
                 DAY,
                 "b",
@@ -1216,6 +1243,7 @@ mod tests {
         let held = ingest::try_lease(&pool, "cron").await?.context("free")?;
         let ran = AtomicUsize::new(0);
         let t = tick(
+            &Tokio,
             &pool,
             DAY,
             "bot",
@@ -1240,6 +1268,7 @@ mod tests {
         .await?;
         let ran = AtomicUsize::new(0);
         let t = tick(
+            &Tokio,
             &pool,
             DAY,
             "bot",
@@ -1258,6 +1287,7 @@ mod tests {
         let ran = AtomicUsize::new(0);
         let mut memory = Memory::default();
         let t = tick(
+            &Tokio,
             &pool,
             DAY,
             "bot",
@@ -1274,6 +1304,7 @@ mod tests {
         );
         seed(&pool).await?;
         let t = tick(
+            &Tokio,
             &pool,
             DAY,
             "bot",
@@ -1302,6 +1333,7 @@ mod tests {
         let mut memory = Memory::default();
         for _ in 0..2 {
             let t = tick(
+                &Tokio,
                 &pool,
                 DAY,
                 "bot",
@@ -1329,6 +1361,7 @@ mod tests {
         let mut memory = Memory::default();
         for _ in 0..2 {
             let t = tick(
+                &Tokio,
                 &pool,
                 DAY,
                 "bot",
@@ -1344,6 +1377,7 @@ mod tests {
             .execute(&pool)
             .await?;
         let t = tick(
+            &Tokio,
             &pool,
             DAY,
             "bot",
@@ -1371,6 +1405,7 @@ mod tests {
         .await?;
         let ran = AtomicUsize::new(0);
         let t = tick(
+            &Tokio,
             &pool,
             DAY,
             "bot",
@@ -1394,28 +1429,88 @@ mod tests {
         Ok(())
     }
 
+    /// A run that finished between a check's first read and its lease:
+    /// the read under the lease sees it, and nothing runs.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_run_done_while_the_lease_was_taken_is_not_repeated(pool: PgPool) -> Result<()> {
+        seed(&pool).await?;
+        // Due when the check first read the record...
+        let before = runs::history(&pool).await?;
+        assert_eq!(due(DAY, &before), Due::Now);
+        // ...and done by another process before it took the lease.
+        sqlx::query(
+            "INSERT INTO refresh_runs (trigger, process, finished_at, ok) VALUES ('manual', 'ingest', now(), true)",
+        )
+        .execute(&pool)
+        .await?;
+        let ran = AtomicUsize::new(0);
+        let t = run_due(
+            &Tokio,
+            &pool,
+            DAY,
+            "bot",
+            &mut Memory::default(),
+            None,
+            LIMIT,
+            async |_: &mut RefreshLease| fake(&pool, &ran).await,
+        )
+        .await;
+        assert!(matches!(t, Ticked::NotDue), "{t:?}");
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        assert!(
+            ingest::try_lease(&pool, "after").await?.is_some(),
+            "the lease was released"
+        );
+        Ok(())
+    }
+
+    /// [`tick`] on `clock` with a run that never ends, the clock moved to
+    /// the run's limit once `begun` resolves and the run waits on it.
+    async fn at_the_limit<F>(
+        clock: &Manual,
+        pool: &PgPool,
+        memory: &mut Memory,
+        begun: impl Future<Output = Result<()>>,
+        run: F,
+    ) -> Result<Ticked>
+    where
+        F: AsyncFnOnce(&mut RefreshLease) -> RunReport,
+    {
+        let limit = clock.elapsed() + LIMIT;
+        let mut ticked = std::pin::pin!(tick(clock, pool, DAY, "bot", memory, LIMIT, run));
+        let drive = async {
+            tokio::time::timeout(HANG, begun)
+                .await
+                .context("the run beginning in time")??;
+            clock.parked(&[limit]).await?;
+            clock.advance_to(limit);
+            anyhow::Ok(())
+        };
+        tokio::select! {
+            t = &mut ticked => anyhow::bail!("the check ended before the run's limit: {t:?}"),
+            driven = drive => driven?,
+        }
+        Ok(tokio::time::timeout(HANG, ticked).await?)
+    }
+
     /// A dropped run that had begun its row gets it closed as failed, so the
     /// record does not read as a process that died.
     #[sqlx::test(migrations = "./migrations")]
     async fn a_dropped_runs_row_is_closed_as_failed(pool: PgPool) -> Result<()> {
         seed(&pool).await?;
-        let hang = async |lease: &mut RefreshLease| {
-            let _row = sqlx::query(
+        let (row, begun) = tokio::sync::oneshot::channel();
+        let hang = async move |lease: &mut RefreshLease| {
+            let inserted = sqlx::query(
                 "INSERT INTO refresh_runs (trigger, process) VALUES ('schedule', 'bot')",
             )
             .execute(lease.pool())
             .await;
+            drop(row.send(inserted.map(|_| ())));
             std::future::pending::<RunReport>().await
         };
-        let t = tick(
-            &pool,
-            DAY,
-            "bot",
-            &mut Memory::default(),
-            Duration::from_millis(300),
-            hang,
-        )
-        .await;
+        let begun = async { Ok(begun.await.context("the run began")??) };
+        let clock = Manual::new();
+        let t = at_the_limit(&clock, &pool, &mut Memory::default(), begun, hang).await?;
         let Ticked::Ran { report, .. } = t else {
             anyhow::bail!("expected a run, got {t:?}");
         };
@@ -1437,23 +1532,18 @@ mod tests {
         seed(&pool).await?;
         let mut memory = Memory::default();
         let hang = async |_: &mut RefreshLease| std::future::pending::<RunReport>().await;
-        let t = tick(
-            &pool,
-            DAY,
-            "bot",
-            &mut memory,
-            Duration::from_millis(200),
-            hang,
-        )
-        .await;
-        let Ticked::Ran { report, .. } = t else {
+        let clock = Manual::new();
+        let t = at_the_limit(&clock, &pool, &mut memory, async { Ok(()) }, hang).await?;
+        let Ticked::Ran { report, secs, .. } = t else {
             anyhow::bail!("expected a run, got {t:?}");
         };
         assert!(report.timed_out && !report.ok());
+        assert_eq!(secs, LIMIT.as_secs(), "it ran for its limit");
         // The fake wrote no row, so there was none to close: remembered.
         assert!(!report.recorded && memory.unrecorded.is_some());
         let ran = AtomicUsize::new(0);
         let t = tick(
+            &clock,
             &pool,
             DAY,
             "bot",
@@ -1463,6 +1553,7 @@ mod tests {
         )
         .await;
         assert!(matches!(t, Ticked::NotDue), "{t:?}");
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
         assert!(
             ingest::try_lease(&pool, "after").await?.is_some(),
             "the lease was released"

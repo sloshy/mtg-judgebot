@@ -141,9 +141,11 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn a_claim_prunes_claims_older_than_a_day(pool: PgPool) -> anyhow::Result<()> {
+        // An hour clear of a day either side: in a time zone with daylight
+        // saving, a day is 23 to 25 hours.
         sqlx::query(
             "INSERT INTO pick_claims (message_id, shown_ms, digest, claimed_at) VALUES
-             (1, 1, 1, now() - interval '25 hours'), (2, 1, 1, now() - interval '23 hours')",
+             (1, 1, 1, now() - interval '26 hours'), (2, 1, 1, now() - interval '22 hours')",
         )
         .execute(&pool)
         .await?;

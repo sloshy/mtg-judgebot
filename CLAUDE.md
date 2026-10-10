@@ -139,7 +139,10 @@ hooks in `scripts/hooks/` are enabled by `scripts/dev-setup.sh` (`core.hooksPath
 run `check.sh --at <rev>`, which checks that exact tree in a scratch worktree
 (`.git/judgebot-check`, sharing `target/` and `.tools`, with its own `node_modules`). The
 working tree cannot mask a failure. The `sqlx` group migrates a throwaway
-`judgebot_check` database, never the development one.
+`judgebot_check` database, never the development one. The `sqlx` and `test` groups take
+turns per Postgres cluster (a lock file keyed on `DATABASE_URL`'s host and port, waited
+on for up to 15 min): `#[sqlx::test]` names each throwaway database after the test's path
+alone, so two suites on one cluster drop each other's databases mid-run.
 - pre-commit checks the staged tree: the groups the staged paths touch, deletions
   included, plus `lint`.
 - pre-push checks the tip of each pushed ref against the remote's sha (`--since`). It
@@ -304,6 +307,9 @@ cargo clippy --workspace --all-targets   # must be warning-free; lints deny unwr
                                          # and bare #[allow]: suppress with #[expect(lint, reason = "…")]
 cargo test --workspace               # includes #[sqlx::test] suites that spin temp DBs off DATABASE_URL
 cargo test -p judge-bot possessive   # run a single test by substring (judge-bot is the library)
+scripts/check.sh test                # the suite, waiting for any other sqlx/test run on the cluster:
+                                     # use it, not bare cargo test, when another session or a hook
+                                     # may be testing (sqlx test DB names collide across processes)
 scripts/check.sh [--staged | group..]   # the CI gates locally (the git hooks run this)
 SQLX_OFFLINE=true cargo build --workspace   # must pass; regenerate .sqlx after SQL changes:
 cargo sqlx prepare --workspace -- --all-targets

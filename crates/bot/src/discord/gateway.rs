@@ -63,18 +63,18 @@ use std::{future::Future, time::Duration};
 
 use anyhow::{Context as _, Result};
 use sqlx::PgPool;
-use tokio::{
-    sync::watch,
-    time::{Instant, MissedTickBehavior},
-};
+use tokio::sync::watch;
 
-use crate::lease::GatewayLease;
+use crate::{
+    clock::{Clock, Ticks as _, Tokio},
+    lease::GatewayLease,
+};
 
 /// How often the holder checks that it still holds the gateway lease.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The hand-off's timings, all derived from the check interval so their
-/// relation holds at any scale (a test runs them in milliseconds).
+/// relation holds at any scale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timing {
     check: Duration,
@@ -85,17 +85,6 @@ impl Timing {
     pub const DEFAULT: Self = Self {
         check: CHECK_INTERVAL,
     };
-
-    /// The timings for a check every `check`, or `None` for a zero
-    /// interval, which `tokio::time::interval` refuses.
-    #[must_use]
-    pub const fn every(check: Duration) -> Option<Self> {
-        if check.is_zero() {
-            None
-        } else {
-            Some(Self { check })
-        }
-    }
 
     /// How often the holder checks the lease.
     #[must_use]
@@ -183,7 +172,7 @@ impl Timing {
     }
 }
 
-// The interval the bot runs on is one `every` accepts.
+// The interval the bot runs on is one tokio's `interval` accepts.
 const _: () = assert!(!CHECK_INTERVAL.is_zero());
 
 // The no-overlap relation, for the timings the bot runs on.
@@ -220,17 +209,33 @@ pub async fn hold<G, F>(
     pool: &PgPool,
     process: &'static str,
     timing: Timing,
+    gateway: G,
+) -> Result<()>
+where
+    G: FnMut(Stop) -> F,
+    F: Future<Output = Result<()>>,
+{
+    hold_on(&Tokio, pool, process, timing, gateway).await
+}
+
+/// [`hold`], waiting on `clock`.
+async fn hold_on<C, G, F>(
+    clock: &C,
+    pool: &PgPool,
+    process: &'static str,
+    timing: Timing,
     mut gateway: G,
 ) -> Result<()>
 where
+    C: Clock,
     G: FnMut(Stop) -> F,
     F: Future<Output = Result<()>>,
 {
     // Lease losses in a row, each soon after the connection before it.
     let mut losses: u32 = 0;
     loop {
-        let mut lease = take(pool, process, timing).await;
-        let connected = Instant::now();
+        let mut lease = take(clock, pool, process, timing).await;
+        let connected = clock.now();
         tracing::info!(
             lease = lease.application_name().unwrap_or("unlabelled"),
             "holding the Discord gateway: connecting"
@@ -243,12 +248,12 @@ where
             ended = &mut run => {
                 // Bounded: a release on a dead link would hang, and dropping
                 // the connection frees the lock anyway.
-                if tokio::time::timeout(timing.check_timeout(), lease.release()).await.is_err() {
+                if clock.timeout(timing.check_timeout(), lease.release()).await.is_err() {
                     tracing::warn!("releasing the gateway lease got no answer; its connection is closed instead");
                 }
                 return ended;
             }
-            lost = keep_checking(&mut lease, timing) => lost,
+            lost = keep_checking(clock, &mut lease, timing) => lost,
         };
         drop(lease);
         tracing::error!(
@@ -258,7 +263,7 @@ where
         if stop.send(true).is_err() {
             tracing::debug!("the gateway had already ended");
         }
-        match tokio::time::timeout(timing.shutdown_limit(), run).await {
+        match clock.timeout(timing.shutdown_limit(), run).await {
             Ok(ended) => {
                 if let Err(e) = ended {
                     tracing::warn!(error = %format!("{e:#}"), "the Discord gateway ended with an error while disconnecting");
@@ -266,7 +271,7 @@ where
                 tracing::info!(
                     "disconnected from the Discord gateway; standing by for the lease again"
                 );
-                if connected.elapsed() >= timing.healthy_hold() {
+                if clock.now().saturating_duration_since(connected) >= timing.healthy_hold() {
                     losses = 0;
                 }
                 losses = losses.saturating_add(1);
@@ -279,7 +284,7 @@ where
                          standing by again, since every connection spends one of Discord's 1000 daily logins \
                          per token"
                     );
-                    tokio::time::sleep(pause).await;
+                    clock.sleep(pause).await;
                 }
             }
             Err(_) => {
@@ -295,7 +300,12 @@ where
 
 /// The lease, held past the grace period: stand by, wait out the grace,
 /// check. A lease lost during the grace goes back to standing by.
-async fn take(pool: &PgPool, process: &'static str, timing: Timing) -> GatewayLease {
+async fn take(
+    clock: &impl Clock,
+    pool: &PgPool,
+    process: &'static str,
+    timing: Timing,
+) -> GatewayLease {
     loop {
         let mut lease = GatewayLease::stand_by(pool, process).await;
         tracing::info!(
@@ -303,8 +313,8 @@ async fn take(pool: &PgPool, process: &'static str, timing: Timing) -> GatewayLe
             grace_secs = timing.grace().as_secs_f32(),
             "took the Discord gateway lease; waiting out the grace period so an instance that lost it has disconnected"
         );
-        tokio::time::sleep(timing.grace()).await;
-        match check(&mut lease, timing).await {
+        clock.sleep(timing.grace()).await;
+        match check(clock, &mut lease, timing).await {
             Ok(()) => return lease,
             Err(e) => tracing::warn!(
                 error = %format!("{e:#}"),
@@ -316,12 +326,15 @@ async fn take(pool: &PgPool, process: &'static str, timing: Timing) -> GatewayLe
 
 /// Check the lease every [`Timing::check`] until a check fails; the error is
 /// why.
-async fn keep_checking(lease: &mut GatewayLease, timing: Timing) -> anyhow::Error {
-    let mut ticks = tokio::time::interval_at(Instant::now() + timing.check(), timing.check());
-    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+async fn keep_checking(
+    clock: &impl Clock,
+    lease: &mut GatewayLease,
+    timing: Timing,
+) -> anyhow::Error {
+    let mut ticks = clock.ticks(timing.check());
     loop {
         ticks.tick().await;
-        if let Err(e) = check(lease, timing).await {
+        if let Err(e) = check(clock, lease, timing).await {
             return e;
         }
     }
@@ -329,8 +342,9 @@ async fn keep_checking(lease: &mut GatewayLease, timing: Timing) -> anyhow::Erro
 
 /// [`GatewayLease::check`], bounded by [`Timing::check_timeout`]: a check
 /// with no answer counts as lost.
-async fn check(lease: &mut GatewayLease, timing: Timing) -> Result<()> {
-    tokio::time::timeout(timing.check_timeout(), lease.check())
+async fn check(clock: &impl Clock, lease: &mut GatewayLease, timing: Timing) -> Result<()> {
+    clock
+        .timeout(timing.check_timeout(), lease.check())
         .await
         .with_context(|| {
             format!(
@@ -343,13 +357,18 @@ async fn check(lease: &mut GatewayLease, timing: Timing) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        clock::manual::Manual,
+        lease::testing::{HANG, waiting},
+    };
     use tokio::sync::mpsc;
 
     #[test]
-    fn the_grace_outlasts_a_holder_that_lost_the_lease() -> Result<()> {
-        assert_eq!(Timing::every(Duration::ZERO), None);
+    fn the_grace_outlasts_a_holder_that_lost_the_lease() {
         for ms in [1, 2, 3, 7, 50, 100, 999, 1_000, 5_000, 60_000] {
-            let t = Timing::every(Duration::from_millis(ms)).context("non-zero")?;
+            let t = Timing {
+                check: Duration::from_millis(ms),
+            };
             assert!(t.worst_disconnect() < t.grace(), "{t:?}");
             assert!(t.check_timeout() < t.check(), "{t:?}");
         }
@@ -368,7 +387,6 @@ mod tests {
                 Duration::from_secs(15)
             )
         );
-        Ok(())
     }
 
     #[test]
@@ -384,17 +402,37 @@ mod tests {
         assert!(86_400 / per_login.as_secs() < 150);
     }
 
-    /// What a gateway did, and when.
+    /// What a gateway did.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Event {
         Connected(&'static str),
         Disconnected(&'static str),
     }
 
-    type Events = mpsc::UnboundedSender<(Event, Instant)>;
+    /// An event, and when it happened on the test's clock.
+    type Events = mpsc::UnboundedSender<(Event, Duration)>;
 
-    fn report(events: &Events, e: Event) {
-        if events.send((e, Instant::now())).is_err() {
+    /// The timings the bot runs on: the clock is the test's, so the real
+    /// ones cost nothing to wait out.
+    const T: Timing = Timing::DEFAULT;
+
+    // The tests wait until the hand-off waits on exactly the deadlines they
+    // expect (the next check, the grace, the pause) before they move the
+    // clock. A check, a release or a shutdown in flight waits on a deadline
+    // of its own, which must never equal one of those offsets: else a test
+    // could take that passing state for the one it waits for, and move the
+    // clock under a check.
+    const _: () = {
+        let (check, grace) = (T.check().as_nanos(), T.grace().as_nanos());
+        let pause = T.reconnect_pause(2).as_nanos();
+        let in_flight = [T.check_timeout().as_nanos(), T.shutdown_limit().as_nanos()];
+        let [timeout, shutdown] = in_flight;
+        assert!(timeout != check && timeout != grace && timeout != pause);
+        assert!(shutdown != check && shutdown != grace && shutdown != pause);
+    };
+
+    fn report(clock: &Manual, events: &Events, e: Event) {
+        if events.send((e, clock.elapsed())).is_err() {
             tracing::debug!("the test stopped listening");
         }
     }
@@ -403,111 +441,164 @@ mod tests {
     /// true (its connection ending by itself).
     async fn fake(
         name: &'static str,
+        clock: Manual,
         events: Events,
         mut end: watch::Receiver<bool>,
         mut stop: Stop,
     ) -> Result<()> {
-        report(&events, Event::Connected(name));
+        report(&clock, &events, Event::Connected(name));
         tokio::select! {
             () = stop.requested() => {}
             _ = end.wait_for(|e| *e) => {}
         }
-        report(&events, Event::Disconnected(name));
+        report(&clock, &events, Event::Disconnected(name));
         Ok(())
     }
 
-    const FAST: Timing = match Timing::every(Duration::from_millis(100)) {
-        Some(t) => t,
-        None => Timing::DEFAULT,
-    };
+    /// Run the hand-off for `name` on `clock`, around `gateway`.
+    fn spawn_hold<G, F>(
+        pool: &PgPool,
+        clock: &Manual,
+        name: &'static str,
+        gateway: G,
+    ) -> tokio::task::JoinHandle<Result<()>>
+    where
+        G: FnMut(Stop) -> F + Send + 'static,
+        F: Future<Output = Result<()>> + Send,
+    {
+        let (pool, clock) = (pool.clone(), clock.clone());
+        tokio::spawn(async move { hold_on(&clock, &pool, name, T, gateway).await })
+    }
 
     fn spawn_holder(
         pool: &PgPool,
+        clock: &Manual,
         name: &'static str,
         events: &Events,
     ) -> (tokio::task::JoinHandle<Result<()>>, watch::Sender<bool>) {
         let (end, ended) = watch::channel(false);
-        let pool = pool.clone();
-        let events = events.clone();
-        let task = tokio::spawn(async move {
-            hold(&pool, name, FAST, |stop| {
-                fake(name, events.clone(), ended.clone(), stop)
-            })
-            .await
+        let (c, events) = (clock.clone(), events.clone());
+        let task = spawn_hold(pool, clock, name, move |stop| {
+            fake(name, c.clone(), events.clone(), ended.clone(), stop)
         });
         (task, end)
     }
 
-    async fn next(rx: &mut mpsc::UnboundedReceiver<(Event, Instant)>) -> Result<(Event, Instant)> {
-        tokio::time::timeout(Duration::from_secs(10), rx.recv())
+    async fn next(
+        rx: &mut mpsc::UnboundedReceiver<(Event, Duration)>,
+    ) -> Result<(Event, Duration)> {
+        tokio::time::timeout(HANG, rx.recv())
             .await
             .context("an event in time")?
             .context("an event")
     }
 
-    /// End `name`'s lease session, as a database restart or an operator would.
+    /// End `name`'s lease session, as a database restart or an operator
+    /// would (any session of its that is still ending, too).
     async fn terminate(pool: &PgPool, name: &str) -> Result<()> {
-        let pid: i32 = sqlx::query_scalar(
-            "SELECT pid FROM pg_stat_activity
+        let ended: Vec<bool> = sqlx::query_scalar(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
              WHERE datname = current_database() AND application_name LIKE $1",
         )
         .bind(format!("judgebot gateway ({name}) since%"))
-        .fetch_one(pool)
+        .fetch_all(pool)
         .await?;
-        sqlx::query("SELECT pg_terminate_backend($1)")
-            .bind(pid)
-            .execute(pool)
-            .await?;
+        anyhow::ensure!(!ended.is_empty(), "{name} holds no lease session");
         Ok(())
+    }
+
+    /// Spawn `name` on a free lease and see it connect after the grace,
+    /// at `at` on the clock; then it is checking the lease.
+    async fn connected(
+        pool: &PgPool,
+        clock: &Manual,
+        name: &'static str,
+        tx: &Events,
+        rx: &mut mpsc::UnboundedReceiver<(Event, Duration)>,
+    ) -> Result<(tokio::task::JoinHandle<Result<()>>, watch::Sender<bool>)> {
+        let at = clock.elapsed() + T.grace();
+        let holder = spawn_holder(pool, clock, name, tx);
+        clock.parked(&[at]).await?;
+        clock.advance_to(at);
+        assert_eq!(next(rx).await?, (Event::Connected(name), at));
+        clock.parked(&[at + T.check()]).await?;
+        Ok(holder)
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn one_instance_connects_and_the_other_takes_over_when_it_ends(
         pool: PgPool,
     ) -> Result<()> {
+        let clock = Manual::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (a, end_a) = spawn_holder(&pool, "a", &tx);
-        assert_eq!(next(&mut rx).await?.0, Event::Connected("a"));
-        let (b, _end_b) = spawn_holder(&pool, "b", &tx);
-        // Well past b's grace: it stands by and has not connected.
-        tokio::time::sleep(FAST.grace() * 3).await;
+        let (a, end_a) = connected(&pool, &clock, "a", &tx, &mut rx).await?;
+        let (b, _end_b) = spawn_holder(&pool, &clock, "b", &tx);
+        waiting(&pool, "judgebot gateway (b) waiting").await?;
+        // a's checks pass, well past what would be b's grace; b stands by.
+        let mut at = clock.elapsed();
+        for _ in 0..4 {
+            at += T.check();
+            clock.parked(&[at]).await?;
+            clock.advance_to(at);
+        }
+        clock.parked(&[at + T.check()]).await?;
         assert!(
             rx.try_recv().is_err(),
             "b stands by while a holds the gateway"
         );
         assert!(!b.is_finished());
-        // a's connection ends by itself: its role ends, and b takes over.
+        waiting(&pool, "judgebot gateway (b) waiting").await?;
+        // a's connection ends by itself: its role ends, and b takes over
+        // after the grace.
         anyhow::ensure!(end_a.send(true).is_ok(), "a is listening for its end");
-        let (ev, a_gone) = next(&mut rx).await?;
-        assert_eq!(ev, Event::Disconnected("a"));
-        a.await??;
-        let (ev, b_up) = next(&mut rx).await?;
-        assert_eq!(ev, Event::Connected("b"));
-        assert!(b_up - a_gone >= FAST.grace(), "b waited out the grace");
+        assert_eq!(next(&mut rx).await?, (Event::Disconnected("a"), at));
+        tokio::time::timeout(HANG, a).await???;
+        clock.parked(&[at + T.grace()]).await?;
+        assert!(rx.try_recv().is_err(), "b waits out the grace");
+        clock.advance_to(at + T.grace());
+        assert_eq!(
+            next(&mut rx).await?,
+            (Event::Connected("b"), at + T.grace())
+        );
         b.abort();
         Ok(())
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn a_holder_that_loses_the_lease_disconnects_and_stands_by(pool: PgPool) -> Result<()> {
+        let clock = Manual::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (a, _end_a) = spawn_holder(&pool, "a", &tx);
-        assert_eq!(next(&mut rx).await?.0, Event::Connected("a"));
-        let (b, end_b) = spawn_holder(&pool, "b", &tx);
-        tokio::time::sleep(FAST.check()).await;
+        let (a, _end_a) = connected(&pool, &clock, "a", &tx, &mut rx).await?;
+        let (b, end_b) = spawn_holder(&pool, &clock, "b", &tx);
+        waiting(&pool, "judgebot gateway (b) waiting").await?;
+        // a's session ends: the lock goes to b at once, and b's grace starts.
+        let lost = clock.elapsed();
         terminate(&pool, "a").await?;
-        // a closes first, then b connects, and a's role goes on standing by.
+        clock.parked(&[lost + T.check(), lost + T.grace()]).await?;
+        // a's next check fails and a disconnects, before b's grace is out.
+        clock.advance_to(lost + T.check());
         let (ev, a_gone) = next(&mut rx).await?;
         assert_eq!(ev, Event::Disconnected("a"));
+        assert!(a_gone <= lost + T.worst_disconnect(), "{a_gone:?}");
+        // a stands by again, behind b.
+        waiting(&pool, "judgebot gateway (a) waiting").await?;
+        clock.parked(&[lost + T.grace()]).await?;
+        assert!(rx.try_recv().is_err(), "b waits out the grace");
+        clock.advance_to(lost + T.grace());
         let (ev, b_up) = next(&mut rx).await?;
         assert_eq!(ev, Event::Connected("b"));
-        assert!((b_up - a_gone) + FAST.worst_disconnect() >= FAST.grace());
+        assert!(b_up >= lost + T.grace() && b_up > a_gone);
         assert!(!a.is_finished(), "a stands by instead of exiting");
         // When b's connection ends, a takes the gateway back.
         anyhow::ensure!(end_b.send(true).is_ok(), "b is listening for its end");
-        assert_eq!(next(&mut rx).await?.0, Event::Disconnected("b"));
-        b.await??;
-        assert_eq!(next(&mut rx).await?.0, Event::Connected("a"));
+        assert_eq!(next(&mut rx).await?, (Event::Disconnected("b"), b_up));
+        tokio::time::timeout(HANG, b).await???;
+        clock.parked(&[b_up + T.grace()]).await?;
+        clock.advance_to(b_up + T.grace());
+        assert_eq!(
+            next(&mut rx).await?,
+            (Event::Connected("a"), b_up + T.grace())
+        );
         a.abort();
         Ok(())
     }
@@ -516,34 +607,45 @@ mod tests {
     async fn a_lone_holder_that_loses_the_lease_reconnects_after_the_grace(
         pool: PgPool,
     ) -> Result<()> {
+        let clock = Manual::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (a, _end_a) = spawn_holder(&pool, "a", &tx);
-        assert_eq!(next(&mut rx).await?.0, Event::Connected("a"));
+        let (a, _end_a) = connected(&pool, &clock, "a", &tx, &mut rx).await?;
         terminate(&pool, "a").await?;
-        let (ev, gone) = next(&mut rx).await?;
-        assert_eq!(ev, Event::Disconnected("a"));
-        let (ev, back) = next(&mut rx).await?;
-        assert_eq!(ev, Event::Connected("a"));
-        assert!(back - gone >= FAST.grace(), "it waited out the grace");
+        let gone = clock.elapsed() + T.check();
+        clock.advance_to(gone);
+        assert_eq!(next(&mut rx).await?, (Event::Disconnected("a"), gone));
+        // It takes the freed lease again, and waits out the grace first.
+        clock.parked(&[gone + T.grace()]).await?;
+        assert!(rx.try_recv().is_err(), "it waits out the grace");
         assert!(!a.is_finished());
+        clock.advance_to(gone + T.grace());
+        assert_eq!(
+            next(&mut rx).await?,
+            (Event::Connected("a"), gone + T.grace())
+        );
         a.abort();
         Ok(())
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn a_gateway_that_does_not_close_in_time_ends_the_role(pool: PgPool) -> Result<()> {
-        let held = tokio::spawn({
-            let pool = pool.clone();
-            async move {
-                hold(&pool, "a", FAST, async |_stop: Stop| -> Result<()> {
-                    std::future::pending().await
-                })
-                .await
-            }
+        let clock = Manual::new();
+        let held = spawn_hold(&pool, &clock, "a", async |_stop: Stop| -> Result<()> {
+            std::future::pending().await
         });
-        tokio::time::sleep(FAST.grace() + FAST.check()).await;
+        clock.parked(&[T.grace()]).await?;
+        clock.advance_to(T.grace());
+        // Connected: checking the lease.
+        let at = T.grace() + T.check();
+        clock.parked(&[at]).await?;
         terminate(&pool, "a").await?;
-        let err = tokio::time::timeout(Duration::from_secs(5), held)
+        clock.advance_to(at);
+        // The check failed, and the gateway was asked to stop: it has the
+        // shutdown limit to close in, and does not.
+        clock.parked(&[at + T.shutdown_limit()]).await?;
+        assert!(!held.is_finished(), "the gateway is given its limit");
+        clock.advance_to(at + T.shutdown_limit());
+        let err = tokio::time::timeout(HANG, held)
             .await??
             .err()
             .map(|e| format!("{e:#}"))
@@ -555,10 +657,13 @@ mod tests {
 
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn a_gateway_that_ends_releases_the_lease(pool: PgPool) -> Result<()> {
-        let ended = hold(&pool, "test", FAST, async |_stop: Stop| -> Result<()> {
+        let clock = Manual::new();
+        let held = spawn_hold(&pool, &clock, "test", async |_stop: Stop| -> Result<()> {
             anyhow::bail!("the token was refused")
-        })
-        .await;
+        });
+        clock.parked(&[T.grace()]).await?;
+        clock.advance_to(T.grace());
+        let ended = tokio::time::timeout(HANG, held).await??;
         assert!(ended.is_err_and(|e| e.to_string().contains("refused")));
         let free = GatewayLease::try_acquire(&pool, "after")
             .await?
@@ -571,21 +676,49 @@ mod tests {
     async fn a_second_loss_soon_after_the_first_pauses_before_reconnecting(
         pool: PgPool,
     ) -> Result<()> {
+        let clock = Manual::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (a, _end_a) = spawn_holder(&pool, "a", &tx);
-        assert_eq!(next(&mut rx).await?.0, Event::Connected("a"));
+        let (a, _end_a) = connected(&pool, &clock, "a", &tx, &mut rx).await?;
+        // Lose the lease at a's next check; when it disconnected.
+        let lose = async |rx: &mut mpsc::UnboundedReceiver<(Event, Duration)>| -> Result<Duration> {
+            terminate(&pool, "a").await?;
+            let gone = clock.elapsed() + T.check();
+            clock.parked(&[gone]).await?;
+            clock.advance_to(gone);
+            assert_eq!(next(rx).await?, (Event::Disconnected("a"), gone));
+            Ok(gone)
+        };
         // The first loss: back after the grace alone.
-        terminate(&pool, "a").await?;
-        let (_, gone) = next(&mut rx).await?;
-        let (ev, back) = next(&mut rx).await?;
-        assert_eq!(ev, Event::Connected("a"));
-        assert!(back - gone < FAST.grace() + FAST.reconnect_pause(2));
-        // The second, soon after: the grace and the pause.
-        terminate(&pool, "a").await?;
-        let (_, gone) = next(&mut rx).await?;
-        let (ev, back) = next(&mut rx).await?;
-        assert_eq!(ev, Event::Connected("a"));
-        assert!(back - gone >= FAST.grace() + FAST.reconnect_pause(2));
+        let gone = lose(&mut rx).await?;
+        clock.parked(&[gone + T.grace()]).await?;
+        clock.advance_to(gone + T.grace());
+        assert_eq!(
+            next(&mut rx).await?,
+            (Event::Connected("a"), gone + T.grace())
+        );
+        // The second, soon after: the pause, then the grace.
+        let gone = lose(&mut rx).await?;
+        let pause = T.reconnect_pause(2);
+        assert!(!pause.is_zero());
+        clock.parked(&[gone + pause]).await?;
+        assert!(rx.try_recv().is_err(), "it pauses");
+        clock.advance_to(gone + pause);
+        clock.parked(&[gone + pause + T.grace()]).await?;
+        clock.advance_to(gone + pause + T.grace());
+        let (ev, up) = next(&mut rx).await?;
+        assert_eq!((ev, up), (Event::Connected("a"), gone + pause + T.grace()));
+        // A loss after a healthy hold starts a new streak: the grace alone.
+        let late = up + T.healthy_hold();
+        clock.parked(&[up + T.check()]).await?;
+        clock.advance_to(late);
+        clock.parked(&[late + T.check()]).await?;
+        let gone = lose(&mut rx).await?;
+        clock.parked(&[gone + T.grace()]).await?;
+        clock.advance_to(gone + T.grace());
+        assert_eq!(
+            next(&mut rx).await?,
+            (Event::Connected("a"), gone + T.grace())
+        );
         a.abort();
         Ok(())
     }

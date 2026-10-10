@@ -69,7 +69,10 @@ use judge_embed::WithSpace;
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
 
-use crate::db::RetireSummary;
+use crate::{
+    clock::{Clock, Tokio},
+    db::RetireSummary,
+};
 use runs::{Outcome, RunReport, Skip, Step, StepReport, Trigger};
 
 /// Default download cache, relative to the working directory (gitignored).
@@ -479,12 +482,13 @@ pub async fn refresh(
     let step = async |lease: &mut RefreshLease, step: Step| {
         refresh_step(lease, step, cache_dir, trigger, meter).await
     };
-    refresh_with(lease, trigger, RUN_TIMEOUT, step).await
+    refresh_with(&Tokio, lease, trigger, RUN_TIMEOUT, step).await
 }
 
-/// [`refresh`] with its time limit and its steps as parameters, so a test can
-/// run it without downloading anything.
+/// [`refresh`] with its clock, its time limit and its steps as parameters, so
+/// a test can run it without downloading anything or waiting for the limit.
 async fn refresh_with<F>(
+    clock: &impl Clock,
     lease: &mut RefreshLease,
     trigger: Trigger,
     limit: Duration,
@@ -493,7 +497,7 @@ async fn refresh_with<F>(
 where
     F: AsyncFnMut(&mut RefreshLease, Step) -> StepReport,
 {
-    let deadline = tokio::time::Instant::now() + limit;
+    let deadline = clock.now() + limit;
     let pool = lease.pool().clone();
     let cr_before = runs::stored_cr(&pool).await;
     let record = runs::begin(&pool, trigger, lease.process(), cr_before.as_deref()).await;
@@ -508,7 +512,7 @@ where
             Some(Halt::Lost(error)) => step.failed(error.clone()),
             Some(Halt::Skip(reason)) => step.skipped(*reason),
             None => {
-                if let Ok(report) = tokio::time::timeout_at(deadline, run_step(lease, step)).await {
+                if let Ok(report) = clock.timeout_at(deadline, run_step(lease, step)).await {
                     report
                 } else {
                     timed_out = true;
@@ -667,6 +671,7 @@ async fn over_ceiling(lease: &mut RefreshLease, trigger: Trigger) -> Result<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{clock::manual::Manual, lease::testing::HANG};
 
     /// `init`'s record has every refresh step, in order: those it reached,
     /// then the rest as skipped because it stopped; a failure outside them
@@ -786,7 +791,7 @@ mod tests {
             ran.set(ran.get() + 1);
             step.failed("ran".into())
         };
-        let report = refresh_with(&mut held, Trigger::Manual, RUN_TIMEOUT, count).await;
+        let report = refresh_with(&Tokio, &mut held, Trigger::Manual, RUN_TIMEOUT, count).await;
         assert_eq!((ran.get(), report.failed()), (0, Vec::new()));
         assert_eq!(report.outcome(), runs::RunOutcome::Stopped);
         assert!(
@@ -812,7 +817,7 @@ mod tests {
         sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 20261008000001")
             .execute(&pool)
             .await?;
-        let report = refresh_with(&mut held, Trigger::Manual, RUN_TIMEOUT, count).await;
+        let report = refresh_with(&Tokio, &mut held, Trigger::Manual, RUN_TIMEOUT, count).await;
         assert_eq!(ran.get(), 0);
         let err = report.ensure_ok().err().map(|e| e.to_string());
         assert!(
@@ -830,22 +835,45 @@ mod tests {
     async fn a_hung_step_times_the_run_out_and_is_recorded(pool: PgPool) -> Result<()> {
         let mut held = lease(&pool, "timeout-test").await?;
         let started = std::cell::Cell::new(Vec::new());
+        let (hung, hanging) = tokio::sync::oneshot::channel();
+        let hung = std::cell::Cell::new(Some(hung));
         let hang = async |_: &mut RefreshLease, step: Step| {
             let mut seen = started.take();
             seen.push(step);
             started.set(seen);
             if step == Step::Rules {
+                if let Some(hung) = hung.take() {
+                    let _ = hung.send(());
+                }
                 std::future::pending::<()>().await;
             }
             StepReport::Cards(Outcome::Ok { summary: () })
         };
-        let report = refresh_with(
-            &mut held,
-            Trigger::Schedule,
-            Duration::from_millis(300),
-            hang,
-        )
-        .await;
+        // The run's clock reaches its limit once the step hangs, and only then.
+        let clock = Manual::new();
+        let report = {
+            let mut run = std::pin::pin!(refresh_with(
+                &clock,
+                &mut held,
+                Trigger::Schedule,
+                RUN_TIMEOUT,
+                hang
+            ));
+            let drive = async {
+                tokio::time::timeout(HANG, hanging)
+                    .await
+                    .context("the rules step beginning in time")?
+                    .context("the rules step began")?;
+                clock.parked(&[RUN_TIMEOUT]).await?;
+                clock.advance_to(RUN_TIMEOUT);
+                anyhow::Ok(())
+            };
+            tokio::select! {
+                report = &mut run => anyhow::bail!("the run ended before its limit: {report:?}"),
+                driven = drive => driven?,
+            }
+            tokio::time::timeout(HANG, run).await?
+        };
         assert!(report.timed_out && report.recorded);
         assert_eq!(report.outcome(), runs::RunOutcome::Failed);
         assert_eq!(started.take(), vec![Step::Cards, Step::Rules]);

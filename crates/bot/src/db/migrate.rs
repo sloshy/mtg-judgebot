@@ -478,13 +478,21 @@ mod tests {
             Err(Error::VersionMismatch(_))
         ));
         // A failed run must not leave a connection holding sqlx's migrator
-        // lock in the pool, or this third run would block forever.
-        let third =
-            tokio::time::timeout(std::time::Duration::from_secs(10), run(&pool, Ahead::Skip)).await;
-        assert!(
-            matches!(third, Ok(Err(Error::VersionMismatch(_)))),
-            "{third:?}"
-        );
+        // lock (a session advisory lock) in the pool, or this third run would
+        // block forever. A closed connection's session ends, and lets go of
+        // the lock, a moment after the close.
+        crate::lease::testing::eventually("no advisory lock left", || async {
+            let held: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'
+                   AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+            )
+            .fetch_one(&pool)
+            .await?;
+            Ok((held == 0).then_some(()))
+        })
+        .await?;
+        let third = run(&pool, Ahead::Skip).await;
+        assert!(matches!(third, Err(Error::VersionMismatch(_))), "{third:?}");
         Ok(())
     }
 

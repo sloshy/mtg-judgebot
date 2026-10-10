@@ -12,6 +12,7 @@
 pub mod alert;
 pub mod backup;
 pub mod budget;
+pub(crate) mod clock;
 pub mod config;
 pub mod db;
 pub mod discord;

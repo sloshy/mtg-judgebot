@@ -554,58 +554,99 @@ mod tests {
         Ok(())
     }
 
-    /// Two processes on one database: each sees the other's spend, a restart
-    /// picks the period up where it was, and `Process` only keeps the record.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn two_processes_share_a_period_through_the_ledger(pool: PgPool) -> anyhow::Result<()> {
+    /// What [`two_processes_share_a_period_through_the_ledger`] saw, checked
+    /// once the run is known to have stayed in one UTC day.
+    #[derive(Debug, Default)]
+    struct Seen {
+        first_syncs: (Option<i64>, Option<i64>),
+        api_total: Option<i64>,
+        api_counted: f64,
+        bot_counted: f64,
+        bot_spent: f64,
+        restarted_counted: f64,
+        lone_total: Option<i64>,
+        lone_counted: f64,
+        rows: i64,
+        micro: i64,
+    }
+
+    /// The scenario: the api process spends, the bot learns of it, a
+    /// restarted bot starts from the period total, and a `Process` meter
+    /// only records its day.
+    async fn share_a_period(pool: &PgPool) -> anyhow::Result<Seen> {
         let (bot, api) = (
             SpendMeter::new().with_max_spend_usd(5.0)?,
             SpendMeter::new().with_max_spend_usd(5.0)?,
         );
         let (mut bot_ledger, mut api_ledger) = (Ledger::default(), Ledger::default());
-        assert_eq!(
-            sync(&pool, &bot, Period::Month, &mut bot_ledger).await?,
-            Some(0)
-        );
-        assert_eq!(
-            sync(&pool, &api, Period::Month, &mut api_ledger).await?,
-            Some(0)
-        );
-
-        // The api process spends $3 (as an adjustment-free stand-in for real
-        // calls, which need a backend: the ledger reads only `spent_micro`).
+        let mut seen = Seen {
+            first_syncs: (
+                sync(pool, &bot, Period::Month, &mut bot_ledger).await?,
+                sync(pool, &api, Period::Month, &mut api_ledger).await?,
+            ),
+            ..Seen::default()
+        };
+        // An adjustment-free stand-in for real calls, which need a backend:
+        // the ledger reads only `spent_micro`.
         spend(&api, 3_000_000);
-        assert_eq!(
-            sync(&pool, &api, Period::Month, &mut api_ledger).await?,
-            Some(3_000_000)
-        );
+        seen.api_total = sync(pool, &api, Period::Month, &mut api_ledger).await?;
+        seen.api_counted = api.counted_usd();
+        sync(pool, &bot, Period::Month, &mut bot_ledger).await?;
+        (seen.bot_counted, seen.bot_spent) = (bot.counted_usd(), bot.spent_usd());
+        let restarted = SpendMeter::new().with_max_spend_usd(5.0)?;
+        sync(pool, &restarted, Period::Month, &mut Ledger::default()).await?;
+        seen.restarted_counted = restarted.counted_usd();
+        let lone = SpendMeter::new();
+        spend(&lone, 250_000);
+        seen.lone_total = sync(pool, &lone, Period::Process, &mut Ledger::default()).await?;
+        seen.lone_counted = lone.counted_usd();
+        (seen.rows, seen.micro) =
+            sqlx::query_as("SELECT count(*), COALESCE(sum(micro_usd), 0)::bigint FROM spend_days")
+                .fetch_one(pool)
+                .await?;
+        Ok(seen)
+    }
+
+    /// Two processes on one database: each sees the other's spend, a restart
+    /// picks the period up where it was, and `Process` only keeps the record.
+    /// The ledger keys on the database's UTC day, so a run that crossed
+    /// midnight (or a month's end) is run again on an empty ledger: it cannot
+    /// cross twice.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn two_processes_share_a_period_through_the_ledger(pool: PgPool) -> anyhow::Result<()> {
+        let day = async || -> anyhow::Result<String> {
+            Ok(
+                sqlx::query_scalar("SELECT (now() AT TIME ZONE 'utc')::date::text")
+                    .fetch_one(&pool)
+                    .await?,
+            )
+        };
+        let mut seen = None;
+        for _ in 0..2 {
+            sqlx::query("DELETE FROM spend_days").execute(&pool).await?;
+            let before = day().await?;
+            let run = share_a_period(&pool).await?;
+            if day().await? == before {
+                seen = Some(run);
+                break;
+            }
+        }
+        let seen = anyhow::Context::context(seen, "the run crossed midnight UTC twice")?;
+        assert_eq!(seen.first_syncs, (Some(0), Some(0)));
+        assert_eq!(seen.api_total, Some(3_000_000));
         assert!(
-            (api.counted_usd() - 3.0).abs() < 1e-9,
+            (seen.api_counted - 3.0).abs() < 1e-9,
             "its own spend is not counted twice"
         );
         // The bot learns of it on its next sync.
-        sync(&pool, &bot, Period::Month, &mut bot_ledger).await?;
-        assert!((bot.counted_usd() - 3.0).abs() < 1e-9);
-        assert!(bot.spent_usd().abs() < 1e-9, "its own total is untouched");
-
+        assert!((seen.bot_counted - 3.0).abs() < 1e-9);
+        assert!(seen.bot_spent.abs() < 1e-9, "its own total is untouched");
         // A restarted bot starts from the period total, not from zero.
-        let restarted = SpendMeter::new().with_max_spend_usd(5.0)?;
-        sync(&pool, &restarted, Period::Month, &mut Ledger::default()).await?;
-        assert!((restarted.counted_usd() - 3.0).abs() < 1e-9);
-
+        assert!((seen.restarted_counted - 3.0).abs() < 1e-9);
         // With no period the day is still recorded, and the meter is left alone.
-        let lone = SpendMeter::new();
-        spend(&lone, 250_000);
-        assert_eq!(
-            sync(&pool, &lone, Period::Process, &mut Ledger::default()).await?,
-            None
-        );
-        assert!((lone.counted_usd() - 0.25).abs() < 1e-9);
-        let (rows, micro): (i64, i64) =
-            sqlx::query_as("SELECT count(*), COALESCE(sum(micro_usd), 0)::bigint FROM spend_days")
-                .fetch_one(&pool)
-                .await?;
-        assert_eq!((rows, micro), (1, 3_250_000));
+        assert_eq!(seen.lone_total, None);
+        assert!((seen.lone_counted - 0.25).abs() < 1e-9);
+        assert_eq!((seen.rows, seen.micro), (1, 3_250_000));
         Ok(())
     }
 

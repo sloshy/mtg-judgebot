@@ -699,8 +699,79 @@ async fn holder<K: LeaseKey>(conn: &mut PgConnection) -> String {
 }
 
 #[cfg(test)]
+pub(crate) mod testing {
+    //! What the lease's tests and the gateway's share: waiting for a session
+    //! to reach a state, seen from another session.
+
+    use std::time::Duration;
+
+    use anyhow::{Context as _, Result};
+    use sqlx::PgPool;
+
+    pub use crate::clock::manual::HANG;
+
+    /// `probe`'s first `Some`, polled until [`HANG`] has passed, which fails
+    /// naming `what`. The deadline only guards against a hang; a test
+    /// asserts what the probe finds, never how soon.
+    ///
+    /// # Errors
+    /// The probe's, or none in time.
+    pub async fn eventually<T, F, Fut>(what: &str, mut probe: F) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<Option<T>>>,
+    {
+        let found = async {
+            loop {
+                if let Some(t) = probe().await? {
+                    return anyhow::Ok(t);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(HANG, found)
+            .await
+            .with_context(|| format!("{what}: not within {} s", HANG.as_secs()))?
+    }
+
+    /// The pid and current statement start of each of this test database's
+    /// sessions named `name` that waits for a lock (an advisory lock is a
+    /// lock wait like any other). `pg_stat_activity` spans the cluster, and
+    /// other tests' databases hold leases of their own.
+    ///
+    /// # Errors
+    /// The query's.
+    pub async fn lock_waits(pool: &PgPool, name: &str) -> Result<Vec<(i32, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT pid, query_start::text FROM pg_stat_activity
+             WHERE datname = current_database() AND application_name = $1
+               AND state = 'active' AND wait_event_type = 'Lock'
+             ORDER BY pid",
+        )
+        .bind(name)
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// Wait until a session named `name` waits for a lock: its pid and
+    /// statement start.
+    ///
+    /// # Errors
+    /// None in time, or a query's.
+    pub async fn waiting(pool: &PgPool, name: &str) -> Result<(i32, String)> {
+        eventually(&format!("{name:?} waiting for a lock"), || async {
+            Ok(lock_waits(pool, name).await?.into_iter().next())
+        })
+        .await
+    }
+}
+
+#[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        testing::{HANG, eventually, lock_waits, waiting},
+        *,
+    };
 
     async fn try_refresh(pool: &PgPool, process: &'static str) -> Result<Option<RefreshLease>> {
         RefreshLease::try_acquire(pool, process).await
@@ -746,14 +817,34 @@ mod tests {
         Ok(())
     }
 
+    async fn backend(pool: &PgPool) -> Result<(i32, String)> {
+        Ok(
+            sqlx::query_as("SELECT pg_backend_pid(), current_setting('application_name')")
+                .fetch_one(pool)
+                .await?,
+        )
+    }
+
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn a_miss_keeps_the_pooled_connection(pool: PgPool) -> Result<()> {
         let held = try_refresh(&pool, "test").await?.context("a free lease")?;
+        // A pool of one session: each acquire waits for the connection the
+        // one before it returned, so a miss that detached or closed its
+        // connection would leave the next acquire a new session.
+        let one = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with((*pool.connect_options()).clone())
+            .await?;
+        let before = backend(&one).await?;
         for _ in 0..5 {
-            assert!(try_refresh(&pool, "test").await?.is_none());
+            assert!(try_refresh(&one, "test").await?.is_none());
         }
-        // A detached connection never comes back; the one a miss tried on does.
-        assert!(pool.num_idle() >= 1, "the connection went back to the pool");
+        assert_eq!(
+            backend(&one).await?,
+            before,
+            "the misses tried on the pooled session and gave it back unlabelled"
+        );
+        one.close().await;
         held.release().await;
         Ok(())
     }
@@ -762,29 +853,26 @@ mod tests {
     async fn a_dropped_lease_is_freed_by_the_server(pool: PgPool) -> Result<()> {
         let first = try_refresh(&pool, "test").await?.context("a free lease")?;
         drop(first);
-        // The socket closed on drop; the server notices and ends the session
-        // asynchronously, so poll briefly rather than expect it at once.
-        for _ in 0..100 {
-            if let Some(l) = try_refresh(&pool, "test").await? {
-                l.release().await;
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        anyhow::bail!("the lease was still held 5 s after it was dropped")
+        // The socket closed on drop; the server ends the session, and frees
+        // the lock, once it notices.
+        let again = eventually("the dropped lease freed", || try_refresh(&pool, "test")).await?;
+        again.release().await;
+        Ok(())
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
     async fn the_waiting_form_gets_the_lease_once_it_is_released(pool: PgPool) -> Result<()> {
-        let first = try_refresh(&pool, "test").await?.context("a free lease")?;
+        let first = try_refresh(&pool, "holder")
+            .await?
+            .context("a free lease")?;
         let waiter = tokio::spawn({
             let pool = pool.clone();
             async move { RefreshLease::acquire(&pool, "test").await }
         });
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        waiting(&pool, "judgebot refresh lease (test) waiting").await?;
         assert!(!waiter.is_finished(), "it waits while the lease is held");
         first.release().await;
-        let mut second = tokio::time::timeout(Duration::from_secs(5), waiter).await???;
+        let mut second = tokio::time::timeout(HANG, waiter).await???;
         assert!(
             try_refresh(&pool, "test").await?.is_none(),
             "the waiter holds it now"
@@ -846,7 +934,7 @@ mod tests {
             tx.commit().await?;
             anyhow::Ok(())
         };
-        tokio::time::timeout(Duration::from_secs(5), step).await??;
+        tokio::time::timeout(HANG, step).await??;
         let mut other = pool.acquire().await?;
         let free = sqlx::query_scalar!(
             r#"SELECT pg_try_advisory_lock($1) AS "free!""#,
@@ -883,19 +971,14 @@ mod tests {
             let pool = pool.clone();
             async move { GatewayLease::stand_by(&pool, "second").await }
         });
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Labelled as waiting, and waiting on the lock.
+        waiting(&pool, "judgebot gateway (second) waiting").await?;
         assert!(
             !standby.is_finished(),
             "it stands by while the lease is held"
         );
-        assert!(
-            session_pid(&pool, "judgebot gateway (second) waiting")
-                .await?
-                .is_some(),
-            "the standby is labelled as waiting"
-        );
         holder.release().await;
-        let mut taken = tokio::time::timeout(Duration::from_secs(5), standby).await??;
+        let mut taken = tokio::time::timeout(HANG, standby).await??;
         taken.check().await?;
         assert!(try_gateway(&pool, "third").await?.is_none(), "taken over");
         taken.release().await;
@@ -909,10 +992,10 @@ mod tests {
             let pool = pool.clone();
             async move { GatewayLease::stand_by(&pool, "second").await }
         });
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        waiting(&pool, "judgebot gateway (second) waiting").await?;
         // What a process that exits does: its socket closes.
         drop(holder);
-        let taken = tokio::time::timeout(Duration::from_secs(5), standby).await??;
+        let taken = tokio::time::timeout(HANG, standby).await??;
         taken.release().await;
         Ok(())
     }
@@ -958,31 +1041,20 @@ mod tests {
             let pool = pool.clone();
             async move { GatewayLease::stand_by(&pool, "second").await }
         });
-        let waiting = "judgebot gateway (second) waiting";
-        let mut pid = None;
-        for _ in 0..100 {
-            pid = session_pid(&pool, waiting).await?;
-            if pid.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        terminate(&pool, pid.context("the standby's session")?).await?;
+        let name = "judgebot gateway (second) waiting";
+        let (pid, _) = waiting(&pool, name).await?;
+        terminate(&pool, pid).await?;
         // The standby logs, pauses and stands by again on a new session.
-        let mut again = None;
-        for _ in 0..200 {
-            again = session_pid(&pool, waiting)
+        eventually("the standby waiting on a new session", || async {
+            Ok(lock_waits(&pool, name)
                 .await?
-                .filter(|p| Some(*p) != pid);
-            if again.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(again.is_some(), "the standby reconnected");
+                .into_iter()
+                .find(|(p, _)| *p != pid))
+        })
+        .await?;
         assert!(!standby.is_finished(), "and still stands by");
         holder.release().await;
-        let taken = tokio::time::timeout(Duration::from_secs(5), standby).await??;
+        let taken = tokio::time::timeout(HANG, standby).await??;
         taken.release().await;
         Ok(())
     }
@@ -994,11 +1066,27 @@ mod tests {
             let pool = pool.clone();
             async move { GatewayLease::stand_by_in(&pool, "second", Duration::from_millis(100)).await }
         });
-        // Several rounds end on lock_timeout; the standby stays on its session.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // A round ends on lock_timeout and the standby asks again: a new
+        // statement on the same session, twice over.
+        let name = "judgebot gateway (second) waiting";
+        let (pid, mut round) = waiting(&pool, name).await?;
+        for _ in 0..2 {
+            round = eventually("the next round on the same session", || async {
+                let waits = lock_waits(&pool, name).await?;
+                anyhow::ensure!(
+                    waits.iter().all(|(p, _)| *p == pid),
+                    "only the first session waits: {waits:?}"
+                );
+                Ok(waits
+                    .into_iter()
+                    .find(|(_, started)| *started != round)
+                    .map(|(_, started)| started))
+            })
+            .await?;
+        }
         assert!(!standby.is_finished(), "it stands by across rounds");
         holder.release().await;
-        let mut taken = tokio::time::timeout(Duration::from_secs(5), standby).await??;
+        let mut taken = tokio::time::timeout(HANG, standby).await??;
         taken.check().await?;
         taken.release().await;
         Ok(())
@@ -1053,10 +1141,10 @@ mod tests {
             let pool = pool.clone();
             async move { GatewayLease::stand_by(&pool, "second").await }
         });
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        waiting(&pool, "judgebot gateway (second) waiting").await?;
         assert!(!standby.is_finished(), "it stands by");
         holder.release().await;
-        let mut taken = tokio::time::timeout(Duration::from_secs(5), standby).await??;
+        let mut taken = tokio::time::timeout(HANG, standby).await??;
         assert_hardened(&mut taken.conn).await?;
         taken.release().await;
         refresh.release().await;
@@ -1064,56 +1152,89 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
-    async fn an_operator_statement_timeout_does_not_cut_a_lease_wait(pool: PgPool) -> Result<()> {
-        let pool = with_option(&pool, "statement_timeout", "100ms").await?;
+    async fn an_operator_statement_timeout_does_not_cut_a_lease_wait(base: PgPool) -> Result<()> {
+        // The operator's bound is on `pool`; the test watches from `base`,
+        // which has none. Every wait below outlasts the bound several times.
+        let bound = Duration::from_millis(250);
+        let pool = with_option(
+            &base,
+            "statement_timeout",
+            &format!("{}ms", bound.as_millis()),
+        )
+        .await?;
         let first = try_refresh(&pool, "holder")
             .await?
             .context("a free lease")?;
-        // The wait ends on its own bound (lock_timeout), not the operator's.
-        let err = RefreshLease::acquire_within(&pool, "test", Duration::from_millis(500))
+        // The wait ends on its own bound (lock_timeout), not the operator's,
+        // which would end it with another error.
+        let err = RefreshLease::acquire_within(&pool, "test", bound * 4)
             .await
             .err()
             .map(|e| format!("{e:#}"))
             .unwrap_or_default();
         assert!(err.contains("still held"), "{err}");
-        // A standby round outlives it too, and stays on its session.
+        // A standby's statement outlives it too, on the same session.
         let gateway = try_gateway(&pool, "first").await?.context("gateway free")?;
         let standby = tokio::spawn({
             let pool = pool.clone();
-            async move { GatewayLease::stand_by_in(&pool, "second", Duration::from_millis(400)).await }
+            async move { GatewayLease::stand_by(&pool, "second").await }
         });
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let waiting = session_pid(&pool, "judgebot gateway (second) waiting").await?;
-        tokio::time::sleep(Duration::from_millis(700)).await;
-        assert_eq!(
-            session_pid(&pool, "judgebot gateway (second) waiting").await?,
-            waiting,
-            "the same session waits across rounds"
-        );
-        assert!(waiting.is_some(), "the standby waits");
+        let (pid, started) = waiting(&base, "judgebot gateway (second) waiting").await?;
+        let past = (bound * 3).as_secs_f64();
+        eventually("the standby's statement outliving the bound", || async {
+            let age: Option<f64> = sqlx::query_scalar(
+                "SELECT extract(epoch FROM clock_timestamp() - query_start)::float8
+                 FROM pg_stat_activity
+                 WHERE pid = $1 AND query_start::text = $2
+                   AND state = 'active' AND wait_event_type = 'Lock'",
+            )
+            .bind(pid)
+            .bind(&started)
+            .fetch_optional(&base)
+            .await?;
+            let age = age.context("the standby's statement ended before its round did")?;
+            Ok((age > past).then_some(()))
+        })
+        .await?;
         gateway.release().await;
-        let taken = tokio::time::timeout(Duration::from_secs(5), standby).await??;
+        let taken = tokio::time::timeout(HANG, standby).await??;
         taken.release().await;
         first.release().await;
+        pool.close().await;
         Ok(())
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
-    async fn an_operator_idle_session_timeout_does_not_end_a_lease(pool: PgPool) -> Result<()> {
-        let pool = with_option(&pool, "idle_session_timeout", "300ms").await?;
+    async fn an_operator_idle_session_timeout_does_not_end_a_lease(base: PgPool) -> Result<()> {
+        let pool = with_option(&base, "idle_session_timeout", "1s").await?;
         let mut refresh = try_refresh(&pool, "test").await?.context("refresh free")?;
         let mut gateway = try_gateway(&pool, "test").await?.context("gateway free")?;
+        // An ordinary session, idle since after the leases' last statements.
         let mut plain = pool.acquire().await?;
-        // Idle well past the operator's timeout, as a holder is between checks.
-        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *plain)
+            .await?;
+        // Once the operator's timeout has ended it, the leases have been
+        // idle longer than it.
+        eventually("the operator's timeout ending an idle session", || async {
+            let alive: bool =
+                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)")
+                    .bind(pid)
+                    .fetch_one(&base)
+                    .await?;
+            Ok((!alive).then_some(()))
+        })
+        .await?;
         assert!(
             sqlx::query("SELECT 1").execute(&mut *plain).await.is_err(),
             "the operator's timeout ends an ordinary idle session"
         );
+        drop(plain);
         refresh.check().await?;
         gateway.check().await?;
         gateway.release().await;
         refresh.release().await;
+        pool.close().await;
         Ok(())
     }
 }

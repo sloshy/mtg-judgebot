@@ -27,7 +27,8 @@
 #   lint   cargo deny, cargo machete, taplo, typos, shellcheck, actionlint,
 #          hadolint, the icon's copies, pg_dump's major vs the db image's,
 #          docker compose config
-# sqlx and test need Postgres (DATABASE_URL, else the one in .env).
+# sqlx and test need Postgres (DATABASE_URL, else the one in .env), and take
+# turns with any other sqlx or test run on the same server (one_run_per_cluster).
 #
 # Every step in the chosen groups runs even when an earlier one fails, and the
 # failures are listed at the end. Linters come from scripts/tools.sh.
@@ -207,6 +208,19 @@ need_node_modules() {
   fi
 }
 
+# DATABASE_URL's host and port (5432 when it names none), space-separated;
+# the host is empty for a form this does not parse (a socket, ?host=).
+db_server() {
+  local rest host port
+  rest="${DATABASE_URL#*://}"
+  rest="${rest##*@}"
+  rest="${rest%%[/?]*}"
+  host="${rest%:*}"
+  port="${rest##*:}"
+  if [ "$port" = "$rest" ]; then port=5432; fi
+  echo "$host $port"
+}
+
 need_database() {
   database_url "$root"
   if [ -z "${DATABASE_URL:-}" ]; then
@@ -215,13 +229,8 @@ need_database() {
   fi
   # A quick reachability probe for the common host:port form; anything it
   # cannot parse (a socket, IPv6, ?host=) is left for cargo to report.
-  local rest host port
-  rest="${DATABASE_URL#*://}"
-  rest="${rest##*@}"
-  rest="${rest%%[/?]*}"
-  host="${rest%:*}"
-  port="${rest##*:}"
-  if [ "$port" = "$rest" ]; then port=5432; fi
+  local host port
+  read -r host port <<< "$(db_server)"
   case "$host" in "" | *[\[\]]*) return 0 ;; esac
   if ! (exec 3<> "/dev/tcp/$host/$port") 2> /dev/null; then
     echo "Postgres is not reachable at $host:$port: \`docker compose up -d db\`" >&2
@@ -442,8 +451,70 @@ if ! tools_ready; then
   exit 1
 fi
 
+# One sqlx or test group at a time per Postgres cluster, across every checkout
+# and process on this machine. #[sqlx::test] names each throwaway database
+# after the test's path alone, so two runs of the suite on one cluster drop
+# and recreate each other's databases mid-test ("database ... does not exist",
+# "duplicate key ... pg_database_datname_index"); the sqlx group resets the
+# one judgebot_check database. A lock file per host and port makes a second
+# run wait its turn (up to CLUSTER_WAIT seconds) instead of failing the first.
+# It holds for the whole group: cargo's children inherit the descriptor, and
+# all of them have exited when the group returns. Where flock(1) is missing
+# (macOS), a directory stands in for it.
+CLUSTER_WAIT=900
+
+one_run_per_cluster() {
+  local group=$1 host port lock waited=0
+  database_url "$root"
+  if [ -z "${DATABASE_URL:-}" ]; then
+    "group_$group"
+    return
+  fi
+  read -r host port <<< "$(db_server)"
+  lock="${XDG_RUNTIME_DIR:-/tmp}"
+  lock="${lock%/}/judgebot-pg-$(printf '%s-%s' "${host:-local}" "$port" | tr -c 'A-Za-z0-9.-' '_').lock"
+  if command -v flock > /dev/null 2>&1; then
+    exec 9>> "$lock" || {
+      failed+=("$group (cannot open $lock)")
+      return
+    }
+    if ! flock -n 9; then
+      echo "waiting for another test run on ${host:-local}:$port ($lock)" >&2
+      if ! flock -w "$CLUSTER_WAIT" 9; then
+        echo "another test run on ${host:-local}:$port held $lock for ${CLUSTER_WAIT} s" >&2
+        exec 9>&-
+        failed+=("$group (another test run on ${host:-local}:$port)")
+        return
+      fi
+    fi
+    "group_$group"
+    exec 9>&-
+  else
+    until mkdir "$lock.d" 2> /dev/null; do
+      if [ "$waited" -eq 0 ]; then
+        echo "waiting for another test run on ${host:-local}:$port ($lock.d; remove it if none is running)" >&2
+      fi
+      if [ "$waited" -ge "$CLUSTER_WAIT" ]; then
+        echo "another test run on ${host:-local}:$port held $lock.d for ${CLUSTER_WAIT} s" >&2
+        failed+=("$group (another test run on ${host:-local}:$port)")
+        return
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+    # shellcheck disable=SC2064 # expand now: the path is fixed
+    trap "rmdir '$lock.d' 2> /dev/null" EXIT
+    "group_$group"
+    rmdir "$lock.d"
+    trap - EXIT
+  fi
+}
+
 for g in "${groups[@]}"; do
-  "group_$g"
+  case "$g" in
+    sqlx | test) one_run_per_cluster "$g" ;;
+    *) "group_$g" ;;
+  esac
 done
 
 if [ ${#failed[@]} -gt 0 ]; then
