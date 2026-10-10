@@ -76,7 +76,7 @@ jobs:
       # rust-toolchain.toml pins the version; the action installs exactly that.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98"
+          toolchain: "1.99"
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -152,7 +152,7 @@ jobs:
       # rather than left to rustup's auto-install from rust-toolchain.toml.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98"
+          toolchain: "1.99"
       - uses: actions/cache@v6
         with:
           path: .tools

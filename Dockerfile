@@ -7,14 +7,14 @@ COPY web/ ./
 RUN npm run build
 
 # Pinned to bookworm to match the debian:bookworm-slim runtime below: the bare
-# `rust:1.98-slim` tag moved to trixie (glibc 2.41), and a binary linked there
+# `rust:1.99-slim` tag moved to trixie (glibc 2.41), and a binary linked there
 # fails on bookworm (glibc 2.36) with `version `GLIBC_2.38' not found`.
 #
 # The Rust build is split with cargo-chef so that dependencies (about two thirds
 # of a cold build's CPU) sit in their own layer, keyed on the manifests and
 # Cargo.lock only. A plain `COPY . .` + `cargo build` invalidated that layer on
 # every source change, so every CI run compiled ~350 crates from scratch.
-FROM rust:1.98-slim-bookworm AS chef
+FROM rust:1.99-slim-bookworm AS chef
 RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /app
 ENV SQLX_OFFLINE=true
