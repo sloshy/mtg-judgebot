@@ -79,7 +79,7 @@ cargo run --release -p judge-configure
 | --- | --- | --- |
 | Database | `DATABASE_URL` present, `DB_PORT`, `JUDGE_AUTO_MIGRATE` | an unset `DATABASE_URL`, `JUDGE_AUTO_MIGRATE=maybe` |
 | Models | the `judge.toml` loader (or the zero-config setup), the spend settings, the source offer | a misplaced key, an unpriced model on an `openai` provider, an unset `api_key_env` variable |
-| Roles | the roles the compose service would run: `JUDGE_ROLES`, else every role but `--mcp` (with the deprecated `API_INTERFACES`) | an unknown flag, a role named twice |
+| Roles | the roles the compose service would run: `JUDGE_ROLES`, else every role but `--mcp` | an unknown flag, a role named twice, a set `API_INTERFACES` (retired) |
 | Discord bot | under `--discord`: the bot's own settings, then its operator contact | an unset `DISCORD_TOKEN`, a bad `GUILD_ID`, no `JUDGE_OPERATOR_DISCORD` |
 | HTTP API | under `--api`, `--web` or `--mcp`: the API's settings and those roles, then its operator contact | `--mcp` with no `MCP_TOKEN`, a bad `API_ADDR`, no `JUDGE_OPERATOR_EMAIL` |
 
@@ -98,7 +98,6 @@ The panel also warns about the files together:
 - a `judge.toml` the containers will not see, because `JUDGE_CONFIG` is blank or names
   another file
 - a `DB_PORT` that differs from the port in `DATABASE_URL`
-- a set `API_INTERFACES`, deprecated, with the `JUDGE_ROLES` line that replaces it
 
 ## After saving
 

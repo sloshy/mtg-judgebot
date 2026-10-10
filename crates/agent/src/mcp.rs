@@ -1,5 +1,5 @@
 //! The MCP server: every [`crate::ops`] operation as a tool, over stdio
-//! ([`serve_stdio`]) or as a tower service for `judge-api` to mount
+//! ([`serve_stdio`]) or as a tower service for `judgebot --mcp` to mount
 //! ([`http_service`]).
 //!
 //! The server keeps no per-connection state. A judging session is identified
@@ -336,7 +336,7 @@ pub async fn serve_stdio(toolbox: Arc<Toolbox>) -> anyhow::Result<()> {
 }
 
 /// The Streamable HTTP transport as a tower service, to be mounted at a path
-/// (`judge-api` puts it at `/mcp`). `allowed_hosts` is what the `Host`
+/// (`judgebot --mcp` puts it at `/mcp`). `allowed_hosts` is what the `Host`
 /// header must match — rmcp defaults to loopback only, against DNS
 /// rebinding, so a public hostname must be listed.
 ///

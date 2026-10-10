@@ -3,7 +3,7 @@
 //! Two ways in, one set of operations ([`ops`]):
 //!
 //! * **MCP** ([`mcp`]): `judge-mcp` speaks the protocol over stdio for a
-//!   local client, and `judge-api` mounts the same handler over Streamable
+//!   local client, and `judgebot --mcp` mounts the same handler over Streamable
 //!   HTTP for a remote one.
 //! * **CLI** (`judge-cli`): every operation is a subcommand printing JSON, for
 //!   a shell agent (a Claude Code skill) or a person.
@@ -21,7 +21,7 @@
 //!   calling agent *is* the model.
 //!
 //! [`Toolbox`] holds the ports both need. Its spend cap, judge slots and
-//! `judge` quota are per process: inside `judge-api` they are the ones the
+//! `judge` quota are per process: inside `judgebot --mcp` they are the ones the
 //! web page uses, so the two interfaces share one budget; a `judge-cli`
 //! invocation or a stdio `judge-mcp` is its own process with its own
 //! `JUDGE_MAX_USD` counter, which is fine for the operator's own shell and
@@ -148,7 +148,7 @@ pub struct Options {
     /// The source offer (`Config::source_offer`).
     pub offer: SourceOffer,
     /// Who runs this instance (`Config::operator`). Optional here because a
-    /// local process has no one else to name; `judge-api` hands `/mcp` the
+    /// local process has no one else to name; `judgebot --mcp` hands `/mcp` the
     /// one it refused to start without (`NetworkOperator::operator`).
     pub operator: Operator,
 }

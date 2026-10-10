@@ -107,14 +107,7 @@ RUN pg_dump --version
 # The one long-running binary: its roles (`--discord --api --web --mcp
 # --jobs`) are launch options, `judgebot ingest` is the data command line and
 # `judgebot backup` the database backup.
-# judge-bot, judge-api and judge-ingest are the binaries it replaced, kept as
-# links to it so a compose file or script written for them still runs: it
-# reads the name it was invoked as (crates/judgebot/src/cli.rs) and logs a
-# warning naming the command that replaces it.
 COPY --from=builder /out/judgebot /usr/local/bin/judgebot
-RUN ln -s judgebot /usr/local/bin/judge-bot \
-    && ln -s judgebot /usr/local/bin/judge-api \
-    && ln -s judgebot /usr/local/bin/judge-ingest
 # The agent surface: `judge-cli` (one subcommand per operation, JSON out) and
 # `judge-mcp` (the MCP server over stdio). The same tools are served over HTTP
 # by `judgebot --mcp` at /mcp (MCP_TOKEN); these two are for a shell on the
@@ -128,9 +121,5 @@ ENV INGEST_CACHE_DIR=/var/cache/judgebot
 COPY --from=web /web/dist /srv/web
 ENV WEB_DIST=/srv/web
 USER nobody
-# The compose files written for the two-binary image run their `bot` service
-# on this default (and override it with judge-api for `api`). The current
-# docker-compose.yml names `judgebot` for every service and never relies on
-# it, so it stays judge-bot until the release that removes the compatibility
-# names, when it becomes judgebot.
-ENTRYPOINT ["judge-bot"]
+# With no arguments it runs the roles in JUDGE_ROLES.
+ENTRYPOINT ["judgebot"]

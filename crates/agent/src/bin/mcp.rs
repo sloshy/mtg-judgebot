@@ -5,7 +5,7 @@
 //! required; a model — `ANTHROPIC_API_KEY`, or a `judge.toml` via
 //! `JUDGE_CONFIG` — optional, enabling the built-in `judge` tool;
 //! `VOYAGE_API_KEY` optional). Logs go to stderr because stdout is the
-//! protocol stream. For the HTTP transport, see `judge-api` (`MCP_TOKEN`).
+//! protocol stream. For the HTTP transport, see `judgebot --mcp` (`MCP_TOKEN`).
 
 use std::sync::Arc;
 

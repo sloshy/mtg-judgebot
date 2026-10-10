@@ -638,7 +638,7 @@ mod tests {
         (router(app, interfaces, &cfg.web_dist), store)
     }
 
-    /// A support address and no Discord username: all `judge-api` demands.
+    /// A support address and no Discord username: all the network roles demand.
     fn test_operator() -> NetworkOperator {
         #[expect(
             clippy::expect_used,

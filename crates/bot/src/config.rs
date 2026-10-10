@@ -1901,7 +1901,7 @@ impl Config {
         Ok(self.operator.clone().for_discord()?)
     }
 
-    /// The operator as `judge-api` must know them, whichever interfaces it opens.
+    /// The operator as the network roles must know them, whichever interfaces it opens.
     ///
     /// # Errors
     /// [`ConfigError::MissingContact`] without `JUDGE_OPERATOR_EMAIL`.

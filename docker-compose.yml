@@ -58,18 +58,13 @@ services:
     container_name: judgebot
     restart: unless-stopped
     logging: *bounded-logs
-    # Named here, so the image's default entrypoint (judge-bot, kept for
-    # compose files written before this service) is never what runs.
     entrypoint: ["judgebot"]
     # The roles: JUDGE_ROLES in .env when it is set, for example
     # `--api --web --jobs` without Discord or `--discord --jobs` without a
-    # public page. Unset, every role but --mcp: what the `bot` and `api`
-    # services ran together, with the interfaces from API_INTERFACES, the
-    # deprecated variable those services read (the process logs a warning
-    # naming the JUDGE_ROLES line that replaces it). Nested defaults were
-    # checked against compose-go v1.16.0, the version Compose v2.20.0 pins. GET /api/health is served while any of --api,
-    # --web and --mcp is on, so the healthcheck below holds for any of them.
-    command: ${JUDGE_ROLES:---discord --jobs ${API_INTERFACES:---api --web}}
+    # public page. Unset, every role but --mcp. GET /api/health is served
+    # while any of --api, --web and --mcp is on, so the healthcheck below
+    # holds for any of them.
+    command: ${JUDGE_ROLES:---discord --api --web --jobs}
     env_file: .env
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot

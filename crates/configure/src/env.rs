@@ -127,12 +127,16 @@ const fn int(min: u64) -> Widget {
     Widget::Integer { min }
 }
 
+/// Variables a release stopped reading. Not in [`VARS`] (the example no
+/// longer carries them), yet not secret either: their values are role flags,
+/// which the check's error quotes back in the line that replaces them.
+pub const RETIRED: &[&str] = &[API_INTERFACES_ENV];
+
 /// Every variable `.env.example` carries, in its order.
 pub const VARS: &[Var] = &[
     secret("DATABASE_URL", Group::Database),
     setting("DB_PORT", Group::Database, int(1)),
     setting(ROLES_ENV, Group::Roles, TEXT),
-    setting(API_INTERFACES_ENV, Group::Roles, TEXT),
     secret(ANTHROPIC_KEY_ENV, Group::Models),
     secret(VOYAGE_KEY_ENV, Group::Models),
     setting("ANTHROPIC_BASE_URL", Group::Models, TEXT),
@@ -505,12 +509,14 @@ impl DotEnv {
     }
 
     /// Every value the page must not see: secrets, variables the registry
-    /// does not know, and hidden settings. Values under four characters are
-    /// left out: masking them would garble every message for nothing.
+    /// does not know (but [`RETIRED`]), and hidden settings. Values under
+    /// four characters are left out: masking them would garble every message
+    /// for nothing.
     #[must_use]
     pub fn sensitive(&self) -> Vec<&str> {
         self.values
             .iter()
+            .filter(|(name, _)| !RETIRED.contains(&name.as_str()))
             .filter(|(name, _)| {
                 Setting::named(name).is_none_or(|s| self.setting(s) == Shown::Hidden)
             })

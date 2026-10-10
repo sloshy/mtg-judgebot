@@ -1,23 +1,15 @@
-//! Which interfaces a process serves, and the `judge-api` command line that
-//! picks them.
+//! Which interfaces a process serves.
 //!
 //! `judgebot` names its interfaces as roles (`--api`, `--web`, `--mcp`, each
-//! a [`Interface`]); [`parse`] is the command line of `judge-api`, the
-//! compatibility name for the network roles plus `--jobs`. Every interface is
-//! opt-in. `judge-api` with no flags serves the JSON API alone — the one mode
-//! the name stands for — and the web page and the MCP transport each need
-//! their own flag, so an operator who never asked to publish a page never
-//! gets one. Naming any flag replaces the default rather than adding to it:
-//! `--web` on its own is a page with no question route, which is a thing an
-//! operator may legitimately want in front of a separate API process.
+//! a [`Interface`]), and every one is opt-in: an operator who never asked to
+//! publish a page never gets one.
 //!
 //! The set is a [`NonEmpty`], so "a listener bound to no interface at all" is
-//! not a state this program can reach: the no-flag case *is* an interface.
-//! `GET /api/health` is outside the set — it reports on the process, not on a
-//! interface, and a container healthcheck must be able to reach it whatever
-//! else is switched off.
+//! not a state this program can reach. `GET /api/health` is outside the set —
+//! it reports on the process, not on a interface, and a container healthcheck
+//! must be able to reach it whatever else is switched off.
 
-use std::{ffi::OsString, fmt};
+use std::fmt;
 
 use nonempty::NonEmpty;
 
@@ -58,26 +50,14 @@ impl Interface {
             Self::Mcp => "mcp",
         }
     }
-
-    /// The interface a flag names, if it names one.
-    #[must_use]
-    fn from_flag(arg: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|i| i.flag() == arg)
-    }
 }
 
-/// The interfaces this launch enables. Built only by [`parse`], which cannot
-/// produce an empty set.
+/// The interfaces this launch enables: never empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Interfaces(NonEmpty<Interface>);
 
 impl Interfaces {
-    /// What a launch with no flags serves.
-    pub const DEFAULT: Interface = Interface::Api;
-
-    /// Build a set directly. The command line is [`parse`]; this is for a
-    /// caller that already knows which interfaces it wants (tests, or an embedder
-    /// of [`crate::router`]).
+    /// The set of `interfaces`.
     ///
     /// Duplicates collapse and the order becomes [`Interface::ALL`]'s, so two
     /// ways of naming the same interfaces are the same value — equality here is set
@@ -151,145 +131,9 @@ fn list(interfaces: impl Iterator<Item = Interface>) -> String {
     }
 }
 
-/// What the command line asked for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Launch {
-    /// Print [`USAGE`] and exit successfully.
-    Help,
-    /// Serve these interfaces.
-    Serve(Interfaces),
-}
-
-/// The help text, also printed with the error on a bad command line.
-pub const USAGE: &str = "\
-usage: judge-api [--api] [--web] [--mcp]
-
-Interfaces are opt-in, and naming any replaces the default rather than adding
-to it. With no flags the JSON API is served alone.
-
-  --api   POST /api/judge, the anonymous question route
-  --web   the built web app, from WEB_DIST
-  --mcp   the MCP transport at /mcp (requires MCP_TOKEN)
-
-GET /api/health and GET /api/about (the source offer) are always served.
-Everything else is configured through the environment; see .env.example.";
-
-/// Parse the arguments after the program name.
-///
-/// Takes [`OsString`]s, because `std::env::args()` panics on an argument that
-/// is not UTF-8 and this crate denies panics: a mistyped byte should print the
-/// usage like any other unknown argument.
-///
-/// # Errors
-/// An unknown argument, or a flag given twice.
-pub fn parse(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Launch> {
-    let mut chosen: Vec<Interface> = vec![];
-    for arg in args {
-        let arg = arg.to_string_lossy();
-        if arg == "-h" || arg == "--help" {
-            return Ok(Launch::Help);
-        }
-        let Some(interface) = Interface::from_flag(&arg) else {
-            anyhow::bail!("unknown argument {arg:?}\n\n{USAGE}");
-        };
-        // Repeats are refused rather than folded: a command line naming the
-        // same interface twice is a mistake, and silently accepting it hides which
-        // one the operator meant to write.
-        anyhow::ensure!(
-            !chosen.contains(&interface),
-            "{} given more than once\n\n{USAGE}",
-            interface.flag()
-        );
-        chosen.push(interface);
-    }
-    Ok(Launch::Serve(NonEmpty::from_vec(chosen).map_or_else(
-        || Interfaces(NonEmpty::new(Interfaces::DEFAULT)),
-        |chosen| Interfaces::of(&chosen),
-    )))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn parse_args(args: &[&str]) -> anyhow::Result<Launch> {
-        parse(args.iter().map(OsString::from))
-    }
-
-    fn serving(args: &[&str]) -> Option<Interfaces> {
-        match parse_args(args) {
-            Ok(Launch::Serve(i)) => Some(i),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn no_flags_serves_the_json_api_alone() {
-        let i = serving(&[]);
-        assert_eq!(i.as_ref().map(Interfaces::api), Some(true));
-        assert_eq!(i.as_ref().map(Interfaces::web), Some(false));
-        assert_eq!(i.as_ref().map(Interfaces::mcp), Some(false));
-        assert_eq!(i.as_ref().map(ToString::to_string), Some("api".to_owned()));
-        assert_eq!(
-            i.as_ref().map(Interfaces::disabled),
-            Some("web, mcp".to_owned())
-        );
-    }
-
-    #[test]
-    fn a_flag_replaces_the_default_rather_than_adding_to_it() {
-        // The whole point of the opt-in: asking for the page does not quietly
-        // hand out the paid question route as well.
-        let i = serving(&["--web"]);
-        assert_eq!(i.as_ref().map(Interfaces::web), Some(true));
-        assert_eq!(i.as_ref().map(Interfaces::api), Some(false));
-        assert_eq!(i.as_ref().map(ToString::to_string), Some("web".to_owned()));
-        assert_eq!(
-            i.as_ref().map(Interfaces::disabled),
-            Some("api, mcp".to_owned())
-        );
-    }
-
-    #[test]
-    fn flags_combine_and_log_in_a_stable_order() {
-        let i = serving(&["--mcp", "--web", "--api"]);
-        assert_eq!(
-            i.as_ref().map(ToString::to_string),
-            Some("api, web, mcp".to_owned())
-        );
-        assert_eq!(
-            i.as_ref().map(Interfaces::disabled),
-            Some("none".to_owned())
-        );
-        // Order typed must not change the meaning or the log line.
-        assert_eq!(serving(&["--api", "--web", "--mcp"]), i);
-    }
-
-    #[test]
-    fn help_wins_wherever_it_appears() {
-        for args in [&["-h"][..], &["--help"][..], &["--web", "--help"][..]] {
-            assert_eq!(parse_args(args).ok(), Some(Launch::Help), "{args:?}");
-        }
-    }
-
-    #[test]
-    fn unknown_and_repeated_arguments_are_refused_with_the_usage() {
-        for (args, needle) in [
-            (&["--serve-everything"][..], "--serve-everything"),
-            (&["-w"][..], "-w"),
-            (&["--web", "--web"][..], "--web"),
-            (&["--api", "--mcp", "--api"][..], "--api"),
-        ] {
-            let r = parse_args(args);
-            assert!(
-                r.as_ref().is_err_and(|e| {
-                    let text = format!("{e:#}");
-                    text.contains(needle) && text.contains("usage: judge-api")
-                }),
-                "{args:?}: {r:?}"
-            );
-        }
-    }
 
     #[test]
     fn a_set_built_directly_dedupes_and_canonicalises() {
@@ -305,14 +149,17 @@ mod tests {
     }
 
     #[test]
-    fn every_interface_has_a_distinct_flag_and_name_and_the_usage_lists_it() {
-        for i in Interface::ALL {
-            assert!(i.flag().starts_with("--"), "{i:?}");
-            assert_eq!(Interface::from_flag(i.flag()), Some(i));
-            assert!(USAGE.contains(i.flag()), "{i:?} missing from the usage");
-        }
+    fn every_interface_has_a_distinct_flag_and_name() {
         let flags: std::collections::BTreeSet<&str> =
             Interface::ALL.into_iter().map(Interface::flag).collect();
+        let names: std::collections::BTreeSet<&str> =
+            Interface::ALL.into_iter().map(Interface::name).collect();
         assert_eq!(flags.len(), Interface::ALL.len());
+        assert_eq!(names.len(), Interface::ALL.len());
+        assert!(
+            Interface::ALL
+                .into_iter()
+                .all(|i| i.flag().starts_with("--"))
+        );
     }
 }

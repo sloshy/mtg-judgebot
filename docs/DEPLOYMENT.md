@@ -33,10 +33,7 @@ Hostnames, paths and the image name below are placeholders (`judge.example.com`,
 - The compose file uses only syntax that older bundled Compose versions accept.
   Synology's Container Manager ships v2.20, which predates the `env_file` long form.
   As a result, `.env.deploy` must exist on any machine running the `tunnel` or
-  `backup` profile, and should exist only there. The `judgebot` service's roles default nests one
-  variable's default inside another's (`${JUDGE_ROLES:-… ${API_INTERFACES:-…}}`). That
-  template was checked against compose-go v1.16.0, the interpolation library Compose
-  v2.20.0 pins, compiled and run on each case. The v2.20 binary itself was not run.
+  `backup` profile, and should exist only there.
 - No Rust toolchain is needed on the host. The image carries its own migrations, and
   `judgebot` applies pending ones at startup (`JUDGE_AUTO_MIGRATE`, on by default).
   `docker compose run --rm refresh migrate` is the explicit form, for an empty
@@ -1003,9 +1000,9 @@ there, `docker rm -f judgebot-bot judgebot-api` removes it.
 What else that upgrade changes:
 
 - **Roles.** A `.env` with neither `JUDGE_ROLES` nor `API_INTERFACES` runs
-  `--discord --api --web --jobs`, what the two services ran together. `API_INTERFACES`
-  still works while `JUDGE_ROLES` is unset (`--discord --jobs` plus its interfaces), and
-  the log warns with the `JUDGE_ROLES` line that replaces it.
+  `--discord --api --web --jobs`, what the two services ran together. `judgebot` refuses
+  to start while `API_INTERFACES` is set: replace it with `JUDGE_ROLES` set to
+  `--discord --jobs` plus its value (the error names the line).
 - **A deployment without Discord** (one that ran only `api`, with no `DISCORD_TOKEN`)
   adds this line to `.env` before `up -d`, or `judgebot` restarts forever with
   `DISCORD_TOKEN is not set`:
@@ -1219,7 +1216,7 @@ own if the connector restarts.
 | `judgebot` exits naming `--web` and `index.html` | `--web` with no built page at `WEB_DIST`; drop `--web` or rebuild the image |
 | The page 404s but `/api/health` is fine | `--web` is not in `JUDGE_ROLES`; the `judgebot roles` startup line lists what is on and what is off |
 | `judgebot` restarts with `DISCORD_TOKEN is not set` on a deployment without Discord (often right after the upgrade to one service) | the default roles include `--discord`; add `JUDGE_ROLES='--api --web --jobs'` to `.env` and `docker compose up -d` |
-| The log warns that `API_INTERFACES` is deprecated | replace it in `.env` with the `JUDGE_ROLES` line the warning names |
+| `judgebot` restarts with `API_INTERFACES: no longer read` | replace it in `.env` with the `JUDGE_ROLES` line the error names |
 | Every Discord question is answered twice | a second process uses the same token without the gateway lease: the old `judgebot-bot` container left by an upgrade without `--remove-orphans` (§8; `docker rm -f judgebot-bot judgebot-api`), or a `judgebot` on another host with a database of its own |
 | The bot is offline and the log says `standing by: another instance holds the Discord gateway` | another `judgebot --discord` on the same database holds the gateway lease; the line names its pid and `application_name` (§8, Gateway holder). Stop that process (`docker rm -f` a leftover container), and this one connects 15 seconds later |
 | `judgebot` reads healthy but nothing answers on 8787 | the roles have no `--api`, `--web` or `--mcp`, so the healthcheck passes without probing (§4) |

@@ -1,8 +1,7 @@
 //! What a long-running process does beside answering questions: today, the
 //! scheduled data refresh ([`crate::ingest::refresh`]) every
 //! `JUDGE_REFRESH_HOURS`, so an instance stays current with no host scheduler.
-//! `judgebot --jobs` calls [`start`] (as do the compatibility names
-//! `judge-bot` and `judge-api`); the record and the lease in Postgres make
+//! `judgebot --jobs` calls [`start`]; the record and the lease in Postgres make
 //! every such process, a cron'd `judgebot ingest refresh` and a manual run
 //! take turns.
 //!
@@ -642,7 +641,7 @@ impl Scheduler {
 
 /// Start the jobs `jobs` asks for on a thread of their own; see the module
 /// docs. `process` names the caller in the record, the lease and an alert
-/// (`judgebot`, or `bot`/`api` under the compatibility names). With the
+/// (`judgebot`). With the
 /// schedule off this logs one line, starts nothing and returns `None`.
 ///
 /// The record is read once here, on the caller's pool, so the startup line

@@ -3,8 +3,8 @@
 //! `--api`, `--web` and `--mcp` (the HTTP interfaces, on one listener) and
 //! `--jobs` (the scheduled data refresh). `judgebot ingest <cmd>` is the data
 //! command line ([`ingest`]), `judgebot backup <cmd>` the database backup
-//! ([`backup`], the `backup` compose service), and the binaries this one
-//! replaced answer as links to it ([`cli`]).
+//! ([`backup`], the `backup` compose service); [`cli`] parses the command
+//! line.
 //!
 //! One process, one composition: one pool, one configuration, one set of
 //! models behind one spend meter and one ledger, one `Vectors`, the schema
@@ -15,7 +15,7 @@
 //!
 //! Environment (a `.env` in the working directory is loaded first; the
 //! process environment wins): `JUDGE_ROLES` when the command line names no
-//! role (`API_INTERFACES`, deprecated, only for a warning); `DATABASE_URL`;
+//! role (a set `API_INTERFACES`, retired, refuses the launch); `DATABASE_URL`;
 //! the model setup (`JUDGE_CONFIG` or a `./judge.toml`, else `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY`); `JUDGE_MAX_USD`,
 //! `JUDGE_BUDGET_PERIOD`, `JUDGE_ALERT_WEBHOOK`; `JUDGE_REFRESH_HOURS` and
 //! `INGEST_CACHE_DIR` under `--jobs`; `DISCORD_TOKEN`, `GUILD_ID`,
@@ -29,21 +29,19 @@ mod ingest;
 use anyhow::{Context as _, Result};
 use judge_bot::{config::Config as JudgeConfig, serving::Serving};
 
-use cli::{Invocation, Name};
+use cli::Invocation;
 use judgebot::roles::{self, Adapters, Plan, ROLES_ENV, Roles, Serve};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // The command line before anything else: `--help` and a typo'd flag must
     // not need a database, a key or a working directory to answer.
-    let mut argv = std::env::args_os();
-    let argv0 = argv.next().unwrap_or_default();
-    match cli::parse(&argv0, argv)? {
+    match cli::parse(std::env::args_os().skip(1))? {
         Invocation::Help(usage) => {
             println!("{usage}");
             Ok(())
         }
-        Invocation::Ingest { args, name } => {
+        Invocation::Ingest { args } => {
             let cmd = match ingest::parse(args)? {
                 ingest::Launch::Help => {
                     println!("{}", ingest::USAGE);
@@ -52,9 +50,6 @@ async fn main() -> Result<()> {
                 ingest::Launch::Run(cmd) => cmd,
             };
             setup()?;
-            if let Some(w) = cli::compat_warning(name, "judgebot ingest") {
-                tracing::warn!("{w}");
-            }
             ingest::run(cmd).await
         }
         Invocation::Backup { args } => match backup::parse(args)? {
@@ -67,28 +62,20 @@ async fn main() -> Result<()> {
                 backup::run(cmd).await
             }
         },
-        Invocation::Serve { roles, name } => {
+        Invocation::Serve { roles } => {
             setup()?;
-            let (roles, origin) = cli::resolve(roles, std::env::var(ROLES_ENV).ok().as_deref())?;
-            if let Some(w) = cli::compat_warning(name, &format!("judgebot {}", roles.flags())) {
-                tracing::warn!("{w}");
-            }
-            // The compose file still folds the deprecated API_INTERFACES into
-            // the role flags; the variable reaches the process through
-            // env_file, so this is where the operator hears about it. The
-            // compatibility names are the old compose file's services, where
-            // the variable is not deprecated yet.
-            if !name.is_compat()
-                && let Some(w) = roles::api_interfaces_warning(
-                    std::env::var(roles::API_INTERFACES_ENV).ok().as_deref(),
-                    std::env::var(ROLES_ENV).ok().as_deref(),
-                    &roles,
-                )
-            {
-                tracing::warn!("{w}");
-            }
+            let judge_roles = std::env::var(ROLES_ENV).ok();
+            // A 1.x `.env` may still choose interfaces through API_INTERFACES,
+            // which the compose file no longer reads: starting without the
+            // roles it named (--mcp, say) would drop them silently.
+            roles::refuse_api_interfaces(
+                std::env::var(roles::API_INTERFACES_ENV).ok().as_deref(),
+                judge_roles.as_deref(),
+                roles.is_some(),
+            )?;
+            let (roles, origin) = cli::resolve(roles, judge_roles.as_deref())?;
             tracing::info!(roles = %roles, off = %roles.off(), from = %origin, "judgebot roles");
-            serve(&roles, name).await
+            serve(&roles).await
         }
     }
 }
@@ -106,8 +93,12 @@ fn setup() -> Result<()> {
     Ok(())
 }
 
-async fn serve(roles: &Roles, name: Name) -> Result<()> {
-    let process = name.process();
+/// What the process calls itself in the spend alerts, the refresh record
+/// and its database connections.
+const PROCESS: &str = "judgebot";
+
+async fn serve(roles: &Roles) -> Result<()> {
+    let process = PROCESS;
     // The models (judge.toml, or the zero-config Anthropic setup; one spend
     // cap for every role) and the operator contacts the roles check.
     let judge = JudgeConfig::load()?;

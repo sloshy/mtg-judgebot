@@ -25,7 +25,6 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `JUDGE_ROLES` | compose: `--discord --api --web --jobs` | What `judgebot` runs: `--discord` (the bot), `--api` (`POST /api/judge`), `--web` (the web app), `--mcp` (the MCP transport), `--jobs` (the scheduled refresh), at least one, separated by spaces and quoted. The compose service passes it as its command; `judgebot` itself reads it when its command line names no role. `'--api --web --jobs'` runs without Discord. |
-| `API_INTERFACES` | `--api --web` | Deprecated. The interfaces of the `api` service that `judgebot` replaced. While `JUDGE_ROLES` is unset the compose service runs `--discord --jobs` plus these, and logs a warning naming the `JUDGE_ROLES` line to use instead. A later release stops reading it. |
 
 ## Database and models
 

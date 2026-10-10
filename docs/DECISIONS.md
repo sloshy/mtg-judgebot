@@ -736,12 +736,11 @@ there, `JUDGE_ROLES`. `judgebot ingest <command>` is the data command line.
 - **One process, one composition.** One pool, one configuration, one set of models
   behind one spend meter, one `Vectors`, the schema migrated once. The first serving
   role to stop ends the process, non-zero, so the restart policy brings all of it back.
-- **The old names still run.** The image links `judge-bot`, `judge-api` and
-  `judge-ingest` to `judgebot`, which reads the name it was invoked as and runs what that
-  binary ran, plus `--jobs`, with a warning naming the replacement. A compose file
-  written for two services keeps working on the new image. `API_INTERFACES`, which chose
-  the old `api` service's interfaces, is still folded into the compose service's roles
-  while `JUDGE_ROLES` is unset, and logs a warning. A later release removes both.
+- **The old names are gone.** The image carries `judgebot` alone, as its entrypoint.
+  The upgrade to it is a major release, so a compose file written for two services is
+  replaced with the image rather than kept running. `API_INTERFACES`, which chose the old
+  `api` service's interfaces, is refused at startup with the `JUDGE_ROLES` line that
+  replaces it, rather than ignored: ignoring it would drop the interfaces it named.
 
 The reasons:
 

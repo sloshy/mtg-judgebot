@@ -3,8 +3,8 @@
 //! restates a rule; a rule the loaders gain is checked here with no edit.
 //!
 //! The roles are the ones the compose `judgebot` service would run
-//! ([`compose_roles`]: `JUDGE_ROLES`, else every role but `--mcp` with the
-//! deprecated `API_INTERFACES`), and a role it would not run is not checked:
+//! ([`compose_roles`]: `JUDGE_ROLES`, else every role but `--mcp`; a set
+//! `API_INTERFACES`, retired, fails), and a role it would not run is not checked:
 //! a deployment without Discord needs no `DISCORD_TOKEN`.
 //!
 //! Two things are left to startup, because they depend on the machine that
@@ -369,13 +369,17 @@ mod tests {
     fn a_bad_role_list_points_at_its_variable() {
         for (var, value) in [
             ("JUDGE_ROLES", "--discord --bot"),
-            ("API_INTERFACES", "--discord"),
-            ("API_INTERFACES", "--help"),
+            // Retired: the fix is the JUDGE_ROLES line the error names.
+            ("API_INTERFACES", "--api --mcp"),
         ] {
             let mut bad = OK.to_vec();
             bad.push((var, value));
             let c = checks(None, &bad);
-            assert_eq!(error_at(c.get(&Surface::Roles)), Some(env(var)), "{value}");
+            assert_eq!(
+                error_at(c.get(&Surface::Roles)),
+                Some(env("JUDGE_ROLES")),
+                "{var}={value}"
+            );
             assert!(skipped(c.get(&Surface::Discord)) && skipped(c.get(&Surface::Http)));
         }
     }
@@ -398,7 +402,7 @@ mod tests {
         );
         let mut bad = OK.to_vec();
         bad.push(("JUDGE_USER_WINDOW_SECS", "0"));
-        bad.push(("API_INTERFACES", "--api --mcp"));
+        bad.push(("JUDGE_ROLES", "--discord --api --mcp --jobs"));
         let c = checks(None, &bad);
         assert_eq!(
             error_at(c.get(&Surface::Discord)),

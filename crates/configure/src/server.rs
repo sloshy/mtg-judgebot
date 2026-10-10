@@ -462,20 +462,6 @@ fn warnings(editor: &Editor, r: &Rendered) -> Vec<String> {
             url.port().unwrap_or(5432)
         ));
     }
-    // The deprecated API_INTERFACES, in the words judgebot logs it with.
-    let (roles_env, api_env) = (
-        lookup(judgebot::roles::ROLES_ENV),
-        lookup(judgebot::roles::API_INTERFACES_ENV),
-    );
-    if let Ok((roles, _)) = judgebot::roles::compose_roles(roles_env.as_deref(), api_env.as_deref())
-        && let Some(w) = judgebot::roles::api_interfaces_warning(
-            api_env.as_deref(),
-            roles_env.as_deref(),
-            &roles,
-        )
-    {
-        out.push(w);
-    }
     out
 }
 
@@ -726,8 +712,10 @@ mod tests {
             assert!(!out.contains(secret), "{secret} in {out}");
         }
         assert!(out.contains("<redacted>"), "{out}");
+        // A retired API_INTERFACES is a roles error naming its replacement,
+        // its value unmasked: role flags are not a secret.
         assert!(
-            out.contains("API_INTERFACES is deprecated")
+            out.contains("API_INTERFACES: no longer read")
                 && out.contains("JUDGE_ROLES='--discord --api --mcp --jobs'"),
             "{out}"
         );

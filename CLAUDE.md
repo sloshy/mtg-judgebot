@@ -279,11 +279,8 @@ to anything provider-shaped: wire format, schema dialect, pricing, auth.
 Binary names: `judgebot`, `judge-eval`, `judge-cli`, `judge-mcp` and `judge-config` are
 what `target/release/` holds. `judgebot` is the one long-running binary: its roles
 (`--discord --api --web --mcp --jobs`, else `JUDGE_ROLES`) are launch options, and
-`judgebot ingest <cmd>` is the data command line (`crates/judgebot`). `judge-bot`,
-`judge-api` and `judge-ingest` exist only in the image, as links to `judgebot` that it
-dispatches on by `argv[0]` (`cli.rs`, with a WARN): `judge-bot` is `--discord --jobs`,
-`judge-api [--api] [--web] [--mcp]` keeps its old interface rules plus `--jobs`, and
-`judge-ingest` is `judgebot ingest`. Locally run `cargo run -p judgebot -- <roles>`.
+`judgebot ingest <cmd>` is the data command line (`crates/judgebot`). `judgebot` is the
+image's entrypoint. Locally run `cargo run -p judgebot -- <roles>`.
 
 Everything needs env from `.env` (`set -a; source .env; set +a`). Postgres runs in
 Docker on **localhost:5432**. `DB_PORT` in `.env` moves the published port. The
@@ -456,7 +453,7 @@ and `bot` ← the other bins):
   (settings, `pg_dump`, a SigV4 S3 client over reqwest for R2, the bucket-kept schedule).
 - `api` (lib `judge_api`): the network roles. `Network` (made only by passing
   `ApiConfig::check`) and `run`.
-- `judgebot`: the binary. `roles.rs` (`Role`, `plan`), `cli.rs` (the `argv[0]` dispatch),
+- `judgebot`: the binary. `roles.rs` (`Role`, `plan`), `cli.rs` (the command line),
   `ingest.rs` (argument parsing over `judge_bot::ingest`), `backup.rs` (over
   `judge_bot::backup`).
 - `eval`: a bin.
@@ -490,7 +487,7 @@ What a `judgebot` process does is a launch option, not a consequence of starting
 
 - `Role::{Discord, Api, Web, Mcp, Jobs}` is exhaustive, held in a `NonEmpty` set so
   "doing nothing" is unrepresentable. Flags on the command line win; with none,
-  `JUDGE_ROLES` (the same flags). A compatibility name ignores `JUDGE_ROLES`.
+  `JUDGE_ROLES` (the same flags).
 - `roles::plan` matches every role and checks its requirements, all reported at once
   (`Unstartable`, a `NonEmpty<Problem>`), before the pool connects or anything binds.
   Its output is the types the roles run on (`discord::Config` holds the token,
@@ -761,8 +758,7 @@ Key cross-file facts that aren't obvious from any one file:
 - `JUDGE_ROLE` (default "Judge").
 - `JUDGE_MAX_USD`, `JUDGE_CONCURRENCY`.
 - `JUDGE_ROLES`: `judgebot`'s roles when its command line names none, and the compose
-  service's `command` (below). The compatibility names (`judge-bot`, `judge-api`)
-  ignore it.
+  service's `command` (below).
 - `JUDGE_AUTO_MIGRATE` (default true). When true, `judgebot` applies pending migrations
   at startup. `judgebot ingest migrate` is the explicit form.
 - `JUDGE_REFRESH_HOURS` (default 24, `1..=720`, `0` = off): how often `--jobs` runs
@@ -776,9 +772,9 @@ For the HTTP API it also holds:
 
 - `API_ADDR` (default `0.0.0.0:8787`).
 - `WEB_DIST` (read only under `--web`).
-- `API_INTERFACES`: deprecated. The interfaces of the old `api` service. The compose
-  service still adds them to `--discord --jobs` while `JUDGE_ROLES` is unset, and the
-  binary only warns about it (`roles::api_interfaces_warning`).
+- `API_INTERFACES`: retired in 2.0.0. Nothing reads it, and a set value refuses the
+  launch with the `JUDGE_ROLES` line that replaces it (`roles::refuse_api_interfaces`,
+  also reached through `compose_roles`, so `judge-config` reports it).
 - `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`.
 - `API_CLIENT_IP` (`peer` or `cloudflare`, see below).
 - `MCP_TOKEN`: the credential for `/mcp`, which also needs the `--mcp` role. ≥24
@@ -790,11 +786,8 @@ For the HTTP API it also holds:
 
 The `judgebot` and `refresh` containers override `DATABASE_URL` to `db:5432` inside the
 compose network. The image builds the web app and sets `WEB_DIST=/srv/web`. The
-`judgebot` service names its entrypoint (the image's default is still `judge-bot`, for
-compose files from before it) and its `command` is
-`${JUDGE_ROLES:---discord --jobs ${API_INTERFACES:---api --web}}`, nested
-interpolation checked against compose-go v1.16.0 (the version Compose v2.20.0 pins;
-the v2.20 binary itself was not run). `roles::COMPOSE_COMMAND` holds that string,
+`judgebot` service's `command` is `${JUDGE_ROLES:---discord --api --web --jobs}`.
+`roles::COMPOSE_COMMAND` holds that string,
 `roles::compose_roles` is the same rule in Rust (judge-config's check uses it), and
 `roles_match_the_compose_file` holds the file to it. Its healthcheck probes
 `/api/health` only when `/proc/1/cmdline` (or `JUDGE_ROLES`) has an HTTP role, and

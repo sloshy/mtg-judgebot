@@ -132,26 +132,23 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `docker compose logs judgebot`. It keeps the `api` service's port, healthcheck and
   network name, so a Cloudflare Tunnel pointing at `http://api:8787` needs no change.
   `refresh` runs `judgebot ingest`, with the same arguments as before.
-- **`API_INTERFACES` is deprecated.** While `JUDGE_ROLES` is unset the compose service
-  still runs `--discord --jobs` plus its interfaces, and logs a warning naming the
-  `JUDGE_ROLES` line that replaces it. `judge-config` shows the same warning and checks
-  only the roles the service would run, so a deployment without Discord needs no
-  `DISCORD_TOKEN` there.
+- **`API_INTERFACES` is retired.** `JUDGE_ROLES` replaces it. A `.env` that still sets it
+  is refused at startup, and the error names the `JUDGE_ROLES` line that replaces it,
+  rather than the process starting without the interfaces it chose. `judge-config`
+  reports the same error, and checks only the roles the service would run, so a
+  deployment without Discord needs no `DISCORD_TOKEN` there.
 - **One spend meter per process.** The roles of one `judgebot` process bill to one meter
   and one ledger. With `JUDGE_BUDGET_PERIOD=process`, a process running both the bot and
   the HTTP interfaces has one `JUDGE_MAX_USD` between them, where the separate `bot` and
   `api` processes had one each. `day` and `month` budgets were already shared. Each role
   keeps its own `JUDGE_CONCURRENCY` slots and the API its rate limits.
-- **The scheduled refresh runs only under `--jobs`.** The compatibility names below keep
-  it on, as before. A process whose only role is `--jobs` exits non-zero if the
+- **The scheduled refresh runs only under `--jobs`.** A process whose only role is `--jobs` exits non-zero if the
   scheduler's thread ends, and refuses to start with `JUDGE_REFRESH_HOURS=0`. Beside a
   serving role, a scheduler thread that ends is logged as an error and the process
   keeps answering.
-- **`judge-bot`, `judge-api` and `judge-ingest` are compatibility names.** The image
-  carries them as links to `judgebot`, which runs what each ran (`judge-bot` is
-  `--discord --jobs`, `judge-api` its `--api`/`--web`/`--mcp` rules plus `--jobs`,
-  `judge-ingest` is `judgebot ingest`) and logs a warning naming the replacement. They
-  ignore `JUDGE_ROLES`. A later release removes them.
+- **`judge-bot`, `judge-api` and `judge-ingest` are gone.** The image carries
+  `judgebot` alone, and it is the image's entrypoint: with no arguments it runs the
+  roles in `JUDGE_ROLES`.
 - **A refresh stops writing when it should.** Before each step `judgebot ingest refresh`
   checks that the migration ledger matches its binary, and every single-step command
   (`cards`, `rules`, `embed`, …) checks once before it starts. A run between
@@ -224,6 +221,15 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
+- **Update the compose file with the image.** This image cannot run the previous
+  release's `docker-compose.yml`: its `bot` service starts `judgebot` with no roles, and
+  its `api` and `refresh` services name binaries the image no longer has. Run `git pull`
+  before or in the same step as `docker compose pull` (below), never the image alone.
+- **Replace `API_INTERFACES` with `JUDGE_ROLES`.** `judgebot` refuses to start while
+  `.env` sets `API_INTERFACES`. `--discord --jobs` plus its value is the line to write:
+  `API_INTERFACES='--api --mcp'` becomes `JUDGE_ROLES='--discord --api --mcp --jobs'`.
+  The startup error names it too. `judgebot ingest` and `judgebot backup` read no roles
+  and ignore it, so `scripts/refresh-data.sh` keeps running meanwhile.
 - **Without Discord, set `JUDGE_ROLES` first.** The one service runs
   `--discord --api --web --jobs` by default. A deployment that ran only `api`, with no
   `DISCORD_TOKEN`, adds this line to `.env` before upgrading, or `judgebot` restarts
@@ -255,10 +261,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   and no `judgebot-bot` or `judgebot-api`. If either is there,
   `docker rm -f judgebot-bot judgebot-api` removes it.
 - **The roles carry over.** A `.env` with neither `JUDGE_ROLES` nor `API_INTERFACES` runs
-  `--discord --api --web --jobs`, what the two services did. One with `API_INTERFACES`
-  runs `--discord --jobs` plus those interfaces and logs a deprecation warning: replace it
-  with the `JUDGE_ROLES` line the warning names. A deployment without Discord: see the
-  first item (add `--mcp` if it served `/mcp`).
+  `--discord --api --web --jobs`, what the two services did. One with `API_INTERFACES`:
+  see the second item. A deployment without Discord: see the third (add `--mcp` if it
+  served `/mcp`).
 - **The tunnel needs no edit.** The service answers to the network name `api` as well
   as `judgebot`, so a public hostname whose service is `http://api:8787` keeps working.
 - **`scripts/refresh-data.sh`, its cron entry and `docker compose run --rm refresh
@@ -276,9 +281,10 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `JUDGE_IMAGE_TAG` to that release, then `docker compose pull && docker compose up -d
   --remove-orphans` (without `--remove-orphans`, the `judgebot` container stays up beside
   the restored `bot`).
-- **Using compatibility names on purpose.** A compose file of your own that runs
-  `judge-bot` or `judge-api` keeps working on the new image: each name runs what it ran,
-  plus `--jobs`, and logs one warning naming its `judgebot` replacement.
+- **A compose file or script of your own** that runs `judge-bot`, `judge-api` or
+  `judge-ingest` moves to `judgebot`: `judge-bot` is `judgebot --discord --jobs`,
+  `judge-api --api --web` is `judgebot --api --web --jobs`, and `judge-ingest <command>`
+  is `judgebot ingest <command>`.
 - **Running from source, the binary is `judgebot`.** `cargo run -p judge-bot` becomes
   `cargo run -p judgebot -- --discord --jobs`, `cargo run -p judge-api -- --api --web`
   becomes `cargo run -p judgebot -- --api --web` (add `--jobs` for the schedule), and

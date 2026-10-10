@@ -33,5 +33,5 @@ pub mod shape;
 
 pub use config::{ApiConfig, Refused, Unmet};
 pub use http::{App, DataStatus, bind, router, serve_on};
-pub use interfaces::{Interface, Interfaces, Launch};
+pub use interfaces::{Interface, Interfaces};
 pub use network::{Listening, Network};

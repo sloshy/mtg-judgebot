@@ -1,7 +1,6 @@
 //! `judgebot ingest` — Scryfall bulk sync, CR parser, alias loader, embedding:
 //! argument parsing over the steps in `judge_bot::ingest`, where they live so
-//! that the long-running roles can run them too. `judge-ingest <cmd>` is the
-//! same command line under its compatibility name.
+//! that the long-running roles can run them too.
 //!
 //! ```text
 //! judgebot ingest cards                 # Scryfall bulk: cards, card_faces, printed_names, rulings
@@ -180,7 +179,7 @@ pub enum Launch {
     Run(Command),
 }
 
-/// Parse the arguments after `ingest` (or after `judge-ingest`). Help and a
+/// Parse the arguments after `ingest`. Help and a
 /// typo need no database, no `.env` and no logging.
 ///
 /// # Errors

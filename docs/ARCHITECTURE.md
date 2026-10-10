@@ -227,10 +227,7 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   the hand-off is tested without Discord. The scheduler's thread
   is different: beside serving roles its end is logged as an error and the process keeps
   answering, while a process whose only role is `--jobs` exits non-zero.
-- `judgebot ingest <cmd>` is the data command line. `judge-bot`, `judge-api` and
-  `judge-ingest`, the binaries it replaced, are links to it in the image: it reads the
-  name it was invoked as, runs what that binary ran (`judge-bot` is `--discord --jobs`,
-  `judge-api` its interfaces plus `--jobs`) and logs a warning naming the replacement.
+- `judgebot ingest <cmd>` is the data command line.
 - `judgebot backup <run|list|fetch|serve>` is the database backup (`judge_bot::backup`,
   D26): `pg_dump -Fc` over the network, gzipped, uploaded to R2 by a `SigV4` client of
   four requests, pruned past `BACKUP_KEEP_DAYS` after the upload. `serve` checks the
@@ -238,8 +235,10 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   `BACKUP_EVERY_DAYS` old. It writes what `scripts/backup-db.sh` writes, so each reads
   the other's backups.
 - `docker-compose.yml` runs the application as one long-running service, `judgebot`, whose command is
-  `JUDGE_ROLES` or, unset, `--discord --jobs` plus the deprecated `API_INTERFACES`
-  (default `--api --web`): `roles::COMPOSE_COMMAND`, which a test holds the file to.
+  `JUDGE_ROLES` or, unset, `--discord --api --web --jobs`: `roles::COMPOSE_COMMAND`,
+  which a test holds the file to. A set `API_INTERFACES`, the retired variable that
+  chose the old `api` service's interfaces, refuses the launch with the `JUDGE_ROLES`
+  line that replaces it.
   `roles::compose_roles` is the same rule in Rust, so `judge-config` checks only the
   roles the service would run. The service keeps the network alias `api` for tunnels
   configured with the old service name. `refresh` runs `judgebot ingest` on demand,

@@ -38,20 +38,10 @@ status, so the restart policy brings it back whole. The refresh runs on a thread
 own. If that thread ends beside serving roles, it is logged as an error and the process
 keeps answering. In a process whose only role is `--jobs`, the process exits non-zero.
 
-The compose service `judgebot` runs `JUDGE_ROLES` when it is set in `.env`, else
-`--discord --jobs` plus the deprecated `API_INTERFACES` (default `--api --web`). With
-neither variable set, that is every role but `--mcp`. A process started with
-`API_INTERFACES` set logs a warning naming the `JUDGE_ROLES` line that replaces it.
-
-The image also answers to the names of the binaries `judgebot` replaced, as links to it.
-Each logs a warning naming its replacement, and a later release removes them. They ignore
-`JUDGE_ROLES`.
-
-| Name | Runs |
-| --- | --- |
-| `judge-bot` | `judgebot --discord --jobs` |
-| `judge-api [--api] [--web] [--mcp]` | Those roles and `--jobs`. With no flags, `--api` alone. |
-| `judge-ingest <command>` | `judgebot ingest <command>` |
+The compose service `judgebot` runs `JUDGE_ROLES` when it is set in `.env`, else every
+role but `--mcp` (`--discord --api --web --jobs`). A process started with
+`API_INTERFACES` set, the variable the 1.x `api` service read, refuses to start and names
+the `JUDGE_ROLES` line that replaces it.
 
 ## `judgebot ingest`
 
