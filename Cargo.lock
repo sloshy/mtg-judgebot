@@ -2004,6 +2004,8 @@ dependencies = [
  "judge-bot",
  "judge-core",
  "judge-llm",
+ "nonempty",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml_ng",

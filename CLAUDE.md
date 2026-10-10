@@ -62,7 +62,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D27),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D28),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -387,6 +387,9 @@ cargo run -p judge-eval -- recall [--vectors]           # retrieval gate, no API
                                                         # shown under the synthesis budget
 cargo run -p judge-eval -- answer --label L --limit 22 --max-usd 6.00   # full live gold run (~$1.70)
                                                         # --config judge.toml runs it on other providers
+cargo run -p judge-eval -- grade eval/runs/<run>.json   # the synthesis model grades each answer: follows from
+                                                        # its quotes? agrees with the reference? (~$0.40, D28;
+                                                        # resumable; --force regrades; answer --grade does both)
 cargo run -p judge-eval -- rescore eval/runs/<run>.json # re-score a stored run, zero API cost
 cargo run -p judge-eval -- show eval/runs/<run>.json    # bot vs gold answers side by side
 ```
@@ -668,7 +671,7 @@ Key cross-file facts that aren't obvious from any one file:
   `equivalent_rule_ids` (alternate rule ids stating the same fact). The loader builds a
   validated `GoldQuestion` (`gold::Expected`): unknown keys are errors, the two lists
   are disjoint, and every equivalent key names an id in one of them. Extend the set when
-  adding capability. `rescore` re-grades old runs after gold edits. Rule ids written
+  adding capability. `rescore` re-scores old runs after gold edits. Rule ids written
   unquoted in YAML are rejected, because floats drop trailing zeros.
 - **Discord layer:** interaction logic is kept pure and unit-tested (`render.rs`,
   `ids.rs` typed button custom-ids, `pick.rs` a pick prompt's age, digest and audience,

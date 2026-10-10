@@ -35,6 +35,8 @@ pub struct Options {
     pub gold_extraction: bool,
     /// A `judge.toml` to run with (`--config`), ahead of `JUDGE_CONFIG`.
     pub config: Option<PathBuf>,
+    /// Grade the answers after the run (`--grade`), on the same spend cap.
+    pub grade: bool,
 }
 
 impl Options {
@@ -52,6 +54,7 @@ impl Options {
             None::<String>,
         );
         let mut gold_extraction = false;
+        let mut grade = false;
         let mut config = None;
         while let Some(a) = args.next() {
             let mut val = || {
@@ -73,6 +76,7 @@ impl Options {
                 "--out" => out = Some(PathBuf::from(val()?)),
                 "--label" => label = Some(val()?),
                 "--gold-extraction" => gold_extraction = true,
+                "--grade" => grade = true,
                 other => anyhow::bail!("unknown flag {other}"),
             }
         }
@@ -102,6 +106,7 @@ impl Options {
             label,
             gold_extraction,
             config,
+            grade,
         })
     }
 }
@@ -187,6 +192,9 @@ pub struct Row {
     pub stubs_dropped: usize,
     /// Estimated USD this question cost.
     pub usd: f64,
+    /// A model's grade of the answer (`eval grade`, D28); absent until graded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<crate::grade::Grade>,
 }
 
 /// Which model answered each stage of a run, as `provider/model`, so
@@ -287,7 +295,10 @@ fn select<'a>(gold: &'a Gold, opts: &Options) -> Vec<&'a GoldQuestion> {
 ///
 /// # Errors
 /// DB / client construction, or writing the run file. Per-question failures are recorded, not raised.
-pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
+pub async fn run(
+    pool: PgPool,
+    opts: &Options,
+) -> anyhow::Result<(Run, Option<crate::grade::Pass>)> {
     let gold = crate::gold::load(&opts.gold)?;
     if let Some(known) = opts
         .ids
@@ -364,7 +375,7 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
             break;
         }
     }
-    let run = Run {
+    let mut run = Run {
         label: opts.label.clone(),
         gold: opts.gold.display().to_string(),
         max_usd: opts.max_usd,
@@ -377,11 +388,23 @@ pub async fn run(pool: PgPool, opts: &Options) -> anyhow::Result<Run> {
     if let Some(dir) = opts.out.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    std::fs::write(&opts.out, serde_json::to_string_pretty(&run)?)
-        .with_context(|| format!("writing {}", opts.out.display()))?;
+    crate::grade::write_run(&opts.out, &run)?;
+    let pass = if opts.grade {
+        let pass =
+            crate::grade::grade_rows(&models.synth(), &meter, &mut run, &gold, false, |run| {
+                crate::grade::write_run(&opts.out, run)
+            })
+            .await?;
+        Some(pass)
+    } else {
+        None
+    };
     print!("{}", table(&run));
+    if let Some(pass) = &pass {
+        println!("{}", crate::grade::pass_line(pass));
+    }
     println!("wrote {}", opts.out.display());
-    Ok(run)
+    Ok((run, pass))
 }
 
 fn score_row(q: &GoldQuestion, traced: &Traced, elapsed_ms: u128, calls: u64, usd: f64) -> Row {
@@ -481,6 +504,7 @@ fn score_row(q: &GoldQuestion, traced: &Traced, elapsed_ms: u128, calls: u64, us
         stubs_dropped: result
             .as_ref()
             .map_or(0, judge_core::Verdict::stubs_dropped),
+        grade: None,
     }
 }
 
@@ -520,7 +544,7 @@ pub fn table(run: &Run) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "{:<width$}  {:<14}  {:<9}  {:>6}  {:>5}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7}  {:>5}  {:>8}",
+        "{:<width$}  {:<14}  {:<9}  {:>6}  {:>5}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:<11}  {:>7}  {:>5}  {:>8}",
         "question",
         "outcome",
         "retry",
@@ -532,6 +556,7 @@ pub fn table(run: &Run) -> String {
         "orcl",
         "src",
         "ok",
+        "grade",
         "secs",
         "calls",
         "usd"
@@ -553,7 +578,7 @@ pub fn table(run: &Run) -> String {
         };
         let _ = writeln!(
             s,
-            "{:<width$}  {:<14}  {:<9}  {:>6}  {:>5}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:>7.1}  {:>5}  {:>8.4}",
+            "{:<width$}  {:<14}  {:<9}  {:>6}  {:>5}  {:<3}  {:>5}  {:>5}  {:>5}  {:<3}  {:<3}  {:<11}  {:>7.1}  {:>5}  {:>8.4}",
             r.id,
             outcome,
             retry,
@@ -569,6 +594,9 @@ pub fn table(run: &Run) -> String {
             r.cites.n_oracle_cites,
             if r.source_ok { "yes" } else { "no" },
             if r.correct_shape { "yes" } else { "NO" },
+            r.grade
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), crate::grade::Grade::cell),
             secs(r.elapsed_ms),
             r.calls,
             r.usd
@@ -598,6 +626,9 @@ pub fn table(run: &Run) -> String {
         "questions with ≥1 decisive id cited: {any}/{expecting}; supporting ids also cited: {supporting_cited}/{supporting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations"
     );
     let _ = writeln!(s, "{}", retries_line(run));
+    if let Some(line) = crate::grade::totals_line(run) {
+        let _ = writeln!(s, "{line}");
+    }
     s
 }
 
@@ -657,6 +688,14 @@ fn regraded(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Resu
         };
         row.expected_rule_ids = q.ids(Weight::Decisive);
         row.supporting_rule_ids = q.ids(Weight::Supporting);
+        if row
+            .grade
+            .as_ref()
+            .is_some_and(|g| g.reference != q.expected_answer)
+        {
+            tracing::warn!(id = %row.id, "grade made against an older reference; left out (`grade` makes it again)");
+            row.grade = None;
+        }
         if q.is_answerable() {
             let equivalents = q.equivalents();
             row.recall =
@@ -757,6 +796,9 @@ pub fn show(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Resu
             secs(r.elapsed_ms),
             r.usd
         );
+        if let Some(g) = &r.grade {
+            let _ = writeln!(s, "{}", crate::grade::show_block(g));
+        }
     }
     Ok(s)
 }
@@ -764,6 +806,49 @@ pub fn show(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every key path in `v`, arrays folded to `[]`.
+    fn key_paths(v: &serde_json::Value, at: &str, out: &mut std::collections::BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, v) in m {
+                    let path = format!("{at}.{k}");
+                    out.insert(path.clone());
+                    key_paths(v, &path, out);
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for v in a {
+                    key_paths(v, &format!("{at}[]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `grade` rewrites a run file whole, so a field the types do not know
+    /// would be dropped. The published runs are the files that matter.
+    #[test]
+    fn published_runs_round_trip_without_losing_a_field() -> anyhow::Result<()> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/published");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+            let run: Run = serde_json::from_value(raw.clone())?;
+            let (mut before, mut after) = Default::default();
+            key_paths(&raw, "", &mut before);
+            key_paths(&serde_json::to_value(&run)?, "", &mut after);
+            let lost: Vec<&String> = before.difference(&after).collect();
+            assert!(lost.is_empty(), "{}: {lost:?}", path.display());
+            checked += 1;
+        }
+        assert!(checked > 0, "no published runs under {}", dir.display());
+        Ok(())
+    }
 
     #[test]
     fn parse_defaults_and_flags() -> anyhow::Result<()> {

@@ -138,7 +138,7 @@ before the source record existed is still recognised as built-in.
 
 **Gold set changes.** `eval/gold.yaml` quotes every rule id (unquoted `702.10` is a
 float and is rejected). `cargo run -p judge-eval -- recall` is the free retrieval gate.
-`rescore` re-grades stored runs after a gold edit without spending anything.
+`rescore` re-scores stored runs after a gold edit without spending anything.
 
 ## Design rules
 

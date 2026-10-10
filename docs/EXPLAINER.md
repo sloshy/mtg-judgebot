@@ -617,6 +617,12 @@ state the same fact. Two gates:
   the first attempt was rejected, when the retry ran, and how many stub citations were
   dropped. Runs are stored and can be re-scored for free after the gold set is edited.
 
+Citation recall cannot tell a right answer from a wrong one that cites the right rules.
+`judge-eval grade` is a third measure, a score rather than a gate: a model reads each
+stored answer with its quotes and the reference, and says whether the ruling follows from
+the quotes, whether it agrees with the reference, and which remarks are wrong
+(`docs/DECISIONS.md` D28).
+
 The gold set is extended whenever capability is added. It is the closest thing the system
 has to a regression suite for the probabilistic parts.
 

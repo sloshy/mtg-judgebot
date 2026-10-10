@@ -512,8 +512,8 @@ passes, and a rule number is not covered by citing a prior call that mentions it
 - *A second model call that judges whether the prose follows from the citations.* It is
   the check one actually wants. It also costs a quarter to three-quarters of an answer
   again, adds seconds, and is itself a model that can be wrong. A probabilistic opinion
-  does not belong among gates that are otherwise exact. If it is ever wanted, it belongs
-  in `judge-eval` as a score, not in the path of every answer.
+  does not belong among gates that are otherwise exact. It belongs in `judge-eval` as a
+  score, not in the path of every answer, and D28 put it there.
 - *Accepting a number that is in the material but not cited.* Looser, and it would let the
   prose lean on text no quote was checked against.
 - *Leaving the model to find out from the retry.* The prompt asks for rule numbers inline
@@ -909,3 +909,47 @@ and the answer text of each attempt. It is written for the operator failures of
   deleting the rows, which would also drop the failure counts; and
   storing no id, which would leave a question the asker cannot take back.
 - **Read on the CLI only** (`judge-cli failures`), like `stats`, and not an MCP tool.
+
+## D28. Model-graded eval score
+
+*Decided 2026-10-10.*
+
+Citation recall says whether an answer cites the rules its reference rests on, not whether
+the answer is right. An answer can cite the right rules and still reach the wrong ruling:
+a reported Academy Manufactor answer cited 614.1a correctly and kept a token the
+replacement removes. The README's agreement and grounding columns were graded by hand,
+with subagents.
+
+`judge-eval grade <run.json>` now asks a model for that reading, and `answer --grade`
+runs it after a run. For each verdict on an answerable question it sees the question, the
+gold reference, the answer and each citation with its quote, and writes:
+
+- each claim of the answer, marked supported by the quoted words alone, unsupported, or
+  contradicted;
+- whether the ruling follows from the quotes (`follows`), rests on a step no quote states
+  (`gap`), or is not supported by them (`unfounded`);
+- whether the conclusion agrees with the reference (`agrees`, `partial`, `disagrees`);
+- the wrong remarks, side remarks included.
+
+The grade is stored on the row with the grader's `provider/model`, its cost and the
+reference it was made against. It is written back after each answer, so a pass the spend
+cap stops resumes. A grade whose reference the gold file has since changed is stale:
+`grade` makes it again and `show`/`rescore` leave it out. A failed grade or a stopped pass
+exits non-zero. Grading the 18 answers of the published Opus run costs about $0.40.
+
+- **A score, never a gate.** It is a model's opinion, so it stays out of the answer path
+  (D20) and out of the exit code's meaning for answers: `grade` fails when grading fails,
+  not when an answer is graded down.
+- **The grader is the configured synthesis model** (`--config` names another). Grading
+  Opus's answers with Opus is grading with the same blind spots, so a different grader
+  is worth a run before a result is published.
+- **Against the hand grading.** The published Opus run, graded by hand at 18 agreeing and
+  14 following from their quotes, grades at 18 and 11. The gaps it names are the ones the
+  hand grading listed (Doubling Season's own text, the definition of "dies") and a few it
+  passed over (Humility's own text, priority while casting). A card's name, mana cost,
+  colors and type line are taken as given, because the material prints them on a label
+  line that cannot be quoted. Read the column between runs with one grader, not as a
+  measure on its own.
+- Rejected: *scoring answer text against required phrases* in `gold.yaml`. It is exact,
+  but a correct answer worded differently fails, and every question would need phrases
+  written for it.

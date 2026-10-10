@@ -188,12 +188,16 @@ verified.
 ```sh
 cargo run -p judge-eval -- recall            # retrieval gate: expected rules present in context? (free)
 cargo run -p judge-eval -- answer --label x --limit 22 --max-usd 6   # full live run (~$1.70)
-cargo run -p judge-eval -- rescore eval/runs/x.json                  # re-grade a stored run (free)
+cargo run -p judge-eval -- grade eval/runs/x.json                    # a model grades each answer (~$0.40)
+cargo run -p judge-eval -- rescore eval/runs/x.json                  # re-score a stored run (free)
 cargo run -p judge-eval -- show eval/runs/x.json                     # bot vs. gold, side by side
 ```
 
 Scoring accepts per-question *equivalence lists* of alternate rule ids that state the
 same fact, so the metric tracks correctness rather than one author's citation taste.
+`grade` asks a model whether each answer's ruling follows from its quotes and agrees with
+the reference, the reading the Results table below was graded by hand with
+(`docs/DECISIONS.md` D28). It is a score, not a gate.
 
 ### Results
 
@@ -316,7 +320,7 @@ crates/
   api        anonymous HTTP adapter (axum): the JSON route, the web page and the /mcp transport
   judgebot   the one long-running binary: --discord --api --web --mcp --jobs as launch-time roles, and
              `judgebot ingest` (init, refresh, cards, rules, embed, …) over the loaders (bin)
-  eval       gold-set harness: recall / answer / rescore / show (bin)
+  eval       gold-set harness: recall / answer / grade / rescore / show (bin)
   agent      the judge for other agents: sessions, lookups and the pipeline as judge-cli and judge-mcp
   configure  judge-config: a localhost page editing judge.toml and .env, checked by the loaders (bin)
 web/         SolidJS + TypeScript single page (Vite)

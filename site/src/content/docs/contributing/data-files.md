@@ -75,7 +75,10 @@ drops the zero, so the loader rejects unquoted ids.
 
 - `judge-eval recall` checks retrieval against it for free.
 - `judge-eval answer` runs the full pipeline (about $1.70 for the set).
-- `rescore` re-grades stored runs after an edit.
+- `judge-eval grade` has a model grade each answer against its quotes and the reference
+  answer (about $0.40 for the set). A grade made against a reference since edited is
+  made again.
+- `rescore` re-scores citation recall in stored runs after an edit.
 
 Extend it when adding capability, and re-verify rule ids on each CR release.
 

@@ -15,13 +15,22 @@
 //! (default 2) gold questions and writes `eval/runs/L.json`, recording which
 //! model answered each stage.
 //!
+//! `--grade` grades the answers after the run, as `grade` does.
+//!
+//! `eval grade <run.json> [--max-usd X] [--config judge.toml] [--gold p] [--force]`:
+//! the configured synthesis model grades each stored answer against its
+//! quotes and the gold reference (D28, live calls capped at `--max-usd`,
+//! default $1.00), written back into the run file. Already graded rows are
+//! skipped unless `--force`, so a capped pass resumes.
+//!
 //! `eval show <run.json>`: expected vs. bot answers side by side, graded
-//! against the current gold file as `rescore` grades it.
+//! against the current gold file as `rescore` grades it, with any grade.
 
 mod answer;
 mod categories;
 mod deps;
 mod gold;
+mod grade;
 mod recall;
 mod score;
 
@@ -67,7 +76,7 @@ async fn main() -> ExitCode {
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage:\n  eval recall [--vectors] [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--config judge.toml]\n  eval show <run.json>"
+        "usage:\n  eval recall [--vectors] [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--grade] [--config judge.toml]\n  eval grade <run.json> [--max-usd X] [--config judge.toml] [--gold path] [--force]\n  eval show <run.json>"
     )
 }
 
@@ -106,8 +115,14 @@ async fn run() -> anyhow::Result<bool> {
         "answer" => {
             let opts = answer::Options::parse(args)?;
             let pool = connect().await?;
-            let run = answer::run(pool, &opts).await?;
-            Ok(run.rows.iter().all(|r| r.correct_shape))
+            let (run, pass) = answer::run(pool, &opts).await?;
+            Ok(run.rows.iter().all(|r| r.correct_shape)
+                && pass.as_ref().is_none_or(grade::Pass::complete))
+        }
+        "grade" => {
+            let opts = grade::Options::parse(args)?;
+            let (_, pass) = grade::run(&opts).await?;
+            Ok(pass.complete())
         }
         "show" => {
             let path = args.next().ok_or_else(usage)?;
