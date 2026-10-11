@@ -166,7 +166,9 @@ one seam (`docs/PROVIDERS.md`).
   - The cap is a process total plus one *adjustment*. `judge_bot::budget` sets it from
     the `spend_days` ledger when `JUDGE_BUDGET_PERIOD` is `day` or `month`, which makes
     the cap a shared budget that survives restarts (D19). It also tells
-    `JUDGE_ALERT_WEBHOOK` when the cap trips. `judge-cli stats` reads the same ledger.
+    `JUDGE_ALERT_WEBHOOK` when the cap trips, and when spending reaches a
+    `JUDGE_SPEND_WARN_AT` threshold (claimed in `spend_warnings`, so one process
+    sends each). `judge-cli stats` reads the same ledger.
 - `crates/anthropic` and `crates/openai` are backends of it. Each owns its wire types and
   its schema-subset transform.
 - The model's own previous turn is replayed as an opaque blob that only the backend that

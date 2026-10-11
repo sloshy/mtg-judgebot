@@ -478,6 +478,18 @@ The same task tells the operator when the cap trips (`JUDGE_ALERT_WEBHOOK`), onc
 period. A capped judgebot is otherwise silent until someone reads the log, and the people
 who notice first are the members being refused.
 
+It can also warn before then (`JUDGE_SPEND_WARN_AT`, percentages of the cap, unset by
+default), once per threshold per period. In a shared period every process sees the same
+total, so a process claims a warning by inserting a `spend_warnings` row keyed by the
+period, the cap and the percentage, and only the one whose insert lands sends it. With
+the cap in the key, a cap raised mid-period, or an ingest run under a raised one, warns
+at its own percentages. A claim lands before
+the post, so a webhook that fails loses that warning (it is still logged) rather than
+every process repeating it.
+
+**Rejected:** *warning from the in-memory meter alone*, which sends one warning per
+process (`judgebot ingest` beside the bot is two) per threshold.
+
 ## D20. The prose answers to the citations
 
 *Decided 2026-09-20.*

@@ -74,7 +74,7 @@ use sqlx::PgPool;
 use crate::{
     DepsConfig, Models,
     alert::{ALERT_WEBHOOK_ENV, AlertWebhook},
-    budget::{self, Budget, Period},
+    budget::{self, Budget, Period, Thresholds},
     db::Vectors,
     jobs::{self, Jobs, Schedule},
 };
@@ -1578,7 +1578,8 @@ pub struct Config {
 ///
 /// # Errors
 /// [`ConfigError::BadBudget`] for a period that is not `process`, `day` or
-/// `month`, or a webhook that is not an `https` URL. The webhook's value is
+/// `month`, a webhook that is not an `https` URL, or warning thresholds that
+/// are not percentages from 1 to 99. The webhook's value is
 /// not echoed: it is a credential.
 pub fn budget(env: impl Fn(&str) -> Option<String>) -> Result<Budget, ConfigError> {
     let period = Period::parse(env(budget::PERIOD_ENV).as_deref()).map_err(|value| {
@@ -1599,7 +1600,18 @@ pub fn budget(env: impl Fn(&str) -> Option<String>) -> Result<Budget, ConfigErro
             })
         })
         .transpose()?;
-    Ok(Budget { period, alert })
+    let warn_at = Thresholds::parse(env(budget::WARN_AT_ENV).as_deref()).map_err(|value| {
+        ConfigError::BadBudget {
+            var: budget::WARN_AT_ENV,
+            value,
+            expected: "comma-separated whole percentages of JUDGE_MAX_USD from 1 to 99",
+        }
+    })?;
+    Ok(Budget {
+        period,
+        alert,
+        warn_at,
+    })
 }
 
 /// The refresh schedule from `env` (`JUDGE_REFRESH_HOURS`), blank meaning
@@ -3044,6 +3056,14 @@ model = "qwen3:8b"
         })?;
         assert_eq!(set.budget().period, Period::Month);
         assert!(set.budget().alert.is_some());
+        assert_eq!(set.budget().warn_at, None);
+        let warned = Config::from_vars(|k| (k == budget::WARN_AT_ENV).then(|| "80,50".to_owned()))?;
+        assert_eq!(
+            warned.budget().warn_at.as_ref().map(ToString::to_string),
+            Some("50%, 80%".to_owned())
+        );
+        let bad = Config::from_vars(|k| (k == budget::WARN_AT_ENV).then(|| "80,100".to_owned()));
+        assert!(bad.is_err_and(|e| e.to_string().contains("JUDGE_SPEND_WARN_AT=\"80,100\"")));
         let bad = Config::from_vars(|k| (k == budget::PERIOD_ENV).then(|| "weekly".to_owned()));
         assert!(bad.is_err_and(|e| e.to_string().contains("JUDGE_BUDGET_PERIOD=\"weekly\"")));
         let bad = Config::from_vars(|k| {

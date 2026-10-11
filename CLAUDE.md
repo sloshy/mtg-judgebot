@@ -22,7 +22,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   shares one period total that survives restarts. A `judgebot` process has one meter
   whichever roles it runs. `judgebot ingest` and a `--jobs`-only process write the ledger
   too. The meter itself stays storage-free.
-  `JUDGE_ALERT_WEBHOOK` is told when the cap trips, when the scheduled refresh fails (once
+  `JUDGE_SPEND_WARN_AT` (percentages of the cap, unset by default) warns before it, once
+  per threshold per period, claimed in `spend_warnings` so one process sends each.
+  `JUDGE_ALERT_WEBHOOK` is told when the cap trips or a warning is due, when the scheduled refresh fails (once
   per streak), recovers or hits its embed ceiling, and when a script fails
   (`scripts/alert.sh`). `judge-cli stats` reads the ledger. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop

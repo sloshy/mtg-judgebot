@@ -408,10 +408,23 @@ impl SpendMeter {
     /// What the cap is compared with: the process total plus the adjustment.
     #[must_use]
     pub fn counted_usd(&self) -> f64 {
-        from_micro(counted(
+        from_micro(self.counted_micro())
+    }
+
+    /// [`Self::counted_usd`] in whole micro-dollars, in-flight reservations
+    /// included.
+    #[must_use]
+    pub fn counted_micro(&self) -> u64 {
+        counted(
             self.0.micro_usd.load(Ordering::Relaxed),
             self.0.adjustment_micro_usd.load(Ordering::Relaxed),
-        ))
+        )
+    }
+
+    /// [`Self::max_spend_usd`] in whole micro-dollars.
+    #[must_use]
+    pub fn max_spend_micro(&self) -> u64 {
+        self.0.cap_micro_usd.load(Ordering::Relaxed)
     }
 
     /// Set what is added to the process total before the cap is checked, in

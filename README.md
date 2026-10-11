@@ -92,7 +92,8 @@ Every model call, embeddings included, counts against a hard cap, `JUDGE_MAX_USD
 - `JUDGE_BUDGET_PERIOD=day` or `month` makes it a daily or monthly budget that survives
   restarts.
 - When what's left can't cover a call's worst case (about $0.36 for the answering step), questions
-  are refused and `JUDGE_ALERT_WEBHOOK` is notified.
+  are refused and `JUDGE_ALERT_WEBHOOK` is notified. `JUDGE_SPEND_WARN_AT=50,80` warns
+  there at those percentages of the cap first.
 
 `docker compose pull` fetches the image CI builds from upstream `main`. To run your own
 checkout instead, skip it and run `docker compose up -d --build` (takes minutes and about

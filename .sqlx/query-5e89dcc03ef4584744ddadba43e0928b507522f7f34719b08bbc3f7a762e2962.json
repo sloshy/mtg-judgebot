@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO spend_warnings (period, period_start, cap_micro, percent)\n        VALUES ($1, $2::text::date, $3, $4)\n        ON CONFLICT DO NOTHING\n        RETURNING true AS \"claimed!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "claimed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5e89dcc03ef4584744ddadba43e0928b507522f7f34719b08bbc3f7a762e2962"
+}

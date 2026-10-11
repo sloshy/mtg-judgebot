@@ -144,6 +144,7 @@ COMPOSE_PROFILES=tunnel     # `docker compose up -d` now includes cloudflared
 API_CLIENT_IP=cloudflare    # rate-limit on CF-Connecting-IP
 JUDGE_MAX_USD=...           # the backstop for anonymous traffic
 JUDGE_BUDGET_PERIOD=month   # one budget for the month, kept across restarts
+JUDGE_SPEND_WARN_AT=50,80   # warn at these percentages of the cap first
 JUDGE_ALERT_WEBHOOK=...     # told when the cap trips, or a refresh or backup fails
                             # (the backup service reads it from .env.deploy, §6)
 ```

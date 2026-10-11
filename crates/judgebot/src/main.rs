@@ -139,12 +139,10 @@ async fn serve(roles: &Roles) -> Result<()> {
             // Alone, the jobs still spend (the embed step), so the ledger runs
             // here too: the period's spend caps the refresh, and the refresh's
             // spend reaches `judge-cli stats`. A tripped cap fails the embed
-            // step, which the refresh reports itself; the questions alert does
-            // not apply to a process that answers none.
-            let budget = judge_bot::budget::Budget {
-                alert: None,
-                ..judge.budget().clone()
-            };
+            // step, which the refresh reports itself; the questions alert
+            // counts chat refusals, which a process that answers nothing
+            // never has. The spend warnings apply as anywhere.
+            let budget = judge.budget().clone();
             // It syncs on its own task for the life of the process.
             let _ledger =
                 judge_bot::budget::start(pool.clone(), judge.meter().clone(), budget, process)

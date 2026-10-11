@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM spend_warnings WHERE period_start < (now() AT TIME ZONE 'utc')::date - 62",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "7cc9149cdd17590b0c588822f4205307eba5490ad58b45ddc046d414320f31d6"
+}

@@ -108,5 +108,6 @@ answered. Discord members are told the bot has hit its spending cap. A model pri
 `free` is never refused.
 
 The log shows `judge failed` with `spend cap exceeded: spent $… of $… cap`, then `spend
-cap reached`. Set `JUDGE_ALERT_WEBHOOK` to be told in a Discord or Slack channel. Run
+cap reached`. Set `JUDGE_ALERT_WEBHOOK` to be told in a Discord or Slack channel, and
+`JUDGE_SPEND_WARN_AT` (such as `50,80`) to be warned there before the cap. Run
 `judge-cli stats` for spend and questions per day.

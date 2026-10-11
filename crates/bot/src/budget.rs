@@ -32,18 +32,35 @@
 //! ([`crate::alert`], `JUDGE_ALERT_WEBHOOK`) the first time the cap refuses a request in a
 //! period: a capped bot is otherwise silent until someone reads the log.
 //!
+//! It also warns before the cap is reached when `JUDGE_SPEND_WARN_AT` lists
+//! percentages of the cap ([`Thresholds`]; unset, no warnings): once per
+//! threshold per period, logged and posted to the same webhook. A sync that
+//! crosses several reports the highest. In a `day` or `month` period every
+//! process sees the same total, so the processes claim each warning in
+//! `spend_warnings` first, keyed by the percentage and the cap it is of, and
+//! only the one whose claim lands sends it. A cap raised mid-period, or a
+//! process under another cap, warns at its own.
+//!
+//! Spend here counts in-flight reservations at their worst case, as the cap
+//! does, so with several questions in flight a threshold can be reached a
+//! little before the settled spend reaches it.
+//!
 //! The arithmetic is [`Ledger`], pure and tested without a database; the
 //! period boundary is Postgres's clock, so processes cannot disagree on it.
 
 use std::{sync::Arc, time::Duration};
 
 use judge_llm::SpendMeter;
+use nonempty::NonEmpty;
+use nutype::nutype;
 use sqlx::PgPool;
 
 use crate::alert::{self, AlertWebhook};
 
 /// `JUDGE_BUDGET_PERIOD`.
 pub const PERIOD_ENV: &str = "JUDGE_BUDGET_PERIOD";
+/// `JUDGE_SPEND_WARN_AT`.
+pub const WARN_AT_ENV: &str = "JUDGE_SPEND_WARN_AT";
 /// How often the ledger is written and the period total read back.
 pub const SYNC_EVERY: Duration = Duration::from_secs(10);
 
@@ -101,13 +118,88 @@ impl std::fmt::Display for Period {
     }
 }
 
+/// A spend warning threshold: a whole percentage of the cap, 1 to 99.
+#[nutype(
+    validate(greater_or_equal = 1, less_or_equal = 99),
+    derive(Clone, Copy, Debug, Display, PartialEq, Eq, PartialOrd, Ord)
+)]
+pub struct Percent(u8);
+
+/// `JUDGE_SPEND_WARN_AT`: the percentages of the cap the operator is warned
+/// at, ascending and distinct. Made only by [`Thresholds::parse`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Thresholds(NonEmpty<Percent>);
+
+impl Thresholds {
+    /// Parse the variable's value: comma-separated whole percentages, each
+    /// optionally followed by `%`, in any order. Blank is no warnings.
+    ///
+    /// # Errors
+    /// The value, when a part is not a whole number from 1 to 99.
+    pub fn parse(raw: Option<&str>) -> Result<Option<Self>, String> {
+        let Some(raw) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+            return Ok(None);
+        };
+        let mut found = raw
+            .split(',')
+            .map(|part| {
+                let digits = part.trim().strip_suffix('%').unwrap_or(part.trim());
+                digits
+                    .trim_end()
+                    .parse::<u8>()
+                    .ok()
+                    .and_then(|n| Percent::try_new(n).ok())
+                    .ok_or_else(|| raw.to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        found.sort_unstable();
+        found.dedup();
+        Ok(NonEmpty::from_vec(found).map(Self))
+    }
+
+    /// The highest threshold `counted` has reached under `cap`, both in
+    /// micro-dollars. None under a zero cap, which every amount reaches.
+    #[must_use]
+    pub fn reached(&self, counted: u64, cap: u64) -> Option<Percent> {
+        if cap == 0 {
+            return None;
+        }
+        self.0
+            .iter()
+            .rev()
+            .copied()
+            .find(|&p| counted >= threshold_micro(cap, p))
+    }
+}
+
+impl std::fmt::Display for Thresholds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, p) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{p}%")?;
+        }
+        Ok(())
+    }
+}
+
+/// `p` percent of `cap`, in micro-dollars, rounded down.
+#[must_use]
+pub fn threshold_micro(cap: u64, p: Percent) -> u64 {
+    let micro = u128::from(cap) * u128::from(p.into_inner()) / 100;
+    u64::try_from(micro).unwrap_or(u64::MAX)
+}
+
 /// The budget settings of one process.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Budget {
     /// What the cap covers.
     pub period: Period,
-    /// Where a tripped cap is reported, if anywhere.
+    /// Where a tripped cap and a spend warning are reported, if anywhere.
     pub alert: Option<AlertWebhook>,
+    /// Where the operator is warned before the cap, if anywhere.
+    pub warn_at: Option<Thresholds>,
 }
 
 /// This process's side of the ledger. All amounts are micro-dollars.
@@ -124,6 +216,9 @@ pub struct Ledger {
     calls_flushed: u64,
     refusals_seen: u64,
     alerted: bool,
+    /// The highest threshold warned about (or claimed by another process)
+    /// this period.
+    warned: Option<Percent>,
 }
 
 /// What one sync writes.
@@ -169,6 +264,12 @@ impl Ledger {
             next.baseline = total;
             next.flushed = 0;
             next.alerted = false;
+            // Only a period that turned clears the warnings: a first sync
+            // that lands after a database outage is the same period, and a
+            // `process` budget may already have warned without one.
+            if self.period_start.is_some() {
+                next.warned = None;
+            }
         }
         (write, next)
     }
@@ -181,6 +282,28 @@ impl Ledger {
         period_total
             .saturating_sub(self.flushed)
             .saturating_sub(signed(self.baseline))
+    }
+
+    /// The day the current period began, as the database names it
+    /// (`process` for a [`Period::Process`] budget), once a sync has landed.
+    #[must_use]
+    pub fn period_start(&self) -> Option<&str> {
+        self.period_start.as_deref()
+    }
+
+    /// The threshold to warn about now, if any: the highest one `counted`
+    /// has reached under `cap`, when it is above any already warned about
+    /// this period.
+    #[must_use]
+    pub fn warning_due(&self, thresholds: &Thresholds, counted: u64, cap: u64) -> Option<Percent> {
+        let reached = thresholds.reached(counted, cap)?;
+        (self.warned < Some(reached)).then_some(reached)
+    }
+
+    /// Record that `p` has been warned about this period, here or by
+    /// another process.
+    pub fn warned(&mut self, p: Percent) {
+        self.warned = self.warned.max(Some(p));
     }
 
     /// Whether the operator should be told now: the cap has refused a request
@@ -260,14 +383,72 @@ pub async fn sync(
     Ok(Some(total))
 }
 
+/// Claim the warning at `p` percent of `cap` micro-dollars for the period
+/// that began on `period_start`: true when this process is the first to, and
+/// so the one to send it. A claim lands before its warning is sent, so a webhook that
+/// fails loses that warning rather than repeating it on every process.
+///
+/// # Errors
+/// sqlx.
+pub async fn claim_warning(
+    pool: &PgPool,
+    period: Period,
+    period_start: &str,
+    cap: u64,
+    p: Percent,
+) -> Result<bool, sqlx::Error> {
+    let claimed = sqlx::query_scalar!(
+        r#"
+        INSERT INTO spend_warnings (period, period_start, cap_micro, percent)
+        VALUES ($1, $2::text::date, $3, $4)
+        ON CONFLICT DO NOTHING
+        RETURNING true AS "claimed!"
+        "#,
+        period.as_str(),
+        period_start,
+        signed(cap),
+        i16::from(p.into_inner())
+    )
+    .fetch_optional(pool)
+    .await?
+    .is_some();
+    if claimed {
+        // A row only has to outlive its period; a month is the longest.
+        sqlx::query!(
+            "DELETE FROM spend_warnings WHERE period_start < (now() AT TIME ZONE 'utc')::date - 62"
+        )
+        .execute(pool)
+        .await?;
+    }
+    Ok(claimed)
+}
+
+/// What the cap covers, as the alerts say it.
+fn scope(period: Period) -> &'static str {
+    match period {
+        Period::Process => "this process (a restart counts from zero)",
+        Period::Day => "today (UTC), across every process",
+        Period::Month => "this month (UTC), across every process",
+    }
+}
+
+/// The text a spend warning sends.
+#[must_use]
+pub fn warn_text(process: &str, period: Period, meter: &SpendMeter, reached: Percent) -> String {
+    format!(
+        "judgebot `{process}` has used {reached}% of its spend cap: ${:.2} of ${:.2} for {}, \
+counting calls in flight at their worst case. Questions are refused once what is left is less \
+than one call's worst case. The thresholds are {WARN_AT_ENV}.",
+        meter.counted_usd(),
+        meter.max_spend_usd(),
+        scope(period),
+    )
+}
+
 /// The text sent to the webhook.
 #[must_use]
 pub fn alert_text(process: &str, period: Period, meter: &SpendMeter) -> String {
-    let scope = match period {
-        Period::Process => "this process (a restart counts from zero)".to_owned(),
-        Period::Day => "today (UTC), across every process".to_owned(),
-        Period::Month => "this month (UTC), across every process".to_owned(),
-    };
+    let scope = scope(period);
     format!(
         "judgebot `{process}` is refusing questions at its spend cap: ${:.2} of ${:.2} spent for \
 {scope}, and what is left is less than one call's worst case. Raise JUDGE_MAX_USD and restart to \
@@ -332,6 +513,13 @@ pub async fn start(
             tracing::error!(error = %e, "spend ledger unavailable; capping per process until it is");
         }
     }
+    if let Some(at) = &budget.warn_at {
+        tracing::info!(
+            thresholds = %at,
+            webhook = budget.alert.is_some(),
+            "spend warnings set"
+        );
+    }
     let handle = Syncing {
         pool,
         meter,
@@ -353,13 +541,21 @@ pub async fn start(
         tick.tick().await;
         loop {
             tick.tick().await;
-            let alert_now = {
+            let (alert_now, warn_now) = {
                 let mut ledger = ledger.lock().await;
                 if let Err(e) = sync(&pool, &meter, period, &mut ledger).await {
                     tracing::warn!(error = %e, "spend ledger sync failed; will retry");
                 }
-                ledger.should_alert(meter.refusals())
+                let warn = budget.warn_at.as_ref().and_then(|at| {
+                    let p =
+                        ledger.warning_due(at, meter.counted_micro(), meter.max_spend_micro())?;
+                    Some((p, ledger.period_start().map(str::to_owned)))
+                });
+                (ledger.should_alert(meter.refusals()), warn)
             };
+            if let Some((p, start)) = warn_now {
+                warn(&pool, &client, &budget, process, &meter, &ledger, p, start).await;
+            }
             if alert_now {
                 tracing::warn!(
                     %period,
@@ -375,6 +571,59 @@ pub async fn start(
         }
     });
     handle
+}
+
+/// Send the warning at `p`, once it is claimed: a `process` budget's are
+/// its own, a period's go through [`claim_warning`]. `start` is the period
+/// the warning was found in; one that turned meanwhile keeps its own
+/// warnings.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the sync task's state, borrowed piecewise"
+)]
+async fn warn(
+    pool: &PgPool,
+    client: &reqwest::Client,
+    budget: &Budget,
+    process: &str,
+    meter: &SpendMeter,
+    ledger: &tokio::sync::Mutex<Ledger>,
+    p: Percent,
+    start: Option<String>,
+) {
+    let period = budget.period;
+    let cap = meter.max_spend_micro();
+    let claimed = match (period, start.as_deref()) {
+        (Period::Process, _) => true,
+        // No sync has landed yet, so the period is not known: next tick.
+        (Period::Day | Period::Month, None) => return,
+        (Period::Day | Period::Month, Some(day)) => {
+            match claim_warning(pool, period, day, cap, p).await {
+                Ok(claimed) => claimed,
+                Err(e) => {
+                    tracing::warn!(error = %e, "spend warning: claim failed; will retry");
+                    return;
+                }
+            }
+        }
+    };
+    if claimed {
+        tracing::warn!(
+            %period,
+            threshold = %p,
+            spent_usd = format_args!("{:.4}", meter.counted_usd()),
+            cap_usd = format_args!("{:.2}", meter.max_spend_usd()),
+            "spend warning: a threshold of the cap is reached"
+        );
+        if let Some(hook) = &budget.alert {
+            let text = warn_text(process, period, meter, p);
+            alert::post(client, hook, "spend warning", &text).await;
+        }
+    }
+    let mut ledger = ledger.lock().await;
+    if period == Period::Process || ledger.period_start() == start.as_deref() {
+        ledger.warned(p);
+    }
 }
 
 fn micro_to_usd(micro: i64) -> f64 {
@@ -523,6 +772,120 @@ mod tests {
         let w = l.write(2_800_000, 10, "2026-10-01");
         assert_eq!(w.micro_usd, 500_000);
         assert_eq!(2_800_000 + l.adjustment(800_000), 800_000);
+    }
+
+    fn thresholds(raw: &str) -> Result<Thresholds, String> {
+        Thresholds::parse(Some(raw))?.ok_or_else(|| "blank".to_owned())
+    }
+
+    #[test]
+    fn thresholds_parse_sorted_and_distinct_and_refuse_anything_else() -> Result<(), String> {
+        assert_eq!(Thresholds::parse(None)?, None);
+        assert_eq!(Thresholds::parse(Some("  "))?, None);
+        assert_eq!(thresholds("95, 50,80%,50")?.to_string(), "50%, 80%, 95%");
+        assert_eq!(thresholds("80 %")?.to_string(), "80%");
+        for bad in ["0", "100", "80,", "eighty", "50;80", "12.5", "-5", "256"] {
+            assert_eq!(Thresholds::parse(Some(bad)), Err(bad.to_owned()), "{bad}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_highest_threshold_reached_is_the_one_reported() -> Result<(), String> {
+        let at = thresholds("50,80,95")?;
+        let cap = 5_000_000;
+        let reached = |counted| at.reached(counted, cap).map(Percent::into_inner);
+        assert_eq!(reached(2_499_999), None);
+        assert_eq!(reached(2_500_000), Some(50));
+        assert_eq!(reached(4_100_000), Some(80));
+        assert_eq!(reached(6_000_000), Some(95));
+        assert_eq!(at.reached(1, 0), None, "a zero cap warns about nothing");
+        // The amounts round down and cannot overflow.
+        let p = Percent::try_new(99).map_err(|e| e.to_string())?;
+        assert_eq!(
+            u128::from(threshold_micro(u64::MAX, p)),
+            u128::from(u64::MAX) * 99 / 100
+        );
+        assert_eq!(threshold_micro(5_000_001, p), 4_950_000);
+        Ok(())
+    }
+
+    #[test]
+    fn each_threshold_is_warned_once_per_period() -> Result<(), String> {
+        let at = thresholds("50,80")?;
+        let cap = 10_000_000;
+        let mut l = Ledger::default();
+        let due = |l: &mut Ledger, counted| {
+            let p = l.warning_due(&at, counted, cap);
+            if let Some(p) = p {
+                l.warned(p);
+            }
+            p.map(Percent::into_inner)
+        };
+        l.write(0, 0, "2026-10-01");
+        assert_eq!(due(&mut l, 4_000_000), None);
+        assert_eq!(
+            due(&mut l, 9_000_000),
+            Some(80),
+            "a jump past both reports the higher"
+        );
+        assert_eq!(due(&mut l, 9_500_000), None);
+        assert_eq!(
+            due(&mut l, 5_000_000),
+            None,
+            "a lower one is not reported after a higher"
+        );
+        l.write(0, 0, "2026-11-01");
+        assert_eq!(due(&mut l, 6_000_000), Some(50), "a new period warns again");
+        Ok(())
+    }
+
+    #[test]
+    fn a_first_sync_after_an_outage_keeps_a_process_budgets_warning() -> Result<(), String> {
+        let at = thresholds("80")?;
+        let mut l = Ledger::default();
+        let p = l.warning_due(&at, 9, 10).ok_or("due")?;
+        l.warned(p);
+        l.write(0, 0, "process");
+        assert_eq!(l.warning_due(&at, 9, 10), None);
+        Ok(())
+    }
+
+    #[test]
+    fn the_warning_names_the_process_the_share_and_the_amounts() -> anyhow::Result<()> {
+        let meter = SpendMeter::new().with_max_spend_usd(5.0)?;
+        meter.set_adjustment_micro(4_100_000);
+        let p = Percent::try_new(80)?;
+        let text = warn_text("judgebot", Period::Month, &meter, p);
+        assert!(
+            text.contains("`judgebot`")
+                && text.contains("80% of its spend cap")
+                && text.contains("$4.10 of $5.00 for this month"),
+            "{text}"
+        );
+        assert!(text.contains(WARN_AT_ENV));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_warning_is_claimed_once_per_period_and_cap(pool: PgPool) -> anyhow::Result<()> {
+        let (half, most) = (Percent::try_new(50)?, Percent::try_new(80)?);
+        let claim = |period, day, cap, p| claim_warning(&pool, period, day, cap, p);
+        assert!(claim(Period::Month, "2026-10-01", 5_000_000, most).await?);
+        assert!(
+            !claim(Period::Month, "2026-10-01", 5_000_000, most).await?,
+            "the second process"
+        );
+        assert!(
+            claim(Period::Month, "2026-10-01", 8_000_000, half).await?,
+            "half of a raised cap is its own warning, though it is the same amount"
+        );
+        assert!(claim(Period::Month, "2026-11-01", 5_000_000, most).await?);
+        assert!(
+            claim(Period::Day, "2026-11-01", 5_000_000, most).await?,
+            "a day and a month starting together are different periods"
+        );
+        Ok(())
     }
 
     #[test]

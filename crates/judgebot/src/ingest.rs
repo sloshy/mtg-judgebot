@@ -243,13 +243,11 @@ pub async fn run(cmd: Command) -> Result<()> {
     }
 }
 
-/// The command's spend cap (`JUDGE_MAX_USD`) and period (`JUDGE_BUDGET_PERIOD`).
-/// No alert: the command fails at the cap itself, naming it.
+/// The command's spend cap (`JUDGE_MAX_USD`), period (`JUDGE_BUDGET_PERIOD`)
+/// and warnings (`JUDGE_SPEND_WARN_AT`). The command fails at the cap itself,
+/// naming it; the questions alert counts chat refusals, which it never has.
 fn budget() -> Result<Budget> {
-    Ok(Budget {
-        alert: None,
-        ..judge_bot::config::budget(|k| std::env::var(k).ok())?
-    })
+    Ok(judge_bot::config::budget(|k| std::env::var(k).ok())?)
 }
 
 /// A meter from `JUDGE_MAX_USD` with the spend ledger running on it.

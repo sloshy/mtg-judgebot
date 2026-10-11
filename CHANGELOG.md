@@ -19,6 +19,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Spend warnings before the cap.** `JUDGE_SPEND_WARN_AT` lists percentages of
+  `JUDGE_MAX_USD` (such as `50,80`). Each is logged and posted to `JUDGE_ALERT_WEBHOOK`
+  once per period when spending reaches it. In a `day` or `month` period one process
+  sends each warning, however many share the budget. Unset by default.
+
 - **Failed calls are kept for troubleshooting.** A call that fails for a reason the
   operator has to diagnose is stored in `failed_calls` with the question, the error and
   the answer text of each synthesis attempt (each cut to a fixed length; the newest 500
