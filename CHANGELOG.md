@@ -113,6 +113,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **`POST /api/judge` answers an unreadable request in JSON.** A body that is not JSON,
+  has the wrong shape, is too large or is sent without a JSON `Content-Type`
+  keeps its 4xx status (400, 422, 413, 415) but now gets `{"kind":"error","message":…}`
+  instead of a plain-text body, so a client can parse every reply the same way.
+
 - **One binary, `judgebot`, whose roles are launch options.** `bot`, `api` and `ingest`
   are now one program. `judgebot --discord --api --web --mcp --jobs` runs any non-empty
   set of the bot, the JSON route, the web page, the MCP transport and the scheduled

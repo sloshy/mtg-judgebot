@@ -30,10 +30,9 @@ curl -s http://localhost:8787/api/judge \
 | `session_id` | UUID, optional | Questions sharing one share history, so a follow-up works. Generate it on the client. Without one the question stands alone. |
 | `pins` | array, optional | Resolved ambiguities, at most 8: `{"span": "<as the ambiguous reply gave it>", "name": "<the full name chosen>"}`, each string at most 200 characters. |
 
-An answer takes twenty to forty-five seconds. A request that parses gets JSON tagged by
-`kind`. A request that does not parse gets a 4xx with a plain-text body, so check the
-status before parsing. That covers malformed JSON, a missing `question`, a `session_id`
-that is not a UUID, and a `Content-Type` other than `application/json`.
+An answer takes twenty to forty-five seconds. Every reply to a `POST` is JSON tagged by
+`kind`, including a request that cannot be read, which gets an `error` with a 4xx status
+(table below).
 
 ```json
 {
@@ -58,7 +57,7 @@ that is not a UUID, and a `Content-Type` other than `application/json`.
 | `answer` | 200 | `answer`, `confidence` (`low`/`medium`/`high`), `source` (`cr`/`commander`), `cr_version` (`YYYYMMDD`), `citations`, `cards` | A validated verdict. Every citation's `quote` was checked verbatim against its source. `url` is `null` for a prior call, which has no public page. |
 | `ambiguous` | 200 | `spans`: `[{"query", "choices", "truncated"}]` | A name matched several cards. Ask again with the same `question` and a `pins` entry per span. At most five `choices` each; `truncated` says there were more. |
 | `not_found` | 200 | `names` | Card names that matched nothing. |
-| `error` | 200 or 400 | `message` | 400 for a request over the limits above. 200 for a question the judge declined or could not answer: out of scope, no verified answer, the spend cap. |
+| `error` | 200 or 4xx | `message` | 200 for a question the judge declined or could not answer: out of scope, no verified answer, the spend cap. 400 for a body that is not JSON or a request over the limits above, 413 for a body over 2 MB, 415 for a missing `Content-Type` or one that is not JSON (`application/json` or `application/*+json`), 422 for JSON of the wrong shape (a missing `question`, a `session_id` that is not a UUID). |
 | `busy` | 429 | `message` | Every judge slot is taken (`JUDGE_CONCURRENCY`). Retry shortly. |
 | `rate_limited` | 429 | `message` | This address used up its window (`API_RATE_LIMIT` per `API_RATE_WINDOW_SECS`). |
 

@@ -11,7 +11,7 @@ use std::{
 use anyhow::Context as _;
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, FromRequestParts, State},
+    extract::{ConnectInfo, FromRequest, FromRequestParts, Request, State},
     http::{HeaderMap, StatusCode, request::Parts},
     routing::{get, post},
 };
@@ -366,11 +366,33 @@ impl<S: Send + Sync> FromRequestParts<S> for PeerAddr {
     }
 }
 
+/// The `POST /api/judge` body. A body axum's `Json` cannot read (not JSON,
+/// the wrong `Content-Type`, the wrong shape, too large) keeps axum's status
+/// and message but is answered as an [`ApiReply::Error`], so every reply from
+/// the route is JSON tagged by `kind`.
+struct JudgeBody(JudgeRequest);
+
+impl<S: Send + Sync> FromRequest<S> for JudgeBody {
+    type Rejection = (StatusCode, Json<ApiReply>);
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<JudgeRequest>::from_request(req, state).await {
+            Ok(Json(body)) => Ok(Self(body)),
+            Err(e) => Err((
+                e.status(),
+                Json(ApiReply::Error {
+                    message: e.body_text(),
+                }),
+            )),
+        }
+    }
+}
+
 async fn judge_route(
     State(app): State<Arc<App>>,
     PeerAddr(peer): PeerAddr,
     headers: HeaderMap,
-    Json(req): Json<JudgeRequest>,
+    JudgeBody(req): JudgeBody,
 ) -> (StatusCode, Json<ApiReply>) {
     if let Err(message) = shape::validate(&req) {
         return (StatusCode::BAD_REQUEST, Json(ApiReply::Error { message }));
@@ -760,6 +782,64 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("error"));
         // The invalid request did not consume the single slot in the window.
+        let (status, _) = post_judge(router, r#"{"question":"does lifelink stack?"}"#).await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    /// A body axum cannot read keeps axum's status but is a JSON `error`
+    /// reply, and like any invalid request spends none of the rate window.
+    #[tokio::test]
+    async fn unreadable_bodies_get_json_errors_with_axums_status() -> Res {
+        let (router, _) = test_app(1);
+        let too_large = format!(r#"{{"question":"{}"}}"#, "a".repeat(3 * 1024 * 1024));
+        for (content_type, body, status, says) in [
+            (
+                "application/json",
+                "{not json",
+                StatusCode::BAD_REQUEST,
+                "parse",
+            ),
+            (
+                "application/json",
+                "{}",
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "missing field `question`",
+            ),
+            (
+                "application/json",
+                r#"{"question":"q","session_id":"not-a-uuid"}"#,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "session_id",
+            ),
+            (
+                "text/plain",
+                r#"{"question":"q"}"#,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type",
+            ),
+            (
+                "application/json",
+                too_large.as_str(),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "length limit",
+            ),
+        ] {
+            let req = Request::post("/api/judge")
+                .header("content-type", content_type)
+                .body(Body::from(body.to_owned()))?;
+            let res = router.clone().oneshot(req).await?;
+            assert_eq!(res.status(), status, "{content_type} {body:.40}");
+            let bytes = res.into_body().collect().await?.to_bytes();
+            let j: serde_json::Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("error"), "{j}");
+            assert!(
+                j.get("message")
+                    .and_then(|m| m.as_str())
+                    .is_some_and(|m| m.contains(says)),
+                "{j}"
+            );
+        }
         let (status, _) = post_judge(router, r#"{"question":"does lifelink stack?"}"#).await?;
         assert_eq!(status, StatusCode::OK);
         Ok(())
