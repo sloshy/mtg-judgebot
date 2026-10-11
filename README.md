@@ -1,5 +1,9 @@
 # mtg-judgebot
 
+[![Build](https://github.com/sloshy/mtg-judgebot/actions/workflows/publish-image.yml/badge.svg?branch=main)](https://github.com/sloshy/mtg-judgebot/actions/workflows/publish-image.yml)
+[![Release](https://img.shields.io/github/v/release/sloshy/mtg-judgebot)](https://github.com/sloshy/mtg-judgebot/releases/latest)
+[![License: AGPL-3.0-or-later](https://img.shields.io/github/license/sloshy/mtg-judgebot)](LICENSE)
+
 <img src="assets/icon.png" alt="" width="96" align="right">
 
 A Discord bot and web app that answers Magic: The Gathering rules questions like a judge.
