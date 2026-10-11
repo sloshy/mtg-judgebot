@@ -128,7 +128,10 @@ lychee over the built site's internal links. A `lint` job runs `cargo deny check
 `judge.example.toml`'s hand-aligned comments), `typos` (`_typos.toml`), shellcheck,
 actionlint, hadolint (`.hadolint.yaml`), `check_icons` (the icon's copies are
 byte-identical and the right size) and `check_pg_major` (the `Dockerfile`'s `PG_MAJOR`
-equals the compose `db` image's major, so the backup's `pg_dump` can dump it). Every tool's config records why each
+equals the compose `db` image's major, so the backup's `pg_dump` can dump it) and
+`scripts/release-version.sh` (web/ and site/'s `package.json` versions equal the crates'
+one `[workspace.package]` version; `publish-image.yml` runs it with the release tag,
+which must match, and its `## [X.Y.Z]` changelog heading). Every tool's config records why each
 ignore is there. `publish-image.yml` calls it before it
 builds.
 

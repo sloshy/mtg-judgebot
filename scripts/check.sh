@@ -26,7 +26,7 @@
 #   site   Biome, astro check, the build, lychee over its internal links
 #   lint   cargo deny, cargo machete, taplo, typos, shellcheck, actionlint,
 #          hadolint, the icon's copies, pg_dump's major vs the db image's,
-#          docker compose config
+#          web/ and site/'s versions vs the crates', docker compose config
 # sqlx and test need Postgres (DATABASE_URL, else the one in .env), and take
 # turns with any other sqlx or test run on the same server (one_run_per_cluster).
 #
@@ -402,6 +402,7 @@ group_lint() {
   step "hadolint" hadolint Dockerfile
   step "icons" check_icons
   step "pg_dump major" check_pg_major
+  step "versions" scripts/release-version.sh
   # docker-compose.yml names .env as an env_file, and the tunnel and backup
   # profiles .env.deploy. The --at worktree has the examples there, as CI's
   # compose job does; a plain run uses yours.

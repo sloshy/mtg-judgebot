@@ -104,6 +104,19 @@ jobs:
             exit 1
           fi
 
+      # The binaries report the crate version (the MCP server, the ingest
+      # User-Agent): a release whose tag says otherwise, or whose changelog
+      # still files its notes under Unreleased, publishes nothing.
+      - uses: actions/checkout@v7
+        if: github.ref_type == 'tag'
+      - name: The version is the tag's
+        if: github.ref_type == 'tag'
+        run: |
+          if ! scripts/release-version.sh "$GITHUB_REF_NAME"; then
+            echo "::error::release $GITHUB_REF_NAME does not match the version in the tree (details above)"
+            exit 1
+          fi
+
       - uses: docker/login-action@v4
         if: github.ref_type == 'tag'
         with:
