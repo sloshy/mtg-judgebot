@@ -21,8 +21,10 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 - **Deploys without downtime.** `scripts/deploy.sh` starts the new `judgebot` container
   beside the running one, waits until Docker reports it healthy, then stops the old one.
-  The web app and the API stay up throughout. Discord is quiet for about 15 to 25
-  seconds while the gateway is handed over. A new container that is not healthy within
+  The web app and the API stay up throughout. Discord is quiet for the new container's
+  login, a few seconds: the old one records that it closed its gateway, so the new one
+  connects without the 15-second grace a takeover after a crash waits (table
+  `gateway_handover`). A new container that is not healthy within
   five minutes is removed and the old one keeps serving. `--build` builds from the
   checkout instead of pulling.
 

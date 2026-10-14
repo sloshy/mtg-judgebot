@@ -984,8 +984,14 @@ load does not need it (D16), and the per-user and per-address limits stay per pr
   and the last ledger write is bounded by five. A signal during startup, before the
   roles run, or a second signal exits at once.
 - **The gateway is handed over at once.** A holder that is shutting down releases the
-  lease as soon as its connection has closed, not when the process exits, so the new
-  container's grace (15 s) runs while the old one drains. A gateway slow to close keeps
+  lease as soon as its connection has closed, not when the process exits. A connection
+  closed within a second is recorded as a clean release (`gateway_handover`), and a
+  standby that takes the lease within 5 s of it connects without the grace (15 s), which
+  covers only a holder that may still be connected. Every holder clears the record as it
+  takes the lease, before it connects, so the record speaks of the last holder only. A
+  holder that never wrote it (an older release) connects no sooner than the grace after
+  taking the lease, longer than the 5 s window (a `const` relation), so a stale release
+  never skips the grace. A gateway slow to close keeps
   the lease until it has closed, so nothing else connects while it may be open. One
   still open at the drain's limit lets it go then, and the process is gone within the
   five-second ledger bound, inside the 15 s a standby waits (a `const` relation). A standby that is shutting down stops waiting.
@@ -1027,8 +1033,10 @@ The reasons:
 
 What follows:
 
-- **Discord is quiet for the grace plus a login** (about 15 to 25 s). An interaction in
-  that gap gets Discord's "did not respond". The web app and the API see no gap.
+- **Discord is quiet for a login** (a few seconds), or for the grace plus a login
+  (about 15 to 25 s) when the old container did not record a clean release. An
+  interaction in that gap gets Discord's "did not respond". Receiving interactions over
+  HTTP instead of the gateway would close it (#29). The web app and the API see no gap.
 - **Limits reset once per deploy.** The per-user `/judge` window and the per-address
   limit are in memory, so the new container starts them empty, as a restart does.
 - **Spend overlaps by one sync.** Both containers bill one period through the ledger,

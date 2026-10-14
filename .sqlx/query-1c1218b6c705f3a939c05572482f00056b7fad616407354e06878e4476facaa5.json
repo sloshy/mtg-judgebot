@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE gateway_handover SET released_at = clock_timestamp() WHERE one",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "1c1218b6c705f3a939c05572482f00056b7fad616407354e06878e4476facaa5"
+}

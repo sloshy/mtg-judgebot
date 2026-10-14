@@ -986,10 +986,13 @@ beside the running one:
    container drains. It closes its listener and its Discord gateway connection, releases
    the gateway lease, and finishes the answers in flight, for up to two minutes. Then
    it exits.
-3. The new container connects to Discord 15 seconds after the lease is released.
-   Questions asked on Discord during that grace and the login get Discord's "The
-   application did not respond". The web app and the API see no gap: the `proxy` service
-   and the tunnel reach whichever container is listening.
+3. The new container connects to Discord as soon as the lease is released. The old
+   one records that it closed its gateway, so the new one skips the 15-second grace
+   that a takeover after a crash waits. Questions asked on Discord during the new
+   container's login, a few seconds, get Discord's "The application did not respond".
+   An old container from a release before this record (the first deploy onto it)
+   leaves none, and the new one waits out the grace. The web app and the API see no
+   gap: the `proxy` service and the tunnel reach whichever container is listening.
 
 If the new container is not healthy within five minutes (`DEPLOY_WAIT_SECS`), or
 restarts, the script removes it, prints its last log lines and exits non-zero. The old
@@ -1080,6 +1083,7 @@ standing by: another instance holds the Discord gateway; this one connects when 
 
 - **Takeover.** When the holder exits or crashes, its database connection closes and a
   standby takes the lease, waits a grace period of 15 seconds and connects. A holder
+  that shut down cleanly skips the wait for its standby (Shutting down, below). A holder
   that vanishes without closing its connection (power loss, a network partition, a
   container network torn down) is noticed by the database's TCP keepalives, which every
   lease session turns on: its session ends within about 25 seconds, so the standby
@@ -1099,10 +1103,12 @@ standing by: another instance holds the Discord gateway; this one connects when 
   never answer side by side.
 - **Shutting down.** A holder sent SIGTERM (a deploy's `docker stop`, Ctrl-C) closes its
   gateway connection and releases the lease at once, then finishes its answers in
-  flight over Discord's REST API, which needs no gateway. A standby takes over 15
-  seconds after the release. A holder whose gateway is slow to close keeps the lease
-  until it has closed, or for at most the two minutes of the drain, so the two never
-  answer side by side. A standby sent SIGTERM stops waiting.
+  flight over Discord's REST API, which needs no gateway. A gateway that closed within
+  a second is recorded as a clean release (table `gateway_handover`), and a standby
+  that takes the lease within 5 seconds of it connects at once, without the grace. A
+  holder whose gateway is slow to close keeps the lease until it has closed, or for at
+  most the two minutes of the drain, so the two never answer side by side, and its
+  standby waits out the grace. A standby sent SIGTERM stops waiting.
 - **Repeated losses.** Every connection spends one of the 1000 logins a day Discord
   allows a token before it resets it. A lease lost again within 30 minutes of the
   last connection (a database restarting in a loop) makes the holder pause before

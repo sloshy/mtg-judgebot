@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH prev AS (SELECT released_at FROM gateway_handover WHERE one)\n               UPDATE gateway_handover SET released_at = NULL WHERE one\n               RETURNING (SELECT released_at BETWEEN clock_timestamp() - make_interval(secs => $1)\n                                                 AND clock_timestamp()\n                          FROM prev) AS \"clean\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "clean",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ba59e051a2487e5b9f1234c200bbfc4f415ab8ef532bfa1aa2f33f9be47cec90"
+}

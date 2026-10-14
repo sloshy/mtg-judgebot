@@ -1269,8 +1269,11 @@ pub async fn run(
     // One case the loop below cannot see: when a shard's shutdown reports a
     // stray id, serenity queues a restart, and `start` can return before the
     // queued start is processed. That costs at worst one IDENTIFY that
-    // dispatches nothing, inside the slack between the shutdown limit and
-    // the grace.
+    // dispatches nothing: the stray runner reads the queued shutdown before
+    // it dispatches an event. After a lost lease it falls inside the slack
+    // between the shutdown limit and the grace; after a clean release at
+    // shutdown the next holder may already be connected, and still nothing
+    // is answered twice.
     let mut connected = std::pin::pin!(client.start());
     tokio::select! {
         biased;

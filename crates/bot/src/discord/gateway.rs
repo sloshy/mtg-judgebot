@@ -14,6 +14,10 @@
 //!    database restarted, its session was ended) notices at its next check
 //!    and disconnects within [`Timing::worst_disconnect`], which the grace
 //!    exceeds (a compile-time relation), so the two never answer side by side.
+//!    Taking the lease records this process as the holder
+//!    ([`GatewayLease::take_over`]); the grace is skipped when the holder
+//!    before closed its gateway and let go within [`Timing::handover_window`]
+//!    ([`Handover::Clean`], below).
 //! 3. **Hold.** Connect, and check the lease every [`Timing::check`]. A check
 //!    that fails stops at once; one with no answer within
 //!    [`Timing::check_timeout`] counts as failed. Then ask the gateway to
@@ -25,7 +29,8 @@
 //!
 //! **Takeover.** A process that exits (a deploy, a crash) closes the lease's
 //! connection, and Postgres frees the lock with the session: a standby takes
-//! over after the grace period and its own gateway login. A holder that
+//! over after the grace period and its own gateway login, or after the login
+//! alone when the holder recorded a clean release (**Leaving**, below). A holder that
 //! vanished without closing its socket (power loss, a partition, a container
 //! network torn down) is noticed by the server's TCP keepalives, which every
 //! lease session sets ([`crate::lease::SESSION_SETTINGS`]): its session ends
@@ -45,6 +50,13 @@
 //! is offline until it resumes and waits out the grace. That delays a
 //! takeover without causing an overlap.
 //!
+//! The clean-release record assumes the database keeps what it acknowledged.
+//! After a failover to a replica that lost the last holder's clearing of the
+//! record (asynchronous replication, `synchronous_commit = off` and a
+//! crash), a process taking the lease within the window may skip the grace
+//! while that holder is still connected, until its next check fails. The
+//! single database `docker-compose.yml` runs cannot lose a commit this way.
+//!
 //! A holder cut off from the database fails its next check and disconnects
 //! within [`Timing::worst_disconnect`] (the wait for that check, its
 //! timeout and the shutdown), and the server frees its lock when the
@@ -54,8 +66,12 @@
 //! **Leaving.** A requested [`Shutdown`] (SIGTERM, a deploy) ends the hand-off
 //! wherever it is. Standing by or in the grace, it stops waiting. Holding, it
 //! asks the gateway to stop and releases the lease the moment it has closed,
-//! so a standby's grace starts while this process finishes its in-flight
-//! answers. A gateway slow to close keeps the lease until it has. One still
+//! while this process finishes its in-flight answers. A gateway closed
+//! within [`Timing::shutdown_limit`] is recorded as a clean release
+//! ([`GatewayLease::release_closed`]), and a standby that takes the lease
+//! then connects at once, so a deploy's Discord gap is the new login. A
+//! gateway slow to close keeps the lease until it has, and its standby waits
+//! out the grace. One still
 //! open at the drain's limit ends the role with an error and lets the lease
 //! go, and the process exits within [`FLUSH_LIMIT`] of that, less than the
 //! grace a standby waits before it connects (a compile-time relation).
@@ -76,7 +92,7 @@ use tokio::sync::watch;
 
 use crate::{
     clock::{Clock, Ticks as _, Tokio},
-    lease::GatewayLease,
+    lease::{GatewayLease, Handover},
     shutdown::{FLUSH_LIMIT, Shutdown},
 };
 
@@ -149,6 +165,16 @@ impl Timing {
         self.check.saturating_mul(3)
     }
 
+    /// How recent the last holder's clean release must be for a process
+    /// taking the lease to skip the grace ([`Handover::Clean`]): one
+    /// interval (5 s). A standby waiting on the lock takes it within
+    /// milliseconds of the release. It must be shorter than the grace
+    /// (a compile-time relation): see [`GatewayLease::take_over`].
+    #[must_use]
+    pub const fn handover_window(self) -> Duration {
+        self.check
+    }
+
     /// The pause before standing by again after the `losses`-th lease loss
     /// in a row (each within [`Self::healthy_hold`] of the connection
     /// before): none after the first, then six intervals (30 s), doubling
@@ -188,6 +214,11 @@ const _: () = assert!(!CHECK_INTERVAL.is_zero());
 // A gateway still open at the drain's limit loses its lease then; the process
 // is gone, with the gateway, before a standby that took it connects.
 const _: () = assert!(FLUSH_LIMIT.as_nanos() < Timing::DEFAULT.grace().as_nanos());
+
+// A clean release is fresh only while no holder that skipped recording can
+// have connected after it (`GatewayLease::take_over`).
+const _: () =
+    assert!(Timing::DEFAULT.handover_window().as_nanos() < Timing::DEFAULT.grace().as_nanos());
 
 // The no-overlap relation, for the timings the bot runs on.
 const _: () =
@@ -356,8 +387,13 @@ where
     if stop.send(true).is_err() {
         tracing::debug!("the gateway had already ended");
     }
-    let ended = if let Ok(ended) = clock.timeout(timing.shutdown_limit(), run.as_mut()).await {
-        ended
+    // Closed within the limit, the gateway is known to be gone, and the
+    // release is recorded as clean. A slow close (serenity's own shutdown
+    // timed out, and a shard it was starting may connect after it) is not.
+    let (ended, prompt) = if let Ok(ended) =
+        clock.timeout(timing.shutdown_limit(), run.as_mut()).await
+    {
+        (ended, true)
     } else {
         tracing::warn!(
             limit_secs = timing.shutdown_limit().as_secs_f32(),
@@ -365,7 +401,7 @@ where
              so that no other instance answers beside it"
         );
         tokio::select! {
-            ended = run.as_mut() => ended,
+            ended = run.as_mut() => (ended, false),
             () = shutdown.limit_passed() => {
                 drop(lease);
                 anyhow::bail!(
@@ -375,11 +411,19 @@ where
             }
         }
     };
+    let clean = prompt && ended.is_ok();
     if let Err(e) = ended {
         tracing::warn!(error = %format!("{e:#}"), "the Discord gateway ended with an error while closing");
     }
+    let release = async {
+        if clean {
+            lease.release_closed().await;
+        } else {
+            lease.release().await;
+        }
+    };
     if clock
-        .timeout(timing.check_timeout(), lease.release())
+        .timeout(timing.check_timeout(), release)
         .await
         .is_err()
     {
@@ -387,14 +431,22 @@ where
             "releasing the gateway lease got no answer; its connection is closed instead"
         );
     }
-    tracing::info!(
-        "closed the Discord gateway and released its lease: a standby connects after its grace period"
-    );
+    if clean {
+        tracing::info!(
+            "closed the Discord gateway and released its lease: a standby connects at once"
+        );
+    } else {
+        tracing::info!(
+            "closed the Discord gateway and released its lease: a standby connects after its grace period"
+        );
+    }
     Ok(())
 }
 
-/// The lease, held past the grace period: stand by, wait out the grace,
-/// check. A lease lost during the grace goes back to standing by.
+/// The lease, held past the grace period: stand by, record this process as
+/// the holder, wait out the grace unless the holder before closed its
+/// gateway just now ([`Handover::Clean`]), check. A lease lost during the
+/// grace goes back to standing by.
 async fn take(
     clock: &impl Clock,
     pool: &PgPool,
@@ -403,12 +455,37 @@ async fn take(
 ) -> GatewayLease {
     loop {
         let mut lease = GatewayLease::stand_by(pool, process).await;
-        tracing::info!(
-            lease = lease.application_name().unwrap_or("unlabelled"),
-            grace_secs = timing.grace().as_secs_f32(),
-            "took the Discord gateway lease; waiting out the grace period so an instance that lost it has disconnected"
-        );
-        clock.sleep(timing.grace()).await;
+        let handover = match clock
+            .timeout(
+                timing.check_timeout(),
+                lease.take_over(timing.handover_window()),
+            )
+            .await
+        {
+            Ok(Ok(handover)) => handover,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %format!("{e:#}"), "could not record this instance as the gateway holder");
+                Handover::Unknown
+            }
+            Err(_) => {
+                tracing::warn!("recording this instance as the gateway holder got no answer");
+                Handover::Unknown
+            }
+        };
+        match handover {
+            Handover::Clean => tracing::info!(
+                lease = lease.application_name().unwrap_or("unlabelled"),
+                "took the Discord gateway lease from an instance that closed its gateway just now; connecting at once"
+            ),
+            Handover::Unknown => {
+                tracing::info!(
+                    lease = lease.application_name().unwrap_or("unlabelled"),
+                    grace_secs = timing.grace().as_secs_f32(),
+                    "took the Discord gateway lease; waiting out the grace period so an instance that lost it has disconnected"
+                );
+                clock.sleep(timing.grace()).await;
+            }
+        }
         match check(clock, &mut lease, timing).await {
             Ok(()) => return lease,
             Err(e) => tracing::warn!(
@@ -826,14 +903,9 @@ mod tests {
         shutdown.request("test");
         assert_eq!(next(&mut rx).await?, (Event::Disconnected("a"), at));
         tokio::time::timeout(HANG, a).await???;
-        // The lease went with it, so b's grace runs from the shutdown.
-        clock.parked(&[at + T.grace()]).await?;
-        assert!(rx.try_recv().is_err(), "b waits out the grace");
-        clock.advance_to(at + T.grace());
-        assert_eq!(
-            next(&mut rx).await?,
-            (Event::Connected("b"), at + T.grace())
-        );
+        // The lease went with it, released as clean: b connects at once,
+        // without the grace.
+        assert_eq!(next(&mut rx).await?, (Event::Connected("b"), at));
         b.abort();
         Ok(())
     }
@@ -937,10 +1009,45 @@ mod tests {
         // It closes: the role ends cleanly and the lease is released at once.
         anyhow::ensure!(close.send(true).is_ok(), "the gateway is listening");
         tokio::time::timeout(HANG, held).await???;
-        let free = GatewayLease::try_acquire(&pool, "after")
+        let mut free = GatewayLease::try_acquire(&pool, "after")
             .await?
             .context("released when the gateway closed")?;
+        // A slow close is not a clean release: the next holder waits out
+        // the grace.
+        assert_eq!(
+            free.take_over(T.handover_window()).await?,
+            Handover::Unknown
+        );
         free.release().await;
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_gateway_that_closes_with_an_error_at_shutdown_is_no_clean_release(
+        pool: PgPool,
+    ) -> Result<()> {
+        let clock = Manual::new();
+        let shutdown = Shutdown::new(HANG);
+        let held = spawn_hold_until(&pool, &clock, "a", &shutdown, async |mut stop: Stop| {
+            stop.requested().await;
+            anyhow::bail!("the close frame was refused")
+        });
+        clock.parked(&[T.grace()]).await?;
+        clock.advance_to(T.grace());
+        clock.parked(&[T.grace() + T.check()]).await?;
+        shutdown.request("test");
+        // The role still ends cleanly, and the lease is free at once.
+        tokio::time::timeout(HANG, held).await???;
+        let mut next = GatewayLease::try_acquire(&pool, "after")
+            .await?
+            .context("released when the gateway closed")?;
+        // An error is not known to be closed: the next holder waits out the
+        // grace.
+        assert_eq!(
+            next.take_over(T.handover_window()).await?,
+            Handover::Unknown
+        );
+        next.release().await;
         Ok(())
     }
 

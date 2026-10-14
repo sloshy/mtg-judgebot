@@ -10,14 +10,15 @@
 # keep the previous release working, so the old container goes on answering
 # against the new schema while the new one becomes healthy. Then `docker stop`
 # sends the old one SIGTERM and it drains: it takes no new work, releases the
-# Discord gateway (the new container connects about 15 s later), and finishes
+# Discord gateway (the new container connects at once, or 15 s later when the
+# old one is from a release that does not record a clean release), and finishes
 # the answers in flight within two minutes before it exits. The `proxy`
 # service on 127.0.0.1:8787 and the tunnel reach whichever is listening.
 #
 # A new container that is not healthy within DEPLOY_WAIT_SECS (default 300) is
 # removed, its last log lines are printed, and the old one keeps serving; the
 # exit status is non-zero, and with JUDGE_ALERT_WEBHOOK set (.env) the failure
-# is posted there. With no judgebot running it is a plain `up -d`.
+# is posted there. With no judgebot running it is `up -d --remove-orphans`.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -66,7 +67,7 @@ case "${1:-}" in
       docker compose build "$service"
     ;;
   -h | --help)
-    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *) die "unknown argument '$1' (scripts/deploy.sh [--build])" ;;

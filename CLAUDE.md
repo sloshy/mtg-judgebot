@@ -212,7 +212,11 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
   installed first; a signal before the roles start, or a second one, exits at once) requests the process's one `Shutdown`, held by
   `Serving`. `hold` then stops standing by, or closes the gateway and releases the lease
   once it has closed (`leave`; one slow to close keeps the lease until it has, and
-  at the limit lets go: `FLUSH_LIMIT` < grace is a `const` assertion). `discord::Tracked` wraps poise's framework so each serenity-dispatched event
+  at the limit lets go: `FLUSH_LIMIT` < grace is a `const` assertion). A close within
+  `shutdown_limit` releases with `GatewayLease::release_closed`, which writes
+  `gateway_handover.released_at`; every holder's `take_over` clears it before connecting
+  and skips the grace (`Handover::Clean`) only for a release under
+  `Timing::handover_window` (5 s, `const` < grace) old. `discord::Tracked` wraps poise's framework so each serenity-dispatched event
   holds a `Work` guard, and `serve` returns after `Shutdown::drained`. `serve_on` is
   axum's graceful shutdown, bounded. All of it is within `DRAIN_LIMIT` (120 s) of the
   request. `main::run` waits for both roles on a requested stop (otherwise the first to

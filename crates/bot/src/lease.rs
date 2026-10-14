@@ -42,7 +42,10 @@
 //! it never goes back to the pool: a lease dropped without `release` (an early
 //! return, a panic, a cancelled future, a process that exits) drops the
 //! socket, and Postgres releases a session lock when its session ends. A
-//! crashed process therefore leaves nothing behind to clean up.
+//! crashed process therefore leaves nothing behind to clean up. The gateway
+//! lease's [`GatewayLease::release_closed`] also records the release as
+//! clean, for the next holder's [`GatewayLease::take_over`]; that record
+//! (table `gateway_handover`) is the only data a lease writes.
 //!
 //! **Session settings.** Every lease session, holding or waiting, gets
 //! [`SESSION_SETTINGS`]: TCP keepalives that end a vanished client's session
@@ -449,7 +452,77 @@ impl Lease<Refresh> {
     }
 }
 
+/// What a process that has just taken the gateway lease knows about the
+/// holder before it ([`GatewayLease::take_over`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handover {
+    /// It closed its gateway and let go within the window, so nothing is
+    /// connected: connect at once.
+    Clean,
+    /// Anything else: no record, a release older than the window, a holder
+    /// that lost the lease or never recorded (an older release). Wait out
+    /// the grace.
+    Unknown,
+}
+
 impl Lease<Gateway> {
+    /// Record, on the lease's session, that this process holds the gateway,
+    /// and say how the holder before it let go. Call it before connecting:
+    /// from here until [`Self::release_closed`], a process that takes the
+    /// lease after this one waits out the grace (table `gateway_handover`).
+    ///
+    /// The release counts as [`Handover::Clean`] only when it is younger
+    /// than `window` on the database's clock, and not in its future (a clock
+    /// stepped back). A holder that never records
+    /// (an older release, or a failed call here) connects no sooner than the
+    /// grace after it took the lease, so with `window` shorter than the
+    /// grace a release is never fresh while such a holder may be connected.
+    ///
+    /// # Errors
+    /// When the session cannot be asked; the caller then waits out the grace.
+    pub async fn take_over(&mut self, window: Duration) -> Result<Handover> {
+        let clean = sqlx::query_scalar!(
+            r#"WITH prev AS (SELECT released_at FROM gateway_handover WHERE one)
+               UPDATE gateway_handover SET released_at = NULL WHERE one
+               RETURNING (SELECT released_at BETWEEN clock_timestamp() - make_interval(secs => $1)
+                                                 AND clock_timestamp()
+                          FROM prev) AS "clean""#,
+            window.as_secs_f64(),
+        )
+        .fetch_optional(&mut self.conn)
+        .await
+        .context("recording the gateway holder")?;
+        Ok(match clean {
+            Some(Some(true)) => Handover::Clean,
+            _ => Handover::Unknown,
+        })
+    }
+
+    /// Release after this process's gateway has closed: record the release
+    /// on the lease's session, then [`Lease::release`], so a standby that
+    /// takes the lease at once connects without the grace. Only for a
+    /// gateway known to be closed. A failure to record is logged, and the
+    /// standby waits out the grace.
+    pub async fn release_closed(mut self) {
+        match quick(
+            sqlx::query!("UPDATE gateway_handover SET released_at = clock_timestamp() WHERE one")
+                .execute(&mut self.conn),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::warn!(
+                error = %e,
+                "recording the gateway's clean release failed; the next holder waits out the grace"
+            ),
+            Err(e) => tracing::warn!(
+                error = %format!("{e:#}"),
+                "recording the gateway's clean release got no answer; the next holder waits out the grace"
+            ),
+        }
+        self.release().await;
+    }
+
     /// The gateway lease, standing by for as long as another process holds
     /// it. Never fails: a standby whose connection drops (the database
     /// restarted, the network went) logs it and reconnects after a pause
@@ -982,6 +1055,33 @@ mod tests {
         taken.check().await?;
         assert!(try_gateway(&pool, "third").await?.is_none(), "taken over");
         taken.release().await;
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn only_a_fresh_clean_release_is_a_clean_handover(pool: PgPool) -> Result<()> {
+        let window = Duration::from_secs(5);
+        // The first holder finds no release recorded.
+        let mut a = try_gateway(&pool, "a").await?.context("a free lease")?;
+        assert_eq!(a.take_over(window).await?, Handover::Unknown);
+        a.release_closed().await;
+        // The next finds a's, and taking over makes the record its own.
+        let mut b = try_gateway(&pool, "b").await?.context("a free lease")?;
+        assert_eq!(b.take_over(window).await?, Handover::Clean);
+        // An end that is not a clean release (a lost lease, a slow close)
+        // records nothing, so the holder after b waits out the grace.
+        b.release().await;
+        let mut c = try_gateway(&pool, "c").await?.context("a free lease")?;
+        assert_eq!(c.take_over(window).await?, Handover::Unknown);
+        c.release_closed().await;
+        // A clean release older than the window is not fresh.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut d = try_gateway(&pool, "d").await?.context("a free lease")?;
+        assert_eq!(
+            d.take_over(Duration::from_millis(200)).await?,
+            Handover::Unknown
+        );
+        d.release().await;
         Ok(())
     }
 

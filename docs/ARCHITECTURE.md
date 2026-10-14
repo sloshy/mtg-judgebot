@@ -210,7 +210,9 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   (`judge_bot::discord::gateway`). The Discord role takes a `GatewayLease` before it
   connects, or stands by until the holder lets go, with no bound on the wait and
   reconnecting if its own connection drops; its HTTP roles serve meanwhile. Having taken
-  it, it waits `Timing::grace` (15 s), checks it still holds it, and connects. The holder
+  it, it waits `Timing::grace` (15 s), unless the holder before it recorded a clean
+  release at shutdown within 5 s (`gateway_handover`), checks it still holds it, and
+  connects. The holder
   checks every 5 s (4 s timeout). A failed or unanswered check closes the gateway
   (serenity's `ShardManager::shutdown_all`, asked again until a still-connecting shard
   registers) and, if it closed within 1 s, stands by again inside the role; otherwise the
@@ -232,7 +234,9 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
 - SIGTERM or Ctrl-C requests a graceful shutdown (`judge_bot::shutdown`, D29), one
   `Shutdown` per process held by `Serving`. The HTTP listener closes and answers the
   requests it accepted (axum's graceful shutdown). The Discord role closes its gateway
-  and releases the lease the moment the connection is closed; a standby stops waiting.
+  and releases the lease the moment the connection is closed, recorded as clean
+  (`gateway_handover`) when it closed within `Timing::shutdown_limit`, so the next holder
+  connects without the grace; a standby stops waiting.
   `discord::Tracked` wraps poise's framework so every event serenity dispatches (each
   on its own task) holds a `Work` guard while its handler runs, and the role returns
   once they are all dropped. Everything is bounded by `DRAIN_LIMIT` (120 s) from the
