@@ -51,6 +51,15 @@
 //! keepalives give up on the session, so the standby takes over about 25 s
 //! plus the grace later, never earlier.
 //!
+//! **Leaving.** A requested [`Shutdown`] (SIGTERM, a deploy) ends the hand-off
+//! wherever it is. Standing by or in the grace, it stops waiting. Holding, it
+//! asks the gateway to stop and releases the lease the moment it has closed,
+//! so a standby's grace starts while this process finishes its in-flight
+//! answers. A gateway slow to close keeps the lease until it has. One still
+//! open at the drain's limit ends the role with an error and lets the lease
+//! go, and the process exits within [`FLUSH_LIMIT`] of that, less than the
+//! grace a standby waits before it connects (a compile-time relation).
+//!
 //! **Discord's login budget.** Every connection sends an IDENTIFY, and
 //! Discord allows 1000 a day per token before it resets the token. A lease
 //! lost again soon after the last loss (a flapping database) therefore
@@ -68,6 +77,7 @@ use tokio::sync::watch;
 use crate::{
     clock::{Clock, Ticks as _, Tokio},
     lease::GatewayLease,
+    shutdown::{FLUSH_LIMIT, Shutdown},
 };
 
 /// How often the holder checks that it still holds the gateway lease.
@@ -175,6 +185,10 @@ impl Timing {
 // The interval the bot runs on is one tokio's `interval` accepts.
 const _: () = assert!(!CHECK_INTERVAL.is_zero());
 
+// A gateway still open at the drain's limit loses its lease then; the process
+// is gone, with the gateway, before a standby that took it connects.
+const _: () = assert!(FLUSH_LIMIT.as_nanos() < Timing::DEFAULT.grace().as_nanos());
+
 // The no-overlap relation, for the timings the bot runs on.
 const _: () =
     assert!(Timing::DEFAULT.worst_disconnect().as_nanos() < Timing::DEFAULT.grace().as_nanos());
@@ -185,8 +199,8 @@ const _: () =
 pub struct Stop(watch::Receiver<bool>);
 
 impl Stop {
-    /// Resolves when the holder has lost the lease, or when [`hold`] itself
-    /// is gone (the process is ending). Resolves again at once if awaited
+    /// Resolves when the holder has lost the lease or is leaving, or when
+    /// [`hold`] itself is gone (the process is ending). Resolves again at once if awaited
     /// after that, so a gateway can ask before each stage of connecting.
     pub async fn requested(&mut self) {
         // An error is a dropped sender: `hold` is gone, which is a stop too.
@@ -200,22 +214,24 @@ impl Stop {
 /// lease; see the module docs. `gateway` makes the connection (in the bot,
 /// [`super::run`]); its future returns when the connection ends, or when
 /// the [`Stop`] it is given resolves and the connection is closed. It is
-/// called once per time this process takes the lease.
+/// called once per time this process takes the lease. It returns `Ok` when
+/// `shutdown` is requested and the lease is let go.
 ///
 /// # Errors
-/// What a connection that ended by itself returns, or a lost lease whose
-/// gateway did not close within [`Timing::shutdown_limit`].
+/// What a connection that ended by itself returns, or a lost lease (or a
+/// shutdown) whose gateway did not close within [`Timing::shutdown_limit`].
 pub async fn hold<G, F>(
     pool: &PgPool,
     process: &'static str,
     timing: Timing,
+    shutdown: &Shutdown,
     gateway: G,
 ) -> Result<()>
 where
     G: FnMut(Stop) -> F,
     F: Future<Output = Result<()>>,
 {
-    hold_on(&Tokio, pool, process, timing, gateway).await
+    hold_on(&Tokio, pool, process, timing, shutdown, gateway).await
 }
 
 /// [`hold`], waiting on `clock`.
@@ -224,6 +240,7 @@ async fn hold_on<C, G, F>(
     pool: &PgPool,
     process: &'static str,
     timing: Timing,
+    shutdown: &Shutdown,
     mut gateway: G,
 ) -> Result<()>
 where
@@ -234,7 +251,15 @@ where
     // Lease losses in a row, each soon after the connection before it.
     let mut losses: u32 = 0;
     loop {
-        let mut lease = take(clock, pool, process, timing).await;
+        let taken = tokio::select! {
+            biased;
+            () = shutdown.requested() => None,
+            lease = take(clock, pool, process, timing) => Some(lease),
+        };
+        let Some(mut lease) = taken else {
+            tracing::info!("shutting down: no longer standing by for the Discord gateway");
+            return Ok(());
+        };
         let connected = clock.now();
         tracing::info!(
             lease = lease.application_name().unwrap_or("unlabelled"),
@@ -245,6 +270,9 @@ where
         // The gateway and the checks are polled side by side, so a slow check
         // never holds up the gateway's future.
         let lost = tokio::select! {
+            () = shutdown.requested() => {
+                return leave(clock, lease, timing, shutdown, &stop, run).await;
+            }
             ended = &mut run => {
                 // Bounded: a release on a dead link would hang, and dropping
                 // the connection frees the lock anyway.
@@ -284,7 +312,14 @@ where
                          standing by again, since every connection spends one of Discord's 1000 daily logins \
                          per token"
                     );
-                    clock.sleep(pause).await;
+                    tokio::select! {
+                        biased;
+                        () = shutdown.requested() => {
+                            tracing::info!("shutting down: no longer waiting to stand by for the Discord gateway");
+                            return Ok(());
+                        }
+                        () = clock.sleep(pause) => {}
+                    }
                 }
             }
             Err(_) => {
@@ -296,6 +331,66 @@ where
             }
         }
     }
+}
+
+/// Leave the gateway on a requested shutdown: stop it, then release the
+/// lease once it has closed. A gateway slow to close (serenity waits for
+/// Discord's reply to its close frame) is waited for, still polled so a
+/// shard that was connecting is asked to close again, and keeps the lease
+/// meanwhile. One still open at the drain's limit ends the role with an
+/// error: the lease goes then, and the process exits within
+/// [`FLUSH_LIMIT`](crate::shutdown::FLUSH_LIMIT), inside the grace a standby
+/// waits after taking it.
+async fn leave<F>(
+    clock: &impl Clock,
+    lease: GatewayLease,
+    timing: Timing,
+    shutdown: &Shutdown,
+    stop: &watch::Sender<bool>,
+    mut run: std::pin::Pin<&mut F>,
+) -> Result<()>
+where
+    F: Future<Output = Result<()>>,
+{
+    tracing::info!("shutting down: closing the Discord gateway connection");
+    if stop.send(true).is_err() {
+        tracing::debug!("the gateway had already ended");
+    }
+    let ended = if let Ok(ended) = clock.timeout(timing.shutdown_limit(), run.as_mut()).await {
+        ended
+    } else {
+        tracing::warn!(
+            limit_secs = timing.shutdown_limit().as_secs_f32(),
+            "the Discord gateway is slow to close; keeping its lease until it has, \
+             so that no other instance answers beside it"
+        );
+        tokio::select! {
+            ended = run.as_mut() => ended,
+            () = shutdown.limit_passed() => {
+                drop(lease);
+                anyhow::bail!(
+                    "shutting down, the Discord gateway was still open at the drain's limit ({} s)",
+                    shutdown.limit().as_secs()
+                )
+            }
+        }
+    };
+    if let Err(e) = ended {
+        tracing::warn!(error = %format!("{e:#}"), "the Discord gateway ended with an error while closing");
+    }
+    if clock
+        .timeout(timing.check_timeout(), lease.release())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            "releasing the gateway lease got no answer; its connection is closed instead"
+        );
+    }
+    tracing::info!(
+        "closed the Discord gateway and released its lease: a standby connects after its grace period"
+    );
+    Ok(())
 }
 
 /// The lease, held past the grace period: stand by, wait out the grace,
@@ -455,6 +550,11 @@ mod tests {
         Ok(())
     }
 
+    /// A shutdown nobody requests.
+    fn running() -> Shutdown {
+        Shutdown::new(HANG)
+    }
+
     /// Run the hand-off for `name` on `clock`, around `gateway`.
     fn spawn_hold<G, F>(
         pool: &PgPool,
@@ -466,8 +566,23 @@ mod tests {
         G: FnMut(Stop) -> F + Send + 'static,
         F: Future<Output = Result<()>> + Send,
     {
-        let (pool, clock) = (pool.clone(), clock.clone());
-        tokio::spawn(async move { hold_on(&clock, &pool, name, T, gateway).await })
+        spawn_hold_until(pool, clock, name, &running(), gateway)
+    }
+
+    /// [`spawn_hold`], leaving when `shutdown` is requested.
+    fn spawn_hold_until<G, F>(
+        pool: &PgPool,
+        clock: &Manual,
+        name: &'static str,
+        shutdown: &Shutdown,
+        gateway: G,
+    ) -> tokio::task::JoinHandle<Result<()>>
+    where
+        G: FnMut(Stop) -> F + Send + 'static,
+        F: Future<Output = Result<()>> + Send,
+    {
+        let (pool, clock, shutdown) = (pool.clone(), clock.clone(), shutdown.clone());
+        tokio::spawn(async move { hold_on(&clock, &pool, name, T, &shutdown, gateway).await })
     }
 
     fn spawn_holder(
@@ -476,9 +591,20 @@ mod tests {
         name: &'static str,
         events: &Events,
     ) -> (tokio::task::JoinHandle<Result<()>>, watch::Sender<bool>) {
+        spawn_holder_until(pool, clock, name, events, &running())
+    }
+
+    /// [`spawn_holder`], leaving when `shutdown` is requested.
+    fn spawn_holder_until(
+        pool: &PgPool,
+        clock: &Manual,
+        name: &'static str,
+        events: &Events,
+        shutdown: &Shutdown,
+    ) -> (tokio::task::JoinHandle<Result<()>>, watch::Sender<bool>) {
         let (end, ended) = watch::channel(false);
         let (c, events) = (clock.clone(), events.clone());
-        let task = spawn_hold(pool, clock, name, move |stop| {
+        let task = spawn_hold_until(pool, clock, name, shutdown, move |stop| {
             fake(name, c.clone(), events.clone(), ended.clone(), stop)
         });
         (task, end)
@@ -516,8 +642,20 @@ mod tests {
         tx: &Events,
         rx: &mut mpsc::UnboundedReceiver<(Event, Duration)>,
     ) -> Result<(tokio::task::JoinHandle<Result<()>>, watch::Sender<bool>)> {
+        connected_until(pool, clock, name, tx, rx, &running()).await
+    }
+
+    /// [`connected`], leaving when `shutdown` is requested.
+    async fn connected_until(
+        pool: &PgPool,
+        clock: &Manual,
+        name: &'static str,
+        tx: &Events,
+        rx: &mut mpsc::UnboundedReceiver<(Event, Duration)>,
+        shutdown: &Shutdown,
+    ) -> Result<(tokio::task::JoinHandle<Result<()>>, watch::Sender<bool>)> {
         let at = clock.elapsed() + T.grace();
-        let holder = spawn_holder(pool, clock, name, tx);
+        let holder = spawn_holder_until(pool, clock, name, tx, shutdown);
         clock.parked(&[at]).await?;
         clock.advance_to(at);
         assert_eq!(next(rx).await?, (Event::Connected(name), at));
@@ -668,6 +806,140 @@ mod tests {
         let free = GatewayLease::try_acquire(&pool, "after")
             .await?
             .context("released when the gateway ended")?;
+        free.release().await;
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_holder_shutting_down_closes_the_gateway_and_hands_the_lease_over(
+        pool: PgPool,
+    ) -> Result<()> {
+        let clock = Manual::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let shutdown = Shutdown::new(HANG);
+        let (a, _end_a) = connected_until(&pool, &clock, "a", &tx, &mut rx, &shutdown).await?;
+        let (b, _end_b) = spawn_holder(&pool, &clock, "b", &tx);
+        waiting(&pool, "judgebot gateway (b) waiting").await?;
+        // a closes its gateway at once and its role ends cleanly, with no
+        // check needed to notice.
+        let at = clock.elapsed();
+        shutdown.request("test");
+        assert_eq!(next(&mut rx).await?, (Event::Disconnected("a"), at));
+        tokio::time::timeout(HANG, a).await???;
+        // The lease went with it, so b's grace runs from the shutdown.
+        clock.parked(&[at + T.grace()]).await?;
+        assert!(rx.try_recv().is_err(), "b waits out the grace");
+        clock.advance_to(at + T.grace());
+        assert_eq!(
+            next(&mut rx).await?,
+            (Event::Connected("b"), at + T.grace())
+        );
+        b.abort();
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_standby_shutting_down_stops_waiting(pool: PgPool) -> Result<()> {
+        let clock = Manual::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (a, _end_a) = connected(&pool, &clock, "a", &tx, &mut rx).await?;
+        let shutdown = Shutdown::new(HANG);
+        let (b, _end_b) = spawn_holder_until(&pool, &clock, "b", &tx, &shutdown);
+        waiting(&pool, "judgebot gateway (b) waiting").await?;
+        shutdown.request("test");
+        tokio::time::timeout(HANG, b).await???;
+        assert!(rx.try_recv().is_err(), "b never connected");
+        assert!(!a.is_finished(), "a keeps the gateway");
+        a.abort();
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_gateway_that_does_not_close_at_shutdown_keeps_the_lease_until_the_limit(
+        pool: PgPool,
+    ) -> Result<()> {
+        let clock = Manual::new();
+        // The drain's limit runs on tokio's clock, not the test's: long
+        // enough for the steps below on a loaded machine.
+        let limit = Duration::from_secs(2);
+        let shutdown = Shutdown::new(limit);
+        let held = spawn_hold_until(
+            &pool,
+            &clock,
+            "a",
+            &shutdown,
+            async |_stop: Stop| -> Result<()> { std::future::pending().await },
+        );
+        clock.parked(&[T.grace()]).await?;
+        clock.advance_to(T.grace());
+        clock.parked(&[T.grace() + T.check()]).await?;
+        let asked = tokio::time::Instant::now();
+        shutdown.request("test");
+        // The shutdown limit passes without the gateway closing.
+        let closing = T.grace() + T.shutdown_limit();
+        clock.parked(&[closing]).await?;
+        clock.advance_to(closing);
+        // The lease stays held while the process drains.
+        tokio::time::sleep(limit / 4).await;
+        assert!(!held.is_finished());
+        let other = GatewayLease::try_acquire(&pool, "other").await?;
+        assert!(
+            other.is_none(),
+            "no one else can connect while it may be open"
+        );
+        let err = tokio::time::timeout(HANG, held)
+            .await??
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(err.contains("still open at the drain's limit"), "{err}");
+        assert!(asked.elapsed() >= limit, "held until the drain's limit");
+        // The lease went with the role, before the process exits.
+        let free = tokio::time::timeout(HANG, async {
+            loop {
+                if let Some(l) = GatewayLease::try_acquire(&pool, "after").await? {
+                    return anyhow::Ok(l);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await??;
+        free.release().await;
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_gateway_slow_to_close_at_shutdown_keeps_the_lease_until_it_has(
+        pool: PgPool,
+    ) -> Result<()> {
+        let clock = Manual::new();
+        let shutdown = Shutdown::new(HANG);
+        let (close, closed) = watch::channel(false);
+        let held = spawn_hold_until(&pool, &clock, "a", &shutdown, move |mut stop: Stop| {
+            let mut closed = closed.clone();
+            async move {
+                stop.requested().await;
+                closed.wait_for(|c| *c).await?;
+                anyhow::Ok(())
+            }
+        });
+        clock.parked(&[T.grace()]).await?;
+        clock.advance_to(T.grace());
+        clock.parked(&[T.grace() + T.check()]).await?;
+        shutdown.request("test");
+        let closing = T.grace() + T.shutdown_limit();
+        clock.parked(&[closing]).await?;
+        clock.advance_to(closing);
+        // Past the shutdown limit it is still waited for, holding the lease.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!held.is_finished());
+        assert!(GatewayLease::try_acquire(&pool, "other").await?.is_none());
+        // It closes: the role ends cleanly and the lease is released at once.
+        anyhow::ensure!(close.send(true).is_ok(), "the gateway is listening");
+        tokio::time::timeout(HANG, held).await???;
+        let free = GatewayLease::try_acquire(&pool, "after")
+            .await?
+            .context("released when the gateway closed")?;
         free.release().await;
         Ok(())
     }

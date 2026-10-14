@@ -63,7 +63,7 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `API_ADDR` | `0.0.0.0:8787` | Listen address of the network roles (`--api`, `--web`, `--mcp`), which also serves `GET /api/health` and `GET /api/about` whichever of them is on. Keep `0.0.0.0` in Docker so `cloudflared` can reach it. Access is restricted by the published port (loopback only). |
+| `API_ADDR` | `0.0.0.0:8787` | Listen address of the network roles (`--api`, `--web`, `--mcp`), which also serves `GET /api/health` and `GET /api/about` whichever of them is on. Keep `0.0.0.0` in Docker so `cloudflared` and the `proxy` service can reach it. The container publishes no port; the `proxy` service publishes `127.0.0.1:8787`, loopback only. |
 | `WEB_DIST` | `web/dist` | The built web app, read only under `--web`. The image sets `/srv/web`. A `--web` launch with no `index.html` there is refused at startup. |
 | `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS` | `4`, `300` | Questions per IP per window, checked before the concurrency semaphore and the spend cap. |
 | `API_CLIENT_IP` | `peer` | `peer` (socket address) or `cloudflare` (`CF-Connecting-IP`). Never `X-Forwarded-For`. See [Security](../../reference/security/). |

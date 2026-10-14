@@ -38,6 +38,8 @@ sqlx = { version = "0.9", default-features = false, features = [
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# `io-util`: the shutdown test speaks HTTP over a raw socket.
+tokio = { workspace = true, features = ["io-util"] }
 
 [lints]
 workspace = true

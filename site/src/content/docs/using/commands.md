@@ -123,13 +123,14 @@ JSON goes to stdout and logs to stderr.
 
 | Entry point | What it does |
 | --- | --- |
-| `docker compose up -d` | `db` and `judgebot`, plus `cloudflared` with `tunnel` in `COMPOSE_PROFILES` and `backup` with `backup`. |
+| `docker compose up -d` | `db`, `judgebot` and `proxy` (which publishes `127.0.0.1:8787`), plus `cloudflared` with `tunnel` in `COMPOSE_PROFILES` and `backup` with `backup`. |
 | `docker compose up -d --build judgebot` | Rebuild and redeploy after code changes. |
-| `docker compose pull && docker compose up -d --remove-orphans` | Deploy host: pull the CI-built image, never build. `--remove-orphans` removes the `bot` and `api` containers of a compose file from before `judgebot`, which would otherwise keep running. |
+| `scripts/deploy.sh [--build]` | Deploy without downtime: pull the image (or build it from the checkout), start a new `judgebot` container beside the running one, wait until it is healthy, then stop the old one, which finishes its answers first. A new container that is not healthy is removed and the old one keeps serving. |
+| `docker compose pull && docker compose up -d --remove-orphans` | Deploy by stopping the old container first: the upgrade to one `judgebot` service, and a release whose migration cannot run beside the previous one. `--remove-orphans` removes the `bot` and `api` containers of a compose file from before `judgebot`, which would otherwise keep running. |
 | `docker compose logs judgebot` | The process's log: the roles it runs, then each role's lines. |
 | `docker compose run --rm --entrypoint judge-cli judgebot <command>` | `judge-cli` from the image. |
 | `scripts/refresh-data.sh` | A refresh now, or from your own cron with `JUDGE_REFRESH_HOURS=0`: `docker compose run --rm refresh`. Arguments pass through to `judgebot ingest`. A failed run posts to `JUDGE_ALERT_WEBHOOK` when that is set. |
 | `docker compose run --rm backup run\|list` | The `backup` service's commands by hand: a backup now, or the objects in the bucket. `docker compose logs backup` shows the scheduled ones. |
 | `docker compose run --rm --no-deps -T backup fetch <name> > <name>` | Download one backup for the restore drill. `-T` keeps the bytes off a terminal. |
 | `scripts/backup-db.sh [list\|fetch]` | The same backup from a host cron, without the `backup` profile: `pg_dump` to Cloudflare R2. `list` and `fetch` serve the restore drill. A failed backup posts to `JUDGE_ALERT_WEBHOOK` (from `.env.deploy`, else `.env`). |
-| `scripts/alert.sh` | Sourced by `scripts/refresh-data.sh` and `scripts/backup-db.sh`: posts one line to the webhook, passing the URL on stdin so it never shows in `ps`. |
+| `scripts/alert.sh` | Sourced by `scripts/refresh-data.sh`, `scripts/backup-db.sh` and `scripts/deploy.sh`: posts one line to the webhook, passing the URL on stdin so it never shows in `ps`. |

@@ -22,6 +22,7 @@ pub mod jobs;
 pub mod lease;
 pub mod serving;
 pub mod session;
+pub mod shutdown;
 pub mod synth;
 
 use std::sync::Arc;

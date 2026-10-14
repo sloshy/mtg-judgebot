@@ -13,6 +13,12 @@
 //! the first to stop ends the process, non-zero, so the restart policy brings
 //! the whole of it back.
 //!
+//! SIGTERM (`docker stop`, a deploy) or Ctrl-C requests a graceful shutdown
+//! ([`judge_bot::shutdown`]): the roles take no new work, the Discord role
+//! releases the gateway lease, the answers in flight are finished within
+//! [`DRAIN_LIMIT`], the spend ledger is written, and the process exits 0. A
+//! signal before the roles start, or a second one, exits at once.
+//!
 //! Environment (a `.env` in the working directory is loaded first; the
 //! process environment wins): `JUDGE_ROLES` when the command line names no
 //! role (a set `API_INTERFACES`, retired, refuses the launch); `DATABASE_URL`;
@@ -26,8 +32,17 @@ mod backup;
 mod cli;
 mod ingest;
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use anyhow::{Context as _, Result};
-use judge_bot::{config::Config as JudgeConfig, serving::Serving};
+use judge_bot::{
+    config::Config as JudgeConfig,
+    serving::Serving,
+    shutdown::{DRAIN_LIMIT, Shutdown},
+};
 
 use cli::Invocation;
 use judgebot::roles::{self, Adapters, Plan, ROLES_ENV, Roles, Serve};
@@ -75,7 +90,8 @@ async fn main() -> Result<()> {
             )?;
             let (roles, origin) = cli::resolve(roles, judge_roles.as_deref())?;
             tracing::info!(roles = %roles, off = %roles.off(), from = %origin, "judgebot roles");
-            serve(&roles).await
+            // Boxed: the roles' futures together are too large for the stack frame.
+            Box::pin(serve(&roles)).await
         }
     }
 }
@@ -99,6 +115,12 @@ const PROCESS: &str = "judgebot";
 
 async fn serve(roles: &Roles) -> Result<()> {
     let process = PROCESS;
+    // The signals first: as PID 1 in a container, a process without a
+    // handler ignores SIGTERM, so a stop during a slow startup (a long
+    // migration, an unreachable database) would wait for SIGKILL.
+    let shutdown = Shutdown::new(DRAIN_LIMIT);
+    let started = Arc::new(AtomicBool::new(false));
+    listen(&shutdown, &started)?;
     // The models (judge.toml, or the zero-config Anthropic setup; one spend
     // cap for every role) and the operator contacts the roles check.
     let judge = JudgeConfig::load()?;
@@ -126,7 +148,7 @@ async fn serve(roles: &Roles) -> Result<()> {
     // spend before any of them can take a question.
     let serving = match serve {
         Some(Serve { adapters, models }) => Some((
-            Serving::start(pool.clone(), &judge, models, process).await?,
+            Serving::start(pool.clone(), &judge, models, shutdown.clone(), process).await?,
             adapters,
         )),
         None => None,
@@ -134,6 +156,7 @@ async fn serve(roles: &Roles) -> Result<()> {
     // The scheduled data refresh, on a thread and a pool of its own
     // (JUDGE_REFRESH_HOURS; 0 leaves it to cron). Its embedding step bills to
     // the process's meter, the one the serving roles' models bill to.
+    let mut jobs_ledger = None;
     let scheduler = if let Some(jobs) = jobs {
         if serving.is_none() {
             // Alone, the jobs still spend (the embed step), so the ledger runs
@@ -143,10 +166,12 @@ async fn serve(roles: &Roles) -> Result<()> {
             // counts chat refusals, which a process that answers nothing
             // never has. The spend warnings apply as anywhere.
             let budget = judge.budget().clone();
-            // It syncs on its own task for the life of the process.
-            let _ledger =
+            // It syncs on its own task for the life of the process, and is
+            // written once more at a requested shutdown.
+            jobs_ledger = Some(
                 judge_bot::budget::start(pool.clone(), judge.meter().clone(), budget, process)
-                    .await;
+                    .await,
+            );
         }
         judge_bot::jobs::start(&pool, jobs, judge.meter().clone(), process).await
     } else {
@@ -155,18 +180,36 @@ async fn serve(roles: &Roles) -> Result<()> {
         );
         None
     };
+    // From here on a signal drains the roles instead of ending the process.
+    started.store(true, Ordering::Release);
     match serving {
         // Beside serving roles a dead scheduler thread is logged at ERROR by
         // the thread itself and the process goes on answering: questions
         // are worth more than a refresh, which `judgebot ingest refresh`
         // or the next restart provides. The handle is dropped.
-        Some((serving, adapters)) => run(&serving, adapters).await,
+        // A refresh in progress at a shutdown ends with the process; its
+        // run record is left open, as after a crash.
+        Some((serving, adapters)) => {
+            let ran = run(&serving, adapters).await;
+            if shutdown.is_requested() {
+                serving.flush().await;
+            }
+            ran
+        }
         // The jobs are the whole process: when their thread ends, so does
         // the process, non-zero, so the restart policy brings them back.
         // `plan` refused a jobs-only launch with the schedule off.
         None => match scheduler {
             Some(scheduler) => {
-                let ended = scheduler.ended().await;
+                let ended = tokio::select! {
+                    ended = scheduler.ended() => ended,
+                    () = shutdown.requested() => {
+                        if let Some(ledger) = &jobs_ledger {
+                            judge_bot::serving::flush(ledger).await;
+                        }
+                        return Ok(());
+                    }
+                };
                 anyhow::bail!(
                     "the scheduler thread {ended}, and it is this process's only role; \
                      exiting so the process restarts"
@@ -175,6 +218,41 @@ async fn serve(roles: &Roles) -> Result<()> {
             None => anyhow::bail!("no role to run: --jobs alone with the schedule off"),
         },
     }
+}
+
+/// Request `shutdown` on the first SIGTERM or SIGINT, and exit at once on
+/// the second. Before the roles have `started` there is nothing to drain,
+/// so the first exits at once too: a migration in progress is rolled back
+/// with its connection.
+fn listen(shutdown: &Shutdown, started: &Arc<AtomicBool>) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = signal(SignalKind::terminate()).context("listen for SIGTERM")?;
+    let mut int = signal(SignalKind::interrupt()).context("listen for SIGINT")?;
+    let (shutdown, started) = (shutdown.clone(), Arc::clone(started));
+    tokio::spawn(async move {
+        let mut first = true;
+        loop {
+            let name = tokio::select! {
+                _ = term.recv() => "SIGTERM",
+                _ = int.recv() => "SIGINT",
+            };
+            if !started.load(Ordering::Acquire) {
+                tracing::info!(signal = name, "a signal during startup: exiting");
+                std::process::exit(0);
+            }
+            if first {
+                first = false;
+                shutdown.request(name);
+            } else {
+                tracing::warn!(
+                    signal = name,
+                    "a second signal: exiting without waiting for the drain"
+                );
+                std::process::exit(1);
+            }
+        }
+    });
+    Ok(())
 }
 
 /// The contacts the roles will name, and the network roles' warnings.
@@ -199,16 +277,34 @@ fn log_plan(plan: &Plan) {
 /// Run the serving roles. The HTTP listener is bound first, so a taken
 /// `API_ADDR` fails before the Discord gateway is contacted. With both, the
 /// first to stop ends the process: a bot whose gateway is gone must not hide
-/// behind a page that still answers.
+/// behind a page that still answers. A stop the process asked for is the
+/// exception: each role is draining, so both are waited for.
 async fn run(serving: &Serving, adapters: Adapters) -> Result<()> {
+    let shutdown = serving.shutdown();
     match adapters {
         Adapters::Discord(d) => judge_bot::discord::serve(serving, d.cfg, d.operator).await,
         Adapters::Network(n) => n.bind(serving).await?.serve().await,
         Adapters::Both(d, n) => {
             let listening = n.bind(serving).await?;
+            let mut discord = std::pin::pin!(judge_bot::discord::serve(serving, d.cfg, d.operator));
+            let mut http = std::pin::pin!(listening.serve());
             tokio::select! {
-                r = judge_bot::discord::serve(serving, d.cfg, d.operator) => stopped("the Discord role", r),
-                r = listening.serve() => stopped("the HTTP roles", r),
+                r = &mut discord => {
+                    if !shutdown.is_requested() {
+                        return stopped("the Discord role", r);
+                    }
+                    let other = http.await;
+                    r.context("the Discord role failed while shutting down")?;
+                    other.context("the HTTP roles failed while shutting down")
+                }
+                r = &mut http => {
+                    if !shutdown.is_requested() {
+                        return stopped("the HTTP roles", r);
+                    }
+                    let other = discord.await;
+                    r.context("the HTTP roles failed while shutting down")?;
+                    other.context("the Discord role failed while shutting down")
+                }
             }
         }
     }

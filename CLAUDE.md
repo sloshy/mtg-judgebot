@@ -64,7 +64,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D28),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D29),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -208,6 +208,16 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
   day per token. `Timing::every` returns `None` for a zero interval. A holder in a paused VM that loses its session can overlap until its
   next check. The old `bot` image takes no lease, hence `--remove-orphans` on the
   upgrade. Tests inject the gateway as a closure; never open a real gateway in one.
+- **Graceful shutdown** (`judge_bot::shutdown`, D29). SIGTERM or Ctrl-C (`main::listen`,
+  installed first; a signal before the roles start, or a second one, exits at once) requests the process's one `Shutdown`, held by
+  `Serving`. `hold` then stops standing by, or closes the gateway and releases the lease
+  once it has closed (`leave`; one slow to close keeps the lease until it has, and
+  at the limit lets go: `FLUSH_LIMIT` < grace is a `const` assertion). `discord::Tracked` wraps poise's framework so each serenity-dispatched event
+  holds a `Work` guard, and `serve` returns after `Shutdown::drained`. `serve_on` is
+  axum's graceful shutdown, bounded. All of it is within `DRAIN_LIMIT` (120 s) of the
+  request. `main::run` waits for both roles on a requested stop (otherwise the first to
+  stop still ends the process), then `Serving::flush` writes the ledger, exit 0.
+  Compose's `stop_grace_period` is `DRAIN_LIMIT + EXIT_MARGIN` (a test).
 
 **The source offer** (`judge_core::source`, AGPL §13). Every remote interface names the
 repository the instance's source is in, the commit it was built from and the
@@ -293,13 +303,18 @@ containers always reach it at `db:5432`.
 
 ```sh
 docker compose up -d                 # db (pgvector/pg16) + judgebot (JUDGE_ROLES, default
-                                     # --discord --api --web --jobs); both restart with Docker
+                                     # --discord --api --web --jobs) + proxy (127.0.0.1:8787);
+                                     # all restart with Docker
 docker compose up -d --build judgebot  # redeploy after code changes
                                      # COMPOSE_PROFILES=tunnel also starts cloudflared, `backup` the
                                      # backup service (docs/DEPLOYMENT.md)
-docker compose pull && docker compose up -d --remove-orphans  # deploy host: pulls the CI-built
-                                     # GHCR image, never builds; --remove-orphans drops the
-                                     # pre-judgebot `bot`/`api` containers (D25)
+scripts/deploy.sh [--build]          # blue-green deploy (D29): pull (or build), start a second
+                                     # judgebot beside the running one, wait for healthy, stop
+                                     # the old one (it drains); an unhealthy new one is removed
+docker compose pull && docker compose up -d --remove-orphans  # stop-then-start deploy: pulls the
+                                     # CI-built GHCR image, never builds; --remove-orphans drops the
+                                     # pre-judgebot `bot`/`api` containers (D25); for a migration
+                                     # that cannot run beside the previous release
 docker compose run --rm backup run  # one backup now (judgebot backup; the service's command by hand)
 docker compose run --rm --no-deps backup list          # --no-deps: works with db down
 docker compose run --rm --no-deps -T backup fetch <name> > <name>   # -T: bytes to stdout, no tty
@@ -802,7 +817,10 @@ only `judgebot-bot` running `up -d` exits 0 and leaves two bots on one token. Th
 is `docker rm -f judgebot-bot judgebot-api`.
 
 Deployment is self-hosted behind a Cloudflare Tunnel. `docs/DEPLOYMENT.md` is the
-runbook. `db` and `judgebot` publish on `127.0.0.1` only. Public traffic reaches
+runbook. `db` and `proxy` publish on `127.0.0.1` only: `proxy` (Caddy) holds
+`127.0.0.1:8787` and forwards to `judgebot:8787`, because `judgebot` has no
+`container_name` and no port so a deploy can run two (D29). A release's migrations keep
+the previous release working (expand, contract later; `CONTRIBUTING.md`). Public traffic reaches
 `judgebot:8787` (network alias `api`, the old service name a tunnel may still point at)
 over the compose network from the `cloudflared` service, which the `tunnel` compose
 profile starts (`COMPOSE_PROFILES=tunnel` in `.env`). Deploy credentials live in

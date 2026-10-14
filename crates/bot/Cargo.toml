@@ -33,6 +33,9 @@ serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "process", "fs", "io-util", "io-std"] }
+# `shutdown`: the drain's request and its count of in-flight work. Already in
+# the graph (rmcp, sqlx).
+tokio-util = { version = "0.7", features = ["rt"] }
 tracing.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -55,6 +58,8 @@ poise = "0.7"
 serenity = { version = "0.12", default-features = false, features = [
   "builder",
   "client",
+  # `discord::Tracked` wraps poise's `Framework` to count events in flight.
+  "framework",
   "gateway",
   "rustls_backend",
   "model",
@@ -86,6 +91,8 @@ percent-encoding = "2"
 
 [dev-dependencies]
 wiremock.workspace = true
+# `test-util`: the shutdown tests run on paused time.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

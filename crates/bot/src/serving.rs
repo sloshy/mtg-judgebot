@@ -1,6 +1,6 @@
 //! The composition every serving role of a process builds on: the models
-//! behind the one spend meter, the vector space check, the call store and the
-//! spend ledger. `judgebot` builds one [`Serving`] whatever roles it opens, so
+//! behind the one spend meter, the vector space check, the call store, the
+//! spend ledger and the process's [`Shutdown`]. `judgebot` builds one [`Serving`] whatever roles it opens, so
 //! the Discord bot and the HTTP interfaces of one process share a meter, a
 //! `Vectors` and a budget period, and each role adds only its own adapter
 //! ([`crate::discord::serve`], `judge_api::run`).
@@ -15,6 +15,7 @@ use crate::{
     Models, budget, build_deps_with,
     config::Config,
     db::{PgCallStore, Vectors},
+    shutdown::{FLUSH_LIMIT, Shutdown},
 };
 
 /// The process's shared composition. Made only by [`Serving::start`], which
@@ -26,6 +27,8 @@ pub struct Serving {
     models: Models,
     vectors: Option<Arc<Vectors>>,
     store: Arc<dyn CallStore>,
+    ledger: budget::Syncing,
+    shutdown: Shutdown,
     process: &'static str,
 }
 
@@ -33,7 +36,8 @@ impl Serving {
     /// Over `models` (built from `judge` before anything connected, one
     /// meter): probe a cloud endpoint's credentials, run the vector space
     /// check once, open the call store and start the spend ledger for
-    /// `process` (its name in alerts and the log).
+    /// `process` (its name in alerts and the log). Every role winds down on
+    /// `shutdown`.
     ///
     /// # Errors
     /// A cloud endpoint whose credential chain is empty, or an embedder that
@@ -42,6 +46,7 @@ impl Serving {
         pool: PgPool,
         judge: &Config,
         models: Models,
+        shutdown: Shutdown,
         process: &'static str,
     ) -> Result<Self> {
         // A cloud endpoint with no credentials fails here, not on the first question.
@@ -67,9 +72,9 @@ impl Serving {
         let store: Arc<dyn CallStore> = Arc::new(store);
         // The period's spend so far is loaded before the first question can
         // arrive, on any role: they all bill to this one meter. The ledger
-        // syncs on its own task for the life of the process; the handle is
-        // for a process that must flush before it exits, which this is not.
-        let _ledger = budget::start(
+        // syncs on its own task for the life of the process; the handle
+        // writes the last of it at a requested shutdown ([`Self::flush`]).
+        let ledger = budget::start(
             pool.clone(),
             models.meter().clone(),
             judge.budget().clone(),
@@ -83,8 +88,23 @@ impl Serving {
             models,
             vectors,
             store,
+            ledger,
+            shutdown,
             process,
         })
+    }
+
+    /// The process's shutdown, which every role winds down on.
+    #[must_use]
+    pub fn shutdown(&self) -> &Shutdown {
+        &self.shutdown
+    }
+
+    /// Write the spend since the ledger's last sync, before a requested
+    /// shutdown exits: the answers drained last were billed after it.
+    /// Bounded by [`FLUSH_LIMIT`].
+    pub async fn flush(&self) {
+        flush(&self.ledger).await;
     }
 
     /// The process's name, for alerts, the log and its leases.
@@ -133,5 +153,19 @@ impl Serving {
             self.vectors.clone(),
             &self.judge.deps_config(),
         )
+    }
+}
+
+/// `ledger`'s last write, given up after [`FLUSH_LIMIT`] (logged): the spend
+/// was capped all the same, only its record is short.
+pub async fn flush(ledger: &budget::Syncing) {
+    if tokio::time::timeout(FLUSH_LIMIT, ledger.flush())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            limit_secs = FLUSH_LIMIT.as_secs(),
+            "spend ledger: the last write got no answer; this run's last spend is missing from `judge-cli stats`"
+        );
     }
 }

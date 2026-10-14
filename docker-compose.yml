@@ -55,10 +55,18 @@ services:
     # also needs the docker-compose.yml of its release); the image is amd64
     # and arm64; `build: .` still works locally.
     image: ${JUDGE_IMAGE:-ghcr.io/sloshy/mtg-judgebot}:${JUDGE_IMAGE_TAG:-latest}
-    container_name: judgebot
+    # No container_name and no published port: `scripts/deploy.sh` starts a
+    # second container of this service beside the running one (blue-green,
+    # D29), and two containers cannot share a name or a host port. The
+    # `proxy` service below publishes 127.0.0.1:8787 for both.
     restart: unless-stopped
     logging: *bounded-logs
     entrypoint: ["judgebot"]
+    # `docker stop` sends SIGTERM, and judgebot drains: it takes no new work,
+    # hands the Discord gateway over and finishes the answers in flight
+    # within two minutes (judge_bot::shutdown::DRAIN_LIMIT), then exits.
+    # SIGKILL comes only after this, ten seconds past the drain.
+    stop_grace_period: 130s
     # The roles: JUDGE_ROLES in .env when it is set, for example
     # `--api --web --jobs` without Discord or `--discord --jobs` without a
     # public page. Unset, every role but --mcp. GET /api/health is served
@@ -98,14 +106,10 @@ services:
         # The HTTP roles were the `api` service, and a Cloudflare Tunnel set
         # up then sends its public hostname to http://api:8787. The alias
         # keeps that address working with no dashboard edit;
-        # http://judgebot:8787 is the same listener.
+        # http://judgebot:8787 is the same listener. During a deploy both
+        # names resolve to both containers, and a container that has stopped
+        # listening refuses the connection, so the dial goes on to the other.
         aliases: [api]
-    # Loopback-only. Public traffic arrives through the cloudflared tunnel on
-    # the compose network, never through a published port. This is also what
-    # makes API_CLIENT_IP=cloudflare sound: CF-Connecting-IP is only
-    # trustworthy while Cloudflare is the sole route to the origin.
-    ports:
-      - "127.0.0.1:8787:8787"
     # /api/health answers 503 until Postgres does. The slim image has no curl,
     # so this is bash's /dev/tcp — invoked as bash explicitly, because CMD-SHELL
     # would run /bin/sh, which is dash there and has no /dev/tcp. It probes
@@ -136,6 +140,31 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  # 127.0.0.1:8787 on the host, for a browser on this machine and for a
+  # reverse proxy that runs on the host (docs/DEPLOYMENT.md §4). It forwards
+  # to judgebot:8787, whichever container of that service is listening, and a
+  # deploy never restarts it, so the address stays up while judgebot is
+  # replaced. The Host header and the client's CF-Connecting-IP pass through
+  # unchanged; judgebot reads no X-Forwarded-For. Answers take up to a
+  # minute, and Caddy's proxy has no read timeout by default.
+  proxy:
+    image: caddy:2.10.2-alpine
+    container_name: judgebot-proxy
+    restart: unless-stopped
+    logging: *bounded-logs
+    command: ["caddy", "reverse-proxy", "--from", ":8787", "--to", "judgebot:8787"]
+    # Loopback-only. Public traffic arrives through the cloudflared tunnel on
+    # the compose network, never through a published port. This is also what
+    # makes API_CLIENT_IP=cloudflare sound: CF-Connecting-IP is only
+    # trustworthy while Cloudflare is the sole route to the origin.
+    ports:
+      - "127.0.0.1:8787:8787"
+    # Started after judgebot, so on the upgrade from a judgebot that
+    # published 8787 itself, compose has replaced that container (and freed
+    # the port) before this one binds it.
+    depends_on:
+      - judgebot
 
   # `judgebot ingest` on demand: the first load (`docker compose run --rm
   # refresh init`), a refresh by hand or from an operator's own cron

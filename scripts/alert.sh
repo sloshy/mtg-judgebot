@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tell the operator a job failed. Sourced by refresh-data.sh and backup-db.sh,
-# which run from cron or by hand, where nobody may be watching the exit code.
+# Tell the operator a job failed. Sourced by refresh-data.sh, backup-db.sh and
+# deploy.sh, which run from cron or by hand, where nobody may be watching the
+# exit code.
 #
 #   alert "text"     post to JUDGE_ALERT_WEBHOOK, or do nothing if it is unset
 #

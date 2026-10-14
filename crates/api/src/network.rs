@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use judge_agent::{Options, Quota, Toolbox};
-use judge_bot::{ingest::runs::FreshnessReader, serving::Serving, synth::Harness};
+use judge_bot::{
+    ingest::runs::FreshnessReader, serving::Serving, shutdown::Shutdown, synth::Harness,
+};
 use judge_core::NetworkOperator;
 use judge_llm::ApiKey;
 
@@ -83,15 +85,18 @@ impl Network {
 pub struct Listening {
     listener: tokio::net::TcpListener,
     routes: axum::Router,
+    shutdown: Shutdown,
 }
 
 impl Listening {
-    /// Serve until the accept loop fails.
+    /// Serve until the accept loop fails, or until the process's shutdown is
+    /// requested and the requests in flight have been answered (at most
+    /// until the drain's limit; see [`serve_on`]).
     ///
     /// # Errors
     /// A fatal accept-loop error.
     pub async fn serve(self) -> Result<()> {
-        serve_on(self.listener, self.routes).await
+        serve_on(self.listener, self.routes, &self.shutdown).await
     }
 }
 
@@ -122,7 +127,11 @@ impl Network {
             "starting HTTP adapter"
         );
         let listener = bind(&cfg).await?;
-        Ok(Listening { listener, routes })
+        Ok(Listening {
+            listener,
+            routes,
+            shutdown: serving.shutdown().clone(),
+        })
     }
 }
 

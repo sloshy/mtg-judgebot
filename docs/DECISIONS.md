@@ -800,9 +800,9 @@ What follows:
   session-level, so it covers processes sharing one database over direct connections,
   and the old `bot` image never takes it: the upgrade to `judgebot` still needs
   `--remove-orphans`.
-- **Several replicas are still deferred** (issue 17). Safe is not supported: the
-  per-user and per-IP limits are per process. Until those are solved, an instance runs
-  one `judgebot`, and a second is a deploy overlap or a standby. A "did you mean?" pick
+- **Several replicas are not a goal** (D29). Safe is not supported: the per-user and
+  per-IP limits are per process. An instance runs one `judgebot`, and a second is a
+  deploy's overlap or a standby. A "did you mean?" pick
   is no longer one of the obstacles: it is answered from the message its buttons are
   on (the question) and the button's custom-id (asker, audience, span, a digest of
   the prompt, card), so a standby that takes the gateway answers the picks the old
@@ -964,3 +964,78 @@ exits non-zero. Grading the 18 answers of the published Opus run costs about $0.
 - Rejected: *scoring answer text against required phrases* in `gold.yaml`. It is exact,
   but a correct answer worded differently fails, and every question would need phrases
   written for it.
+
+## D29. Blue-green deploys
+
+*Decided 2026-10-13.*
+
+A deploy starts the new `judgebot` container beside the running one, waits until Docker
+reports it healthy, then stops the old one (`scripts/deploy.sh`). The two overlap for a
+minute or two. Running several instances all the time is not a goal: one community's
+load does not need it (D16), and the per-user and per-address limits stay per process.
+
+- **SIGTERM drains** (`judge_bot::shutdown`). `docker stop` asks; it no longer kills.
+  The process takes no new work: the HTTP listener closes and the Discord role closes
+  its gateway connection. It then finishes what is in flight within two minutes
+  (`DRAIN_LIMIT`), writes the spend ledger once more and exits 0. Each Discord event
+  holds a `Work` guard for as long as serenity's task runs its handler, and an answer
+  already deferred is sent over the REST API, which needs no gateway. The compose
+  `stop_grace_period` (130 s) is the limit plus ten seconds, a relation a test holds,
+  and the last ledger write is bounded by five. A signal during startup, before the
+  roles run, or a second signal exits at once.
+- **The gateway is handed over at once.** A holder that is shutting down releases the
+  lease as soon as its connection has closed, not when the process exits, so the new
+  container's grace (15 s) runs while the old one drains. A gateway slow to close keeps
+  the lease until it has closed, so nothing else connects while it may be open. One
+  still open at the drain's limit lets it go then, and the process is gone within the
+  five-second ledger bound, inside the 15 s a standby waits (a `const` relation). A standby that is shutting down stops waiting.
+- **A proxy holds the host port.** Two containers of one service cannot share a name or
+  a published port, so `judgebot` has neither. The `proxy` service (Caddy) publishes
+  `127.0.0.1:8787` and forwards to `judgebot:8787`, and the tunnel reaches the same name
+  through the `api` alias. During the overlap the name resolves to both containers. One
+  that has stopped listening refuses the connection, and the dial goes on to the other
+  address.
+- **Migrations keep the previous release working.** The new container migrates as it
+  starts, while the old one still answers, so a release's migrations must leave the
+  previous release's queries valid: expand now, contract a release later. It applies
+  from the next migration on. Those already on `main` since 1.2.0 add tables only, so
+  they pass it. `CONTRIBUTING.md` lists what passes it.
+
+The reasons:
+
+- **A deploy was an outage.** Compose stops the old container before starting the new
+  one, so every deploy cost the startup and the migration, and an answer in progress
+  died with the process. PID 1 ignores a SIGTERM it has no handler for, so `docker stop`
+  waited its ten seconds and then sent SIGKILL.
+- **Most of it existed.** The refresh lease, the gateway lease, picks answered from their
+  message and the schema-skew checks (#16) already made a second process safe. What was
+  missing was letting go cleanly and room in the compose file for two containers.
+
+**Rejected:**
+
+- *Several replicas behind a load balancer.* Rate limits and the spend overshoot would
+  then need to live in the database, for throughput nobody needs.
+- *A CI job that runs the previous release against the new schema.* It would catch a
+  broken expand step, but needs the previous image and a populated database in CI. A
+  written rule and a review are proportionate to a migration every few weeks.
+- *A port range* (`127.0.0.1:8787-8788`) instead of a proxy. Each copy takes the first
+  free port, so the address moves with every deploy and a host's reverse proxy must
+  list both.
+- *Discord's HTTP interactions endpoint* in place of the gateway. It would remove the
+  handover, but needs a public URL for every Discord deployment. A gap of 15 to 25
+  seconds per deploy is accepted.
+
+What follows:
+
+- **Discord is quiet for the grace plus a login** (about 15 to 25 s). An interaction in
+  that gap gets Discord's "did not respond". The web app and the API see no gap.
+- **Limits reset once per deploy.** The per-user `/judge` window and the per-address
+  limit are in memory, so the new container starts them empty, as a restart does.
+- **Spend overlaps by one sync.** Both containers bill one period through the ledger,
+  which syncs every 10 s (D19).
+- **A refresh in progress ends with the old container.** Its run record is left open
+  and is counted as a failed run after 3 h 10 min, as after a crash. The new
+  container's schedule runs a refresh once the lease is free.
+- **A migration that cannot keep the previous release working** (a rewrite of rows the
+  old binary writes) is deployed with `docker compose up -d`, stop then start, and the
+  CHANGELOG says so.

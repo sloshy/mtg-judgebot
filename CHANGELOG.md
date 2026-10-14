@@ -19,6 +19,19 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Deploys without downtime.** `scripts/deploy.sh` starts the new `judgebot` container
+  beside the running one, waits until Docker reports it healthy, then stops the old one.
+  The web app and the API stay up throughout. Discord is quiet for about 15 to 25
+  seconds while the gateway is handed over. A new container that is not healthy within
+  five minutes is removed and the old one keeps serving. `--build` builds from the
+  checkout instead of pulling.
+
+- **`judgebot` shuts down gracefully.** On SIGTERM (`docker stop`) or Ctrl-C it stops
+  taking new work, releases the Discord gateway at once, finishes the answers in flight
+  within two minutes, writes the spend ledger and exits 0. A second signal exits at
+  once. Before, `docker stop` waited ten seconds and killed it, and a question in
+  progress got no answer. The compose service's `stop_grace_period` is 130 seconds.
+
 - **Spend warnings before the cap.** `JUDGE_SPEND_WARN_AT` lists percentages of
   `JUDGE_MAX_USD` (such as `50,80`). Each is logged and posted to `JUDGE_ALERT_WEBHOOK`
   once per period when spending reaches it. In a `day` or `month` period one process
@@ -117,6 +130,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   face. None of the built-in aliases is affected.
 
 ### Changed
+
+- **`127.0.0.1:8787` is published by a new `proxy` service** (Caddy), which forwards to
+  `judgebot`. The `judgebot` container publishes no port and has no fixed
+  `container_name`, so that a deploy can run two of them. The address, the tunnel's
+  `http://api:8787` and a host reverse proxy in front of `127.0.0.1:8787` are unchanged.
 
 - **`POST /api/judge` answers an unreadable request in JSON.** A body that is not JSON,
   has the wrong shape, is too large or is sent without a JSON `Content-Type`
@@ -231,6 +249,13 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
+- **The `judgebot` container has no fixed name.** Compose names it after the
+  checkout's directory (`mtg-judgebot-judgebot-1`). Use the service name with Compose
+  (`docker compose logs judgebot`, `docker compose exec judgebot …`) instead of
+  `docker logs judgebot`.
+- **Deploy this release with `docker compose up -d --remove-orphans`**, as below.
+  `scripts/deploy.sh` is the deploy from this release on. The old container has no
+  SIGTERM handler, so this one deploy waits up to 130 seconds for it to stop.
 - **Update the compose file with the image.** This image cannot run the previous
   release's `docker-compose.yml`: its `bot` service starts `judgebot` with no roles, and
   its `api` and `refresh` services name binaries the image no longer has. Run `git pull`

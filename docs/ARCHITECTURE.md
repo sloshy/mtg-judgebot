@@ -229,6 +229,18 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   the hand-off is tested without Discord. The scheduler's thread
   is different: beside serving roles its end is logged as an error and the process keeps
   answering, while a process whose only role is `--jobs` exits non-zero.
+- SIGTERM or Ctrl-C requests a graceful shutdown (`judge_bot::shutdown`, D29), one
+  `Shutdown` per process held by `Serving`. The HTTP listener closes and answers the
+  requests it accepted (axum's graceful shutdown). The Discord role closes its gateway
+  and releases the lease the moment the connection is closed; a standby stops waiting.
+  `discord::Tracked` wraps poise's framework so every event serenity dispatches (each
+  on its own task) holds a `Work` guard while its handler runs, and the role returns
+  once they are all dropped. Everything is bounded by `DRAIN_LIMIT` (120 s) from the
+  request; compose's `stop_grace_period` is that plus `EXIT_MARGIN` (a test). With both
+  kinds of role, `main` waits for both rather than the first, then flushes the spend
+  ledger (bounded by `FLUSH_LIMIT`, 5 s) and exits 0. A gateway slow to close keeps the
+  lease until it has, at most until the limit. A signal before the roles start, or a
+  second one, exits at once.
 - `judgebot ingest <cmd>` is the data command line.
 - `judgebot backup <run|list|fetch|serve>` is the database backup (`judge_bot::backup`,
   D26): `pg_dump -Fc` over the network, gzipped, uploaded to R2 by a `SigV4` client of
@@ -243,7 +255,12 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   line that replaces it.
   `roles::compose_roles` is the same rule in Rust, so `judge-config` checks only the
   roles the service would run. The service keeps the network alias `api` for tunnels
-  configured with the old service name. `refresh` runs `judgebot ingest` on demand,
+  configured with the old service name. It has no `container_name` and publishes no
+  port, so `scripts/deploy.sh` can run a second container of it beside the first
+  (blue-green, D29): start the new one, wait for Docker's healthy, `docker stop` the old
+  one, which drains. The `proxy` service (Caddy, `caddy reverse-proxy`) publishes
+  `127.0.0.1:8787` and forwards to `judgebot:8787`, whichever container listens.
+  `refresh` runs `judgebot ingest` on demand,
   and `backup` (profile `backup`, `.env.deploy` and no `.env`) runs `judgebot backup
   serve`.
 

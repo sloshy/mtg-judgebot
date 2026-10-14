@@ -17,6 +17,7 @@ use axum::{
 };
 use judge_bot::discord::{capture::CapturingRetriever, render};
 use judge_bot::ingest::runs::FreshnessReader;
+use judge_bot::shutdown::Shutdown;
 use judge_core::{
     About, CallStore, Deps, Freshness, JudgeError, NetworkOperator, Question, Retriever,
     SourceOffer, Validated, Verdict, judge_traced,
@@ -304,17 +305,44 @@ pub async fn bind(cfg: &ApiConfig) -> anyhow::Result<tokio::net::TcpListener> {
     Ok(listener)
 }
 
-/// Serve `router` on `listener` until the accept loop fails.
+/// Serve `router` on `listener` until the accept loop fails, or until
+/// `shutdown` is requested and the requests in flight have been answered.
+///
+/// On the request the listener closes, so a new connection is refused
+/// (behind the `edge` proxy or the tunnel, the dial goes on to the other
+/// instance's address), and each open connection is closed once its current
+/// request is answered. A request still open at the drain's limit is cut
+/// off with the process.
 ///
 /// # Errors
 /// A fatal accept-loop error.
-pub async fn serve_on(listener: tokio::net::TcpListener, router: Router) -> anyhow::Result<()> {
-    axum::serve(
+pub async fn serve_on(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    shutdown: &Shutdown,
+) -> anyhow::Result<()> {
+    let stopping = shutdown.clone();
+    let serving = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
-    .context("serve HTTP")
+    .with_graceful_shutdown(async move { stopping.requested().await });
+    tokio::select! {
+        served = serving => {
+            served.context("serve HTTP")?;
+            if shutdown.is_requested() {
+                tracing::info!("HTTP: every request in flight was answered");
+            }
+            Ok(())
+        }
+        () = shutdown.limit_passed() => {
+            tracing::warn!(
+                limit_secs = shutdown.limit().as_secs(),
+                "HTTP: requests still open at the drain's limit; they end with the process"
+            );
+            Ok(())
+        }
+    }
 }
 
 /// `200 ok` when the process can serve, `503` naming the failed dependency
@@ -1169,6 +1197,48 @@ mod tests {
         assert_eq!(
             client_ip(&headers, Some(peer), Cf),
             "198.51.100.7".parse::<IpAddr>()?
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_answers_the_request_in_flight_and_refuses_new_ones() -> Res {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let (began, in_handler) = tokio::sync::oneshot::channel::<()>();
+        let began = Arc::new(Mutex::new(Some(began)));
+        let slow = get(move || {
+            let began = Arc::clone(&began);
+            async move {
+                if let Some(tx) = began.lock().ok().and_then(|mut b| b.take()) {
+                    let _ = tx.send(());
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                "done"
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let shutdown = Shutdown::new(Duration::from_secs(10));
+        let serving = tokio::spawn({
+            let s = shutdown.clone();
+            async move { serve_on(listener, Router::new().route("/slow", slow), &s).await }
+        });
+        let mut conn = tokio::net::TcpStream::connect(addr).await?;
+        conn.write_all(b"GET /slow HTTP/1.1\r\nHost: test\r\n\r\n")
+            .await?;
+        in_handler.await?;
+        shutdown.request("test");
+        // The request in flight is answered, and its connection closed after it.
+        let mut reply = String::new();
+        tokio::time::timeout(Duration::from_secs(5), conn.read_to_string(&mut reply)).await??;
+        assert!(
+            reply.starts_with("HTTP/1.1 200") && reply.ends_with("done"),
+            "{reply}"
+        );
+        tokio::time::timeout(Duration::from_secs(5), serving).await???;
+        assert!(
+            tokio::net::TcpStream::connect(addr).await.is_err(),
+            "the listener is closed"
         );
         Ok(())
     }

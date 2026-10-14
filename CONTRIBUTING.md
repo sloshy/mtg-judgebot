@@ -117,6 +117,23 @@ SQLX_OFFLINE=true cargo build --workspace          # must pass without a databas
 Install the tool with `cargo install sqlx-cli --no-default-features --features
 postgres,rustls` if you do not have it.
 
+**Migrations keep the previous release working.** A deploy starts the new container,
+which migrates, while the old one is still answering (`scripts/deploy.sh`,
+`docs/DECISIONS.md` D29). The previous release's queries must therefore still work
+against the new schema. Expand in one release, contract in a later one:
+
+- **Fine in one release:** a new table; a new column that is nullable or has a default;
+  a new index; a new constraint that the previous release's writes already satisfy.
+- **Two releases:** renaming or dropping a column or table, changing a column's type,
+  making a column `NOT NULL` without a default. The first release adds the new shape and
+  writes both (or reads the new one with a fallback). The next one drops the old shape.
+- **Not across a deploy:** a migration that rewrites rows the previous release reads or
+  writes, such as moving stored citations to a new key. Say so under the release's
+  `### Upgrading` in `CHANGELOG.md`. Such a release is deployed by stopping the old
+  container first (`docker compose pull && docker compose up -d`).
+
+A released migration is never edited.
+
 **Prompt and schema changes.** Two tests pin the bytes the bot sends. If you edit a
 prompt template under `crates/bot/src/prompts/` or a struct that feeds the model's output
 schema, both fail on purpose:

@@ -29,7 +29,8 @@ judge-api.workspace = true
 judge-llm.workspace = true
 anyhow.workspace = true
 nonempty.workspace = true
-tokio.workspace = true
+# `signal`: SIGTERM and Ctrl-C start the graceful shutdown.
+tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 dotenvy = "0.15"

@@ -75,6 +75,7 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 use crate::{
     db::{PgLibrary, PickKey, claim_pick, release_pick},
     serving::Serving,
+    shutdown::{Drained, Shutdown},
 };
 use capture::CapturingRetriever;
 use cooldown::{Cooldowns, UserLimit};
@@ -1099,6 +1100,12 @@ async fn on_error(error: poise::FrameworkError<'_, Arc<Data>, Error>) {
 /// `cfg` holds the token and `operator` is the contact the bot must name, so
 /// a process that reaches this has passed both requirements.
 ///
+/// On the process's requested shutdown it leaves the gateway (releasing the
+/// lease once the connection is closed) and returns when every event
+/// handler in flight has finished, or the drain's limit has passed: an
+/// answer already deferred is sent over the REST API, which needs no
+/// gateway.
+///
 /// # Errors
 /// As [`run`], or the gateway lease was lost.
 pub async fn serve(
@@ -1129,13 +1136,55 @@ pub async fn serve(
         user_limit = ?cfg.user_limit,
         "starting Discord adapter"
     );
+    let shutdown = serving.shutdown();
     gateway::hold(
         serving.pool(),
         serving.process(),
         gateway::Timing::DEFAULT,
-        |stop| run(cfg.clone(), Arc::clone(&data), stop),
+        shutdown,
+        |stop| run(cfg.clone(), Arc::clone(&data), shutdown.clone(), stop),
     )
-    .await
+    .await?;
+    // A connection that ended by itself with no error: as before, the role
+    // has stopped.
+    if !shutdown.is_requested() {
+        return Ok(());
+    }
+    // Left on the shutdown, with the gateway closed: no event is dispatched
+    // after this point. An event dispatched before it holds its `Work` from
+    // the first poll of the task serenity spawned for it, which in practice
+    // has happened during the close and the lease release's round trip;
+    // nothing can count it at the spawn itself.
+    match shutdown.drained().await {
+        Drained::Finished => tracing::info!("Discord: every answer in flight was sent"),
+        Drained::Abandoned(n) => tracing::warn!(
+            in_flight = n,
+            limit_secs = shutdown.limit().as_secs(),
+            "Discord: event handlers still running at the drain's limit; they end with the process"
+        ),
+    }
+    Ok(())
+}
+
+/// poise's framework, with each event it handles counted as in-flight work
+/// for the process's [`Shutdown`]: serenity dispatches every event on a task
+/// of its own, and this holds the [`Work`](crate::shutdown::Work) for as long
+/// as that task runs the handler, a `/judge` answer included.
+struct Tracked<F> {
+    inner: F,
+    shutdown: Shutdown,
+}
+
+#[serenity::async_trait]
+impl<F: serenity::framework::Framework> serenity::framework::Framework for Tracked<F> {
+    async fn init(&mut self, client: &serenity::Client) {
+        self.inner.init(client).await;
+    }
+
+    async fn dispatch(&self, ctx: serenity::Context, event: FullEvent) {
+        let _work = self.shutdown.work();
+        self.inner.dispatch(ctx, event).await;
+    }
 }
 
 /// Connect to the gateway and serve until the connection ends, or until
@@ -1147,9 +1196,17 @@ pub async fn serve(
 /// [`gateway::Timing::shutdown_limit`], then ends the role, and the process
 /// exits, which closes any shard still open.
 ///
+/// Every event it dispatches is counted as in-flight work for `shutdown`
+/// ([`Tracked`]).
+///
 /// # Errors
 /// Building the client (bad token) or a fatal gateway error.
-pub async fn run(cfg: Config, data: Arc<Data>, mut stop: gateway::Stop) -> anyhow::Result<()> {
+pub async fn run(
+    cfg: Config,
+    data: Arc<Data>,
+    shutdown: Shutdown,
+    mut stop: gateway::Stop,
+) -> anyhow::Result<()> {
     let guild = cfg.guild_id;
     // The symbol watcher this connection starts, aborted when the connection
     // ends (however `run` returns, or is dropped), so reconnects never stack
@@ -1198,7 +1255,10 @@ pub async fn run(cfg: Config, data: Arc<Data>, mut stop: gateway::Stop) -> anyho
         .build();
     // Slash commands and button presses arrive without any gateway intent.
     let building = serenity::ClientBuilder::new(cfg.token.expose(), GatewayIntents::empty())
-        .framework(framework);
+        .framework(Tracked {
+            inner: framework,
+            shutdown,
+        });
     // `biased`: a stop that came first wins, so nothing starts after it.
     let mut client = tokio::select! {
         biased;

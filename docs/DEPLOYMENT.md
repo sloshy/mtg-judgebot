@@ -165,6 +165,10 @@ docker compose up -d
 curl -s localhost:8787/api/health
 ```
 
+Port 8787 on the host is the `proxy` service, which forwards to `judgebot`. The
+`judgebot` container publishes nothing itself, so that a deploy can run two of them
+side by side (§8).
+
 The container's healthcheck asks `/api/health` the same question, and `cloudflared`
 waits for it to pass. It probes only when the roles include `--api`, `--web` or
 `--mcp`: it reads them from the process's command line, or from `JUDGE_ROLES` when the
@@ -371,8 +375,11 @@ Leave `API_CLIENT_IP=peer` for any deployment where Cloudflare is not the sole i
 
 ### Behind another reverse proxy
 
-The tunnel is a choice, not a requirement. `judgebot` publishes on `127.0.0.1:8787`, and any
-reverse proxy on the host can terminate TLS in front of it. Two things need care.
+The tunnel is a choice, not a requirement. The `proxy` service publishes `127.0.0.1:8787`
+in front of `judgebot`, and any reverse proxy on the host can terminate TLS in front of
+that. It passes the `Host` header and `CF-Connecting-IP` through unchanged, and it is not
+restarted by a deploy, so the address stays up while `judgebot` is replaced. Two things
+need care.
 
 **Answers take up to a minute**, so the proxy's read timeout must be longer than that.
 Caddy's default is unlimited. nginx's is 60 seconds.
@@ -961,13 +968,44 @@ update on releases rather than on every push, pin one:
 JUDGE_IMAGE_TAG=1.2    # in .env: follows 1.2.x patch releases; 1.2.0 pins one exactly
 ```
 
-`CONTRIBUTING.md` says how a release is cut. The ordinary deploy:
+`CONTRIBUTING.md` says how a release is cut. The ordinary deploy has no downtime
+(D29):
 
 ```sh
 git pull                                # runbook + compose changes
-docker compose pull
-docker compose up -d --remove-orphans
+scripts/deploy.sh                       # pull, start the new container, stop the old
 ```
+
+`scripts/deploy.sh` pulls the image and starts a second `judgebot` container from it
+beside the running one:
+
+1. The new container applies the release's migrations, if any, and starts its roles.
+   Its HTTP roles serve at once. Its Discord role stands by, because the old container
+   holds the gateway.
+2. When Docker reports it healthy (its first passing healthcheck), the script stops the old container. `docker stop` sends SIGTERM and the old
+   container drains. It closes its listener and its Discord gateway connection, releases
+   the gateway lease, and finishes the answers in flight, for up to two minutes. Then
+   it exits.
+3. The new container connects to Discord 15 seconds after the lease is released.
+   Questions asked on Discord during that grace and the login get Discord's "The
+   application did not respond". The web app and the API see no gap: the `proxy` service
+   and the tunnel reach whichever container is listening.
+
+If the new container is not healthy within five minutes (`DEPLOY_WAIT_SECS`), or
+restarts, the script removes it, prints its last log lines and exits non-zero. The old
+container keeps serving. `scripts/deploy.sh --build` builds the image from the checkout
+instead of pulling it.
+
+"Healthy" means `GET /api/health` answers, which needs an HTTP role. A container with
+no HTTP role (`JUDGE_ROLES=--discord --jobs`) passes its healthcheck at once, so the
+script switches to it before anything shows that it can connect to Discord. Check its
+log for the gateway connection after the deploy.
+
+The deploy that stops the old container first is still
+`docker compose pull && docker compose up -d --remove-orphans`. Use it for the upgrade
+to one `judgebot` service below, which is also the first deploy of this script, and
+for a release whose notes say its migration cannot run beside the previous release
+(Releases with a migration, below).
 
 **`--remove-orphans` is required on the upgrade that replaced the `bot` and `api`
 services with `judgebot`.** Without it the old `judgebot-bot` and `judgebot-api`
@@ -993,10 +1031,10 @@ Check afterwards:
 docker ps -a --filter name=judgebot- --format '{{.Names}} {{.Status}}'
 ```
 
-It should list `judgebot-db` (and `judgebot-tunnel` with the tunnel) and nothing else:
-`judgebot` itself does not match the filter, and a `judgebot-bot` or `judgebot-api` is
-left over. If either is still
-there, `docker rm -f judgebot-bot judgebot-api` removes it.
+It should list `judgebot-db`, `judgebot-proxy` (and `judgebot-tunnel` with the tunnel)
+and the service's own container, which Compose names after the checkout's directory
+(`mtg-judgebot-judgebot-1`). A `judgebot-bot` or `judgebot-api` is left over. If either
+is still there, `docker rm -f judgebot-bot judgebot-api` removes it.
 
 What else that upgrade changes:
 
@@ -1018,6 +1056,9 @@ What else that upgrade changes:
   between the two runs the new compose file on the old local image and fails.
 - **The tunnel.** The service answers to `api` on the compose network as well as
   `judgebot`, so a public hostname pointing at `http://api:8787` needs no edit.
+- **The host port.** `127.0.0.1:8787` is the `proxy` service. The `judgebot` container
+  has no fixed name, so use the service name with Compose (`docker compose logs
+  judgebot`, `docker compose exec judgebot …`) rather than `docker logs judgebot`.
 - **Commands.** `scripts/refresh-data.sh`, its cron entry and
   `docker compose run --rm refresh <command>` work as before. The logs are
   `docker compose logs judgebot`, and a `judge.toml` edit takes
@@ -1056,6 +1097,12 @@ standing by: another instance holds the Discord gateway; this one connects when 
   back. The grace (15 seconds) is longer than the slowest disconnect (a 5-second
   interval, a 4-second check and a 1-second shutdown), so the old and new holders
   never answer side by side.
+- **Shutting down.** A holder sent SIGTERM (a deploy's `docker stop`, Ctrl-C) closes its
+  gateway connection and releases the lease at once, then finishes its answers in
+  flight over Discord's REST API, which needs no gateway. A standby takes over 15
+  seconds after the release. A holder whose gateway is slow to close keeps the lease
+  until it has closed, or for at most the two minutes of the drain, so the two never
+  answer side by side. A standby sent SIGTERM stops waiting.
 - **Repeated losses.** Every connection spends one of the 1000 logins a day Discord
   allows a token before it resets it. A lease lost again within 30 minutes of the
   last connection (a database restarting in a loop) makes the holder pause before
@@ -1125,13 +1172,18 @@ finishes, which is minutes on a NAS. It logs one warning line,
 `another job holds the calls rewrite lock ... waiting`, in `docker compose logs judgebot`.
 That is a wait, not a hang.
 
-Compose stops the old `judgebot` container before it starts the new one, so the old
-binary is not saving calls while the new one migrates. Nothing stops another process on
-the same database: a `judgebot` or `judge-mcp` on another machine, a `judge-cli` session.
-Stop those first for a migration that is not additive. A migration that rewrites `calls`
-rows (20260902000001 did, moving ruling citations to content keys) must not race an old
-binary saving a call, and `ALTER TABLE` waits on any in-flight query. The release notes
-in the commit say when this applies.
+`scripts/deploy.sh` starts the new container while the old one still answers, so the
+old binary runs against the new schema for a minute or two. A release's migrations are
+written for that (`CONTRIBUTING.md`, D29). They add tables, columns that may be null or
+have a default, and indexes, and leave a rename or a drop to a later release.
+
+A migration that cannot keep the previous release working is the exception, and the
+CHANGELOG says so. An example is one that rewrites rows the old binary writes, as
+20260902000001 did when it moved ruling citations to content keys. Deploy it with
+`docker compose pull && docker compose up -d`, which stops the old container before the
+new one migrates. Nothing stops another process on the same database: a `judgebot` or
+`judge-mcp` on another machine, a `judge-cli` session. Stop those first for such a
+migration. `ALTER TABLE` also waits on any in-flight query.
 
 To migrate by hand instead, set `JUDGE_AUTO_MIGRATE=false` in `.env`. `judgebot`
 picks it up when next recreated, which `up -d` does because the env file changed. Then run the explicit form from the *new* image:
@@ -1220,6 +1272,10 @@ own if the connector restarts.
 | `judgebot` restarts with `API_INTERFACES: no longer read` | replace it in `.env` with the `JUDGE_ROLES` line the error names |
 | Every Discord question is answered twice | a second process uses the same token without the gateway lease: the old `judgebot-bot` container left by an upgrade without `--remove-orphans` (§8; `docker rm -f judgebot-bot judgebot-api`), or a `judgebot` on another host with a database of its own |
 | The bot is offline and the log says `standing by: another instance holds the Discord gateway` | another `judgebot --discord` on the same database holds the gateway lease; the line names its pid and `application_name` (§8, Gateway holder). Stop that process (`docker rm -f` a leftover container), and this one connects 15 seconds later |
+| `scripts/deploy.sh` stops with `2 judgebot containers are running` | an earlier deploy was interrupted between starting the new container and removing the old one. `docker compose ps judgebot` lists both; `docker stop` the older one (it drains first) and `docker rm` it |
+| `scripts/deploy.sh` removed the new container | it was not healthy in time or it restarted; the script printed its last log lines (a failed migration, a missing variable). The old container kept serving |
+| `localhost:8787` answers 502 while the tunnel works | the `proxy` service is up and `judgebot` runs no network role, or is restarting (`docker compose ps`) |
+| `up -d` fails with `port is already allocated` for 8787 | something else on the host listens on 8787: a `judgebot` from `cargo run`, or a container from before the `proxy` service that is not part of this compose project |
 | `judgebot` reads healthy but nothing answers on 8787 | the roles have no `--api`, `--web` or `--mcp`, so the healthcheck passes without probing (§4) |
 | Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the tunnel — every request looks like the cloudflared container |
 | Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied |
