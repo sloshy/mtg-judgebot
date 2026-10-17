@@ -156,8 +156,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `proxy` service, so a public hostname whose service is `http://api:8787` needs no
   edit. One whose service is `http://judgebot:8787`, as the runbook said before, still
   works but bypasses the proxy, and a deploy can then lose a request in flight: change
-  it to `http://proxy:8787` in the Cloudflare dashboard (Networks → Tunnels → your
-  tunnel → Public hostnames). The first `scripts/deploy.sh` onto this release recreates
+  it to `http://proxy:8787` on the tunnel's public hostname (Cloudflare Zero Trust →
+  Networks → Tunnels). The first `scripts/deploy.sh` onto this release recreates
   the proxy once: the host port and the tunnel are down for about three seconds, and a
   request that tunnel connections still send straight to the old container can be lost
   as it stops. Later edits to `proxy/Caddyfile` load without a restart.
@@ -283,6 +283,16 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **Deploy this release with `docker compose up -d --remove-orphans`**, as below.
   `scripts/deploy.sh` is the deploy from this release on. The old container has no
   SIGTERM handler, so this one deploy waits up to 130 seconds for it to stop.
+- **Check the tunnel's service in Cloudflare:** the public hostname of your tunnel, under
+  Zero Trust → Networks → Tunnels. `http://api:8787` needs no change. `http://judgebot:8787`
+  still works but bypasses the `proxy`, so a deploy can lose a request in flight:
+  change it to `http://proxy:8787`.
+- **Leave `/discord/interactions` unchallenged if you turn on Discord over HTTP.**
+  Discord's requests come from its servers, not a browser, so they cannot pass a
+  challenge: a Managed Challenge rule or a Cloudflare Access policy that covers that
+  path, or Bot Fight Mode at all (it covers the whole zone and cannot skip a path),
+  fails Discord's URL check and every interaction. `DISCORD_INTERACTIONS` stays
+  `gateway` unless you set it.
 - **Update the compose file with the image.** This image cannot run the previous
   release's `docker-compose.yml`: its `bot` service starts `judgebot` with no roles, and
   its `api` and `refresh` services name binaries the image no longer has. Run `git pull`

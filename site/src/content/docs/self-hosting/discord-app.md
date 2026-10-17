@@ -180,6 +180,11 @@ needs a public HTTPS address for the bot, such as the tunnel's hostname
 The bot then opens no gateway connection, and shows in the member list without a
 status dot.
 
+Discord's requests come from its servers, not a browser, so they cannot pass a
+challenge. Behind Cloudflare, keep `/discord/interactions` out of any Managed Challenge
+rule or Access policy, and turn Bot Fight Mode off (it covers the whole zone and cannot
+skip a path), or the test and every interaction fail.
+
 ## One channel
 
 The bot answers wherever its commands can be used. That is a Discord setting, not the

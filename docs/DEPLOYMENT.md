@@ -371,9 +371,10 @@ switches containers (D30). The bot then
 opens no gateway connection.
 
 It needs a public HTTPS address that reaches the container: the tunnel's public
-hostname, which already serves the web app. Discord's requests carry no browser, so a
-Cloudflare Access policy, Bot Fight Mode or a WAF challenge on that hostname must leave
-`/discord/interactions` alone. A deployment without `--api`, `--web` or `--mcp` listens
+hostname, which already serves the web app. Discord's requests come from its servers,
+not a browser, so they cannot pass a challenge: a Cloudflare Access policy or a WAF
+challenge on that hostname must leave `/discord/interactions` alone, and Bot Fight
+Mode, which covers the whole zone and cannot skip a path, must be off. A deployment without `--api`, `--web` or `--mcp` listens
 on `API_ADDR` for the endpoint and `/api/health` only, and still needs the tunnel.
 
 1. Set it in `.env` and deploy:
@@ -477,7 +478,10 @@ first line of defence, and the in-process limiter is the backstop.
 - **Managed Challenge** as a WAF custom rule on the HTML document request, *not* on
   `/api/judge`. `fetch` cannot solve a challenge served to an `XHR`, so challenging the
   API path breaks the web app. Challenging the document checks a visitor once, and later
-  `/api/judge` calls carry the `cf_clearance` cookie.
+  `/api/judge` calls carry the `cf_clearance` cookie. With
+  `DISCORD_INTERACTIONS=http`, keep `/discord/interactions` out of the rule too
+  (match only `GET`, or exclude the path): Discord cannot pass a challenge, so its URL
+  check and every interaction would fail.
 
 Full Turnstile with server-side `siteverify` is stronger. It needs a token in the POST
 body and a verification call inside `judge_route` before any spending. Add it only if
