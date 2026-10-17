@@ -23,6 +23,8 @@ ignore = [
   { id = "RUSTSEC-2026-0104", reason = "CRL parsing panic; no CRLs are parsed here. No 0.102 fix; via serenity." },
   { id = "RUSTSEC-2026-0098", reason = "URI name constraints; only the Discord gateway connection is exposed. No 0.102 fix; via serenity." },
   { id = "RUSTSEC-2026-0099", reason = "Wildcard name constraints; only the Discord gateway connection is exposed. No 0.102 fix; via serenity." },
+  { id = "RUSTSEC-2026-0346", reason = "Debug of client session values; only a custom ClientSessionStore formats them, and none is used. rustls 0.22 has no fix; via serenity." },
+  { id = "RUSTSEC-2026-0349", reason = "Key-share prediction downgrades post-quantum key exchange; rustls 0.22 offers none to lose. No 0.22 fix; via serenity." },
 ]
 
 [licenses]
