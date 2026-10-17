@@ -23,7 +23,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use poise::serenity_prelude as serenity;
+use serenity::all as serenity;
 use sqlx::PgPool;
 
 use super::mana::{SharedSymbols, SymbolTable};

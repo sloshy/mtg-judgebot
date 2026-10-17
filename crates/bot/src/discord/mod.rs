@@ -1,11 +1,13 @@
 //! The Discord adapter (build-order step 6): the `/judge` slash command,
-//! rating buttons and the "did you mean…?" flow, on poise 0.7 / serenity 0.12.
+//! rating buttons and the "did you mean…?" flow, on serenity 0.12.
 //!
 //! Everything that does not need the gateway lives in a pure submodule:
-//! [`render`] (verdict / error → text), [`mana`] (card symbols → the bot's
-//! custom emoji), [`ids`] (typed `custom_id`s), [`pick`] (how old a card
-//! pick's prompt is), [`question`] (span replacement) and [`capture`] (keeps the
-//! retrieval `Context` so a call can be persisted). [`symbols`] lists the
+//! [`command`] (the slash commands: registration and parsing), [`render`]
+//! (verdict / error → text), [`mana`] (card symbols → the bot's custom
+//! emoji), [`ids`] (typed `custom_id`s), [`pick`] (how old a card pick's
+//! prompt is), [`question`] (span replacement) and [`capture`] (keeps the
+//! retrieval `Context` so a call can be persisted). [`reply`] answers a
+//! command over the REST API. [`symbols`] lists the
 //! card-symbol emoji and keeps the table current while the bot runs.
 //! [`gateway`] keeps the gateway connection to one process of all those
 //! running `--discord` on a database. This file is the glue: serenity types
@@ -38,6 +40,7 @@
 //! * `/card` and `/rule` read the database and call no model.
 
 pub mod capture;
+pub mod command;
 pub mod cooldown;
 pub mod gateway;
 pub mod ids;
@@ -45,6 +48,7 @@ pub mod mana;
 pub mod pick;
 pub mod question;
 pub mod render;
+pub mod reply;
 pub mod symbols;
 
 use std::{
@@ -63,12 +67,11 @@ use judge_core::{
 };
 use judge_llm::{ApiKey, SpendMeter};
 use nonempty::NonEmpty;
-use poise::serenity_prelude as serenity;
-use serenity::{
-    ButtonStyle, ComponentInteraction, CreateActionRow, CreateAllowedMentions, CreateButton,
-    CreateEmbed, CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseFollowup,
-    CreateInteractionResponseMessage, EditInteractionResponse, FullEvent, GatewayIntents, GuildId,
-    Interaction, Member, MessageFlags, UserId,
+use serenity::all::{
+    ButtonStyle, CommandInteraction, ComponentInteraction, CreateActionRow, CreateAllowedMentions,
+    CreateButton, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
+    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, EditInteractionResponse,
+    GatewayIntents, GuildId, Http, Interaction, Member, MessageFlags, Ready, UserId,
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -78,11 +81,14 @@ use crate::{
     shutdown::{Drained, Shutdown},
 };
 use capture::CapturingRetriever;
+pub use command::QUESTION_MAX_CHARS;
+use command::{Command, Unparsed};
 use cooldown::{Cooldowns, UserLimit};
 use ids::{ButtonAction, ByteSpan, Pick};
 use mana::{SharedSymbols, SymbolTable};
 use pick::Digest;
 use render::PickPrompt;
+use reply::{Message, Reply};
 
 /// How long a `/judge` (or a card pick) waits for a free slot before replying
 /// "busy". Under Discord's 3 s initial-response deadline, so short bursts queue
@@ -238,7 +244,7 @@ impl Config {
     }
 }
 
-/// Shared state behind every command and button (poise's user data).
+/// Shared state behind every command and button.
 pub struct Data {
     deps: Deps,
     capture: Arc<CapturingRetriever>,
@@ -277,9 +283,6 @@ impl std::fmt::Debug for Data {
             .finish_non_exhaustive()
     }
 }
-
-type Error = anyhow::Error;
-type Ctx<'a> = poise::Context<'a, Arc<Data>, Error>;
 
 impl Data {
     /// Wire the shared state. `meter` must be the one the models inside
@@ -442,25 +445,21 @@ impl Data {
         }
     }
 
-    async fn on_component(
-        &self,
-        ctx: &serenity::Context,
-        c: &ComponentInteraction,
-    ) -> anyhow::Result<()> {
+    async fn on_component(&self, http: &Http, c: &ComponentInteraction) -> anyhow::Result<()> {
         match ButtonAction::parse(&c.data.custom_id) {
-            Ok(ButtonAction::Rate { call, score }) => self.on_rate(ctx, c, call, score).await,
-            Ok(ButtonAction::Pick(pick)) => self.on_pick(ctx, c, pick).await,
-            Ok(ButtonAction::LegacyPick) => ephemeral(ctx, c, render::EXPIRED).await,
+            Ok(ButtonAction::Rate { call, score }) => self.on_rate(http, c, call, score).await,
+            Ok(ButtonAction::Pick(pick)) => self.on_pick(http, c, pick).await,
+            Ok(ButtonAction::LegacyPick) => ephemeral(http, c, render::EXPIRED).await,
             Err(e) => {
                 tracing::warn!(custom_id = %c.data.custom_id, error = %e, "unparseable button");
-                ephemeral(ctx, c, render::UNKNOWN_BUTTON).await
+                ephemeral(http, c, render::UNKNOWN_BUTTON).await
             }
         }
     }
 
     async fn on_rate(
         &self,
-        ctx: &serenity::Context,
+        http: &Http,
         c: &ComponentInteraction,
         call: CallId,
         score: Score,
@@ -470,11 +469,11 @@ impl Data {
         let ack = CreateInteractionResponse::Defer(
             CreateInteractionResponseMessage::new().ephemeral(true),
         );
-        c.create_response(&ctx.http, ack)
+        c.create_response(http, ack)
             .await
             .context("acknowledge rating")?;
         let is_judge = match (c.guild_id, c.member.as_ref()) {
-            (Some(guild), Some(member)) => has_role(ctx, guild, member, &self.judge_role).await,
+            (Some(guild), Some(member)) => has_role(http, guild, member, &self.judge_role).await,
             _ => false,
         };
         let user_id = c.user.id.to_string();
@@ -488,7 +487,7 @@ impl Data {
                 render::RATE_FAILED.to_owned()
             }
         };
-        ephemeral_followup(ctx, c, &text).await
+        ephemeral_followup(http, c, &text).await
     }
 
     /// A "did you mean…?" click, answered from the button and the message it
@@ -498,12 +497,12 @@ impl Data {
     /// the same reason.
     async fn on_pick(
         &self,
-        ctx: &serenity::Context,
+        http: &Http,
         c: &ComponentInteraction,
         pick: Pick,
     ) -> anyhow::Result<()> {
         if c.user.id.get() != pick.asker.get() {
-            return ephemeral(ctx, c, render::NOT_YOURS).await;
+            return ephemeral(http, c, render::NOT_YOURS).await;
         }
         let message = &c.message;
         let shown = pick::shown_ms(
@@ -511,7 +510,7 @@ impl Data {
             message.edited_timestamp.map(|t| t.timestamp_millis()),
         );
         if pick::expired(shown, pick::now_ms(), self.pick_ttl) {
-            return ephemeral(ctx, c, render::EXPIRED).await;
+            return ephemeral(http, c, render::EXPIRED).await;
         }
         // The message is the bot's own, so its content arrives without the
         // message-content intent. It must be the very prompt the button was
@@ -531,7 +530,7 @@ impl Data {
                 digest_matches = digest == pick.digest,
                 "a pick's message does not hold the prompt it was made for; answering as expired"
             );
-            return ephemeral(ctx, c, render::EXPIRED).await;
+            return ephemeral(http, c, render::EXPIRED).await;
         };
         // The answer goes where the message is: a private button on a channel
         // message, or the reverse, is refused.
@@ -542,28 +541,28 @@ impl Data {
                 ephemeral = ?ephemeral_flag,
                 "a pick's audience disagrees with its message; answering as expired"
             );
-            return ephemeral(ctx, c, render::EXPIRED).await;
+            return ephemeral(http, c, render::EXPIRED).await;
         };
         let name = match self.library.card(pick.card).await {
             Ok(Some(card)) if prompt.lists(&card.name) => card.name,
             Ok(Some(_)) => {
                 tracing::warn!(card = %pick.card, "a pick's card is not on its prompt's list");
-                return ephemeral(ctx, c, render::UNKNOWN_BUTTON).await;
+                return ephemeral(http, c, render::UNKNOWN_BUTTON).await;
             }
-            Ok(None) => return ephemeral(ctx, c, render::UNKNOWN_BUTTON).await,
+            Ok(None) => return ephemeral(http, c, render::UNKNOWN_BUTTON).await,
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "pick: card lookup failed");
-                return ephemeral(ctx, c, render::PICK_FAILED).await;
+                return ephemeral(http, c, render::PICK_FAILED).await;
             }
         };
         let Some(text) = question::pin_at(prompt.question(), pick.span.map(ByteSpan::range), &name)
         else {
             tracing::warn!(span = ?pick.span, "a pick's span is not in its question; answering as expired");
-            return ephemeral(ctx, c, render::EXPIRED).await;
+            return ephemeral(http, c, render::EXPIRED).await;
         };
         // Take the permit before the claim, so a "busy" leaves the buttons usable.
         let Some(_permit) = self.acquire().await else {
-            return ephemeral(ctx, c, render::BUSY).await;
+            return ephemeral(http, c, render::BUSY).await;
         };
         let key = PickKey {
             message_id: message.id.get(),
@@ -573,10 +572,10 @@ impl Data {
         let pool = self.library.pool();
         match claim_pick(pool, key).await {
             Ok(true) => {}
-            Ok(false) => return ephemeral(ctx, c, render::ALREADY_PICKED).await,
+            Ok(false) => return ephemeral(http, c, render::ALREADY_PICKED).await,
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "pick: claim failed");
-                return ephemeral(ctx, c, render::PICK_FAILED).await;
+                return ephemeral(http, c, render::PICK_FAILED).await;
             }
         }
         // Replace the "did you mean…?" in place, then edit it again with the verdict.
@@ -585,7 +584,7 @@ impl Data {
             .components(vec![])
             .embeds(vec![]);
         if let Err(e) = c
-            .create_response(&ctx.http, CreateInteractionResponse::UpdateMessage(working))
+            .create_response(http, CreateInteractionResponse::UpdateMessage(working))
             .await
         {
             // The buttons are most likely still there: give the claim back so
@@ -603,12 +602,12 @@ impl Data {
             text,
         };
         let out = self.answer(&q, c.user.id, audience).await;
-        if let Err(e) = c.edit_response(&ctx.http, out.into_edit()).await {
+        if let Err(e) = c.edit_response(http, out.into_edit()).await {
             // The pick is claimed and the message shows "Working on it…" with
             // no buttons: tell the asker (ephemerally) to ask again rather
             // than leave them waiting on a message that will never change.
             tracing::error!(error = %e, "edit picked reply failed; asking the user to re-ask");
-            ephemeral_followup(ctx, c, render::EDIT_FAILED)
+            ephemeral_followup(http, c, render::EDIT_FAILED)
                 .await
                 .context("report failed edit after pick")?;
             return Err(anyhow::Error::from(e).context("edit picked reply"));
@@ -638,7 +637,8 @@ impl NoPick {
     }
 }
 
-/// A reply before it is shaped for poise (`CreateReply`) or serenity (`EditInteractionResponse`).
+/// A reply before it is shaped as a command's [`Message`] or a pick's
+/// [`EditInteractionResponse`].
 struct Outgoing {
     content: String,
     embed: Option<CreateEmbed>,
@@ -707,15 +707,15 @@ impl Outgoing {
         })
     }
 
-    fn into_reply(self) -> poise::CreateReply {
-        let mut r = poise::CreateReply::default()
+    fn into_message(self) -> Message {
+        let mut m = Message::default()
             .content(self.content)
             .components(self.components)
-            .allowed_mentions(no_pings());
+            .no_pings();
         if let Some(e) = self.embed {
-            r = r.embed(e);
+            m = m.embed(e);
         }
-        r
+        m
     }
 
     fn into_edit(self) -> EditInteractionResponse {
@@ -775,29 +775,25 @@ const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
     }
 }
 
-async fn ephemeral(
-    ctx: &serenity::Context,
-    c: &ComponentInteraction,
-    text: &str,
-) -> anyhow::Result<()> {
+async fn ephemeral(http: &Http, c: &ComponentInteraction, text: &str) -> anyhow::Result<()> {
     let msg = CreateInteractionResponseMessage::new()
         .content(text)
         .ephemeral(true);
-    c.create_response(&ctx.http, CreateInteractionResponse::Message(msg))
+    c.create_response(http, CreateInteractionResponse::Message(msg))
         .await
         .context("respond to button")
 }
 
 /// An ephemeral follow-up after a deferred acknowledgement.
 async fn ephemeral_followup(
-    ctx: &serenity::Context,
+    http: &Http,
     c: &ComponentInteraction,
     text: &str,
 ) -> anyhow::Result<()> {
     let msg = CreateInteractionResponseFollowup::new()
         .content(text)
         .ephemeral(true);
-    c.create_followup(&ctx.http, msg)
+    c.create_followup(http, msg)
         .await
         .map(drop)
         .context("follow up on button")
@@ -806,13 +802,8 @@ async fn ephemeral_followup(
 /// Whether `member` holds a role named `role_name` in `guild`. Looked up over
 /// HTTP each time (the gateway runs with no intents, so the cache is empty);
 /// a lookup failure counts as "not a judge" and is logged.
-async fn has_role(
-    ctx: &serenity::Context,
-    guild: GuildId,
-    member: &Member,
-    role_name: &str,
-) -> bool {
-    match guild.roles(&ctx.http).await {
+async fn has_role(http: &Http, guild: GuildId, member: &Member, role_name: &str) -> bool {
+    match guild.roles(http).await {
         Ok(roles) => roles
             .values()
             .any(|r| r.name == role_name && member.roles.contains(&r.id)),
@@ -823,275 +814,232 @@ async fn has_role(
     }
 }
 
-/// The longest `/judge` question, in characters: the `max_length` of its
-/// `question` option, which the attribute below must repeat as a literal
-/// (poise takes no paths there; a test reads the registered value back). At
-/// most [`render::PICK_QUESTION_LIMIT`], so a "did you mean…?" always has
-/// room for the whole question, and a quarter of `u16::MAX`, so its byte
-/// offsets fit a pick's `custom_id`.
-pub const QUESTION_MAX_CHARS: usize = 1300;
-const _: () = assert!(QUESTION_MAX_CHARS <= render::PICK_QUESTION_LIMIT);
-const _: () = assert!(QUESTION_MAX_CHARS * 4 <= u16::MAX as usize);
-
-/// Ask a Magic rules question; the answer cites the Comprehensive Rules.
-#[poise::command(slash_command, rename = "judge", guild_only)]
-async fn judge_command(
-    ctx: Ctx<'_>,
-    #[description = "Your rules question. Use brackets like [[Full Card Name]] to avoid ambiguity."]
-    #[max_length = 1300]
-    question: String,
-    #[description = "Show the answer only to you. A private answer stands alone: no follow-ups, no ratings, not saved."]
-    private: Option<bool>,
-) -> Result<(), Error> {
-    let data = ctx.data();
-    let audience = Audience::from_option(private);
-    let Some(_permit) = data.acquire().await else {
-        ctx.send(
-            poise::CreateReply::default()
-                .content(render::BUSY)
-                .ephemeral(true),
-        )
-        .await?;
-        return Ok(());
-    };
-    // After the slot, so a "busy" costs the asker none of their allowance.
-    // Everything past here counts, answered or not: an ambiguous or unknown
-    // card has already paid for an extraction call.
-    if let Some(cooldowns) = &data.cooldowns
-        && let Err(wait) = cooldowns.take(ctx.author().id.get(), Instant::now())
-    {
-        ctx.send(
-            poise::CreateReply::default()
-                .content(render::cooling_down(cooldowns.limit(), wait))
-                .ephemeral(true),
-        )
-        .await?;
-        return Ok(());
-    }
-    // Answers take 20–45 s; Discord wants an acknowledgement within 3 s. The
-    // acknowledgement is also where Discord fixes who sees the reply.
-    match audience {
-        Audience::Channel => ctx.defer().await?,
-        Audience::Private => ctx.defer_ephemeral().await?,
-    }
-    let q = Question {
-        thread_id: ctx.channel_id().to_string(),
-        text: question,
-    };
-    let out = data.answer(&q, ctx.author().id, audience).await;
-    ctx.send(out.into_reply().ephemeral(audience.is_private()))
-        .await?;
-    Ok(())
-}
-
-/// Look up a card: Oracle text and rulings. Free: no model is called.
-#[poise::command(slash_command, rename = "card")]
-async fn card_command(
-    ctx: Ctx<'_>,
-    #[description = "A card name or nickname."] name: String,
-    #[description = "Show the card only to you."] private: Option<bool>,
-) -> Result<(), Error> {
-    let data = ctx.data();
-    let private = Audience::from_option(private).is_private();
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > render::LOOKUP_INPUT_LIMIT {
-        return say(ctx, render::LOOKUP_BAD_NAME, true).await;
-    }
-    // The resolver's fuzzy step and a cold pool can outlast Discord's 3 s.
-    defer(ctx, private).await?;
-    let resolution = match data.deps.resolver.resolve(name).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error = format_args!("{e:#}"), "/card resolve failed");
-            return say(ctx, render::LOOKUP_FAILED, true).await;
+impl Data {
+    /// Answer an interaction, however it arrived: a slash command or a
+    /// button. Other kinds (autocomplete, modals) are not registered, so
+    /// none arrive. Never fails: a handler's error is logged here, and a
+    /// command's is reported to the user.
+    async fn dispatch(&self, http: &Http, interaction: &Interaction) {
+        match interaction {
+            Interaction::Command(c) => self.on_command(http, c).await,
+            Interaction::Component(c) => {
+                if let Err(e) = self.on_component(http, c).await {
+                    tracing::error!(error = format_args!("{e:#}"), "button handler failed");
+                }
+            }
+            other => {
+                tracing::warn!(kind = ?other.kind(), "an interaction of a kind this bot does not register");
+            }
         }
-    };
-    match resolution {
-        Resolution::Resolved { card, .. } => {
-            let rulings = data.library.rulings(card.id).await.unwrap_or_else(|e| {
-                tracing::warn!(error = format_args!("{e:#}"), "/card rulings unavailable");
-                vec![]
-            });
-            let view = render::card(&card, &rulings, &data.symbols.get());
-            let embed = lookup_embed(view);
-            ctx.send(
-                poise::CreateReply::default()
-                    .embed(embed)
-                    .ephemeral(private)
-                    .allowed_mentions(no_pings()),
-            )
+    }
+
+    /// A slash command: parsed, run, and on an error answered with
+    /// [`render::FAILED`].
+    async fn on_command(&self, http: &Http, c: &CommandInteraction) {
+        let command = match Command::parse(&c.data, c.guild_id.is_some()) {
+            Ok(command) => command,
+            Err(why) => {
+                tracing::warn!(command = %c.data.name, error = %why, "a slash command this build cannot run");
+                let text = match why {
+                    Unparsed::NotInGuild => render::SERVER_ONLY,
+                    Unparsed::Unknown(_) | Unparsed::BadOption { .. } => render::UNKNOWN_COMMAND,
+                };
+                if let Err(e) = Reply::new(http, c, true).send(Message::text(text)).await {
+                    tracing::error!(error = %e, "could not answer an unusable command");
+                }
+                return;
+            }
+        };
+        let name = command.name();
+        let mut reply = Reply::new(http, c, command.ephemeral());
+        let ran = match command {
+            Command::Judge { question, audience } => {
+                self.judge(&mut reply, c, question, audience).await
+            }
+            Command::Card { name, private } => self.card(&mut reply, &name, private).await,
+            Command::Rule { id, private } => self.rule(&mut reply, &id, private).await,
+            Command::Help => self.help(&mut reply).await,
+            Command::License => self.license(&mut reply).await,
+            Command::Forget => self.forget(&mut reply, c.user.id).await,
+        };
+        if let Err(error) = ran {
+            tracing::error!(
+                command = name,
+                error = format_args!("{error:#}"),
+                "command failed"
+            );
+            if let Err(e) = reply.send(Message::default().content(render::FAILED)).await {
+                tracing::error!(error = %e, "could not report the failure to the user");
+            }
+        }
+    }
+
+    /// `/judge`: ask a Magic rules question; the answer cites the
+    /// Comprehensive Rules.
+    async fn judge(
+        &self,
+        reply: &mut Reply<'_>,
+        c: &CommandInteraction,
+        question: String,
+        audience: Audience,
+    ) -> anyhow::Result<()> {
+        let Some(_permit) = self.acquire().await else {
+            reply
+                .send(Message::default().content(render::BUSY).ephemeral(true))
+                .await?;
+            return Ok(());
+        };
+        // After the slot, so a "busy" costs the asker none of their allowance.
+        // Everything past here counts, answered or not: an ambiguous or unknown
+        // card has already paid for an extraction call.
+        if let Some(cooldowns) = &self.cooldowns
+            && let Err(wait) = cooldowns.take(c.user.id.get(), Instant::now())
+        {
+            reply
+                .send(
+                    Message::default()
+                        .content(render::cooling_down(cooldowns.limit(), wait))
+                        .ephemeral(true),
+                )
+                .await?;
+            return Ok(());
+        }
+        // Answers take 20–45 s; Discord wants an acknowledgement within 3 s. The
+        // acknowledgement is also where Discord fixes who sees the reply.
+        reply.defer(audience.is_private()).await?;
+        let q = Question {
+            thread_id: c.channel_id.to_string(),
+            text: question,
+        };
+        let out = self.answer(&q, c.user.id, audience).await;
+        reply
+            .send(out.into_message().ephemeral(audience.is_private()))
             .await?;
-            Ok(())
+        Ok(())
+    }
+
+    /// `/card`: look up a card's Oracle text and rulings. No model is called.
+    async fn card(&self, reply: &mut Reply<'_>, name: &str, private: bool) -> anyhow::Result<()> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > render::LOOKUP_INPUT_LIMIT {
+            return say(reply, render::LOOKUP_BAD_NAME, true).await;
         }
-        Resolution::Ambiguous { candidates, .. } => {
-            let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-            say(ctx, &render::card_ambiguous(name, &names), true).await
+        // The resolver's fuzzy step and a cold pool can outlast Discord's 3 s.
+        // Discord fixes the reply's visibility here, so what follows (the
+        // result, or "not found") is seen by whoever `private` says.
+        reply.defer(private).await?;
+        let resolution = match self.deps.resolver.resolve(name).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = format_args!("{e:#}"), "/card resolve failed");
+                return say(reply, render::LOOKUP_FAILED, true).await;
+            }
+        };
+        match resolution {
+            Resolution::Resolved { card, .. } => {
+                let rulings = self.library.rulings(card.id).await.unwrap_or_else(|e| {
+                    tracing::warn!(error = format_args!("{e:#}"), "/card rulings unavailable");
+                    vec![]
+                });
+                let view = render::card(&card, &rulings, &self.symbols.get());
+                let lookup = lookup_message(view).ephemeral(private);
+                reply.send(lookup).await?;
+                Ok(())
+            }
+            Resolution::Ambiguous { candidates, .. } => {
+                let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+                say(reply, &render::card_ambiguous(name, &names), true).await
+            }
+            Resolution::NotFound { .. } => say(reply, &render::card_not_found(name), true).await,
         }
-        Resolution::NotFound { .. } => say(ctx, &render::card_not_found(name), true).await,
+    }
+
+    /// `/rule`: look up Comprehensive Rules text by number. No model is
+    /// called.
+    async fn rule(&self, reply: &mut Reply<'_>, id: &str, private: bool) -> anyhow::Result<()> {
+        let Ok(rule) = RuleId::try_new(id.trim().trim_end_matches('.')) else {
+            return say(reply, render::LOOKUP_BAD_RULE, true).await;
+        };
+        reply.defer(private).await?;
+        let chunks = match self
+            .deps
+            .retriever
+            .lookup_rules(std::slice::from_ref(&rule))
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = format_args!("{e:#}"), "/rule lookup failed");
+                return say(reply, render::LOOKUP_FAILED, true).await;
+            }
+        };
+        let Some(view) = render::rules(&rule, &chunks, &self.symbols.get()) else {
+            return say(reply, &render::rule_not_found(&rule), true).await;
+        };
+        reply.send(lookup_message(view).ephemeral(private)).await?;
+        Ok(())
+    }
+
+    /// `/help`: what the bot does, how to ask, what it stores, and where its
+    /// source is.
+    async fn help(&self, reply: &mut Reply<'_>) -> anyhow::Result<()> {
+        // Deferred first: the data's freshness is a database read, and the reply
+        // must not miss Discord's 3 s deadline waiting on it.
+        reply.defer(true).await?;
+        let freshness = self.library.freshness().await;
+        // Two ephemeral messages: the second is a follow-up to the first.
+        for part in render::help(&self.offer, &self.operator, freshness.as_ref()) {
+            reply.send(Message::default().content(part)).await?;
+        }
+        Ok(())
+    }
+
+    /// `/license`: where this bot's source code is, at which commit, and
+    /// under which licence.
+    async fn license(&self, reply: &mut Reply<'_>) -> anyhow::Result<()> {
+        let text = render::license(&self.offer, &self.operator);
+        reply.send(Message::default().content(text)).await?;
+        Ok(())
+    }
+
+    /// `/forget`: delete the caller's ratings and anonymize their failed
+    /// calls.
+    async fn forget(&self, reply: &mut Reply<'_>, user: UserId) -> anyhow::Result<()> {
+        let user_id = user.to_string();
+        // The id stays out of the log: the point of the command is to stop
+        // keeping it.
+        let text = match self.store.forget_user(&user_id).await {
+            Ok(f) => {
+                tracing::info!(ratings = f.ratings, failures = f.failures, "forgot a user");
+                render::forgotten(f)
+            }
+            Err(e) => {
+                tracing::error!(error = format_args!("{e:#}"), "forget failed");
+                render::FORGET_FAILED.to_owned()
+            }
+        };
+        reply.send(Message::default().content(text)).await?;
+        Ok(())
     }
 }
 
-/// Look up Comprehensive Rules text by number. Free: no model is called.
-#[poise::command(slash_command, rename = "rule")]
-async fn rule_command(
-    ctx: Ctx<'_>,
-    #[description = "A rule number such as 702.19, 702.19b or 702."] id: String,
-    #[description = "Show the rule only to you."] private: Option<bool>,
-) -> Result<(), Error> {
-    let data = ctx.data();
-    let private = Audience::from_option(private).is_private();
-    let Ok(rule) = RuleId::try_new(id.trim().trim_end_matches('.')) else {
-        return say(ctx, render::LOOKUP_BAD_RULE, true).await;
-    };
-    defer(ctx, private).await?;
-    let chunks = match data
-        .deps
-        .retriever
-        .lookup_rules(std::slice::from_ref(&rule))
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = format_args!("{e:#}"), "/rule lookup failed");
-            return say(ctx, render::LOOKUP_FAILED, true).await;
-        }
-    };
-    let Some(view) = render::rules(&rule, &chunks, &data.symbols.get()) else {
-        return say(ctx, &render::rule_not_found(&rule), true).await;
-    };
-    let embed = lookup_embed(view);
-    ctx.send(
-        poise::CreateReply::default()
-            .embed(embed)
-            .ephemeral(private)
-            .allowed_mentions(no_pings()),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Acknowledge a lookup. Discord fixes the reply's visibility here, so what
-/// follows (the result, or "not found") is seen by whoever `private` says.
-async fn defer(ctx: Ctx<'_>, private: bool) -> Result<(), Error> {
-    if private {
-        ctx.defer_ephemeral().await?;
-    } else {
-        ctx.defer().await?;
-    }
-    Ok(())
-}
-
-fn lookup_embed(view: render::Lookup) -> CreateEmbed {
+/// A lookup's embed, pinging nobody.
+fn lookup_message(view: render::Lookup) -> Message {
     let embed = CreateEmbed::new()
         .title(view.title)
         .url(view.url)
         .description(view.description);
-    match view.footer {
+    let embed = match view.footer {
         Some(f) => embed.footer(CreateEmbedFooter::new(f)),
         None => embed,
-    }
+    };
+    Message::default().embed(embed).no_pings()
 }
 
 /// A plain text reply, pinging nobody.
-async fn say(ctx: Ctx<'_>, text: &str, ephemeral: bool) -> Result<(), Error> {
-    ctx.send(
-        poise::CreateReply::default()
-            .content(text)
-            .ephemeral(ephemeral)
-            .allowed_mentions(no_pings()),
-    )
-    .await?;
+async fn say(reply: &mut Reply<'_>, text: &str, ephemeral: bool) -> anyhow::Result<()> {
+    reply.send(Message::text(text).ephemeral(ephemeral)).await?;
     Ok(())
-}
-
-/// What the bot does, how to ask, what it stores, and where its source is.
-#[poise::command(slash_command, rename = "help", ephemeral)]
-async fn help_command(ctx: Ctx<'_>) -> Result<(), Error> {
-    // Deferred first: the data's freshness is a database read, and the reply
-    // must not miss Discord's 3 s deadline waiting on it.
-    ctx.defer_ephemeral().await?;
-    let data = ctx.data();
-    let freshness = data.library.freshness().await;
-    // Two ephemeral messages: the second is a follow-up to the first.
-    for part in render::help(&data.offer, &data.operator, freshness.as_ref()) {
-        ctx.say(part).await?;
-    }
-    Ok(())
-}
-
-/// Where this bot's source code is, at which commit, and under which licence.
-#[poise::command(slash_command, rename = "license", ephemeral)]
-async fn license_command(ctx: Ctx<'_>) -> Result<(), Error> {
-    ctx.say(render::license(&ctx.data().offer, &ctx.data().operator))
-        .await?;
-    Ok(())
-}
-
-/// Delete your ratings and anonymize your failed calls; nothing else is stored about you.
-#[poise::command(slash_command, rename = "forget", ephemeral)]
-async fn forget_command(ctx: Ctx<'_>) -> Result<(), Error> {
-    let user_id = ctx.author().id.to_string();
-    // The id stays out of the log: the point of the command is to stop
-    // keeping it.
-    let text = match ctx.data().store.forget_user(&user_id).await {
-        Ok(f) => {
-            tracing::info!(ratings = f.ratings, failures = f.failures, "forgot a user");
-            render::forgotten(f)
-        }
-        Err(e) => {
-            tracing::error!(error = format_args!("{e:#}"), "forget failed");
-            render::FORGET_FAILED.to_owned()
-        }
-    };
-    ctx.say(text).await?;
-    Ok(())
-}
-
-async fn event_handler(
-    framework: poise::FrameworkContext<'_, Arc<Data>, Error>,
-    event: &FullEvent,
-) -> Result<(), Error> {
-    let (ctx, data) = (framework.serenity_context, framework.user_data);
-    match event {
-        FullEvent::Ready { data_about_bot } => {
-            tracing::info!(user = %data_about_bot.user.name, guilds = data_about_bot.guilds.len(), "connected to Discord");
-        }
-        FullEvent::InteractionCreate {
-            interaction: Interaction::Component(c),
-        } => data.on_component(ctx, c).await?,
-        _ => {}
-    }
-    Ok(())
-}
-
-async fn on_error(error: poise::FrameworkError<'_, Arc<Data>, Error>) {
-    match error {
-        poise::FrameworkError::Command { error, ctx, .. } => {
-            tracing::error!(
-                command = &*ctx.command().name,
-                error = format_args!("{error:#}"),
-                "command failed"
-            );
-            if let Err(e) = ctx
-                .send(poise::CreateReply::default().content(render::FAILED))
-                .await
-            {
-                tracing::error!(error = %e, "could not report the failure to the user");
-            }
-        }
-        poise::FrameworkError::EventHandler { error, event, .. } => {
-            tracing::error!(
-                event = event.snake_case_name(),
-                error = format_args!("{error:#}"),
-                "event handler failed"
-            );
-        }
-        other => {
-            if let Err(e) = poise::builtins::on_error(other).await {
-                tracing::error!(error = %e, "error while handling an error");
-            }
-        }
-    }
 }
 
 /// The `--discord` role: build the adapter's [`Data`] over the process's
@@ -1166,24 +1114,81 @@ pub async fn serve(
     Ok(())
 }
 
-/// poise's framework, with each event it handles counted as in-flight work
-/// for the process's [`Shutdown`]: serenity dispatches every event on a task
-/// of its own, and this holds the [`Work`](crate::shutdown::Work) for as long
-/// as that task runs the handler, a `/judge` answer included.
-struct Tracked<F> {
-    inner: F,
+/// One gateway connection's event handler: interactions go to
+/// [`Data::dispatch`], each counted as in-flight work for the process's
+/// [`Shutdown`] (serenity dispatches every event on a task of its own, and
+/// this holds the [`Work`](crate::shutdown::Work) for as long as that task
+/// runs the handler, a `/judge` answer included).
+struct Handler {
+    data: Arc<Data>,
     shutdown: Shutdown,
+    guild: Option<GuildId>,
+    /// Where the first `Ready` hands the symbol watcher's abort handle. Taken
+    /// by that `Ready`, so a later one (a new session on the same
+    /// connection) starts no second watcher.
+    watcher: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<tokio::task::AbortHandle>>>,
 }
 
-#[serenity::async_trait]
-impl<F: serenity::framework::Framework> serenity::framework::Framework for Tracked<F> {
-    async fn init(&mut self, client: &serenity::Client) {
-        self.inner.init(client).await;
+#[serenity::all::async_trait]
+impl serenity::all::EventHandler for Handler {
+    async fn ready(&self, ctx: serenity::all::Context, ready: Ready) {
+        tracing::info!(user = %ready.user.name, guilds = ready.guilds.len(), "connected to Discord");
+        let Some(watcher_tx) = self.watcher.lock().ok().and_then(|mut w| w.take()) else {
+            return;
+        };
+        // Nothing in here fails or waits long: registration is bounded and
+        // only logged on failure, and the watcher is a task of its own.
+        register(&ctx.http, self.guild, &self.data).await;
+        // The application id arrives with `Ready`, so `ctx.http` can list the
+        // emoji now. The watcher does it as a task of its own, so a slow
+        // database or Discord never delays the bot's readiness: symbols
+        // render as text until its first listing lands.
+        let watcher = tokio::spawn(symbols::watch(
+            Arc::clone(&ctx.http),
+            self.data.library.pool().clone(),
+            Arc::clone(&self.data.symbols),
+        ));
+        if watcher_tx.send(watcher.abort_handle()).is_err() {
+            // The connection is already over.
+            watcher.abort();
+        }
     }
 
-    async fn dispatch(&self, ctx: serenity::Context, event: FullEvent) {
+    async fn interaction_create(&self, ctx: serenity::all::Context, interaction: Interaction) {
         let _work = self.shutdown.work();
-        self.inner.dispatch(ctx, event).await;
+        dispatch_guarded(Arc::clone(&self.data), Arc::clone(&ctx.http), interaction).await;
+    }
+}
+
+/// [`Data::dispatch`] on a task of its own, so a panic in a handler is
+/// caught: it is logged, and a command is told [`render::FAILED`], as it is
+/// after an error.
+async fn dispatch_guarded(data: Arc<Data>, http: Arc<Http>, interaction: Interaction) {
+    let command = match &interaction {
+        Interaction::Command(c) => Some(c.clone()),
+        _ => None,
+    };
+    let h = Arc::clone(&http);
+    let ran = tokio::spawn(async move { data.dispatch(&h, &interaction).await }).await;
+    let Err(e) = ran else { return };
+    if !e.is_panic() {
+        return;
+    }
+    tracing::error!(error = %e, "an interaction handler panicked");
+    let Some(c) = command else { return };
+    let ephemeral = Command::parse(&c.data, c.guild_id.is_some()).map_or(true, |c| c.ephemeral());
+    let message = || Message::default().content(render::FAILED);
+    // The initial response if the handler sent none, else a follow-up.
+    if Reply::new(&http, &c, ephemeral)
+        .send(message())
+        .await
+        .is_err()
+    {
+        let mut after = Reply::new(&http, &c, ephemeral);
+        after.responded();
+        if let Err(e) = after.send(message()).await {
+            tracing::error!(error = %e, "could not report the panic to the user");
+        }
     }
 }
 
@@ -1196,8 +1201,8 @@ impl<F: serenity::framework::Framework> serenity::framework::Framework for Track
 /// [`gateway::Timing::shutdown_limit`], then ends the role, and the process
 /// exits, which closes any shard still open.
 ///
-/// Every event it dispatches is counted as in-flight work for `shutdown`
-/// ([`Tracked`]).
+/// Every interaction it dispatches is counted as in-flight work for
+/// `shutdown` ([`Handler`]).
 ///
 /// # Errors
 /// Building the client (bad token) or a fatal gateway error.
@@ -1207,58 +1212,20 @@ pub async fn run(
     shutdown: Shutdown,
     mut stop: gateway::Stop,
 ) -> anyhow::Result<()> {
-    let guild = cfg.guild_id;
     // The symbol watcher this connection starts, aborted when the connection
     // ends (however `run` returns, or is dropped), so reconnects never stack
     // watchers.
     let (watcher_tx, watcher_rx) = tokio::sync::oneshot::channel();
     let _watcher = AbortOnDrop(watcher_rx);
-    let options = poise::FrameworkOptions {
-        commands: vec![
-            judge_command(),
-            card_command(),
-            rule_command(),
-            help_command(),
-            license_command(),
-            forget_command(),
-        ],
-        event_handler: |framework, event| Box::pin(event_handler(framework, event)),
-        on_error: |e| Box::pin(on_error(e)),
-        ..Default::default()
+    let handler = Handler {
+        data,
+        shutdown,
+        guild: cfg.guild_id,
+        watcher: std::sync::Mutex::new(Some(watcher_tx)),
     };
-    let framework = poise::Framework::builder()
-        .options(options)
-        .setup(move |ctx, _ready, framework| {
-            // Nothing in here fails: an error from `setup` would leave poise
-            // connected with no user data, answering nothing while this
-            // process keeps the lease. Registration is bounded and only
-            // logged on failure, and the watcher is a task of its own.
-            Box::pin(async move {
-                register(ctx, &framework.options().commands, guild, &data).await;
-                // The application id arrives with `Ready`, which is what got us
-                // here, so `ctx.http` can list the emoji now. The watcher does
-                // it as a task of its own, so a slow database or Discord never
-                // delays the bot's readiness: symbols render as text until its
-                // first listing lands.
-                let watcher = tokio::spawn(symbols::watch(
-                    Arc::clone(&ctx.http),
-                    data.library.pool().clone(),
-                    Arc::clone(&data.symbols),
-                ));
-                if watcher_tx.send(watcher.abort_handle()).is_err() {
-                    // The connection is already over.
-                    watcher.abort();
-                }
-                Ok(data)
-            })
-        })
-        .build();
     // Slash commands and button presses arrive without any gateway intent.
-    let building = serenity::ClientBuilder::new(cfg.token.expose(), GatewayIntents::empty())
-        .framework(Tracked {
-            inner: framework,
-            shutdown,
-        });
+    let building = serenity::all::ClientBuilder::new(cfg.token.expose(), GatewayIntents::empty())
+        .event_handler(handler);
     // `biased`: a stop that came first wins, so nothing starts after it.
     let mut client = tokio::select! {
         biased;
@@ -1299,35 +1266,26 @@ pub async fn run(
 /// it goes on without them (the ones registered before stay in force).
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Register the slash commands, once per role: in `guild`, or globally.
-/// Never fails: Discord keeps the commands registered earlier, so a failure
-/// (or no answer in [`REGISTER_TIMEOUT`]) is a warning, and the next
-/// connection tries again.
-async fn register(
-    ctx: &serenity::Context,
-    commands: &[poise::Command<Arc<Data>, Error>],
-    guild: Option<GuildId>,
-    data: &Data,
-) {
+/// Register the slash commands ([`command::definitions`]), once per role: in
+/// `guild`, or globally. Never fails: Discord keeps the commands registered
+/// earlier, so a failure (or no answer in [`REGISTER_TIMEOUT`]) is a warning,
+/// and the next connection tries again.
+async fn register(http: &Http, guild: Option<GuildId>, data: &Data) {
     if data.registered.load(Ordering::Acquire) {
         tracing::debug!("slash commands already registered by this process");
         return;
     }
+    let commands = command::definitions();
     let done = match guild {
-        Some(g) => {
-            tokio::time::timeout(
-                REGISTER_TIMEOUT,
-                poise::builtins::register_in_guild(ctx, commands, g),
-            )
+        Some(g) => tokio::time::timeout(REGISTER_TIMEOUT, g.set_commands(http, commands))
             .await
-        }
-        None => {
-            tokio::time::timeout(
-                REGISTER_TIMEOUT,
-                poise::builtins::register_globally(ctx, commands),
-            )
-            .await
-        }
+            .map(|r| r.map(drop)),
+        None => tokio::time::timeout(
+            REGISTER_TIMEOUT,
+            serenity::all::Command::set_global_commands(http, commands),
+        )
+        .await
+        .map(|r| r.map(drop)),
     };
     match (done, guild) {
         (Ok(Ok(())), Some(g)) => {
@@ -1643,22 +1601,6 @@ mod tests {
             Outgoing::pick(asker, Audience::Channel, &long, &spans("q")).err(),
             Some(NoPick::TooLong)
         );
-    }
-
-    #[test]
-    fn the_question_option_is_registered_with_its_max_length() {
-        let cmd = judge_command().create_as_slash_command();
-        let json = serde_json::to_value(&cmd).unwrap_or_default();
-        let max = json
-            .get("options")
-            .and_then(|o| o.as_array())
-            .and_then(|o| {
-                o.iter()
-                    .find(|o| o.get("name").and_then(|n| n.as_str()) == Some("question"))
-            })
-            .and_then(|o| o.get("max_length"))
-            .and_then(serde_json::Value::as_u64);
-        assert_eq!(max, u64::try_from(QUESTION_MAX_CHARS).ok());
     }
 
     #[test]

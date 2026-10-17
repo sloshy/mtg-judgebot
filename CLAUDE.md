@@ -161,7 +161,10 @@ The hooks run on Claude's commits too. Don't bypass them with `--no-verify`. Fix
 failure instead.
 
 Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`,
-`/license` and `/forget`, which deletes the caller's ratings and anonymizes their
+`/license` and `/forget` (`discord::command`: `definitions` is the registration, pinned
+byte-for-byte by `tests/fixtures/discord/commands.json`, and `Command::parse` the typed
+invocation; no poise, whose dispatch needs a live gateway connection; replies go
+through `discord::reply::Reply`, initial response then follow-ups, over REST), which deletes the caller's ratings and anonymizes their
 `failed_calls` rows through `CallStore::forget_user` (`Forgotten`).
 
 - `/judge private:True` is `discord::Audience::Private`: ephemeral, no thread history
@@ -198,11 +201,10 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
   returns, since it is a no-op before a shard registers) and waits `shutdown_limit`
   (1 s). Closed in time: stand by again. Not: return an error so the process exits.
   `grace` (15 s) > `worst_disconnect` (10 s) is a `const` assertion. The gateway is an
-  `FnMut(Stop)`, called per connection over one `Arc<Data>` (poise's user data is
-  `Arc<Data>`); `symbols::watch` is spawned per connection and aborted with it
-  (`AbortOnDrop`). `setup` cannot fail (an error there leaves poise connected with no
-  user data, answering nothing): commands register once per role (`Data::registered`),
-  bounded by `REGISTER_TIMEOUT`, and a failure is a WARN. A loss within
+  `FnMut(Stop)`, called per connection over one `Arc<Data>`; `symbols::watch` is
+  spawned on the connection's first `Ready` and aborted with it (`AbortOnDrop`). Commands
+  register once per role (`Data::registered`), bounded by `REGISTER_TIMEOUT`, and a
+  failure is a WARN. A loss within
   `Timing::healthy_hold` (30 min) of the last connection pauses before standing by
   (`reconnect_pause`: 30 s doubling to 10 min, ERROR), for Discord's 1000 IDENTIFYs a
   day per token. `Timing::every` returns `None` for a zero interval. A holder in a paused VM that loses its session can overlap until its
@@ -216,8 +218,8 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
   `shutdown_limit` releases with `GatewayLease::release_closed`, which writes
   `gateway_handover.released_at`; every holder's `take_over` clears it before connecting
   and skips the grace (`Handover::Clean`) only for a release under
-  `Timing::handover_window` (5 s, `const` < grace) old. `discord::Tracked` wraps poise's framework so each serenity-dispatched event
-  holds a `Work` guard, and `serve` returns after `Shutdown::drained`. `serve_on` is
+  `Timing::handover_window` (5 s, `const` < grace) old. `discord::Handler` holds a `Work` guard for each
+  interaction serenity dispatches, and `serve` returns after `Shutdown::drained`. `serve_on` is
   axum's graceful shutdown, bounded. All of it is within `DRAIN_LIMIT` (120 s) of the
   request. `main::run` waits for both roles on a requested stop (otherwise the first to
   stop still ends the process), then `Serving::flush` writes the ledger, exit 0.
@@ -470,7 +472,7 @@ and `bot` ← the other bins):
   questions-refused alert stay chat-only. A dropped `Reservation` keeps its worst case.
 - `bot` (lib `judge_bot`): sqlx adapters, `config.rs` (the `judge.toml` loader),
   `extract.rs`/`synth.rs` over `judge-llm` only, prompts in `crates/bot/src/prompts/`,
-  the serenity/poise Discord layer with pure `render.rs` (`discord::serve`, the
+  the serenity Discord layer with pure `render.rs` (`discord::serve`, the
   `--discord` role), `serving.rs` (`Serving`: what the serving roles of one process
   share), and `ingest.rs`, the data steps (Scryfall, CR, curated lists, embedding, emoji,
   `init`, `refresh`), which `jobs.rs` schedules, and `backup.rs`, the database backup

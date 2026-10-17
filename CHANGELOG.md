@@ -133,6 +133,12 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **Discord answers a command it cannot run.** A slash command this version does not
+  have (Discord can still list a previous release's for a moment after a deploy) gets a
+  private "I don't recognise that command" instead of no response, and `/judge` in a
+  direct message a private "works in a server only". Replies ping nobody unless they
+  mention someone on purpose.
+
 - **`127.0.0.1:8787` is published by a new `proxy` service** (Caddy), which forwards to
   `judgebot`. The `judgebot` container publishes no port and has no fixed
   `container_name`, so that a deploy can run two of them. The address, the tunnel's

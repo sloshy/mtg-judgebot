@@ -666,7 +666,7 @@ at high). Prompt caching
 matters for the large synthesis turn. The provider seam means this is a default, not a
 lock-in.
 
-**serenity + poise** for Discord, **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite**
+**serenity** for Discord, **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite**
 for the web app. All conventional, well-maintained choices for their niches.
 
 **Docker Compose behind a Cloudflare Tunnel.** One host, no open inbound ports, a

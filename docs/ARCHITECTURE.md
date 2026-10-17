@@ -237,8 +237,8 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   and releases the lease the moment the connection is closed, recorded as clean
   (`gateway_handover`) when it closed within `Timing::shutdown_limit`, so the next holder
   connects without the grace; a standby stops waiting.
-  `discord::Tracked` wraps poise's framework so every event serenity dispatches (each
-  on its own task) holds a `Work` guard while its handler runs, and the role returns
+  `discord::Handler`, the gateway's event handler, holds a `Work` guard for each
+  interaction serenity dispatches (each on its own task) while its handler runs, and the role returns
   once they are all dropped. Everything is bounded by `DRAIN_LIMIT` (120 s) from the
   request; compose's `stop_grace_period` is that plus `EXIT_MARGIN` (a test). With both
   kinds of role, `main` waits for both rather than the first, then flushes the spend

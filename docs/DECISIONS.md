@@ -88,10 +88,13 @@ into.
 - **sqlx with compile-time checked queries** and a committed `.sqlx` offline cache (I6),
   over Diesel or a query builder. `cargo sqlx prepare --check` in CI keeps the cache
   current.
-- **serenity + poise** for Discord (slash commands, buttons and threads were all verified
+- **serenity** for Discord (slash commands, buttons and threads were all verified
   before the choice), **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite** for the
   page. These are conventional, maintained choices where nothing in the invariants pushed
   one way.
+  The slash commands are the adapter's own (`discord::command`) rather than poise's: poise
+  dispatches only from a live gateway connection, which an interaction received over HTTP
+  (#29) does not have.
 - **Workspace lints** deny `unwrap`, `expect`, indexing and `panic!` in every crate, and
   warn on the pedantic group and missing docs. I8 is a lint failure, not a review
   comment.

@@ -74,6 +74,13 @@ pub const PICK_FAILED: &str = "Sorry, I couldn't take that pick just now. Please
 pub const NOT_YOURS: &str = "Only the person who asked can pick a card for that question.";
 /// A button whose `custom_id` did not parse.
 pub const UNKNOWN_BUTTON: &str = "I don't recognise that button any more.";
+/// A slash command this build does not have, or whose options it cannot
+/// read: Discord still lists another release's commands for a moment after
+/// a deploy.
+pub const UNKNOWN_COMMAND: &str =
+    "I don't recognise that command in this version. Please try again in a minute.";
+/// `/judge` outside a server.
+pub const SERVER_ONLY: &str = "`/judge` works in a server only, not in direct messages.";
 /// The rating could not be stored.
 pub const RATE_FAILED: &str = "Sorry, I couldn't record that rating. Please try again.";
 
