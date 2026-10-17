@@ -1000,10 +1000,19 @@ load does not need it (D16), and the per-user and per-address limits stay per pr
   five-second ledger bound, inside the 15 s a standby waits (a `const` relation). A standby that is shutting down stops waiting.
 - **A proxy holds the host port.** Two containers of one service cannot share a name or
   a published port, so `judgebot` has neither. The `proxy` service (Caddy) publishes
-  `127.0.0.1:8787` and forwards to `judgebot:8787`, and the tunnel reaches the same name
-  through the `api` alias. During the overlap the name resolves to both containers. One
-  that has stopped listening refuses the connection, and the dial goes on to the other
-  address.
+  `127.0.0.1:8787` and forwards to `judgebot:8787`, and the tunnel goes through it
+  (`proxy:8787`, or the `api` alias). During the overlap the name resolves to both
+  containers. One that has stopped listening refuses the connection, and the dial goes
+  on to the other address. The proxy dials afresh for every request: a kept-alive
+  connection to the draining container can be closed under a request already written,
+  which a POST cannot repeat (a drill with two backends swapped under load lost 4 of
+  12 000 requests with keep-alive). What remains: closing the listener resets a
+  connection the kernel had queued for the old container but the process had not
+  accepted. A drill of real deploys under about 2 000 requests a second hit it twice in
+  17 000; at a community's traffic it is unlikely. Caddy cannot save such a request,
+  because it resends no POST body, and pointing the proxy at the new container alone
+  first (a configuration reload) reset more connections than it saved. Four deploys
+  under steady load through the compose network, the tunnel's path, lost none of 5 000.
 - **Migrations keep the previous release working.** The new container migrates as it
   starts, while the old one still answers, so a release's migrations must leave the
   previous release's queries valid: expand now, contract a release later. It applies
@@ -1032,14 +1041,14 @@ The reasons:
   list both.
 - *Discord's HTTP interactions endpoint* in place of the gateway. It would remove the
   handover, but needs a public URL for every Discord deployment. A gap of 15 to 25
-  seconds per deploy is accepted.
+  seconds per deploy is accepted. D30 later added it as an option beside the gateway.
 
 What follows:
 
 - **Discord is quiet for a login** (a few seconds), or for the grace plus a login
   (about 15 to 25 s) when the old container did not record a clean release. An
   interaction in that gap gets Discord's "did not respond". Receiving interactions over
-  HTTP instead of the gateway would close it (#29). The web app and the API see no gap.
+  HTTP instead of the gateway closes it (D30). The web app and the API see no gap.
 - **Limits reset once per deploy.** The per-user `/judge` window and the per-address
   limit are in memory, so the new container starts them empty, as a restart does.
 - **Spend overlaps by one sync.** Both containers bill one period through the ledger,
@@ -1050,3 +1059,95 @@ What follows:
 - **A migration that cannot keep the previous release working** (a rewrite of rows the
   old binary writes) is deployed with `docker compose up -d`, stop then start, and the
   CHANGELOG says so.
+
+## D30. Discord interactions over HTTP
+
+*Decided 2026-10-17.*
+
+`DISCORD_INTERACTIONS=http` has Discord POST each slash command and button click to the
+application's Interactions Endpoint URL, which reaches `/discord/interactions` on the
+process's HTTP listener (`judge_bot::discord::endpoint`), instead of sending it over a
+gateway connection. `gateway` stays the default. Discord delivers an application's
+interactions one way or the other, never both, so the setting has to agree with the
+Developer Portal.
+
+- **No gateway, no lease.** In `http` mode the Discord role opens no gateway
+  connection and takes no gateway lease. It reads the application's id and public key
+  over the REST API (`GET /applications/@me`), registers the commands, starts the
+  symbol watcher and opens the endpoint. Every response already went over REST; only
+  the delivery of the interaction changes. An HTTP-only bot is listed online in the
+  member list with no status dot.
+- **One dispatch for both routes.** The commands are the adapter's own
+  (`discord::command`, `Data::dispatch`) rather than poise's, whose dispatch needs a
+  live gateway connection. The gateway feeds the same dispatch from serenity's event
+  handler.
+- **Verify, then answer.** A request without a valid Ed25519 signature over the
+  timestamp and the body, or signed more than five minutes from the host's clock,
+  gets `401` before anything else is read. Discord sends invalid
+  ones on purpose and removes the URL from an application that accepts one. A PING is
+  answered in the body. Anything else runs on a task of its own, counted as in-flight
+  work for the drain, and the request is answered `202` with no body once the handler
+  has sent its initial response through the REST callback, as Discord documents for an
+  interaction answered that way. That is bounded by 2.8 s from the request's arrival,
+  under Discord's 3 s.
+- **Through the proxy.** Discord's requests reach the endpoint through the tunnel and
+  the `proxy` service, which dials a container afresh for every request (D29), so a
+  request sent while a deploy swaps containers lands on whichever is listening. The
+  old container's endpoint keeps answering what reaches it while it drains, and the
+  Discord role drains its handlers only after the listener has answered every
+  request it accepted.
+- **A closed endpoint takes no requests.** Until the role has the public key, the
+  listener has its port but does not listen, so the proxy's dial is refused and goes
+  on to the old container, which can verify them. It listens once the endpoint opens,
+  or after 30 s so a Discord API that does not answer cannot keep the web app down; a
+  request that still finds it closed waits up to half a second, then gets `503`.
+  `/api/health` fails while it is closed, so a deploy does not switch to it.
+- **A listener either way.** With a network role the endpoint is mounted on its
+  listener; `--discord` alone binds `API_ADDR` for the endpoint and `/api/health`.
+- **Outside the per-address limit.** Every request it acts on is signed by Discord, so
+  the anonymous API's per-IP limit does not apply. The per-user `/judge` window does,
+  as over the gateway.
+- **A mismatch is reported, not refused.** At startup the role compares the setting
+  with the application's Interactions Endpoint URL and logs an ERROR (and posts to the
+  alert webhook) when they disagree. Refusing would make the switch impossible:
+  Discord saves a URL only after its endpoint has answered, so an `http` instance must
+  be running before the URL can be set. It would also take down the web app in the
+  same process.
+
+The reasons:
+
+- **A deploy lost Discord for a login.** Over the gateway, interactions sent while the
+  connection changes hands get "did not respond". Over HTTP they arrive through the
+  tunnel and the proxy like any other request, and the listener's drain already
+  finishes what is in flight.
+- **Discord recommends it.** Its documentation describes the callback endpoint as the
+  way to respond, and an HTTP endpoint needs no long-lived connection or IDENTIFY
+  budget.
+
+**Rejected:**
+
+- *Choosing the mode from the application's URL alone.* It needs no setting, but makes
+  the process's behaviour a consequence of state outside it, and a URL saved by
+  mistake would silently close the gateway path.
+- *Answering inline* (the initial response as the HTTP response body). It saves one
+  REST call, but a handler's error on that response would be invisible, and every
+  handler would need a second code path. The callback keeps the code identical for
+  both routes.
+- *Keeping the gateway as a fallback in `http` mode* until the URL is saved. It would
+  make the switch seamless, but needs a second way to start and stop the gateway for a
+  one-time step.
+
+What follows:
+
+- **Switching modes costs a short gap.** Deploy with `http`, then save the URL in the
+  Developer Portal; interactions in between still go to the gateway, which nobody
+  holds. Switching back is the reverse.
+- **It needs a public HTTPS address.** A Discord-only deployment with no tunnel stays
+  on the gateway.
+- **A replay is bounded.** Discord gives no timestamp freshness window; the endpoint
+  refuses a signed timestamp more than five minutes from the host's clock, which bounds
+  a replay and tolerates a drifted clock. Within the window a replayed request's token
+  has been used, so its handler's first call to Discord fails and no model is called,
+  but what comes before that call happens again (a `/judge` charges the asker's
+  window). A host clock five minutes wrong refuses every interaction; the first
+  refusal of a streak is an ERROR and an alert.

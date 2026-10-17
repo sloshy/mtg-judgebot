@@ -17,13 +17,16 @@
 //!   Anthropic client remains the backstop;
 //! * with `--mcp` and `MCP_TOKEN` set, the MCP transport of `judge-agent` is
 //!   mounted at `/mcp` behind that bearer token ([`mcp`]), sharing the judge
-//!   slots and the spend cap with the web route.
+//!   slots and the spend cap with the web route;
+//! * with `DISCORD_INTERACTIONS=http`, Discord's interactions endpoint is
+//!   mounted at `/discord/interactions` ([`discord`]), outside the rate limit.
 //!
 //! Which of those interfaces a process opens is a launch option, not a
 //! consequence of being started: see [`interfaces`] and `judgebot`'s roles.
 //! The web page is served only where an operator asked for it.
 
 pub mod config;
+pub mod discord;
 pub mod http;
 pub mod interfaces;
 pub mod limit;

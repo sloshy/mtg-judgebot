@@ -145,6 +145,13 @@ pub const VARS: &[Var] = &[
     secret("DISCORD_TOKEN", Group::Discord),
     setting("JUDGE_ROLE", Group::Discord, TEXT),
     setting("GUILD_ID", Group::Discord, TEXT),
+    setting(
+        "DISCORD_INTERACTIONS",
+        Group::Discord,
+        Widget::Choice {
+            values: &["gateway", "http"],
+        },
+    ),
     setting(AUTO_MIGRATE_ENV, Group::Pipeline, Widget::Toggle),
     setting("JUDGE_CONCURRENCY", Group::Pipeline, int(1)),
     setting("JUDGE_USER_LIMIT", Group::Discord, int(0)),

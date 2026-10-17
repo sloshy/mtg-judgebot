@@ -19,6 +19,14 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Discord interactions over HTTP.** With `DISCORD_INTERACTIONS=http`, Discord POSTs
+  slash commands and button clicks to `/discord/interactions` (the application's
+  Interactions Endpoint URL, a public HTTPS address such as the tunnel's) instead of
+  sending them over a gateway connection. The bot then opens no gateway connection, and
+  Discord keeps being answered while a deploy switches containers. `gateway` stays the default. The bot reports a setting
+  that disagrees with the Developer Portal in its log and to `JUDGE_ALERT_WEBHOOK`.
+  Steps: `docs/DEPLOYMENT.md`, "Discord over HTTP".
+
 - **Deploys without downtime.** `scripts/deploy.sh` starts the new `judgebot` container
   beside the running one, waits until Docker reports it healthy, then stops the old one.
   The web app and the API stay up throughout. Discord is quiet for the new container's
@@ -139,10 +147,20 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   direct message a private "works in a server only". Replies ping nobody unless they
   mention someone on purpose.
 
-- **`127.0.0.1:8787` is published by a new `proxy` service** (Caddy), which forwards to
-  `judgebot`. The `judgebot` container publishes no port and has no fixed
-  `container_name`, so that a deploy can run two of them. The address, the tunnel's
-  `http://api:8787` and a host reverse proxy in front of `127.0.0.1:8787` are unchanged.
+- **`127.0.0.1:8787` is published by a new `proxy` service** (Caddy, `proxy/Caddyfile`),
+  which forwards to `judgebot` on a new connection per request. The `judgebot`
+  container publishes no port and has no fixed `container_name`, so that a deploy can
+  run two of them. The address and a host reverse proxy in front of `127.0.0.1:8787` are
+  unchanged.
+- **The tunnel goes through the proxy.** The network name `api` now belongs to the
+  `proxy` service, so a public hostname whose service is `http://api:8787` needs no
+  edit. One whose service is `http://judgebot:8787`, as the runbook said before, still
+  works but bypasses the proxy, and a deploy can then lose a request in flight: change
+  it to `http://proxy:8787` in the Cloudflare dashboard (Networks → Tunnels → your
+  tunnel → Public hostnames). The first `scripts/deploy.sh` onto this release recreates
+  the proxy once: the host port and the tunnel are down for about three seconds, and a
+  request that tunnel connections still send straight to the old container can be lost
+  as it stops. Later edits to `proxy/Caddyfile` load without a restart.
 
 - **`POST /api/judge` answers an unreadable request in JSON.** A body that is not JSON,
   has the wrong shape, is too large or is sent without a JSON `Content-Type`
@@ -165,8 +183,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `JUDGE_ROLES` when that is set in `.env`, else `--discord --api --web --jobs`: what the
   two services ran together. `JUDGE_ROLES='--api --web --jobs'` runs it without Discord.
   The container is `judgebot` (it was `judgebot-bot` and `judgebot-api`), so the logs are
-  `docker compose logs judgebot`. It keeps the `api` service's port, healthcheck and
-  network name, so a Cloudflare Tunnel pointing at `http://api:8787` needs no change.
+  `docker compose logs judgebot`. It keeps the `api` service's port and healthcheck, and
+  the `api` network name now belongs to the `proxy` in front of it, so a Cloudflare
+  Tunnel pointing at `http://api:8787` needs no change.
   `refresh` runs `judgebot ingest`, with the same arguments as before.
 - **`API_INTERFACES` is retired.** `JUDGE_ROLES` replaces it. A `.env` that still sets it
   is refused at startup, and the error names the `JUDGE_ROLES` line that replaces it,
@@ -307,8 +326,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `--discord --api --web --jobs`, what the two services did. One with `API_INTERFACES`:
   see the second item. A deployment without Discord: see the third (add `--mcp` if it
   served `/mcp`).
-- **The tunnel needs no edit.** The service answers to the network name `api` as well
-  as `judgebot`, so a public hostname whose service is `http://api:8787` keeps working.
+- **The tunnel needs no edit.** The network name `api` belongs to the `proxy` service,
+  which forwards to `judgebot`, so a public hostname whose service is `http://api:8787`
+  keeps working.
 - **`scripts/refresh-data.sh`, its cron entry and `docker compose run --rm refresh
   <command>` keep working.** Other commands that named a service change: `docker compose
   logs judgebot`, `docker compose restart judgebot` after a `judge.toml` edit, `docker

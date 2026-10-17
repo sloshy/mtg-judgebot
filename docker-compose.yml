@@ -101,26 +101,20 @@ services:
     # `refresh`'s `embed` step writes the vector space judgebot queries, so
     # the two must agree. Editing the file's content changes nothing here,
     # so `up -d` will not recreate: `docker compose restart judgebot`.
-    networks:
-      default:
-        # The HTTP roles were the `api` service, and a Cloudflare Tunnel set
-        # up then sends its public hostname to http://api:8787. The alias
-        # keeps that address working with no dashboard edit;
-        # http://judgebot:8787 is the same listener. During a deploy both
-        # names resolve to both containers, and a container that has stopped
-        # listening refuses the connection, so the dial goes on to the other.
-        aliases: [api]
-    # /api/health answers 503 until Postgres does. The slim image has no curl,
-    # so this is bash's /dev/tcp — invoked as bash explicitly, because CMD-SHELL
-    # would run /bin/sh, which is dash there and has no /dev/tcp. It probes
-    # only when the process runs an HTTP role: the roles are read from its
-    # command line (/proc/1/cmdline, NUL-separated: judgebot --discord ...),
-    # or from JUDGE_ROLES when that names none. Without --api, --web or --mcp
-    # (JUDGE_ROLES=--discord --jobs) nothing listens and the check passes, so
-    # the container is not "unhealthy" forever and cloudflared, which waits for
-    # it, still starts. The Discord gateway is not observable from outside the
-    # process; a fatal disconnect exits it, which `restart: unless-stopped`
-    # already covers. `$$` is a literal `$` to Compose.
+    # /api/health answers 503 until Postgres does, and with
+    # DISCORD_INTERACTIONS=http until the interactions endpoint can verify
+    # requests. The slim image has no curl, so this is bash's /dev/tcp —
+    # invoked as bash explicitly, because CMD-SHELL would run /bin/sh, which is
+    # dash there and has no /dev/tcp. It probes only when the process listens:
+    # an HTTP role, or --discord with DISCORD_INTERACTIONS=http. The roles are
+    # read from its command line (/proc/1/cmdline, NUL-separated: judgebot
+    # --discord ...), or from JUDGE_ROLES when that names none. Otherwise
+    # (JUDGE_ROLES=--discord --jobs over the gateway) nothing listens and the
+    # check passes, so the container is not "unhealthy" forever and
+    # cloudflared, which waits for it, still starts. The Discord gateway is not
+    # observable from outside the process; a fatal disconnect exits it, which
+    # `restart: unless-stopped` already covers. `$$` is a literal `$` to
+    # Compose.
     healthcheck:
       test:
         - CMD
@@ -129,7 +123,11 @@ services:
         - >-
           r=" $$(tr '\0' ' ' </proc/1/cmdline) ";
           case "$$r" in *" --"[a-z]*) ;; *) r=" $${JUDGE_ROLES:-} " ;; esac;
-          case "$$r" in *" --api "*|*" --web "*|*" --mcp "*) ;; *) exit 0 ;; esac;
+          case "$$r" in
+          *" --api "*|*" --web "*|*" --mcp "*) ;;
+          *" --discord "*) m="$${DISCORD_INTERACTIONS:-}"; [ "$${m//[[:space:]]/}" = http ] || exit 0 ;;
+          *) exit 0 ;;
+          esac;
           exec 3<>/dev/tcp/127.0.0.1/8787 &&
           printf 'GET /api/health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
           head -n1 <&3 | grep -q ' 200 '
@@ -141,10 +139,12 @@ services:
       db:
         condition: service_healthy
 
-  # 127.0.0.1:8787 on the host, for a browser on this machine and for a
-  # reverse proxy that runs on the host (docs/DEPLOYMENT.md §4). It forwards
-  # to judgebot:8787, whichever container of that service is listening, and a
-  # deploy never restarts it, so the address stays up while judgebot is
+  # The entrance to judgebot's HTTP listener: 127.0.0.1:8787 on the host, for
+  # a browser on this machine and for a reverse proxy that runs on the host
+  # (docs/DEPLOYMENT.md §4), and proxy:8787 on the compose network, for the
+  # tunnel. It forwards to judgebot:8787, whichever container of that service
+  # is listening, on a new connection per request (proxy/Caddyfile says why),
+  # and a deploy never restarts it, so the address stays up while judgebot is
   # replaced. The Host header and the client's CF-Connecting-IP pass through
   # unchanged; judgebot reads no X-Forwarded-For. Answers take up to a
   # minute, and Caddy's proxy has no read timeout by default.
@@ -153,7 +153,19 @@ services:
     container_name: judgebot-proxy
     restart: unless-stopped
     logging: *bounded-logs
-    command: ["caddy", "reverse-proxy", "--from", ":8787", "--to", "judgebot:8787"]
+    # --watch: a Caddyfile changed by `git pull` is loaded within a second,
+    # gracefully, with no restart (the directory is mounted, not the file,
+    # because git replaces a file rather than writing into it).
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--watch"]
+    volumes:
+      - ./proxy:/etc/caddy:ro
+    networks:
+      default:
+        # The HTTP roles were the `api` service, and a Cloudflare Tunnel set
+        # up then sends its public hostname to http://api:8787. The alias
+        # keeps that address working, now through the proxy, with no
+        # dashboard edit.
+        aliases: [api]
     # Loopback-only. Public traffic arrives through the cloudflared tunnel on
     # the compose network, never through a published port. This is also what
     # makes API_CLIENT_IP=cloudflare sound: CF-Connecting-IP is only
@@ -290,9 +302,12 @@ services:
       R2_SECRET_ACCESS_KEY: ""
       JUDGE_ALERT_WEBHOOK: ""
     logging: *bounded-logs
+    # Its public hostname points at http://proxy:8787 (or http://api:8787).
     depends_on:
       judgebot:
         condition: service_healthy
+      proxy:
+        condition: service_started
 
 volumes:
   judgebot-pgdata:

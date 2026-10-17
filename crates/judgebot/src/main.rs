@@ -40,6 +40,7 @@ use std::sync::{
 use anyhow::{Context as _, Result};
 use judge_bot::{
     config::Config as JudgeConfig,
+    discord::{Delivery, endpoint::Interactions},
     serving::Serving,
     shutdown::{DRAIN_LIMIT, Shutdown},
 };
@@ -190,7 +191,7 @@ async fn serve(roles: &Roles) -> Result<()> {
         // A refresh in progress at a shutdown ends with the process; its
         // run record is left open, as after a crash.
         Some((serving, adapters)) => {
-            let ran = run(&serving, adapters).await;
+            let ran = Box::pin(run(&serving, adapters)).await;
             if shutdown.is_requested() {
                 serving.flush().await;
             }
@@ -275,37 +276,63 @@ fn log_plan(plan: &Plan) {
 }
 
 /// Run the serving roles. The HTTP listener is bound first, so a taken
-/// `API_ADDR` fails before the Discord gateway is contacted. With both, the
-/// first to stop ends the process: a bot whose gateway is gone must not hide
-/// behind a page that still answers. A stop the process asked for is the
-/// exception: each role is draining, so both are waited for.
+/// `API_ADDR` fails before the Discord gateway is contacted. With
+/// `DISCORD_INTERACTIONS=http` the listener also serves Discord's
+/// interactions endpoint: the network roles', or one of its own when there
+/// are none.
 async fn run(serving: &Serving, adapters: Adapters) -> Result<()> {
-    let shutdown = serving.shutdown();
+    // Discord's interactions endpoint, shared by the Discord role (which
+    // opens it) and the listener (which serves it); unused over the gateway.
+    let interactions = Interactions::new();
+    let over_http = |d: &roles::Discord| d.cfg.interactions == Delivery::Http;
     match adapters {
-        Adapters::Discord(d) => judge_bot::discord::serve(serving, d.cfg, d.operator).await,
-        Adapters::Network(n) => n.bind(serving).await?.serve().await,
-        Adapters::Both(d, n) => {
-            let listening = n.bind(serving).await?;
-            let mut discord = std::pin::pin!(judge_bot::discord::serve(serving, d.cfg, d.operator));
-            let mut http = std::pin::pin!(listening.serve());
-            tokio::select! {
-                r = &mut discord => {
-                    if !shutdown.is_requested() {
-                        return stopped("the Discord role", r);
-                    }
-                    let other = http.await;
-                    r.context("the Discord role failed while shutting down")?;
-                    other.context("the HTTP roles failed while shutting down")
-                }
-                r = &mut http => {
-                    if !shutdown.is_requested() {
-                        return stopped("the HTTP roles", r);
-                    }
-                    let other = discord.await;
-                    r.context("the HTTP roles failed while shutting down")?;
-                    other.context("the Discord role failed while shutting down")
-                }
+        Adapters::Discord(d) => match d.listen {
+            None => judge_bot::discord::serve(serving, d.cfg, d.operator, &interactions).await,
+            Some(cfg) => {
+                let listening =
+                    judge_api::Listening::interactions_only(&cfg, serving, &interactions)?;
+                let discord = judge_bot::discord::serve(serving, d.cfg, d.operator, &interactions);
+                together(serving, discord, listening.serve()).await
             }
+        },
+        Adapters::Network(n) => n.bind(serving, None).await?.serve().await,
+        Adapters::Both(d, n) => {
+            let endpoint = over_http(&d).then_some(&interactions);
+            let listening = n.bind(serving, endpoint).await?;
+            let discord = judge_bot::discord::serve(serving, d.cfg, d.operator, &interactions);
+            together(serving, discord, listening.serve()).await
+        }
+    }
+}
+
+/// The Discord role and the HTTP listener side by side. The first to stop
+/// ends the process: a bot whose gateway is gone must not hide behind a
+/// page that still answers. A stop the process asked for is the exception:
+/// each is draining, so both are waited for.
+async fn together(
+    serving: &Serving,
+    discord: impl Future<Output = Result<()>>,
+    http: impl Future<Output = Result<()>>,
+) -> Result<()> {
+    let shutdown = serving.shutdown();
+    let mut discord = std::pin::pin!(discord);
+    let mut http = std::pin::pin!(http);
+    tokio::select! {
+        r = &mut discord => {
+            if !shutdown.is_requested() {
+                return stopped("the Discord role", r);
+            }
+            let other = http.await;
+            r.context("the Discord role failed while shutting down")?;
+            other.context("the HTTP roles failed while shutting down")
+        }
+        r = &mut http => {
+            if !shutdown.is_requested() {
+                return stopped("the HTTP roles", r);
+            }
+            let other = discord.await;
+            r.context("the HTTP roles failed while shutting down")?;
+            other.context("the Discord role failed while shutting down")
         }
     }
 }

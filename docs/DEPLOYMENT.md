@@ -7,13 +7,14 @@ Cloudflare's edge and traffic returns down that connection.
 ```
 Browser ──https──> Cloudflare edge        [TLS, WAF, rate limiting, challenge]
                         ↕ outbound tunnel — no inbound port on the host
-                   cloudflared ──http──> judgebot:8787 ──> db:5432
-                                         judgebot ──outbound WS──> Discord
+                   cloudflared ──http──> proxy:8787 ──> judgebot:8787 ──> db:5432
+                                                        judgebot ──outbound WS──> Discord
 ```
 
 This keeps two properties that a serverless split would lose:
 
-- The Discord gateway stays a long-lived connection, with no HTTP-interactions rewrite.
+- The Discord bot can keep a long-lived gateway connection (the default) rather than
+  needing a public endpoint ([Discord over HTTP](#discord-over-http) is the option).
 - The spend cap, concurrency semaphore and rate limiter stay in-memory values in one
   process rather than becoming distributed state. A budget period adds one small table
   beside the cap, not a service.
@@ -97,12 +98,16 @@ and add a public hostname:
 | --- | --- |
 | Subdomain | `judge` |
 | Domain | `example.com` |
-| Service | `http://judgebot:8787` |
+| Service | `http://proxy:8787` |
 
-`judgebot` is the compose service name. cloudflared resolves it on the compose network,
-so the API never needs a published port. The service also answers to `api`, the name of
-the service that served HTTP before `bot` and `api` became one, so a tunnel set up then
-with `http://api:8787` keeps working. Cloudflare creates the
+`proxy` is the compose service in front of `judgebot`'s HTTP listener. cloudflared
+resolves it on the compose network, so nothing needs a published port. It forwards
+each request to whichever `judgebot` container is listening, so requests keep being
+answered while a deploy, which runs two for a minute, switches between them. It also answers to `api`, the name of the service that
+served HTTP before `bot` and `api` became one, so a tunnel set up then with
+`http://api:8787` keeps working. A tunnel whose service is `http://judgebot:8787` (what
+this step said before) reaches the containers directly: it works, but a deploy can lose a
+request in flight, so change it to `http://proxy:8787`. Cloudflare creates the
 `judge CNAME <uuid>.cfargotunnel.com` record for you, proxied. It must stay **proxied**
 (orange cloud), unlike every other record in the zone.
 
@@ -145,7 +150,7 @@ API_CLIENT_IP=cloudflare    # rate-limit on CF-Connecting-IP
 JUDGE_MAX_USD=...           # the backstop for anonymous traffic
 JUDGE_BUDGET_PERIOD=month   # one budget for the month, kept across restarts
 JUDGE_SPEND_WARN_AT=50,80   # warn at these percentages of the cap first
-JUDGE_ALERT_WEBHOOK=...     # told when the cap trips, or a refresh or backup fails
+JUDGE_ALERT_WEBHOOK=...     # told when the cap trips, a refresh or backup fails, or Discord's setup is off
                             # (the backup service reads it from .env.deploy, §6)
 ```
 
@@ -171,9 +176,9 @@ side by side (§8).
 
 The container's healthcheck asks `/api/health` the same question, and `cloudflared`
 waits for it to pass. It probes only when the roles include `--api`, `--web` or
-`--mcp`: it reads them from the process's command line, or from `JUDGE_ROLES` when the
-command line names none. With no HTTP role (`JUDGE_ROLES='--discord --jobs'`) nothing
-listens, so the check passes without probing rather than marking the container
+`--mcp`, or `--discord` with `DISCORD_INTERACTIONS=http`: it reads them from the
+process's command line, or from `JUDGE_ROLES` when the command line names none. With
+no HTTP role over the gateway (`JUDGE_ROLES='--discord --jobs'`) nothing listens, so the check passes without probing rather than marking the container
 unhealthy forever. The Discord gateway is not visible from outside the process; a
 fatal disconnect exits it, and `restart: unless-stopped` brings it back. A process
 standing by for the gateway (§8, Gateway holder) is healthy: it is waiting by design.
@@ -354,6 +359,47 @@ The refresh (§7) runs the same upload. A running bot lists the emoji again:
 - every ten minutes while it has none, so the first upload by hand needs no restart
 - every hour regardless, so any other upload by hand, or an emoji deleted by hand, is
   seen within the hour.
+
+### Discord over HTTP
+
+By default the bot receives slash commands and button clicks over its gateway
+connection, which one container holds at a time. A deploy hands that connection to the
+new container, and Discord is quiet while it logs in. With `DISCORD_INTERACTIONS=http`
+Discord POSTs each interaction to `/discord/interactions` instead, through the tunnel
+and the `proxy` like any other request, and keep being answered while a deploy
+switches containers (D30). The bot then
+opens no gateway connection.
+
+It needs a public HTTPS address that reaches the container: the tunnel's public
+hostname, which already serves the web app. Discord's requests carry no browser, so a
+Cloudflare Access policy, Bot Fight Mode or a WAF challenge on that hostname must leave
+`/discord/interactions` alone. A deployment without `--api`, `--web` or `--mcp` listens
+on `API_ADDR` for the endpoint and `/api/health` only, and still needs the tunnel.
+
+1. Set it in `.env` and deploy:
+
+   ```ini
+   DISCORD_INTERACTIONS=http
+   ```
+
+   ```sh
+   scripts/deploy.sh
+   ```
+
+   The new container logs `receiving Discord interactions over HTTP`, and an ERROR that
+   the application has no Interactions Endpoint URL. Until step 2, Discord still sends
+   interactions over the gateway, which nothing holds now, so commands go unanswered.
+2. In the [Developer Portal](https://discord.com/developers/applications), open the
+   application's *General Information* and set *Interactions Endpoint URL* to
+   `https://<your public host>/discord/interactions`. Discord tests the address when
+   you save: it sends a PING and requests with invalid signatures, and refuses to save
+   if any answer is wrong or missing.
+3. Run `/help` in the server.
+
+The setting and the portal must agree, because Discord delivers interactions one way
+only. The bot compares them when it starts and logs an ERROR (and posts to
+`JUDGE_ALERT_WEBHOOK`) if they differ, but keeps running. To go back, clear the URL
+in the portal, set `DISCORD_INTERACTIONS=gateway` and deploy.
 
 ### Client address
 
@@ -981,7 +1027,9 @@ beside the running one:
 
 1. The new container applies the release's migrations, if any, and starts its roles.
    Its HTTP roles serve at once. Its Discord role stands by, because the old container
-   holds the gateway.
+   holds the gateway. With `DISCORD_INTERACTIONS=http` there is no gateway: the
+   Discord role reads the application's public key and answers interactions as they
+   arrive, beside the old container.
 2. When Docker reports it healthy (its first passing healthcheck), the script stops the old container. `docker stop` sends SIGTERM and the old
    container drains. It closes its listener and its Discord gateway connection, releases
    the gateway lease, and finishes the answers in flight, for up to two minutes. Then
@@ -993,16 +1041,19 @@ beside the running one:
    An old container from a release before this record (the first deploy onto it)
    leaves none, and the new one waits out the grace. The web app and the API see no
    gap: the `proxy` service and the tunnel reach whichever container is listening.
+   Neither does Discord with `DISCORD_INTERACTIONS=http` ([Discord over HTTP](#discord-over-http)).
 
 If the new container is not healthy within five minutes (`DEPLOY_WAIT_SECS`), or
 restarts, the script removes it, prints its last log lines and exits non-zero. The old
 container keeps serving. `scripts/deploy.sh --build` builds the image from the checkout
 instead of pulling it.
 
-"Healthy" means `GET /api/health` answers, which needs an HTTP role. A container with
-no HTTP role (`JUDGE_ROLES=--discord --jobs`) passes its healthcheck at once, so the
-script switches to it before anything shows that it can connect to Discord. Check its
-log for the gateway connection after the deploy.
+"Healthy" means `GET /api/health` answers, which needs a listener: an HTTP role, or
+`DISCORD_INTERACTIONS=http`, where it also waits for the interactions endpoint to have
+the application's public key. A container with neither (`JUDGE_ROLES=--discord --jobs`
+over the gateway) passes its healthcheck at once, so the script switches to it before
+anything shows that it can connect to Discord. Check its log for the gateway connection
+after the deploy.
 
 The deploy that stops the old container first is still
 `docker compose pull && docker compose up -d --remove-orphans`. Use it for the upgrade
@@ -1057,7 +1108,7 @@ What else that upgrade changes:
   same deploy, or `up -d` fails with `judgebot` not found. For the same reason, run
   `docker compose pull` straight after `git pull`: a cron'd `scripts/refresh-data.sh`
   between the two runs the new compose file on the old local image and fails.
-- **The tunnel.** The service answers to `api` on the compose network as well as
+- **The tunnel.** `api` on the compose network is the `proxy` service, which forwards to
   `judgebot`, so a public hostname pointing at `http://api:8787` needs no edit.
 - **The host port.** `127.0.0.1:8787` is the `proxy` service. The `judgebot` container
   has no fixed name, so use the service name with Compose (`docker compose logs
@@ -1265,7 +1316,7 @@ own if the connector restarts.
 
 | Symptom | Cause |
 | --- | --- |
-| 502 from the public hostname | `judgebot` is down or runs no network role, or the tunnel's service is not `http://judgebot:8787` (or `http://api:8787`) |
+| 502 from the public hostname | `judgebot` is down or runs no network role, or the tunnel's service is not `http://proxy:8787` (or `http://api:8787`) |
 | Tunnel healthy, hostname NXDOMAIN | the `judge` record is grey-clouded; it must be proxied |
 | `/mcp` answers 401 | wrong or missing `Authorization: Bearer <MCP_TOKEN>` |
 | `/mcp` answers 403 while `/api/health` is fine | the public hostname is not in `MCP_ALLOWED_HOSTS` |

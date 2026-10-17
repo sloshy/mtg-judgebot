@@ -111,10 +111,49 @@ impl Message {
     }
 }
 
+/// Tells whoever is waiting that an interaction's initial response has
+/// been sent: the interactions endpoint ([`super::endpoint`]) answers
+/// Discord's POST only then. [`Ack::none`] for an interaction from the
+/// gateway, where nobody waits.
+#[derive(Clone, Debug, Default)]
+pub struct Ack(Option<std::sync::Arc<tokio::sync::Notify>>);
+
+impl Ack {
+    /// Nobody waits.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self(None)
+    }
+
+    /// An acknowledgement [`Self::wait`] can wait for.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Some(std::sync::Arc::default()))
+    }
+
+    /// The initial response has been sent, or its sending failed: either way
+    /// nothing more will come of it.
+    pub fn sent(&self) {
+        if let Some(n) = &self.0 {
+            // A permit is stored when nobody is waiting yet.
+            n.notify_one();
+        }
+    }
+
+    /// Until [`Self::sent`]; forever for [`Self::none`].
+    pub async fn wait(&self) {
+        match &self.0 {
+            Some(n) => n.notified().await,
+            None => std::future::pending().await,
+        }
+    }
+}
+
 /// The replies to one slash command invocation.
 pub struct Reply<'a> {
     http: &'a Http,
     interaction: &'a CommandInteraction,
+    ack: &'a Ack,
     /// The visibility of a reply that does not set its own.
     ephemeral: bool,
     /// Whether the initial response (a message or a deferral) has been sent:
@@ -123,12 +162,19 @@ pub struct Reply<'a> {
 }
 
 impl<'a> Reply<'a> {
-    /// Replies to `interaction`, private by default when `ephemeral`.
+    /// Replies to `interaction`, private by default when `ephemeral`; `ack`
+    /// hears of the initial response.
     #[must_use]
-    pub const fn new(http: &'a Http, interaction: &'a CommandInteraction, ephemeral: bool) -> Self {
+    pub const fn new(
+        http: &'a Http,
+        interaction: &'a CommandInteraction,
+        ephemeral: bool,
+        ack: &'a Ack,
+    ) -> Self {
         Self {
             http,
             interaction,
+            ack,
             ephemeral,
             responded: false,
         }
@@ -152,7 +198,9 @@ impl<'a> Reply<'a> {
             let defer = CreateInteractionResponse::Defer(
                 CreateInteractionResponseMessage::new().ephemeral(ephemeral),
             );
-            self.interaction.create_response(self.http, defer).await?;
+            let sent = self.interaction.create_response(self.http, defer).await;
+            self.ack.sent();
+            sent?;
             self.responded = true;
         }
         Ok(())
@@ -170,12 +218,15 @@ impl<'a> Reply<'a> {
                 .create_followup(self.http, message.followup())
                 .await?;
         } else {
-            self.interaction
+            let sent = self
+                .interaction
                 .create_response(
                     self.http,
                     CreateInteractionResponse::Message(message.initial()),
                 )
-                .await?;
+                .await;
+            self.ack.sent();
+            sent?;
             self.responded = true;
         }
         Ok(())

@@ -61,6 +61,8 @@ serenity = { version = "0.12", default-features = false, features = [
   # in milliseconds (`discord::pick`), so the precision must not change.
   "chrono",
   "gateway",
+  # `discord::endpoint`: the Ed25519 check on an interaction received over HTTP.
+  "interactions_endpoint",
   "rustls_backend",
   "model",
 ] }
@@ -91,6 +93,8 @@ percent-encoding = "2"
 
 [dev-dependencies]
 wiremock.workspace = true
+# `discord::endpoint`'s tests sign requests as Discord does.
+ed25519-dalek = "2"
 # `test-util`: the shutdown tests run on paused time.
 tokio = { workspace = true, features = ["test-util"] }
 

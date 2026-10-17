@@ -295,6 +295,11 @@ pub struct Discord {
     pub cfg: discord::Config,
     /// The contact `/help` and `/license` name.
     pub operator: DiscordOperator,
+    /// Where Discord's interactions endpoint listens when no network role
+    /// opens a listener for it: `Some` exactly when the role runs with
+    /// `DISCORD_INTERACTIONS=http` and without `--api`, `--web` or `--mcp`
+    /// (it reads `API_ADDR`, as they do).
+    pub listen: Option<Box<ApiConfig>>,
 }
 
 /// The adapters a process serves, at least one of them.
@@ -440,6 +445,17 @@ pub fn plan(
             }
         }
     };
+    // Discord's interactions endpoint needs a listener: the network roles'
+    // when there are any, else one of its own on API_ADDR.
+    if let Some(d) = discord.as_mut()
+        && d.cfg.interactions == discord::Delivery::Http
+        && network.is_none()
+    {
+        match ApiConfig::from_vars(vars) {
+            Ok(cfg) => d.listen = Some(Box::new(cfg)),
+            Err(e) => fail(Role::Discord.flag(), vec![format!("{e:#}")]),
+        }
+    }
     // The models are pure configuration (a chat model named, a price for
     // it), so a mistake there is reported here with the rest, before the
     // database is touched. Only the serving roles call a model.
@@ -503,7 +519,11 @@ fn discord_role(
         )
     });
     match (cfg, operator) {
-        (Ok(cfg), Ok(operator)) => Ok(Discord { cfg, operator }),
+        (Ok(cfg), Ok(operator)) => Ok(Discord {
+            cfg,
+            operator,
+            listen: None,
+        }),
         (cfg, operator) => Err(cfg
             .err()
             .into_iter()
@@ -667,6 +687,52 @@ mod tests {
         assert!(Role::Discord.serves() && !Role::Jobs.serves());
         assert_eq!(Role::Discord.interface(), None);
         assert_eq!(Role::Jobs.interface(), None);
+    }
+
+    /// Discord's interactions endpoint needs a listener: the network
+    /// roles' when there are any, else one of its own on `API_ADDR`.
+    #[test]
+    fn interactions_over_http_get_a_listener() {
+        let http = ("DISCORD_INTERACTIONS", "http");
+        let listen = |flags: &str, pairs: &[(&str, &str)]| match plan_with(flags, pairs) {
+            Ok(Plan {
+                serve: Some(Serve { adapters, .. }),
+                ..
+            }) => match adapters {
+                Adapters::Discord(d) | Adapters::Both(d, _) => {
+                    Some(d.listen.map(|c| c.addr.to_string()))
+                }
+                Adapters::Network(_) => None,
+            },
+            _ => None,
+        };
+        let alone = [TOKEN, DISCORD_OP, http, ("API_ADDR", "127.0.0.1:9000")];
+        assert_eq!(
+            listen("--discord", &alone),
+            Some(Some("127.0.0.1:9000".to_owned()))
+        );
+        assert_eq!(listen("--discord", &[TOKEN, DISCORD_OP]), Some(None));
+        assert_eq!(
+            listen("--discord --api", &[TOKEN, DISCORD_OP, EMAIL, http]),
+            Some(None),
+            "the network roles' listener serves it"
+        );
+        let text = error(plan_with(
+            "--discord",
+            &[TOKEN, DISCORD_OP, ("DISCORD_INTERACTIONS", "webhook")],
+        ));
+        assert!(
+            text.contains("DISCORD_INTERACTIONS must be gateway or http"),
+            "{text}"
+        );
+        let text = error(plan_with(
+            "--discord",
+            &[TOKEN, DISCORD_OP, http, ("API_ADDR", "nowhere")],
+        ));
+        assert!(
+            text.contains("--discord") && text.contains("API_ADDR"),
+            "{text}"
+        );
     }
 
     #[test]

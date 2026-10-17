@@ -41,6 +41,8 @@ finish() {
     docker rm -f "$new" >/dev/null 2>&1 || true
   elif [ "$stage" = stopping ]; then
     kept="the old container was being stopped and the new one is serving; check docker compose ps"
+  elif [ "$stage" = proxy ]; then
+    kept="the new container is serving, but the proxy in front of it did not load proxy/Caddyfile; check docker compose logs proxy"
   fi
   alert "judgebot deploy failed on $(hostname 2>/dev/null || echo this host) (exit $status); $kept."
 }
@@ -53,6 +55,11 @@ trap 'exit 129' HUP
 service=judgebot
 wait_secs="${DEPLOY_WAIT_SECS:-300}"
 case "$wait_secs" in '' | *[!0-9]*) die "DEPLOY_WAIT_SECS must be a number of seconds, not '$wait_secs'" ;; esac
+# The proxy mounts proxy/; without a file it can load it answers nothing
+# once the old container is gone. Checked before anything changes.
+[ -f proxy/Caddyfile ] || die "proxy/Caddyfile is missing: run this from a full checkout (git pull)"
+docker compose run --rm --no-deps -T proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 ||
+  die "proxy/Caddyfile does not load: docker compose run --rm --no-deps proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
 
 case "${1:-}" in
   "")
@@ -122,12 +129,25 @@ done
 # The old container may come from a compose file older than its
 # stop_grace_period, so the new one's (the current file's) is passed.
 grace="$(docker inspect -f '{{if .Config.StopTimeout}}{{.Config.StopTimeout}}{{end}}' "$new")"
+# The proxy is brought up to date while the old container still serves, so
+# a proxy whose definition changed is recreated with the old container and
+# the new one both behind it. It cannot start while an old judgebot that
+# publishes 8787 itself holds the port; the call after the stop starts it.
+docker compose up -d --no-deps proxy ||
+  log "the proxy did not start yet; trying again once the old container has stopped"
 log "the new container is healthy; stopping the old one, which finishes its answers first (up to ${grace:-10}s)"
 stage=stopping
 docker stop --time "${grace:-10}" "$old" >/dev/null
 docker rm "$old" >/dev/null
 # The proxy on 127.0.0.1:8787 is never restarted by a deploy; this starts it
 # if it is not running, as on the first deploy from a judgebot container that
-# published the port itself.
+# published the port itself. Then it is asked to load proxy/Caddyfile as it
+# is now: nothing happens when it already runs it (it watches the file), and
+# a proxy that is not running, or kept an older configuration because the
+# file stopped loading, fails the deploy, since nothing reaches judgebot
+# without it.
+stage=proxy
 docker compose up -d --no-deps proxy
+docker compose exec -T proxy caddy reload --adapter caddyfile --config /etc/caddy/Caddyfile >/dev/null 2>&1 ||
+  die "the proxy did not load proxy/Caddyfile"
 log "deployed: $(docker inspect -f '{{.Name}} {{.Config.Image}}' "$new")"

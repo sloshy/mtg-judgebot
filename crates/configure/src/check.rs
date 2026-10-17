@@ -227,7 +227,17 @@ fn discord(
     if !roles.is_some_and(|r| r.iter().any(|r| r == Role::Discord)) {
         return not_run(roles, "--discord is not");
     }
-    if let Err(e) = judge_bot::discord::Config::from_vars(env) {
+    let cfg = match judge_bot::discord::Config::from_vars(env) {
+        Ok(cfg) => cfg,
+        Err(e) => return anyhow_error(&e),
+    };
+    // Over HTTP with no network role, the interactions endpoint binds
+    // API_ADDR itself, as `roles::plan` checks.
+    let listens = roles.is_some_and(|r| r.iter().any(|r| r.interface().is_some()));
+    if cfg.interactions == judge_bot::discord::Delivery::Http
+        && !listens
+        && let Err(e) = ApiConfig::from_vars(env)
+    {
         return anyhow_error(&e);
     }
     with_models(config, |c| c.discord_operator().map(|_| ()), None)
@@ -361,6 +371,29 @@ mod tests {
         assert!(
             matches!(c.get(&Surface::Roles), Some(Outcome::Ok { summary: Some(s) })
                 if s.starts_with("--discord --api --web --jobs")),
+            "{c:?}"
+        );
+    }
+
+    /// `--discord` alone over HTTP binds `API_ADDR` itself, so a bad one is
+    /// a Discord error even though no network role runs.
+    #[test]
+    fn discord_over_http_alone_checks_its_listen_address() {
+        let mut alone = OK.to_vec();
+        alone.extend([
+            ("JUDGE_ROLES", "--discord"),
+            ("DISCORD_INTERACTIONS", "http"),
+            ("API_ADDR", "nowhere"),
+        ]);
+        let c = checks(None, &alone);
+        assert!(
+            matches!(c.get(&Surface::Discord), Some(Outcome::Error { .. })),
+            "{c:?}"
+        );
+        alone.retain(|(n, _)| *n != "API_ADDR");
+        let c = checks(None, &alone);
+        assert!(
+            matches!(c.get(&Surface::Discord), Some(Outcome::Ok { .. })),
             "{c:?}"
         );
     }

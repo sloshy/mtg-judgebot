@@ -42,6 +42,7 @@
 pub mod capture;
 pub mod command;
 pub mod cooldown;
+pub mod endpoint;
 pub mod gateway;
 pub mod ids;
 pub mod mana;
@@ -88,7 +89,7 @@ use ids::{ButtonAction, ByteSpan, Pick};
 use mana::{SharedSymbols, SymbolTable};
 use pick::Digest;
 use render::PickPrompt;
-use reply::{Message, Reply};
+use reply::{Ack, Message, Reply};
 
 /// How long a `/judge` (or a card pick) waits for a free slot before replying
 /// "busy". Under Discord's 3 s initial-response deadline, so short bursts queue
@@ -116,6 +117,34 @@ pub struct Config {
     /// `/judge` questions one user may ask per window (`JUDGE_USER_LIMIT` per
     /// `JUDGE_USER_WINDOW_SECS`); `None` is no per-user limit.
     pub user_limit: Option<UserLimit>,
+    /// How Discord delivers interactions (`DISCORD_INTERACTIONS`).
+    pub interactions: Delivery,
+}
+
+/// How Discord delivers this application's interactions: one way or the
+/// other, set per application in the Developer Portal (D30).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// Over the gateway connection one process holds ([`gateway`]): the
+    /// application has no Interactions Endpoint URL.
+    Gateway,
+    /// Posted to the application's Interactions Endpoint URL, which reaches
+    /// [`endpoint::PATH`] on this process's HTTP listener. No gateway
+    /// connection is opened.
+    Http,
+}
+
+impl Delivery {
+    /// The variable that chooses it.
+    pub const ENV: &'static str = "DISCORD_INTERACTIONS";
+
+    fn parse(raw: Option<&str>) -> anyhow::Result<Self> {
+        match raw {
+            None | Some("gateway") => Ok(Self::Gateway),
+            Some("http") => Ok(Self::Http),
+            Some(other) => anyhow::bail!("{} must be gateway or http, got {other:?}", Self::ENV),
+        }
+    }
 }
 
 /// Who sees a `/judge` reply.
@@ -177,7 +206,8 @@ impl Config {
     ///
     /// # Errors
     /// A missing token, or a malformed `GUILD_ID`, `JUDGE_CONCURRENCY`,
-    /// `JUDGE_USER_LIMIT` or `JUDGE_USER_WINDOW_SECS`.
+    /// `JUDGE_USER_LIMIT` or `JUDGE_USER_WINDOW_SECS`, or a
+    /// `DISCORD_INTERACTIONS` other than `gateway` (the default) or `http`.
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let var = |k: &str| {
             get(k)
@@ -232,6 +262,7 @@ impl Config {
             max,
             window: user_window,
         });
+        let interactions = Delivery::parse(var(Delivery::ENV).as_deref())?;
         Ok(Self {
             token,
             guild_id,
@@ -240,6 +271,7 @@ impl Config {
             history_len: Self::DEFAULT_HISTORY,
             pick_ttl: pick::DEFAULT_TTL,
             user_limit,
+            interactions,
         })
     }
 }
@@ -445,14 +477,19 @@ impl Data {
         }
     }
 
-    async fn on_component(&self, http: &Http, c: &ComponentInteraction) -> anyhow::Result<()> {
+    async fn on_component(
+        &self,
+        http: &Http,
+        c: &ComponentInteraction,
+        ack: &Ack,
+    ) -> anyhow::Result<()> {
         match ButtonAction::parse(&c.data.custom_id) {
-            Ok(ButtonAction::Rate { call, score }) => self.on_rate(http, c, call, score).await,
-            Ok(ButtonAction::Pick(pick)) => self.on_pick(http, c, pick).await,
-            Ok(ButtonAction::LegacyPick) => ephemeral(http, c, render::EXPIRED).await,
+            Ok(ButtonAction::Rate { call, score }) => self.on_rate(http, c, ack, call, score).await,
+            Ok(ButtonAction::Pick(pick)) => self.on_pick(http, c, ack, pick).await,
+            Ok(ButtonAction::LegacyPick) => ephemeral(http, c, ack, render::EXPIRED).await,
             Err(e) => {
                 tracing::warn!(custom_id = %c.data.custom_id, error = %e, "unparseable button");
-                ephemeral(http, c, render::UNKNOWN_BUTTON).await
+                ephemeral(http, c, ack, render::UNKNOWN_BUTTON).await
             }
         }
     }
@@ -461,15 +498,16 @@ impl Data {
         &self,
         http: &Http,
         c: &ComponentInteraction,
+        ack: &Ack,
         call: CallId,
         score: Score,
     ) -> anyhow::Result<()> {
         // Acknowledge before the role lookup (HTTP) and the upsert (DB): both
         // can outlast Discord's 3 s deadline under rate limiting or load.
-        let ack = CreateInteractionResponse::Defer(
+        let defer = CreateInteractionResponse::Defer(
             CreateInteractionResponseMessage::new().ephemeral(true),
         );
-        c.create_response(http, ack)
+        respond(http, c, ack, defer)
             .await
             .context("acknowledge rating")?;
         let is_judge = match (c.guild_id, c.member.as_ref()) {
@@ -499,10 +537,11 @@ impl Data {
         &self,
         http: &Http,
         c: &ComponentInteraction,
+        ack: &Ack,
         pick: Pick,
     ) -> anyhow::Result<()> {
         if c.user.id.get() != pick.asker.get() {
-            return ephemeral(http, c, render::NOT_YOURS).await;
+            return ephemeral(http, c, ack, render::NOT_YOURS).await;
         }
         let message = &c.message;
         let shown = pick::shown_ms(
@@ -510,7 +549,7 @@ impl Data {
             message.edited_timestamp.map(|t| t.timestamp_millis()),
         );
         if pick::expired(shown, pick::now_ms(), self.pick_ttl) {
-            return ephemeral(http, c, render::EXPIRED).await;
+            return ephemeral(http, c, ack, render::EXPIRED).await;
         }
         // The message is the bot's own, so its content arrives without the
         // message-content intent. It must be the very prompt the button was
@@ -530,7 +569,7 @@ impl Data {
                 digest_matches = digest == pick.digest,
                 "a pick's message does not hold the prompt it was made for; answering as expired"
             );
-            return ephemeral(http, c, render::EXPIRED).await;
+            return ephemeral(http, c, ack, render::EXPIRED).await;
         };
         // The answer goes where the message is: a private button on a channel
         // message, or the reverse, is refused.
@@ -541,28 +580,28 @@ impl Data {
                 ephemeral = ?ephemeral_flag,
                 "a pick's audience disagrees with its message; answering as expired"
             );
-            return ephemeral(http, c, render::EXPIRED).await;
+            return ephemeral(http, c, ack, render::EXPIRED).await;
         };
         let name = match self.library.card(pick.card).await {
             Ok(Some(card)) if prompt.lists(&card.name) => card.name,
             Ok(Some(_)) => {
                 tracing::warn!(card = %pick.card, "a pick's card is not on its prompt's list");
-                return ephemeral(http, c, render::UNKNOWN_BUTTON).await;
+                return ephemeral(http, c, ack, render::UNKNOWN_BUTTON).await;
             }
-            Ok(None) => return ephemeral(http, c, render::UNKNOWN_BUTTON).await,
+            Ok(None) => return ephemeral(http, c, ack, render::UNKNOWN_BUTTON).await,
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "pick: card lookup failed");
-                return ephemeral(http, c, render::PICK_FAILED).await;
+                return ephemeral(http, c, ack, render::PICK_FAILED).await;
             }
         };
         let Some(text) = question::pin_at(prompt.question(), pick.span.map(ByteSpan::range), &name)
         else {
             tracing::warn!(span = ?pick.span, "a pick's span is not in its question; answering as expired");
-            return ephemeral(http, c, render::EXPIRED).await;
+            return ephemeral(http, c, ack, render::EXPIRED).await;
         };
         // Take the permit before the claim, so a "busy" leaves the buttons usable.
         let Some(_permit) = self.acquire().await else {
-            return ephemeral(http, c, render::BUSY).await;
+            return ephemeral(http, c, ack, render::BUSY).await;
         };
         let key = PickKey {
             message_id: message.id.get(),
@@ -572,10 +611,10 @@ impl Data {
         let pool = self.library.pool();
         match claim_pick(pool, key).await {
             Ok(true) => {}
-            Ok(false) => return ephemeral(http, c, render::ALREADY_PICKED).await,
+            Ok(false) => return ephemeral(http, c, ack, render::ALREADY_PICKED).await,
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "pick: claim failed");
-                return ephemeral(http, c, render::PICK_FAILED).await;
+                return ephemeral(http, c, ack, render::PICK_FAILED).await;
             }
         }
         // Replace the "did you mean…?" in place, then edit it again with the verdict.
@@ -583,10 +622,14 @@ impl Data {
             .content(render::working(&name))
             .components(vec![])
             .embeds(vec![]);
-        if let Err(e) = c
-            .create_response(http, CreateInteractionResponse::UpdateMessage(working))
-            .await
-        {
+        let sent = respond(
+            http,
+            c,
+            ack,
+            CreateInteractionResponse::UpdateMessage(working),
+        )
+        .await;
+        if let Err(e) = sent {
             // The buttons are most likely still there: give the claim back so
             // the next click is not told the card was already picked.
             if let Err(released) = release_pick(pool, key).await {
@@ -775,13 +818,32 @@ const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
     }
 }
 
-async fn ephemeral(http: &Http, c: &ComponentInteraction, text: &str) -> anyhow::Result<()> {
+async fn ephemeral(
+    http: &Http,
+    c: &ComponentInteraction,
+    ack: &Ack,
+    text: &str,
+) -> anyhow::Result<()> {
     let msg = CreateInteractionResponseMessage::new()
         .content(text)
         .ephemeral(true);
-    c.create_response(http, CreateInteractionResponse::Message(msg))
+    respond(http, c, ack, CreateInteractionResponse::Message(msg))
         .await
         .context("respond to button")
+}
+
+/// A button's initial response, told to `ack` whether or not it was sent.
+/// The only way a button handler sends one: the interactions endpoint
+/// answers Discord's request when it hears of it.
+async fn respond(
+    http: &Http,
+    c: &ComponentInteraction,
+    ack: &Ack,
+    response: CreateInteractionResponse,
+) -> serenity::Result<()> {
+    let sent = c.create_response(http, response).await;
+    ack.sent();
+    sent
 }
 
 /// An ephemeral follow-up after a deferred acknowledgement.
@@ -819,11 +881,11 @@ impl Data {
     /// button. Other kinds (autocomplete, modals) are not registered, so
     /// none arrive. Never fails: a handler's error is logged here, and a
     /// command's is reported to the user.
-    async fn dispatch(&self, http: &Http, interaction: &Interaction) {
+    async fn dispatch(&self, http: &Http, interaction: &Interaction, ack: &Ack) {
         match interaction {
-            Interaction::Command(c) => self.on_command(http, c).await,
+            Interaction::Command(c) => self.on_command(http, c, ack).await,
             Interaction::Component(c) => {
-                if let Err(e) = self.on_component(http, c).await {
+                if let Err(e) = self.on_component(http, c, ack).await {
                     tracing::error!(error = format_args!("{e:#}"), "button handler failed");
                 }
             }
@@ -835,7 +897,7 @@ impl Data {
 
     /// A slash command: parsed, run, and on an error answered with
     /// [`render::FAILED`].
-    async fn on_command(&self, http: &Http, c: &CommandInteraction) {
+    async fn on_command(&self, http: &Http, c: &CommandInteraction, ack: &Ack) {
         let command = match Command::parse(&c.data, c.guild_id.is_some()) {
             Ok(command) => command,
             Err(why) => {
@@ -844,14 +906,17 @@ impl Data {
                     Unparsed::NotInGuild => render::SERVER_ONLY,
                     Unparsed::Unknown(_) | Unparsed::BadOption { .. } => render::UNKNOWN_COMMAND,
                 };
-                if let Err(e) = Reply::new(http, c, true).send(Message::text(text)).await {
+                if let Err(e) = Reply::new(http, c, true, ack)
+                    .send(Message::text(text))
+                    .await
+                {
                     tracing::error!(error = %e, "could not answer an unusable command");
                 }
                 return;
             }
         };
         let name = command.name();
-        let mut reply = Reply::new(http, c, command.ephemeral());
+        let mut reply = Reply::new(http, c, command.ephemeral(), ack);
         let ran = match command {
             Command::Judge { question, audience } => {
                 self.judge(&mut reply, c, question, audience).await
@@ -1043,23 +1108,35 @@ async fn say(reply: &mut Reply<'_>, text: &str, ephemeral: bool) -> anyhow::Resu
 }
 
 /// The `--discord` role: build the adapter's [`Data`] over the process's
-/// shared composition and [`run`] it while this process holds the gateway
-/// lease ([`gateway::hold`]: it stands by while another process holds it).
+/// shared composition and serve it as `cfg.interactions` says (D30).
 /// `cfg` holds the token and `operator` is the contact the bot must name, so
 /// a process that reaches this has passed both requirements.
 ///
+/// - [`Delivery::Gateway`]: [`run`] while this process holds the gateway
+///   lease ([`gateway::hold`]: it stands by while another process holds it).
+/// - [`Delivery::Http`]: fetch the application's public key over the REST
+///   API, register the commands, then open `interactions`, which the HTTP
+///   adapter serves at [`endpoint::PATH`]. No gateway, no lease.
+///
+/// Either way it checks the application's Interactions Endpoint URL against
+/// the mode, and reports a mismatch (ERROR, and the alert webhook) without
+/// stopping: Discord saves a URL only once its endpoint answers, so an
+/// `http` instance must run before the URL can be set.
+///
 /// On the process's requested shutdown it leaves the gateway (releasing the
-/// lease once the connection is closed) and returns when every event
-/// handler in flight has finished, or the drain's limit has passed: an
-/// answer already deferred is sent over the REST API, which needs no
-/// gateway.
+/// lease once the connection is closed), or stops waiting for the HTTP
+/// endpoint to open, and returns when every interaction in flight has been
+/// answered, or the drain's limit has passed: an answer already deferred is
+/// sent over the REST API, which needs no gateway.
 ///
 /// # Errors
-/// As [`run`], or the gateway lease was lost.
+/// As [`run`], the gateway lease was lost, or the application's public key
+/// is not one.
 pub async fn serve(
     serving: &Serving,
     cfg: Config,
     operator: DiscordOperator,
+    interactions: &endpoint::Interactions,
 ) -> anyhow::Result<()> {
     let judge = serving.judge();
     // `/card` reads rulings by card id only, so its library needs no vectors.
@@ -1067,7 +1144,7 @@ pub async fn serve(
     // One `Data` for the role, whichever connection serves it: the concurrency
     // slots, the per-user windows and the symbol table outlive a reconnect
     // after a lost lease. A "did you mean?" pick needs none of it: it is
-    // answered from its message, by whichever process holds the gateway.
+    // answered from its message, by whichever process receives the click.
     let data = Arc::new(Data::new(
         serving.deps(),
         serving.store(),
@@ -1082,36 +1159,175 @@ pub async fn serve(
         judge_role = %cfg.judge_role,
         concurrency = cfg.max_concurrent,
         user_limit = ?cfg.user_limit,
+        interactions = ?cfg.interactions,
         "starting Discord adapter"
     );
     let shutdown = serving.shutdown();
-    gateway::hold(
-        serving.pool(),
-        serving.process(),
-        gateway::Timing::DEFAULT,
-        shutdown,
-        |stop| run(cfg.clone(), Arc::clone(&data), shutdown.clone(), stop),
-    )
-    .await?;
-    // A connection that ended by itself with no error: as before, the role
-    // has stopped.
-    if !shutdown.is_requested() {
-        return Ok(());
+    let alert = judge.budget().alert.clone();
+    let http = Arc::new(Http::new(cfg.token.expose()));
+    match cfg.interactions {
+        Delivery::Gateway => {
+            // The URL check, on a task of its own: the gateway does not wait
+            // for it, and it ends with the role.
+            let _check = AbortTask(tokio::spawn({
+                let (http, shutdown) = (Arc::clone(&http), shutdown.clone());
+                async move {
+                    if let Some(app) = application(&http, &shutdown).await {
+                        let url = app.interactions_endpoint_url.as_deref();
+                        report_delivery(Delivery::Gateway, url, alert.as_ref()).await;
+                    }
+                }
+            }));
+            gateway::hold(
+                serving.pool(),
+                serving.process(),
+                gateway::Timing::DEFAULT,
+                shutdown,
+                |stop| run(cfg.clone(), Arc::clone(&data), shutdown.clone(), stop),
+            )
+            .await?;
+            // A connection that ended by itself with no error: as before, the
+            // role has stopped.
+            if !shutdown.is_requested() {
+                return Ok(());
+            }
+            // Left on the shutdown, with the gateway closed: no event is
+            // dispatched after this point. An event dispatched before it holds
+            // its `Work` from the first poll of the task serenity spawned for
+            // it, which in practice has happened during the close and the
+            // lease release's round trip; nothing can count it at the spawn
+            // itself.
+        }
+        Delivery::Http => {
+            // Nothing to drain if the shutdown came first.
+            let Some(app) = application(&http, shutdown).await else {
+                return Ok(());
+            };
+            http.set_application_id(app.id);
+            let verifier = endpoint::verifier(&app.verify_key)?;
+            let url = app.interactions_endpoint_url.clone();
+            // Off the path to opening: an alert webhook may take its time.
+            let _report = AbortTask(tokio::spawn(async move {
+                report_delivery(Delivery::Http, url.as_deref(), alert.as_ref()).await;
+            }));
+            // These three for the life of the role: there is no connection
+            // to start them again.
+            let _register = AbortTask(tokio::spawn({
+                let (http, data) = (Arc::clone(&http), Arc::clone(&data));
+                async move { register_until_done(&http, cfg.guild_id, &data).await }
+            }));
+            let _watcher = AbortTask(tokio::spawn(symbols::watch(
+                Arc::clone(&http),
+                data.library.pool().clone(),
+                Arc::clone(&data.symbols),
+            )));
+            interactions.open(
+                verifier,
+                Arc::clone(&data),
+                Arc::clone(&http),
+                shutdown.clone(),
+                judge.budget().alert.clone(),
+            );
+            tracing::info!(
+                path = endpoint::PATH,
+                "receiving Discord interactions over HTTP; no gateway connection"
+            );
+            shutdown.requested().await;
+            // The endpoint stays open while the listener drains: a request
+            // that still arrives is Discord's only attempt, and is answered.
+            // Its handler's work is counted only once the request is read,
+            // so the drain starts when the listener has answered them all.
+            tokio::select! {
+                () = interactions.closed() => {}
+                () = shutdown.limit_passed() => {}
+            }
+        }
     }
-    // Left on the shutdown, with the gateway closed: no event is dispatched
-    // after this point. An event dispatched before it holds its `Work` from
-    // the first poll of the task serenity spawned for it, which in practice
-    // has happened during the close and the lease release's round trip;
-    // nothing can count it at the spawn itself.
     match shutdown.drained().await {
         Drained::Finished => tracing::info!("Discord: every answer in flight was sent"),
         Drained::Abandoned(n) => tracing::warn!(
             in_flight = n,
             limit_secs = shutdown.limit().as_secs(),
-            "Discord: event handlers still running at the drain's limit; they end with the process"
+            "Discord: interaction handlers still running at the drain's limit; they end with the process"
         ),
     }
     Ok(())
+}
+
+/// How long one request for the application's details may take.
+const APPLICATION_TIMEOUT: Duration = Duration::from_secs(10);
+/// The first pause after a failed request for them, doubling to
+/// [`APPLICATION_RETRY_MAX`].
+const APPLICATION_RETRY: Duration = Duration::from_secs(5);
+/// The longest pause between requests for them.
+const APPLICATION_RETRY_MAX: Duration = Duration::from_mins(1);
+
+/// The application's details from the REST API (`GET /applications/@me`),
+/// asked again with a growing pause until they come, or `None` once the
+/// process's shutdown is requested.
+async fn application(
+    http: &Http,
+    shutdown: &Shutdown,
+) -> Option<serenity::all::CurrentApplicationInfo> {
+    let mut pause = APPLICATION_RETRY;
+    loop {
+        let asked = tokio::time::timeout(APPLICATION_TIMEOUT, http.get_current_application_info());
+        let failed = tokio::select! {
+            biased;
+            () = shutdown.requested() => return None,
+            got = asked => match got {
+                Ok(Ok(app)) => return Some(app),
+                Ok(Err(e)) => e.to_string(),
+                Err(_) => format!("no answer within {}s", APPLICATION_TIMEOUT.as_secs()),
+            },
+        };
+        tracing::warn!(
+            error = %failed,
+            retry_secs = pause.as_secs(),
+            "could not read the Discord application's details; asking again"
+        );
+        tokio::select! {
+            biased;
+            () = shutdown.requested() => return None,
+            () = tokio::time::sleep(pause) => {}
+        }
+        pause = (pause * 2).min(APPLICATION_RETRY_MAX);
+    }
+}
+
+/// Log (and post to the alert webhook) what [`endpoint::mismatch`] finds.
+async fn report_delivery(
+    mode: Delivery,
+    url: Option<&str>,
+    alert: Option<&crate::alert::AlertWebhook>,
+) {
+    let Some(problem) = endpoint::mismatch(mode, url) else {
+        tracing::info!(
+            ?mode,
+            url,
+            "Discord's delivery of interactions matches DISCORD_INTERACTIONS"
+        );
+        return;
+    };
+    tracing::error!("{problem}");
+    if let Some(hook) = alert {
+        crate::alert::post(
+            &crate::alert::client(),
+            hook,
+            "Discord delivery alert",
+            &problem,
+        )
+        .await;
+    }
+}
+
+/// Aborts its task when dropped.
+struct AbortTask(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// One gateway connection's event handler: interactions go to
@@ -1156,20 +1372,26 @@ impl serenity::all::EventHandler for Handler {
 
     async fn interaction_create(&self, ctx: serenity::all::Context, interaction: Interaction) {
         let _work = self.shutdown.work();
-        dispatch_guarded(Arc::clone(&self.data), Arc::clone(&ctx.http), interaction).await;
+        dispatch_guarded(
+            Arc::clone(&self.data),
+            Arc::clone(&ctx.http),
+            interaction,
+            Ack::none(),
+        )
+        .await;
     }
 }
 
 /// [`Data::dispatch`] on a task of its own, so a panic in a handler is
 /// caught: it is logged, and a command is told [`render::FAILED`], as it is
 /// after an error.
-async fn dispatch_guarded(data: Arc<Data>, http: Arc<Http>, interaction: Interaction) {
+async fn dispatch_guarded(data: Arc<Data>, http: Arc<Http>, interaction: Interaction, ack: Ack) {
     let command = match &interaction {
         Interaction::Command(c) => Some(c.clone()),
         _ => None,
     };
-    let h = Arc::clone(&http);
-    let ran = tokio::spawn(async move { data.dispatch(&h, &interaction).await }).await;
+    let (h, a) = (Arc::clone(&http), ack.clone());
+    let ran = tokio::spawn(async move { data.dispatch(&h, &interaction, &a).await }).await;
     let Err(e) = ran else { return };
     if !e.is_panic() {
         return;
@@ -1179,12 +1401,12 @@ async fn dispatch_guarded(data: Arc<Data>, http: Arc<Http>, interaction: Interac
     let ephemeral = Command::parse(&c.data, c.guild_id.is_some()).map_or(true, |c| c.ephemeral());
     let message = || Message::default().content(render::FAILED);
     // The initial response if the handler sent none, else a follow-up.
-    if Reply::new(&http, &c, ephemeral)
+    if Reply::new(&http, &c, ephemeral, &ack)
         .send(message())
         .await
         .is_err()
     {
-        let mut after = Reply::new(&http, &c, ephemeral);
+        let mut after = Reply::new(&http, &c, ephemeral, &ack);
         after.responded();
         if let Err(e) = after.send(message()).await {
             tracing::error!(error = %e, "could not report the panic to the user");
@@ -1266,14 +1488,31 @@ pub async fn run(
 /// it goes on without them (the ones registered before stay in force).
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The first pause after a failed registration in `http` mode, doubling to
+/// [`REGISTER_RETRY_MAX`].
+const REGISTER_RETRY: Duration = Duration::from_secs(30);
+/// The longest pause between registrations in `http` mode.
+const REGISTER_RETRY_MAX: Duration = Duration::from_mins(10);
+
+/// [`register`] until it succeeds, for `http` mode, where no next
+/// connection would try again.
+async fn register_until_done(http: &Http, guild: Option<GuildId>, data: &Data) {
+    let mut pause = REGISTER_RETRY;
+    while !register(http, guild, data).await {
+        tokio::time::sleep(pause).await;
+        pause = (pause * 2).min(REGISTER_RETRY_MAX);
+    }
+}
+
 /// Register the slash commands ([`command::definitions`]), once per role: in
-/// `guild`, or globally. Never fails: Discord keeps the commands registered
-/// earlier, so a failure (or no answer in [`REGISTER_TIMEOUT`]) is a warning,
-/// and the next connection tries again.
-async fn register(http: &Http, guild: Option<GuildId>, data: &Data) {
+/// `guild`, or globally; `true` once registered. Never fails: Discord keeps
+/// the commands registered earlier, so a failure (or no answer in
+/// [`REGISTER_TIMEOUT`]) is a warning, and it is tried again (on the next
+/// gateway connection, or after a pause over HTTP).
+async fn register(http: &Http, guild: Option<GuildId>, data: &Data) -> bool {
     if data.registered.load(Ordering::Acquire) {
         tracing::debug!("slash commands already registered by this process");
-        return;
+        return true;
     }
     let commands = command::definitions();
     let done = match guild {
@@ -1300,13 +1539,14 @@ async fn register(http: &Http, guild: Option<GuildId>, data: &Data) {
         }
         (Ok(Err(e)), _) => tracing::warn!(
             error = %e,
-            "registering the slash commands failed; those registered before stay, and the next connection tries again"
+            "registering the slash commands failed; those registered before stay, and it is tried again"
         ),
         (Err(_), _) => tracing::warn!(
             secs = REGISTER_TIMEOUT.as_secs(),
-            "registering the slash commands got no answer in time; those registered before stay, and the next connection tries again"
+            "registering the slash commands got no answer in time; those registered before stay, and it is tried again"
         ),
     }
+    data.registered.load(Ordering::Acquire)
 }
 
 /// How often [`run`] asks serenity again to shut its shards down while a
@@ -1601,6 +1841,17 @@ mod tests {
             Outgoing::pick(asker, Audience::Channel, &long, &spans("q")).err(),
             Some(NoPick::TooLong)
         );
+    }
+
+    /// Every initial response goes through [`respond`] (or [`Reply`], in
+    /// its own file), which tell the interactions endpoint's [`Ack`]: one
+    /// sent any other way would leave Discord's request waiting until
+    /// [`endpoint::ACK_WAIT`].
+    #[test]
+    fn initial_responses_go_through_respond() {
+        let call = concat!(".create", "_response(");
+        assert_eq!(include_str!("mod.rs").matches(call).count(), 1);
+        assert_eq!(include_str!("reply.rs").matches(call).count(), 2);
     }
 
     #[test]

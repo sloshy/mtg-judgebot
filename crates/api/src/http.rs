@@ -305,6 +305,40 @@ pub async fn bind(cfg: &ApiConfig) -> anyhow::Result<tokio::net::TcpListener> {
     Ok(listener)
 }
 
+/// Reserve `cfg.addr` without listening on it: a connection to it is refused
+/// until [`listen`], but an address another process listens on fails here,
+/// as it does in [`bind`].
+///
+/// # Errors
+/// Binding the address.
+pub fn reserve(cfg: &ApiConfig) -> anyhow::Result<tokio::net::TcpSocket> {
+    let socket = if cfg.addr.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()
+    } else {
+        tokio::net::TcpSocket::new_v6()
+    }
+    .context("open a socket")?;
+    // As `TcpListener::bind` does on Unix, so a restart can rebind at once.
+    socket.set_reuseaddr(true).context("set SO_REUSEADDR")?;
+    socket
+        .bind(cfg.addr)
+        .with_context(|| format!("bind {}", cfg.addr))?;
+    tracing::info!(addr = %cfg.addr, "HTTP adapter bound; it listens once Discord's interactions endpoint opens");
+    Ok(socket)
+}
+
+/// Start listening on a socket from [`reserve`].
+///
+/// # Errors
+/// The kernel refused to listen on it.
+pub fn listen(socket: tokio::net::TcpSocket) -> anyhow::Result<tokio::net::TcpListener> {
+    let listener = socket.listen(1024).context("listen")?;
+    if let Ok(addr) = listener.local_addr() {
+        tracing::info!(%addr, "HTTP adapter listening");
+    }
+    Ok(listener)
+}
+
 /// Serve `router` on `listener` until the accept loop fails, or until
 /// `shutdown` is requested and the requests in flight have been answered.
 ///

@@ -162,6 +162,24 @@ application, not to any server, and need no emoji permission
 Without them, answers show the literal `{W}`. The command is safe to rerun, reads
 `DISCORD_TOKEN` and needs no database.
 
+## 7. Interactions over HTTP
+
+This step is optional. By default the bot receives commands and button clicks over a
+gateway connection, and Discord is quiet for a few seconds while a deploy hands it to
+the new container. Receiving them over HTTP instead keeps them answered during a deploy, but
+needs a public HTTPS address for the bot, such as the tunnel's hostname
+([Deployment](../deployment/#discord-over-http) has the steps).
+
+1. Set `DISCORD_INTERACTIONS=http` in `.env` and deploy (`scripts/deploy.sh`, or
+   `docker compose up -d`; a `restart` keeps the old environment). Commands go
+   unanswered until step 2.
+2. In the Developer Portal, open *General Information* and set *Interactions Endpoint
+   URL* to `https://<your public host>/discord/interactions`. Discord tests the address
+   before it saves it.
+
+The bot then opens no gateway connection, and shows in the member list without a
+status dot.
+
 ## One channel
 
 The bot answers wherever its commands can be used. That is a Discord setting, not the

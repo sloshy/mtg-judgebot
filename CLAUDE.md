@@ -25,8 +25,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   `JUDGE_SPEND_WARN_AT` (percentages of the cap, unset by default) warns before it, once
   per threshold per period, claimed in `spend_warnings` so one process sends each.
   `JUDGE_ALERT_WEBHOOK` is told when the cap trips or a warning is due, when the scheduled refresh fails (once
-  per streak), recovers or hits its embed ceiling, and when a script fails
-  (`scripts/alert.sh`). `judge-cli stats` reads the ledger. The cap *reserves*
+  per streak), recovers or hits its embed ceiling, when a script fails
+  (`scripts/alert.sh`), and when the Discord role finds `DISCORD_INTERACTIONS` and the
+  application's Interactions Endpoint URL disagree, or refuses a signed interaction for
+  its timestamp (once per streak; a wrong host clock refuses them all). `judge-cli stats` reads the ledger. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop
   against wiremock, not the live API. A full 22-question gold run costs ~$1.70.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
@@ -64,7 +66,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D29),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D30),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -192,7 +194,22 @@ through `discord::reply::Reply`, initial response then follow-ups, over REST), w
 - `/card` and `/rule` are model-free lookups, rendered by pure `render::card` / `rules`.
 - An *Incorrect* rating's ephemeral reply names the operator and, when the source offer
   is a GitHub repository, links its `wrong_answer.yml` issue form (`render::report_url`).
-- **One gateway holder** (`discord/gateway.rs`). `discord::serve` runs `run` inside
+- **Interactions over HTTP** (`DISCORD_INTERACTIONS=http`, `discord::Delivery`, D30):
+  no gateway, no lease. `serve` reads the application (`GET /applications/@me`,
+  retried) for its id and `verify_key`, registers, starts `symbols::watch` and opens
+  `endpoint::Interactions`, served at `endpoint::PATH` by `judge_api::discord` (on the
+  network roles' listener, or `Listening::interactions_only` on `API_ADDR` when
+  `roles::Discord::listen` is set: `--discord` alone). In http mode that listener is
+  `http::reserve`d (bound, refusing dials) and `listen`s only once the endpoint opens,
+  or after `network::LISTEN_WAIT` (30 s). `receive`: wait up to
+  `OPEN_WAIT` for it to open (else 503), verify (401), PING inline, else dispatch on a
+  `Work`-holding task and answer 202 once `reply::Ack` hears the initial response (REST
+  callback) or at `ACK_WAIT` from arrival. Every initial `create_response` must call
+  `ack.sent()`. `/api/health` fails until it is open (`discord::Open`), and the compose
+  healthcheck probes `--discord` alone when the variable is `http`. A mismatch with the
+  application's Interactions Endpoint URL (`endpoint::mismatch`) is an ERROR plus the
+  alert webhook, never a refusal: Discord saves the URL only once the endpoint answers.
+- **One gateway holder** (`discord/gateway.rs`, `DISCORD_INTERACTIONS=gateway`, the default). `discord::serve` runs `run` inside
   `gateway::hold`, in a loop: take a `GatewayLease` or stand by for it (unbounded, INFO
   `standing by: …` naming the holder, reconnecting with backoff if the waiting
   connection drops; the process's HTTP roles serve meanwhile), wait `Timing::grace`,
@@ -229,7 +246,9 @@ through `discord::reply::Reply`, initial response then follow-ups, over REST), w
 repository the instance's source is in, the commit it was built from and the
 licence/copyright:
 
-- the web footer via `GET /api/about`, served beside `/api/health` whatever interfaces are off
+- the web footer via `GET /api/about`, served beside `/api/health` by the network roles whatever
+  interfaces are off (not by `--discord` alone over HTTP, whose listener serves the
+  endpoint and `/api/health` only)
 - `/help` and `/license`
 - the MCP instructions and `about` tool
 - `judge-cli about`
@@ -826,9 +845,17 @@ Deployment is self-hosted behind a Cloudflare Tunnel. `docs/DEPLOYMENT.md` is th
 runbook. `db` and `proxy` publish on `127.0.0.1` only: `proxy` (Caddy) holds
 `127.0.0.1:8787` and forwards to `judgebot:8787`, because `judgebot` has no
 `container_name` and no port so a deploy can run two (D29). A release's migrations keep
-the previous release working (expand, contract later; `CONTRIBUTING.md`). Public traffic reaches
-`judgebot:8787` (network alias `api`, the old service name a tunnel may still point at)
-over the compose network from the `cloudflared` service, which the `tunnel` compose
+the previous release working (expand, contract later; `CONTRIBUTING.md`). `proxy/Caddyfile`
+dials `judgebot:8787` afresh for every request (`keepalive off`, retrying a refused dial
+for 5 s): a kept-alive connection to a draining container lost POSTs in a drill. What
+remains is a connection the kernel had queued for the old container in the instant it
+closes its listener, which is reset (Caddy resends no POST body, so retrying cannot
+save it; a config-changing `caddy reload` resets connections too, so the deploy does
+not switch upstreams that way). It runs with `--watch` over the mounted `proxy/`
+directory, so a Caddyfile edit needs no restart; `deploy.sh` validates the file first
+and ends with a `caddy reload` of it, a no-op unless the proxy runs something else. Public
+traffic reaches `proxy:8787` (network alias `api`, the old service name a tunnel may
+still point at) over the compose network from the `cloudflared` service, which the `tunnel` compose
 profile starts (`COMPOSE_PROFILES=tunnel` in `.env`). Deploy credentials live in
 `.env.deploy` (`TUNNEL_TOKEN`, `R2_*`, `BACKUP_*`). Only `cloudflared`, the `backup`
 service and `scripts/backup-db.sh` read it, never the internet-facing `judgebot` (D15).

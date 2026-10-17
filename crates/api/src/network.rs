@@ -8,12 +8,31 @@ use std::sync::Arc;
 use anyhow::Result;
 use judge_agent::{Options, Quota, Toolbox};
 use judge_bot::{
-    ingest::runs::FreshnessReader, serving::Serving, shutdown::Shutdown, synth::Harness,
+    discord::endpoint::Interactions, ingest::runs::FreshnessReader, serving::Serving,
+    shutdown::Shutdown, synth::Harness,
 };
 use judge_core::NetworkOperator;
 use judge_llm::ApiKey;
 
-use crate::{ApiConfig, App, Interfaces, Refused, bind, router, serve_on};
+use crate::{
+    ApiConfig, App, Interfaces, Refused, bind,
+    discord::{All, Open},
+    http::{self, Probe},
+    router, serve_on,
+};
+
+/// The longest a listener that serves Discord's interactions endpoint waits
+/// for it to open before it listens anyway, so the other routes are not held
+/// up by a Discord API that does not answer.
+pub const LISTEN_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The address, listening or only reserved.
+enum Socket {
+    Listening(tokio::net::TcpListener),
+    /// Reserved: a dial is refused, and goes on to another container, until
+    /// the interactions endpoint opens.
+    Reserved(tokio::net::TcpSocket),
+}
 
 /// The HTTP interfaces a process opens, with everything they require. Made
 /// only by [`Network::new`], which runs [`ApiConfig::check`], and holding the
@@ -83,9 +102,12 @@ impl Network {
 /// The network roles with their routes built and `API_ADDR` bound, ready to
 /// serve.
 pub struct Listening {
-    listener: tokio::net::TcpListener,
+    socket: Socket,
     routes: axum::Router,
     shutdown: Shutdown,
+    /// Discord's interactions endpoint, when it is mounted: told when the
+    /// listener has stopped, so the Discord role drains only then.
+    interactions: Option<Interactions>,
 }
 
 impl Listening {
@@ -95,25 +117,97 @@ impl Listening {
     ///
     /// # Errors
     /// A fatal accept-loop error.
+    ///
+    /// A listener that serves Discord's interactions endpoint listens only
+    /// once the endpoint opens (or after [`LISTEN_WAIT`]): until then the
+    /// address refuses connections, so during a deploy the proxy's dial goes
+    /// on to the old container, which can verify them, rather than here.
     pub async fn serve(self) -> Result<()> {
-        serve_on(self.listener, self.routes, &self.shutdown).await
+        let Self {
+            socket,
+            routes,
+            shutdown,
+            interactions,
+        } = self;
+        let served = async {
+            let listener = match socket {
+                Socket::Listening(l) => l,
+                Socket::Reserved(socket) => {
+                    if let Some(i) = &interactions {
+                        tokio::select! {
+                            () = i.opened() => {}
+                            () = tokio::time::sleep(LISTEN_WAIT) => tracing::warn!(
+                                wait_secs = LISTEN_WAIT.as_secs(),
+                                "Discord's interactions endpoint has not opened; listening anyway"
+                            ),
+                            // Nothing was accepted, so nothing to drain.
+                            () = shutdown.requested() => return Ok(()),
+                        }
+                    }
+                    http::listen(socket)?
+                }
+            };
+            serve_on(listener, routes, &shutdown).await
+        }
+        .await;
+        if let Some(i) = &interactions {
+            i.close();
+        }
+        served
+    }
+
+    /// The listener of a process whose only HTTP role is Discord's
+    /// interactions endpoint (`--discord` alone with
+    /// `DISCORD_INTERACTIONS=http`): the endpoint and `GET /api/health` on
+    /// `cfg`'s `API_ADDR`, nothing else.
+    ///
+    /// # Errors
+    /// Binding `API_ADDR`.
+    pub fn interactions_only(
+        cfg: &ApiConfig,
+        serving: &Serving,
+        interactions: &Interactions,
+    ) -> Result<Self> {
+        let probe = All(vec![
+            Arc::new(serving.pool().clone()),
+            Arc::new(Open(interactions.clone())),
+        ]);
+        let routes = crate::discord::alone(interactions.clone(), Arc::new(probe));
+        tracing::info!(
+            path = judge_bot::discord::endpoint::PATH,
+            "starting HTTP adapter for Discord's interactions endpoint alone"
+        );
+        let socket = Socket::Reserved(http::reserve(cfg)?);
+        Ok(Self {
+            socket,
+            routes,
+            shutdown: serving.shutdown().clone(),
+            interactions: Some(interactions.clone()),
+        })
     }
 }
 
 impl Network {
     /// Build the routes over `serving` and bind `API_ADDR`. A process binds
     /// before it starts its other roles, so a taken address fails before the
-    /// Discord gateway is ever contacted.
+    /// Discord gateway is ever contacted (with `discord`, an address another
+    /// process listens on; one only reserved by another fails at listen). With `discord`, Discord's
+    /// interactions endpoint is mounted beside them, and `/api/health` fails
+    /// until it is open.
     ///
     /// # Errors
     /// Binding `API_ADDR`.
-    pub async fn bind(self, serving: &Serving) -> Result<Listening> {
+    pub async fn bind(
+        self,
+        serving: &Serving,
+        discord: Option<&Interactions>,
+    ) -> Result<Listening> {
         let Self {
             cfg,
             interfaces,
             operator,
         } = self;
-        let routes = routes(serving, &cfg, &interfaces, &operator);
+        let routes = routes(serving, &cfg, &interfaces, &operator, discord);
         // The enabled *and* the disabled interfaces: an operator hunting a
         // 404 reads the reason here rather than inferring it from the routes
         // that answer.
@@ -124,23 +218,30 @@ impl Network {
             rate_limit = cfg.rate_limit,
             rate_window_secs = cfg.rate_window.as_secs(),
             concurrency = cfg.max_concurrent,
+            discord_interactions = discord.map(|_| judge_bot::discord::endpoint::PATH),
             "starting HTTP adapter"
         );
-        let listener = bind(&cfg).await?;
+        let socket = match discord {
+            None => Socket::Listening(bind(&cfg).await?),
+            Some(_) => Socket::Reserved(http::reserve(&cfg)?),
+        };
         Ok(Listening {
-            listener,
+            socket,
             routes,
             shutdown: serving.shutdown().clone(),
+            interactions: discord.cloned(),
         })
     }
 }
 
-/// The router for `interfaces`, the MCP transport mounted when asked for.
+/// The router for `interfaces`, the MCP transport mounted when asked for,
+/// and Discord's interactions endpoint with `discord`.
 fn routes(
     serving: &Serving,
     cfg: &ApiConfig,
     interfaces: &Interfaces,
     operator: &NetworkOperator,
+    discord: Option<&Interactions>,
 ) -> axum::Router {
     let judge = serving.judge();
     let pool = serving.pool();
@@ -156,7 +257,13 @@ fn routes(
             judge.source_offer().clone(),
             operator.clone(),
         )
-        .with_probe(Arc::new(pool.clone()))
+        .with_probe(match discord {
+            None => Arc::new(pool.clone()),
+            Some(i) => Arc::new(All(vec![
+                Arc::new(pool.clone()) as Arc<dyn Probe>,
+                Arc::new(Open(i.clone())),
+            ])),
+        })
         // /api/about reads the run record for the data's freshness, cached
         // for a minute: the page asks on every load.
         .with_data_status(Arc::new(FreshnessReader::new(pool.clone()))),
@@ -192,6 +299,9 @@ fn routes(
         let service = judge_agent::mcp::http_service(Arc::new(toolbox), cfg.mcp_hosts.clone());
         routes = routes.merge(crate::mcp::router(service, token));
     }
+    if let Some(i) = discord {
+        routes = routes.merge(crate::discord::router(i.clone()));
+    }
     routes
 }
 
@@ -219,6 +329,20 @@ mod tests {
             ApiConfig::from_vars(|k| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()))
                 .ok()?;
         Network::new(cfg, Interfaces::of(interfaces), operator()?).ok()
+    }
+
+    /// A reserved address refuses a dial (so a proxy goes on to another
+    /// container) until it listens, and holds the port meanwhile.
+    #[tokio::test]
+    async fn a_reserved_address_refuses_until_it_listens() -> anyhow::Result<()> {
+        let cfg = ApiConfig::from_vars(|k| (k == "API_ADDR").then(|| "127.0.0.1:0".to_owned()))?;
+        let socket = http::reserve(&cfg)?;
+        let addr = socket.local_addr()?;
+        assert!(tokio::net::TcpStream::connect(addr).await.is_err());
+        let listener = http::listen(socket)?;
+        assert!(tokio::net::TcpStream::connect(addr).await.is_ok());
+        drop(listener);
+        Ok(())
     }
 
     #[test]

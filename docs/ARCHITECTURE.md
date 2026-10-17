@@ -206,8 +206,24 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   migration at startup. Each role keeps its own concurrency slots and limits. The HTTP
   listener is bound before the Discord gateway is contacted, then both run side by side,
   and the first to stop ends the process with a non-zero status.
-- Of the processes running `--discord` on one database, one holds the gateway
-  (`judge_bot::discord::gateway`). The Discord role takes a `GatewayLease` before it
+- `DISCORD_INTERACTIONS` (`discord::Delivery`, D30) says how Discord delivers
+  interactions. `http`: the Discord role takes no lease and opens no gateway; it reads
+  the application's id and public key over REST (retrying until they come), registers
+  the commands, starts the symbol watcher and opens `discord::endpoint::Interactions`,
+  which the listener serves at `/discord/interactions` (the network roles' listener, or
+  with `--discord` alone one on `API_ADDR` serving only it and `/api/health`). A request
+  is verified (Ed25519, `401` otherwise), a PING answered inline, anything else
+  dispatched on a task holding a `Work` guard, and answered `202` once the handler's
+  initial response has gone through the REST callback (`reply::Ack`), at most 2.8 s
+  after arrival. Until the endpoint opens the listener holds its port without
+  listening (at most 30 s), so dials go to another container; a request that finds it
+  closed gets `503`, and `/api/health` fails.
+  Both modes compare the setting with the application's Interactions Endpoint URL at
+  startup and report a mismatch (ERROR, alert webhook) without stopping. Both feed one
+  dispatch (`Data::dispatch`, each interaction on a task of its own so a panic is
+  answered like an error).
+- Over the gateway, of the processes running `--discord` on one database, one holds the
+  gateway (`judge_bot::discord::gateway`). The Discord role takes a `GatewayLease` before it
   connects, or stands by until the holder lets go, with no bound on the wait and
   reconnecting if its own connection drops; its HTTP roles serve meanwhile. Having taken
   it, it waits `Timing::grace` (15 s), unless the holder before it recorded a clean
@@ -258,12 +274,16 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   chose the old `api` service's interfaces, refuses the launch with the `JUDGE_ROLES`
   line that replaces it.
   `roles::compose_roles` is the same rule in Rust, so `judge-config` checks only the
-  roles the service would run. The service keeps the network alias `api` for tunnels
-  configured with the old service name. It has no `container_name` and publishes no
+  roles the service would run. It has no `container_name` and publishes no
   port, so `scripts/deploy.sh` can run a second container of it beside the first
   (blue-green, D29): start the new one, wait for Docker's healthy, `docker stop` the old
-  one, which drains. The `proxy` service (Caddy, `caddy reverse-proxy`) publishes
-  `127.0.0.1:8787` and forwards to `judgebot:8787`, whichever container listens.
+  one, which drains. The `proxy` service (Caddy, `proxy/Caddyfile`) publishes
+  `127.0.0.1:8787`, carries the network alias `api` (the old service name a tunnel may
+  point at; the runbook's is `proxy:8787`) and forwards to `judgebot:8787`, whichever
+  container listens, on a new connection per request with dial retries for 5 s: a
+  draining container closes its listener, so a refused dial goes on to the other, and
+  no kept-alive connection to it can be closed under a POST. A connection the kernel
+  had queued for it as it closes its listener is reset, the one loss left.
   `refresh` runs `judgebot ingest` on demand,
   and `backup` (profile `backup`, `.env.deploy` and no `.env`) runs `judgebot backup
   serve`.
