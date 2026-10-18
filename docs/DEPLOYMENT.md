@@ -472,9 +472,24 @@ from anonymous traffic.
 With hosting at $0, the LLM bill is the entire bill. The edge rules below are the
 first line of defence, and the in-process limiter is the backstop.
 
-- **Rate limiting rule** on `/api/judge`: match `API_RATE_LIMIT` /
-  `API_RATE_WINDOW_SECS` (default 4 per 300s), or set it slightly tighter. The free
-  plan includes one rule.
+- **Rate limiting rule** on `/api/judge`, a burst limit in front of the process's own
+  limit (`API_RATE_LIMIT` per `API_RATE_WINDOW_SECS`, default 4 per 300 s). The free
+  plan has one rule, matched on the path only, counted per IP over 10 seconds, with a
+  10-second block, so it cannot match the process's window:
+
+  | Field | Value |
+  | --- | --- |
+  | When incoming requests match | URI Path equals `/api/judge` |
+  | With the same characteristics | IP |
+  | When rate exceeds | 2 requests per 10 seconds |
+  | Then take action | Block, for 10 seconds |
+
+  An answer takes 20 to 45 seconds and the web page sends one question at a time, so a
+  person reaches it only by resubmitting quick replies (busy, not found, "did you
+  mean?"), and then waits 10 seconds. Business and Enterprise plans can count over 5
+  minutes and match the process's window; Pro counts up to 1 minute. Keep the rule to that path: Discord's requests to `/discord/interactions`
+  arrive from a few addresses of Discord's, which a rule over the whole site would
+  block.
 - **Managed Challenge** as a WAF custom rule on the HTML document request, *not* on
   `/api/judge`. `fetch` cannot solve a challenge served to an `XHR`, so challenging the
   API path breaks the web app. Challenging the document checks a visitor once, and later
