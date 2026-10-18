@@ -1192,3 +1192,68 @@ The public feed, the feedback queue and the dashboard read these.
   rated and the counts the dashboard shows.
 - **The web has no private option.** It has no account to show a private answer to. A
   database constraint pins that, and another keeps an asker on Discord calls only.
+
+## D32. Major releases and maintenance
+
+*Decided 2026-10-18.*
+
+A major release may change the database in ways the previous release cannot run
+against. Deploying one is still one ordinary deploy, with a short downtime while it
+migrates, during which questions get a maintenance reply rather than an error.
+
+- **Within a major, migrations only add** (CONTRIBUTING). A new table, a nullable
+  column, an index: the previous release keeps working beside the new one (D29), an
+  older `judge-cli` or `judge-mcp` keeps working against the new schema, and rolling back
+  to an older release of the major works. Dropping, renaming and rewriting rows wait for
+  the next major, made during its `X.0.0-dev` cycle.
+- **Versions say which is which.** `main` carries `X.Y.Z-dev` between releases, and each
+  migration run records the release and commit that ran it (`instance_release`). A new
+  major's pre-release (`X.0.0-*`) works only with the very build that migrated the
+  database; any other pre-release orders among its major's releases
+  (`judge_core::release`). The version comes from the tree, not from the tag, because a
+  release retags the image CI already built and tested; the release check holds the tag
+  to the tree's version.
+- **The tools check the instance's release** (`judge_agent::release`). Same major,
+  newer instance: a note, and they work. Anything else: every operation fails, naming
+  what to update and the instance's commit. The check is a type: the ports are reached
+  only through it.
+- **`judgebot` refuses a rollback across a major.** Unknown migrations within a major
+  only added, so an older release starts; across a major, or between builds of a new
+  major's pre-release, it exits naming both builds. The decision is made under the
+  migration lock, so it cannot race another process's migration.
+- **Maintenance while a major migrates.** Every `judgebot` process with a role (not a
+  one-shot `judgebot ingest` or `judgebot backup`) holds the shared side of an advisory
+  lock (`SCHEMA_LOCK`) for its life, taken before it looks at the schema, and checks
+  every 10 s that it still does: one lost (a Postgres restart) is taken again only
+  while the schema is still its own, or the process exits. A major upgrade starts its
+  roles closed,
+  takes the exclusive side once every older process has exited, migrates, and opens.
+  `judgebot ingest migrate` waits the same way. A one-shot `judgebot ingest` step of
+  the previous release that is running stops at its next step, which checks the
+  ledger.
+  Closed, every question is answered with the maintenance reply and runs nothing: a
+  Retry button on Discord, read back from the message as a "did you mean?" pick is, so
+  nothing is held in memory; a `maintenance` reply with `Retry-After` on the web and the
+  API; the message as the error over `/mcp`. `/api/health` fails, so nothing routes to
+  the process as if it were up. The process's own background work does read the
+  previous schema meanwhile (the spend ledger, the data's freshness, the gateway lease
+  and its handover record) and logs rather than fails when it cannot, so a major that
+  changes those tables keeps them readable until it has migrated.
+- **`scripts/deploy.sh` decides the path.** It asks the new image what its migrations
+  are (`judgebot ingest upgrade`). Within a major: blue-green, unchanged. A major: a
+  backup when one is configured, the new container beside the old one, the old one
+  stopped as soon as the new one listens, then the wait for the migration. From 1.x,
+  whose processes hold no schema lock, the old container is stopped first.
+
+**Rejected:**
+
+- *Expand and contract across every release, majors included.* It keeps every deploy
+  free of downtime, but a breaking change takes two releases and leaves a compatibility
+  shape behind in between. A short, announced downtime once per major costs less.
+- *A special command for a major's deploy.* Operators would have to know which kind of
+  release they are deploying. The new process decides from the database instead.
+- *Rebuilding the image on a tag, so the binary can read its tag.* The release would no
+  longer be the image that was tested.
+- *Refusing every question with an error while migrating.* An error reads as a fault;
+  the maintenance reply says what is happening and how to ask again.
+

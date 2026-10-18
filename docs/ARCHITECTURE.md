@@ -261,6 +261,25 @@ and `--jobs`, on the command line or else in `JUDGE_ROLES`.
   ledger (bounded by `FLUSH_LIMIT`, 5 s) and exits 0. A gateway slow to close keeps the
   lease until it has, at most until the limit. A signal before the roles start, or a
   second one, exits at once.
+- **Startup and the schema** (D32). `migrate::upgrade` decides what the pending
+  migrations are. Within a major they only add, so they run first and the process
+  opens (`maintenance::Availability::open`) beside any previous release still
+  draining. A major upgrade's (another major, a new major's `X.0.0-*` pre-release, or a
+  database from before 2.0) cannot run beside the previous release: the roles start at
+  once, closed (`Availability::upgrading`), and answer every question with the
+  maintenance reply (Discord: the question restated with a Retry button,
+  `render::RetryPrompt`, read back from the message as a pick is; `/api/judge`: 503
+  `maintenance` with `Retry-After`; `/mcp`: the message as the tool's error;
+  `/api/health`: 503 through the `Maintenance` probe, after the Discord endpoint's `Open`
+  so `scripts/deploy.sh` can read a `maintenance:` answer as "up"). Every process with a
+  role holds the shared side of `SCHEMA_LOCK` before it reads the schema, and
+  `SchemaHold::keep` checks it every 10 s beside the roles (retaken only while the
+  ledger holds nothing unknown, else the process exits). The upgrade waits for the
+  exclusive side (`lease::SchemaHold::exclusive`, in 5 s attempts that give up once
+  another process of its release has migrated), which it gets once every older process has exited, migrates,
+  downgrades to shared, opens, and only then starts the scheduler. A process starting
+  meanwhile queues behind it. A rollback is refused under the migration lock
+  (`migrate::rollback_refusal`) unless it stays within a major.
 - `judgebot ingest <cmd>` is the data command line.
 - `judgebot backup <run|list|fetch|serve>` is the database backup (`judge_bot::backup`,
   D26): `pg_dump -Fc` over the network, gzipped, uploaded to R2 by a `SigV4` client of

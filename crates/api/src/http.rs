@@ -13,10 +13,12 @@ use axum::{
     Json, Router,
     extract::{ConnectInfo, FromRequest, FromRequestParts, Request, State},
     http::{HeaderMap, StatusCode, request::Parts},
+    response::{IntoResponse as _, Response},
     routing::{get, post},
 };
 use judge_bot::discord::{capture::CapturingRetriever, render};
 use judge_bot::ingest::runs::FreshnessReader;
+use judge_bot::maintenance::{self, Availability};
 use judge_bot::shutdown::Shutdown;
 use judge_core::{
     About, CallStore, Deps, Freshness, HistoryScope, JudgeError, NetworkOperator, Origin, Question,
@@ -55,6 +57,21 @@ pub trait Probe: Send + Sync {
 /// a container healthcheck's timeout, so a saturated pool reads as "slow", not
 /// as a killed check.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Fails while the process is closed for a major upgrade's migration
+/// ([`judge_bot::maintenance`]), so a deploy does not count it as up.
+pub struct Maintenance(pub Availability);
+
+#[async_trait::async_trait]
+impl Probe for Maintenance {
+    async fn probe(&self) -> Result<(), String> {
+        if self.0.is_open() {
+            Ok(())
+        } else {
+            Err("maintenance: migrating the schema for a major upgrade".to_owned())
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl Probe for sqlx::PgPool {
@@ -105,6 +122,8 @@ pub struct App {
     operator: NetworkOperator,
     /// What `GET /api/about` says about the data; `None` serves it as null.
     data: Option<Arc<dyn DataStatus>>,
+    /// Open, or closed for a major upgrade's migration.
+    availability: Availability,
 }
 
 impl std::fmt::Debug for App {
@@ -143,7 +162,16 @@ impl App {
             offer,
             operator,
             data: None,
+            availability: Availability::open(),
         }
+    }
+
+    /// Answer questions only while `availability` is open, and the
+    /// maintenance reply otherwise.
+    #[must_use]
+    pub fn with_availability(mut self, availability: Availability) -> Self {
+        self.availability = availability;
+        self
     }
 
     /// Make `GET /api/health` check `probe` (the database) instead of only
@@ -459,9 +487,24 @@ async fn judge_route(
     PeerAddr(peer): PeerAddr,
     headers: HeaderMap,
     JudgeBody(req): JudgeBody,
-) -> (StatusCode, Json<ApiReply>) {
+) -> Response {
     if let Err(message) = shape::validate(&req) {
-        return (StatusCode::BAD_REQUEST, Json(ApiReply::Error { message }));
+        return (StatusCode::BAD_REQUEST, Json(ApiReply::Error { message })).into_response();
+    }
+    // Before the rate limit: a maintenance reply costs the caller nothing.
+    if !app.availability.is_open() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(
+                axum::http::header::RETRY_AFTER,
+                maintenance::RETRY_AFTER.as_secs().to_string(),
+            )],
+            Json(ApiReply::Maintenance {
+                message: maintenance::MESSAGE.to_owned(),
+                retry_after_secs: maintenance::RETRY_AFTER.as_secs(),
+            }),
+        )
+            .into_response();
     }
     let ip = client_ip(&headers, peer, app.client_ip);
     if !app.limiter.allow(ip) {
@@ -471,7 +514,8 @@ async fn judge_route(
             Json(ApiReply::RateLimited {
                 message: shape::RATE_LIMITED.to_owned(),
             }),
-        );
+        )
+            .into_response();
     }
     let Some(_permit) = app.acquire().await else {
         return (
@@ -479,7 +523,8 @@ async fn judge_route(
             Json(ApiReply::Busy {
                 message: render::BUSY.to_owned(),
             }),
-        );
+        )
+            .into_response();
     };
     // No session id still gets an answer, just no follow-up history.
     let session = req.session_id.unwrap_or_else(Uuid::new_v4);
@@ -487,7 +532,7 @@ async fn judge_route(
         thread_id: format!("web:{session}"),
         text: shape::question_text(&req),
     };
-    (StatusCode::OK, Json(app.answer(&q, ip).await))
+    (StatusCode::OK, Json(app.answer(&q, ip).await)).into_response()
 }
 
 /// The address rate limiting buckets on: `CF-Connecting-IP` behind Cloudflare,
@@ -1199,6 +1244,67 @@ mod tests {
             let bytes = axum::body::to_bytes(res.into_body(), 1024).await?;
             assert_eq!(std::str::from_utf8(&bytes)?, body);
         }
+        Ok(())
+    }
+
+    /// While a major upgrade migrates, a question gets the maintenance reply
+    /// (503, `Retry-After`), runs nothing, is stored nowhere and costs no
+    /// rate allowance, and `/api/health` fails; once open, all is as before.
+    #[tokio::test]
+    async fn a_closed_instance_answers_with_maintenance_and_fails_health() -> Res {
+        let store = Arc::new(StubStore::default());
+        let availability = judge_bot::maintenance::Availability::upgrading();
+        let app = Arc::new(
+            App::new(
+                stub_deps(),
+                Arc::clone(&store) as Arc<dyn CallStore>,
+                SpendMeter::new(),
+                &test_cfg(1, Path::new("does-not-exist")),
+                SourceOffer::upstream(judge_core::Commit::Unknown),
+                test_operator(),
+            )
+            .with_probe(Arc::new(Maintenance(availability.clone())))
+            .with_availability(availability.clone()),
+        );
+        let router = router(
+            app,
+            &Interfaces::of(&nonempty![Interface::Api]),
+            Path::new("does-not-exist"),
+        );
+        let ask = || {
+            Request::post("/api/judge")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"question":"does bolt kill bob?"}"#))
+        };
+        for _ in 0..3 {
+            let res = router.clone().oneshot(ask()?).await?;
+            assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                res.headers()
+                    .get("retry-after")
+                    .map(axum::http::HeaderValue::as_bytes),
+                Some(&b"30"[..])
+            );
+            let bytes = axum::body::to_bytes(res.into_body(), 4096).await?;
+            let body: serde_json::Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(body.get("kind"), Some(&"maintenance".into()), "{body}");
+            assert_eq!(body.get("retry_after_secs"), Some(&30.into()));
+        }
+        assert!(persisted(&store).is_empty());
+        let health = router
+            .clone()
+            .oneshot(Request::get("/api/health").body(Body::empty())?)
+            .await?;
+        assert_eq!(health.status(), StatusCode::SERVICE_UNAVAILABLE);
+        availability.set_open();
+        let health = router
+            .clone()
+            .oneshot(Request::get("/api/health").body(Body::empty())?)
+            .await?;
+        assert_eq!(health.status(), StatusCode::OK);
+        // Open, and the maintenance replies took none of the one-a-window allowance.
+        let res = router.oneshot(ask()?).await?;
+        assert_eq!(res.status(), StatusCode::OK);
         Ok(())
     }
 

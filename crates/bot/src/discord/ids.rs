@@ -13,6 +13,9 @@
 //!   of the prompt's content ([`Digest`]), the oracle id 32 hex digits. The
 //!   question itself is not here: it is read back from the message the button
 //!   is on ([`super::render::PickPrompt`]), whose content must match the digest.
+//! * `retry:<asker>:<c|p>:<digest>`: ask the question on the button's message
+//!   again, after a maintenance reply ([`super::render::RetryPrompt`], whose
+//!   content must match the digest).
 //! * `pick:<uuid>:<n>`: the shape a pick had while picks were held in memory.
 //!   It parses, to [`ButtonAction::LegacyPick`], so a button sent before the
 //!   upgrade is answered as expired rather than as unrecognised.
@@ -29,6 +32,7 @@ pub const CUSTOM_ID_LIMIT: usize = 100;
 
 const RATE: &str = "rate";
 const CARD: &str = "card";
+const RETRY: &str = "retry";
 const LEGACY_PICK: &str = "pick";
 /// The span marker for "not found in the question".
 const NOT_FOUND: &str = "_";
@@ -46,9 +50,23 @@ pub enum ButtonAction {
     /// Pick a card for the first ambiguous span of the question on the
     /// button's message.
     Pick(Pick),
+    /// Ask the question on the button's message again: it was answered
+    /// with the maintenance reply.
+    Retry(Retry),
     /// A pick button from a release that held the question in memory
     /// (`pick:<uuid>:<n>`). Nothing can answer it any more.
     LegacyPick,
+}
+
+/// A maintenance reply's Retry button. The question is on the message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Retry {
+    /// Discord user id of the asker; only they may retry.
+    pub asker: NonZeroU64,
+    /// Who the answer is for.
+    pub audience: Audience,
+    /// The content of the reply this button was made for.
+    pub digest: Digest,
 }
 
 /// One "did you mean…?" button: everything a click needs except the
@@ -163,6 +181,13 @@ impl fmt::Display for ButtonAction {
                 }
                 write!(f, ":{}:{}", p.digest, p.card.into_inner().simple())
             }
+            ButtonAction::Retry(r) => write!(
+                f,
+                "{RETRY}:{}:{}:{}",
+                r.asker,
+                audience_code(r.audience),
+                r.digest
+            ),
             // Never sent any more; written in the old shape for completeness.
             ButtonAction::LegacyPick => write!(f, "{LEGACY_PICK}:{}:0", Uuid::nil()),
         }
@@ -181,6 +206,28 @@ fn uuid(s: &str) -> Result<Uuid, ParseError> {
     Uuid::parse_str(s).map_err(|_| ParseError::BadUuid(s.to_owned()))
 }
 
+fn parse_audience(s: &str) -> Result<Audience, ParseError> {
+    match s {
+        "c" => Ok(Audience::Channel),
+        "p" => Ok(Audience::Private),
+        other => Err(ParseError::BadAudience(other.to_owned())),
+    }
+}
+
+fn parse_retry(rest: &str) -> Result<Retry, ParseError> {
+    let mut parts = rest.split(':');
+    let (Some(asker), Some(audience), Some(digest), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(ParseError::Shape);
+    };
+    Ok(Retry {
+        asker: digits::<NonZeroU64>(asker).ok_or_else(|| ParseError::BadUser(asker.to_owned()))?,
+        audience: parse_audience(audience)?,
+        digest: Digest::parse(digest).ok_or_else(|| ParseError::BadDigest(digest.to_owned()))?,
+    })
+}
+
 fn parse_pick(rest: &str) -> Result<Pick, ParseError> {
     let mut parts = rest.split(':');
     let (Some(asker), Some(audience), Some(span), Some(digest), Some(card), None) = (
@@ -194,11 +241,7 @@ fn parse_pick(rest: &str) -> Result<Pick, ParseError> {
         return Err(ParseError::Shape);
     };
     let asker = digits::<NonZeroU64>(asker).ok_or_else(|| ParseError::BadUser(asker.to_owned()))?;
-    let audience = match audience {
-        "c" => Audience::Channel,
-        "p" => Audience::Private,
-        other => return Err(ParseError::BadAudience(other.to_owned())),
-    };
+    let audience = parse_audience(audience)?;
     let span = match span {
         NOT_FOUND => None,
         other => {
@@ -241,6 +284,7 @@ impl FromStr for ButtonAction {
                 Ok(ButtonAction::Rate { call, score })
             }
             CARD => parse_pick(rest).map(ButtonAction::Pick),
+            RETRY => parse_retry(rest).map(ButtonAction::Retry),
             LEGACY_PICK => {
                 let (id, n) = rest.split_once(':').ok_or(ParseError::Shape)?;
                 uuid(id)?;
@@ -455,5 +499,26 @@ mod tests {
             matches!(ButtonAction::parse(&long), Err(ParseError::TooLong(n)) if n > CUSTOM_ID_LIMIT)
         );
         assert!(ParseError::Shape.to_string().contains("<kind>"));
+    }
+
+    #[test]
+    fn a_retry_round_trips_and_its_longest_id_fits() -> Result<(), ParseError> {
+        let r = ButtonAction::Retry(Retry {
+            asker: NonZeroU64::MAX,
+            audience: Audience::Private,
+            digest: Digest::of("x"),
+        });
+        let id = r.to_custom_id();
+        assert!(id.starts_with("retry:18446744073709551615:p:"), "{id}");
+        assert!(id.chars().count() <= CUSTOM_ID_LIMIT);
+        assert_eq!(ButtonAction::parse(&id)?, r);
+        for bad in [
+            "retry:0:p:0123456789abcdef",
+            "retry:1:x:0123456789abcdef",
+            "retry:1:c",
+        ] {
+            assert!(ButtonAction::parse(bad).is_err(), "{bad}");
+        }
+        Ok(())
     }
 }

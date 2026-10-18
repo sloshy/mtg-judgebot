@@ -15,6 +15,7 @@ use crate::{
     Models, budget, build_deps_with,
     config::Config,
     db::{PgCallStore, Vectors},
+    maintenance::Availability,
     shutdown::{FLUSH_LIMIT, Shutdown},
 };
 
@@ -29,6 +30,8 @@ pub struct Serving {
     store: Arc<dyn CallStore>,
     ledger: budget::Syncing,
     shutdown: Shutdown,
+    /// Open, or closed for a major upgrade's migration.
+    availability: Availability,
     process: &'static str,
 }
 
@@ -47,6 +50,7 @@ impl Serving {
         judge: &Config,
         models: Models,
         shutdown: Shutdown,
+        availability: Availability,
         process: &'static str,
     ) -> Result<Self> {
         // A cloud endpoint with no credentials fails here, not on the first question.
@@ -90,6 +94,7 @@ impl Serving {
             store,
             ledger,
             shutdown,
+            availability,
             process,
         })
     }
@@ -98,6 +103,12 @@ impl Serving {
     #[must_use]
     pub fn shutdown(&self) -> &Shutdown {
         &self.shutdown
+    }
+
+    /// Whether the roles answer questions yet ([`crate::maintenance`]).
+    #[must_use]
+    pub fn availability(&self) -> &Availability {
+        &self.availability
     }
 
     /// Write the spend since the ledger's last sync, before a requested

@@ -37,7 +37,8 @@ export type ApiReply =
   | { kind: "not_found"; names: string[] }
   | { kind: "error"; message: string }
   | { kind: "busy"; message: string }
-  | { kind: "rate_limited"; message: string };
+  | { kind: "rate_limited"; message: string }
+  | { kind: "maintenance"; message: string; retry_after_secs: number };
 
 /** Ask the judge. Never throws on HTTP-level failures; those come back as
  * an `error` reply so the UI has one rendering path. */

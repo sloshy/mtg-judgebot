@@ -35,6 +35,21 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   build, or restore the backup taken before the upgrade. A 1.x image has no such check.
   A pre-release tag now needs that exact version in the tree.
 
+- **`scripts/deploy.sh` deploys a major release too.** It asks the new image what its
+  migrations are (`judgebot ingest upgrade`). For a major it takes a backup when one is
+  configured, starts the new container beside the old one, stops the old one as soon as
+  the new one listens, and waits for the migration.
+
+- **Major upgrades answer with a maintenance reply.** A release whose migrations cannot
+  run beside the previous release (a new major) starts its roles at once and answers
+  every question with a maintenance message: on Discord the question with a **Retry**
+  button, on the web a **Try again** button, over the API a `maintenance` reply (503,
+  `Retry-After`), over `/mcp` the message as the error. It migrates once every process
+  of the previous release has stopped (a lock every `judgebot` with a role holds while
+  it runs),
+  then answers as usual. `/api/health` fails meanwhile. Releases within a major still
+  migrate first and run beside the previous release.
+
 - **Every call records where it came from.** A stored call names its interface
   (Discord, web, MCP, `judge-cli` or an agent session) and, on Discord, the asker's user
   id and username at asking time. `judge-cli stats` counts questions by each interface
@@ -309,10 +324,12 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   checkout's directory (`mtg-judgebot-judgebot-1`). Use the service name with Compose
   (`docker compose logs judgebot`, `docker compose exec judgebot …`) instead of
   `docker logs judgebot`.
-- **Deploy this release with `docker compose up -d --remove-orphans`**, as below.
-  `scripts/deploy.sh` is the deploy from this release on. The old container has no
-  SIGTERM handler, so this one deploy waits up to 130 seconds for it to stop. This
-  release's migrations also assume no earlier release is writing calls while they run.
+- **Deploy this release with `scripts/deploy.sh`** (after `git pull`), or with
+  `docker compose up -d --remove-orphans` as below. Either stops the 1.x containers before
+  the new one migrates, since this release's migrations cannot run beside 1.x; with
+  `R2_BUCKET` set in `.env.deploy`, `deploy.sh` takes a backup first. Questions get a
+  maintenance reply while it migrates. The 1.x containers have no SIGTERM handler, so
+  Docker stops them after 10 seconds, and an answer still in progress then is cut off.
 - **Rebuild `judge-cli` and `judge-mcp` with the image.** A 1.x tool has no release
   check and fails on this release's schema with SQL errors.
 - **More is stored about each question.** From this release a Discord call stores the

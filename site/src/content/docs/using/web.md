@@ -38,6 +38,9 @@ also serves `GET /api/health` and `GET /api/about`. The compose service runs
 `docker compose up -d` serves the web app. `JUDGE_ROLES='--discord --api --jobs'`, for
 example, is a deployment with no public page.
 
+While the instance migrates its database for a major release, a question gets a short
+notice and a **Try again** button that sends the same question once the upgrade is done.
+
 ## Limits
 
 Anonymous traffic is rate limited per address (`API_RATE_LIMIT` questions per

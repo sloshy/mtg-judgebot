@@ -40,7 +40,10 @@ use std::sync::{
 use anyhow::{Context as _, Result};
 use judge_bot::{
     config::Config as JudgeConfig,
+    db::migrate::Upgrade,
     discord::{Delivery, endpoint::Interactions},
+    lease::SchemaHold,
+    maintenance::Availability,
     serving::Serving,
     shutdown::{DRAIN_LIMIT, Shutdown},
 };
@@ -138,48 +141,100 @@ async fn serve(roles: &Roles) -> Result<()> {
         .connect(&database_url)
         .await
         .context("connect to Postgres")?;
-    // The schema first: pending migrations are applied here (opt out with
-    // JUDGE_AUTO_MIGRATE=false), and a failure exits so the restart policy
+    // The schema first. A migration that only adds (within a major) runs
+    // here, beside any previous release still answering, and the process
+    // opens with it. A major upgrade's must wait for the previous release to
+    // stop: the roles start closed for maintenance and the migration runs
+    // once it can (`major`, below). A failure exits, so the restart policy
     // makes it loud rather than answering without persisting.
-    judge_bot::db::migrate::at_startup(&pool)
-        .await
-        .context("migrating the schema")?;
+    let upgrade = if judge_bot::db::migrate::auto_migrate_enabled()? {
+        judge_bot::db::migrate::upgrade(&pool)
+            .await
+            .context("reading the schema")?
+    } else {
+        Upgrade::InPlace
+    };
     let Plan { serve, jobs } = plan;
+    let (availability, mut schema) = match &upgrade {
+        Upgrade::InPlace => {
+            // The hold first: a process of an older release that starts while
+            // a major upgrade waits to migrate queues here, and then finds the
+            // migrated schema in `at_startup` and refuses it.
+            let hold = SchemaHold::shared(&pool, process).await?;
+            judge_bot::db::migrate::at_startup(&pool)
+                .await
+                .context("migrating the schema")?;
+            (Availability::open(), Some(hold))
+        }
+        Upgrade::Major { from } => {
+            tracing::warn!(
+                from = %from.as_ref().map_or_else(|| "a release from before 2.0".to_owned(), judge_bot::db::migrate::InstanceRelease::describe),
+                "a major upgrade: answering with a maintenance reply until every process of the \
+                 previous release has stopped and the schema is migrated"
+            );
+            (Availability::upgrading(), None)
+        }
+    };
+    // With no serving role there is nobody to tell: migrate before the jobs.
+    // From here a signal no longer exits at once: a migration it began is
+    // finished, then the process stops.
+    if schema.is_none() && serve.is_none() {
+        started.store(true, Ordering::Release);
+        schema = Some(major(&pool, process, &AtomicBool::new(false)).await?);
+    }
     // The serving roles' shared composition, which also loads the period's
     // spend before any of them can take a question.
     let serving = match serve {
         Some(Serve { adapters, models }) => Some((
-            Serving::start(pool.clone(), &judge, models, shutdown.clone(), process).await?,
+            Serving::start(
+                pool.clone(),
+                &judge,
+                models,
+                shutdown.clone(),
+                availability.clone(),
+                process,
+            )
+            .await?,
             adapters,
         )),
         None => None,
     };
     // The scheduled data refresh, on a thread and a pool of its own
     // (JUDGE_REFRESH_HOURS; 0 leaves it to cron). Its embedding step bills to
-    // the process's meter, the one the serving roles' models bill to.
+    // the process's meter, the one the serving roles' models bill to. Under
+    // a major upgrade it starts once the schema is migrated.
     let mut jobs_ledger = None;
-    let scheduler = if let Some(jobs) = jobs {
-        if serving.is_none() {
-            // Alone, the jobs still spend (the embed step), so the ledger runs
-            // here too: the period's spend caps the refresh, and the refresh's
-            // spend reaches `judge-cli stats`. A tripped cap fails the embed
-            // step, which the refresh reports itself; the questions alert
-            // counts chat refusals, which a process that answers nothing
-            // never has. The spend warnings apply as anywhere.
-            let budget = judge.budget().clone();
-            // It syncs on its own task for the life of the process, and is
-            // written once more at a requested shutdown.
-            jobs_ledger = Some(
-                judge_bot::budget::start(pool.clone(), judge.meter().clone(), budget, process)
-                    .await,
-            );
+    let start_jobs = |jobs| {
+        let pool = pool.clone();
+        let meter = judge.meter().clone();
+        async move { judge_bot::jobs::start(&pool, jobs, meter, process).await }
+    };
+    let (scheduler, later_jobs) = match jobs {
+        Some(jobs) if schema.is_some() => {
+            if serving.is_none() {
+                // Alone, the jobs still spend (the embed step), so the ledger runs
+                // here too: the period's spend caps the refresh, and the refresh's
+                // spend reaches `judge-cli stats`. A tripped cap fails the embed
+                // step, which the refresh reports itself; the questions alert
+                // counts chat refusals, which a process that answers nothing
+                // never has. The spend warnings apply as anywhere.
+                let budget = judge.budget().clone();
+                // It syncs on its own task for the life of the process, and is
+                // written once more at a requested shutdown.
+                jobs_ledger = Some(
+                    judge_bot::budget::start(pool.clone(), judge.meter().clone(), budget, process)
+                        .await,
+                );
+            }
+            (start_jobs(jobs).await, None)
         }
-        judge_bot::jobs::start(&pool, jobs, judge.meter().clone(), process).await
-    } else {
-        tracing::info!(
-            "scheduled data refresh: not this process's role (add --jobs to run it here)"
-        );
-        None
+        Some(jobs) => (None, Some(jobs)),
+        None => {
+            tracing::info!(
+                "scheduled data refresh: not this process's role (add --jobs to run it here)"
+            );
+            (None, None)
+        }
     };
     // From here on a signal drains the roles instead of ending the process.
     started.store(true, Ordering::Release);
@@ -191,7 +246,53 @@ async fn serve(roles: &Roles) -> Result<()> {
         // A refresh in progress at a shutdown ends with the process; its
         // run record is left open, as after a crash.
         Some((serving, adapters)) => {
-            let ran = Box::pin(run(&serving, adapters)).await;
+            let roles = Box::pin(run(&serving, adapters));
+            tokio::pin!(roles);
+            // The schema hold is kept beside the roles: one lost for good ends
+            // the process ([`SchemaHold::keep`]).
+            let ran = if let Some(hold) = schema.take() {
+                tokio::select! {
+                    ran = &mut roles => ran,
+                    lost = hold.keep(&pool, process) => Err(lost),
+                }
+            } else {
+                // A major upgrade: the roles answer with the maintenance reply
+                // while the migration waits its turn, then open.
+                let migrating = AtomicBool::new(false);
+                let upgrading = async {
+                    let hold = major(&pool, process, &migrating).await?;
+                    availability.set_open();
+                    tracing::info!("schema migrated; answering questions");
+                    if let Some(jobs) = later_jobs
+                        && !shutdown.is_requested()
+                    {
+                        // Beside serving roles a scheduler is dropped, as above.
+                        drop(start_jobs(jobs).await);
+                    }
+                    anyhow::Ok(hold)
+                };
+                tokio::pin!(upgrading);
+                tokio::select! {
+                    ran = &mut roles => {
+                        // A migration under way is finished, never cut off
+                        // between two of its migrations: the previous release
+                        // has stopped, and only this one can run on what it
+                        // leaves.
+                        if migrating.load(Ordering::Acquire) {
+                            tracing::warn!("stopping during the migration; finishing it first");
+                            upgrading.await.context("finishing the migration")?;
+                        }
+                        ran
+                    }
+                    hold = &mut upgrading => {
+                        let hold = hold?;
+                        tokio::select! {
+                            ran = &mut roles => ran,
+                            lost = hold.keep(&pool, process) => Err(lost),
+                        }
+                    }
+                }
+            };
             if shutdown.is_requested() {
                 serving.flush().await;
             }
@@ -202,7 +303,14 @@ async fn serve(roles: &Roles) -> Result<()> {
         // `plan` refused a jobs-only launch with the schedule off.
         None => match scheduler {
             Some(scheduler) => {
+                let keep = async {
+                    match schema.take() {
+                        Some(hold) => hold.keep(&pool, process).await,
+                        None => std::future::pending().await,
+                    }
+                };
                 let ended = tokio::select! {
+                    lost = keep => return Err(lost),
                     ended = scheduler.ended() => ended,
                     () = shutdown.requested() => {
                         if let Some(ledger) = &jobs_ledger {
@@ -218,6 +326,41 @@ async fn serve(roles: &Roles) -> Result<()> {
             }
             None => anyhow::bail!("no role to run: --jobs alone with the schedule off"),
         },
+    }
+}
+
+/// A major upgrade's migration: wait for the exclusive schema hold (every
+/// process of the previous release gone), migrate, and keep the shared side.
+/// Another process of this release may migrate first (two started at once):
+/// its shared hold would keep the exclusive side from ever being granted, so
+/// between attempts the wait checks whether anything is left to migrate, and
+/// joins as an ordinary start once nothing is.
+async fn major(
+    pool: &sqlx::PgPool,
+    process: &'static str,
+    migrating: &AtomicBool,
+) -> Result<SchemaHold> {
+    let still_needed = || async {
+        match judge_bot::db::migrate::upgrade(pool).await {
+            Ok(u) => matches!(u, Upgrade::Major { .. }),
+            Err(e) => {
+                tracing::warn!(error = %e, "checking whether the schema was migrated");
+                true
+            }
+        }
+    };
+    if let Some(exclusive) = SchemaHold::exclusive(pool, process, still_needed).await? {
+        migrating.store(true, Ordering::Release);
+        judge_bot::db::migrate::at_startup(pool)
+            .await
+            .context("migrating the schema")?;
+        exclusive.downgrade().await
+    } else {
+        tracing::info!("another process of this release migrated the schema; joining it");
+        judge_bot::db::migrate::at_startup(pool)
+            .await
+            .context("checking the migrated schema")?;
+        SchemaHold::shared(pool, process).await
     }
 }
 

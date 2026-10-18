@@ -41,6 +41,7 @@ use std::{
 };
 
 use anyhow::Context as _;
+use judge_bot::maintenance::Availability;
 use judge_bot::{
     DepsConfig, Models,
     config::Config,
@@ -101,13 +102,15 @@ impl Transport {
 }
 
 /// Where a toolbox runs relative to the instance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum Client {
     /// A tool built on its own (`judge-cli`, a stdio `judge-mcp`): its
     /// release is checked against the database's ([`release`]).
     Standalone,
-    /// Part of the instance (`judgebot --mcp`), its release by construction.
-    Instance,
+    /// Part of the instance (`judgebot --mcp`), its release by construction:
+    /// it answers while the instance is open, and with the maintenance
+    /// message while a major upgrade migrates.
+    Instance(Availability),
 }
 
 /// The built-in pipeline, present when models are configured.
@@ -250,12 +253,12 @@ impl Toolbox {
                 retriever,
                 calls,
                 pipeline,
-                release: match opts.client {
-                    Client::Standalone => Some(release::ReleaseCheck::new(
+                guard: match opts.client {
+                    Client::Standalone => gated::Guard::Release(release::ReleaseCheck::new(
                         pool_for_release,
                         opts.transport.tool(),
                     )),
-                    Client::Instance => None,
+                    Client::Instance(availability) => gated::Guard::Instance(availability),
                 },
             }),
             transport: opts.transport,

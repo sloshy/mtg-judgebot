@@ -66,7 +66,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D30),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D32),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -299,6 +299,17 @@ Same major, newer instance: a note; otherwise a stop. `main` carries `X.Y.Z-dev`
 releases. Within a major, migrations only add (CONTRIBUTING); dropping, renaming and
 rewriting rows wait for a major, made during its `X.0.0-dev` cycle.
 
+**Maintenance during a major upgrade** (D32). `migrate::upgrade` is `InPlace` (migrate,
+then open) or `Major` (another major, a new major's pre-release, or no recorded
+release with migrations pending). `Major`: `main` starts the roles with
+`maintenance::Availability::upgrading()`, then `SchemaHold::exclusive` (every process
+holds `SCHEMA_LOCK` shared for life) → `at_startup` → `downgrade` → `set_open`, and only
+then the scheduler. Closed: Discord commands but `/help`/`/license` get
+`render::MAINTENANCE`, `/judge` a `RetryPrompt` + `retry:` button (`ids::Retry`, claimed
+in `pick_claims`, charged to the cooldown on retry); `/api/judge` 503 `maintenance` with
+`Retry-After`; `/mcp` ops fail through `gated::Guard::Instance`; `/api/health` fails
+through the `Maintenance` probe.
+
 `GET /api/health` runs a `Probe` (the pool, 3 s timeout). The compose healthcheck invokes
 bash by name, because `/bin/sh` is dash in the slim image and has no `/dev/tcp`.
 
@@ -358,11 +369,13 @@ docker compose up -d --build judgebot  # redeploy after code changes
                                      # backup service (docs/DEPLOYMENT.md)
 scripts/deploy.sh [--build]          # blue-green deploy (D29): pull (or build), start a second
                                      # judgebot beside the running one, wait for healthy, stop
-                                     # the old one (it drains); an unhealthy new one is removed
+                                     # the old one (it drains); an unhealthy new one is removed.
+                                     # A major (`judgebot ingest upgrade` says): backup if R2 is
+                                     # set, new beside old in maintenance, old stopped once the
+                                     # new one listens, then wait for the migration (D32)
 docker compose pull && docker compose up -d --remove-orphans  # stop-then-start deploy: pulls the
                                      # CI-built GHCR image, never builds; --remove-orphans drops the
-                                     # pre-judgebot `bot`/`api` containers (D25); for a migration
-                                     # that cannot run beside the previous release
+                                     # pre-judgebot `bot`/`api` containers (D25)
 docker compose run --rm backup run  # one backup now (judgebot backup; the service's command by hand)
 docker compose run --rm --no-deps backup list          # --no-deps: works with db down
 docker compose run --rm --no-deps -T backup fetch <name> > <name>   # -T: bytes to stdout, no tty

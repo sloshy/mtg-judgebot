@@ -20,6 +20,7 @@ pub mod extract;
 pub mod ingest;
 pub mod jobs;
 pub mod lease;
+pub mod maintenance;
 pub mod serving;
 pub mod session;
 pub mod shutdown;

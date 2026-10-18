@@ -67,7 +67,9 @@ database:
 - **A release that cannot be read:** the same stop, naming the error, until a later
   operation reads it.
 
-`about` is never stopped, so it can still say where the instance's source is.
+`about` is never stopped, so it can still say where the instance's source is. Over
+`/mcp`, while the instance migrates its database for a major release, every tool but
+`about` returns the maintenance message as its error; try again in a minute or two.
 `judge-mcp` checks again a minute after its last check, so an upgrade under a running
 server is noticed within a minute. `judgebot --mcp` is part of the instance and does no
 check. `judge-mcp` run inside the image over SSH does, and passes, being the instance's

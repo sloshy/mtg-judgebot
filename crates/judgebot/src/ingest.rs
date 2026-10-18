@@ -17,6 +17,9 @@
 //! judgebot ingest migrate               # apply the embedded schema migrations (the serving roles do this at
 //!                                       #   startup; this is for an empty database, or JUDGE_AUTO_MIGRATE=false)
 //! judgebot ingest refresh               # cards, rules latest, lists, retire, embed, emoji — the scheduled job
+//! judgebot ingest upgrade               # print what this binary's pending migrations are (`upgrade: in-place`,
+//!                                       #   `upgrade: major` or `upgrade: major-from-1.x`), changing nothing;
+//!                                       #   scripts/deploy.sh asks the new image before it deploys
 //! ```
 //!
 //! `refresh` is what an operator's own cron runs (`scripts/refresh-data.sh`,
@@ -66,6 +69,9 @@ pub enum Command {
     Init,
     /// Its own lock, and runs before any table exists.
     Migrate,
+    /// Reads only: what this binary's pending migrations are, for
+    /// `scripts/deploy.sh`.
+    Upgrade,
     /// Scryfall and Discord only; must work with no `DATABASE_URL`.
     Emoji,
     /// Writes data: runs under the refresh lease.
@@ -127,7 +133,7 @@ impl Yaml {
 const LATEST: &str = "latest";
 
 /// The usage `judgebot ingest --help` prints.
-pub const USAGE: &str = "usage: judgebot ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh>\n\
+pub const USAGE: &str = "usage: judgebot ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh | upgrade>\n\
 init: the whole first load (migrate, cards, rules latest, aliases, notes, embed, emoji); safe to run again.\n\
 aliases, notes: with no file, the lists this binary was built with (data/*.yaml), which refresh then keeps current; a file is yours, and refresh leaves it alone.";
 
@@ -165,6 +171,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
         Some("emoji") => Ok(Command::Emoji),
         Some("retire") => leased(Leased::Retire),
         Some("migrate") => Ok(Command::Migrate),
+        Some("upgrade") => Ok(Command::Upgrade),
         Some("refresh") => leased(Leased::Refresh),
         other => anyhow::bail!("{USAGE} (got {other:?})"),
     }
@@ -225,6 +232,16 @@ pub async fn run(cmd: Command) -> Result<()> {
             result
         }
         Command::Migrate => schema::migrate(&connect().await?).await.map(drop),
+        Command::Upgrade => {
+            let kind = match judge_bot::db::migrate::upgrade(&connect().await?).await? {
+                judge_bot::db::migrate::Upgrade::InPlace => "in-place",
+                judge_bot::db::migrate::Upgrade::Major { from: Some(_) } => "major",
+                judge_bot::db::migrate::Upgrade::Major { from: None } => "major-from-1.x",
+            };
+            // On its own line, after any log line: deploy.sh reads it.
+            println!("upgrade: {kind}");
+            Ok(())
+        }
         Command::Emoji => emoji::run(&cache_dir).await.map(drop),
         Command::Leased(cmd) => {
             let meter = SpendMeter::from_env()?;
@@ -386,6 +403,7 @@ mod tests {
         }
         assert!(matches!(parse(&["init"])?, Command::Init));
         assert!(matches!(parse(&["migrate"])?, Command::Migrate));
+        assert!(matches!(parse(&["upgrade"])?, Command::Upgrade));
         assert!(matches!(parse(&["emoji"])?, Command::Emoji));
         Ok(())
     }

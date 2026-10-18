@@ -512,6 +512,54 @@ fn refusal_for(this: &Release, recorded: Option<&InstanceRelease>) -> Option<Str
     })
 }
 
+/// What a startup's migration is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Upgrade {
+    /// Nothing to migrate, a fresh database, or a migration that only adds
+    /// (within a major): run it and serve, beside the previous release.
+    InPlace,
+    /// A new major's migrations (or a pre-2.0 database, which records no
+    /// release): the previous release must have stopped before they run,
+    /// and the process serves maintenance replies until then
+    /// ([`crate::maintenance`]).
+    Major {
+        /// What the database records, when anything.
+        from: Option<InstanceRelease>,
+    },
+}
+
+/// Whether the migrations this binary would apply are a major upgrade's.
+///
+/// # Errors
+/// [`Error`] from reading the ledger or the release.
+pub async fn upgrade(pool: &PgPool) -> Result<Upgrade, Error> {
+    let skew = skew(pool).await?;
+    let carried = MIGRATOR
+        .iter()
+        .filter(|m| !m.migration_type.is_down_migration())
+        .count();
+    // Nothing pending, a rollback (decided by `at_startup`), or an empty
+    // database with nothing running against it.
+    if skew.behind.is_empty() || !skew.ahead.is_empty() || skew.behind.len() == carried {
+        return Ok(Upgrade::InPlace);
+    }
+    let from = instance_release(pool).await?;
+    let this = Release::this_build();
+    let major = match &from {
+        None => true,
+        Some(r) => {
+            r.release.major() != this.major()
+                || r.release.is_major_prerelease()
+                || this.is_major_prerelease()
+        }
+    };
+    Ok(if major {
+        Upgrade::Major { from }
+    } else {
+        Upgrade::InPlace
+    })
+}
+
 /// [`rollback_refusal`] for a startup that does not migrate
 /// (`JUDGE_AUTO_MIGRATE=false`); a migrating startup decides it under the
 /// migration lock instead.
@@ -740,6 +788,53 @@ mod tests {
             "{refused:?}"
         );
         assert!(matches!(at_startup(&pool).await, Err(Error::Rollback(_))));
+        Ok(())
+    }
+
+    /// A fresh database, a current one and a rollback migrate in place; a
+    /// database with migrations pending is a major upgrade when it records
+    /// no release (from before 2.0), another major, or a new major's
+    /// pre-release, and in place within a major otherwise.
+    #[sqlx::test(migrations = false)]
+    async fn a_major_upgrade_is_told_from_one_in_place(pool: PgPool) -> anyhow::Result<()> {
+        assert_eq!(upgrade(&pool).await?, Upgrade::InPlace, "a fresh database");
+        let versions = all_versions();
+        let Some(&first) = versions.first() else {
+            return Err(anyhow::anyhow!("no migrations embedded"));
+        };
+        MIGRATOR.run_to(first, &pool).await?;
+        assert!(
+            matches!(upgrade(&pool).await?, Upgrade::Major { from: None }),
+            "pending, from a release that records none"
+        );
+        run(&pool, Ahead::Refuse).await?;
+        assert_eq!(upgrade(&pool).await?, Upgrade::InPlace, "nothing pending");
+        // Pending again: forget the last migration, as an older release left it.
+        let Some(&last) = versions.last() else {
+            return Err(anyhow::anyhow!("no migrations embedded"));
+        };
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+            .bind(last)
+            .execute(&pool)
+            .await?;
+        let this = Release::this_build();
+        let older_major = format!("{}.0.0", this.major().saturating_sub(1).max(1));
+        let same_major = format!("{}.0.0", this.major());
+        for (recorded, major) in [
+            (older_major.as_str(), this.major() > 1),
+            (same_major.as_str(), this.is_major_prerelease()),
+        ] {
+            sqlx::query("UPDATE instance_release SET version = $1")
+                .bind(recorded)
+                .execute(&pool)
+                .await?;
+            let got = upgrade(&pool).await?;
+            assert_eq!(
+                matches!(got, Upgrade::Major { .. }),
+                major,
+                "{recorded} to {this}: {got:?}"
+            );
+        }
         Ok(())
     }
 

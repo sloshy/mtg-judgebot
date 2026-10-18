@@ -419,13 +419,23 @@ async fn a_tool_of_another_major_stops_with_what_to_update(pool: PgPool) -> anyh
         Some(crate::release::Notice::Stop(_))
     ));
 
+    let availability = judge_bot::maintenance::Availability::upgrading();
     let inside = Toolbox::new(
         pool,
         Options {
-            client: Client::Instance,
+            client: Client::Instance(availability.clone()),
             ..options(None)
         },
     );
+    // Inside the instance a major upgrade's migration is the maintenance
+    // message, and an open instance answers.
+    let err = lookup(&inside).await.err().map(|e| e.to_string());
+    assert_eq!(
+        err.as_deref(),
+        Some(judge_bot::maintenance::MESSAGE),
+        "{err:?}"
+    );
+    availability.set_open();
     lookup(&inside).await?;
     Ok(())
 }

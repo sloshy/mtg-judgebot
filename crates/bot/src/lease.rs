@@ -19,7 +19,7 @@
 //!
 //! ## The advisory keys
 //!
-//! The database's three advisory lock keys, all arbitrary, distinct (checked
+//! The database's four advisory lock keys, all arbitrary, distinct (checked
 //! at compile time below) and the same in every process:
 //!
 //! | Key | Scope | Held by | For |
@@ -27,6 +27,7 @@
 //! | [`REFRESH_LOCK`] | session | a data-writing run, for minutes | [`RefreshLease`] |
 //! | [`GATEWAY_LOCK`] | session | the gateway holder, for its life | [`GatewayLease`] |
 //! | [`CALLS_REWRITE_LOCK`](crate::db::CALLS_REWRITE_LOCK) | transaction, shared or exclusive; session for a migration | a vector write (shared); the CR load, the retirement pass, a space switch (exclusive); a migration, for its whole run | the calls rewrite and the vector space |
+//! | [`SCHEMA_LOCK`] | session, shared or exclusive | every `judgebot` process, for its life (shared); a major upgrade while it migrates (exclusive) | [`SchemaHold`] |
 //!
 //! They nest in one order only. A refresh run holds the lease and its steps
 //! take the calls lock; nothing takes the refresh lease while holding the
@@ -82,10 +83,16 @@ pub const REFRESH_LOCK: i64 = 0x6a75_6467_6572_6566; // "judgeref"
 /// Advisory lock key for the Discord gateway lease.
 pub const GATEWAY_LOCK: i64 = 0x6a75_6467_6567_7779; // "judgegwy"
 
+/// Advisory lock key for the schema in use ([`SchemaHold`]).
+pub const SCHEMA_LOCK: i64 = 0x6a75_6467_6573_6368; // "judgesch"
+
 const _: () = assert!(
     REFRESH_LOCK != GATEWAY_LOCK
         && REFRESH_LOCK != crate::db::CALLS_REWRITE_LOCK
         && GATEWAY_LOCK != crate::db::CALLS_REWRITE_LOCK
+        && SCHEMA_LOCK != REFRESH_LOCK
+        && SCHEMA_LOCK != GATEWAY_LOCK
+        && SCHEMA_LOCK != crate::db::CALLS_REWRITE_LOCK
 );
 
 /// How long [`RefreshLease::acquire`] waits for another run. Longer than any
@@ -196,6 +203,7 @@ mod sealed {
     pub trait Sealed {}
     impl Sealed for super::Refresh {}
     impl Sealed for super::Gateway {}
+    impl Sealed for super::Schema {}
 }
 
 /// What a [`Lease`] guards. Sealed: the advisory keys are listed in one
@@ -232,6 +240,17 @@ impl LeaseKey for Gateway {
     const LOCK: i64 = GATEWAY_LOCK;
     const LABEL: &'static str = "judgebot gateway";
     const NOUN: &'static str = "gateway lease";
+}
+
+/// The schema hold's key ([`SchemaHold`]): taken shared by every `judgebot`
+/// process, exclusive by a major upgrade's migration.
+#[derive(Debug)]
+pub enum Schema {}
+
+impl LeaseKey for Schema {
+    const LOCK: i64 = SCHEMA_LOCK;
+    const LABEL: &'static str = "judgebot schema";
+    const NOUN: &'static str = "schema hold";
 }
 
 // Each label leaves room for a process name: 22 + 14 + 27 = 63 for the
@@ -768,6 +787,254 @@ async fn holder<K: LeaseKey>(conn: &mut PgConnection) -> String {
         ),
         Ok(None) => "a session that has just released it".to_owned(),
         Err(e) => format!("an unidentified session ({e:#})"),
+    }
+}
+
+/// How often a major upgrade waiting for [`SchemaHold::exclusive`] says who
+/// it is waiting for.
+const SCHEMA_WAIT_REPORT: Duration = Duration::from_secs(15);
+
+/// How often [`SchemaHold::keep`] checks that its session still holds the lock.
+const SCHEMA_CHECK: Duration = Duration::from_secs(10);
+
+/// How long one attempt at [`SchemaHold::exclusive`] waits in Postgres's queue.
+const SCHEMA_ATTEMPT: Duration = Duration::from_secs(5);
+
+/// This process's hold on the schema it runs against: the shared side of
+/// [`SCHEMA_LOCK`] for as long as the process lives, on a connection of its
+/// own (detached from the pool, closed with the process).
+///
+/// A major upgrade migrates under the exclusive side ([`Self::exclusive`]),
+/// which it gets only once every process of the previous release has let go
+/// of its shared side, that is, has exited. A process starting meanwhile
+/// waits for the migration in [`Self::shared`], then starts against the
+/// migrated schema (and refuses it, if it is the older build).
+#[derive(Debug)]
+pub struct SchemaHold {
+    conn: PgConnection,
+    exclusive: bool,
+}
+
+impl SchemaHold {
+    /// The shared side, waiting while a major upgrade migrates.
+    ///
+    /// # Errors
+    /// When the database does not answer.
+    pub async fn shared(pool: &PgPool, process: &'static str) -> Result<Self> {
+        let mut conn = Self::session(pool).await?;
+        let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock_shared($1)")
+            .bind(SCHEMA_LOCK)
+            .fetch_one(&mut conn)
+            .await
+            .context("trying the schema hold")?;
+        if !free {
+            tracing::warn!("a major upgrade is migrating the schema; waiting for it to finish");
+            label::<Schema>(&mut conn, process, Label::Waiting).await;
+            sqlx::query("SELECT pg_advisory_lock_shared($1)")
+                .bind(SCHEMA_LOCK)
+                .execute(&mut conn)
+                .await
+                .context("waiting for the schema hold")?;
+        }
+        label::<Schema>(&mut conn, process, Label::Holding).await;
+        Ok(Self {
+            conn,
+            exclusive: false,
+        })
+    }
+
+    /// The exclusive side, for a major upgrade's migration: waits until
+    /// every other process has let go of the shared side, or until
+    /// `still_needed` says the wait is over (another process of the same
+    /// release has migrated), and then returns `None`. Saying every
+    /// [`SCHEMA_WAIT_REPORT`] which processes it is waiting for.
+    ///
+    /// The wait is a series of attempts of [`SCHEMA_ATTEMPT`] each, so that
+    /// giving up leaves nothing queued: a session dropped while blocked in a
+    /// lock wait would stay in Postgres's queue, ahead of every process asking
+    /// for the shared side, until the lock came free. Within an attempt a
+    /// process asking for the shared side queues behind this one.
+    ///
+    /// # Errors
+    /// When the database does not answer.
+    pub async fn exclusive<F, Fut>(
+        pool: &PgPool,
+        process: &'static str,
+        mut still_needed: F,
+    ) -> Result<Option<Self>>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = bool>,
+    {
+        let mut conn = Self::session(pool).await?;
+        label::<Schema>(&mut conn, process, Label::Waiting).await;
+        quick(set_lock_timeout(&mut conn, SCHEMA_ATTEMPT))
+            .await?
+            .context("bounding the schema hold's wait")?;
+        let mut reported: Option<Instant> = None;
+        loop {
+            match sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(SCHEMA_LOCK)
+                .execute(&mut conn)
+                .await
+            {
+                Ok(_) => break,
+                Err(e) if timed_out(&e) => {}
+                Err(e) => return Err(e).context("waiting for the exclusive schema hold"),
+            }
+            if !still_needed().await {
+                return Ok(None);
+            }
+            if reported.is_none_or(|at| at.elapsed() >= SCHEMA_WAIT_REPORT) {
+                reported = Some(Instant::now());
+                let holders = schema_holders(pool).await;
+                tracing::info!(
+                    holders = %holders.join(", "),
+                    "waiting for the previous release's processes to stop before migrating"
+                );
+            }
+        }
+        quick(set_lock_timeout(&mut conn, Duration::ZERO))
+            .await?
+            .context("resetting lock_timeout on the schema hold")?;
+        label::<Schema>(&mut conn, process, Label::Holding).await;
+        Ok(Some(Self {
+            conn,
+            exclusive: true,
+        }))
+    }
+
+    /// Trade the exclusive side for the shared one on the same session, so
+    /// there is no moment without a hold: the migration is done, and this
+    /// process now runs on the schema like any other.
+    ///
+    /// # Errors
+    /// When the database does not answer.
+    pub async fn downgrade(mut self) -> Result<Self> {
+        if self.exclusive {
+            sqlx::query("SELECT pg_advisory_lock_shared($1)")
+                .bind(SCHEMA_LOCK)
+                .execute(&mut self.conn)
+                .await
+                .context("taking the shared schema hold")?;
+            sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(SCHEMA_LOCK)
+                .execute(&mut self.conn)
+                .await
+                .context("releasing the exclusive schema hold")?;
+            self.exclusive = false;
+        }
+        Ok(self)
+    }
+
+    /// Whether this is the exclusive side.
+    #[must_use]
+    pub const fn is_exclusive(&self) -> bool {
+        self.exclusive
+    }
+
+    /// Keep the shared side for as long as the process runs, checking every
+    /// [`SCHEMA_CHECK`] that the session still holds it. A session that died
+    /// (Postgres restarted, the network dropped it) is replaced when the
+    /// shared side can be taken again at once and the schema is still one
+    /// this binary knows; otherwise a major upgrade may have migrated in the
+    /// gap, and the error returned ends the process, whose restart then
+    /// refuses the newer schema. Returns only that error.
+    pub async fn keep(mut self, pool: &PgPool, process: &'static str) -> anyhow::Error {
+        loop {
+            tokio::time::sleep(SCHEMA_CHECK).await;
+            if self.holds().await {
+                continue;
+            }
+            tracing::error!("the schema hold's session is gone; taking the hold again");
+            match Self::retake(pool, process).await {
+                Ok(hold) => {
+                    tracing::info!("schema hold taken again; the schema is this release's");
+                    self = hold;
+                }
+                Err(e) => {
+                    return e.context(
+                        "lost the schema hold, and could not take it again on this release's schema",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether the session still holds the lock (`false` when it does not
+    /// answer within [`QUICK`]).
+    async fn holds(&mut self) -> bool {
+        let (classid, objid) = halves(SCHEMA_LOCK);
+        let held = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = pg_backend_pid() \
+               AND locktype = 'advisory' AND granted AND objsubid = 1 \
+               AND classid = $1 AND objid = $2)",
+        )
+        .bind(classid)
+        .bind(objid)
+        .fetch_one(&mut self.conn);
+        matches!(quick(held).await, Ok(Ok(true)))
+    }
+
+    /// The shared side on a fresh session, taken without waiting, and only
+    /// while the database holds no migration this binary does not know.
+    async fn retake(pool: &PgPool, process: &'static str) -> Result<Self> {
+        let mut conn = Self::session(pool).await?;
+        let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock_shared($1)")
+            .bind(SCHEMA_LOCK)
+            .fetch_one(&mut conn)
+            .await
+            .context("trying the schema hold")?;
+        anyhow::ensure!(free, "a major upgrade holds the schema");
+        let skew = crate::db::migrate::skew(pool)
+            .await
+            .context("reading the migration ledger")?;
+        anyhow::ensure!(
+            skew.ahead.is_empty(),
+            "the database now holds migrations this binary does not know ({:?})",
+            skew.ahead
+        );
+        label::<Schema>(&mut conn, process, Label::Holding).await;
+        Ok(Self {
+            conn,
+            exclusive: false,
+        })
+    }
+
+    async fn session(pool: &PgPool) -> Result<PgConnection> {
+        let mut conn = pool
+            .acquire()
+            .await
+            .context("connecting for the schema hold")?
+            .detach();
+        harden::<Schema>(&mut conn).await?;
+        Ok(conn)
+    }
+}
+
+/// The `application_name` of each other session holding [`SCHEMA_LOCK`].
+/// Best effort: a failure is logged and reads as nobody.
+async fn schema_holders(pool: &PgPool) -> Vec<String> {
+    let (classid, objid) = halves(SCHEMA_LOCK);
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT coalesce(nullif(a.application_name, ''), 'pid ' || a.pid) \
+           FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+          WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 1 \
+            AND l.classid = $1 AND l.objid = $2 \
+            AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+    )
+    .bind(classid)
+    .bind(objid)
+    .fetch_all(pool);
+    match quick(rows)
+        .await
+        .and_then(|r| r.map_err(anyhow::Error::from))
+    {
+        Ok(names) => names,
+        Err(e) => {
+            tracing::debug!(error = %format!("{e:#}"), "listing the schema holders");
+            Vec::new()
+        }
     }
 }
 
@@ -1335,6 +1602,106 @@ mod tests {
         gateway.release().await;
         refresh.release().await;
         pool.close().await;
+        Ok(())
+    }
+
+    /// Old processes hold the shared side; the upgrade's exclusive side waits
+    /// until the last of them is gone, a process starting meanwhile waits
+    /// behind it, and the downgrade leaves the upgrader holding the shared
+    /// side with no gap, beside the newcomer.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_major_upgrade_migrates_only_once_the_old_processes_are_gone(
+        pool: PgPool,
+    ) -> Result<()> {
+        let old_a = SchemaHold::shared(&pool, "old-a").await?;
+        let old_b = SchemaHold::shared(&pool, "old-b").await?;
+        assert!(!old_a.is_exclusive());
+        let upgrade = tokio::spawn({
+            let pool = pool.clone();
+            async move { SchemaHold::exclusive(&pool, "new", || async { true }).await }
+        });
+        // Waiting, with both old processes still there.
+        eventually("the upgrade waits on the lock", || async {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+            )
+            .fetch_one(&pool)
+            .await?;
+            Ok((waiting == 1).then_some(()))
+        })
+        .await?;
+        drop(old_a);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!upgrade.is_finished(), "one old process is still running");
+        // A process starting now queues behind the upgrade.
+        let newcomer = tokio::spawn({
+            let pool = pool.clone();
+            async move { SchemaHold::shared(&pool, "newcomer").await }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!newcomer.is_finished(), "behind the waiting upgrade");
+        drop(old_b);
+        let exclusive = tokio::time::timeout(Duration::from_secs(10), upgrade)
+            .await???
+            .context("still needed")?;
+        assert!(exclusive.is_exclusive());
+        assert!(!newcomer.is_finished(), "the migration is still running");
+        let shared = exclusive.downgrade().await?;
+        assert!(!shared.is_exclusive());
+        let newcomer = tokio::time::timeout(Duration::from_secs(10), newcomer).await???;
+        assert!(!newcomer.is_exclusive());
+        Ok(())
+    }
+
+    /// A wait that is no longer needed (another process of the release
+    /// migrated) gives up between attempts and leaves nothing queued, so a
+    /// process asking for the shared side is not held behind it.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_wait_given_up_leaves_nothing_queued(pool: PgPool) -> Result<()> {
+        let other = SchemaHold::shared(&pool, "other").await?;
+        let gave_up = SchemaHold::exclusive(&pool, "new", || async { false }).await?;
+        assert!(gave_up.is_none());
+        let newcomer = tokio::time::timeout(
+            Duration::from_secs(2),
+            SchemaHold::shared(&pool, "newcomer"),
+        )
+        .await??;
+        assert!(!newcomer.is_exclusive() && !other.is_exclusive());
+        Ok(())
+    }
+
+    /// A hold whose session died is taken again while the schema is still
+    /// this binary's, and the process goes on; with a migration it does not
+    /// know in the ledger, keeping it fails, so the process exits.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_lost_hold_is_taken_again_only_on_this_releases_schema(pool: PgPool) -> Result<()> {
+        let hold = SchemaHold::shared(&pool, "keeper").await?;
+        let kept = tokio::spawn({
+            let pool = pool.clone();
+            async move { hold.keep(&pool, "keeper").await }
+        });
+        let pid = session_pid(&pool, "judgebot schema (keeper)")
+            .await?
+            .context("the hold's session")?;
+        terminate(&pool, pid).await?;
+        let again = eventually("the hold is taken again", || async {
+            Ok(session_pid(&pool, "judgebot schema (keeper)")
+                .await?
+                .filter(|p| *p != pid))
+        })
+        .await?;
+        assert!(!kept.is_finished(), "the process goes on");
+        // A newer release's migration appears, and the hold is lost again.
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES ($1, 'future', true, $2, 0)",
+        )
+        .bind(99_990_101_000_001_i64)
+        .bind(&b"future"[..])
+        .execute(&pool)
+        .await?;
+        terminate(&pool, again).await?;
+        let lost = tokio::time::timeout(SCHEMA_CHECK * 3, kept).await??;
+        assert!(format!("{lost:#}").contains("does not know"), "{lost:#}");
         Ok(())
     }
 }

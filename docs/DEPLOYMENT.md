@@ -1250,17 +1250,38 @@ finishes, which is minutes on a NAS. It logs one warning line,
 That is a wait, not a hang.
 
 `scripts/deploy.sh` starts the new container while the old one still answers, so the
-old binary runs against the new schema for a minute or two. A release's migrations are
-written for that (`CONTRIBUTING.md`, D29). They add tables, columns that may be null or
-have a default, and indexes, and leave a rename or a drop to a later release.
+old binary runs against the new schema for a minute or two. Within a major release,
+migrations are written for that (`CONTRIBUTING.md`, D29): they add tables, columns that
+may be null or have a default, and indexes, and leave a rename or a drop to the next
+major.
 
-A migration that cannot keep the previous release working is the exception, and the
-CHANGELOG says so. An example is one that rewrites rows the old binary writes, as
-20260902000001 did when it moved ruling citations to content keys. Deploy it with
-`docker compose pull && docker compose up -d`, which stops the old container before the
-new one migrates. Nothing stops another process on the same database: a `judgebot` or
-`judge-mcp` on another machine, a `judge-cli` session. Stop those first for such a
-migration. `ALTER TABLE` also waits on any in-flight query.
+A major release's migrations may change what the previous release reads, so they wait
+for it to stop (D32). The deploy is the same command, `scripts/deploy.sh`, and it says
+which path it takes (`the new image's migrations: major`):
+
+1. With `R2_BUCKET` set in `.env.deploy` it takes a backup first, the way back if the
+   upgrade has to be undone (`DEPLOY_SKIP_BACKUP=1` skips it).
+2. It starts the new container beside the old one. The new one answers every question
+   with a maintenance reply and a way to retry (Discord's Retry button, the web app's
+   Try again, a `maintenance` reply with `Retry-After` from the API) and waits.
+3. As soon as the new one listens, it stops the old one, which finishes the answers in
+   flight.
+4. Once every `judgebot` of the previous release has exited (each process with a role
+   holds a lock while it runs; a one-shot `judgebot ingest` stops at its next step), the
+   new one migrates,
+   starts answering, and becomes healthy. The log says `waiting for the previous
+   release's processes to stop before migrating` with their names until then.
+
+Questions get the maintenance reply for the drain and the migration, usually a minute
+or two. From a 1.x release, whose processes hold no lock the new one could wait for,
+the old container is stopped before the new one starts. `docker compose pull &&
+docker compose up -d` also works: it stops the old container first, and the new one
+answers with the maintenance reply while it migrates.
+
+Nothing stops another process on the same database. A `judgebot` of the previous
+release on another machine holds the lock too, so the new one waits for it: stop it.
+A `judge-cli` or `judge-mcp` of the previous major stops by itself and says what to
+update. `ALTER TABLE` also waits on any in-flight query.
 
 To migrate by hand instead, set `JUDGE_AUTO_MIGRATE=false` in `.env`. `judgebot`
 picks it up when next recreated, which `up -d` does because the env file changed. Then run the explicit form from the *new* image:

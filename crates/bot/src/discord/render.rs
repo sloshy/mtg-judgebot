@@ -72,6 +72,12 @@ pub const ALREADY_PICKED: &str = "A card has already been picked for that questi
 pub const PICK_FAILED: &str = "Sorry, I couldn't take that pick just now. Please try again.";
 /// Someone other than the asker pressed a "did you mean…?" button.
 pub const NOT_YOURS: &str = "Only the person who asked can pick a card for that question.";
+/// Someone other than the asker pressed a Retry button.
+pub const NOT_YOUR_RETRY: &str = "Only the person who asked can retry that question.";
+/// A Retry pressed a second time.
+pub const ALREADY_RETRIED: &str = "That question has already been asked again.";
+/// What a retried question's message shows while it is answered.
+pub const RETRYING: &str = "Asking again. Working on it…";
 /// A button whose `custom_id` did not parse.
 pub const UNKNOWN_BUTTON: &str = "I don't recognise that button any more.";
 /// A slash command this build does not have, or whose options it cannot
@@ -658,6 +664,102 @@ impl PickPrompt {
         let displayed =
             p.span == display_span(&p.span) && p.choices.iter().all(|c| *c == display_name(c));
         (displayed && p.fits() && p.render() == content).then_some(p)
+    }
+}
+
+/// What any command but `/help` and `/license` gets while the instance is
+/// migrating for a major upgrade ([`crate::maintenance`]).
+pub const MAINTENANCE: &str = "Judgebot is being upgraded and will be back in a minute or two. \
+Please try again shortly.";
+
+/// A Retry clicked while the upgrade is still migrating.
+pub const STILL_UPGRADING: &str =
+    "Still upgrading. Press **Retry** again in a minute; your question is kept on the message.";
+
+/// The Retry button's label.
+pub const RETRY_LABEL: &str = "Retry";
+
+/// The body of a [`RetryPrompt`].
+const RETRY_BODY: &str = "Judgebot is being upgraded and will be back in a minute or two. \
+Press **Retry** to ask this again.";
+
+/// The longest question, in characters, that a [`RetryPrompt`] always holds
+/// within [`CONTENT_LIMIT`].
+pub const RETRY_QUESTION_LIMIT: usize =
+    CONTENT_LIMIT - PICK_PREFIX_MAX - SEPARATOR.len() - RETRY_BODY.len();
+
+/// A `/judge` answered with the maintenance reply, carrying the whole
+/// question so its Retry button ([`super::ids::Retry`]) asks it again from
+/// the message alone, like a "did you mean…?" ([`PickPrompt`]):
+///
+/// ```text
+/// <@42> asked: does bob  die?
+///
+/// Judgebot is being upgraded and will be back in a minute or two. Press **Retry** to ask this again.
+/// ```
+///
+/// [`Self::parse`] renders what it read and compares, so a parse never
+/// recovers a question the bot did not write.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetryPrompt {
+    asker: u64,
+    question: String,
+}
+
+impl RetryPrompt {
+    /// The reply for `question`, or `None` when it would not fit
+    /// [`CONTENT_LIMIT`] (the caller then sends [`MAINTENANCE`] alone).
+    #[must_use]
+    pub fn new(asker: u64, question: &str) -> Option<Self> {
+        let p = Self {
+            asker,
+            question: question.to_owned(),
+        };
+        p.fits().then_some(p)
+    }
+
+    /// The asker's Discord user id.
+    #[must_use]
+    pub const fn asker(&self) -> u64 {
+        self.asker
+    }
+
+    /// The question, byte for byte as asked.
+    #[must_use]
+    pub fn question(&self) -> &str {
+        &self.question
+    }
+
+    /// The message content.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "{PROMPT_MENTION}{}{PROMPT_ASKED}{}{SEPARATOR}{RETRY_BODY}",
+            self.asker, self.question
+        )
+    }
+
+    fn fits(&self) -> bool {
+        let c = self.render();
+        c.chars().count() <= CONTENT_LIMIT && c.encode_utf16().count() <= CONTENT_LIMIT
+    }
+
+    /// Read a reply back from a message's content: `None` unless rendering
+    /// what was read reproduces `content` exactly.
+    #[must_use]
+    pub fn parse(content: &str) -> Option<Self> {
+        let rest = content.strip_prefix(PROMPT_MENTION)?;
+        let (asker, rest) = rest.split_once(PROMPT_ASKED)?;
+        if asker.is_empty() || !asker.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let asker: u64 = asker.parse().ok()?;
+        let question = rest.strip_suffix(RETRY_BODY)?.strip_suffix(SEPARATOR)?;
+        let p = Self {
+            asker,
+            question: question.to_owned(),
+        };
+        (p.fits() && p.render() == content).then_some(p)
     }
 }
 
@@ -2204,5 +2306,32 @@ mod lookup_tests {
             view.description
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn a_retry_prompt_reads_back_exactly_what_it_wrote() {
+        for q in [
+            "does bob  die?",
+            "two\n\nparagraphs\n\nhere",
+            "{W}{U} and [[Bolt]]",
+        ] {
+            let p = RetryPrompt::new(42, q).map(|p| p.render());
+            let back = p.as_deref().and_then(RetryPrompt::parse);
+            assert_eq!(back.as_ref().map(RetryPrompt::question), Some(q), "{q:?}");
+            assert_eq!(back.map(|b| b.asker()), Some(42));
+        }
+        let longest = "é".repeat(RETRY_QUESTION_LIMIT);
+        assert!(RetryPrompt::new(u64::MAX, &longest).is_some());
+        let content = RetryPrompt::new(1, "q")
+            .map(|p| p.render())
+            .unwrap_or_default();
+        assert_eq!(RetryPrompt::parse(&format!("{content} ")), None);
+        assert_eq!(RetryPrompt::parse(&content.replace("<@1>", "<@x>")), None);
+        assert_eq!(RetryPrompt::parse(MAINTENANCE), None);
     }
 }

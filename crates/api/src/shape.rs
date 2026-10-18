@@ -91,6 +91,14 @@ pub enum ApiReply {
         /// Human-readable explanation.
         message: String,
     },
+    /// The instance is migrating its schema for a major upgrade: nothing was
+    /// asked. Send the same question again after `retry_after_secs`.
+    Maintenance {
+        /// Human-readable explanation.
+        message: String,
+        /// How long to wait before retrying, in seconds.
+        retry_after_secs: u64,
+    },
 }
 
 /// One citation, pre-linked the way the Discord embed links them.

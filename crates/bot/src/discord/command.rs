@@ -15,6 +15,7 @@ use super::{Audience, render};
 /// `u16::MAX`, so its byte offsets fit a pick's `custom_id`.
 pub const QUESTION_MAX_CHARS: u16 = 1300;
 const _: () = assert!(QUESTION_MAX_CHARS as usize <= render::PICK_QUESTION_LIMIT);
+const _: () = assert!(QUESTION_MAX_CHARS as usize <= render::RETRY_QUESTION_LIMIT);
 const _: () = assert!(QUESTION_MAX_CHARS as u32 * 4 <= u16::MAX as u32);
 
 const JUDGE: &str = "judge";
@@ -146,6 +147,16 @@ impl Command {
     #[must_use]
     pub const fn ephemeral(&self) -> bool {
         matches!(self, Self::Help | Self::License | Self::Forget)
+    }
+
+    /// Whether the command is answered while a major upgrade migrates: only
+    /// those that need no table of the schema being changed.
+    #[must_use]
+    pub const fn answers_in_maintenance(&self) -> bool {
+        match self {
+            Self::Help | Self::License => true,
+            Self::Judge { .. } | Self::Card { .. } | Self::Rule { .. } | Self::Forget => false,
+        }
     }
 }
 

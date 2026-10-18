@@ -60,6 +60,7 @@ An answer takes twenty to forty-five seconds. Every reply to a `POST` is JSON ta
 | `error` | 200 or 4xx | `message` | 200 for a question the judge declined or could not answer: out of scope, no verified answer, the spend cap. 400 for a body that is not JSON or a request over the limits above, 413 for a body over 2 MB, 415 for a missing `Content-Type` or one that is not JSON (`application/json` or `application/*+json`), 422 for JSON of the wrong shape (a missing `question`, a `session_id` that is not a UUID). |
 | `busy` | 429 | `message` | Every judge slot is taken (`JUDGE_CONCURRENCY`). Retry shortly. |
 | `rate_limited` | 429 | `message` | This address used up its window (`API_RATE_LIMIT` per `API_RATE_WINDOW_SECS`). |
+| `maintenance` | 503 | `message`, `retry_after_secs` | The instance is migrating its database for a major upgrade, usually for a minute or two. Nothing was asked and nothing was counted against the window: send the same request again after `retry_after_secs` (also in the `Retry-After` header). |
 
 The "did you mean?" round trip is stateless. The server keeps nothing between the
 `ambiguous` reply and the question asked again with `pins`:
@@ -74,7 +75,8 @@ curl -s http://localhost:8787/api/judge -H 'Content-Type: application/json' -d '
 ## `GET /api/health`
 
 `200 ok` when the database answers within three seconds, `503` with the reason when it
-does not. The compose healthcheck and the tunnel's start condition use it.
+does not, or while a major upgrade migrates the database (`maintenance: …`). The compose
+healthcheck and the tunnel's start condition use it.
 
 ## `GET /api/about`
 

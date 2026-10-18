@@ -127,6 +127,15 @@ An unmodified build names the upstream repository. An operator running a modifie
 points it at their fork with `JUDGE_SOURCE_URL`. The username is `JUDGE_OPERATOR_DISCORD`,
 which the bot does not start without.
 
+## During an upgrade
+
+While the instance migrates its database for a major release, usually a minute or two,
+`/judge` answers with your question and a **Retry** button instead of an answer. Press
+it once the upgrade is done to ask the same question again; only you can press it, and
+it counts as one question. `/card`, `/rule`, `/forget` and the rating and "did you
+mean?" buttons say the bot is being upgraded and change nothing. `/help` and `/license`
+work as usual.
+
 ## `/forget`
 
 Deletes every rating you have recorded, removes your user id and username from every

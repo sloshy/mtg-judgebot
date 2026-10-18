@@ -80,6 +80,7 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::{
     db::{PgLibrary, PickKey, claim_pick, release_pick},
+    maintenance::Availability,
     serving::Serving,
     shutdown::{Drained, Shutdown},
 };
@@ -87,10 +88,10 @@ use capture::CapturingRetriever;
 pub use command::QUESTION_MAX_CHARS;
 use command::{Command, Unparsed};
 use cooldown::{Cooldowns, UserLimit};
-use ids::{ButtonAction, ByteSpan, Pick};
+use ids::{ButtonAction, ByteSpan, Pick, Retry};
 use mana::{SharedSymbols, SymbolTable};
 use pick::Digest;
-use render::PickPrompt;
+use render::{PickPrompt, RetryPrompt};
 use reply::{Ack, Message, Reply};
 
 /// How long a `/judge` (or a card pick) waits for a free slot before replying
@@ -304,6 +305,9 @@ pub struct Data {
     /// Whether a connection of this role has registered the slash commands,
     /// so a reconnect after a lost lease does not register them again.
     registered: AtomicBool,
+    /// Open, or closed while a major upgrade migrates: then every command but
+    /// `/help` and `/license` gets the maintenance reply.
+    availability: Availability,
 }
 
 impl std::fmt::Debug for Data {
@@ -318,18 +322,18 @@ impl std::fmt::Debug for Data {
 }
 
 impl Data {
-    /// Wire the shared state. `meter` must be the one the models inside
-    /// `deps` bill to, so its counters reflect the judge runs.
+    /// Wire the shared state from the process's composition: its pipeline,
+    /// store, meter (the one its models bill to, so the counters reflect the
+    /// judge runs), source offer and availability.
     #[must_use]
-    pub fn new(
-        mut deps: Deps,
-        store: Arc<dyn CallStore>,
-        meter: SpendMeter,
-        cfg: &Config,
-        offer: SourceOffer,
-        operator: DiscordOperator,
-        library: PgLibrary,
-    ) -> Self {
+    pub fn new(serving: &Serving, cfg: &Config, operator: DiscordOperator) -> Self {
+        let mut deps = serving.deps();
+        let store = serving.store();
+        let meter = serving.models().meter().clone();
+        let offer = serving.judge().source_offer().clone();
+        // `/card` reads rulings by card id only, so its library needs no vectors.
+        let library = PgLibrary::new(serving.pool().clone());
+        let availability = serving.availability().clone();
         let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
         deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
         Self {
@@ -347,6 +351,7 @@ impl Data {
             cooldowns: cfg.user_limit.map(Cooldowns::new),
             library,
             registered: AtomicBool::new(false),
+            availability,
         }
     }
 
@@ -488,6 +493,12 @@ impl Data {
         ack: &Ack,
     ) -> anyhow::Result<()> {
         match ButtonAction::parse(&c.data.custom_id) {
+            Ok(ButtonAction::Retry(retry)) => self.on_retry(http, c, ack, retry).await,
+            Ok(ButtonAction::Rate { .. } | ButtonAction::Pick(_))
+                if !self.availability.is_open() =>
+            {
+                ephemeral(http, c, ack, render::MAINTENANCE).await
+            }
             Ok(ButtonAction::Rate { call, score }) => self.on_rate(http, c, ack, call, score).await,
             Ok(ButtonAction::Pick(pick)) => self.on_pick(http, c, ack, pick).await,
             Ok(ButtonAction::LegacyPick) => ephemeral(http, c, ack, render::EXPIRED).await,
@@ -661,6 +672,157 @@ impl Data {
         }
         Ok(())
     }
+}
+
+impl Data {
+    /// A command while a major upgrade migrates: `/judge` gets the question
+    /// back with a Retry button (in the audience it asked for), anything
+    /// else [`render::MAINTENANCE`], privately. Nothing is charged or stored.
+    async fn maintenance(
+        &self,
+        reply: &mut Reply<'_>,
+        c: &CommandInteraction,
+        command: &Command,
+    ) -> anyhow::Result<()> {
+        let message = match command {
+            Command::Judge { question, audience } => {
+                match (
+                    RetryPrompt::new(c.user.id.get(), question),
+                    NonZeroU64::new(c.user.id.get()),
+                ) {
+                    (Some(prompt), Some(asker)) => {
+                        let content = prompt.render();
+                        let retry = Retry {
+                            asker,
+                            audience: *audience,
+                            digest: Digest::of(&content),
+                        };
+                        Message::default()
+                            .content(content)
+                            .components(vec![retry_row(retry)])
+                            .no_pings()
+                            .ephemeral(audience.is_private())
+                    }
+                    _ => Message::default()
+                        .content(render::MAINTENANCE)
+                        .ephemeral(true),
+                }
+            }
+            _ => Message::default()
+                .content(render::MAINTENANCE)
+                .ephemeral(true),
+        };
+        reply.send(message).await?;
+        Ok(())
+    }
+
+    /// A Retry click: the question on the message asked again, by its asker,
+    /// once the instance is open. Checked as a pick is (the message must be
+    /// the very reply the button was made for, in the audience it names),
+    /// then charged to the asker's window as the question it is, and claimed
+    /// so a second click asks nothing.
+    async fn on_retry(
+        &self,
+        http: &Http,
+        c: &ComponentInteraction,
+        ack: &Ack,
+        retry: Retry,
+    ) -> anyhow::Result<()> {
+        if c.user.id.get() != retry.asker.get() {
+            return ephemeral(http, c, ack, render::NOT_YOUR_RETRY).await;
+        }
+        let message = &c.message;
+        let digest = Digest::of(&message.content);
+        let prompt = (digest == retry.digest)
+            .then(|| RetryPrompt::parse(&message.content))
+            .flatten()
+            .filter(|p| p.asker() == retry.asker.get());
+        let Some(prompt) = prompt else {
+            tracing::warn!(message = %message.id, "a retry's message does not hold the reply it was made for");
+            return ephemeral(http, c, ack, render::EXPIRED).await;
+        };
+        let ephemeral_flag = message.flags.map(|f| f.contains(MessageFlags::EPHEMERAL));
+        let Some(audience) = pick::audience(retry.audience, ephemeral_flag) else {
+            return ephemeral(http, c, ack, render::EXPIRED).await;
+        };
+        if !self.availability.is_open() {
+            return ephemeral(http, c, ack, render::STILL_UPGRADING).await;
+        }
+        let Some(_permit) = self.acquire().await else {
+            return ephemeral(http, c, ack, render::BUSY).await;
+        };
+        let key = PickKey {
+            message_id: message.id.get(),
+            shown_ms: pick::shown_ms(
+                message.id.get(),
+                message.edited_timestamp.map(|t| t.timestamp_millis()),
+            ),
+            digest: digest.as_i64(),
+        };
+        let pool = self.library.pool();
+        match claim_pick(pool, key).await {
+            Ok(true) => {}
+            Ok(false) => return ephemeral(http, c, ack, render::ALREADY_RETRIED).await,
+            Err(e) => {
+                tracing::error!(error = format_args!("{e:#}"), "retry: claim failed");
+                return ephemeral(http, c, ack, render::PICK_FAILED).await;
+            }
+        }
+        // The question was never charged: the maintenance reply cost nothing.
+        if let Some(cooldowns) = &self.cooldowns
+            && let Err(wait) = cooldowns.take(c.user.id.get(), Instant::now())
+        {
+            if let Err(released) = release_pick(pool, key).await {
+                tracing::error!(
+                    error = format_args!("{released:#}"),
+                    "retry: could not give the claim back"
+                );
+            }
+            let text = render::cooling_down(cooldowns.limit(), wait);
+            return ephemeral(http, c, ack, &text).await;
+        }
+        let working = CreateInteractionResponseMessage::new()
+            .content(render::RETRYING)
+            .components(vec![])
+            .embeds(vec![]);
+        if let Err(e) = respond(
+            http,
+            c,
+            ack,
+            CreateInteractionResponse::UpdateMessage(working),
+        )
+        .await
+        {
+            if let Err(released) = release_pick(pool, key).await {
+                tracing::error!(
+                    error = format_args!("{released:#}"),
+                    "retry: could not give the claim back"
+                );
+            }
+            return Err(anyhow::Error::from(e).context("acknowledge retry"));
+        }
+        let q = Question {
+            thread_id: c.channel_id.to_string(),
+            text: prompt.question().to_owned(),
+        };
+        let out = self.answer(&q, &c.user, audience).await;
+        if let Err(e) = c.edit_response(http, out.into_edit()).await {
+            tracing::error!(error = %e, "edit retried reply failed; asking the user to re-ask");
+            ephemeral_followup(http, c, render::EDIT_FAILED)
+                .await
+                .context("report failed edit after retry")?;
+            return Err(anyhow::Error::from(e).context("edit retried reply"));
+        }
+        Ok(())
+    }
+}
+
+fn retry_row(retry: Retry) -> CreateActionRow {
+    CreateActionRow::Buttons(vec![
+        CreateButton::new(ButtonAction::Retry(retry).to_custom_id())
+            .label(render::RETRY_LABEL)
+            .style(ButtonStyle::Primary),
+    ])
 }
 
 /// Why a "did you mean…?" goes out without buttons.
@@ -921,6 +1083,12 @@ impl Data {
         };
         let name = command.name();
         let mut reply = Reply::new(http, c, command.ephemeral(), ack);
+        if !self.availability.is_open() && !command.answers_in_maintenance() {
+            if let Err(e) = self.maintenance(&mut reply, c, &command).await {
+                tracing::error!(error = %e, "could not send the maintenance reply");
+            }
+            return;
+        }
         let ran = match command {
             Command::Judge { question, audience } => {
                 self.judge(&mut reply, c, question, audience).await
@@ -1148,21 +1316,11 @@ pub async fn serve(
     interactions: &endpoint::Interactions,
 ) -> anyhow::Result<()> {
     let judge = serving.judge();
-    // `/card` reads rulings by card id only, so its library needs no vectors.
-    let library = PgLibrary::new(serving.pool().clone());
     // One `Data` for the role, whichever connection serves it: the concurrency
     // slots, the per-user windows and the symbol table outlive a reconnect
     // after a lost lease. A "did you mean?" pick needs none of it: it is
     // answered from its message, by whichever process receives the click.
-    let data = Arc::new(Data::new(
-        serving.deps(),
-        serving.store(),
-        serving.models().meter().clone(),
-        &cfg,
-        judge.source_offer().clone(),
-        operator,
-        library,
-    ));
+    let data = Arc::new(Data::new(serving, &cfg, operator));
     tracing::info!(
         guild = ?cfg.guild_id,
         judge_role = %cfg.judge_role,
@@ -1632,6 +1790,29 @@ mod tests {
         assert_eq!(
             origin(Audience::Channel).history_scope(),
             Some(judge_core::HistoryScope::Public)
+        );
+    }
+
+    /// While a major upgrade migrates only the commands that need no table
+    /// answer, and `/judge`'s reply carries a Retry button for its asker.
+    #[test]
+    fn maintenance_answers_only_help_and_license_and_offers_a_retry() {
+        let judge = Command::Judge {
+            question: "q".into(),
+            audience: Audience::Private,
+        };
+        assert!(!judge.answers_in_maintenance());
+        assert!(Command::Help.answers_in_maintenance());
+        assert!(Command::License.answers_in_maintenance());
+        assert!(!Command::Forget.answers_in_maintenance());
+        let retry = Retry {
+            asker: NonZeroU64::MIN,
+            audience: Audience::Private,
+            digest: Digest::of("x"),
+        };
+        assert_eq!(
+            custom_ids(retry_row(retry)),
+            vec![ButtonAction::Retry(retry)]
         );
     }
 

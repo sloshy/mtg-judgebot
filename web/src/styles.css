@@ -164,7 +164,8 @@ a.cite-label:hover {
   margin: 0.5rem 0;
 }
 
-.choices button {
+.choices button,
+.maintenance button {
   background: var(--accent);
   color: var(--accent-ink);
   border: none;
@@ -175,8 +176,15 @@ a.cite-label:hover {
   cursor: pointer;
 }
 
-.choices button:hover {
+.choices button:hover,
+.maintenance button:hover {
   filter: brightness(1.1);
+}
+
+.maintenance button:disabled {
+  cursor: default;
+  filter: none;
+  opacity: 0.6;
 }
 
 .hint {
@@ -242,6 +250,7 @@ a.cite-label:hover {
 
 .ask textarea:focus-visible,
 .choices button:focus-visible,
+.maintenance button:focus-visible,
 .ask button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;

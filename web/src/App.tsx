@@ -88,6 +88,13 @@ export default function App() {
     box?.focus();
   }
 
+  /** Ask an entry again as it was, after a maintenance reply. */
+  function retry(index: number) {
+    const entry = entries[index];
+    if (!entry || waiting()) return;
+    void ask(entry.question, entry.pins, index);
+  }
+
   /** A "did you mean…?" pick: re-ask the same entry with the span pinned. */
   function pick(index: number, span: string, name: string) {
     const entry = entries[index];
@@ -119,7 +126,14 @@ export default function App() {
                 <p class="thinking">Consulting the rules… this usually takes 20–45 seconds.</p>
               }
             >
-              {(reply) => <Reply reply={reply()} onPick={(span, name) => pick(i(), span, name)} />}
+              {(reply) => (
+                <Reply
+                  reply={reply()}
+                  onPick={(span, name) => pick(i(), span, name)}
+                  onRetry={() => retry(i())}
+                  waiting={waiting()}
+                />
+              )}
             </Show>
           </section>
         )}
@@ -260,7 +274,12 @@ function SourceOffer(props: { about: About | null }) {
   );
 }
 
-function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) => void }) {
+function Reply(props: {
+  reply: ApiReply;
+  onPick: (span: string, name: string) => void;
+  onRetry: () => void;
+  waiting: boolean;
+}) {
   return (
     <Switch>
       <Match when={props.reply.kind === "answer" && props.reply}>
@@ -366,11 +385,22 @@ function Reply(props: { reply: ApiReply; onPick: (span: string, name: string) =>
           </p>
         )}
       </Match>
+      <Match when={props.reply.kind === "maintenance" && props.reply}>
+        {(r) => (
+          <div class="maintenance">
+            <p class="notice">{r().message}</p>
+            <button type="button" onClick={() => props.onRetry()} disabled={props.waiting}>
+              Try again
+            </button>
+          </div>
+        )}
+      </Match>
       <Match
         when={
           props.reply.kind !== "answer" &&
           props.reply.kind !== "ambiguous" &&
           props.reply.kind !== "not_found" &&
+          props.reply.kind !== "maintenance" &&
           props.reply
         }
       >

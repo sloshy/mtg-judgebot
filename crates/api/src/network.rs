@@ -17,7 +17,7 @@ use judge_llm::ApiKey;
 use crate::{
     ApiConfig, App, Interfaces, Refused, bind,
     discord::{All, Open},
-    http::{self, Probe},
+    http::{self, Maintenance, Probe},
     router, serve_on,
 };
 
@@ -168,9 +168,13 @@ impl Listening {
         serving: &Serving,
         interactions: &Interactions,
     ) -> Result<Self> {
+        // The endpoint before maintenance: `scripts/deploy.sh` reads a
+        // `maintenance:` answer as "up and answering with the maintenance
+        // reply", which needs the endpoint open.
         let probe = All(vec![
             Arc::new(serving.pool().clone()),
             Arc::new(Open(interactions.clone())),
+            Arc::new(Maintenance(serving.availability().clone())),
         ]);
         let routes = crate::discord::alone(interactions.clone(), Arc::new(probe));
         tracing::info!(
@@ -258,12 +262,18 @@ fn routes(
             operator.clone(),
         )
         .with_probe(match discord {
-            None => Arc::new(pool.clone()),
+            None => Arc::new(All(vec![
+                Arc::new(pool.clone()) as Arc<dyn Probe>,
+                Arc::new(Maintenance(serving.availability().clone())),
+            ])),
+            // The endpoint before maintenance, as in `interactions_only`.
             Some(i) => Arc::new(All(vec![
                 Arc::new(pool.clone()) as Arc<dyn Probe>,
                 Arc::new(Open(i.clone())),
+                Arc::new(Maintenance(serving.availability().clone())),
             ])),
         })
+        .with_availability(serving.availability().clone())
         // /api/about reads the run record for the data's freshness, cached
         // for a minute: the page asks on every load.
         .with_data_status(Arc::new(FreshnessReader::new(pool.clone()))),
@@ -283,7 +293,7 @@ fn routes(
             pool.clone(),
             Options {
                 transport: Transport::Mcp,
-                client: Client::Instance,
+                client: Client::Instance(serving.availability().clone()),
                 models: Some(serving.models().clone()),
                 deps_config: judge.deps_config(),
                 vectors: serving.vectors().cloned(),
