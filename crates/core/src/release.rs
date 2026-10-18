@@ -9,16 +9,17 @@
 //!   update exists.
 //! * Across a major version, the schema may break, so a client of another
 //!   major stops.
-//! * A pre-release (`2.0.0-dev`) promises nothing to any other version, so a
-//!   client and an instance that are not the same pre-release stop too.
+//! * A pre-release of a new major (`3.0.0-dev`, `3.0.0-rc.1`) is where that
+//!   major's breaking changes are made, so it promises nothing to any other
+//!   version: a client and an instance that are not the same one stop. A
+//!   pre-release of a minor or patch (`2.1.0-dev`) only adds, like the release
+//!   it leads to, and is ordered among its major's releases.
 //! * Whatever the versions say, a database that lacks a migration the client
 //!   carries cannot hold what the client reads and writes, so the client
 //!   stops.
-//! * A database holding a migration the client does not know is expected
-//!   only when a newer release of the same major migrated it. Otherwise
-//!   (the same version, an unrecorded release, or a client newer than the
-//!   record) another build migrated it, or the record is stale, and the
-//!   client stops.
+//! * A database holding a migration the client does not know stops it when
+//!   nothing says those migrations only add: no release is recorded, or the
+//!   same major pre-release is (another build of `3.0.0-dev` made them).
 
 use std::{cmp::Ordering, fmt};
 
@@ -49,10 +50,17 @@ impl Release {
         self.0.major
     }
 
-    /// Whether this is a pre-release (`2.0.0-dev`, `2.0.0-rc.1`).
+    /// Whether this is a pre-release (`2.0.0-dev`, `2.1.0-rc.1`).
     #[must_use]
     pub fn is_prerelease(&self) -> bool {
         !self.0.pre.is_empty()
+    }
+
+    /// Whether this is a pre-release of a new major (`3.0.0-dev`): the
+    /// builds in which that major's breaking migrations are made.
+    #[must_use]
+    pub fn is_major_prerelease(&self) -> bool {
+        self.is_prerelease() && self.0.minor == 0 && self.0.patch == 0
     }
 }
 
@@ -98,17 +106,17 @@ pub enum Incompatible {
         /// The instance's.
         instance: Release,
     },
-    /// Different releases, at least one a pre-release.
+    /// Different releases, at least one a pre-release of a new major.
     Prerelease {
         /// The client's release.
         client: Release,
         /// The instance's.
         instance: Release,
     },
-    /// The database holds migrations the client does not know, and its
-    /// recorded release does not explain them: another build of the same
-    /// version (a `-dev` build of another commit) migrated it, or the record
-    /// is stale (a migration run with `sqlx migrate run`).
+    /// The database holds migrations the client does not know, and nothing
+    /// says they only add: no release is recorded (a database migrated with
+    /// `sqlx migrate run`), or another build of the same major pre-release
+    /// made them.
     UnknownBuild {
         /// The client's release.
         client: Release,
@@ -178,23 +186,25 @@ pub fn compatibility(
         };
     };
     let pair = || (client.clone(), instance.clone());
-    if client == instance {
-        if ledger.unknown {
+    if client.major() != instance.major() {
+        let (client, instance) = pair();
+        Compatibility::Incompatible(Incompatible::Major { client, instance })
+    } else if client.is_major_prerelease() || instance.is_major_prerelease() {
+        // Breaking migrations are being made: only the very same build.
+        if client != instance {
+            let (client, instance) = pair();
+            Compatibility::Incompatible(Incompatible::Prerelease { client, instance })
+        } else if ledger.unknown {
             unknown_build()
         } else {
             Compatibility::Current
         }
-    } else if client.major() != instance.major() {
-        let (client, instance) = pair();
-        Compatibility::Incompatible(Incompatible::Major { client, instance })
-    } else if client.is_prerelease() || instance.is_prerelease() {
-        let (client, instance) = pair();
-        Compatibility::Incompatible(Incompatible::Prerelease { client, instance })
     } else {
+        // Within a major every migration only adds, so migrations the client
+        // does not know cannot break it, whoever made them.
         let (client, instance) = pair();
         match client.cmp(&instance) {
             Ordering::Less => Compatibility::UpdateAvailable { client, instance },
-            Ordering::Greater if ledger.unknown => unknown_build(),
             Ordering::Greater => Compatibility::AheadOfInstance { client, instance },
             Ordering::Equal => Compatibility::Current,
         }
@@ -216,24 +226,31 @@ mod tests {
         unknown: true,
     };
 
-    /// Migrations the client does not know are explained only by a newer
-    /// release of its major.
+    fn r(s: &str) -> Result<Release, semver::Error> {
+        Release::parse(s)
+    }
+
+    /// Migrations the client does not know stop it only when nothing says
+    /// they only add.
     #[test]
-    fn unknown_migrations_stop_the_client_unless_a_newer_minor_made_them() -> Res {
+    fn unknown_migrations_stop_the_client_only_when_nothing_says_they_add() -> Res {
         let unknown = |c: &str, i: Option<&str>| -> Result<Compatibility, semver::Error> {
             let i = i.map(r).transpose()?;
             Ok(compatibility(&r(c)?, i.as_ref(), UNKNOWN))
         };
-        assert!(matches!(
-            unknown("2.1.0", Some("2.3.0"))?,
-            Compatibility::UpdateAvailable { .. }
-        ));
         for (c, i) in [
-            ("2.0.0-dev", Some("2.0.0-dev")),
+            ("2.1.0", Some("2.3.0")),
             ("2.1.0", Some("2.1.0")),
             ("2.3.0", Some("2.1.0")),
-            ("2.1.0", None),
+            ("2.1.0-dev", Some("2.1.0-dev")),
+            ("2.0.0", Some("2.1.0-dev")),
         ] {
+            assert!(
+                !matches!(unknown(c, i)?, Compatibility::Incompatible(_)),
+                "{c} vs {i:?}"
+            );
+        }
+        for (c, i) in [("3.0.0-dev", Some("3.0.0-dev")), ("2.1.0", None)] {
             assert!(
                 matches!(
                     unknown(c, i)?,
@@ -243,10 +260,6 @@ mod tests {
             );
         }
         Ok(())
-    }
-
-    fn r(s: &str) -> Result<Release, semver::Error> {
-        Release::parse(s)
     }
 
     #[test]
@@ -287,11 +300,12 @@ mod tests {
     }
 
     #[test]
-    fn pre_releases_promise_nothing_to_other_versions() -> Res {
+    fn a_new_majors_pre_releases_promise_nothing_to_other_versions() -> Res {
         for (client, instance) in [
             ("2.0.0-dev", "2.0.0"),
             ("2.0.0", "2.0.0-dev"),
-            ("2.0.0-rc.1", "2.0.0-rc.2"),
+            ("3.0.0-rc.1", "3.0.0-rc.2"),
+            ("3.0.0-dev", "3.0.0"),
         ] {
             assert!(
                 matches!(
@@ -309,6 +323,15 @@ mod tests {
         assert!(matches!(
             compatibility(&r("2.0.0-dev")?, Some(&r("1.2.0")?), Ledger::default()),
             Compatibility::Incompatible(Incompatible::Major { .. })
+        ));
+        // A minor's pre-release orders among its major's releases.
+        assert!(matches!(
+            compatibility(&r("2.0.0")?, Some(&r("2.1.0-dev")?), Ledger::default()),
+            Compatibility::UpdateAvailable { .. }
+        ));
+        assert!(matches!(
+            compatibility(&r("2.1.0-dev")?, Some(&r("2.1.0")?), Ledger::default()),
+            Compatibility::UpdateAvailable { .. }
         ));
         Ok(())
     }

@@ -210,13 +210,21 @@ when the deployed surface is in question. Those calls cost money.
 A release is a GitHub release whose tag is `vX.Y.Z` on a commit of `main`.
 
 Between releases, `main` carries the next version with a `-dev` suffix (`2.0.0-dev`),
-set in the same places as step 1 below when work toward that release starts. A
-pre-release works only with its own build: a `judge-cli` or stdio `judge-mcp` of any
-other version stops against a database it migrated (`judge_core::release`). Each
-migration records the release that ran it in `instance_release`, and the tools compare
-their own release with it. Against a newer release of the same major they print a note
-and keep working. Against another major, or a database missing one of their
-migrations, they stop and say what to update.
+set in the same places as step 1 below when work toward that release starts. Each
+migration records the release and commit that ran it in `instance_release`, and
+`judge-cli`, `judge-mcp` and `judgebot` itself compare their own release with it
+(`judge_core::release`):
+
+- **Within a major** (`2.1.0-dev` included), migrations only add, so builds work
+  together in either direction. An older tool prints a note, and an older `judgebot`
+  (a rollback) starts.
+- **A new major's pre-release** (`3.0.0-dev`, `3.0.0-rc.1`) is where its breaking
+  migrations are made, so it works only with the very build that migrated the
+  database. While `main` is on one, switching a checkout back to an earlier commit
+  means a fresh development database (or a backup of one): `judgebot` refuses the one
+  a later build migrated.
+- **Across a major**, or against a database missing one of their migrations, the
+  tools stop and `judgebot` refuses to start, each saying what to update.
 
 1. Move the *Unreleased* changelog section under a `## [X.Y.Z]` heading, and set that
    version in `[workspace.package]` in the root `Cargo.toml` (then
@@ -235,7 +243,9 @@ Publishing it runs `publish-image.yml`. That tags the image already built for th
 as `X.Y.Z`, `X.Y` and, from 1.0 on, `X`, without rebuilding. So the release is the same
 image that has been running as `latest`, down to the platform digests. A commit with no
 image of its own (a docs-only commit, or a build a later push cancelled) is built first,
-through CI. Pre-release tags such as `v1.0.0-rc.1` get only their exact version tag.
+through CI. Pre-release tags such as `v1.0.0-rc.1` get only their exact version tag, and
+need that exact version in the tree (step 1) first, because the binaries report it and a
+new major's pre-release works only with its own build.
 `latest` keeps following `main`.
 
 ## Claude Code

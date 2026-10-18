@@ -46,7 +46,10 @@ use sqlx::{
     migrate::{AppliedMigration, Migrate as _, MigrateError, Migration},
 };
 
-use judge_core::release::{self, Compatibility, Release};
+use judge_core::{
+    CommitHash,
+    release::{self, Compatibility, Release},
+};
 
 use super::CALLS_REWRITE_LOCK;
 use crate::MIGRATOR;
@@ -112,6 +115,10 @@ pub enum Error {
     /// Any other migrator failure (a migration's SQL failing, say).
     #[error("applying migrations: {0}")]
     Migrate(MigrateError),
+    /// The database was migrated by a build this one cannot run against
+    /// ([`rollback_refusal`] says why and what to do).
+    #[error("{0}")]
+    Rollback(String),
     /// `JUDGE_AUTO_MIGRATE` is not a boolean.
     #[error("{AUTO_MIGRATE_ENV} must be true or false (also 1/0, yes/no, on/off), got {0:?}")]
     BadFlag(String),
@@ -194,7 +201,13 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
         match ahead {
             Ahead::Refuse => return Err(Error::Ahead(unknown)),
             Ahead::Skip => {
-                tracing::warn!(versions = ?unknown, "database is ahead of this binary (a newer release migrated it); not migrating");
+                // Decided under the lock this run holds, so a migration in
+                // progress elsewhere has finished and recorded its release.
+                let recorded = instance_release(&mut *conn).await?;
+                if let Some(why) = rollback_refusal(recorded.as_ref()) {
+                    return Err(Error::Rollback(why));
+                }
+                tracing::warn!(versions = ?unknown, "database is ahead of this binary (a newer release of its major migrated it); not migrating");
                 return Ok(Report {
                     applied: Vec::new(),
                     already: before.len(),
@@ -227,12 +240,16 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
     }
     // The binary carries every migration in the ledger, so the database is
     // now this release's (`instance_release`, which client tools compare with).
-    let release = judge_core::release::Release::this_build().to_string();
+    let release = Release::this_build().to_string();
+    let commit = crate::config::build_commit();
     sqlx::query(
-        "INSERT INTO instance_release (id, version) VALUES (true, $1) \
-         ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, recorded_at = now()",
+        "INSERT INTO instance_release (id, version, commit, dirty) VALUES (true, $1, $2, $3) \
+         ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, commit = EXCLUDED.commit, \
+         dirty = EXCLUDED.dirty, recorded_at = now()",
     )
     .bind(&release)
+    .bind(commit.hash().map(|h| h.as_ref().to_owned()))
+    .bind(commit.dirty())
     .execute(&mut *conn)
     .await
     .map_err(db("recording the instance's release"))?;
@@ -332,52 +349,195 @@ pub async fn skew(pool: &PgPool) -> Result<Skew, Error> {
 /// Postgres's SQLSTATE for a missing table.
 const UNDEFINED_TABLE: &str = "42P01";
 
+/// What `instance_release` records: the release and the commit of the binary
+/// that last migrated the database.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstanceRelease {
+    /// Its release.
+    pub release: Release,
+    /// Its commit, when the build was stamped.
+    pub commit: Option<CommitHash>,
+    /// Whether that build's tree had uncommitted changes.
+    pub dirty: bool,
+}
+
+impl InstanceRelease {
+    /// `2.0.0-dev (commit 6573c59)`, or the release alone.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match &self.commit {
+            Some(c) if self.dirty => {
+                format!(
+                    "{} (commit {}, with uncommitted changes)",
+                    self.release,
+                    c.short()
+                )
+            }
+            Some(c) => format!("{} (commit {})", self.release, c.short()),
+            None => self.release.to_string(),
+        }
+    }
+}
+
 /// The release recorded as having last migrated the database
 /// (`instance_release`), or `None` when none is (a database migrated before
 /// the table existed, or by `sqlx migrate run`). A recorded value that is not
-/// semver is `None` too, with a WARN.
+/// semver is `None` too, with a WARN. Read as JSON, so a table from before
+/// its `commit` column reads as having no commit.
 ///
 /// # Errors
 /// [`Error::Db`] for anything but a missing table.
-pub async fn instance_release(pool: &PgPool) -> Result<Option<Release>, Error> {
-    let row: Result<Option<String>, sqlx::Error> =
-        sqlx::query_scalar("SELECT version FROM instance_release WHERE id")
-            .fetch_optional(pool)
+pub async fn instance_release<'e>(
+    exec: impl sqlx::PgExecutor<'e>,
+) -> Result<Option<InstanceRelease>, Error> {
+    let row: Result<Option<serde_json::Value>, sqlx::Error> =
+        sqlx::query_scalar("SELECT to_jsonb(r) FROM instance_release r WHERE id")
+            .fetch_optional(exec)
             .await;
-    match row {
-        Ok(Some(v)) => match Release::parse(&v) {
-            Ok(r) => Ok(Some(r)),
-            Err(e) => {
-                tracing::warn!(version = %v, error = %e, "instance_release holds a version that is not semver");
-                Ok(None)
-            }
-        },
-        Ok(None) => Ok(None),
-        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some(UNDEFINED_TABLE) => Ok(None),
-        Err(error) => Err(Error::Db {
-            what: "reading the instance's release",
-            error,
-        }),
+    let row = match row {
+        Ok(Some(row)) => row,
+        Ok(None) => return Ok(None),
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some(UNDEFINED_TABLE) => {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(Error::Db {
+                what: "reading the instance's release",
+                error,
+            });
+        }
+    };
+    let field = |k: &str| row.get(k).and_then(serde_json::Value::as_str);
+    let version = field("version").unwrap_or_default();
+    match Release::parse(version) {
+        Ok(release) => Ok(Some(InstanceRelease {
+            release,
+            commit: field("commit").and_then(|c| CommitHash::try_new(c.to_owned()).ok()),
+            dirty: row
+                .get("dirty")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        })),
+        Err(e) => {
+            tracing::warn!(version, error = %e, "instance_release holds a version that is not semver");
+            Ok(None)
+        }
     }
+}
+
+/// Where a client tool of this build stands against the database
+/// ([`judge_core::release::compatibility`]), with the instance's record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientCheck {
+    /// The verdict.
+    pub compatibility: Compatibility,
+    /// What the database records, when it records anything.
+    pub instance: Option<InstanceRelease>,
 }
 
 /// Where a client tool of this build stands against the database: its
 /// recorded release, and which migrations it lacks or holds beyond this
-/// build's ([`judge_core::release::compatibility`]).
+/// build's.
 ///
 /// # Errors
 /// [`Error`] from reading the ledger or the release.
-pub async fn client_compatibility(pool: &PgPool) -> Result<Compatibility, Error> {
+pub async fn client_compatibility(pool: &PgPool) -> Result<ClientCheck, Error> {
     let skew = skew(pool).await?;
     let instance = instance_release(pool).await?;
-    Ok(release::compatibility(
-        &Release::this_build(),
-        instance.as_ref(),
+    Ok(ClientCheck {
+        compatibility: release::compatibility(
+            &Release::this_build(),
+            instance.as_ref().map(|i| &i.release),
+            release::Ledger {
+                lacks: !skew.behind.is_empty(),
+                unknown: !skew.ahead.is_empty(),
+            },
+        ),
+        instance,
+    })
+}
+
+/// Why this `judgebot` must not start against a database holding
+/// migrations it does not know, recorded as migrated by `recorded`, or `None`
+/// when it may. Within a major every migration only adds, so a rollback
+/// there runs. Across a major, between builds of a new major's pre-release,
+/// or with nothing recorded to say the migrations only add, it is refused:
+/// that schema may no longer hold what this build reads and writes.
+#[must_use]
+pub fn rollback_refusal(recorded: Option<&InstanceRelease>) -> Option<String> {
+    refusal_for(&Release::this_build(), recorded)
+}
+
+/// [`rollback_refusal`] for a build of release `this`.
+fn refusal_for(this: &Release, recorded: Option<&InstanceRelease>) -> Option<String> {
+    let verdict = release::compatibility(
+        this,
+        recorded.map(|i| &i.release),
         release::Ledger {
-            lacks: !skew.behind.is_empty(),
-            unknown: !skew.ahead.is_empty(),
+            lacks: false,
+            unknown: true,
         },
-    ))
+    );
+    let Compatibility::Incompatible(why) = verdict else {
+        return None;
+    };
+    let this = describe_build(this);
+    let restore = "or restore the backup taken before the upgrade (docs/DEPLOYMENT.md §6)";
+    let by = || recorded.map_or_else(String::new, InstanceRelease::describe);
+    Some(match why {
+        release::Incompatible::Major { .. } => format!(
+            "the database was migrated by judgebot {}, another major release, and this judgebot {this} \
+             cannot run against its schema: run that release again, {restore}",
+            by()
+        ),
+        release::Incompatible::Prerelease { .. } => format!(
+            "the database was migrated by judgebot {}, and this judgebot {this} cannot run against it: \
+             a pre-release of a new major works only with the database its own build migrated. Run that \
+             build again, {restore}",
+            by()
+        ),
+        release::Incompatible::UnknownBuild { .. } if recorded.is_some() => format!(
+            "the database holds migrations this judgebot {this} does not know, made by another build of {}: \
+             run that build again, {restore}",
+            by()
+        ),
+        release::Incompatible::UnknownBuild { .. }
+        | release::Incompatible::InstanceBehind { .. } => {
+            format!(
+                "the database holds migrations this judgebot {this} does not know, and records no release \
+                 that made them (a migration run with `sqlx migrate run` records none): run the build that \
+                 migrated it, or `judgebot ingest migrate` from it to record its release, {restore}"
+            )
+        }
+    })
+}
+
+/// [`rollback_refusal`] for a startup that does not migrate
+/// (`JUDGE_AUTO_MIGRATE=false`); a migrating startup decides it under the
+/// migration lock instead.
+///
+/// # Errors
+/// [`Error::Rollback`]; [`Error`] from reading the ledger or the release.
+pub async fn check_startup(pool: &PgPool) -> Result<(), Error> {
+    if skew(pool).await?.ahead.is_empty() {
+        return Ok(());
+    }
+    match rollback_refusal(instance_release(pool).await?.as_ref()) {
+        Some(why) => Err(Error::Rollback(why)),
+        None => Ok(()),
+    }
+}
+
+/// A build of `release` at this binary's commit, as
+/// [`InstanceRelease::describe`] writes one.
+fn describe_build(release: &Release) -> String {
+    let commit = crate::config::build_commit();
+    InstanceRelease {
+        release: release.clone(),
+        commit: commit.hash().cloned(),
+        dirty: commit.dirty(),
+    }
+    .describe()
 }
 
 /// The `_sqlx_migrations` ledger (version + checksum), creating the table if
@@ -419,13 +579,17 @@ pub fn parse_flag(raw: Option<&str>) -> Result<bool, Error> {
     }
 }
 
-/// What `judgebot` does first: migrate unless opted out, tolerating a
-/// database ahead of the binary (see the module docs).
+/// What `judgebot` does first: refuse a database another major (or another
+/// pre-release build) migrated ([`check_startup`]), then migrate unless
+/// opted out, tolerating a database a newer release of the same major is
+/// ahead of (see the module docs).
 ///
 /// # Errors
-/// [`Error`] as [`run`] with [`Ahead::Skip`], or a bad opt-out value.
+/// [`Error`] as [`run`] with [`Ahead::Skip`], [`Error::Rollback`], or a bad
+/// opt-out value.
 pub async fn at_startup(pool: &PgPool) -> Result<Report, Error> {
     if !auto_migrate_enabled()? {
+        check_startup(pool).await?;
         tracing::info!(
             "{AUTO_MIGRATE_ENV} is off; schema left as it is (run `judgebot ingest migrate` yourself)"
         );
@@ -512,15 +676,29 @@ mod tests {
         let this = Release::this_build();
         assert_eq!(instance_release(&pool).await?, None, "no table yet");
         assert_eq!(
-            client_compatibility(&pool).await?,
+            client_compatibility(&pool).await?.compatibility,
             Compatibility::Incompatible(release::Incompatible::InstanceBehind {
                 client: this.clone(),
                 instance: None
             })
         );
+        check_startup(&pool).await?;
         run(&pool, Ahead::Refuse).await?;
-        assert_eq!(instance_release(&pool).await?, Some(this.clone()));
-        assert_eq!(client_compatibility(&pool).await?, Compatibility::Current);
+        let recorded = instance_release(&pool).await?;
+        assert_eq!(recorded.as_ref().map(|r| &r.release), Some(&this));
+        assert_eq!(
+            recorded
+                .and_then(|r| r.commit)
+                .map(|c| c.as_ref().to_owned()),
+            crate::config::build_commit()
+                .hash()
+                .map(|h| h.as_ref().to_owned()),
+            "the build's commit is recorded beside its release"
+        );
+        assert_eq!(
+            client_compatibility(&pool).await?.compatibility,
+            Compatibility::Current
+        );
         let set = |v: &'static str| {
             let pool = pool.clone();
             async move {
@@ -532,7 +710,7 @@ mod tests {
         };
         set("99.0.0").await?;
         assert!(matches!(
-            client_compatibility(&pool).await?,
+            client_compatibility(&pool).await?.compatibility,
             Compatibility::Incompatible(release::Incompatible::Major { .. })
         ));
         set("not a version").await?;
@@ -546,11 +724,22 @@ mod tests {
         .bind(&b"future"[..])
         .execute(&pool)
         .await?;
-        run(&pool, Ahead::Skip).await?;
+        // ... and refuses to start against it: a rollback across a major
+        // cannot work. The decision is made under the migration lock.
+        assert!(matches!(
+            run(&pool, Ahead::Skip).await,
+            Err(Error::Rollback(_))
+        ));
         assert_eq!(
-            instance_release(&pool).await?,
+            instance_release(&pool).await?.map(|r| r.release),
             Some(Release::parse("99.0.0")?)
         );
+        let refused = check_startup(&pool).await;
+        assert!(
+            matches!(&refused, Err(Error::Rollback(why)) if why.contains("99.0.0") && why.contains("another major")),
+            "{refused:?}"
+        );
+        assert!(matches!(at_startup(&pool).await, Err(Error::Rollback(_))));
         Ok(())
     }
 
@@ -624,10 +813,26 @@ mod tests {
         assert!(
             matches!(run(&pool, Ahead::Refuse).await, Err(Error::Ahead(v)) if v == [99_990_101_000_001])
         );
-        let r = run(&pool, Ahead::Skip).await?;
-        assert_eq!(r.ahead, [99_990_101_000_001]);
-        assert!(r.applied.is_empty());
-        assert_eq!(r.already, all_versions().len() + 1);
+        // Startup skips it when a newer release of this build's major made
+        // it, and refuses otherwise (here nothing is recorded: refused).
+        assert!(matches!(
+            run(&pool, Ahead::Skip).await,
+            Err(Error::Rollback(_))
+        ));
+        let newer_minor = Release::this_build().major().to_string() + ".999.0";
+        sqlx::query("INSERT INTO instance_release (id, version) VALUES (true, $1)")
+            .bind(&newer_minor)
+            .execute(&pool)
+            .await?;
+        let skipped = run(&pool, Ahead::Skip).await;
+        if Release::this_build().is_major_prerelease() {
+            assert!(matches!(skipped, Err(Error::Rollback(_))), "{skipped:?}");
+        } else {
+            let r = skipped?;
+            assert_eq!(r.ahead, [99_990_101_000_001]);
+            assert!(r.applied.is_empty());
+            assert_eq!(r.already, all_versions().len() + 1);
+        }
         // Ahead does not excuse a changed known file: the rolled-back image
         // must not boot against a schema its own migration did not produce.
         let Some(m) = MIGRATOR.iter().last() else {
@@ -641,6 +846,39 @@ mod tests {
         assert!(
             matches!(run(&pool, Ahead::Skip).await, Err(Error::VersionMismatch(v)) if v == m.version)
         );
+        Ok(())
+    }
+
+    /// A rollback within a major runs; across one, between builds of a new
+    /// major's pre-release, or with nothing recorded, it is refused.
+    #[test]
+    fn a_rollback_runs_only_within_a_major() -> anyhow::Result<()> {
+        let recorded = |v: &str| -> anyhow::Result<InstanceRelease> {
+            Ok(InstanceRelease {
+                release: Release::parse(v)?,
+                commit: None,
+                dirty: false,
+            })
+        };
+        let refused = |this: &str, by: Option<&str>| -> anyhow::Result<Option<String>> {
+            let by = by.map(recorded).transpose()?;
+            Ok(refusal_for(&Release::parse(this)?, by.as_ref()))
+        };
+        for (this, by) in [
+            ("2.1.0", "2.3.0"),
+            ("2.0.0", "2.1.0-dev"),
+            ("2.1.0-dev", "2.1.0-dev"),
+            ("2.1.0", "2.1.0"),
+        ] {
+            assert_eq!(refused(this, Some(by))?, None, "{this} after {by}");
+        }
+        assert!(refused("2.3.0", Some("3.0.0"))?.is_some_and(|w| w.contains("another major")));
+        assert!(
+            refused("3.0.0-dev", Some("3.0.0-dev"))?
+                .is_some_and(|w| w.contains("another build of 3.0.0-dev"))
+        );
+        assert!(refused("2.9.0", Some("3.0.0-dev"))?.is_some());
+        assert!(refused("2.1.0", None)?.is_some_and(|w| w.contains("records no release")));
         Ok(())
     }
 

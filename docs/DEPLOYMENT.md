@@ -1288,7 +1288,8 @@ visibility) removes the login step.
 
 ### Rolling back
 
-Every build leaves an immutable tag, so reverting a bad deploy is a one-line change. Take the
+Every build leaves an immutable tag, so reverting a bad deploy is a one-line change,
+within a major release (below). Take the
 `sha-<short>` from the workflow run summary, or the version of the last good release:
 
 ```ini
@@ -1315,14 +1316,19 @@ docker compose pull && docker compose up -d --remove-orphans
 file, and left running it answers Discord beside the restored `bot`.
 `git checkout HEAD -- docker-compose.yml` undoes it when you upgrade again.
 
-An older tag starting against a newer schema logs `database is ahead of this binary`
-and does not migrate. Whether it then works depends on the migration:
+An older tag starting against a newer schema depends on how far back it goes:
 
-- An additive one (a new table, a nullable column) is harmless to the old binary.
-- One that changed a column the old queries use is not. Rolling back across it means
-  restoring the pre-release dump too (`docker compose run --rm --no-deps -T backup fetch`, §6).
-  Take a backup by hand right before such a deploy (`docker compose run --rm backup
-  run`, or `scripts/backup-db.sh`).
+- **Within its major release** (a `latest` build of the next minor included), it logs
+  `database is ahead of this binary`, does not migrate, and runs: migrations within a
+  major only add (`CONTRIBUTING.md`), so its queries still find what they need.
+- **Across a major release**, or from one build of a new major's pre-release to another
+  (`latest` while `main` is on `3.0.0-dev`, say), it refuses to start and exits, naming
+  the build that migrated the database and its own. From 2.0 on: a 1.x image has no
+  such check, starts, and fails on the queries the new schema broke. Rolling back that far means
+  restoring the backup taken before the upgrade too
+  (`docker compose run --rm --no-deps -T backup fetch`, §6). Take one by hand right
+  before a major release's deploy (`docker compose run --rm backup run`, or
+  `scripts/backup-db.sh`).
 
 `judgebot ingest migrate` refuses a database that is ahead rather than guessing, and the
 scheduled refresh stays paused while it is (§7): the data is not refreshed until the

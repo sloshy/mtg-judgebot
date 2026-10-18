@@ -21,11 +21,19 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 - **`judge-cli` and `judge-mcp` check the instance's release.** Each migration records
   the release that ran it (table `instance_release`). Against a newer release of the
-  same major the tools print a note and keep working. Against another major, a
-  different pre-release, or a database missing one of their migrations, every
-  operation fails and says what to update. Between releases `main` carries a `-dev`
+  same major the tools print a note and keep working. Against another major, another
+  build of a new major's pre-release (such as `2.0.0-dev`), or a database missing one of
+  their migrations, every operation fails and says what to update, naming the
+  instance's commit. Between releases `main` carries a `-dev`
   version (now `2.0.0-dev`). Migrations within a major now only add; dropping,
   renaming and rewriting wait for the next major (CONTRIBUTING).
+
+- **`judgebot` refuses to start against a newer major's schema.** A rollback within a
+  major still starts and runs, since those migrations only add. Across a major, or
+  between two builds of a new major's pre-release, it exits naming both builds,
+  because the schema can no longer hold what it reads and writes: run the newer
+  build, or restore the backup taken before the upgrade. A 1.x image has no such check.
+  A pre-release tag now needs that exact version in the tree.
 
 - **Every call records where it came from.** A stored call names its interface
   (Discord, web, MCP, `judge-cli` or an agent session) and, on Discord, the asker's user

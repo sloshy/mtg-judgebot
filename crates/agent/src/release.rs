@@ -3,7 +3,8 @@
 //! database was migrated by another release.
 //!
 //! A newer release of the same major is a notice, and the tool goes on
-//! working. A different major, a different pre-release, or a database that
+//! working. A different major, another build of a new major's pre-release,
+//! or a database that
 //! lacks a migration the tool carries stops every operation with a message
 //! naming what to update. `judgebot --mcp` is part of the instance and does
 //! no check.
@@ -13,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use judge_bot::db::migrate::{ClientCheck, InstanceRelease};
 use judge_core::release::{Compatibility, Incompatible};
 use sqlx::PgPool;
 
@@ -42,58 +44,72 @@ impl Notice {
     }
 }
 
-/// What `tool` (`judge-cli`, `judge-mcp`) says about `c`, if anything.
+/// What `tool` (`judge-cli`, `judge-mcp`) says about `check`, if anything.
 #[must_use]
-pub fn notice(c: &Compatibility, tool: &str) -> Option<Notice> {
-    match c {
-        Compatibility::Current | Compatibility::AheadOfInstance { .. } => None,
-        Compatibility::UpdateAvailable { client, instance } => Some(Notice::Info(format!(
-            "this instance runs judgebot {instance} and this {tool} is {client}. It keeps working; \
-             update it to get what changed ({REBUILD})."
-        ))),
-        Compatibility::Incompatible(why) => Some(Notice::Stop(stop(why, tool))),
-    }
-}
-
-fn stop(why: &Incompatible, tool: &str) -> String {
-    let fix = |instance: &str| {
-        if why.instance_is_older() {
-            format!(
-                "upgrade the instance (scripts/deploy.sh), or use the {tool} built from its release ({instance})"
-            )
-        } else {
-            format!("update {tool} ({REBUILD})")
-        }
+pub fn notice(check: &ClientCheck, tool: &str) -> Option<Notice> {
+    let instance = check.instance.as_ref();
+    let runs = || {
+        instance.map_or_else(
+            || "a release it does not record".to_owned(),
+            InstanceRelease::describe,
+        )
     };
-    match why {
-        Incompatible::Major { client, instance } => format!(
-            "this {tool} is {client}, but the instance runs judgebot {instance}, another major release, \
-             whose database it cannot use: {}.",
-            fix(&instance.to_string())
+    let update = || match instance.and_then(|i| i.commit.as_ref()) {
+        Some(c) => format!(
+            "build {tool} from the instance's commit: git fetch, git checkout {}, then \
+             cargo build --release -p judge-agent",
+            c.short()
         ),
-        Incompatible::Prerelease { client, instance } => format!(
-            "this {tool} is {client}, but the instance runs judgebot {instance}, and a pre-release works \
-             only with its own build: {}.",
-            fix(&instance.to_string())
-        ),
-        Incompatible::UnknownBuild { client, instance } => {
-            let by = instance.as_ref().map_or_else(
-                || "a release it does not record".to_owned(),
-                |r| format!("another build of {r}"),
-            );
-            format!(
-                "this {tool} is {client}, but the instance's database holds migrations it does not \
-                 know, made by {by}: rebuild {tool} from the instance's commit ({REBUILD})."
-            )
-        }
-        Incompatible::InstanceBehind { client, instance } => {
-            let at = instance
-                .as_ref()
-                .map_or_else(|| "an older release".to_owned(), ToString::to_string);
-            format!(
-                "this {tool} is {client}, but the instance's database ({at}) lacks migrations it needs: {}.",
-                fix(&at)
-            )
+        None => format!("update {tool} ({REBUILD})"),
+    };
+    match &check.compatibility {
+        Compatibility::Current | Compatibility::AheadOfInstance { .. } => None,
+        Compatibility::UpdateAvailable { client, .. } => Some(Notice::Info(format!(
+            "this instance runs judgebot {} and this {tool} is {client}. It keeps working; \
+             update it to get what changed ({REBUILD}).",
+            runs()
+        ))),
+        Compatibility::Incompatible(why) => {
+            let fix = if why.instance_is_older() {
+                format!(
+                    "upgrade the instance (scripts/deploy.sh), or use the {tool} built from its release"
+                )
+            } else {
+                update()
+            };
+            let (client, what) = match why {
+                Incompatible::Major { client, .. } => (
+                    client,
+                    format!(
+                        "the instance runs judgebot {}, another major release",
+                        runs()
+                    ),
+                ),
+                Incompatible::Prerelease { client, .. } => (
+                    client,
+                    format!(
+                        "the instance runs judgebot {}, and a new major's pre-release works only with its own build",
+                        runs()
+                    ),
+                ),
+                Incompatible::UnknownBuild { client, .. } => (
+                    client,
+                    format!(
+                        "the instance's database holds migrations it does not know, made by {}",
+                        runs()
+                    ),
+                ),
+                Incompatible::InstanceBehind { client, .. } => (
+                    client,
+                    format!(
+                        "the instance's database ({}) lacks migrations it needs",
+                        runs()
+                    ),
+                ),
+            };
+            Some(Notice::Stop(format!(
+                "this {tool} is {client}, but {what}: {fix}."
+            )))
         }
     }
 }
@@ -156,12 +172,20 @@ mod tests {
     use super::*;
 
     fn says(client: &str, instance: &str) -> anyhow::Result<Option<Notice>> {
+        let instance = InstanceRelease {
+            release: Release::parse(instance)?,
+            commit: Some(judge_core::CommitHash::try_new("6573c59".to_owned())?),
+            dirty: false,
+        };
         Ok(notice(
-            &compatibility(
-                &Release::parse(client)?,
-                Some(&Release::parse(instance)?),
-                judge_core::release::Ledger::default(),
-            ),
+            &ClientCheck {
+                compatibility: compatibility(
+                    &Release::parse(client)?,
+                    Some(&instance.release),
+                    judge_core::release::Ledger::default(),
+                ),
+                instance: Some(instance),
+            },
             "judge-cli",
         ))
     }
@@ -175,7 +199,7 @@ mod tests {
         assert_eq!(says("2.1.0", "2.1.0")?, None);
         assert!(matches!(
             says("2.4.0", "3.0.0")?,
-            Some(Notice::Stop(t)) if t.contains("update judge-cli") && t.contains("3.0.0")
+            Some(Notice::Stop(t)) if t.contains("git checkout 6573c59") && t.contains("3.0.0 (commit 6573c59)")
         ));
         assert!(matches!(
             says("3.0.0", "2.4.0")?,

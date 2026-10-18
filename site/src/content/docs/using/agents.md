@@ -51,9 +51,12 @@ database:
 
 - **A newer release of the same major:** a note (on stderr for `judge-cli`, at the top
   of the MCP instructions), and everything keeps working.
-- **Another major release, or a different pre-release build:** every operation fails
-  with a message saying what to update, until the tool is rebuilt (`git pull`, then
-  `cargo build --release -p judge-agent`) or the instance is upgraded. `judge-mcp` keeps
+- **Another major release, or another build of a new major's pre-release**
+  (`3.0.0-dev`): every operation fails
+  with a message saying what to update, until the tool is rebuilt or the instance is
+  upgraded. The message names the commit the instance was built from, so the tool can
+  be built from the same one (`git checkout <commit>`, then
+  `cargo build --release -p judge-agent`). `judge-mcp` keeps
   running and returns that message from each tool, and its instructions lead with it.
 - **A database missing a migration the tool carries** (the instance is older than the
   tool): the same stop, naming the instance as the one to upgrade.

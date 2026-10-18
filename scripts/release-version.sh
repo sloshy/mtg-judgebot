@@ -10,9 +10,10 @@
 #
 # With a tag (publish-image.yml, before anything is published) the version
 # must also be the tag's, and CHANGELOG.md must have the tag's `## [X.Y.Z]`
-# heading. A pre-release tag (`v2.0.0-rc.1`) may carry either its own version
-# or the release it precedes (`2.0.0`), and needs no heading of its own. A tag
-# with build metadata (`+…`) is refused.
+# heading. A pre-release tag (`v2.0.0-rc.1`) needs the tree at exactly that
+# version, since the binaries report it and a pre-release works only with its
+# own build (judge_core::release), and no heading of its own. A tag with
+# build metadata (`+…`) is refused.
 # Run from the repository root. Needs jq.
 
 set -euo pipefail
@@ -47,7 +48,7 @@ if [ "$tag" = "$tagged" ] || [[ "$tag" == *+* ]]; then
   echo "release tag '$tag' is not vX.Y.Z or vX.Y.Z-pre (no +build metadata)" >&2
   exit 1
 fi
-if [ "$version" != "$tagged" ] && [ "$version" != "$release" ]; then
+if [ "$version" != "$tagged" ]; then
   echo "release tag '$tag' but the crates are version $version: bump [workspace.package] in Cargo.toml (CONTRIBUTING, Releases), then delete this release and its tag and create them again" >&2
   ok=1
 fi
