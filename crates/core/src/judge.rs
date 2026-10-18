@@ -6,12 +6,14 @@ use futures::future::try_join_all;
 use nonempty::NonEmpty;
 
 use crate::{
-    Ambiguous, Card, Extractor, FailedCall, JudgeError, MatchedVia, Origin, Qa, Question,
-    RejectedAttempt, Rejection, Resolution, Resolver, Retriever, Synthesizer, Validated, Verdict,
+    Ambiguous, Card, Context, Extractor, FailedCall, JudgeError, MatchedVia, Origin, Qa, Question,
+    RejectedAttempt, Rejection, Resolution, Resolver, Retriever, Synthesizer, Tally, Validated,
+    Verdict,
 };
 
 /// The ports `judge()` needs. `CallStore` is deliberately absent: persisting
-/// is the caller's decision after rendering.
+/// is the caller's decision after rendering. Cheap to clone: every port is shared.
+#[derive(Clone)]
 pub struct Deps {
     /// Steps 1 + 3.
     pub extractor: Arc<dyn Extractor>,
@@ -23,7 +25,8 @@ pub struct Deps {
     pub synthesizer: Arc<dyn Synthesizer>,
 }
 
-/// Answer `q`. Returns a verdict whose citations were checked against Context.
+/// Answer `q`. Returns a verdict whose citations were checked against
+/// Context. Every model call and embedding is billed to `tally`.
 ///
 /// # Errors
 /// See [`JudgeError`]. Ambiguity and not-found are reported for *all* spans at once.
@@ -31,8 +34,9 @@ pub async fn judge(
     deps: &Deps,
     q: &Question,
     history: &[Qa],
+    tally: &Tally,
 ) -> Result<Verdict<Validated>, JudgeError> {
-    judge_traced(deps, q, history).await.result
+    judge_traced(deps, q, history, tally).await.result
 }
 
 /// What [`judge_traced`] saw on the way to its result.
@@ -49,6 +53,11 @@ pub struct Traced {
     /// none): what the model sent, before validation. A failed call
     /// is stored with these (`CallStore::record_failure`).
     pub attempts: Vec<String>,
+    /// The material the answer was judged from, as the synthesis left it
+    /// (the `lookup_rules` round's chunks included): what
+    /// `CallStore::persist` stores the context ids of. `None` when the run
+    /// stopped before retrieval.
+    pub context: Option<Context>,
 }
 
 impl Traced {
@@ -76,25 +85,33 @@ impl Traced {
 /// [`judge`], also reporting the first attempt's rejection. For the eval
 /// harness, which measures how often and why the retry runs; the interfaces
 /// call [`judge`].
-pub async fn judge_traced(deps: &Deps, q: &Question, history: &[Qa]) -> Traced {
-    let mut first_rejection = None;
-    let mut attempts = Vec::new();
-    let result = run(deps, q, history, &mut first_rejection, &mut attempts).await;
+pub async fn judge_traced(deps: &Deps, q: &Question, history: &[Qa], tally: &Tally) -> Traced {
+    let mut seen = Seen::default();
+    let result = run(deps, q, history, tally, &mut seen).await;
     Traced {
         result,
-        first_rejection,
-        attempts,
+        first_rejection: seen.first_rejection,
+        attempts: seen.attempts,
+        context: seen.context,
     }
+}
+
+/// What [`run`] reports beside its result.
+#[derive(Default)]
+struct Seen {
+    first_rejection: Option<Rejection>,
+    attempts: Vec<String>,
+    context: Option<Context>,
 }
 
 async fn run(
     deps: &Deps,
     q: &Question,
     history: &[Qa],
-    first_rejection: &mut Option<Rejection>,
-    attempts: &mut Vec<String>,
+    tally: &Tally,
+    seen: &mut Seen,
 ) -> Result<Verdict<Validated>, JudgeError> {
-    let e = deps.extractor.extract(q, history).await?;
+    let e = deps.extractor.extract(q, history, tally).await?;
     // The verdict's source is stamped from here, not reported by the synthesis
     // model: `validate` takes an `AnswerableSource`, so this is the only way in.
     let source = e
@@ -103,19 +120,20 @@ async fn run(
         .ok_or(JudgeError::OutOfScope(e.source))?;
     let resolutions = try_join_all(e.card_spans.iter().map(|s| deps.resolver.resolve(s))).await?;
     let cards = collect_resolved(resolutions)?;
-    let mut ctx = deps.retriever.retrieve(q, &cards, &e).await?;
+    let retrieved = deps.retriever.retrieve(q, &cards, &e, tally).await?;
+    let ctx = seen.context.insert(retrieved);
     ctx.history = history.to_vec();
 
     // ARCHITECTURE §3 step 5: BadCitation (or an empty verdict, or a misused
     // tool round) ⇒ retry once, telling the model what was wrong, then error.
     // Retries live here, not in the Discord layer.
-    let (rejection, answer) = match deps.synthesizer.answer(q, &mut ctx, None).await {
+    let (rejection, answer) = match deps.synthesizer.answer(q, ctx, None, tally).await {
         Ok(first) => {
             // Kept before `validate` consumes the verdict: the retry is a fresh
             // conversation, and it is shown what it is asked to correct.
             let answer = first.answer().to_owned();
-            attempts.push(answer.clone());
-            let rejection = match first.validate(&ctx, source) {
+            seen.attempts.push(answer.clone());
+            let rejection = match first.validate(ctx, source) {
                 Err(JudgeError::BadCitation(c)) => Rejection::BadCitation(c),
                 Err(JudgeError::MalformedCitation(m)) => Rejection::Malformed(m),
                 Err(JudgeError::EmptyVerdict(e)) => Rejection::Empty(e),
@@ -127,17 +145,17 @@ async fn run(
         Err(JudgeError::ToolMisuse(t)) => (Rejection::Tool(t), String::new()),
         Err(e) => return Err(e),
     };
-    *first_rejection = Some(rejection.clone());
+    seen.first_rejection = Some(rejection.clone());
     let rejected = RejectedAttempt::new(rejection, &answer);
     // At INFO, not DEBUG: when the retry also fails, the *first* rejection is
     // usually what explains the second, and production runs at INFO.
     tracing::info!(%rejected, "verdict rejected; retrying synthesis once");
     let retry = deps
         .synthesizer
-        .answer(q, &mut ctx, Some(&rejected))
+        .answer(q, ctx, Some(&rejected), tally)
         .await?;
-    attempts.push(retry.answer().to_owned());
-    retry.validate(&ctx, source)
+    seen.attempts.push(retry.answer().to_owned());
+    retry.validate(ctx, source)
 }
 
 /// Turn per-span resolutions into cards, or the first blocking error.
@@ -488,7 +506,12 @@ mod tests {
     struct StubExtractor(Source);
     #[async_trait]
     impl Extractor for StubExtractor {
-        async fn extract(&self, _q: &Question, _h: &[Qa]) -> Result<Extraction, JudgeError> {
+        async fn extract(
+            &self,
+            _q: &Question,
+            _h: &[Qa],
+            _t: &Tally,
+        ) -> Result<Extraction, JudgeError> {
             Ok(Extraction {
                 card_spans: vec![],
                 concepts: vec![],
@@ -520,6 +543,7 @@ mod tests {
             _q: &Question,
             _c: &[Card],
             _e: &Extraction,
+            _t: &Tally,
         ) -> Result<Context, JudgeError> {
             Ok(Context {
                 rules: vec![RuleChunk {
@@ -585,6 +609,7 @@ mod tests {
             _q: &Question,
             ctx: &mut Context,
             rejected: Option<&RejectedAttempt>,
+            _t: &Tally,
         ) -> Result<Verdict<Unvalidated>, JudgeError> {
             let quote = self
                 .quotes
@@ -660,7 +685,7 @@ mod tests {
             question: "q0".into(),
             answer: "a0".into(),
         }];
-        let v = futures::executor::block_on(judge(&d, &q(), &history))?;
+        let v = futures::executor::block_on(judge(&d, &q(), &history, &Tally::new()))?;
         assert_eq!(v.cr_version().as_ref(), "20250801");
         assert_eq!(v.source(), Source::Cr);
         assert_eq!(synth.seen(), vec![(1, None)]);
@@ -670,7 +695,7 @@ mod tests {
     #[test]
     fn verdict_source_comes_from_the_extraction() -> Result<(), JudgeError> {
         let (d, _) = deps_from(Source::Commander, vec!["gain that much life"]);
-        let v = futures::executor::block_on(judge(&d, &q(), &[]))?;
+        let v = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()))?;
         assert_eq!(v.source(), Source::Commander);
         Ok(())
     }
@@ -679,7 +704,7 @@ mod tests {
     fn unanswerable_sources_stop_before_synthesis() {
         for source in [Source::OutOfScope, Source::Tournament] {
             let (d, synth) = deps_from(source, vec!["gain that much life"]);
-            let r = futures::executor::block_on(judge(&d, &q(), &[]));
+            let r = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()));
             assert!(matches!(r, Err(JudgeError::OutOfScope(s)) if s == source));
             assert!(
                 synth.seen().is_empty(),
@@ -691,7 +716,7 @@ mod tests {
     #[test]
     fn bad_citation_retries_once_with_the_rejected_citation() -> Result<(), JudgeError> {
         let (d, synth) = deps(vec!["not in the rule", "gain that much life"]);
-        let v = futures::executor::block_on(judge(&d, &q(), &[]))?;
+        let v = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()))?;
         assert_eq!(v.citations().len(), 1);
         let seen = synth.seen();
         assert_eq!(seen.len(), 2);
@@ -703,10 +728,50 @@ mod tests {
         Ok(())
     }
 
+    /// Adds a rule to the context the way the `lookup_rules` round does, then answers.
+    struct LookingUp(Arc<ScriptedSynth>);
+    #[async_trait]
+    impl Synthesizer for LookingUp {
+        async fn answer(
+            &self,
+            q: &Question,
+            ctx: &mut Context,
+            rejected: Option<&RejectedAttempt>,
+            tally: &Tally,
+        ) -> Result<Verdict<Unvalidated>, JudgeError> {
+            ctx.tool_round
+                .push(RuleId::try_new("613".to_owned()).map_err(anyhow::Error::from)?);
+            self.0.answer(q, ctx, rejected, tally).await
+        }
+    }
+
+    /// The context comes back as synthesis left it (what `persist` stores the
+    /// ids of), with the history; a run stopped before retrieval has none.
+    #[test]
+    fn the_traced_context_is_the_one_the_answer_was_judged_from() -> Result<(), JudgeError> {
+        let (mut d, synth) = deps(vec!["gain that much life"]);
+        d.synthesizer = Arc::new(LookingUp(synth));
+        let history = vec![Qa {
+            question: "q0".into(),
+            answer: "a0".into(),
+        }];
+        let traced = futures::executor::block_on(judge_traced(&d, &q(), &history, &Tally::new()));
+        assert!(traced.result.is_ok(), "{:?}", traced.result);
+        let ctx = traced
+            .context
+            .ok_or_else(|| anyhow::anyhow!("no context returned"))?;
+        assert_eq!(ctx.history.len(), 1);
+        assert_eq!(ctx.tool_round.len(), 1, "the lookup round's rules are kept");
+        let (d, _) = deps_from(Source::OutOfScope, vec![]);
+        let traced = futures::executor::block_on(judge_traced(&d, &q(), &[], &Tally::new()));
+        assert!(traced.context.is_none());
+        Ok(())
+    }
+
     #[test]
     fn empty_verdict_retries_once_like_a_bad_citation() -> Result<(), JudgeError> {
         let (d, synth) = deps(vec!["", "gain that much life"]);
-        let v = futures::executor::block_on(judge(&d, &q(), &[]))?;
+        let v = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()))?;
         assert_eq!(v.citations().len(), 1);
         let seen = synth.seen();
         assert_eq!(seen.len(), 2);
@@ -716,7 +781,7 @@ mod tests {
         ));
 
         let (d, _) = deps(vec!["", ""]);
-        let r = futures::executor::block_on(judge(&d, &q(), &[]));
+        let r = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()));
         assert!(matches!(
             r,
             Err(JudgeError::EmptyVerdict(EmptyVerdict::NoCitations))
@@ -728,7 +793,7 @@ mod tests {
     #[test]
     fn a_double_failure_is_traced_with_each_attempts_answer() {
         let (d, _) = deps(vec!["", ""]);
-        let traced = futures::executor::block_on(judge_traced(&d, &q(), &[]));
+        let traced = futures::executor::block_on(judge_traced(&d, &q(), &[], &Tally::new()));
         assert_eq!(traced.attempts.len(), 2);
         let origin = crate::Origin::Discord {
             asker: crate::Asker::new(std::num::NonZeroU64::MIN, "urza"),
@@ -744,7 +809,7 @@ mod tests {
         );
         // An answered call is not a failure.
         let (d, _) = deps(vec!["gain that much life"]);
-        let ok = futures::executor::block_on(judge_traced(&d, &q(), &[]));
+        let ok = futures::executor::block_on(judge_traced(&d, &q(), &[], &Tally::new()));
         assert!(ok.failure(&q(), &crate::Origin::Web).is_none());
     }
 
@@ -754,7 +819,7 @@ mod tests {
     #[test]
     fn malformed_citation_retries_once_like_a_bad_citation() -> Result<(), JudgeError> {
         let (d, synth) = deps(vec![MALFORMED, "gain that much life"]);
-        let v = futures::executor::block_on(judge(&d, &q(), &[]))?;
+        let v = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()))?;
         assert_eq!(v.citations().len(), 1);
         let seen = synth.seen();
         assert_eq!(seen.len(), 2, "exactly one retry");
@@ -771,7 +836,7 @@ mod tests {
     #[test]
     fn malformed_citation_twice_is_an_error() {
         let (d, synth) = deps(vec![MALFORMED, MALFORMED]);
-        let r = futures::executor::block_on(judge(&d, &q(), &[]));
+        let r = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()));
         assert!(matches!(r, Err(JudgeError::MalformedCitation(_))), "{r:?}");
         assert_eq!(synth.seen().len(), 2, "capped at one retry, no loop");
     }
@@ -779,7 +844,7 @@ mod tests {
     #[test]
     fn bad_citation_twice_is_an_error() {
         let (d, synth) = deps(vec!["bad one", "bad two"]);
-        let r = futures::executor::block_on(judge(&d, &q(), &[]));
+        let r = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()));
         assert!(
             matches!(r, Err(JudgeError::BadCitation(Citation::Rule { quote, .. })) if quote.as_ref() == "bad two")
         );
@@ -791,7 +856,7 @@ mod tests {
     #[test]
     fn tool_misuse_retries_once_like_a_bad_citation() -> Result<(), JudgeError> {
         let (d, synth) = deps(vec![SECOND_ROUND, "gain that much life"]);
-        let v = futures::executor::block_on(judge(&d, &q(), &[]))?;
+        let v = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()))?;
         assert_eq!(v.citations().len(), 1);
         let seen = synth.seen();
         assert!(
@@ -802,7 +867,7 @@ mod tests {
         assert!(synth.retry_answers().is_empty(), "nothing to quote back");
 
         let (d, synth) = deps(vec![SECOND_ROUND, SECOND_ROUND]);
-        let r = futures::executor::block_on(judge(&d, &q(), &[]));
+        let r = futures::executor::block_on(judge(&d, &q(), &[], &Tally::new()));
         assert!(matches!(r, Err(JudgeError::ToolMisuse(_))), "{r:?}");
         assert_eq!(synth.seen().len(), 2, "capped at one retry");
         Ok(())

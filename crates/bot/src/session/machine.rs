@@ -422,7 +422,11 @@ impl Session {
             resolutions.push(resolver.resolve(span).await?);
         }
         let cards = collect_resolved(resolutions)?;
-        let mut ctx = retriever.retrieve(&self.question, &cards, &e).await?;
+        // A session's run is not recorded (its model is the agent), so the
+        // query embedding's charge goes nowhere; the spend cap still counts it.
+        let mut ctx = retriever
+            .retrieve(&self.question, &cards, &e, &judge_core::Tally::new())
+            .await?;
         ctx.history.clone_from(history);
         let prompt = synthesis_prompt(&self.question, &ctx, None, true, harness, budget);
         self.stage = Stage::AwaitingVerdict {
@@ -770,6 +774,7 @@ mod tests {
             _q: &Question,
             cards: &[Card],
             _e: &Extraction,
+            _tally: &judge_core::Tally,
         ) -> Result<Context, JudgeError> {
             // A populated context: every kind of material the store must round-trip.
             let text = "Urza's Saga's third chapter ability can find a card with mana value 0.";

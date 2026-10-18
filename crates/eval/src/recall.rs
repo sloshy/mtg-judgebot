@@ -160,7 +160,9 @@ pub async fn run(
             thread_id: q.id.clone(),
             text: q.question.clone(),
         };
-        let ctx = retriever.retrieve(&question, &cards, &extraction).await?;
+        let ctx = retriever
+            .retrieve(&question, &cards, &extraction, &judge_core::Tally::new())
+            .await?;
         let shown = shown_rules(&ctx, &[], &Budget::default());
         let (mut hit, mut cut, mut missed) = (Vec::new(), Vec::new(), Vec::new());
         // Decisive and supporting alike: retrieving the background rules is

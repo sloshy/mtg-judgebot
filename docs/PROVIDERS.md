@@ -126,7 +126,7 @@ pub struct ChatResponse {
     pub text: Vec<String>,               // text blocks in order; the JSON is the last
     pub tool_calls: Vec<ToolCall>,       // { id, name, input: Value }
     pub stop: Stop,                      // EndTurn | MaxTokens | ToolUse | Refusal(details) | Other(String)
-    pub usage: Usage,                    // input, output, cache_read, cache_write (0 when unknown)
+    pub usage: Option<Usage>,            // input, output, cache_read, cache_write; None when unreported
     pub model: String,                   // as billed (may differ under fallbacks)
     pub assistant: AssistantTurn,        // for replay
 }
@@ -188,6 +188,12 @@ Around the meter:
   `JUDGE_MAX_USD` is the cap.
 - A 2xx body that fails to decode is still billed: each backend exposes a lenient
   `usage_of(body)`.
+- A response with no usage (an OpenAI-compatible server may leave it out) keeps the
+  whole reservation as its cost, as an embedding does.
+- `ChatModel::complete` takes a `Bill`: the run's `judge_core::Tally` and the `Stage`
+  the call is for. Settling adds a `Charge` to it, so a run's cost is its own however
+  many runs share the meter (`judge_runs`, D33). A response with no usage is charged at
+  the reservation it kept, as `Cost::WorstCase`.
 - Each call logs an `llm call` line with a `provider` field.
 - `Models::{single, pair, priced}` take the meter and bare backends and meter them
   themselves. The fields are private, so there is no uncapped model and no foreign meter.

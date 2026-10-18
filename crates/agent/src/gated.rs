@@ -135,6 +135,11 @@ impl Checked<'_> {
         &*self.0.calls
     }
 
+    /// The call store, shared, for a run that outlives its request.
+    pub(crate) const fn calls_arc(&self) -> &Arc<dyn CallStore> {
+        &self.0.calls
+    }
+
     pub(crate) const fn pipeline(&self) -> Option<&Pipeline> {
         self.0.pipeline.as_ref()
     }

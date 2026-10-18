@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use judge_core::{JudgeError, RuleChunk, RuleId, ToolMisuse, Unvalidated, Verdict};
+use judge_core::{JudgeError, RuleChunk, RuleId, Tally, ToolMisuse, Unvalidated, Verdict};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +40,10 @@ mod sealed {
     pub trait Sealed {}
 }
 /// Typestate marker for `Synth`. Sealed.
-pub trait Stage: sealed::Sealed + core::fmt::Debug {}
+pub trait Stage: sealed::Sealed + core::fmt::Debug {
+    /// What a request sent in this stage is billed as.
+    fn billed_as(&self) -> judge_core::Stage;
+}
 
 /// Nothing sent yet.
 #[derive(Debug)]
@@ -54,15 +57,35 @@ pub struct ToolRequested {
     /// Union of the ids the model asked for.
     requested: Vec<RuleId>,
 }
-/// Tool result attached; only `finish` remains.
+/// Tool result attached (or, for the retry, no tool allowed); only `finish`
+/// remains.
 #[derive(Debug)]
-pub struct Final;
+pub struct Final {
+    /// Whether the request carries a `lookup_rules` result.
+    after_tool: bool,
+}
 impl sealed::Sealed for Fresh {}
 impl sealed::Sealed for ToolRequested {}
 impl sealed::Sealed for Final {}
-impl Stage for Fresh {}
-impl Stage for ToolRequested {}
-impl Stage for Final {}
+impl Stage for Fresh {
+    fn billed_as(&self) -> judge_core::Stage {
+        judge_core::Stage::Synthesis
+    }
+}
+impl Stage for ToolRequested {
+    fn billed_as(&self) -> judge_core::Stage {
+        judge_core::Stage::Synthesis
+    }
+}
+impl Stage for Final {
+    fn billed_as(&self) -> judge_core::Stage {
+        if self.after_tool {
+            judge_core::Stage::ToolRound
+        } else {
+            judge_core::Stage::Synthesis
+        }
+    }
+}
 
 /// Knobs for the synthesis request. The model itself is the backend's.
 #[derive(Clone, Debug)]
@@ -140,6 +163,8 @@ pub enum SendOutcome {
 /// One synthesis conversation. `S` is the stage.
 pub struct Synth<S: Stage> {
     model: Arc<dyn ChatModel>,
+    /// The run every request is billed to.
+    tally: Tally,
     cfg: SynthConfig,
     req: ChatRequest,
     stage: S,
@@ -149,6 +174,7 @@ impl<S: Stage> std::fmt::Debug for Synth<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Synth")
             .field("model", &self.model.model())
+            .field("tally", &self.tally)
             .field("cfg", &self.cfg)
             .field("req", &self.req)
             .field("stage", &self.stage)
@@ -199,21 +225,24 @@ impl<S: Stage> Synth<S> {
     /// One round trip, logging output tokens against `max_tokens` so the
     /// truncation margin is observable.
     async fn round_trip(&self) -> Result<ChatResponse, JudgeError> {
+        let bill = self.tally.bill(self.stage.billed_as());
         let resp = self
             .model
-            .complete(&self.req)
+            .complete(&self.req, &bill)
             .await
             .map_err(anyhow::Error::from)?;
-        tracing::info!(output_tokens = resp.usage.output, max_tokens = self.req.max_tokens, stop = ?resp.stop, "synthesis response");
+        tracing::info!(output_tokens = resp.usage.map(|u| u.output), max_tokens = self.req.max_tokens, stop = ?resp.stop, "synthesis response");
         Ok(resp)
     }
 }
 
 impl Synth<Fresh> {
-    /// Build the first request (see [`first_request`]) with the tool allowed.
+    /// Build the first request (see [`first_request`]) with the tool
+    /// allowed. Every request of the conversation is billed to `tally`.
     #[must_use]
     pub fn new(
         model: Arc<dyn ChatModel>,
+        tally: &Tally,
         cfg: &SynthConfig,
         system: impl Into<String>,
         user: Vec<TextBlock>,
@@ -226,6 +255,7 @@ impl Synth<Fresh> {
         );
         Self {
             model,
+            tally: tally.clone(),
             cfg: cfg.clone(),
             req,
             stage: Fresh,
@@ -247,6 +277,7 @@ impl Synth<Fresh> {
                 self.req.turns.push(Turn::Assistant(assistant));
                 Ok(SendOutcome::ToolRequested(Synth {
                     model: self.model,
+                    tally: self.tally,
                     cfg: self.cfg,
                     req: self.req,
                     stage: ToolRequested {
@@ -286,9 +317,10 @@ impl Synth<ToolRequested> {
         self.req.turns.push(Turn::ToolResults(results));
         Synth {
             model: self.model,
+            tally: self.tally,
             cfg: self.cfg,
             req: self.req,
-            stage: Final,
+            stage: Final { after_tool: true },
         }
     }
 }
@@ -333,6 +365,7 @@ impl Synth<Final> {
     #[must_use]
     pub fn new_final(
         model: Arc<dyn ChatModel>,
+        tally: &Tally,
         cfg: &SynthConfig,
         system: impl Into<String>,
         user: Vec<TextBlock>,
@@ -340,9 +373,10 @@ impl Synth<Final> {
         let req = first_request(cfg, system.into(), user, ToolChoice::None);
         Self {
             model,
+            tally: tally.clone(),
             cfg: cfg.clone(),
             req,
-            stage: Final,
+            stage: Final { after_tool: false },
         }
     }
 
@@ -403,7 +437,7 @@ pub fn classify(resp: ChatResponse) -> Result<Step, JudgeError> {
             Err(JudgeError::LlmRefused)
         }
         Stop::MaxTokens => Err(anyhow::Error::from(Truncated {
-            output_tokens: resp.usage.output,
+            output_tokens: resp.usage.map_or(0, |u| u.output),
         })
         .into()),
         Stop::ToolUse => {
@@ -524,12 +558,12 @@ mod tests {
             text: text.iter().map(|t| (*t).to_owned()).collect(),
             tool_calls,
             stop,
-            usage: Usage {
+            usage: Some(Usage {
                 input: 1,
                 output: 1,
                 cache_read: 0,
                 cache_write: 0,
-            },
+            }),
             model: "m".into(),
             assistant: AssistantTurn {
                 backend: "test",
@@ -563,6 +597,7 @@ mod tests {
     fn fresh_request_has_tool_thinking_format_and_fallbacks() {
         let s = Synth::new(
             model(),
+            &Tally::new(),
             &SynthConfig::default(),
             "sys",
             vec![TextBlock::plain("q")],
@@ -582,10 +617,22 @@ mod tests {
             fallbacks: None,
             ..SynthConfig::default()
         };
-        let s = Synth::new(model(), &cfg, "sys", vec![TextBlock::plain("q")]);
+        let s = Synth::new(
+            model(),
+            &Tally::new(),
+            &cfg,
+            "sys",
+            vec![TextBlock::plain("q")],
+        );
         assert!(s.request().fallbacks.is_none());
 
-        let f = Synth::new_final(model(), &cfg, "sys", vec![TextBlock::plain("q")]);
+        let f = Synth::new_final(
+            model(),
+            &Tally::new(),
+            &cfg,
+            "sys",
+            vec![TextBlock::plain("q")],
+        );
         assert_eq!(f.request().tool_choice, ToolChoice::None);
         assert_eq!(
             f.request().tools.first().map(|t| t.name.as_str()),
@@ -611,12 +658,14 @@ mod tests {
     {
         let s = Synth::new(
             model(),
+            &Tally::new(),
             &SynthConfig::default(),
             "sys",
             vec![TextBlock::plain("q")],
         );
         let t: Synth<ToolRequested> = Synth {
             model: s.model,
+            tally: s.tally,
             cfg: s.cfg,
             req: s.req,
             stage: ToolRequested {
@@ -806,6 +855,7 @@ mod tests {
         ));
         Synth::new_final(
             model,
+            &Tally::new(),
             &SynthConfig::default(),
             "system",
             vec![TextBlock::plain("user")],

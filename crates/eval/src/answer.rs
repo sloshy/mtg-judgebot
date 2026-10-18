@@ -350,20 +350,24 @@ pub async fn run(
 
     let mut rows = Vec::with_capacity(selected.len());
     for q in selected {
-        let (usd0, calls0) = (meter.spent_usd(), meter.calls());
+        // This question's own tally: exact, whatever else shares the meter.
+        let tally = judge_core::Tally::new();
         let question = Question {
             thread_id: q.id.clone(),
             text: q.question.clone(),
         };
         let started = Instant::now();
-        let traced = judge_traced(&deps, &question, &[]).await;
+        let traced = judge_traced(&deps, &question, &[], &tally).await;
         let elapsed_ms = started.elapsed().as_millis();
+        let model_calls = tally.count(judge_core::Stage::Extraction)
+            + tally.count(judge_core::Stage::Synthesis)
+            + tally.count(judge_core::Stage::ToolRound);
         let row = score_row(
             q,
             &traced,
             elapsed_ms,
-            meter.calls() - calls0,
-            meter.spent_usd() - usd0,
+            u64::try_from(model_calls).unwrap_or(u64::MAX),
+            tally.cost().usd(),
         );
         tracing::info!(id = %row.id, ok = row.correct_shape, usd = format_args!("{:.4}", row.usd), "scored");
         rows.push(row);
@@ -921,6 +925,7 @@ mod tests {
             result,
             attempts: vec![],
             first_rejection: None,
+            context: None,
         }
     }
 
@@ -1114,6 +1119,7 @@ mod tests {
                 result: Ok(v),
                 first_rejection: Some(first.clone()),
                 attempts: vec![],
+                context: None,
             },
             1,
             1,

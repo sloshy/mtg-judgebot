@@ -52,6 +52,9 @@ Operators should know these properties. The reasoning behind each is in
   `/forget` deletes the user's ratings and removes their id and username from their calls
   and failed calls. A private call loses its question, answer, citations and card ids too,
   and a failed one its text. A public call keeps its text, which the channel saw.
+  - for each run of the pipeline (`judge_runs`): the interface, whether it was private,
+    how it ended, when, and the models, tokens and cost of each request. No text and no
+    user id.
   - for each "did you mean?" prompt a card is picked from (`pick_claims`): the Discord
     message id, when the prompt was shown and a short digest of its content. No text and
     no user id; rows are deleted after a day.

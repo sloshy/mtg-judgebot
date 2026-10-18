@@ -3411,7 +3411,13 @@ model = "qwen3:8b"
             thinking: false,
             fallbacks: None,
         };
-        models.synth().complete(&req).await?;
+        models
+            .synth()
+            .complete(
+                &req,
+                &judge_core::Tally::new().bill(judge_core::Stage::Synthesis),
+            )
+            .await?;
         assert!(
             (c.meter().spent_usd() - 2.0).abs() < 1e-6,
             "billed at the operator's rate, not the table's $8: {}",
@@ -4255,8 +4261,20 @@ model = "qwen3:8b"
             thinking: false,
             fallbacks: None,
         };
-        models.extract().complete(&req).await?;
-        models.synth().complete(&req).await?;
+        models
+            .extract()
+            .complete(
+                &req,
+                &judge_core::Tally::new().bill(judge_core::Stage::Synthesis),
+            )
+            .await?;
+        models
+            .synth()
+            .complete(
+                &req,
+                &judge_core::Tally::new().bill(judge_core::Stage::Synthesis),
+            )
+            .await?;
         assert_eq!(c.meter().calls(), 2, "counted");
         assert!(c.meter().spent_usd().abs() < f64::EPSILON, "never billed");
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 2);

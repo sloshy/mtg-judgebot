@@ -14,7 +14,7 @@ use std::{fmt::Write as _, sync::Arc};
 
 use anyhow::Context as _;
 use async_trait::async_trait;
-use judge_core::{Category, Extraction, Extractor, JudgeError, Qa, Question};
+use judge_core::{Category, Extraction, Extractor, JudgeError, Qa, Question, Stage, Tally};
 use judge_llm::{
     Capabilities, ChatModel, ChatRequest, ChatResponse, Effort, LOG_TEXT_CHARS, OutputSchema, Stop,
     TextBlock, ToolChoice, Turn, needs_schema_in_prompt, schema_block, strip_json_fence,
@@ -66,11 +66,16 @@ impl LlmExtractor {
 
 #[async_trait]
 impl Extractor for LlmExtractor {
-    async fn extract(&self, q: &Question, history: &[Qa]) -> Result<Extraction, JudgeError> {
+    async fn extract(
+        &self,
+        q: &Question,
+        history: &[Qa],
+        tally: &Tally,
+    ) -> Result<Extraction, JudgeError> {
         let req = build_request(&self.cfg, self.model.capabilities(), q, history);
         let resp = self
             .model
-            .complete(&req)
+            .complete(&req, &tally.bill(Stage::Extraction))
             .await
             .map_err(anyhow::Error::from)?;
         let e = parse_extraction(&resp)?;
@@ -344,7 +349,7 @@ mod tests {
             text: text.iter().map(|t| (*t).to_owned()).collect(),
             tool_calls: vec![],
             stop,
-            usage: Usage::default(),
+            usage: Some(Usage::default()),
             model: "claude-opus-5-5".into(),
             assistant: AssistantTurn {
                 backend: "test",
@@ -490,7 +495,7 @@ mod tests {
             ..Dialect::default()
         };
         let e = openai_extractor(&server, dialect)?
-            .extract(&question(), &history())
+            .extract(&question(), &history(), &judge_core::Tally::new())
             .await?;
         assert_eq!(e.card_spans, ["[[Humility]]", "Bob"]);
         assert_eq!(e.primary_category(), Category::Layers);
@@ -545,7 +550,7 @@ mod tests {
             ..Dialect::default()
         };
         openai_extractor(&server, dialect)?
-            .extract(&question(), &[])
+            .extract(&question(), &[], &judge_core::Tally::new())
             .await?;
         let sent = first_body(&server).await?;
         let user = at(&sent, "/messages/1/content")
@@ -583,7 +588,7 @@ mod tests {
             ..Dialect::default()
         };
         let e = openai_extractor(&server, dialect)?
-            .extract(&question(), &[])
+            .extract(&question(), &[], &judge_core::Tally::new())
             .await?;
         assert_eq!(e.source, Source::Cr);
         let sent = first_body(&server).await?;
@@ -605,7 +610,7 @@ mod tests {
         ))
         .await;
         let r = openai_extractor(&server, Dialect::default())?
-            .extract(&question(), &[])
+            .extract(&question(), &[], &judge_core::Tally::new())
             .await;
         assert!(matches!(r, Err(JudgeError::LlmRefused)), "{r:?}");
 
@@ -615,7 +620,7 @@ mod tests {
         ))
         .await;
         let r = openai_extractor(&server, Dialect::default())?
-            .extract(&question(), &[])
+            .extract(&question(), &[], &judge_core::Tally::new())
             .await;
         assert!(matches!(r, Err(JudgeError::LlmRefused)), "{r:?}");
 
@@ -625,7 +630,7 @@ mod tests {
         ))
         .await;
         let r = openai_extractor(&server, Dialect::default())?
-            .extract(&question(), &[])
+            .extract(&question(), &[], &judge_core::Tally::new())
             .await;
         assert!(
             matches!(&r, Err(JudgeError::Upstream(e)) if format!("{e:#}").contains("truncated")),
@@ -635,7 +640,7 @@ mod tests {
         let bad_args = json!({"role": "assistant", "content": null, "tool_calls": [{"id": "c", "type": "function", "function": {"name": "x", "arguments": "{oops"}}]});
         let server = openai_server_with(completion("tool_calls", &bad_args)).await;
         let r = openai_extractor(&server, Dialect::default())?
-            .extract(&question(), &[])
+            .extract(&question(), &[], &judge_core::Tally::new())
             .await;
         assert!(
             matches!(&r, Err(JudgeError::Upstream(e)) if e.downcast_ref::<judge_llm::LlmError>().is_some_and(|e| matches!(e, judge_llm::LlmError::Decode { .. }))),
@@ -647,7 +652,9 @@ mod tests {
     #[tokio::test]
     async fn happy_path() -> Result<(), Box<dyn std::error::Error>> {
         let server = server_with(body("end_turn", json!([{"type": "text", "text": GOOD}]))).await;
-        let e = extractor(&server)?.extract(&question(), &history()).await?;
+        let e = extractor(&server)?
+            .extract(&question(), &history(), &judge_core::Tally::new())
+            .await?;
         assert_eq!(e.card_spans, ["[[Humility]]", "Bob"]);
         assert_eq!(e.concepts, ["lifelink", "layers"]);
         assert_eq!(e.primary_category(), Category::Layers);
@@ -681,7 +688,9 @@ mod tests {
             &json!({"type": "refusal", "category": "other"}),
         );
         let server = server_with(b).await;
-        let r = extractor(&server)?.extract(&question(), &[]).await;
+        let r = extractor(&server)?
+            .extract(&question(), &[], &judge_core::Tally::new())
+            .await;
         assert!(matches!(r, Err(JudgeError::LlmRefused)), "{r:?}");
         Ok(())
     }
@@ -693,7 +702,9 @@ mod tests {
             json!([{"type": "text", "text": "{\"card_spans\": 1"}]),
         ))
         .await;
-        let r = extractor(&server)?.extract(&question(), &[]).await;
+        let r = extractor(&server)?
+            .extract(&question(), &[], &judge_core::Tally::new())
+            .await;
         match r {
             Err(JudgeError::Upstream(e)) => {
                 assert!(format!("{e:#}").contains("{\"card_spans\": 1"), "{e:#}");
@@ -771,7 +782,8 @@ mod tests {
             history_turns: 1,
         };
         let x = LlmExtractor::new(model(&server)?, cfg);
-        x.extract(&question(), &history()).await?;
+        x.extract(&question(), &history(), &judge_core::Tally::new())
+            .await?;
         let reqs = server.received_requests().await.unwrap_or_default();
         let sent: Value =
             serde_json::from_slice(&reqs.first().map(|r| r.body.clone()).unwrap_or_default())?;

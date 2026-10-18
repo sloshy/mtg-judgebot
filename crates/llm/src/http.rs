@@ -118,7 +118,7 @@ mod tests {
             text: vec![String::from_utf8_lossy(&reply.body).into_owned()],
             tool_calls: vec![],
             stop: Stop::EndTurn,
-            usage: Usage::default(),
+            usage: Some(Usage::default()),
             model: "m".into(),
             assistant: AssistantTurn {
                 backend: "test",

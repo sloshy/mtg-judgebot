@@ -3,16 +3,22 @@
 use async_trait::async_trait;
 
 use crate::{
-    CallId, Card, Context, Extraction, FailedCall, Forgotten, HistoryScope, JudgeError, Origin, Qa,
-    Question, RejectedAttempt, Resolution, RuleChunk, RuleId, Score, Validated, Verdict,
-    verdict::Unvalidated,
+    CallId, Card, Context, Extraction, FailedCall, FailedCallId, Forgotten, HistoryScope,
+    JudgeError, Origin, Qa, Question, RejectedAttempt, Resolution, RuleChunk, RuleId, RunRecord,
+    Score, Tally, Validated, Verdict, verdict::Unvalidated,
 };
 
 /// Pipeline steps 1 + 3: entity extraction and classification (one LLM call).
 #[async_trait]
 pub trait Extractor: Send + Sync {
-    /// Split `q` into card-name spans and rules concepts, and classify it.
-    async fn extract(&self, q: &Question, history: &[Qa]) -> Result<Extraction, JudgeError>;
+    /// Split `q` into card-name spans and rules concepts, and classify it,
+    /// billing the model call to `tally`.
+    async fn extract(
+        &self,
+        q: &Question,
+        history: &[Qa],
+        tally: &Tally,
+    ) -> Result<Extraction, JudgeError>;
 }
 
 /// Pipeline step 2: resolve one card-name span. Never guesses.
@@ -25,12 +31,14 @@ pub trait Resolver: Send + Sync {
 /// Pipeline step 4: build Context; also serves the synthesizer's `lookup_rules` tool.
 #[async_trait]
 pub trait Retriever: Send + Sync {
-    /// Build the Context for `q`. Thread history is filled in by `judge()`.
+    /// Build the Context for `q`, billing the query's embedding to `tally`.
+    /// Thread history is filled in by `judge()`.
     async fn retrieve(
         &self,
         q: &Question,
         cards: &[Card],
         e: &Extraction,
+        tally: &Tally,
     ) -> Result<Context, JudgeError>;
     /// Fetch full rule chunks by id (expands a subsection id to all rules under it).
     async fn lookup_rules(&self, ids: &[RuleId]) -> Result<Vec<RuleChunk>, JudgeError>;
@@ -44,12 +52,13 @@ pub trait Retriever: Send + Sync {
 pub trait Synthesizer: Send + Sync {
     /// Answer `q` from `ctx`. `rejected` is the previous attempt that failed
     /// validation (why, and what it answered), so the model can correct it on
-    /// the retry.
+    /// the retry. Every model call is billed to `tally`.
     async fn answer(
         &self,
         q: &Question,
         ctx: &mut Context,
         rejected: Option<&RejectedAttempt>,
+        tally: &Tally,
     ) -> Result<Verdict<Unvalidated>, JudgeError>;
 }
 
@@ -66,8 +75,14 @@ pub enum InputKind {
 /// Text embeddings (Voyage today; the trait exists so this can change).
 #[async_trait]
 pub trait Embedder: Send + Sync {
-    /// Embed `texts` in order. Implementations reject an empty slice.
-    async fn embed(&self, texts: &[&str], kind: InputKind) -> Result<Vec<Vec<f32>>, JudgeError>;
+    /// Embed `texts` in order, billing the request to `tally`.
+    /// Implementations reject an empty slice.
+    async fn embed(
+        &self,
+        texts: &[&str],
+        kind: InputKind,
+        tally: &Tally,
+    ) -> Result<Vec<Vec<f32>>, JudgeError>;
     /// Vector width produced by `embed`.
     fn dimensions(&self) -> usize;
 }
@@ -77,13 +92,15 @@ pub trait Embedder: Send + Sync {
 pub trait CallStore: Send + Sync {
     /// Store the question, verdict and the ids of the context it was
     /// answered from, with where it came from. A private call is stored too:
-    /// [`Self::history`] and the prior-call examples leave it out.
+    /// [`Self::history`] and the prior-call examples leave it out. The
+    /// call's embedding is billed to `tally`.
     async fn persist(
         &self,
         q: &Question,
         origin: &Origin,
         v: &Verdict<Validated>,
         ctx: &Context,
+        tally: &Tally,
     ) -> Result<CallId, JudgeError>;
     /// Record (or replace) one user's rating of a call.
     async fn rate(
@@ -108,7 +125,9 @@ pub trait CallStore: Send + Sync {
     /// private call, its question and answer), and anonymize the failed calls
     /// they asked, returning how many of each.
     async fn forget_user(&self, user_id: &str) -> Result<Forgotten, JudgeError>;
-    /// Keep a failed call for troubleshooting. The store bounds the size of
-    /// every field and the number of rows it keeps.
-    async fn record_failure(&self, failed: &FailedCall) -> Result<(), JudgeError>;
+    /// Keep a failed call for troubleshooting, returning its id. The store
+    /// bounds the size of every field and the number of rows it keeps.
+    async fn record_failure(&self, failed: &FailedCall) -> Result<FailedCallId, JudgeError>;
+    /// Record one run of the pipeline (`judge_runs`), whatever its outcome.
+    async fn record_run(&self, run: &RunRecord) -> Result<(), JudgeError>;
 }

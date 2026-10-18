@@ -5,8 +5,7 @@
 //! [`command`] (the slash commands: registration and parsing), [`render`]
 //! (verdict / error → text), [`mana`] (card symbols → the bot's custom
 //! emoji), [`ids`] (typed `custom_id`s), [`pick`] (how old a card pick's
-//! prompt is), [`question`] (span replacement) and [`capture`] (keeps the
-//! retrieval `Context` so a call can be persisted). [`reply`] answers a
+//! prompt is) and [`question`] (span replacement). [`reply`] answers a
 //! command over the REST API. [`symbols`] lists the
 //! card-symbol emoji and keeps the table current while the bot runs.
 //! [`gateway`] keeps the gateway connection to one process of all those
@@ -40,7 +39,6 @@
 //!   ([`cooldown`]); a pick re-runs a question already counted and is free.
 //! * `/card` and `/rule` read the database and call no model.
 
-pub mod capture;
 pub mod command;
 pub mod cooldown;
 pub mod endpoint;
@@ -65,10 +63,9 @@ use std::{
 use anyhow::Context as _;
 use judge_core::{
     Ambiguous, Asker, CallId, CallStore, Card, Deps, DiscordOperator, JudgeError, Origin, Question,
-    Resolution, Retriever, RuleId, Score, SourceOffer, Validated, Verdict, Visibility,
-    judge_traced,
+    Resolution, RuleId, Score, SourceOffer, Validated, Verdict, Visibility,
 };
-use judge_llm::{ApiKey, SpendMeter};
+use judge_llm::ApiKey;
 use nonempty::NonEmpty;
 use serenity::all::{
     ButtonStyle, CommandInteraction, ComponentInteraction, CreateActionRow, CreateAllowedMentions,
@@ -81,10 +78,10 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 use crate::{
     db::{PgLibrary, PickKey, claim_pick, release_pick},
     maintenance::Availability,
+    run,
     serving::Serving,
     shutdown::{Drained, Shutdown},
 };
-use capture::CapturingRetriever;
 pub use command::QUESTION_MAX_CHARS;
 use command::{Command, Unparsed};
 use cooldown::{Cooldowns, UserLimit};
@@ -281,9 +278,7 @@ impl Config {
 /// Shared state behind every command and button.
 pub struct Data {
     deps: Deps,
-    capture: Arc<CapturingRetriever>,
     store: Arc<dyn CallStore>,
-    meter: SpendMeter,
     /// How long a "did you mean…?" stays answerable.
     pick_ttl: Duration,
     permits: Semaphore,
@@ -323,24 +318,18 @@ impl std::fmt::Debug for Data {
 
 impl Data {
     /// Wire the shared state from the process's composition: its pipeline,
-    /// store, meter (the one its models bill to, so the counters reflect the
-    /// judge runs), source offer and availability.
+    /// store, source offer and availability.
     #[must_use]
     pub fn new(serving: &Serving, cfg: &Config, operator: DiscordOperator) -> Self {
-        let mut deps = serving.deps();
+        let deps = serving.deps();
         let store = serving.store();
-        let meter = serving.models().meter().clone();
         let offer = serving.judge().source_offer().clone();
         // `/card` reads rulings by card id only, so its library needs no vectors.
         let library = PgLibrary::new(serving.pool().clone());
         let availability = serving.availability().clone();
-        let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
-        deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
         Self {
             deps,
-            capture,
             store,
-            meter,
             pick_ttl: cfg.pick_ttl,
             permits: Semaphore::new(cfg.max_concurrent),
             judge_role: cfg.judge_role.clone(),
@@ -391,49 +380,32 @@ impl Data {
                 }
             },
         };
-        let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
-        let traced = judge_traced(&self.deps, q, &history).await;
-        let captured = self.capture.take(q);
-        if let Some(failed) = traced.failure(q, &origin)
-            && let Err(e) = self.store.record_failure(&failed).await
-        {
-            tracing::warn!(
-                error = format_args!("{e:#}"),
-                "could not record the failed call"
-            );
-        }
-        let result = traced.result;
+        // An interaction runs on a task of its own, so the caller's permit
+        // (held until this returns) already outlives the run's result.
+        let ran = run::run(&self.deps, &self.store, q, &origin, history, ()).await;
         tracing::info!(
             user = %asker,
             thread = %q.thread_id,
-            elapsed_ms = t0.elapsed().as_millis(),
-            usd = format_args!("{:.4}", self.meter.spent_usd() - usd0),
-            llm_calls = self.meter.calls() - calls0,
-            outcome = outcome(&result),
+            elapsed_ms = ran.elapsed.as_millis(),
+            usd = format_args!("{:.4}", ran.cost.usd()),
+            worst_case = ran.cost.is_estimate(),
+            llm_calls = ran.model_calls,
+            outcome = %ran.outcome,
             private = audience.is_private(),
             "/judge"
         );
+        let run::Ran {
+            result,
+            context,
+            call,
+            ..
+        } = ran;
         match result {
             Ok(v) => {
-                // No call id, no rating buttons.
-                let call = if let Some(ctx) = captured.as_ref() {
-                    self.store
-                        .persist(q, &origin, &v, ctx)
-                        .await
-                        .map_err(|e| {
-                            tracing::error!(
-                                error = format_args!("{e:#}"),
-                                "persist failed; answering without rating buttons"
-                            );
-                        })
-                        .ok()
-                } else {
-                    tracing::warn!("no captured context for the question; call not persisted");
-                    None
-                };
+                // No stored call, no rating buttons.
                 Outgoing::answer(
                     &v,
-                    captured.as_ref(),
+                    context.as_ref(),
                     call,
                     asker,
                     &q.text,
@@ -966,22 +938,6 @@ fn pick_row(base: Pick, candidates: &NonEmpty<Card>) -> CreateActionRow {
         })
         .collect();
     CreateActionRow::Buttons(buttons)
-}
-
-const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
-    match r {
-        Ok(_) => "answered",
-        Err(JudgeError::AmbiguousCards(_)) => "ambiguous",
-        Err(JudgeError::CardsNotFound(_)) => "not_found",
-        Err(JudgeError::OutOfScope(_)) => "out_of_scope",
-        Err(JudgeError::BadCitation(_)) => "bad_citation",
-        Err(JudgeError::MalformedCitation(_)) => "malformed_citation",
-        Err(JudgeError::EmptyVerdict(_)) => "empty_verdict",
-        Err(JudgeError::UncitedRules(_)) => "uncited_rules",
-        Err(JudgeError::ToolMisuse(_)) => "tool_misuse",
-        Err(JudgeError::LlmRefused) => "refused",
-        Err(JudgeError::Upstream(_)) => "upstream",
-    }
 }
 
 async fn ephemeral(
@@ -2022,14 +1978,5 @@ mod tests {
         let call = concat!(".create", "_response(");
         assert_eq!(include_str!("mod.rs").matches(call).count(), 1);
         assert_eq!(include_str!("reply.rs").matches(call).count(), 2);
-    }
-
-    #[test]
-    fn outcome_labels_every_variant() {
-        assert_eq!(outcome(&Err(JudgeError::LlmRefused)), "refused");
-        assert_eq!(
-            outcome(&Err(JudgeError::Upstream(anyhow::anyhow!("x")))),
-            "upstream"
-        );
     }
 }

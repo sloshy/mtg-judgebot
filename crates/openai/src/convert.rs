@@ -254,7 +254,7 @@ pub fn from_wire(
             .collect(),
         tool_calls,
         stop,
-        usage: resp.usage.as_ref().map(usage).unwrap_or_default(),
+        usage: resp.usage.as_ref().map(usage),
         model: resp.model.clone().unwrap_or_else(|| model.to_owned()),
         assistant: AssistantTurn {
             backend: BACKEND,
@@ -589,12 +589,12 @@ mod tests {
         assert_eq!(c.stop, Stop::ToolUse);
         assert_eq!(
             c.usage,
-            Usage {
+            Some(Usage {
                 input: 40,
                 output: 7,
                 cache_read: 60,
                 cache_write: 0
-            },
+            }),
             "cached tokens come out of the input"
         );
         assert_eq!(c.model, "served-model");
@@ -644,7 +644,7 @@ mod tests {
         let c = from_wire(&parts, "asked")?;
         assert_eq!(c.text, ["a", "b"]);
         assert_eq!(c.model, "asked");
-        assert_eq!(c.usage, Usage::default());
+        assert_eq!(c.usage, None, "no usage reported");
         Ok(())
     }
 

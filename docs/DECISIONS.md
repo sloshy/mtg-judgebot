@@ -1257,3 +1257,48 @@ migrates, during which questions get a maintenance reply rather than an error.
 - *Refusing every question with an error while migrating.* An error reads as a fault;
   the maintenance reply says what is happening and how to ask again.
 
+
+## D33. Per-run usage records
+
+*Decided 2026-10-18.*
+
+Every run of the built-in pipeline leaves one `judge_runs` row, whatever its outcome or
+audience, with one `judge_run_charges` row per billed model call or embedding. The
+dashboard and the admin surfaces read cost, models and outcomes from them.
+
+- **An explicit tally per run.** `judge_core::Tally` is made by `judge_bot::run::run`
+  and passed to every port that can spend: `Extractor`, `Retriever`, `Synthesizer`,
+  `Embedder` and `CallStore::persist`. `ChatModel::complete` takes a `Bill` (a tally
+  and a `Stage`), so a model call cannot be made without saying whose it is. `Metered`
+  and `MeteredEmbedder` add the charge when they settle with the shared `SpendMeter`,
+  so the cap is unchanged. Rejected: the shared meter's total before and after a run,
+  which concurrent runs bleed into, and task-local state, which a spawned task or a
+  forgotten scope loses without a compile error.
+- **A missing usage is a flagged worst case.** A response that reports no usage was
+  still billed. The cap keeps the reservation it took, and the charge records that
+  amount as `Cost::WorstCase` (`cost_estimated`), with no tokens. A sum with an
+  estimate in it is itself an estimate. The run's figure then matches what the cap
+  counted and still adds up. Rejected: NULL, which turns every total it touches
+  unknown, and 0, which under-counts. A chat response with no usage, all-zero usage
+  from a paid model, or a 2xx body nothing could be read from used to settle at 0
+  against the cap. Each now keeps the reservation, as an embedding already did.
+- **The stage is named by the caller.** Extraction bills `extraction`. The synthesis
+  typestate bills `tool_round` for the request carrying the `lookup_rules` result and
+  `synthesis` for every other request, so "the tool round ran" is a fact about billed
+  requests. The model is the one the response named, which differs from the configured
+  one under refusal fallbacks.
+- **The run outlives its call.** A run links its call or failed call with `ON DELETE
+  SET NULL`, so retention and the failed-call bound leave spend and outcome figures
+  intact. A spend-cap refusal marks the tally, so the outcome is `at_cap` rather than
+  `upstream`.
+- **One flow for every interface.** Discord, the HTTP API and the agent toolbox's
+  `judge` call `run::run`, which judges, stores the call or the failure, and records
+  the run. The run is a task of its own holding the caller's judge slot, so a request
+  that goes away (a closed tab, a cancelled MCP call) still leaves its paid-for answer
+  stored and its run recorded, and still counts against `JUDGE_CONCURRENCY`. The record
+  is written after the result is handed back, so it never delays a reply. `judge_traced` returns the context the answer was judged from, lookup round
+  included, so persisting no longer needs a retriever decorator keyed by question
+  text.
+- **Not recorded.** An agent-driven session has no run row: its model is the agent, and
+  its steps span processes. Ingest, search and eval runs pass their own tallies and
+  read or drop them.

@@ -31,7 +31,7 @@ use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 use async_trait::async_trait;
 use judge_core::{
     Card, CardId, Citation, Context, EmptyVerdict, JudgeError, Question, RejectedAttempt,
-    Rejection, Retriever, RuleChunk, RuleId, Synthesizer, ToolMisuse, Unvalidated, Verdict,
+    Rejection, Retriever, RuleChunk, RuleId, Synthesizer, Tally, ToolMisuse, Unvalidated, Verdict,
 };
 use judge_llm::{
     ChatModel, Effort, OutputSchema, SendOutcome, Synth, SynthConfig, TextBlock, Truncated,
@@ -243,6 +243,7 @@ impl LlmSynthesizer {
         ctx: &mut Context,
         rejected: Option<&RejectedAttempt>,
         effort: Effort,
+        tally: &Tally,
     ) -> Result<Verdict<Unvalidated>, JudgeError> {
         let caps = self.model.capabilities();
         let fallbacks = if caps.refusal_fallbacks {
@@ -262,6 +263,7 @@ impl LlmSynthesizer {
         if !round_unspent(ctx, rejected) {
             return Synth::new_final(
                 Arc::clone(&self.model),
+                tally,
                 &cfg,
                 self.system_prompt.clone(),
                 user,
@@ -271,6 +273,7 @@ impl LlmSynthesizer {
         }
         match Synth::new(
             Arc::clone(&self.model),
+            tally,
             &cfg,
             self.system_prompt.clone(),
             user,
@@ -303,11 +306,14 @@ impl Synthesizer for LlmSynthesizer {
         q: &Question,
         ctx: &mut Context,
         rejected: Option<&RejectedAttempt>,
+        tally: &Tally,
     ) -> Result<Verdict<Unvalidated>, JudgeError> {
         if let Some(Rejection::Uncited(u)) = rejected.map(RejectedAttempt::rejection) {
             self.fetch_uncited(u, ctx).await;
         }
-        let first = self.converse(q, ctx, rejected, self.cfg.effort).await;
+        let first = self
+            .converse(q, ctx, rejected, self.cfg.effort, tally)
+            .await;
         let truncated = match (&first, self.cfg.effort.truncation_rerun()) {
             (Err(JudgeError::Upstream(e)), Some(lower)) => e
                 .downcast_ref::<Truncated>()
@@ -322,7 +328,7 @@ impl Synthesizer for LlmSynthesizer {
                     effort = ?lower,
                     "synthesis truncated; retrying at a lower effort"
                 );
-                self.converse(q, ctx, rejected, lower).await?
+                self.converse(q, ctx, rejected, lower, tally).await?
             }
             None => first?,
         };
@@ -1560,6 +1566,7 @@ mod tests {
             _q: &Question,
             _c: &[Card],
             _e: &Extraction,
+            _tally: &judge_core::Tally,
         ) -> Result<Context, JudgeError> {
             Err(anyhow::anyhow!("not used").into())
         }
@@ -1715,7 +1722,9 @@ mod tests {
             ..Context::default()
         };
 
-        let v = synth.answer(&q(), &mut ctx, None).await?;
+        let v = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await?;
         assert_eq!(v.confidence(), Confidence::High);
         assert!(
             ctx.rule(&rid("613.7")?).is_some(),
@@ -1787,7 +1796,14 @@ mod tests {
             id: rid("613.7")?,
             quote: judge_core::Quote::try_new("not there")?,
         });
-        let v2 = synth.answer(&q(), &mut ctx, Some(&attempt(bad))).await?;
+        let v2 = synth
+            .answer(
+                &q(),
+                &mut ctx,
+                Some(&attempt(bad)),
+                &judge_core::Tally::new(),
+            )
+            .await?;
         assert!(v2.validate(&ctx, AnswerableSource::Cr).is_ok());
         let reqs = bodies(&server).await?;
         assert_eq!(reqs.len(), 3);
@@ -1834,7 +1850,12 @@ mod tests {
         let uncited =
             Rejection::Uncited(judge_core::UncitedRules::new(NonEmpty::new(rid("613.7")?)));
         let v = synth
-            .answer(&q(), &mut ctx, Some(&attempt(uncited)))
+            .answer(
+                &q(),
+                &mut ctx,
+                Some(&attempt(uncited)),
+                &judge_core::Tally::new(),
+            )
             .await?;
         assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
         assert_eq!(ctx.tool_round, vec![rid("613.7")?]);
@@ -1966,7 +1987,9 @@ mod tests {
             ..Context::default()
         };
 
-        let v = synth.answer(&q(), &mut ctx, None).await?;
+        let v = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await?;
         assert_eq!(v.confidence(), Confidence::High);
         assert!(
             ctx.rule(&rid("613.7")?).is_some(),
@@ -2052,7 +2075,14 @@ mod tests {
             id: rid("613.7")?,
             quote: judge_core::Quote::try_new("not there")?,
         });
-        let v2 = synth.answer(&q(), &mut ctx, Some(&attempt(bad))).await?;
+        let v2 = synth
+            .answer(
+                &q(),
+                &mut ctx,
+                Some(&attempt(bad)),
+                &judge_core::Tally::new(),
+            )
+            .await?;
         assert!(v2.validate(&ctx, AnswerableSource::Cr).is_ok());
         let reqs = bodies(&server).await?;
         let third = reqs.get(2).ok_or("no third request")?;
@@ -2098,7 +2128,9 @@ mod tests {
             rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
             ..Context::default()
         };
-        let v = synth.answer(&q(), &mut ctx, None).await?;
+        let v = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await?;
         assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
         let reqs = bodies(&server).await?;
         let first = reqs.first().ok_or("first")?;
@@ -2159,7 +2191,9 @@ mod tests {
             rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
             ..Context::default()
         };
-        let v = synth.answer(&q(), &mut ctx, None).await?;
+        let v = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await?;
         assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
         let reqs = bodies(&server).await?;
         assert_eq!(
@@ -2186,7 +2220,11 @@ mod tests {
                 rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
                 ..Context::default()
             };
-            Ok::<_, Box<dyn std::error::Error>>(synth.answer(&q(), &mut ctx, None).await)
+            Ok::<_, Box<dyn std::error::Error>>(
+                synth
+                    .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+                    .await,
+            )
         };
         let r = one(
             "content_filter",
@@ -2242,7 +2280,9 @@ mod tests {
             ..Context::default()
         };
 
-        let v = synth.answer(&q(), &mut ctx, None).await?;
+        let v = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await?;
         assert!(ctx.rule(&rid("702.19b")?).is_some(), "leaf hydrated");
         assert_eq!(
             retriever
@@ -2318,7 +2358,9 @@ mod tests {
             rules: vec![parent],
             ..Context::default()
         };
-        let v = synth.answer(&q(), &mut ctx, None).await?;
+        let v = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await?;
         assert_eq!(
             retriever
                 .calls
@@ -2370,7 +2412,10 @@ mod tests {
             synth_against(&server, vec![chunk("613.7", None, TIMESTAMP_RULE)?])?;
         let mut ctx = Context::default();
 
-        let Err(JudgeError::ToolMisuse(misuse)) = synth.answer(&q(), &mut ctx, None).await else {
+        let Err(JudgeError::ToolMisuse(misuse)) = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await
+        else {
             return Err("a second call must be a ToolMisuse".into());
         };
         assert_eq!(
@@ -2385,7 +2430,9 @@ mod tests {
         );
 
         let rejected = attempt(Rejection::Tool(misuse));
-        let v = synth.answer(&q(), &mut ctx, Some(&rejected)).await?;
+        let v = synth
+            .answer(&q(), &mut ctx, Some(&rejected), &judge_core::Tally::new())
+            .await?;
         assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
         assert_eq!(
             retriever
@@ -2439,8 +2486,9 @@ mod tests {
             ..Context::default()
         };
 
-        let Err(JudgeError::ToolMisuse(misuse @ ToolMisuse::Unreadable { .. })) =
-            synth.answer(&q(), &mut ctx, None).await
+        let Err(JudgeError::ToolMisuse(misuse @ ToolMisuse::Unreadable { .. })) = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await
         else {
             return Err("an unreadable call must be a ToolMisuse".into());
         };
@@ -2452,7 +2500,9 @@ mod tests {
                 .is_empty()
         );
         let rejected = attempt(Rejection::Tool(misuse));
-        synth.answer(&q(), &mut ctx, Some(&rejected)).await?;
+        synth
+            .answer(&q(), &mut ctx, Some(&rejected), &judge_core::Tally::new())
+            .await?;
         let reqs = bodies(&server).await?;
         let retry = reqs.get(1).ok_or("no retry request")?;
         assert_eq!(at(retry, "/tool_choice/type").as_str(), Some("auto"));
@@ -2483,7 +2533,9 @@ mod tests {
             rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
             ..Context::default()
         };
-        let v = synth.answer(&q(), &mut ctx, None).await?;
+        let v = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await?;
         assert!(
             retriever
                 .calls
@@ -2525,7 +2577,9 @@ mod tests {
             rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
             ..Context::default()
         };
-        let v = synth.answer(&q(), &mut ctx, None).await?;
+        let v = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await?;
         assert!(v.validate(&ctx, AnswerableSource::Cr).is_ok());
         let reqs = bodies(&server).await?;
         assert_eq!(
@@ -2549,7 +2603,9 @@ mod tests {
             .mount(&server)
             .await;
         let (synth, _) = synth_against(&server, vec![])?;
-        let r = synth.answer(&q(), &mut ctx, None).await;
+        let r = synth
+            .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+            .await;
         assert!(
             matches!(r, Err(JudgeError::Upstream(e)) if e.downcast_ref::<Truncated>().is_some())
         );
@@ -2604,7 +2660,9 @@ mod tests {
                 rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
                 ..Context::default()
             };
-            let r = synth.answer(&q(), &mut ctx, None).await;
+            let r = synth
+                .answer(&q(), &mut ctx, None, &judge_core::Tally::new())
+                .await;
             match rerun {
                 Some(lower) => {
                     assert!(r.is_ok(), "{r:?}");

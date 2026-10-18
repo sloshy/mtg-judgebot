@@ -343,9 +343,11 @@ pub async fn grade_rows(
         else {
             continue;
         };
-        let usd0 = meter.spent_usd();
-        let result = model.complete(&req).await;
-        let usd = meter.spent_usd() - usd0;
+        let tally = judge_core::Tally::new();
+        let result = model
+            .complete(&req, &tally.bill(judge_core::Stage::Synthesis))
+            .await;
+        let usd = tally.cost().usd();
         let graded = match result {
             Ok(resp) => parse(&resp, model.provider(), usd, &q.expected_answer),
             Err(LlmError::SpendCapExceeded { .. }) => {
@@ -627,12 +629,12 @@ mod tests {
             text: vec![text.to_owned()],
             tool_calls: vec![],
             stop,
-            usage: Usage {
+            usage: Some(Usage {
                 input: 1000,
                 output: 200,
                 cache_read: 0,
                 cache_write: 0,
-            },
+            }),
             model: "claude-opus-5-5".to_owned(),
             assistant: AssistantTurn {
                 backend: "fake",

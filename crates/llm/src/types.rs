@@ -7,6 +7,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings};
 use serde::Serialize;
 use serde_json::Value;
 
+use judge_core::Bill;
+
 use crate::LlmError;
 
 /// One non-streaming chat request.
@@ -215,8 +217,10 @@ pub struct ChatResponse {
     pub tool_calls: Vec<ToolCall>,
     /// Why generation stopped.
     pub stop: Stop,
-    /// Token accounting.
-    pub usage: Usage,
+    /// Token accounting, `None` when the body reported none (some
+    /// OpenAI-compatible servers): billed at an unknown amount, so the spend
+    /// cap keeps its worst case.
+    pub usage: Option<Usage>,
     /// The model that answered, as billed (may differ from the one asked for
     /// under fallbacks).
     pub model: String,
@@ -344,8 +348,9 @@ pub trait Backend: Send + Sync {
 /// types, not a discipline at the composition root.
 #[async_trait]
 pub trait ChatModel: sealed::Sealed + Send + Sync {
-    /// One non-streaming round trip behind the spend cap: reserve, send, settle.
-    async fn complete(&self, req: &ChatRequest) -> Result<ChatResponse, LlmError>;
+    /// One non-streaming round trip behind the spend cap: reserve, send,
+    /// settle, and add the charge to the run `bill` names.
+    async fn complete(&self, req: &ChatRequest, bill: &Bill) -> Result<ChatResponse, LlmError>;
     /// What the backend can enforce server-side.
     fn capabilities(&self) -> Capabilities;
     /// The provider the price table is keyed by (`"anthropic"`, …).
@@ -384,7 +389,7 @@ mod tests {
             text: vec!["a".into(), "b".into()],
             tool_calls: vec![],
             stop: Stop::EndTurn,
-            usage: Usage::default(),
+            usage: Some(Usage::default()),
             model: "m".into(),
             assistant: AssistantTurn {
                 backend: "test",

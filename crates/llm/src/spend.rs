@@ -48,6 +48,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use judge_core::{Bill, Cost, Tokens};
 
 use crate::{
     Backend, Capabilities, ChatModel, ChatRequest, ChatResponse, LlmError, Usage, types::sealed,
@@ -623,15 +624,19 @@ impl<B: Backend> Metered<B> {
         &self.inner
     }
 
-    /// Reserve the worst case of `req`, or nothing for a free model.
-    fn reserve(&self, req: &ChatRequest) -> Result<Option<ChatReservation>, LlmError> {
+    /// Reserve the worst case of `req`, or nothing for a free model. A
+    /// refusal is noted on `bill`.
+    fn reserve(&self, req: &ChatRequest, bill: &Bill) -> Result<Option<ChatReservation>, LlmError> {
         let (rate, from_table) = match self.price {
             Price::Free => return Ok(None),
             Price::Table(rate) => (rate, true),
             Price::PerToken(pricing) => (Rate::flat(pricing), false),
         };
         let micro = estimate_micro(req, &rate);
-        self.meter.0.reserve(micro, &self.meter.0.refusals)?;
+        self.meter
+            .0
+            .reserve(micro, &self.meter.0.refusals)
+            .inspect_err(|_| bill.cap_refused())?;
         Ok(Some(ChatReservation {
             rate,
             from_table,
@@ -639,31 +644,60 @@ impl<B: Backend> Metered<B> {
         }))
     }
 
-    /// Replace `reserved` by the real cost of a billed response in the shared counters and log it.
-    fn record(&self, reserved: Option<ChatReservation>, model: &str, usage: &Usage) {
-        let usd = reserved.map_or(0.0, |r| {
-            // Only a table price is re-read for the model the response names;
-            // an operator's rate is what the operator pays, whatever the server
-            // called the model.
-            let rate = if r.from_table {
-                pricing_for(self.inner.provider(), model).unwrap_or(r.rate)
-            } else {
-                r.rate
-            };
-            let usd = rate.usd(usage);
-            self.meter.0.settle(r.micro, to_micro(usd));
-            usd
+    /// Replace `reserved` by the real cost of a billed response in the
+    /// shared counters, add it to `bill`, and log it. A response that
+    /// reported no `usage` (or all zeros, for a paid model) keeps the whole
+    /// reservation on the meter, and is charged at it as a
+    /// [`Cost::WorstCase`], with no tokens.
+    fn record(
+        &self,
+        reserved: Option<ChatReservation>,
+        model: &str,
+        usage: Option<&Usage>,
+        bill: &Bill,
+    ) {
+        // A count of nothing on a paid response is not a measurement: a server
+        // that fills `usage` with zeros is billed as one that leaves it out.
+        let usage = usage.filter(|u| reserved.is_none() || **u != Usage::default());
+        let cost = match (reserved, usage) {
+            (None, _) => Cost::ZERO,
+            (Some(r), Some(usage)) => {
+                // Only a table price is re-read for the model the response
+                // names; an operator's rate is what the operator pays,
+                // whatever the server called the model.
+                let rate = if r.from_table {
+                    pricing_for(self.inner.provider(), model).unwrap_or(r.rate)
+                } else {
+                    r.rate
+                };
+                let usd = rate.usd(usage);
+                self.meter.0.settle(r.micro, to_micro(usd));
+                Cost::Billed(usd)
+            }
+            // Billed at an unknown amount: the worst case stays spent.
+            (Some(r), None) => Cost::WorstCase(from_micro(r.micro)),
+        };
+        let tokens = usage.map(|u| Tokens {
+            input: u.input,
+            output: u.output,
+            cache_read: u.cache_read,
+            cache_write: u.cache_write,
         });
+        bill.charge(self.inner.provider(), model, tokens, cost);
         let total = self.meter.0.micro_usd.load(Ordering::Relaxed);
         let calls = self.meter.0.calls.fetch_add(1, Ordering::Relaxed) + 1;
+        let usage = usage.copied().unwrap_or_default();
         tracing::info!(
             provider = self.inner.provider(),
             model,
+            stage = bill.stage().id(),
             input_tokens = usage.input,
             output_tokens = usage.output,
             cache_read_tokens = usage.cache_read,
             cache_write_tokens = usage.cache_write,
-            usd = format_args!("{usd:.4}"),
+            usage_reported = tokens.is_some(),
+            usd = format_args!("{:.4}", cost.usd()),
+            worst_case = cost.is_estimate(),
             cumulative_usd = format_args!("{:.4}", from_micro(total)),
             calls,
             "llm call"
@@ -685,11 +719,11 @@ impl<B: Backend> sealed::Sealed for Metered<B> {}
 
 #[async_trait]
 impl<B: Backend> ChatModel for Metered<B> {
-    async fn complete(&self, req: &ChatRequest) -> Result<ChatResponse, LlmError> {
-        let reserved = self.reserve(req)?;
+    async fn complete(&self, req: &ChatRequest, bill: &Bill) -> Result<ChatResponse, LlmError> {
+        let reserved = self.reserve(req, bill)?;
         match self.inner.complete(req).await {
             Ok(resp) => {
-                self.record(reserved, &resp.model, &resp.usage);
+                self.record(reserved, &resp.model, resp.usage.as_ref(), bill);
                 Ok(resp)
             }
             // A body that was billed but did not decode still counts; anything else frees the reservation.
@@ -703,11 +737,24 @@ impl<B: Backend> ChatModel for Metered<B> {
                         .model
                         .as_deref()
                         .unwrap_or_else(|| self.inner.model()),
-                    &billed.usage,
+                    Some(&billed.usage),
+                    bill,
                 );
                 Err(LlmError::Decode {
                     source,
                     billed: Some(billed),
+                })
+            }
+            // A 2xx body neither a response nor a usage could be read from: the
+            // provider billed it at an amount nobody knows, so the worst case stays.
+            Err(LlmError::Decode {
+                source,
+                billed: None,
+            }) => {
+                self.record(reserved, self.inner.model(), None, bill);
+                Err(LlmError::Decode {
+                    source,
+                    billed: None,
                 })
             }
             Err(err) => {
@@ -791,6 +838,11 @@ mod tests {
     use crate::{AssistantTurn, Billed, Stop, StructuredOutput, ToolChoice};
     use std::sync::Mutex;
 
+    /// A bill for a run nobody reads.
+    fn bill() -> Bill {
+        judge_core::Tally::new().bill(judge_core::Stage::Synthesis)
+    }
+
     /// Answers with a scripted outcome and remembers nothing else.
     struct Stub {
         provider: &'static str,
@@ -802,12 +854,12 @@ mod tests {
             text: vec!["hi".into()],
             tool_calls: vec![],
             stop: Stop::EndTurn,
-            usage: Usage {
+            usage: Some(Usage {
                 input,
                 output,
                 cache_read,
                 cache_write,
-            },
+            }),
             model: "claude-opus-5-5".into(),
             assistant: AssistantTurn {
                 backend: "stub",
@@ -935,6 +987,119 @@ mod tests {
         assert_eq!(pricing_for("somewhere-else", "claude-opus-5-5"), None);
     }
 
+    /// Each settled call is one charge on the run's tally, under the stage
+    /// the caller named; an unreported usage is an unknown charge that keeps
+    /// the reservation on the meter; a cap refusal marks the tally.
+    #[tokio::test]
+    async fn every_call_is_charged_to_the_run_it_names() -> Result<(), LlmError> {
+        use judge_core::{Cost, Stage, Tally, Tokens};
+        let mut unreported = reply(0, 0, 0, 0);
+        unreported.usage = None;
+        let meter = SpendMeter::new().with_max_spend_usd(20.0)?;
+        let m = Metered::new(
+            stub(vec![Ok(reply(1_000_000, 200_000, 0, 0)), Ok(unreported)]),
+            meter.clone(),
+        )?;
+        let (run, other) = (Tally::new(), Tally::new());
+        m.complete(&req(64), &run.bill(Stage::Extraction)).await?;
+        let charges = run.charges();
+        assert_eq!(charges.len(), 1);
+        let first = charges
+            .first()
+            .ok_or(LlmError::Request("no charge".into()))?;
+        assert_eq!(first.stage, Stage::Extraction);
+        assert_eq!(
+            (first.provider.as_str(), first.model.as_str()),
+            (ANTHROPIC, "claude-opus-5-5")
+        );
+        assert_eq!(
+            first.tokens,
+            Some(Tokens {
+                input: 1_000_000,
+                output: 200_000,
+                cache_read: 0,
+                cache_write: 0
+            })
+        );
+        assert!(
+            matches!(run.cost(), Cost::Billed(usd) if (usd - 8.0).abs() < 1e-6),
+            "{:?}",
+            run.cost()
+        );
+        let before = meter.spent_usd();
+        m.complete(&req(64), &other.bill(Stage::ToolRound)).await?;
+        assert_eq!(
+            run.charges().len(),
+            1,
+            "another run's call is not this run's"
+        );
+        assert_eq!(other.count(Stage::ToolRound), 1);
+        let kept = meter.spent_usd() - before;
+        assert!(kept > 0.0, "the reservation stays spent");
+        assert!(
+            matches!(other.cost(), Cost::WorstCase(usd) if (usd - kept).abs() < 1e-6),
+            "no usage: charged at the worst case the meter kept, flagged; {:?}",
+            other.cost()
+        );
+        assert!(!run.was_capped());
+        let capped = Tally::new();
+        let refused = m
+            .complete(&req(16_000_000), &capped.bill(Stage::Synthesis))
+            .await;
+        assert!(
+            matches!(refused, Err(LlmError::SpendCapExceeded { .. })),
+            "{refused:?}"
+        );
+        assert!(capped.was_capped() && capped.charges().is_empty());
+        // All zeros from a paid model, and a 2xx body that read as nothing at
+        // all, are worst cases too.
+        let undecodable = || {
+            serde_json::from_str::<u8>("x").map_or_else(
+                |source| LlmError::Decode {
+                    source,
+                    billed: None,
+                },
+                |_| LlmError::Request("parsed".into()),
+            )
+        };
+        let m = Metered::new(
+            stub(vec![Ok(reply(0, 0, 0, 0)), Err(undecodable())]),
+            SpendMeter::new(),
+        )?;
+        let zeros = Tally::new();
+        m.complete(&req(64), &zeros.bill(Stage::Synthesis)).await?;
+        assert!(
+            zeros.cost().is_estimate() && zeros.cost().usd() > 0.0,
+            "{:?}",
+            zeros.cost()
+        );
+        let garbled = Tally::new();
+        assert!(
+            m.complete(&req(64), &garbled.bill(Stage::Synthesis))
+                .await
+                .is_err()
+        );
+        assert!(garbled.cost().is_estimate() && garbled.cost().usd() > 0.0);
+        assert!(
+            (m.meter().spent_usd() - zeros.cost().usd() - garbled.cost().usd()).abs() < 1e-9,
+            "both reservations stay on the meter"
+        );
+        let free = Metered::priced(
+            stub(vec![Ok(reply(1_000_000, 200_000, 0, 0))]),
+            SpendMeter::new(),
+            Price::Free,
+        );
+        let tally = Tally::new();
+        free.complete(&req(64), &tally.bill(Stage::Synthesis))
+            .await?;
+        assert_eq!(
+            tally.cost(),
+            Cost::ZERO,
+            "a free model costs a known nothing"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn usage_accumulates_and_cap_blocks_without_sending() -> Result<(), LlmError> {
         // 1M input + 200k output = $4 + $4 = $8 per call.
@@ -943,20 +1108,20 @@ mod tests {
             .collect();
         let meter = SpendMeter::new().with_max_spend_usd(15.0)?;
         let m = Metered::new(stub(replies), meter.clone())?;
-        m.complete(&req(64)).await?;
+        m.complete(&req(64), &bill()).await?;
         assert!(
             (meter.spent_usd() - 8.0).abs() < 1e-6,
             "{}",
             meter.spent_usd()
         );
-        m.complete(&req(64)).await?;
+        m.complete(&req(64), &bill()).await?;
         assert!(
             (m.meter().spent_usd() - 16.0).abs() < 1e-6,
             "{}",
             meter.spent_usd()
         );
         assert_eq!(meter.calls(), 2);
-        let third = m.complete(&req(64)).await;
+        let third = m.complete(&req(64), &bill()).await;
         assert!(
             matches!(third, Err(LlmError::SpendCapExceeded { spent, cap }) if (spent - 16.0).abs() < 1e-6 && (cap - 15.0).abs() < 1e-6),
             "{third:?}"
@@ -983,7 +1148,7 @@ mod tests {
         };
         let m = Metered::new(stub(vec![Err(err)]), SpendMeter::new())?;
         assert!(matches!(
-            m.complete(&req(64)).await,
+            m.complete(&req(64), &bill()).await,
             Err(LlmError::Api { .. })
         ));
         assert_eq!(m.meter().calls(), 0);
@@ -1009,7 +1174,7 @@ mod tests {
             SpendMeter::new(),
         )?;
         assert!(matches!(
-            m.complete(&req(64)).await,
+            m.complete(&req(64), &bill()).await,
             Err(LlmError::Decode {
                 billed: Some(_),
                 ..
@@ -1032,11 +1197,11 @@ mod tests {
             SpendMeter::new().with_max_spend_usd(0.10)?,
         )?;
         assert!(matches!(
-            m.complete(&req(16_000)).await,
+            m.complete(&req(16_000), &bill()).await,
             Err(LlmError::SpendCapExceeded { .. })
         ));
         // The small request fits, and afterwards the reservation is gone.
-        m.complete(&req(64)).await?;
+        m.complete(&req(64), &bill()).await?;
         assert!(m.meter().spent_usd() < 0.001, "{}", m.meter().spent_usd());
         assert_eq!(m.meter().calls(), 1);
         Ok(())
@@ -1146,7 +1311,7 @@ mod tests {
             meter.clone(),
             Price::PerToken(rate),
         );
-        m.complete(&req(64)).await?;
+        m.complete(&req(64), &bill()).await?;
         assert!(
             (meter.spent_usd() - 2.0).abs() < 1e-6,
             "{}",
@@ -1165,7 +1330,7 @@ mod tests {
             meter.clone(),
             Price::PerToken(dear),
         );
-        m.complete(&req(64)).await?;
+        m.complete(&req(64), &bill()).await?;
         assert!(
             (meter.spent_usd() - 100.0).abs() < 1e-6,
             "{}",
@@ -1178,7 +1343,7 @@ mod tests {
             meter.clone(),
             Price::Table(Rate::flat(rate)),
         );
-        m.complete(&req(64)).await?;
+        m.complete(&req(64), &bill()).await?;
         assert!(
             (meter.spent_usd() - 8.0).abs() < 1e-6,
             "{}",
@@ -1195,9 +1360,9 @@ mod tests {
             stub(vec![Ok(reply(1_000_000, 200_000, 0, 0))]),
             meter.clone(),
         )?;
-        paid.complete(&req(64)).await?;
+        paid.complete(&req(64), &bill()).await?;
         assert!(matches!(
-            paid.complete(&req(64)).await,
+            paid.complete(&req(64), &bill()).await,
             Err(LlmError::SpendCapExceeded { .. })
         ));
         // ...and the free one still answers, counted but not billed, even for a huge output.
@@ -1209,7 +1374,7 @@ mod tests {
             meter.clone(),
             Price::Free,
         );
-        free.complete(&req(16_000)).await?;
+        free.complete(&req(16_000), &bill()).await?;
         assert!(
             (meter.spent_usd() - 8.0).abs() < 1e-6,
             "{}",
@@ -1226,7 +1391,7 @@ mod tests {
             Price::Free,
         );
         assert!(matches!(
-            failing.complete(&req(64)).await,
+            failing.complete(&req(64), &bill()).await,
             Err(LlmError::Request(_))
         ));
         assert_eq!(meter.calls(), 2);

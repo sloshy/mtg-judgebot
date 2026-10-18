@@ -375,7 +375,9 @@ mod tests {
         );
         assert_eq!(e.dimensions(), 3);
         // `InputKind` is ignored: both kinds send the same body.
-        let docs = e.embed(&["a", "b"], InputKind::Document).await?;
+        let docs = e
+            .embed(&["a", "b"], InputKind::Document, &judge_core::Tally::new())
+            .await?;
         assert_eq!(docs, vec![vec_of(3, 1.0), vec_of(3, 2.0)]);
         Ok(())
     }
@@ -410,7 +412,8 @@ mod tests {
             false,
         )?);
         assert_eq!(
-            e.embed(&["q"], InputKind::Query).await?,
+            e.embed(&["q"], InputKind::Query, &judge_core::Tally::new())
+                .await?,
             vec![vec_of(2, 0.5)]
         );
         Ok(())
@@ -439,7 +442,11 @@ mod tests {
             1,
             true,
         )?);
-        assert_eq!(e.embed(&["q"], InputKind::Query).await?, vec![vec![1.0]]);
+        assert_eq!(
+            e.embed(&["q"], InputKind::Query, &judge_core::Tally::new())
+                .await?,
+            vec![vec![1.0]]
+        );
         Ok(())
     }
 
@@ -476,14 +483,14 @@ mod tests {
             true,
         )?);
         let err = e
-            .embed(&["a", "b"], InputKind::Document)
+            .embed(&["a", "b"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
             .map(|e| e.to_string())
             .unwrap_or_default();
         assert!(err.contains("returned 1 vectors for 2 texts"), "{err}");
         let err = e
-            .embed(&["a"], InputKind::Document)
+            .embed(&["a"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
             .map(|e| e.to_string())
@@ -493,7 +500,7 @@ mod tests {
             "{err}"
         );
         let err = e
-            .embed(&[], InputKind::Document)
+            .embed(&[], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
             .map(|e| e.to_string())
@@ -521,7 +528,7 @@ mod tests {
             true,
         )?);
         let err = e
-            .embed(&["a", "b"], InputKind::Document)
+            .embed(&["a", "b"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
             .map(|e| e.to_string())
@@ -547,7 +554,7 @@ mod tests {
             true,
         )?);
         let err = e
-            .embed(&["a"], InputKind::Document)
+            .embed(&["a"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
             .map(|e| e.to_string())
@@ -584,7 +591,8 @@ mod tests {
             true,
         )?);
         assert_eq!(
-            e.embed(&["a"], InputKind::Document).await?,
+            e.embed(&["a"], InputKind::Document, &judge_core::Tally::new())
+                .await?,
             vec![vec![1.0, 2.0]]
         );
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 2);
@@ -608,7 +616,7 @@ mod tests {
             true,
         )?);
         let err = e
-            .embed(&["a"], InputKind::Document)
+            .embed(&["a"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
             .map(|e| e.to_string())
@@ -643,7 +651,8 @@ mod tests {
         assert_eq!(usage(br#"{"data": []}"#), EmbedUsage::Unreported);
         let meter = SpendMeter::new().with_max_spend_usd(1.0)?;
         let e = MeteredEmbedder::priced(backend, meter.clone(), EmbedPrice::PerToken(0.10));
-        e.embed(&["q"], InputKind::Query).await?;
+        e.embed(&["q"], InputKind::Query, &judge_core::Tally::new())
+            .await?;
         assert!(
             (meter.spent_usd() - 0.05).abs() < 1e-9,
             "{}",
@@ -651,7 +660,10 @@ mod tests {
         );
         // The rest of the cap is spent elsewhere: the next request is refused unsent.
         meter.set_adjustment_micro(950_000);
-        let err = e.embed(&["q"], InputKind::Query).await.err();
+        let err = e
+            .embed(&["q"], InputKind::Query, &judge_core::Tally::new())
+            .await
+            .err();
         assert!(err.as_ref().is_some_and(is_spend_cap), "{err:?}");
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 1);
         Ok(())
@@ -671,7 +683,8 @@ mod tests {
             OpenAiEmbedder::new(&format!("{}/v1", server.uri()), Auth::None, "m", 1, true)?;
         let meter = SpendMeter::new();
         let e = MeteredEmbedder::priced(backend, meter.clone(), EmbedPrice::PerToken(1.0));
-        e.embed(&["abcd"], InputKind::Document).await?;
+        e.embed(&["abcd"], InputKind::Document, &judge_core::Tally::new())
+            .await?;
         let reserved = crate::metered::usd_for(crate::worst_case_tokens(&["abcd"]), 1.0);
         assert!(
             (meter.spent_usd() - reserved).abs() < 1e-6,

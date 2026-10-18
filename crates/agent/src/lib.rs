@@ -46,12 +46,10 @@ use judge_bot::{
     DepsConfig, Models,
     config::Config,
     db::{PgCallStore, PgLibrary, PgResolver, PgRetriever, PgSessionStore, Vectors},
-    discord::capture::CapturingRetriever,
     session::{PersistCall, Sessions},
     synth::Harness,
 };
 use judge_core::{CallStore, Deps, Operator, Origin, Resolver, Retriever, SourceOffer, Visibility};
-use judge_llm::SpendMeter;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
@@ -116,9 +114,6 @@ pub enum Client {
 /// The built-in pipeline, present when models are configured.
 pub struct Pipeline {
     deps: Deps,
-    capture: Arc<CapturingRetriever>,
-    /// The meter the pipeline's models bill to.
-    meter: SpendMeter,
 }
 
 /// How many `judge` runs one toolbox allows per window: the most that can be spent through
@@ -233,17 +228,8 @@ impl Toolbox {
         )
         .with_history_len(opts.history_len);
         let calls: Arc<dyn CallStore> = calls;
-        let pipeline = opts.models.map(|models| {
-            let meter = models.meter().clone();
-            let mut deps =
-                judge_bot::build_deps_with(pool, &models, opts.vectors, &opts.deps_config);
-            let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
-            deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
-            Pipeline {
-                deps,
-                capture,
-                meter,
-            }
+        let pipeline = opts.models.map(|models| Pipeline {
+            deps: judge_bot::build_deps_with(pool, &models, opts.vectors, &opts.deps_config),
         });
         Self {
             db: gated::Db::new(gated::Parts {

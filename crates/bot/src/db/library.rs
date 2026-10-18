@@ -101,8 +101,13 @@ impl PgLibrary {
         Ok(out)
     }
 
+    /// A search is not a judge run, so its embedding's charge is recorded
+    /// nowhere (the spend cap still counts it).
     async fn embed(&self, text: &str) -> Option<Vector> {
-        self.vectors.as_ref()?.embed(text, InputKind::Query).await
+        self.vectors
+            .as_ref()?
+            .embed(text, InputKind::Query, &judge_core::Tally::new())
+            .await
     }
 
     /// The card with this oracle id.

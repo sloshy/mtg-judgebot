@@ -227,7 +227,12 @@ mod tests {
         let e = MeteredEmbedder::new(backend, meter.clone())?;
         assert_eq!(e.price(), EmbedPrice::Table(0.06));
         assert_eq!(
-            e.embed(&["Sample text"], InputKind::Query).await?,
+            e.embed(
+                &["Sample text"],
+                InputKind::Query,
+                &judge_core::Tally::new()
+            )
+            .await?,
             vec![vec![0.5, 0.5]]
         );
         // 1M tokens of voyage-3.5 is $0.06: the usage, not the byte-count reservation.
@@ -250,7 +255,10 @@ mod tests {
             .await;
         let meter = SpendMeter::new().with_max_spend_usd(0.0)?;
         let e = MeteredEmbedder::new(at(&server)?, meter.clone())?;
-        let err = e.embed(&["q"], InputKind::Query).await.err();
+        let err = e
+            .embed(&["q"], InputKind::Query, &judge_core::Tally::new())
+            .await
+            .err();
         assert!(err.as_ref().is_some_and(is_spend_cap), "{err:?}");
         assert_eq!(server.received_requests().await.map_or(0, |r| r.len()), 0);
         assert_eq!(meter.embedding_calls(), 0);
@@ -270,7 +278,7 @@ mod tests {
         let meter = SpendMeter::new();
         let e = MeteredEmbedder::new(at(&server)?, meter.clone())?;
         let err = e
-            .embed(&["a"], InputKind::Document)
+            .embed(&["a"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
             .map(|e| e.to_string());

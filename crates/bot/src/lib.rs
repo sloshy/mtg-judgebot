@@ -21,6 +21,7 @@ pub mod ingest;
 pub mod jobs;
 pub mod lease;
 pub mod maintenance;
+pub mod run;
 pub mod serving;
 pub mod session;
 pub mod shutdown;

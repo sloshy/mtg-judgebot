@@ -46,7 +46,7 @@ use std::{
     },
 };
 
-use judge_core::{InputKind, JudgeError};
+use judge_core::{InputKind, JudgeError, Tally};
 use judge_embed::{Provider, Space, WithSpace};
 use pgvector::Vector;
 use sqlx::{PgConnection, PgPool};
@@ -390,12 +390,12 @@ impl Vectors {
 
     /// Embed one text, or `None` (logged) when the space check fails, the
     /// embedder fails, or it returns something other than one vector of the
-    /// space's width.
-    pub async fn embed(&self, text: &str, kind: InputKind) -> Option<Vector> {
+    /// space's width. The request is billed to `tally`.
+    pub async fn embed(&self, text: &str, kind: InputKind, tally: &Tally) -> Option<Vector> {
         if !self.enabled().await {
             return None;
         }
-        let vectors = match self.embedder.embed(&[text], kind).await {
+        let vectors = match self.embedder.embed(&[text], kind, tally).await {
             Ok(v) => {
                 if self.capped.swap(false, Ordering::Relaxed) {
                     tracing::info!("the spend cap has room again; embedding resumed");

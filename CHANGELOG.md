@@ -19,6 +19,16 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Every judge run is recorded with its cost.** A `/judge`, a web question, an MCP
+  `judge` and a `judge-cli judge` each leave a `judge_runs` row, whatever the outcome
+  (answered, ambiguous, not found, out of scope, refused, at the spend cap, failed),
+  private ones included, with one `judge_run_charges` row per model call and embedding:
+  the stage, the model the response named, its tokens and its cost. Each run's cost is
+  its own, not a difference of the process's running total, so concurrent questions no
+  longer bleed into each other's `usd=` log figure. A response that reports no usage is
+  recorded at the worst case the spend cap kept for it, flagged as an estimate. No text
+  or user id is stored there.
+
 - **`judge-cli` and `judge-mcp` check the instance's release.** Each migration records
   the release that ran it (table `instance_release`). Against a newer release of the
   same major the tools print a note and keep working. Against another major, another
@@ -184,6 +194,17 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   face. None of the built-in aliases is affected.
 
 ### Changed
+
+- **A chat response with no usage counts its worst case against the spend cap.** An
+  OpenAI-compatible server that leaves `usage` out of a paid model's response, fills
+  it with zeros, or sends a 2xx body that cannot be read was counted at $0. It now
+  keeps the reservation taken before the request, as an embedding with no usage
+  already did. A free model is unaffected.
+
+- **A web or MCP question finishes when its caller goes away.** Closing the tab (or
+  cancelling the MCP request) mid-answer used to drop the run, losing the stored call
+  the models had already been paid for. The run now finishes, is stored and recorded,
+  and keeps its judge slot until then.
 
 - **Discord answers a command it cannot run.** A slash command this version does not
   have (Discord can still list a previous release's for a moment after a deploy) gets a

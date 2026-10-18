@@ -251,12 +251,11 @@ fn routes(
     let pool = serving.pool();
     // /api/health answers 503 when Postgres does not: the compose healthcheck
     // and the tunnel's readiness key off it. MCP's `judge` bills to the same
-    // meter as the page, so it is under the same budget.
+    // meter as the page (the process's one), so it is under the same budget.
     let app = Arc::new(
         App::new(
             serving.deps(),
             serving.store(),
-            serving.models().meter().clone(),
             cfg,
             judge.source_offer().clone(),
             operator.clone(),

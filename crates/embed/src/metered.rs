@@ -44,7 +44,7 @@
 use std::fmt;
 
 use async_trait::async_trait;
-use judge_core::{Embedder, InputKind, JudgeError};
+use judge_core::{Cost, Embedder, InputKind, JudgeError, Stage, Tally, Tokens};
 use judge_llm::{LlmError, SpendMeter};
 
 use crate::{Provider, Space, WithSpace, space::sealed};
@@ -264,13 +264,16 @@ impl<B: EmbedBackend> MeteredEmbedder<B> {
         &self.inner
     }
 
-    /// The cost of a billed request, logged; settles `reserved` (the
-    /// reservation and the rate it was taken at) to it.
+    /// The cost of a billed request, logged and charged to `tally`; settles
+    /// `reserved` (the reservation and the rate it was taken at) to it. A
+    /// request that reported no usage keeps the reservation on the meter and
+    /// is charged at it, as a [`Cost::WorstCase`] with no tokens.
     fn record(
         &self,
         reserved: Option<(judge_llm::Reservation, f64)>,
         usage: EmbedUsage,
         texts: usize,
+        tally: &Tally,
     ) {
         // A count of nothing for texts that were sent is not a measurement: a
         // server that fills the field with 0 is billed as one that leaves it out.
@@ -299,6 +302,21 @@ impl<B: EmbedBackend> MeteredEmbedder<B> {
             EmbedUsage::Tokens(t) => Some(t),
             EmbedUsage::Unreported => None,
         };
+        // Free is a known nothing; a paid request with no usage kept its worst case.
+        let charged = match (self.price.per_million(), tokens) {
+            (None, _) => Cost::ZERO,
+            (Some(_), Some(_)) => Cost::Billed(usd),
+            (Some(_), None) => Cost::WorstCase(usd),
+        };
+        tally.bill(Stage::Embedding).charge(
+            &space.provider.to_string(),
+            &space.model,
+            tokens.map(|input| Tokens {
+                input,
+                ..Tokens::default()
+            }),
+            charged,
+        );
         tracing::info!(
             provider = %space.provider,
             model = %space.model,
@@ -315,7 +333,12 @@ impl<B: EmbedBackend> MeteredEmbedder<B> {
 #[async_trait]
 impl<B: EmbedBackend> Embedder for MeteredEmbedder<B> {
     /// Reserve the worst case, send, settle to the reported usage.
-    async fn embed(&self, texts: &[&str], kind: InputKind) -> Result<Vec<Vec<f32>>, JudgeError> {
+    async fn embed(
+        &self,
+        texts: &[&str],
+        kind: InputKind,
+        tally: &Tally,
+    ) -> Result<Vec<Vec<f32>>, JudgeError> {
         let reserved = match self.price.per_million() {
             Some(rate) => Some((
                 self.meter
@@ -327,14 +350,14 @@ impl<B: EmbedBackend> Embedder for MeteredEmbedder<B> {
         };
         match self.inner.embed(texts, kind).await {
             Ok(Embedded { vectors, usage }) => {
-                self.record(reserved, usage, texts.len());
+                self.record(reserved, usage, texts.len(), tally);
                 Ok(vectors)
             }
             Err(EmbedError {
                 error,
                 billed: Some(usage),
             }) => {
-                self.record(reserved, usage, texts.len());
+                self.record(reserved, usage, texts.len(), tally);
                 Err(error)
             }
             // Not billed: the reservation is handed back. (Dropped without
@@ -466,6 +489,57 @@ mod tests {
         ));
     }
 
+    /// A request is one embedding charge on the tally it is given: its
+    /// tokens and cost, a known 0 when free, unknown when unreported. A cap
+    /// refusal is not a refused run (the question answers without vectors).
+    #[tokio::test]
+    async fn each_request_is_charged_to_the_tally_it_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let meter = SpendMeter::new().with_max_spend_usd(1.0)?;
+        let e = MeteredEmbedder::priced(
+            stub(
+                Provider::Voyage,
+                "voyage-3.5",
+                vec![Ok(EmbedUsage::Tokens(500_000)), Ok(EmbedUsage::Unreported)],
+            ),
+            meter.clone(),
+            EmbedPrice::PerToken(1.0),
+        );
+        let tally = Tally::new();
+        e.embed(&["a"], InputKind::Query, &tally).await?;
+        let charges = tally.charges();
+        let first = charges.first().ok_or("no charge")?;
+        assert_eq!(first.stage, Stage::Embedding);
+        assert_eq!(
+            (first.provider.as_str(), first.model.as_str()),
+            ("voyage", "voyage-3.5")
+        );
+        assert_eq!(first.tokens.map(|t| t.input), Some(500_000));
+        assert!(matches!(tally.cost(), Cost::Billed(usd) if (usd - 0.5).abs() < 1e-9));
+        e.embed(&["b"], InputKind::Query, &tally).await?;
+        // "b" is reserved at 1 byte + 16 tokens, $1 per million.
+        let worst = usd_for(worst_case_tokens(&["b"]), 1.0);
+        assert_eq!(tally.charges().len(), 2);
+        assert!(
+            matches!(tally.cost(), Cost::WorstCase(usd) if (usd - 0.5 - worst).abs() < 1e-12),
+            "{:?}",
+            tally.cost()
+        );
+        let refused = Tally::new();
+        let big = "x".repeat(2_000_000);
+        assert!(e.embed(&[&big], InputKind::Query, &refused).await.is_err());
+        assert!(refused.charges().is_empty() && !refused.was_capped());
+        let free = MeteredEmbedder::priced(
+            stub(Provider::OpenAi, "local", vec![Ok(EmbedUsage::Unreported)]),
+            SpendMeter::new(),
+            EmbedPrice::Free,
+        );
+        let tally = Tally::new();
+        free.embed(&["a"], InputKind::Document, &tally).await?;
+        assert_eq!(tally.cost(), Cost::ZERO);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn usage_settles_the_reservation_and_a_capped_meter_sends_nothing()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -480,7 +554,12 @@ mod tests {
             meter.clone(),
             EmbedPrice::PerToken(1.0),
         );
-        assert_eq!(e.embed(&["a", "b"], InputKind::Document).await?.len(), 2);
+        assert_eq!(
+            e.embed(&["a", "b"], InputKind::Document, &judge_core::Tally::new())
+                .await?
+                .len(),
+            2
+        );
         assert!(
             (meter.spent_usd() - 0.5).abs() < 1e-9,
             "{}",
@@ -489,7 +568,10 @@ mod tests {
         assert_eq!(meter.embedding_calls(), 1);
         // A worst case of 600k tokens ($0.60) cannot fit in the $0.50 left: refused unsent.
         let big = "x".repeat(600_000);
-        let err = e.embed(&[&big], InputKind::Document).await.err();
+        let err = e
+            .embed(&[&big], InputKind::Document, &judge_core::Tally::new())
+            .await
+            .err();
         assert!(err.as_ref().is_some_and(is_spend_cap), "{err:?}");
         assert_eq!(e.inner().sent.load(Ordering::SeqCst), 1, "never sent");
         assert_eq!((meter.embedding_refusals(), meter.refusals()), (1, 0));
@@ -519,7 +601,8 @@ mod tests {
             EmbedPrice::PerToken(2.0),
         );
         // 4 bytes + 16 = 20 tokens at $2/M.
-        e.embed(&["abcd"], InputKind::Query).await?;
+        e.embed(&["abcd"], InputKind::Query, &judge_core::Tally::new())
+            .await?;
         let reserved = usd_for(20, 2.0);
         assert!(
             (meter.spent_usd() - reserved).abs() < 1e-6,
@@ -527,11 +610,19 @@ mod tests {
             meter.spent_usd()
         );
         // A failure nobody billed: released, not counted.
-        assert!(e.embed(&["abcd"], InputKind::Query).await.is_err());
+        assert!(
+            e.embed(&["abcd"], InputKind::Query, &judge_core::Tally::new())
+                .await
+                .is_err()
+        );
         assert!((meter.spent_usd() - reserved).abs() < 1e-6);
         assert_eq!(meter.embedding_calls(), 1);
         // A billed 2xx that failed afterwards is paid for at its usage.
-        assert!(e.embed(&["abcd"], InputKind::Query).await.is_err());
+        assert!(
+            e.embed(&["abcd"], InputKind::Query, &judge_core::Tally::new())
+                .await
+                .is_err()
+        );
         assert!(
             (meter.spent_usd() - reserved - 2.0).abs() < 1e-6,
             "{}",
@@ -539,7 +630,8 @@ mod tests {
         );
         assert_eq!(meter.embedding_calls(), 2);
         // Zero tokens for a text that was sent is no measurement: billed at the reservation.
-        e.embed(&["abcd"], InputKind::Query).await?;
+        e.embed(&["abcd"], InputKind::Query, &judge_core::Tally::new())
+            .await?;
         assert!(
             (meter.spent_usd() - 2.0 * reserved - 2.0).abs() < 1e-6,
             "{}",
@@ -575,7 +667,7 @@ mod tests {
         );
         let cancelled = tokio::time::timeout(
             std::time::Duration::from_millis(10),
-            e.embed(&["abcd"], InputKind::Query),
+            e.embed(&["abcd"], InputKind::Query, &judge_core::Tally::new()),
         )
         .await;
         assert!(cancelled.is_err(), "timed out");
@@ -602,7 +694,8 @@ mod tests {
             meter.clone(),
             EmbedPrice::Free,
         );
-        e.embed(&["q"], InputKind::Query).await?;
+        e.embed(&["q"], InputKind::Query, &judge_core::Tally::new())
+            .await?;
         assert_eq!(meter.embedding_calls(), 1);
         assert!(meter.spent_usd().abs() < f64::EPSILON);
         assert_eq!(e.price(), EmbedPrice::Free);

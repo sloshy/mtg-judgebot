@@ -16,7 +16,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   to core.
 - **The user is cost-sensitive on API spend.** Every model call goes through the
   spend-capped `judge_llm::Metered` (`JUDGE_MAX_USD`, default $5), and every embedding
-  through `judge_embed::MeteredEmbedder` on the same meter. `JUDGE_BUDGET_PERIOD`
+  through `judge_embed::MeteredEmbedder` on the same meter. Each run's own cost is a
+  `judge_core::Tally` passed to every port that spends (`ChatModel::complete` takes a
+  `Bill`), recorded in `judge_runs` by `judge_bot::run::run` (D33). `JUDGE_BUDGET_PERIOD`
   (`process` | `day` | `month`) says what the cap covers (D19): `judge_bot::budget` keeps
   the `spend_days` ledger every 10 s and sets the meter's *adjustment*, so every process
   shares one period total that survives restarts. A `judgebot` process has one meter
@@ -66,7 +68,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D32),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D33),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 

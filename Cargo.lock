@@ -1912,7 +1912,6 @@ dependencies = [
  "dotenvy",
  "judge-bot",
  "judge-core",
- "judge-llm",
  "nonempty",
  "rmcp",
  "schemars",

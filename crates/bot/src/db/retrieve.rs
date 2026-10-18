@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use judge_core::{
     CallId, Card, CardId, CardNote, Category, Context, CrVersion, Extraction, GlossaryEntry,
     InputKind, JudgeError, PriorCall, Question, Retriever, RuleChunk, RuleId, Ruling, RulingKey,
+    Tally,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
@@ -66,14 +67,14 @@ impl PgRetriever {
 
     /// Embed the question, or `None` (logged) when no embedder is configured,
     /// its space is not the stored one, or it fails.
-    async fn embed_query(&self, text: &str) -> Option<Vector> {
+    async fn embed_query(&self, text: &str, tally: &Tally) -> Option<Vector> {
         let Some(vectors) = &self.vectors else {
             tracing::warn!(
                 "no embedder configured; skipping the vector search and prior-call similarity"
             );
             return None;
         };
-        vectors.embed(text, InputKind::Query).await
+        vectors.embed(text, InputKind::Query, tally).await
     }
 
     /// Source (a): the rule-level chunks of the subsections curated for each of
@@ -357,10 +358,11 @@ impl Retriever for PgRetriever {
         q: &Question,
         cards: &[Card],
         e: &Extraction,
+        tally: &Tally,
     ) -> Result<Context, JudgeError> {
         let categories: Vec<Category> = e.categories().map(|g| g.category).collect();
         let concepts = e.concepts.join(" ");
-        let embedding = self.embed_query(&q.text).await;
+        let embedding = self.embed_query(&q.text, tally).await;
         let card_ids: Vec<Uuid> = cards.iter().map(|c| c.id.into_inner()).collect();
         let texts: Vec<String> = cards
             .iter()

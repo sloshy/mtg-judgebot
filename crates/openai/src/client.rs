@@ -256,16 +256,21 @@ mod tests {
             cache_write: 0.0,
         };
         let metered = Metered::priced(client, SpendMeter::new(), Price::PerToken(rate));
-        let resp = metered.complete(&req()).await?;
+        let resp = metered
+            .complete(
+                &req(),
+                &judge_core::Tally::new().bill(judge_core::Stage::Synthesis),
+            )
+            .await?;
         assert_eq!(resp.text, ["hi"]);
         assert_eq!(
             resp.usage,
-            judge_llm::Usage {
+            Some(judge_llm::Usage {
                 input: 600,
                 output: 10,
                 cache_read: 400,
                 cache_write: 0
-            }
+            })
         );
         // 600 in at $1 + 10 out at $2 + 400 cached at $0.10, per million.
         let expected = (600.0 + 20.0 + 40.0) / 1_000_000.0;
@@ -376,7 +381,12 @@ mod tests {
         };
         let metered = Metered::priced(client, SpendMeter::new(), Price::PerToken(rate));
         assert!(matches!(
-            metered.complete(&req()).await,
+            metered
+                .complete(
+                    &req(),
+                    &judge_core::Tally::new().bill(judge_core::Stage::Synthesis)
+                )
+                .await,
             Err(LlmError::Decode {
                 billed: Some(_),
                 ..

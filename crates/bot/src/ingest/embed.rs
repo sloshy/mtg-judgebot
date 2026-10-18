@@ -120,10 +120,19 @@ pub async fn run(
     check_space(pool, embedder.space()).await?;
     let mut counts = Vec::with_capacity(TARGETS.len());
     for t in &TARGETS {
-        let n = embed_table(pool, embedder, t)
+        // One table's requests, so its line can say what they cost.
+        let tally = judge_core::Tally::new();
+        let n = embed_table(pool, embedder, t, &tally)
             .await
             .with_context(|| format!("embedding {}", t.name))?;
-        tracing::info!(table = t.name, embedded = n, "ingest embed");
+        let cost = tally.cost();
+        tracing::info!(
+            table = t.name,
+            embedded = n,
+            usd = format_args!("{:.4}", cost.usd()),
+            worst_case = cost.is_estimate(),
+            "ingest embed"
+        );
         counts.push((t.name, n));
     }
     Ok(counts)
@@ -186,7 +195,12 @@ async fn check_space(pool: &PgPool, space: &Space) -> anyhow::Result<()> {
 }
 
 /// Embed `t` until no NULL rows remain; returns the number of rows embedded.
-async fn embed_table(pool: &PgPool, embedder: &dyn WithSpace, t: &Target) -> anyhow::Result<usize> {
+async fn embed_table(
+    pool: &PgPool,
+    embedder: &dyn WithSpace,
+    t: &Target,
+    tally: &judge_core::Tally,
+) -> anyhow::Result<usize> {
     let space = embedder.space();
     let mut total = 0usize;
     loop {
@@ -213,7 +227,7 @@ async fn embed_table(pool: &PgPool, embedder: &dyn WithSpace, t: &Target) -> any
         let batch = fit_chars(&pairs);
         let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
         let vectors = embedder
-            .embed(&texts, InputKind::Document)
+            .embed(&texts, InputKind::Document, tally)
             .await
             .map_err(|e| refused(&e, total))?;
         if vectors.len() != batch.len() {

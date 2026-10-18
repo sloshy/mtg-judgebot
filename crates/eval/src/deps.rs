@@ -49,7 +49,12 @@ impl GoldExtractor {
 
 #[async_trait]
 impl Extractor for GoldExtractor {
-    async fn extract(&self, q: &Question, _history: &[Qa]) -> Result<Extraction, JudgeError> {
+    async fn extract(
+        &self,
+        q: &Question,
+        _history: &[Qa],
+        _tally: &judge_core::Tally,
+    ) -> Result<Extraction, JudgeError> {
         self.by_id
             .get(&q.thread_id)
             .cloned()

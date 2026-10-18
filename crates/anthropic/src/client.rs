@@ -757,6 +757,10 @@ impl Backend for Anthropic {
 
 #[cfg(test)]
 mod tests {
+    /// A bill for a run nobody reads.
+    fn bill() -> judge_core::Bill {
+        judge_core::Tally::new().bill(judge_core::Stage::Synthesis)
+    }
     use super::*;
     use judge_llm::{
         ChatModel as _, Metered, RefusalFallback, SpendMeter, TextBlock, ToolChoice, Turn,
@@ -816,13 +820,13 @@ mod tests {
             SpendMeter::new().with_max_spend_usd(15.0)?,
         )?;
         let clone = client.clone();
-        client.complete(&req()).await?;
+        client.complete(&req(), &bill()).await?;
         assert!(
             (client.meter().spent_usd() - 8.0).abs() < 1e-6,
             "{}",
             client.meter().spent_usd()
         );
-        clone.complete(&req()).await?;
+        clone.complete(&req(), &bill()).await?;
         assert!(
             (client.meter().spent_usd() - 16.0).abs() < 1e-6,
             "{}",
@@ -830,7 +834,7 @@ mod tests {
         );
         assert_eq!(client.meter().calls(), 2);
         assert_eq!(clone.meter().calls(), 2);
-        let third = client.complete(&req()).await;
+        let third = client.complete(&req(), &bill()).await;
         assert!(
             matches!(third, Err(LlmError::SpendCapExceeded { spent, cap }) if (spent - 16.0).abs() < 1e-6 && (cap - 15.0).abs() < 1e-6),
             "{third:?}"
@@ -851,7 +855,7 @@ mod tests {
             .mount(&server)
             .await;
         let client = Metered::new(against(&server)?, SpendMeter::new())?;
-        let r = client.complete(&req()).await;
+        let r = client.complete(&req(), &bill()).await;
         assert!(
             matches!(&r, Err(LlmError::Api { kind, message, .. }) if kind == "invalid_request_error" && message == "nope"),
             "{r:?}"
@@ -875,7 +879,7 @@ mod tests {
             .await;
         let client = Metered::new(against(&server)?, SpendMeter::new())?;
         assert!(matches!(
-            client.complete(&req()).await,
+            client.complete(&req(), &bill()).await,
             Err(LlmError::Decode {
                 billed: Some(_),
                 ..
@@ -908,11 +912,11 @@ mod tests {
             ..req()
         };
         assert!(matches!(
-            client.complete(&big).await,
+            client.complete(&big, &bill()).await,
             Err(LlmError::SpendCapExceeded { .. })
         ));
         // The small request fits, and afterwards the reservation is gone.
-        client.complete(&req()).await?;
+        client.complete(&req(), &bill()).await?;
         assert!(
             client.meter().spent_usd() < 0.001,
             "{}",

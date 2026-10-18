@@ -195,7 +195,7 @@ pub fn from_wire(resp: &MessagesResponse) -> Result<ChatResponse, serde_json::Er
             })
             .collect(),
         stop,
-        usage: usage(&resp.usage),
+        usage: Some(usage(&resp.usage)),
         model: resp.model.clone(),
         assistant: AssistantTurn {
             backend: BACKEND,
@@ -442,12 +442,12 @@ mod tests {
         assert_eq!(c.stop, Stop::ToolUse);
         assert_eq!(
             c.usage,
-            Usage {
+            Some(Usage {
                 input: 1,
                 output: 2,
                 cache_read: 3,
                 cache_write: 0
-            }
+            })
         );
         assert_eq!(c.model, "claude-opus-5-5");
         assert_eq!(c.assistant.backend, BACKEND);

@@ -550,6 +550,7 @@ async fn retrieve_unions_category_map_and_full_text(pool: PgPool) -> anyhow::Res
             &question("does trample need lethal damage?"),
             &[card],
             &extraction(&[Category::Layers], &["trample lethal damage"]),
+            &judge_core::Tally::new(),
         )
         .await?;
     let ids: Vec<&str> = ctx
@@ -600,6 +601,7 @@ async fn retrieve_orders_primary_by_relevance_then_full_text_then_secondary(
                 &[Category::Layers, Category::ReplacementEffects],
                 &["apply first"],
             ),
+            &judge_core::Tally::new(),
         )
         .await?;
     let ids: Vec<&str> = ctx
@@ -663,7 +665,12 @@ async fn a_private_call_is_stored_with_its_asker_and_never_a_prior_call(
     let store = PgCallStore::new(pool.clone());
     let q = question("how do layers work?");
     let ctx = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     let verdict = Verdict::new(
         "Layer 4 is where type-changing effects apply, before colour and abilities.".into(),
@@ -676,7 +683,9 @@ async fn a_private_call_is_stored_with_its_asker_and_never_a_prior_call(
         asker: Asker::new(std::num::NonZeroU64::MIN.saturating_add(41), "urza"),
         visibility: Visibility::Private,
     };
-    let call = store.persist(&q, &origin, &verdict, &ctx).await?;
+    let call = store
+        .persist(&q, &origin, &verdict, &ctx, &judge_core::Tally::new())
+        .await?;
     store.rate(call, "u1", Score::Correct, true).await?;
     let row: (String, Option<String>, Option<String>, bool) =
         sqlx::query_as("SELECT interface, asker_id, asker_name, private FROM calls WHERE id = $1")
@@ -693,7 +702,12 @@ async fn a_private_call_is_stored_with_its_asker_and_never_a_prior_call(
         )
     );
     let after = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     assert!(after.prior.is_empty(), "{:?}", after.prior);
     for (interface, origin) in [
@@ -701,7 +715,9 @@ async fn a_private_call_is_stored_with_its_asker_and_never_a_prior_call(
         ("mcp", Origin::Mcp(Visibility::Public)),
         ("cli", Origin::Cli(Visibility::Private)),
     ] {
-        let id = store.persist(&q, &origin, &verdict, &ctx).await?;
+        let id = store
+            .persist(&q, &origin, &verdict, &ctx, &judge_core::Tally::new())
+            .await?;
         let (stored, private, asker): (String, bool, Option<String>) =
             sqlx::query_as("SELECT interface, private, asker_id FROM calls WHERE id = $1")
                 .bind(id.into_inner())
@@ -722,7 +738,12 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
     let store = PgCallStore::new(pool.clone());
     let q = question("how do layers work?");
     let ctx = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     let verdict = Verdict::new(
         "Layer 4 is where type-changing effects apply, before colour and abilities.".into(),
@@ -731,10 +752,17 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let call = store.persist(&q, &Origin::Web, &verdict, &ctx).await?;
+    let call = store
+        .persist(&q, &Origin::Web, &verdict, &ctx, &judge_core::Tally::new())
+        .await?;
 
     let ctx2 = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     assert_eq!(ctx2.prior.len(), 1);
     let prior = ctx2
@@ -746,7 +774,12 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
     assert!((prior.rating - 2.0).abs() < 1e-6);
     // Other categories do not see it.
     let other = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Combat], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Combat], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     assert!(other.prior.is_empty());
     // A question about a card the call did not involve does not see it either.
@@ -760,6 +793,7 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
             &q,
             std::slice::from_ref(&bob),
             &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
         )
         .await?;
     assert!(unrelated.prior.is_empty());
@@ -768,6 +802,7 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
             &q,
             std::slice::from_ref(&bob),
             &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
         )
         .await?;
     let v2 = Verdict::new(
@@ -777,12 +812,15 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
         Category::Layers,
     )
     .validate(&ctx_bob, AnswerableSource::Cr)?;
-    let call_bob = store.persist(&q, &Origin::Web, &v2, &ctx_bob).await?;
+    let call_bob = store
+        .persist(&q, &Origin::Web, &v2, &ctx_bob, &judge_core::Tally::new())
+        .await?;
     let with_bob = retriever
         .retrieve(
             &q,
             std::slice::from_ref(&bob),
             &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
         )
         .await?;
     assert_eq!(
@@ -805,7 +843,12 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
     .await?;
     assert_eq!((n, score, judge), (1, 1, true));
     let ctx3 = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     let prior = ctx3
         .prior
@@ -823,13 +866,23 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
         store.rate(call, u, Score::Incorrect, false).await?;
     }
     let ctx4 = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     assert!(ctx4.prior.is_empty());
     // ... unless a judge says otherwise: the judge score dominates the exclusion too.
     store.rate(call, "u1", Score::Correct, true).await?;
     let ctx5 = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     assert_eq!(ctx5.prior.len(), 1);
     Ok(())
@@ -963,7 +1016,12 @@ async fn retirement_follows_citation_validity_both_ways(pool: PgPool) -> anyhow:
     let store = PgCallStore::new(pool.clone());
     let q = question("how do layers work?");
     let ctx = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     let cites = cite_first_rule(&ctx)?;
     let rule_id = match cites.first() {
@@ -977,10 +1035,17 @@ async fn retirement_follows_citation_validity_both_ways(pool: PgPool) -> anyhow:
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let call = store.persist(&q, &Origin::Web, &verdict, &ctx).await?;
+    let call = store
+        .persist(&q, &Origin::Web, &verdict, &ctx, &judge_core::Tally::new())
+        .await?;
     let prior_visible = || async {
         let c = retriever
-            .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+            .retrieve(
+                &q,
+                &[],
+                &extraction(&[Category::Layers], &[]),
+                &judge_core::Tally::new(),
+            )
             .await?;
         anyhow::Ok(c.prior.iter().any(|p| p.id == call))
     };
@@ -1072,7 +1137,12 @@ async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::
     let q = question("can Stomp target a player?");
     let card = super::cards::load_cards(&pool, &[BONECRUSHER]).await?;
     let ctx = retriever
-        .retrieve(&q, &card, &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &card,
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     let ruling = ctx
         .rulings
@@ -1093,7 +1163,9 @@ async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let call = store.persist(&q, &Origin::Web, &verdict, &ctx).await?;
+    let call = store
+        .persist(&q, &Origin::Web, &verdict, &ctx, &judge_core::Tally::new())
+        .await?;
     assert_eq!(retire_unsupported(&pool).await?.retired, 0);
 
     // The ruling is removed (as a refresh does before reinserting): retired, naming it.
@@ -1240,14 +1312,19 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
     let fake = FakeEmbedder::new(Provider::Voyage, "voyage-3.5", 1024);
     let vectors = Vectors::new(pool.clone(), Arc::clone(&fake) as Arc<dyn WithSpace>);
     assert!(!vectors.enabled().await);
-    assert!(vectors.embed("lifelink", InputKind::Query).await.is_none());
+    assert!(
+        vectors
+            .embed("lifelink", InputKind::Query, &judge_core::Tally::new())
+            .await
+            .is_none()
+    );
     assert_eq!(calls(&fake), 0);
     // The row appears (the first `ingest embed`): the same `Vectors` picks it up without a restart.
     record_space(&pool, &voyage()).await?;
     assert!(vectors.enabled().await);
     assert!(
         vectors
-            .embed("lifelink", InputKind::Query)
+            .embed("lifelink", InputKind::Query, &judge_core::Tally::new())
             .await
             .is_some_and(|v| v.as_slice().len() == 1024)
     );
@@ -1262,7 +1339,7 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
     assert!(!mismatched.enabled().await);
     assert!(
         mismatched
-            .embed("lifelink", InputKind::Query)
+            .embed("lifelink", InputKind::Query, &judge_core::Tally::new())
             .await
             .is_none()
     );
@@ -1276,7 +1353,12 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
     let q = question("Does lifelink work on Dark Confidant's trigger?");
     let ctx = PgRetriever::new(pool.clone())
         .with_vectors(Arc::clone(&mismatched))
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &["lifelink"]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &["lifelink"]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     assert!(!ctx.rules.is_empty());
     let store = PgCallStore::new(pool.clone()).with_vectors(Arc::clone(&mismatched));
@@ -1287,7 +1369,9 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let id = store.persist(&q, &Origin::Web, &v, &ctx).await?;
+    let id = store
+        .persist(&q, &Origin::Web, &v, &ctx, &judge_core::Tally::new())
+        .await?;
     let embedded: bool =
         sqlx::query_scalar("SELECT embedding IS NOT NULL FROM calls WHERE id = $1")
             .bind(id.into_inner())
@@ -1309,7 +1393,12 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
     };
     switch_space(&pool, &nomic).await?;
     assert!(!vectors.enabled().await);
-    assert!(vectors.embed("lifelink", InputKind::Query).await.is_none());
+    assert!(
+        vectors
+            .embed("lifelink", InputKind::Query, &judge_core::Tally::new())
+            .await
+            .is_none()
+    );
     assert!(format!("{vectors:?}").contains("Mismatch"), "{vectors:?}");
     assert_eq!(calls(&fake), 1);
     // And the writer's check: under the shared lock the same answer, with a matching
@@ -1337,7 +1426,12 @@ async fn a_persisted_call_carries_a_vector_only_of_the_stored_space(
     let store = PgCallStore::new(pool.clone()).with_vectors(Arc::clone(&vectors));
     let q = question("Does lifelink work on Dark Confidant's trigger?");
     let ctx = PgRetriever::new(pool.clone())
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &["lifelink"]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &["lifelink"]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     let v = Verdict::new(
         "Lifelink applies to any damage the creature deals.".into(),
@@ -1360,7 +1454,9 @@ async fn a_persisted_call_carries_a_vector_only_of_the_stored_space(
         }
     };
     // The stored space is the embedder's: the vector is written.
-    let id = store.persist(&q, &Origin::Web, &v, &ctx).await?;
+    let id = store
+        .persist(&q, &Origin::Web, &v, &ctx, &judge_core::Tally::new())
+        .await?;
     assert!(embedded(id).await?);
     // The database moves to another model of the same width: the next persist, whose
     // embedder still matched a moment ago, stores no vector rather than a Voyage one.
@@ -1376,6 +1472,7 @@ async fn a_persisted_call_carries_a_vector_only_of_the_stored_space(
             &Origin::Web,
             &v,
             &ctx,
+            &judge_core::Tally::new(),
         )
         .await?;
     assert!(!embedded(id).await?);
@@ -1413,7 +1510,12 @@ async fn at_the_spend_cap_a_question_is_answered_and_stored_without_a_vector(
     let q = question("Does lifelink work on Dark Confidant's trigger?");
     let ctx = PgRetriever::new(pool.clone())
         .with_vectors(Arc::clone(&vectors))
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &["lifelink"]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &["lifelink"]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     assert!(!ctx.rules.is_empty(), "the other sources still answer");
     let store = PgCallStore::new(pool.clone()).with_vectors(Arc::clone(&vectors));
@@ -1424,7 +1526,9 @@ async fn at_the_spend_cap_a_question_is_answered_and_stored_without_a_vector(
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let id = store.persist(&q, &Origin::Web, &v, &ctx).await?;
+    let id = store
+        .persist(&q, &Origin::Web, &v, &ctx, &judge_core::Tally::new())
+        .await?;
     let null: bool = sqlx::query_scalar("SELECT embedding IS NULL FROM calls WHERE id = $1")
         .bind(id.into_inner())
         .fetch_one(&pool)
@@ -1438,7 +1542,12 @@ async fn at_the_spend_cap_a_question_is_answered_and_stored_without_a_vector(
     );
     // Room again (a new period, a raised cap): the next embedding goes through.
     meter.set_max_spend_usd(1.0)?;
-    assert!(vectors.embed("lifelink", InputKind::Query).await.is_some());
+    assert!(
+        vectors
+            .embed("lifelink", InputKind::Query, &judge_core::Tally::new())
+            .await
+            .is_some()
+    );
     assert_eq!(calls(&fake), 1);
     Ok(())
 }
@@ -1569,7 +1678,12 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_calls(
     let store = PgCallStore::new(pool.clone());
     let q = question("how do layers work?");
     let ctx = retriever
-        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
         .await?;
     let verdict = Verdict::new(
         "Layer 4 is where type-changing effects apply.".into(),
@@ -1587,7 +1701,13 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_calls(
         visibility,
     };
     let call = store
-        .persist(&q, &asked(11, "urza", Visibility::Public), &verdict, &ctx)
+        .persist(
+            &q,
+            &asked(11, "urza", Visibility::Public),
+            &verdict,
+            &ctx,
+            &judge_core::Tally::new(),
+        )
         .await?;
     store
         .persist(
@@ -1595,6 +1715,7 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_calls(
             &asked(11, "urza", Visibility::Private),
             &verdict,
             &ctx,
+            &judge_core::Tally::new(),
         )
         .await?;
     store
@@ -1603,6 +1724,7 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_calls(
             &asked(22, "mishra", Visibility::Public),
             &verdict,
             &ctx,
+            &judge_core::Tally::new(),
         )
         .await?;
     store.rate(call, "11", Score::Correct, false).await?;
@@ -1854,5 +1976,157 @@ async fn a_failed_call_is_kept_cut_to_size_and_pruned(pool: PgPool) -> Result<()
         .await
         .map_err(|e| JudgeError::Upstream(e.into()))?;
     assert_eq!(left, 1);
+    Ok(())
+}
+
+/// A run is one `judge_runs` row with its charges in billing order, linked to
+/// what it left; deleting the call or the failed call keeps the run, unlinked.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_run_is_recorded_with_its_charges_and_outlives_its_call(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    use judge_core::{Charge, Cost, Left, Outcome, RunRecord, Stage, Tokens};
+    seed(&pool).await?;
+    let retriever = PgRetriever::new(pool.clone());
+    let store = PgCallStore::new(pool.clone());
+    let q = question("how do layers work?");
+    let ctx = retriever
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
+        .await?;
+    let verdict = Verdict::new(
+        "Layer 4 is where type-changing effects apply, before colour and abilities.".into(),
+        Confidence::High,
+        cite_first_rule(&ctx)?,
+        Category::Layers,
+    )
+    .validate(&ctx, AnswerableSource::Cr)?;
+    let call = store
+        .persist(&q, &Origin::Web, &verdict, &ctx, &judge_core::Tally::new())
+        .await?;
+    let charge = |stage, tokens: Option<Tokens>, cost| Charge {
+        stage,
+        provider: "anthropic".into(),
+        model: "claude-opus-5-5".into(),
+        tokens,
+        cost,
+    };
+    let reported = Some(Tokens {
+        input: 10,
+        output: 20,
+        cache_read: 30,
+        cache_write: 40,
+    });
+    let answered = RunRecord {
+        interface: judge_core::Interface::Web,
+        private: false,
+        outcome: Outcome::Answered,
+        elapsed: std::time::Duration::from_millis(1_500),
+        retried: true,
+        charges: vec![
+            charge(Stage::Extraction, reported, Cost::Billed(0.001_234_4)),
+            charge(Stage::Synthesis, reported, Cost::Billed(0.25)),
+            charge(Stage::ToolRound, None, Cost::WorstCase(0.5)),
+        ],
+        left: Left::Call(call),
+    };
+    store.record_run(&answered).await?;
+    let failed = store
+        .record_failure(&judge_core::FailedCall {
+            origin: Origin::Cli(Visibility::Private),
+            thread_id: "agent:x".into(),
+            question: "q".into(),
+            error: "e".into(),
+            first_rejection: None,
+            attempts: vec![],
+        })
+        .await?;
+    store
+        .record_run(&RunRecord {
+            interface: judge_core::Interface::Cli,
+            private: true,
+            outcome: Outcome::AtCap,
+            elapsed: std::time::Duration::ZERO,
+            retried: false,
+            charges: vec![],
+            left: Left::Failure(failed),
+        })
+        .await?;
+
+    let runs = sqlx::query!(
+        r#"SELECT interface, private, outcome, retried, tool_round, call_id, failed_call_id,
+                  (finished_at - started_at) AS "took!"
+           FROM judge_runs ORDER BY private"#
+    )
+    .fetch_all(&pool)
+    .await?;
+    let [web, cli] = runs.as_slice() else {
+        anyhow::bail!("two runs, got {}", runs.len());
+    };
+    assert_eq!(
+        (
+            web.interface.as_str(),
+            web.outcome.as_str(),
+            web.retried,
+            web.tool_round
+        ),
+        ("web", "answered", true, true)
+    );
+    assert_eq!(web.call_id, Some(call.into_inner()));
+    assert_eq!(web.took.microseconds, 1_500_000);
+    assert_eq!(
+        (
+            cli.interface.as_str(),
+            cli.private,
+            cli.outcome.as_str(),
+            cli.tool_round
+        ),
+        ("cli", true, "at_cap", false)
+    );
+    assert_eq!(cli.failed_call_id, Some(failed.0));
+    let charges = sqlx::query!(
+        "SELECT seq, stage, input_tokens, cache_write_tokens, micro_usd, cost_estimated
+         FROM judge_run_charges ORDER BY seq"
+    )
+    .fetch_all(&pool)
+    .await?;
+    let got: Vec<_> = charges
+        .iter()
+        .map(|c| {
+            (
+                c.seq,
+                c.stage.as_str(),
+                c.input_tokens,
+                c.cache_write_tokens,
+                c.micro_usd,
+                c.cost_estimated,
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (0, "extraction", Some(10), Some(40), 1_234, false),
+            (1, "synthesis", Some(10), Some(40), 250_000, false),
+            (2, "tool_round", None, None, 500_000, true),
+        ]
+    );
+
+    // Retention and the failed-call bound delete what a run points at; the run stays.
+    sqlx::query!("DELETE FROM calls").execute(&pool).await?;
+    sqlx::query!("DELETE FROM failed_calls")
+        .execute(&pool)
+        .await?;
+    let left = sqlx::query!(
+        r#"SELECT count(*) AS "runs!", count(call_id) AS "calls!", count(failed_call_id) AS "failures!"
+           FROM judge_runs"#
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!((left.runs, left.calls, left.failures), (2, 0, 0));
     Ok(())
 }

@@ -6,8 +6,6 @@
 //! verdict and a closed session are all *replies* the agent can act on, and
 //! only a broken adapter is an error.
 
-use std::time::Instant;
-
 use crate::gated::Checked;
 use judge_bot::{
     discord::{question::pin_card, render},
@@ -18,7 +16,7 @@ use judge_bot::{
 use judge_core::{
     About, Ambiguous, CallId, Card, CardId, CardNote, CardRef, Citation, Confidence, Context,
     Extraction, GlossaryEntry, JudgeError, Origin, Question, Rejection, Resolution, RuleChunk,
-    RuleId, Ruling, Source, Unvalidated, Validated, Verdict, Visibility, judge_traced,
+    RuleId, Ruling, Source, Unvalidated, Validated, Verdict, Visibility,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -407,7 +405,12 @@ impl Toolbox {
             check_short(&p.span, "pin span")?;
             check_short(&p.name, "pin name")?;
         }
-        let Ok(Ok(_permit)) = tokio::time::timeout(ACQUIRE_WAIT, self.permits.acquire()).await
+        // Owned: the run holds it past a request that goes away.
+        let Ok(Ok(slot)) = tokio::time::timeout(
+            ACQUIRE_WAIT,
+            std::sync::Arc::clone(&self.permits).acquire_owned(),
+        )
+        .await
         else {
             return Ok(JudgeReply::Busy {
                 message: render::BUSY.to_owned(),
@@ -433,48 +436,29 @@ impl Toolbox {
             .transport
             .origin(Visibility::from_private(input.private));
         let history = history(&db, &q.thread_id, &origin, self.history_len).await;
-        let (t0, usd0, calls0) = (Instant::now(), p.meter.spent_usd(), p.meter.calls());
-        let traced = judge_traced(&p.deps, &q, &history).await;
-        let captured = p.capture.take(&q);
-        if let Some(failed) = traced.failure(&q, &origin)
-            && let Err(e) = db.calls().record_failure(&failed).await
-        {
-            tracing::warn!(
-                error = format_args!("{e:#}"),
-                "could not record the failed call"
-            );
-        }
-        let result = traced.result;
+        let ran = judge_bot::run::run(&p.deps, db.calls_arc(), &q, &origin, history, slot).await;
         tracing::info!(
             thread = %q.thread_id,
-            elapsed_ms = t0.elapsed().as_millis(),
-            usd = format_args!("{:.4}", p.meter.spent_usd() - usd0),
-            llm_calls = p.meter.calls() - calls0,
-            ok = result.is_ok(),
+            elapsed_ms = ran.elapsed.as_millis(),
+            usd = format_args!("{:.4}", ran.cost.usd()),
+            worst_case = ran.cost.is_estimate(),
+            llm_calls = ran.model_calls,
+            outcome = %ran.outcome,
             private = origin.is_private(),
             "judge"
         );
+        let judge_bot::run::Ran {
+            result,
+            context,
+            call,
+            ..
+        } = ran;
         Ok(match result {
-            Ok(v) => {
-                let call = match &captured {
-                    Some(ctx) => match db.calls().persist(&q, &origin, &v, ctx).await {
-                        Ok(id) => Some(id),
-                        Err(e) => {
-                            tracing::error!(
-                                error = format_args!("{e:#}"),
-                                "persist failed; answering anyway"
-                            );
-                            None
-                        }
-                    },
-                    None => None,
-                };
-                JudgeReply::Answer {
-                    answer: answer(&v, captured.as_ref()),
-                    call,
-                    thread,
-                }
-            }
+            Ok(v) => JudgeReply::Answer {
+                answer: answer(&v, context.as_ref()),
+                call,
+                thread,
+            },
             Err(e) => {
                 if e.is_operator_failure() {
                     tracing::warn!(thread = %q.thread_id, error = format_args!("{e:#}"), "judge failed");

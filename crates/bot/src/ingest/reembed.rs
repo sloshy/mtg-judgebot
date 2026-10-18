@@ -184,7 +184,11 @@ fn cost(rows: i64, bytes: i64, price: EmbedPrice, room: Room) -> String {
 async fn probe(embedder: &dyn WithSpace) -> anyhow::Result<usize> {
     let target = embedder.space();
     let mut vectors = embedder
-        .embed(&[PROBE_TEXT], InputKind::Document)
+        .embed(
+            &[PROBE_TEXT],
+            InputKind::Document,
+            &judge_core::Tally::new(),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("probing {target}: {e}"))?;
     let Some(v) = vectors.pop().filter(|_| vectors.is_empty()) else {

@@ -5,7 +5,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::Context as _;
@@ -16,16 +16,15 @@ use axum::{
     response::{IntoResponse as _, Response},
     routing::{get, post},
 };
-use judge_bot::discord::{capture::CapturingRetriever, render};
+use judge_bot::discord::render;
 use judge_bot::ingest::runs::FreshnessReader;
 use judge_bot::maintenance::{self, Availability};
+use judge_bot::run;
 use judge_bot::shutdown::Shutdown;
 use judge_core::{
-    About, CallStore, Deps, Freshness, HistoryScope, JudgeError, NetworkOperator, Origin, Question,
-    Retriever, SourceOffer, Validated, Verdict, judge_traced,
+    About, CallStore, Deps, Freshness, HistoryScope, NetworkOperator, Origin, Question, SourceOffer,
 };
-use judge_llm::SpendMeter;
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
@@ -108,9 +107,7 @@ impl DataStatus for FreshnessReader {
 /// Shared state behind every route.
 pub struct App {
     deps: Deps,
-    capture: Arc<CapturingRetriever>,
     store: Arc<dyn CallStore>,
-    meter: SpendMeter,
     permits: Arc<Semaphore>,
     limiter: RateLimiter,
     history_len: usize,
@@ -136,24 +133,18 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
-    /// Wire the shared state. `meter` must be the one the models inside
-    /// `deps` bill to, so its counters reflect the judge runs.
+    /// Wire the shared state.
     #[must_use]
     pub fn new(
-        mut deps: Deps,
+        deps: Deps,
         store: Arc<dyn CallStore>,
-        meter: SpendMeter,
         cfg: &ApiConfig,
         offer: SourceOffer,
         operator: NetworkOperator,
     ) -> Self {
-        let capture = Arc::new(CapturingRetriever::new(Arc::clone(&deps.retriever)));
-        deps.retriever = Arc::clone(&capture) as Arc<dyn Retriever>;
         Self {
             deps,
-            capture,
             store,
-            meter,
             permits: Arc::new(Semaphore::new(cfg.max_concurrent)),
             limiter: RateLimiter::new(cfg.rate_limit, cfg.rate_window),
             history_len: cfg.history_len,
@@ -198,8 +189,9 @@ impl App {
     }
 
     /// A judge slot, waiting up to [`ACQUIRE_WAIT`] for one; `None` means "busy".
-    async fn acquire(&self) -> Option<SemaphorePermit<'_>> {
-        match tokio::time::timeout(ACQUIRE_WAIT, self.permits.acquire()).await {
+    /// Owned, so the run can hold it past a request that goes away.
+    async fn acquire(&self) -> Option<OwnedSemaphorePermit> {
+        match tokio::time::timeout(ACQUIRE_WAIT, Arc::clone(&self.permits).acquire_owned()).await {
             Ok(Ok(p)) => Some(p),
             // The semaphore is never closed; a timeout is the only real `None`.
             Ok(Err(_)) | Err(_) => None,
@@ -208,7 +200,7 @@ impl App {
 
     /// Run the pipeline for `q` and shape the reply. Mirrors the Discord
     /// adapter's flow (history → judge → persist) minus rating buttons.
-    async fn answer(&self, q: &Question, ip: IpAddr) -> ApiReply {
+    async fn answer(&self, q: &Question, ip: IpAddr, slot: OwnedSemaphorePermit) -> ApiReply {
         let history = match self
             .store
             .history(&q.thread_id, self.history_len, HistoryScope::Public)
@@ -223,44 +215,22 @@ impl App {
                 vec![]
             }
         };
-        let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
-        let traced = judge_traced(&self.deps, q, &history).await;
-        let captured = self.capture.take(q);
-        if let Some(failed) = traced.failure(q, &Origin::Web)
-            && let Err(e) = self.store.record_failure(&failed).await
-        {
-            tracing::warn!(
-                error = format_args!("{e:#}"),
-                "could not record the failed call"
-            );
-        }
-        let result = traced.result;
+        // The stored call feeds session history and the prior-call retrieval
+        // source; web calls arrive unrated, exactly like an unrated Discord
+        // call. A store failure only costs those.
+        let ran = run::run(&self.deps, &self.store, q, &Origin::Web, history, slot).await;
         tracing::info!(
             %ip,
             thread = %q.thread_id,
-            elapsed_ms = t0.elapsed().as_millis(),
-            usd = format_args!("{:.4}", self.meter.spent_usd() - usd0),
-            llm_calls = self.meter.calls() - calls0,
-            outcome = outcome(&result),
+            elapsed_ms = ran.elapsed.as_millis(),
+            usd = format_args!("{:.4}", ran.cost.usd()),
+            worst_case = ran.cost.is_estimate(),
+            llm_calls = ran.model_calls,
+            outcome = %ran.outcome,
             "POST /api/judge"
         );
-        match result {
-            Ok(v) => {
-                if let Some(ctx) = captured.as_ref() {
-                    // Persisting feeds session history and the prior-call
-                    // retrieval source; web calls arrive unrated, exactly like an
-                    // unrated Discord call. Failure only costs those.
-                    if let Err(e) = self.store.persist(q, &Origin::Web, &v, ctx).await {
-                        tracing::error!(
-                            error = format_args!("{e:#}"),
-                            "persist failed; answering anyway"
-                        );
-                    }
-                } else {
-                    tracing::warn!("no captured context for the question; call not persisted");
-                }
-                shape::answer(&v, captured.as_ref())
-            }
+        match ran.result {
+            Ok(v) => shape::answer(&v, ran.context.as_ref()),
             Err(e) => {
                 // The line above classifies the outcome; a genuine failure also
                 // needs its cause, or the operator sees `outcome=upstream` and
@@ -273,22 +243,6 @@ impl App {
                 shape::error(&e)
             }
         }
-    }
-}
-
-const fn outcome(r: &Result<Verdict<Validated>, JudgeError>) -> &'static str {
-    match r {
-        Ok(_) => "answered",
-        Err(JudgeError::AmbiguousCards(_)) => "ambiguous",
-        Err(JudgeError::CardsNotFound(_)) => "not_found",
-        Err(JudgeError::OutOfScope(_)) => "out_of_scope",
-        Err(JudgeError::BadCitation(_)) => "bad_citation",
-        Err(JudgeError::MalformedCitation(_)) => "malformed_citation",
-        Err(JudgeError::EmptyVerdict(_)) => "empty_verdict",
-        Err(JudgeError::UncitedRules(_)) => "uncited_rules",
-        Err(JudgeError::ToolMisuse(_)) => "tool_misuse",
-        Err(JudgeError::LlmRefused) => "refused",
-        Err(JudgeError::Upstream(_)) => "upstream",
     }
 }
 
@@ -517,7 +471,7 @@ async fn judge_route(
         )
             .into_response();
     }
-    let Some(_permit) = app.acquire().await else {
+    let Some(slot) = app.acquire().await else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ApiReply::Busy {
@@ -532,7 +486,7 @@ async fn judge_route(
         thread_id: format!("web:{session}"),
         text: shape::question_text(&req),
     };
-    (StatusCode::OK, Json(app.answer(&q, ip).await)).into_response()
+    (StatusCode::OK, Json(app.answer(&q, ip, slot).await)).into_response()
 }
 
 /// The address rate limiting buckets on: `CF-Connecting-IP` behind Cloudflare,
@@ -570,8 +524,9 @@ mod tests {
     use http_body_util::BodyExt as _;
     use judge_core::{
         CallId, Card, CardId, Category, CategoryGuess, Confidence, Context, CrVersion, Extraction,
-        Extractor, Face, Layout, MatchedVia, Qa, Resolution, Resolver, RuleChunk, RuleId, Score,
-        Source, Synthesizer, Unvalidated,
+        Extractor, Face, Interface as Asked, JudgeError, Layout, MatchedVia, Outcome, Qa,
+        Resolution, Resolver, Retriever, RuleChunk, RuleId, RunRecord, Score, Source, Synthesizer,
+        Tally, Unvalidated, Validated, Verdict,
     };
     use nonempty::{NonEmpty, nonempty};
     use std::sync::Mutex;
@@ -598,7 +553,12 @@ mod tests {
     struct StubExtractor;
     #[async_trait]
     impl Extractor for StubExtractor {
-        async fn extract(&self, q: &Question, _h: &[Qa]) -> Result<Extraction, JudgeError> {
+        async fn extract(
+            &self,
+            q: &Question,
+            _h: &[Qa],
+            _t: &Tally,
+        ) -> Result<Extraction, JudgeError> {
             let mut spans = vec![];
             if let Some(start) = q.text.find("[[")
                 && let Some(len) = q.text.get(start..).and_then(|s| s.find("]]"))
@@ -649,6 +609,7 @@ mod tests {
             _q: &Question,
             _c: &[Card],
             _e: &Extraction,
+            _tally: &judge_core::Tally,
         ) -> Result<Context, JudgeError> {
             Ok(Context {
                 rules: vec![RuleChunk {
@@ -677,6 +638,7 @@ mod tests {
             _q: &Question,
             _ctx: &mut Context,
             _rejected: Option<&judge_core::RejectedAttempt>,
+            _t: &Tally,
         ) -> Result<Verdict<Unvalidated>, JudgeError> {
             let id = RuleId::try_new("702.15b".to_owned()).map_err(anyhow::Error::from)?;
             Ok(Verdict::new(
@@ -692,10 +654,11 @@ mod tests {
         }
     }
 
-    /// Records persisted questions; returns no history.
+    /// Records persisted questions and runs; returns no history.
     #[derive(Default)]
     struct StubStore {
         persisted: Mutex<Vec<String>>,
+        runs: Mutex<Vec<RunRecord>>,
     }
     #[async_trait]
     impl CallStore for StubStore {
@@ -705,6 +668,7 @@ mod tests {
             _origin: &Origin,
             _v: &Verdict<Validated>,
             _ctx: &Context,
+            _t: &Tally,
         ) -> Result<CallId, JudgeError> {
             if let Ok(mut p) = self.persisted.lock() {
                 p.push(q.text.clone());
@@ -731,7 +695,16 @@ mod tests {
         async fn forget_user(&self, _user: &str) -> Result<judge_core::Forgotten, JudgeError> {
             Ok(judge_core::Forgotten::default())
         }
-        async fn record_failure(&self, _failed: &judge_core::FailedCall) -> Result<(), JudgeError> {
+        async fn record_failure(
+            &self,
+            _failed: &judge_core::FailedCall,
+        ) -> Result<judge_core::FailedCallId, JudgeError> {
+            Ok(judge_core::FailedCallId(1))
+        }
+        async fn record_run(&self, run: &RunRecord) -> Result<(), JudgeError> {
+            if let Ok(mut r) = self.runs.lock() {
+                r.push(run.clone());
+            }
             Ok(())
         }
     }
@@ -769,7 +742,6 @@ mod tests {
         let app = Arc::new(App::new(
             stub_deps(),
             Arc::clone(&store) as Arc<dyn CallStore>,
-            SpendMeter::new(),
             &cfg,
             SourceOffer::upstream(judge_core::Commit::Unknown),
             test_operator(),
@@ -821,6 +793,24 @@ mod tests {
         Ok((status, json))
     }
 
+    /// The runs recorded, once `n` have been: a run is recorded after its
+    /// reply is sent, so a test waits for it (up to a second).
+    async fn runs(store: &StubStore, n: usize) -> Vec<RunRecord> {
+        let read = || {
+            store
+                .runs
+                .lock()
+                .map_or_else(|e| e.into_inner().clone(), |r| r.clone())
+        };
+        for _ in 0..100 {
+            if read().len() >= n {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        read()
+    }
+
     fn persisted(store: &StubStore) -> Vec<String> {
         store
             .persisted
@@ -845,6 +835,32 @@ mod tests {
             "{j}"
         );
         assert_eq!(persisted(&store), vec!["does lifelink stack?".to_owned()]);
+        let runs = runs(&store, 1).await;
+        let [run] = runs.as_slice() else {
+            return Err(format!("one run recorded, got {runs:?}").into());
+        };
+        assert_eq!((run.interface, run.private), (Asked::Web, false));
+        assert_eq!(run.outcome, Outcome::Answered);
+        assert_eq!(
+            run.left,
+            judge_core::Left::Call(CallId::new(Uuid::from_u128(9)))
+        );
+        Ok(())
+    }
+
+    /// A question that leaves no call (an ambiguous card) is still a run.
+    #[tokio::test]
+    async fn a_run_is_recorded_whatever_its_outcome() -> Res {
+        let (router, store) = test_app(10);
+        let (status, _) = post_judge(router, r#"{"question":"can urza block?"}"#).await?;
+        assert_eq!(status, StatusCode::OK);
+        let runs = runs(&store, 1).await;
+        let [run] = runs.as_slice() else {
+            return Err(format!("one run recorded, got {runs:?}").into());
+        };
+        assert_eq!(run.outcome, Outcome::Ambiguous);
+        assert_eq!(run.left, judge_core::Left::Nothing);
+        assert!(persisted(&store).is_empty());
         Ok(())
     }
 
@@ -1169,7 +1185,6 @@ mod tests {
                 App::new(
                     stub_deps(),
                     Arc::new(StubStore::default()),
-                    SpendMeter::new(),
                     &test_cfg(10, Path::new("does-not-exist")),
                     SourceOffer::upstream(judge_core::Commit::Unknown),
                     test_operator(),
@@ -1225,7 +1240,6 @@ mod tests {
                 App::new(
                     stub_deps(),
                     Arc::new(StubStore::default()),
-                    SpendMeter::new(),
                     &test_cfg(10, Path::new("does-not-exist")),
                     SourceOffer::upstream(judge_core::Commit::Unknown),
                     test_operator(),
@@ -1258,7 +1272,6 @@ mod tests {
             App::new(
                 stub_deps(),
                 Arc::clone(&store) as Arc<dyn CallStore>,
-                SpendMeter::new(),
                 &test_cfg(1, Path::new("does-not-exist")),
                 SourceOffer::upstream(judge_core::Commit::Unknown),
                 test_operator(),

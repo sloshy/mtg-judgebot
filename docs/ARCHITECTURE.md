@@ -177,6 +177,11 @@ one seam (`docs/PROVIDERS.md`).
 - The pipeline's port, `ChatModel`, is sealed and implemented only by `Metered`, so a
   model that bypasses the cap is unrepresentable. The embedders' port, `WithSpace`, is
   sealed the same way (`judge_embed::MeteredEmbedder`), on the same meter.
+- Each run also has its own `judge_core::Tally` (D33). Every port that can spend takes
+  it, and `ChatModel::complete` takes a `Bill` naming the run and the `Stage`. The two
+  metered types add a `Charge` (stage, provider, the model the response named, tokens,
+  `Cost`) when they settle with the meter. A response with no usage keeps its
+  reservation on the meter and is charged at it as `Cost::WorstCase`.
 - Each backend declares `Capabilities`. What a server cannot enforce (an output schema,
   strict tools) the adapter moves into the prompt, since decoding and citation validation
   are client-side either way.
@@ -316,6 +321,9 @@ Three interfaces share this pipeline through the same composition root
     interface, the Discord asker (id and username) and whether the call is private.
     `CallStore::persist` and `record_failure` store it; `Origin::history_scope` says
     which earlier calls of the thread a question reads.
+  - Every interface runs a question through `judge_bot::run::run` (D33): judge, store
+    the call or the failed call, and record the run in `judge_runs` with its charges.
+    It returns the context the answer was judged from, the run's `Outcome` and cost.
   - `/judge private:True` is `Audience::Private`: acknowledged ephemerally, no history
     read, persisted private (with rating buttons), so it is never a prior call and
     never another question's history. A call that *fails* is recorded in
@@ -501,6 +509,7 @@ pictures, from one set of names:
 | Categories → subsections | YAML (single source of truth; the enum is generated from it) | `categories` |
 | Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity | `calls` (id, thread_id, interface, asker_id, asker_name, private, locale, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding; a private call has no embedding) |
 | Failed calls | on each operator failure; pruned to 30 days / 500 rows on write | `failed_calls` (thread_id, interface, asker_id, asker_name, private, question, error, first_rejection, attempts) |
+| Judge runs | one row per built-in pipeline run, any outcome (D33) | `judge_runs` (started_at, finished_at, interface, private, outcome, retried, tool_round, call_id, failed_call_id) + `judge_run_charges` (run_id, seq, stage, provider, model, tokens, micro_usd, cost_estimated) |
 | Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |
 | Refresh runs | one row per refresh, scheduled or `judgebot ingest refresh` | `refresh_runs` (started_at, finished_at, trigger, process, cr_before, cr_after, steps jsonb, ok) |
 

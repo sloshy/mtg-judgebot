@@ -53,6 +53,7 @@ impl Retriever for StubRetriever {
         _q: &Question,
         _c: &[Card],
         _e: &Extraction,
+        _tally: &judge_core::Tally,
     ) -> Result<Context, JudgeError> {
         Err(anyhow::anyhow!("not used").into())
     }
@@ -153,7 +154,8 @@ async fn extraction_request_is_byte_identical() -> R {
         .mount(&server)
         .await;
     let x = LlmExtractor::new(model(&server)?, ExtractConfig::default());
-    x.extract(&asked.question, &asked.history).await?;
+    x.extract(&asked.question, &asked.history, &judge_core::Tally::new())
+        .await?;
     let reqs = server.received_requests().await.unwrap_or_default();
     assert_eq!(reqs.len(), 1);
     assert_golden("extraction", reqs.first().ok_or("no extraction request")?)
@@ -223,7 +225,9 @@ async fn synthesis_first_turn_continuation_and_retry_are_byte_identical() -> R {
         calls: Mutex::new(Vec::new()),
     });
     let synth = LlmSynthesizer::new(model(&server)?, SynthConfig::default(), retriever.clone());
-    synth.answer(&asked.question, &mut ctx, None).await?;
+    synth
+        .answer(&asked.question, &mut ctx, None, &judge_core::Tally::new())
+        .await?;
     assert_eq!(
         retriever
             .calls
@@ -244,7 +248,14 @@ async fn synthesis_first_turn_continuation_and_retry_are_byte_identical() -> R {
         bad,
         "Timestamps decide: the later effect wins within the same layer.\n\nPer 613.7.",
     );
-    synth.answer(&asked.question, &mut ctx, Some(&bad)).await?;
+    synth
+        .answer(
+            &asked.question,
+            &mut ctx,
+            Some(&bad),
+            &judge_core::Tally::new(),
+        )
+        .await?;
 
     let reqs = server.received_requests().await.unwrap_or_default();
     assert_eq!(reqs.len(), 3);
