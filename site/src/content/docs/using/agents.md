@@ -43,6 +43,33 @@ Session-persisted calls are thread history only. Nothing can rate them, so the p
 source never shows them as examples. Session thread ids carry an `agent:` prefix that a
 Discord thread id cannot have, so a session cannot read a channel's history.
 
+## Release check
+
+`judge-cli` and a stdio `judge-mcp` are built on their own and read the instance's
+database directly, so each compares its release with the one that last migrated the
+database:
+
+- **A newer release of the same major:** a note (on stderr for `judge-cli`, at the top
+  of the MCP instructions), and everything keeps working.
+- **Another major release, or a different pre-release build:** every operation fails
+  with a message saying what to update, until the tool is rebuilt (`git pull`, then
+  `cargo build --release -p judge-agent`) or the instance is upgraded. `judge-mcp` keeps
+  running and returns that message from each tool, and its instructions lead with it.
+- **A database missing a migration the tool carries** (the instance is older than the
+  tool): the same stop, naming the instance as the one to upgrade.
+
+- **Migrations the tool does not know, which no newer release of its major explains**
+  (another build of the same `-dev` version migrated the database, or it was migrated
+  with `sqlx migrate run`, which records no release): the same stop.
+- **A release that cannot be read:** the same stop, naming the error, until a later
+  operation reads it.
+
+`about` is never stopped, so it can still say where the instance's source is.
+`judge-mcp` checks again a minute after its last check, so an upgrade under a running
+server is noticed within a minute. `judgebot --mcp` is part of the instance and does no
+check. `judge-mcp` run inside the image over SSH does, and passes, being the instance's
+own build.
+
 ## Private calls
 
 `judge` and `begin_session` take `private: true` (`--private` on `judge-cli judge` and

@@ -6,13 +6,13 @@
 use std::sync::Arc;
 
 use judge_core::{
-    Category, CategoryGuess, Citation, Confidence, Extraction, RuleId, Source, Verdict,
+    Category, CategoryGuess, Citation, Confidence, Extraction, Resolution, RuleId, Source, Verdict,
 };
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
 use crate::{
-    Options, Quota, Toolbox, Transport,
+    Client, Options, Quota, Toolbox, Transport,
     ops::{
         BeginInput, ExtractionReply, IdsInput, JudgeInput, JudgeReply, LookupInput, NameInput,
         SearchInput, SessionInput, VerdictInput, VerdictReply,
@@ -67,21 +67,23 @@ async fn seed(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn options(quota: Option<Quota>) -> Options {
+    Options {
+        transport: Transport::Mcp,
+        client: Client::Standalone,
+        models: None,
+        deps_config: judge_bot::DepsConfig::default(),
+        vectors: None,
+        permits: Arc::new(Semaphore::new(1)),
+        judge_quota: quota,
+        history_len: 5,
+        offer: judge_core::SourceOffer::upstream(judge_core::Commit::Unknown),
+        operator: judge_core::Operator::default(),
+    }
+}
+
 fn toolbox(pool: PgPool, quota: Option<Quota>) -> Toolbox {
-    Toolbox::new(
-        pool,
-        Options {
-            transport: Transport::Mcp,
-            models: None,
-            deps_config: judge_bot::DepsConfig::default(),
-            vectors: None,
-            permits: Arc::new(Semaphore::new(1)),
-            judge_quota: quota,
-            history_len: 5,
-            offer: judge_core::SourceOffer::upstream(judge_core::Commit::Unknown),
-            operator: judge_core::Operator::default(),
-        },
-    )
+    Toolbox::new(pool, options(quota))
 }
 
 fn extraction() -> Extraction {
@@ -380,4 +382,57 @@ async fn lookups_are_bounded_and_the_judge_quota_counts(pool: PgPool) -> anyhow:
     assert!(t.allow_judge(), "the quota is untouched");
     assert!(!t.allow_judge(), "one run per window");
     Ok(())
+}
+
+/// A standalone tool works against its own release and stops, saying what to
+/// update, against another major; inside the instance nothing is checked.
+#[sqlx::test(migrations = "../bot/migrations")]
+async fn a_tool_of_another_major_stops_with_what_to_update(pool: PgPool) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    let record = |v: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO instance_release (id, version) VALUES (true, $1) \
+                 ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version",
+            )
+            .bind(v)
+            .execute(&pool)
+            .await
+        }
+    };
+    record(judge_core::release::Release::this_build().to_string()).await?;
+    let t = toolbox(pool.clone(), None);
+    assert_eq!(t.release_notice().await, None);
+    lookup(&t).await?;
+
+    record("99.0.0".to_owned()).await?;
+    let t = toolbox(pool.clone(), None);
+    let err = lookup(&t).await.err().map(|e| e.to_string());
+    assert!(
+        err.as_deref()
+            .is_some_and(|e| e.contains("99.0.0") && e.contains("update judge-mcp")),
+        "{err:?}"
+    );
+    assert!(matches!(
+        t.release_notice_cached(),
+        Some(crate::release::Notice::Stop(_))
+    ));
+
+    let inside = Toolbox::new(
+        pool,
+        Options {
+            client: Client::Instance,
+            ..options(None)
+        },
+    );
+    lookup(&inside).await?;
+    Ok(())
+}
+
+async fn lookup(t: &Toolbox) -> anyhow::Result<Resolution> {
+    t.resolve_card(NameInput {
+        name: "[[Lightning Bolt]]".into(),
+    })
+    .await
 }

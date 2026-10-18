@@ -8,6 +8,7 @@
 
 use std::time::Instant;
 
+use crate::gated::Checked;
 use judge_bot::{
     discord::{question::pin_card, render},
     session::{
@@ -391,7 +392,8 @@ impl Toolbox {
     /// Only the call store failing to load history is swallowed (logged);
     /// pipeline failures are replies.
     pub async fn judge(&self, input: JudgeInput) -> Result<JudgeReply, OpError> {
-        let Some(p) = &self.pipeline else {
+        let db = self.db.check().await?;
+        let Some(p) = db.pipeline() else {
             return Ok(JudgeReply::Unavailable {
                 message: "the built-in pipeline needs a model on the server (ANTHROPIC_API_KEY, or a judge.toml); use begin_session and do the model work yourself".into(),
             });
@@ -430,12 +432,12 @@ impl Toolbox {
         let origin = self
             .transport
             .origin(Visibility::from_private(input.private));
-        let history = self.history(&q.thread_id, &origin).await;
+        let history = history(&db, &q.thread_id, &origin, self.history_len).await;
         let (t0, usd0, calls0) = (Instant::now(), p.meter.spent_usd(), p.meter.calls());
         let traced = judge_traced(&p.deps, &q, &history).await;
         let captured = p.capture.take(&q);
         if let Some(failed) = traced.failure(&q, &origin)
-            && let Err(e) = self.calls.record_failure(&failed).await
+            && let Err(e) = db.calls().record_failure(&failed).await
         {
             tracing::warn!(
                 error = format_args!("{e:#}"),
@@ -455,7 +457,7 @@ impl Toolbox {
         Ok(match result {
             Ok(v) => {
                 let call = match &captured {
-                    Some(ctx) => match self.calls.persist(&q, &origin, &v, ctx).await {
+                    Some(ctx) => match db.calls().persist(&q, &origin, &v, ctx).await {
                         Ok(id) => Some(id),
                         Err(e) => {
                             tracing::error!(
@@ -487,8 +489,9 @@ impl Toolbox {
     /// # Errors
     /// The store.
     pub async fn begin_session(&self, input: BeginInput) -> Result<Begun, OpError> {
-        Ok(self
-            .sessions
+        let db = self.db.check().await?;
+        Ok(db
+            .sessions()
             .begin(
                 input.thread.unwrap_or_default(),
                 input.question,
@@ -502,7 +505,8 @@ impl Toolbox {
     /// # Errors
     /// Unknown session, or closed.
     pub async fn session_prompt(&self, input: SessionInput) -> Result<Prompt, OpError> {
-        Ok(self.sessions.prompt(input.session).await?)
+        let db = self.db.check().await?;
+        Ok(db.sessions().prompt(input.session).await?)
     }
 
     /// Where a session is.
@@ -510,7 +514,8 @@ impl Toolbox {
     /// # Errors
     /// Unknown session.
     pub async fn session_status(&self, input: SessionInput) -> Result<SessionStatus, OpError> {
-        let s = self.sessions.load(input.session).await?;
+        let db = self.db.check().await?;
+        let s = db.sessions().load(input.session).await?;
         let (lookup_available, attempts, outcome) = match &s.stage {
             Stage::AwaitingExtraction { .. } => (true, Some(0), None),
             Stage::AwaitingVerdict {
@@ -550,8 +555,9 @@ impl Toolbox {
         &self,
         input: ExtractionInput,
     ) -> Result<ExtractionReply, OpError> {
-        match self
-            .sessions
+        let db = self.db.check().await?;
+        match db
+            .sessions()
             .submit_extraction(input.session, input.extraction)
             .await
         {
@@ -579,9 +585,10 @@ impl Toolbox {
     /// # Errors
     /// Unknown session, wrong stage, round already used, or the store.
     pub async fn lookup_rules(&self, input: LookupInput) -> Result<Rules, OpError> {
+        let db = self.db.check().await?;
         Ok(Rules {
-            rules: self
-                .sessions
+            rules: db
+                .sessions()
                 .lookup_rules(input.session, &input.ids)
                 .await?,
         })
@@ -592,8 +599,9 @@ impl Toolbox {
     /// # Errors
     /// Unknown session, wrong stage, or the store. A rejection is a reply.
     pub async fn submit_verdict(&self, input: VerdictInput) -> Result<VerdictReply, OpError> {
-        match self
-            .sessions
+        let db = self.db.check().await?;
+        match db
+            .sessions()
             .submit_verdict(input.session, input.verdict)
             .await
         {
@@ -602,7 +610,7 @@ impl Toolbox {
                 // a failed persist or reload is reported, not turned into an
                 // error the agent would retry into `WrongStage`.
                 let (call, persist_error) = if input.persist {
-                    match self.sessions.persist(input.session).await {
+                    match db.sessions().persist(input.session).await {
                         Ok(id) => (Some(id), None),
                         Err(e) => (None, Some(format!("{e:#}"))),
                     }
@@ -610,7 +618,7 @@ impl Toolbox {
                     (None, None)
                 };
                 // The context is in the closed session; use it for citation labels.
-                let ctx = match self.sessions.load(input.session).await {
+                let ctx = match db.sessions().load(input.session).await {
                     Ok(s) => match s.stage {
                         Stage::Closed(judge_bot::session::Outcome::Answered { ctx, .. }) => {
                             Some(*ctx)
@@ -649,8 +657,9 @@ impl Toolbox {
     /// # Errors
     /// Unknown session, not answered, or the store.
     pub async fn persist_session(&self, input: SessionInput) -> Result<Persisted, OpError> {
+        let db = self.db.check().await?;
         Ok(Persisted {
-            call: self.sessions.persist(input.session).await?,
+            call: db.sessions().persist(input.session).await?,
         })
     }
 
@@ -659,8 +668,9 @@ impl Toolbox {
     /// # Errors
     /// The store.
     pub async fn resolve_card(&self, input: NameInput) -> Result<Resolution, OpError> {
+        let db = self.db.check().await?;
         check_short(&input.name, "name")?;
-        Ok(self.resolver.resolve(input.name.trim()).await?)
+        Ok(db.resolver().resolve(input.name.trim()).await?)
     }
 
     /// A card with its rulings and notes.
@@ -668,10 +678,11 @@ impl Toolbox {
     /// # Errors
     /// The store.
     pub async fn card_info(&self, input: CardInput) -> Result<CardInfo, OpError> {
+        let db = self.db.check().await?;
         let (card, rulings, notes) = tokio::try_join!(
-            self.library.card(input.card),
-            self.library.rulings(input.card),
-            self.library.notes(input.card)
+            db.library().card(input.card),
+            db.library().rulings(input.card),
+            db.library().notes(input.card)
         )?;
         Ok(CardInfo {
             card,
@@ -685,6 +696,7 @@ impl Toolbox {
     /// # Errors
     /// The store.
     pub async fn get_rules(&self, input: IdsInput) -> Result<Rules, OpError> {
+        let db = self.db.check().await?;
         anyhow::ensure!(
             !input.ids.is_empty(),
             "get_rules needs at least one rule id"
@@ -694,7 +706,7 @@ impl Toolbox {
             "get_rules takes at most {MAX_RULE_IDS} ids per call"
         );
         Ok(Rules {
-            rules: self.retriever.lookup_rules(&input.ids).await?,
+            rules: db.retriever().lookup_rules(&input.ids).await?,
         })
     }
 
@@ -703,6 +715,7 @@ impl Toolbox {
     /// # Errors
     /// The store.
     pub async fn search_rules(&self, input: SearchInput) -> Result<Rules, OpError> {
+        let db = self.db.check().await?;
         let query = input.query.trim();
         anyhow::ensure!(!query.is_empty(), "query must not be empty");
         anyhow::ensure!(
@@ -711,7 +724,7 @@ impl Toolbox {
         );
         let limit = input.limit.unwrap_or(10).clamp(1, MAX_SEARCH);
         Ok(Rules {
-            rules: self.library.search_rules(query, limit).await?,
+            rules: db.library().search_rules(query, limit).await?,
         })
     }
 
@@ -720,7 +733,7 @@ impl Toolbox {
     /// database (cached for a minute); `freshness` is null when it does not
     /// answer, and the rest is served regardless.
     pub async fn about(&self) -> About {
-        let freshness = self.library.freshness().await;
+        let freshness = self.db.freshness().await;
         self.offer().about(self.operator(), freshness)
     }
 
@@ -731,7 +744,8 @@ impl Toolbox {
     /// # Errors
     /// The store.
     pub async fn stats(&self, input: StatsInput) -> Result<judge_bot::db::stats::Usage, OpError> {
-        Ok(self.library.usage(input.days.unwrap_or(30)).await?)
+        let db = self.db.check().await?;
+        Ok(db.library().usage(input.days.unwrap_or(30)).await?)
     }
 
     /// The newest failed calls with the question and what the model sent. On
@@ -744,7 +758,8 @@ impl Toolbox {
         &self,
         input: FailuresInput,
     ) -> Result<Vec<judge_bot::db::stats::FailedRow>, OpError> {
-        Ok(self.library.failures(input.limit.unwrap_or(10)).await?)
+        let db = self.db.check().await?;
+        Ok(db.library().failures(input.limit.unwrap_or(10)).await?)
     }
 
     /// Glossary lookup.
@@ -752,25 +767,33 @@ impl Toolbox {
     /// # Errors
     /// The store.
     pub async fn glossary(&self, input: TermInput) -> Result<Glossary, OpError> {
+        let db = self.db.check().await?;
         check_short(&input.term, "term")?;
         Ok(Glossary {
-            entries: self.library.glossary(&input.term).await?,
+            entries: db.library().glossary(&input.term).await?,
         })
     }
+}
 
-    async fn history(&self, thread: &str, origin: &Origin) -> Vec<judge_core::Qa> {
-        let Some(scope) = origin.history_scope() else {
-            return vec![];
-        };
-        match self.calls.history(thread, self.history_len, scope).await {
-            Ok(h) => h,
-            Err(e) => {
-                tracing::warn!(
-                    error = format_args!("{e:#}"),
-                    "thread history unavailable; judging without it"
-                );
-                vec![]
-            }
+/// The thread's history `origin` may read; logged and empty when the store
+/// fails.
+async fn history(
+    db: &Checked<'_>,
+    thread: &str,
+    origin: &Origin,
+    len: usize,
+) -> Vec<judge_core::Qa> {
+    let Some(scope) = origin.history_scope() else {
+        return vec![];
+    };
+    match db.calls().history(thread, len, scope).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(
+                error = format_args!("{e:#}"),
+                "thread history unavailable; judging without it"
+            );
+            vec![]
         }
     }
 }

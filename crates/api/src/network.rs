@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use judge_agent::{Options, Quota, Toolbox, Transport};
+use judge_agent::{Client, Options, Quota, Toolbox, Transport};
 use judge_bot::{
     discord::endpoint::Interactions, ingest::runs::FreshnessReader, serving::Serving,
     shutdown::Shutdown,
@@ -283,6 +283,7 @@ fn routes(
             pool.clone(),
             Options {
                 transport: Transport::Mcp,
+                client: Client::Instance,
                 models: Some(serving.models().clone()),
                 deps_config: judge.deps_config(),
                 vectors: serving.vectors().cloned(),

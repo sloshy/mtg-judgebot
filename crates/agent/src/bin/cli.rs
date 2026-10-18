@@ -39,6 +39,7 @@ use judge_agent::{
         BeginInput, CardInput, ExtractionInput, FailuresInput, IdsInput, JudgeInput, LookupInput,
         NameInput, Pin, SearchInput, SessionInput, StatsInput, TermInput, VerdictInput,
     },
+    release::Notice,
 };
 use judge_bot::{
     ingest::runs,
@@ -416,6 +417,11 @@ async fn run(cmd: Command) -> Result<()> {
         };
     }
     let toolbox = Toolbox::from_env(Transport::Cli).await?;
+    // A newer release of the instance is a note on stderr; an incompatible
+    // one is each operation's error.
+    if let Some(Notice::Info(note)) = toolbox.release_notice().await {
+        tracing::warn!("{note}");
+    }
     match cmd {
         Command::Judge(i) => print(&toolbox.judge(i).await?),
         Command::Begin(i) => print(&toolbox.begin_session(i).await?),

@@ -101,6 +101,21 @@ impl JudgeMcp {
         }
     }
 
+    /// [`instructions`], led by what this server says about the instance's
+    /// release when it has something to say (a standalone `judge-mcp` of
+    /// another release; `release_notice` warms it before serving).
+    fn instructions(&self) -> String {
+        let base = instructions(self.toolbox.offer(), self.toolbox.operator());
+        match self.toolbox.release_notice_cached() {
+            Some(crate::release::Notice::Stop(why)) => format!(
+                "THIS SERVER CANNOT ANSWER: {why} Every tool but `about` returns this error until it is updated. \
+                 Tell the user.\n\n{base}"
+            ),
+            Some(crate::release::Notice::Info(note)) => format!("Note: {note}\n\n{base}"),
+            None => base,
+        }
+    }
+
     #[tool(
         name = "judge",
         description = "Answer a Magic rules question with the built-in pipeline (the server's own model calls; costs the operator API budget). Returns a validated, cited answer, or `ambiguous` (re-ask with `pins`), `not_found`, `out_of_scope`, `busy`, `rate_limited` (this client's quota for the window), `unavailable` (no API key on the server: use begin_session instead) or `error`. Pass `thread` back for follow-up questions. Set `private` to keep the call off everything public: only the operator sees it."
@@ -320,7 +335,7 @@ impl ServerHandler for JudgeMcp {
         };
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("mtg-judgebot", version))
-            .with_instructions(instructions(self.toolbox.offer(), self.toolbox.operator()))
+            .with_instructions(self.instructions())
     }
 }
 
@@ -330,6 +345,9 @@ impl ServerHandler for JudgeMcp {
 /// # Errors
 /// Transport failures.
 pub async fn serve_stdio(toolbox: Arc<Toolbox>) -> anyhow::Result<()> {
+    if let Some(notice) = toolbox.release_notice().await {
+        tracing::warn!("{}", notice.text());
+    }
     let running = JudgeMcp::new(toolbox).serve(stdio()).await?;
     running.waiting().await?;
     Ok(())

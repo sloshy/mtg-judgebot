@@ -14,6 +14,7 @@ pub mod operator;
 pub mod origin;
 pub mod ports;
 pub mod quote;
+pub mod release;
 pub mod source;
 pub mod symbol;
 pub mod verdict;

@@ -28,8 +28,10 @@
 //! is why the remote transport is `/mcp` and not a stdio server exposed to
 //! others.
 
+mod gated;
 pub mod mcp;
 pub mod ops;
+pub mod release;
 #[cfg(test)]
 mod tests;
 
@@ -87,6 +89,25 @@ impl Transport {
             Self::Mcp => Origin::Mcp(visibility),
         }
     }
+
+    /// The tool's name, as its messages call it.
+    #[must_use]
+    pub const fn tool(self) -> &'static str {
+        match self {
+            Self::Cli => "judge-cli",
+            Self::Mcp => "judge-mcp",
+        }
+    }
+}
+
+/// Where a toolbox runs relative to the instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Client {
+    /// A tool built on its own (`judge-cli`, a stdio `judge-mcp`): its
+    /// release is checked against the database's ([`release`]).
+    Standalone,
+    /// Part of the instance (`judgebot --mcp`), its release by construction.
+    Instance,
 }
 
 /// The built-in pipeline, present when models are configured.
@@ -133,12 +154,8 @@ impl Meter {
 
 /// Everything the operations need.
 pub struct Toolbox {
-    sessions: Sessions,
-    library: PgLibrary,
-    resolver: Arc<dyn Resolver>,
-    retriever: Arc<dyn Retriever>,
-    calls: Arc<dyn CallStore>,
-    pipeline: Option<Pipeline>,
+    /// The ports over the database, behind the release check.
+    db: gated::Db,
     transport: Transport,
     permits: Arc<Semaphore>,
     meter: Option<Mutex<Meter>>,
@@ -153,7 +170,7 @@ pub struct Toolbox {
 impl std::fmt::Debug for Toolbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Toolbox")
-            .field("pipeline", &self.pipeline.is_some())
+            .field("pipeline", &self.db.has_pipeline())
             .field("permits", &self.permits.available_permits())
             .finish_non_exhaustive()
     }
@@ -164,6 +181,8 @@ pub struct Options {
     /// The interface served: what `judge` calls are stored as, and how the
     /// session prompts are worded.
     pub transport: Transport,
+    /// Whether this is a separate tool, whose release is checked.
+    pub client: Client,
     /// The metered models for the built-in pipeline; `None` disables `judge`.
     pub models: Option<Models>,
     /// The request knobs the models were configured with.
@@ -189,6 +208,7 @@ impl Toolbox {
     /// Wire the ports over `pool`.
     #[must_use]
     pub fn new(pool: PgPool, opts: Options) -> Self {
+        let pool_for_release = pool.clone();
         let mut retriever = PgRetriever::new(pool.clone());
         let mut library = PgLibrary::new(pool.clone());
         let mut calls = PgCallStore::new(pool.clone());
@@ -223,12 +243,21 @@ impl Toolbox {
             }
         });
         Self {
-            sessions,
-            library,
-            resolver,
-            retriever,
-            calls,
-            pipeline,
+            db: gated::Db::new(gated::Parts {
+                sessions,
+                library,
+                resolver,
+                retriever,
+                calls,
+                pipeline,
+                release: match opts.client {
+                    Client::Standalone => Some(release::ReleaseCheck::new(
+                        pool_for_release,
+                        opts.transport.tool(),
+                    )),
+                    Client::Instance => None,
+                },
+            }),
             transport: opts.transport,
             permits: opts.permits,
             meter: opts.judge_quota.map(|quota| {
@@ -318,6 +347,7 @@ impl Toolbox {
             pool,
             Options {
                 transport,
+                client: Client::Standalone,
                 models,
                 deps_config: config.deps_config(),
                 vectors,
@@ -330,10 +360,22 @@ impl Toolbox {
         ))
     }
 
+    /// What this tool says about the instance's release, read again once
+    /// [`release::CHECK_EVERY`] has passed; `None` inside the instance.
+    pub async fn release_notice(&self) -> Option<release::Notice> {
+        self.db.notice().await
+    }
+
+    /// [`Self::release_notice`] as last read, without reading the database.
+    #[must_use]
+    pub fn release_notice_cached(&self) -> Option<release::Notice> {
+        self.db.notice_cached()
+    }
+
     /// Whether the built-in pipeline can run.
     #[must_use]
     pub fn has_pipeline(&self) -> bool {
-        self.pipeline.is_some()
+        self.db.has_pipeline()
     }
 }
 

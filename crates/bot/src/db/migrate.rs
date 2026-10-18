@@ -46,6 +46,8 @@ use sqlx::{
     migrate::{AppliedMigration, Migrate as _, MigrateError, Migration},
 };
 
+use judge_core::release::{self, Compatibility, Release};
+
 use super::CALLS_REWRITE_LOCK;
 use crate::MIGRATOR;
 
@@ -223,6 +225,17 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
     } else {
         tracing::info!(?applied, in_place = after.len(), "schema migrated");
     }
+    // The binary carries every migration in the ledger, so the database is
+    // now this release's (`instance_release`, which client tools compare with).
+    let release = judge_core::release::Release::this_build().to_string();
+    sqlx::query(
+        "INSERT INTO instance_release (id, version) VALUES (true, $1) \
+         ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, recorded_at = now()",
+    )
+    .bind(&release)
+    .execute(&mut *conn)
+    .await
+    .map_err(db("recording the instance's release"))?;
     Ok(Report {
         applied,
         already: before.len(),
@@ -318,6 +331,54 @@ pub async fn skew(pool: &PgPool) -> Result<Skew, Error> {
 
 /// Postgres's SQLSTATE for a missing table.
 const UNDEFINED_TABLE: &str = "42P01";
+
+/// The release recorded as having last migrated the database
+/// (`instance_release`), or `None` when none is (a database migrated before
+/// the table existed, or by `sqlx migrate run`). A recorded value that is not
+/// semver is `None` too, with a WARN.
+///
+/// # Errors
+/// [`Error::Db`] for anything but a missing table.
+pub async fn instance_release(pool: &PgPool) -> Result<Option<Release>, Error> {
+    let row: Result<Option<String>, sqlx::Error> =
+        sqlx::query_scalar("SELECT version FROM instance_release WHERE id")
+            .fetch_optional(pool)
+            .await;
+    match row {
+        Ok(Some(v)) => match Release::parse(&v) {
+            Ok(r) => Ok(Some(r)),
+            Err(e) => {
+                tracing::warn!(version = %v, error = %e, "instance_release holds a version that is not semver");
+                Ok(None)
+            }
+        },
+        Ok(None) => Ok(None),
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some(UNDEFINED_TABLE) => Ok(None),
+        Err(error) => Err(Error::Db {
+            what: "reading the instance's release",
+            error,
+        }),
+    }
+}
+
+/// Where a client tool of this build stands against the database: its
+/// recorded release, and which migrations it lacks or holds beyond this
+/// build's ([`judge_core::release::compatibility`]).
+///
+/// # Errors
+/// [`Error`] from reading the ledger or the release.
+pub async fn client_compatibility(pool: &PgPool) -> Result<Compatibility, Error> {
+    let skew = skew(pool).await?;
+    let instance = instance_release(pool).await?;
+    Ok(release::compatibility(
+        &Release::this_build(),
+        instance.as_ref(),
+        release::Ledger {
+            lacks: !skew.behind.is_empty(),
+            unknown: !skew.ahead.is_empty(),
+        },
+    ))
+}
 
 /// The `_sqlx_migrations` ledger (version + checksum), creating the table if
 /// the database is empty (idempotent, and what the migrator does first anyway).
@@ -438,6 +499,57 @@ mod tests {
                 already: all_versions().len(),
                 ahead: Vec::new()
             }
+        );
+        Ok(())
+    }
+
+    /// A run records this build's release; a client of this build is current
+    /// against it, stops before it, and is told about a newer one of its major.
+    #[sqlx::test(migrations = false)]
+    async fn a_run_records_the_release_client_tools_compare_with(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let this = Release::this_build();
+        assert_eq!(instance_release(&pool).await?, None, "no table yet");
+        assert_eq!(
+            client_compatibility(&pool).await?,
+            Compatibility::Incompatible(release::Incompatible::InstanceBehind {
+                client: this.clone(),
+                instance: None
+            })
+        );
+        run(&pool, Ahead::Refuse).await?;
+        assert_eq!(instance_release(&pool).await?, Some(this.clone()));
+        assert_eq!(client_compatibility(&pool).await?, Compatibility::Current);
+        let set = |v: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query("UPDATE instance_release SET version = $1")
+                    .bind(v)
+                    .execute(&pool)
+                    .await
+            }
+        };
+        set("99.0.0").await?;
+        assert!(matches!(
+            client_compatibility(&pool).await?,
+            Compatibility::Incompatible(release::Incompatible::Major { .. })
+        ));
+        set("not a version").await?;
+        assert_eq!(instance_release(&pool).await?, None);
+        // A rolled-back image that finds unknown migrations leaves the record.
+        set("99.0.0").await?;
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES ($1, 'future', true, $2, 0)",
+        )
+        .bind(99_990_101_000_001_i64)
+        .bind(&b"future"[..])
+        .execute(&pool)
+        .await?;
+        run(&pool, Ahead::Skip).await?;
+        assert_eq!(
+            instance_release(&pool).await?,
+            Some(Release::parse("99.0.0")?)
         );
         Ok(())
     }

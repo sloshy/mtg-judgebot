@@ -19,6 +19,14 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **`judge-cli` and `judge-mcp` check the instance's release.** Each migration records
+  the release that ran it (table `instance_release`). Against a newer release of the
+  same major the tools print a note and keep working. Against another major, a
+  different pre-release, or a database missing one of their migrations, every
+  operation fails and says what to update. Between releases `main` carries a `-dev`
+  version (now `2.0.0-dev`). Migrations within a major now only add; dropping,
+  renaming and rewriting wait for the next major (CONTRIBUTING).
+
 - **Every call records where it came from.** A stored call names its interface
   (Discord, web, MCP, `judge-cli` or an agent session) and, on Discord, the asker's user
   id and username at asking time. `judge-cli stats` counts questions by each interface
@@ -297,6 +305,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `scripts/deploy.sh` is the deploy from this release on. The old container has no
   SIGTERM handler, so this one deploy waits up to 130 seconds for it to stop. This
   release's migrations also assume no earlier release is writing calls while they run.
+- **Rebuild `judge-cli` and `judge-mcp` with the image.** A 1.x tool has no release
+  check and fails on this release's schema with SQL errors.
 - **More is stored about each question.** From this release a Discord call stores the
   asker's user id and username, and a `private: True` answer is stored (for the
   operator only). `/help` says so. Earlier calls are labelled by interface from their

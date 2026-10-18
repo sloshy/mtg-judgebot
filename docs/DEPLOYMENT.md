@@ -195,8 +195,9 @@ docker compose run --rm refresh migrate   # the image `pull` fetched; build only
 
 You can also run `sqlx migrate run --source crates/bot/migrations` from a workstation,
 over an SSH tunnel to the loopback-bound Postgres. It writes the same ledger with the
-same checksums. It skips the refresh-job lock and the "database is ahead" check, so
-prefer the container form on a live host.
+same checksums. It skips the refresh-job lock and the "database is ahead" check, and it
+records no release in `instance_release`, so a `judge-cli` or `judge-mcp` stops against
+the result until `judgebot` next migrates. Prefer the container form on a live host.
 
 Use a full `docker compose up -d` whenever the compose file's `db` service changes.
 `up -d --build judgebot` leaves `db` alone, so it would keep the old port binding or

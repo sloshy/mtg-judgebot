@@ -15,6 +15,8 @@ futures.workspace = true
 nonempty.workspace = true
 nutype.workspace = true
 regex = "1"
+# Release versions: which client and instance releases work together (`release`).
+semver = "1"
 schemars.workspace = true
 serde.workspace = true
 # Pure hashing: `ruling_key` is the one definition of a ruling's identity, shared

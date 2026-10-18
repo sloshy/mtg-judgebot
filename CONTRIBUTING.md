@@ -117,20 +117,25 @@ SQLX_OFFLINE=true cargo build --workspace          # must pass without a databas
 Install the tool with `cargo install sqlx-cli --no-default-features --features
 postgres,rustls` if you do not have it.
 
-**Migrations keep the previous release working.** A deploy starts the new container,
+**Within a major version, migrations only add.** A deploy starts the new container,
 which migrates, while the old one is still answering (`scripts/deploy.sh`,
-`docs/DECISIONS.md` D29). The previous release's queries must therefore still work
-against the new schema. Expand in one release, contract in a later one:
+`docs/DECISIONS.md` D29), and a `judge-cli` or `judge-mcp` of an older minor keeps
+working against the new schema (`judge_core::release`). So every earlier release of the
+same major must still work against it:
 
-- **Fine in one release:** a new table; a new column that is nullable or has a default;
-  a new index; a new constraint that the previous release's writes already satisfy.
-- **Two releases:** renaming or dropping a column or table, changing a column's type,
-  making a column `NOT NULL` without a default. The first release adds the new shape and
-  writes both (or reads the new one with a fallback). The next one drops the old shape.
-- **Not across a deploy:** a migration that rewrites rows the previous release reads or
-  writes, such as moving stored citations to a new key. Say so under the release's
-  `### Upgrading` in `CHANGELOG.md`. Such a release is deployed by stopping the old
-  container first (`docker compose pull && docker compose up -d`).
+- **Fine in a minor or patch release:** a new table; a new column that is nullable or
+  has a default; a new index; a new constraint that earlier releases' writes already
+  satisfy. A rename or a type change is a new column the release writes beside the old
+  one (or reads with a fallback), and the old one stays.
+- **Only in a major release:** dropping or renaming a column or table, changing a
+  column's type, making a column `NOT NULL` without a default, and rewriting rows that
+  earlier releases read or write (moving stored citations to a new key, say). This is
+  also where the old shapes the minors left behind are dropped. Say what changed under
+  the release's `### Upgrading` in `CHANGELOG.md`.
+
+A major release's deploy stops the old container before the new one migrates, so it has
+a short downtime. Its migrations must still finish quickly, because they run inside that
+window: a slow backfill belongs in a background job.
 
 A released migration is never edited.
 
@@ -203,6 +208,15 @@ when the deployed surface is in question. Those calls cost money.
 ## Releases
 
 A release is a GitHub release whose tag is `vX.Y.Z` on a commit of `main`.
+
+Between releases, `main` carries the next version with a `-dev` suffix (`2.0.0-dev`),
+set in the same places as step 1 below when work toward that release starts. A
+pre-release works only with its own build: a `judge-cli` or stdio `judge-mcp` of any
+other version stops against a database it migrated (`judge_core::release`). Each
+migration records the release that ran it in `instance_release`, and the tools compare
+their own release with it. Against a newer release of the same major they print a note
+and keep working. Against another major, or a database missing one of their
+migrations, they stop and say what to update.
 
 1. Move the *Unreleased* changelog section under a `## [X.Y.Z]` heading, and set that
    version in `[workspace.package]` in the root `Cargo.toml` (then

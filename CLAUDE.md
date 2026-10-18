@@ -281,7 +281,18 @@ ignores it.
 "Required" is a type: `Data::new` takes a `DiscordOperator` and `App::new` a
 `NetworkOperator`, made only by `Operator::for_discord` / `for_network`
 (`Config::discord_operator` / `network_operator`). `judge-cli` and stdio `judge-mcp` hold
-a plain `Operator` and need neither. A set-but-malformed value fails `Config` load
+a plain `Operator` and need neither.
+
+**Release check.** `migrate::run` records the binary's release in `instance_release`.
+A standalone toolbox (`judge_agent::Client::Standalone`: `judge-cli`, stdio `judge-mcp`)
+compares its release with it (`judge_core::release::compatibility` over a `Ledger`:
+migrations it lacks, migrations it does not know) through `release::ReleaseCheck`,
+cached for a minute, failing closed. The ports live in `gated::Db`, reachable only as
+`Checked` from `Db::check`, so an op cannot skip it (`about`'s freshness is the one
+unchecked read). Same major, newer instance: a note. Another major, a different
+pre-release, missing migrations, or unknown ones no newer minor explains: every op
+fails. `main` carries `X.Y.Z-dev` between releases. Within a major, migrations only add
+(CONTRIBUTING); dropping, renaming and rewriting rows wait for a major. A set-but-malformed value fails `Config` load
 everywhere. `About` carries both as `operator_discord` / `operator_email`.
 
 `GET /api/health` runs a `Probe` (the pool, 3 s timeout). The compose healthcheck invokes
