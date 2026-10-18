@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use judge_core::{Operator, SourceOffer};
 use rmcp::{
-    Json, ServerHandler, ServiceExt as _,
+    Json, RoleServer, ServerHandler, ServiceExt as _,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{Implementation, ServerCapabilities, ServerConfig},
+    service::RequestContext,
     tool, tool_handler, tool_router,
     transport::{
         StreamableHttpServerConfig, StreamableHttpService, stdio,
@@ -123,12 +124,16 @@ impl JudgeMcp {
     async fn judge(
         &self,
         Parameters(input): Parameters<JudgeInput>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<Json<crate::ops::JudgeReply>, String> {
-        self.toolbox
-            .judge(input)
-            .await
-            .map(Json)
-            .map_err(|e| msg(&e))
+        // rmcp keeps a cancelled request's handler running and only cancels
+        // its token (on `notifications/cancelled`, or when the session ends).
+        // Dropping the judge future on it is what tells the run its caller
+        // went away (`judge_bot::run`), so no further model call is sent.
+        tokio::select! {
+            reply = self.toolbox.judge(input) => reply.map(Json).map_err(|e| msg(&e)),
+            () = ctx.ct.cancelled() => Err("cancelled".to_owned()),
+        }
     }
 
     #[tool(

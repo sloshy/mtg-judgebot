@@ -1294,11 +1294,24 @@ dashboard and the admin surfaces read cost, models and outcomes from them.
 - **One flow for every interface.** Discord, the HTTP API and the agent toolbox's
   `judge` call `run::run`, which judges, stores the call or the failure, and records
   the run. The run is a task of its own holding the caller's judge slot, so a request
-  that goes away (a closed tab, a cancelled MCP call) still leaves its paid-for answer
-  stored and its run recorded, and still counts against `JUDGE_CONCURRENCY`. The record
-  is written after the result is handed back, so it never delays a reply. `judge_traced` returns the context the answer was judged from, lookup round
+  that goes away (a closed tab, a cancelled MCP call) does not drop it half-way. The
+  record is written after the result is handed back, so it never delays a reply.
+  `judge_traced` returns the context the answer was judged from, lookup round
   included, so persisting no longer needs a retriever decorator keyed by question
   text.
+- **A caller that leaves stops the run at the next model call.** The run's task marks
+  the tally abandoned when the caller's end of the result channel closes: the HTTP
+  handler's future is dropped with its connection, and the MCP `judge` tool drops its
+  future when rmcp cancels the request's token (`notifications/cancelled`, or the
+  session ending), since rmcp itself keeps a cancelled handler running. The request
+  in flight finishes, since a non-streamed request is likely billed whether or not
+  anyone reads it, and is charged at its real cost. `Metered` sends nothing more
+  (`LlmError::Abandoned`), the run ends `abandoned`, and it is not a failed call. An
+  answer already written is still stored. The slot is held until the run's result is
+  ready (its persist included). `retried` stays true for a run abandoned at its retry,
+  which then has no second synthesis charge. Rejected: dropping the run with the request, which spent the same on the
+  request in flight, recorded none of it and threw away an answer already paid for; and
+  finishing the run regardless, which pays for synthesis or a retry nobody reads.
 - **Not recorded.** An agent-driven session has no run row: its model is the agent, and
   its steps span processes. Ingest, search and eval runs pass their own tallies and
   read or drop them.

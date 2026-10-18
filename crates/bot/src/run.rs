@@ -7,9 +7,12 @@
 //! process is answering, and the stored call's embedding is on it too.
 //!
 //! The run is a task of its own. A caller that goes away (a browser tab
-//! closed, a cancelled MCP request) does not take it down half-way: the
-//! models it paid for still leave their answer stored and their run
-//! recorded. The run's record is written after the result is handed back,
+//! closed, a cancelled MCP request) does not take it down half-way. The run
+//! is marked abandoned ([`Tally::abandon`]): the request in flight finishes,
+//! since the provider bills it either way, and no new model call is sent,
+//! so the run ends `abandoned` at its next one. What it paid for is still
+//! stored (an answer that was already written) and its run recorded with the
+//! charges it made. The record is written after the result is handed back,
 //! so a slow database does not hold the reply.
 
 use std::{
@@ -62,9 +65,22 @@ pub async fn run<H: Send + 'static>(
 ) -> Ran {
     let t0 = Instant::now();
     let (deps, store, q, origin) = (deps.clone(), Arc::clone(store), q.clone(), origin.clone());
-    let (tx, rx) = oneshot::channel();
+    let (mut tx, rx) = oneshot::channel();
     tokio::spawn(async move {
-        let (ran, record) = judge_and_store(&deps, store.as_ref(), &q, &origin, &history, t0).await;
+        let tally = Tally::new();
+        let work = judge_and_store(&deps, store.as_ref(), &q, &origin, &history, &tally, t0);
+        tokio::pin!(work);
+        let (ran, record) = tokio::select! {
+            done = &mut work => done,
+            () = tx.closed() => {
+                tally.abandon();
+                tracing::info!(
+                    thread = %q.thread_id,
+                    "the caller went away; the run stops before its next model call"
+                );
+                work.await
+            }
+        };
         drop(slot);
         // The caller may be gone; the run is recorded either way.
         let _ = tx.send(ran);
@@ -94,12 +110,14 @@ async fn judge_and_store(
     q: &Question,
     origin: &Origin,
     history: &[Qa],
+    tally: &Tally,
     t0: Instant,
 ) -> (Ran, RunRecord) {
-    let tally = Tally::new();
-    let traced = judge_traced(deps, q, history, &tally).await;
+    let traced = judge_traced(deps, q, history, tally).await;
     let mut left = Left::Nothing;
-    if let Some(failed) = traced.failure(q, origin) {
+    // A run stopped because its caller left has nothing for an operator to
+    // diagnose; its `judge_runs` row says how it ended.
+    if let Some(failed) = traced.failure(q, origin).filter(|_| !tally.was_stopped()) {
         match store.record_failure(&failed).await {
             Ok(id) => left = Left::Failure(id),
             Err(e) => tracing::warn!(
@@ -115,7 +133,7 @@ async fn judge_and_store(
         ..
     } = traced;
     let call = match (&result, &context) {
-        (Ok(v), Some(ctx)) => match store.persist(q, origin, v, ctx, &tally).await {
+        (Ok(v), Some(ctx)) => match store.persist(q, origin, v, ctx, tally).await {
             Ok(id) => Some(id),
             Err(e) => {
                 tracing::error!(
@@ -134,7 +152,7 @@ async fn judge_and_store(
     if let Some(id) = call {
         left = Left::Call(id);
     }
-    let outcome = Outcome::of(&result, &tally);
+    let outcome = Outcome::of(&result, tally);
     let elapsed = t0.elapsed();
     let record = RunRecord {
         interface: origin.interface(),
@@ -157,4 +175,174 @@ async fn judge_and_store(
         elapsed,
     };
     (ran, record)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use judge_core::{
+        Card, Charge, Extraction, Extractor, FailedCall, FailedCallId, Forgotten, HistoryScope,
+        RejectedAttempt, Resolution, Resolver, Retriever, RuleChunk, RuleId, Score, Synthesizer,
+        Unvalidated,
+    };
+    use tokio::sync::Notify;
+
+    use super::*;
+
+    /// Bills one request, says so, waits for the caller to leave, then tries
+    /// a second request the way `Metered` would.
+    struct Extract(Arc<Notify>);
+    #[async_trait]
+    impl Extractor for Extract {
+        async fn extract(
+            &self,
+            _q: &Question,
+            _h: &[Qa],
+            tally: &Tally,
+        ) -> Result<Extraction, JudgeError> {
+            tally.charge(Charge {
+                stage: Stage::Extraction,
+                provider: "anthropic".into(),
+                model: "m".into(),
+                tokens: None,
+                cost: Cost::Billed(0.01),
+            });
+            self.0.notify_one();
+            for _ in 0..200 {
+                if tally.is_abandoned() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            if tally.bill(Stage::Synthesis).stop_if_abandoned() {
+                return Err(anyhow::Error::from(judge_llm::LlmError::Abandoned).into());
+            }
+            Err(anyhow::anyhow!("the caller never went away").into())
+        }
+    }
+
+    struct Unused;
+    #[async_trait]
+    impl Resolver for Unused {
+        async fn resolve(&self, _span: &str) -> Result<Resolution, JudgeError> {
+            Err(anyhow::anyhow!("unused").into())
+        }
+    }
+    #[async_trait]
+    impl Retriever for Unused {
+        async fn retrieve(
+            &self,
+            _q: &Question,
+            _c: &[Card],
+            _e: &Extraction,
+            _t: &Tally,
+        ) -> Result<Context, JudgeError> {
+            Err(anyhow::anyhow!("unused").into())
+        }
+        async fn lookup_rules(&self, _ids: &[RuleId]) -> Result<Vec<RuleChunk>, JudgeError> {
+            Err(anyhow::anyhow!("unused").into())
+        }
+    }
+    #[async_trait]
+    impl Synthesizer for Unused {
+        async fn answer(
+            &self,
+            _q: &Question,
+            _ctx: &mut Context,
+            _r: Option<&RejectedAttempt>,
+            _t: &Tally,
+        ) -> Result<Verdict<Unvalidated>, JudgeError> {
+            Err(anyhow::anyhow!("unused").into())
+        }
+    }
+
+    #[derive(Default)]
+    struct Store(Mutex<Vec<RunRecord>>);
+    #[async_trait]
+    impl CallStore for Store {
+        async fn persist(
+            &self,
+            _q: &Question,
+            _o: &Origin,
+            _v: &Verdict<Validated>,
+            _c: &Context,
+            _t: &Tally,
+        ) -> Result<CallId, JudgeError> {
+            Err(anyhow::anyhow!("unused").into())
+        }
+        async fn rate(&self, _c: CallId, _u: &str, _s: Score, _j: bool) -> Result<(), JudgeError> {
+            Ok(())
+        }
+        async fn history(
+            &self,
+            _t: &str,
+            _n: usize,
+            _s: HistoryScope,
+        ) -> Result<Vec<Qa>, JudgeError> {
+            Ok(vec![])
+        }
+        async fn forget_user(&self, _u: &str) -> Result<Forgotten, JudgeError> {
+            Ok(Forgotten::default())
+        }
+        async fn record_failure(&self, _f: &FailedCall) -> Result<FailedCallId, JudgeError> {
+            Ok(FailedCallId(7))
+        }
+        async fn record_run(&self, run: &RunRecord) -> Result<(), JudgeError> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(run.clone());
+            Ok(())
+        }
+    }
+
+    /// A caller that goes away mid-run leaves the run to finish its request
+    /// in flight, send nothing more, and be recorded `abandoned` with what it
+    /// paid for.
+    #[tokio::test]
+    async fn a_caller_that_goes_away_stops_the_run_at_its_next_model_call() -> anyhow::Result<()> {
+        let started = Arc::new(Notify::new());
+        let deps = Deps {
+            extractor: Arc::new(Extract(Arc::clone(&started))),
+            resolver: Arc::new(Unused),
+            retriever: Arc::new(Unused),
+            synthesizer: Arc::new(Unused),
+        };
+        let store = Arc::new(Store::default());
+        let calls: Arc<dyn CallStore> = Arc::clone(&store) as Arc<dyn CallStore>;
+        let q = Question {
+            thread_id: "web:x".into(),
+            text: "does lifelink stack?".into(),
+        };
+        let slot = Arc::new(());
+        tokio::select! {
+            _ = run(&deps, &calls, &q, &Origin::Web, vec![], Arc::clone(&slot)) => {
+                anyhow::bail!("the run finished while its caller waited");
+            }
+            () = started.notified() => {}
+        }
+        // The caller's future is gone; the run goes on and is recorded.
+        let mut runs = vec![];
+        for _ in 0..200 {
+            runs = store
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if !runs.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let [recorded] = runs.as_slice() else {
+            anyhow::bail!("one run recorded, got {}", runs.len());
+        };
+        assert_eq!(recorded.outcome, Outcome::Abandoned);
+        assert_eq!(recorded.charges.len(), 1, "the request in flight is kept");
+        assert_eq!(recorded.left, Left::Nothing, "not a failure to diagnose");
+        assert_eq!(Arc::strong_count(&slot), 1, "the slot is given back");
+        Ok(())
+    }
 }

@@ -720,6 +720,14 @@ impl<B: Backend> sealed::Sealed for Metered<B> {}
 #[async_trait]
 impl<B: Backend> ChatModel for Metered<B> {
     async fn complete(&self, req: &ChatRequest, bill: &Bill) -> Result<ChatResponse, LlmError> {
+        // Checked before anything is reserved: nobody is waiting for the answer.
+        if bill.stop_if_abandoned() {
+            tracing::info!(
+                stage = bill.stage().id(),
+                "the caller went away; request not sent"
+            );
+            return Err(LlmError::Abandoned);
+        }
         let reserved = self.reserve(req, bill)?;
         match self.inner.complete(req).await {
             Ok(resp) => {
@@ -1051,6 +1059,22 @@ mod tests {
             "{refused:?}"
         );
         assert!(capped.was_capped() && capped.charges().is_empty());
+        // A run whose caller went away sends nothing more and reserves nothing.
+        let gone = Tally::new();
+        gone.abandon();
+        let queued = m.inner().replies.lock().map_or(0, |r| r.len());
+        let before_gone = meter.spent_usd();
+        assert!(matches!(
+            m.complete(&req(64), &gone.bill(Stage::Synthesis)).await,
+            Err(LlmError::Abandoned)
+        ));
+        assert_eq!(
+            m.inner().replies.lock().map_or(0, |r| r.len()),
+            queued,
+            "not sent"
+        );
+        assert!((meter.spent_usd() - before_gone).abs() < 1e-12 && gone.charges().is_empty());
+        assert!(gone.was_stopped() && !gone.was_capped());
         // All zeros from a paid model, and a 2xx body that read as nothing at
         // all, are worst cases too.
         let undecodable = || {

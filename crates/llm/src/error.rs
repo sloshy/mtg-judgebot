@@ -67,6 +67,10 @@ pub enum LlmError {
         /// The cap in USD.
         cap: f64,
     },
+    /// The run's caller went away, so the request was not sent
+    /// (`judge_core::Tally::abandon`).
+    #[error("the caller went away; request not sent")]
+    Abandoned,
     /// A spend cap is not a finite non-negative number. `setting` names
     /// where it came from (`JUDGE_MAX_USD`, or "spend cap" for a value handed
     /// to [`crate::SpendMeter::with_max_spend_usd`], as `--max-usd` does).
@@ -104,6 +108,7 @@ impl LlmError {
             | LlmError::MissingApiKey { .. }
             | LlmError::Auth { .. }
             | LlmError::SpendCapExceeded { .. }
+            | LlmError::Abandoned
             | LlmError::BadMaxSpend { .. }
             | LlmError::Unpriced { .. } => false,
         }

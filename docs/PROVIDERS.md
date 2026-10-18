@@ -193,7 +193,8 @@ Around the meter:
 - `ChatModel::complete` takes a `Bill`: the run's `judge_core::Tally` and the `Stage`
   the call is for. Settling adds a `Charge` to it, so a run's cost is its own however
   many runs share the meter (`judge_runs`, D33). A response with no usage is charged at
-  the reservation it kept, as `Cost::WorstCase`.
+  the reservation it kept, as `Cost::WorstCase`. A run whose caller went away
+  (`Tally::abandon`) gets `LlmError::Abandoned` before anything is reserved or sent.
 - Each call logs an `llm call` line with a `provider` field.
 - `Models::{single, pair, priced}` take the meter and bare backends and meter them
   themselves. The fields are private, so there is no uncapped model and no foreign meter.

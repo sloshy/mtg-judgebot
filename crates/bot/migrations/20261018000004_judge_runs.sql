@@ -3,7 +3,9 @@
 -- `judge-cli judge`, whatever the outcome or audience. An agent-driven session
 -- has no row: its model is the agent.
 --
--- outcome: judge_core::Outcome's ids. retried: the first synthesis attempt was
+-- outcome: judge_core::Outcome's ids. `abandoned`: the caller went away, so
+-- the run sent no further model call (the one in flight finished and is
+-- charged). retried: the first synthesis attempt was
 -- rejected, so the one retry was attempted (its request may still have failed).
 -- tool_round: a billed request carried the lookup_rules result.
 --
@@ -23,7 +25,7 @@ CREATE TABLE judge_runs (
         CHECK (outcome IN ('answered', 'ambiguous', 'not_found', 'out_of_scope',
                            'bad_citation', 'malformed_citation', 'empty_verdict',
                            'uncited_rules', 'tool_misuse', 'refused', 'at_cap',
-                           'upstream')),
+                           'abandoned', 'upstream')),
     retried        boolean     NOT NULL,
     tool_round     boolean     NOT NULL,
     call_id        uuid        REFERENCES calls (id) ON DELETE SET NULL,

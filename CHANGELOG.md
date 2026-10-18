@@ -201,10 +201,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   keeps the reservation taken before the request, as an embedding with no usage
   already did. A free model is unaffected.
 
-- **A web or MCP question finishes when its caller goes away.** Closing the tab (or
-  cancelling the MCP request) mid-answer used to drop the run, losing the stored call
-  the models had already been paid for. The run now finishes, is stored and recorded,
-  and keeps its judge slot until then.
+- **A web or MCP question whose caller goes away stops at its next model call.**
+  Closing the tab (or cancelling the MCP request) mid-answer used to drop the run
+  outright: the request in flight was still billed, but nothing recorded it. Now that
+  request finishes and is charged, no further model call is sent, and the run is
+  recorded as `abandoned`. An answer already written is still stored.
 
 - **Discord answers a command it cannot run.** A slash command this version does not
   have (Discord can still list a previous release's for a moment after a deploy) gets a

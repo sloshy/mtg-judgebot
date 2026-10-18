@@ -12,6 +12,11 @@
 //!
 //! A caller with no run to record (an ingest batch, a search) still passes a
 //! tally, its own, and may read or drop it.
+//!
+//! A run whose caller went away is marked [`Tally::abandon`]: the metered
+//! chat model then sends no new request for it (one in flight finishes, as
+//! the provider bills it either way), and the run ends, recorded, at the
+//! next model call.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -134,6 +139,10 @@ pub struct Charge {
 struct Ledger {
     charges: Vec<Charge>,
     capped: bool,
+    /// The caller went away.
+    abandoned: bool,
+    /// A model call was not sent because the caller went away.
+    stopped: bool,
 }
 
 /// One run's charges. A cheap handle: clones add to the same list, so an
@@ -173,6 +182,24 @@ impl Tally {
     #[must_use]
     pub fn was_capped(&self) -> bool {
         self.lock().capped
+    }
+
+    /// The caller went away: no new model call is sent for this run.
+    pub fn abandon(&self) {
+        self.lock().abandoned = true;
+    }
+
+    /// Whether the caller went away.
+    #[must_use]
+    pub fn is_abandoned(&self) -> bool {
+        self.lock().abandoned
+    }
+
+    /// Whether a model call was left unsent because the caller went away,
+    /// which is what ended the run.
+    #[must_use]
+    pub fn was_stopped(&self) -> bool {
+        self.lock().stopped
     }
 
     /// The charges so far, in the order they were billed.
@@ -238,6 +265,17 @@ impl Bill {
     pub fn cap_refused(&self) {
         self.tally.cap_refused();
     }
+
+    /// Whether the run's caller went away, so the call must not be sent.
+    /// `true` also notes that a call was left unsent for it.
+    #[must_use]
+    pub fn stop_if_abandoned(&self) -> bool {
+        let mut ledger = self.tally.lock();
+        if ledger.abandoned {
+            ledger.stopped = true;
+        }
+        ledger.abandoned
+    }
 }
 
 #[cfg(test)]
@@ -283,5 +321,14 @@ mod tests {
         assert!(!Cost::ZERO.plus(Cost::Billed(1.0)).is_estimate());
         held.bill(Stage::Synthesis).cap_refused();
         assert!(tally.was_capped());
+        assert!(!tally.bill(Stage::Synthesis).stop_if_abandoned());
+        assert!(
+            !tally.was_stopped(),
+            "a call sent while the caller waits stops nothing"
+        );
+        held.abandon();
+        assert!(tally.is_abandoned() && !tally.was_stopped());
+        assert!(tally.bill(Stage::Synthesis).stop_if_abandoned());
+        assert!(tally.was_stopped());
     }
 }

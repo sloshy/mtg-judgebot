@@ -38,13 +38,15 @@ pub enum Outcome {
     Refused,
     /// The spend cap refused a model call.
     AtCap,
+    /// The caller went away, and the run stopped before its next model call.
+    Abandoned,
     /// Anything else from an adapter: HTTP, the database, parsing.
     Upstream,
 }
 
 impl Outcome {
     /// Every variant, in declaration order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Answered,
         Self::Ambiguous,
         Self::NotFound,
@@ -56,11 +58,13 @@ impl Outcome {
         Self::ToolMisuse,
         Self::Refused,
         Self::AtCap,
+        Self::Abandoned,
         Self::Upstream,
     ];
 
-    /// How `result` ended, `tally` telling a spend-cap refusal apart from
-    /// another upstream failure.
+    /// How `result` ended, `tally` telling a spend-cap refusal and a run
+    /// stopped for a caller that went away apart from another upstream
+    /// failure.
     #[must_use]
     pub fn of(result: &Result<Verdict<Validated>, JudgeError>, tally: &Tally) -> Self {
         match result {
@@ -75,6 +79,7 @@ impl Outcome {
             Err(JudgeError::ToolMisuse(_)) => Self::ToolMisuse,
             Err(JudgeError::LlmRefused) => Self::Refused,
             Err(JudgeError::Upstream(_)) if tally.was_capped() => Self::AtCap,
+            Err(JudgeError::Upstream(_)) if tally.was_stopped() => Self::Abandoned,
             Err(JudgeError::Upstream(_)) => Self::Upstream,
         }
     }
@@ -94,6 +99,7 @@ impl Outcome {
             Self::ToolMisuse => "tool_misuse",
             Self::Refused => "refused",
             Self::AtCap => "at_cap",
+            Self::Abandoned => "abandoned",
             Self::Upstream => "upstream",
         }
     }
@@ -171,10 +177,19 @@ mod tests {
     }
 
     #[test]
-    fn an_upstream_failure_is_at_the_cap_only_when_the_cap_refused() {
+    fn an_upstream_failure_is_at_the_cap_or_abandoned_only_when_a_call_was_refused() {
         let tally = Tally::new();
         let failed = Err(JudgeError::Upstream(anyhow::anyhow!("x")));
         assert_eq!(Outcome::of(&failed, &tally), Outcome::Upstream);
+        let left = Tally::new();
+        left.abandon();
+        assert_eq!(
+            Outcome::of(&failed, &left),
+            Outcome::Upstream,
+            "gone, but nothing was left unsent: the failure is its own"
+        );
+        assert!(left.bill(crate::Stage::Synthesis).stop_if_abandoned());
+        assert_eq!(Outcome::of(&failed, &left), Outcome::Abandoned);
         tally.cap_refused();
         assert_eq!(Outcome::of(&failed, &tally), Outcome::AtCap);
         assert_eq!(

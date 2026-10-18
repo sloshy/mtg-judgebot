@@ -2130,3 +2130,38 @@ async fn a_run_is_recorded_with_its_charges_and_outlives_its_call(
     assert_eq!((left.runs, left.calls, left.failures), (2, 0, 0));
     Ok(())
 }
+
+/// The migration's CHECK lists hold every `Outcome` and every `Stage`, so a
+/// new variant cannot ship with a constraint that refuses it.
+#[sqlx::test(migrations = "./migrations")]
+async fn every_outcome_and_stage_is_storable(pool: PgPool) -> anyhow::Result<()> {
+    use judge_core::{Charge, Cost, Left, Outcome, RunRecord, Stage};
+    let store = PgCallStore::new(pool.clone());
+    for outcome in Outcome::ALL {
+        store
+            .record_run(&RunRecord {
+                interface: judge_core::Interface::Mcp,
+                private: false,
+                outcome,
+                elapsed: std::time::Duration::from_millis(1),
+                retried: false,
+                charges: Stage::ALL
+                    .iter()
+                    .map(|&stage| Charge {
+                        stage,
+                        provider: "openai".into(),
+                        model: "local".into(),
+                        tokens: None,
+                        cost: Cost::ZERO,
+                    })
+                    .collect(),
+                left: Left::Nothing,
+            })
+            .await?;
+    }
+    let n = sqlx::query_scalar!(r#"SELECT count(DISTINCT outcome) AS "n!" FROM judge_runs"#)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(usize::try_from(n)?, Outcome::ALL.len());
+    Ok(())
+}
