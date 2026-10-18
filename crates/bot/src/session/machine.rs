@@ -25,9 +25,9 @@ use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use judge_core::{
-    AnswerableSource, CallId, Context, Extraction, JudgeError, MAX_ANSWER_CHARS, Qa, Question,
-    RejectedAttempt, Rejection, Resolver, Retriever, RuleChunk, RuleId, Source, Unvalidated,
-    Validated, Verdict, judge::collect_resolved,
+    AnswerableSource, CallId, Context, Extraction, JudgeError, MAX_ANSWER_CHARS, Origin, Qa,
+    Question, RejectedAttempt, Rejection, Resolver, Retriever, RuleChunk, RuleId, Source,
+    Unvalidated, Validated, Verdict, Visibility, judge::collect_resolved,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -309,6 +309,7 @@ pub trait PersistCall: Send + Sync {
         &self,
         session: SessionId,
         q: &Question,
+        origin: &Origin,
         v: &Verdict<Validated>,
         ctx: &Context,
     ) -> Result<CallId, JudgeError>;
@@ -321,6 +322,8 @@ pub struct Session {
     pub id: SessionId,
     /// The question, in an [`AgentThread`].
     pub question: Question,
+    /// Whether the call it stores is private (`begin_session`'s `private`).
+    pub visibility: Visibility,
     /// Where it is.
     pub stage: Stage,
 }
@@ -351,6 +354,7 @@ impl Session {
         id: SessionId,
         thread: AgentThread,
         text: String,
+        visibility: Visibility,
         history: Vec<Qa>,
     ) -> Result<Self, SessionError> {
         if text.trim().is_empty() {
@@ -367,6 +371,7 @@ impl Session {
                 thread_id: thread.into(),
                 text,
             },
+            visibility,
             stage: Stage::AwaitingExtraction { history },
         })
     }
@@ -608,7 +613,13 @@ impl Session {
             JudgeError::Upstream(anyhow::anyhow!("accepted verdict no longer validates: {e}"))
         })?;
         let id = store
-            .persist_call(self.id, &self.question, &validated, ctx)
+            .persist_call(
+                self.id,
+                &self.question,
+                &Origin::AgentSession(self.visibility),
+                &validated,
+                ctx,
+            )
             .await?;
         *call = Some(id);
         Ok(id)
@@ -828,6 +839,7 @@ mod tests {
             &self,
             session: SessionId,
             _q: &Question,
+            _origin: &Origin,
             _v: &Verdict<Validated>,
             _ctx: &Context,
         ) -> Result<CallId, JudgeError> {
@@ -870,6 +882,7 @@ mod tests {
             SessionId::new(),
             AgentThread::new(),
             "does lifelink stack?".into(),
+            Visibility::Public,
             vec![Qa {
                 question: "earlier".into(),
                 answer: "yes".into(),
@@ -930,11 +943,23 @@ mod tests {
     fn begin_bounds_the_question() {
         let long = "x".repeat(MAX_QUESTION_CHARS + 1);
         assert!(matches!(
-            Session::begin(SessionId::new(), AgentThread::new(), long, vec![]),
+            Session::begin(
+                SessionId::new(),
+                AgentThread::new(),
+                long,
+                Visibility::Public,
+                vec![]
+            ),
             Err(SessionError::Invalid(_))
         ));
         assert!(matches!(
-            Session::begin(SessionId::new(), AgentThread::new(), "  ".into(), vec![]),
+            Session::begin(
+                SessionId::new(),
+                AgentThread::new(),
+                "  ".into(),
+                Visibility::Public,
+                vec![]
+            ),
             Err(SessionError::Invalid(_))
         ));
     }

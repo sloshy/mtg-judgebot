@@ -40,18 +40,24 @@ line. Once your bot is in a server, `/help` explains the commands, and the
 For every question answered, an instance stores:
 
 - the question text and the answer
-- the channel or web session it was asked in
+- the channel or web session it was asked in, and whether it came from Discord, the web
+  app or an agent
+- on Discord, the asker's user id and username
+- whether it was asked private
 - the ids of the rules, rulings and cards it was answered from.
 
-A Discord question asked with `private: True` is not saved unless the call fails. A failed
-call (any question) is kept with what the model sent, until a later failure finds it older than 30 days, so the operator can
-diagnose it, and it is marked private when the asker chose that. When someone presses a rating
-button, the instance stores their Discord user id and the score. It stores nothing else.
-The bot receives only its own slash commands and button presses, never channel messages.
-Ratings and failed Discord calls are the data tied to a user id. `/forget` deletes the
-ratings and anonymizes the failed calls: the id, question, error and the model's text are
-removed, and only the time, thread and private flag stay. A failed call from the web app
-or an agent has no user id.
+A Discord question asked with `private: True` is stored too, but only the operator can
+see it: it is never shown to anyone else, never read as another question's history and
+never used as an example. A failed call is kept with what the model sent, until a later
+failure finds it older than 30 days, so the operator can diagnose it. When someone
+presses a rating button, the instance stores their Discord user id and the score. It
+stores nothing else. The bot receives only its own slash commands and button presses,
+never channel messages.
+
+`/forget` deletes a user's ratings and removes their id and username from every question
+they asked. A private question loses its text too, and so does a failed one. A public
+question keeps its text, which the channel saw. A question from the web app or an agent
+has no user id.
 
 [Sample answers](../../start-here/sample-answers/) shows what comes back, and
 [Evaluation](../../how-it-works/evaluation/#results) how it scored on a hard question set.

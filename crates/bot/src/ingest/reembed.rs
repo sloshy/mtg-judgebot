@@ -53,7 +53,7 @@ async fn workload(pool: &PgPool, only_missing: bool) -> anyhow::Result<Vec<(Stri
                 CASE WHEN cardinality(examples) > 0 THEN E'\\nExample: ' || array_to_string(examples, E'\\nExample: ') ELSE '' END)), 0)::bigint AS bytes \
            FROM rules WHERE parent_id IS NULL AND (NOT $1 OR embedding IS NULL) \
          UNION ALL SELECT 'glossary', count(*), coalesce(sum(octet_length(term || E'\\n' || text)), 0)::bigint FROM glossary WHERE (NOT $1 OR embedding IS NULL) \
-         UNION ALL SELECT 'calls', count(*), coalesce(sum(octet_length(question || E'\\n' || answer)), 0)::bigint FROM calls WHERE (NOT $1 OR embedding IS NULL)",
+         UNION ALL SELECT 'calls', count(*), coalesce(sum(octet_length(question || E'\\n' || answer)), 0)::bigint FROM calls WHERE NOT private AND (NOT $1 OR embedding IS NULL)",
     )
     .bind(only_missing)
     .fetch_all(pool)

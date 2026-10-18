@@ -6,8 +6,8 @@ use futures::future::try_join_all;
 use nonempty::NonEmpty;
 
 use crate::{
-    Ambiguous, Card, Extractor, FailedCall, JudgeError, MatchedVia, Qa, Question, RejectedAttempt,
-    Rejection, Resolution, Resolver, Retriever, Synthesizer, Validated, Verdict,
+    Ambiguous, Card, Extractor, FailedCall, JudgeError, MatchedVia, Origin, Qa, Question,
+    RejectedAttempt, Rejection, Resolution, Resolver, Retriever, Synthesizer, Validated, Verdict,
 };
 
 /// The ports `judge()` needs. `CallStore` is deliberately absent: persisting
@@ -54,24 +54,18 @@ pub struct Traced {
 impl Traced {
     /// What a failed call is stored as, when `result` is a failure an
     /// operator needs the cause of ([`JudgeError::is_operator_failure`]).
-    /// `private` is the asker's audience, kept as a flag on the row.
+    /// `origin` is stored with it: a private call's failure is kept too, flagged.
     #[must_use]
-    pub fn failure(
-        &self,
-        q: &Question,
-        private: bool,
-        user_id: Option<String>,
-    ) -> Option<FailedCall> {
+    pub fn failure(&self, q: &Question, origin: &Origin) -> Option<FailedCall> {
         let e = self
             .result
             .as_ref()
             .err()
             .filter(|e| e.is_operator_failure())?;
         Some(FailedCall {
+            origin: origin.clone(),
             thread_id: q.thread_id.clone(),
             question: q.text.clone(),
-            private,
-            user_id,
             error: format!("{e:#}"),
             first_rejection: self.first_rejection.as_ref().map(ToString::to_string),
             attempts: self.attempts.clone(),
@@ -736,10 +730,13 @@ mod tests {
         let (d, _) = deps(vec!["", ""]);
         let traced = futures::executor::block_on(judge_traced(&d, &q(), &[]));
         assert_eq!(traced.attempts.len(), 2);
-        let failed = traced.failure(&q(), true, Some("u1".to_owned()));
+        let origin = crate::Origin::Discord {
+            asker: crate::Asker::new(std::num::NonZeroU64::MIN, "urza"),
+            visibility: crate::Visibility::Private,
+        };
+        let failed = traced.failure(&q(), &origin);
         assert!(
-            failed.as_ref().is_some_and(|f| f.private
-                && f.user_id.as_deref() == Some("u1")
+            failed.as_ref().is_some_and(|f| f.origin == origin
                 && f.attempts.len() == 2
                 && f.first_rejection.is_some()
                 && f.question == q().text),
@@ -748,7 +745,7 @@ mod tests {
         // An answered call is not a failure.
         let (d, _) = deps(vec!["gain that much life"]);
         let ok = futures::executor::block_on(judge_traced(&d, &q(), &[]));
-        assert!(ok.failure(&q(), false, None).is_none());
+        assert!(ok.failure(&q(), &crate::Origin::Web).is_none());
     }
 
     /// The regression: an unreadable citation must behave like a bad one — one

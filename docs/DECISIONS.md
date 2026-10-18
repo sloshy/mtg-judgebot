@@ -274,9 +274,9 @@ question.
 
 Prior calls are always rendered *after* the CR material and labelled as precedent, never
 authority. The CR outranks anything the community has said. The anonymous web app never
-rates, because a rating with no identity behind it is noise. `/forget` deletes a user's
-ratings and anonymizes their failed calls (D27), the only per-user data kept. Questions
-are stored against the channel, not the asker.
+rates, because a rating with no identity behind it is noise. A Discord call records who
+asked (D31). `/forget` deletes a user's ratings and removes them from their calls and
+failed calls.
 
 ## D11. Call retirement
 
@@ -909,16 +909,14 @@ and the answer text of each attempt. It is written for the operator failures of
   it has no text.
 - **Bounded on write.** The question (2000 characters), each attempt (8000) and the error
   (4000) are cut, and an insert deletes rows older than 30 days or past the newest 500.
-- **Private questions are stored when the call fails**, flagged `private`: a failure cannot
-  be read without its question, and the operator decided that a private question is private
-  from the channel, not from them. An answered private question is still never stored, and
-  `Audience::record` still hides the store from the answering path. The Discord adapter
-  reaches `record_failure` directly, which is the one exception.
-- **`/forget` anonymizes.** A Discord failure stores the asker's user id, so `/forget` can
-  find the rows. It sets the id to NULL and replaces the question, error, first rejection
-  and attempts, keeping the time, thread and `private` flag (`Forgotten` counts ratings
-  deleted and failed calls anonymized). The HTTP API and agents have no user and store
-  none. A call still running when its asker runs `/forget` can record its failure afterwards,
+- **Private questions are stored**, flagged `private`: a failure cannot be read without
+  its question, and the operator decided that a private question is private from the
+  channel, not from them. An answered private question is stored too (D31).
+- **`/forget` anonymizes.** A Discord failure stores the asker's user id and username
+  (`asker_id`, `asker_name`), so `/forget` can find the rows. It sets both to NULL and
+  replaces the question, error, first rejection and attempts, keeping the time, thread,
+  interface and `private` flag (`Forgotten` counts what it deleted and anonymized). The
+  HTTP API and agents have no user and store none. A call still running when its asker runs `/forget` can record its failure afterwards,
   with the id; `/forget` again clears it (a late rating behaves the same). Rejected:
   deleting the rows, which would also drop the failure counts; and
   storing no id, which would leave a question the asker cannot take back.
@@ -1151,3 +1149,46 @@ What follows:
   but what comes before that call happens again (a `/judge` charges the asker's
   window). A host clock five minutes wrong refuses every interaction; the first
   refusal of a streak is an ERROR and an alert.
+
+## D31. Call origin and private calls
+
+*Decided 2026-10-18.*
+
+Every stored call and failed call records where it came from (`judge_core::origin`): the
+interface it was asked through, the Discord user who asked, and whether it is private.
+The public feed, the feedback queue and the dashboard read these.
+
+- **The interface is stated, not guessed.** `calls.interface` is `discord`, `web`,
+  `mcp`, `cli` or `agent_session`. Each interface passes its own `Origin` to
+  `CallStore::persist` and `record_failure`, so an interface cannot store a call without
+  naming itself. Rows from before 2.0.0 were labelled from the thread id. An `agent:`
+  thread with no session keeps the value `agent`, because the MCP `judge` tool and
+  `judge-cli judge` could not be told apart. The column is `interface` because
+  `calls.source` already means `cr` or `commander`. Rejected: reading the thread id's
+  prefix, which cannot separate MCP from the CLI.
+- **The asker's username.** A Discord call stores the user id and the unique username,
+  snapshotted when asked, so a later rename does not change who asked. The display name
+  and the server nickname are not stored. A value that is not a username by Discord's
+  rule (a legacy `name#1234` tag) is stored as NULL and shown as anonymous. Web and agent
+  calls have no asker.
+- **Private means not public-facing.** A `/judge private:True` call, and a `judge` or
+  `begin_session` call with `private`, is stored with its text and asker. On Discord it
+  gets rating buttons. Only the operator's surfaces show it. It is never a prior-call
+  example and is never embedded. Rejected: leaving answered private calls unstored, which
+  leaves the operator unable to read an answer someone rated wrong.
+- **History by scope** (`Origin::history_scope`). A private Discord question reads no
+  history, and a public question in any thread reads only public calls. A Discord
+  channel is shared, so one user's private calls must never reach another's answer. An
+  agent thread (`agent:<uuid>`) is known only to the caller it was returned to, so a
+  private agent question reads its own thread whole.
+- **`/forget`.** It deletes the user's ratings and removes their id and username from
+  their calls. On their private calls it also replaces the question and answer with
+  `[removed]` and clears the citations and context ids, which would say what was asked
+  about. A public call keeps its text, which the channel saw. It holds the shared side of
+  `CALLS_REWRITE_LOCK`, so a CR renumbering cannot write a removed answer back from an
+  earlier read. A question still running when its asker runs `/forget` is stored
+  afterwards with the asker, as a late failure or rating is (D27); `/forget` again
+  clears it. Rejected: deleting the calls, which would also remove answers other people
+  rated and the counts the dashboard shows.
+- **The web has no private option.** It has no account to show a private answer to. A
+  database constraint pins that, and another keeps an asker on Discord calls only.

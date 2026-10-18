@@ -217,6 +217,7 @@ impl PgRetriever {
                     WHERE c.category = ANY($1)
                       AND c.retired_at IS NULL
                       AND c.session_id IS NULL
+                      AND NOT c.private
                       AND NOT (r.effective_score < 1.5 AND r.n >= 5)
                       AND (cardinality($4::uuid[]) = 0 OR EXISTS (
                             SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)
@@ -243,6 +244,7 @@ impl PgRetriever {
                     WHERE c.category = ANY($1)
                       AND c.retired_at IS NULL
                       AND c.session_id IS NULL
+                      AND NOT c.private
                       AND NOT (r.effective_score < 1.5 AND r.n >= 5)
                       AND (cardinality($3::uuid[]) = 0 OR EXISTS (
                             SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)

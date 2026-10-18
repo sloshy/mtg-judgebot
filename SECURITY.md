@@ -41,13 +41,17 @@ Operators should know these properties. The reasoning behind each is in
   holds. Change it if you publish the port.
 - **The image runs as `nobody`** and is rebuilt by CI from the committed lockfiles.
 - **User data stored:**
-  - the question and answer text of every call
-  - the Discord thread or web session id it was asked in
-  - the Discord user id of anyone who presses a rating button (`/forget` deletes those)
+  - the question and answer text of every call, private ones included
+  - the Discord thread or web session id it was asked in, and the interface
+  - for a Discord question, the asker's user id and username at asking time
+  - the Discord user id of anyone who presses a rating button
   - for a call that failed (`failed_calls`): the question, the error, the model's answer
-    text and, for a Discord question, the asker's user id and whether it was private.
-    Pruned to 30 days / 500 rows when a later failure is recorded; `/forget` anonymizes the
-    asker's rows.
+    text and, for a Discord question, the asker's user id and username. Pruned to 30
+    days / 500 rows when a later failure is recorded.
+
+  `/forget` deletes the user's ratings and removes their id and username from their calls
+  and failed calls. A private call loses its question, answer, citations and card ids too,
+  and a failed one its text. A public call keeps its text, which the channel saw.
   - for each "did you mean?" prompt a card is picked from (`pick_claims`): the Discord
     message id, when the prompt was shown and a short digest of its content. No text and
     no user id; rows are deleted after a day.

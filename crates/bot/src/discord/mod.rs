@@ -33,8 +33,9 @@
 //!   ambiguous span simply starts the loop again. A question too long for the
 //!   message gets the choices listed and no buttons.
 //! * `/judge … private:True` → the same, shown to the asker alone
-//!   ([`Audience::Private`]): no thread history read, nothing persisted, so
-//!   no rating buttons and no trace in the channel's follow-ups.
+//!   ([`Audience::Private`]): no thread history read, and the call stored
+//!   private (with rating buttons), so it never reaches the channel's
+//!   follow-ups or the prior-call examples.
 //! * Each user gets [`Config::user_limit`] questions per window, charged once
 //!   ([`cooldown`]); a pick re-runs a question already counted and is free.
 //! * `/card` and `/rule` read the database and call no model.
@@ -63,8 +64,9 @@ use std::{
 
 use anyhow::Context as _;
 use judge_core::{
-    Ambiguous, CallId, CallStore, Card, Deps, DiscordOperator, JudgeError, Question, Resolution,
-    Retriever, RuleId, Score, SourceOffer, Validated, Verdict, judge_traced,
+    Ambiguous, Asker, CallId, CallStore, Card, Deps, DiscordOperator, JudgeError, Origin, Question,
+    Resolution, Retriever, RuleId, Score, SourceOffer, Validated, Verdict, Visibility,
+    judge_traced,
 };
 use judge_llm::{ApiKey, SpendMeter};
 use nonempty::NonEmpty;
@@ -72,7 +74,7 @@ use serenity::all::{
     ButtonStyle, CommandInteraction, ComponentInteraction, CreateActionRow, CreateAllowedMentions,
     CreateButton, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
     CreateInteractionResponseFollowup, CreateInteractionResponseMessage, EditInteractionResponse,
-    GatewayIntents, GuildId, Http, Interaction, Member, MessageFlags, Ready, UserId,
+    GatewayIntents, GuildId, Http, Interaction, Member, MessageFlags, Ready, User, UserId,
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -154,11 +156,11 @@ impl Delivery {
 /// `custom_id` ([`ids::Pick`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Audience {
-    /// The channel: thread history in, the call persisted, rating buttons.
+    /// The channel: thread history in, the call stored public.
     Channel,
     /// The asker alone. The question stands by itself: it reads no thread
-    /// history and is never persisted, so it cannot be rated, cannot become a
-    /// prior call and cannot surface in anyone's follow-up.
+    /// history, and its call is stored private, so it cannot become a prior
+    /// call or surface in anyone's follow-up ([`Visibility::Private`]).
     Private,
 }
 
@@ -174,12 +176,11 @@ impl Audience {
         matches!(self, Self::Private)
     }
 
-    /// The call store as this audience may use it: not at all, for a private
-    /// question.
-    fn record(self, store: &dyn CallStore) -> Option<&dyn CallStore> {
+    /// How the call is stored.
+    const fn visibility(self) -> Visibility {
         match self {
-            Self::Channel => Some(store),
-            Self::Private => None,
+            Self::Channel => Visibility::Public,
+            Self::Private => Visibility::Private,
         }
     }
 }
@@ -361,13 +362,20 @@ impl Data {
 
     /// Run the pipeline for `q` and build the reply: answer with rating
     /// buttons, "did you mean…?" with pick buttons, or an error message.
-    async fn answer(&self, q: &Question, asker: UserId, audience: Audience) -> Outgoing {
-        // The only route to the store in here: `None` for a private question,
-        // so it reads no history and cannot be persisted.
-        let record = audience.record(&*self.store);
-        let history = match record {
+    async fn answer(&self, q: &Question, user: &User, audience: Audience) -> Outgoing {
+        let asker = user.id;
+        let origin = Origin::Discord {
+            asker: Asker::new(asker.into(), &user.name),
+            visibility: audience.visibility(),
+        };
+        // `None` for a private question: a channel is shared, so it reads none.
+        let history = match origin.history_scope() {
             None => vec![],
-            Some(store) => match store.history(&q.thread_id, self.history_len).await {
+            Some(scope) => match self
+                .store
+                .history(&q.thread_id, self.history_len, scope)
+                .await
+            {
                 Ok(h) => h,
                 Err(e) => {
                     tracing::warn!(
@@ -381,9 +389,7 @@ impl Data {
         let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
         let traced = judge_traced(&self.deps, q, &history).await;
         let captured = self.capture.take(q);
-        // Kept for a private question too, flagged: this is the one place
-        // such a question is stored, and only because the call failed.
-        if let Some(failed) = traced.failure(q, audience.is_private(), Some(asker.to_string()))
+        if let Some(failed) = traced.failure(q, &origin)
             && let Err(e) = self.store.record_failure(&failed).await
         {
             tracing::warn!(
@@ -404,11 +410,10 @@ impl Data {
         );
         match result {
             Ok(v) => {
-                // No record, no call id, and so no rating buttons.
-                let call = match (record, captured.as_ref()) {
-                    (None, _) => None,
-                    (Some(store), Some(ctx)) => store
-                        .persist(q, &v, ctx)
+                // No call id, no rating buttons.
+                let call = if let Some(ctx) = captured.as_ref() {
+                    self.store
+                        .persist(q, &origin, &v, ctx)
                         .await
                         .map_err(|e| {
                             tracing::error!(
@@ -416,11 +421,10 @@ impl Data {
                                 "persist failed; answering without rating buttons"
                             );
                         })
-                        .ok(),
-                    (Some(_), None) => {
-                        tracing::warn!("no captured context for the question; call not persisted");
-                        None
-                    }
+                        .ok()
+                } else {
+                    tracing::warn!("no captured context for the question; call not persisted");
+                    None
                 };
                 Outgoing::answer(
                     &v,
@@ -644,7 +648,7 @@ impl Data {
             thread_id: c.channel_id.to_string(),
             text,
         };
-        let out = self.answer(&q, c.user.id, audience).await;
+        let out = self.answer(&q, &c.user, audience).await;
         if let Err(e) = c.edit_response(http, out.into_edit()).await {
             // The pick is claimed and the message shows "Working on it…" with
             // no buttons: tell the asker (ephemerally) to ask again rather
@@ -976,7 +980,7 @@ impl Data {
             thread_id: c.channel_id.to_string(),
             text: question,
         };
-        let out = self.answer(&q, c.user.id, audience).await;
+        let out = self.answer(&q, &c.user, audience).await;
         reply
             .send(out.into_message().ephemeral(audience.is_private()))
             .await?;
@@ -1075,7 +1079,12 @@ impl Data {
         // keeping it.
         let text = match self.store.forget_user(&user_id).await {
             Ok(f) => {
-                tracing::info!(ratings = f.ratings, failures = f.failures, "forgot a user");
+                tracing::info!(
+                    ratings = f.ratings,
+                    calls = f.calls,
+                    failures = f.failures,
+                    "forgot a user"
+                );
                 render::forgotten(f)
             }
             Err(e) => {
@@ -1609,41 +1618,21 @@ mod tests {
         Ok(())
     }
 
-    /// A store that must never be reached.
-    struct Untouchable;
-
-    #[async_trait::async_trait]
-    impl CallStore for Untouchable {
-        async fn persist(
-            &self,
-            _: &Question,
-            _: &Verdict<Validated>,
-            _: &judge_core::Context,
-        ) -> Result<CallId, JudgeError> {
-            Err(JudgeError::Upstream(anyhow::anyhow!("persist reached")))
-        }
-        async fn rate(&self, _: CallId, _: &str, _: Score, _: bool) -> Result<(), JudgeError> {
-            Err(JudgeError::Upstream(anyhow::anyhow!("rate reached")))
-        }
-        async fn history(&self, _: &str, _: usize) -> Result<Vec<judge_core::Qa>, JudgeError> {
-            Err(JudgeError::Upstream(anyhow::anyhow!("history reached")))
-        }
-        async fn forget_user(&self, _: &str) -> Result<judge_core::Forgotten, JudgeError> {
-            Err(JudgeError::Upstream(anyhow::anyhow!("forget reached")))
-        }
-        async fn record_failure(&self, _: &judge_core::FailedCall) -> Result<(), JudgeError> {
-            Err(JudgeError::Upstream(anyhow::anyhow!(
-                "record_failure reached"
-            )))
-        }
-    }
-
-    /// `Data::answer` reaches the store only through this, so a private
-    /// question has no store to read history from or persist to.
+    /// A private `/judge` is stored private and reads no channel history; a
+    /// channel one reads only the channel's public calls.
     #[test]
-    fn a_private_question_is_handed_no_store() {
-        assert!(Audience::Private.record(&Untouchable).is_none());
-        assert!(Audience::Channel.record(&Untouchable).is_some());
+    fn a_private_question_is_stored_private_and_reads_no_history() {
+        let origin = |audience: Audience| Origin::Discord {
+            asker: Asker::new(NonZeroU64::MIN, "urza"),
+            visibility: audience.visibility(),
+        };
+        assert!(origin(Audience::Private).is_private());
+        assert_eq!(origin(Audience::Private).history_scope(), None);
+        assert!(!origin(Audience::Channel).is_private());
+        assert_eq!(
+            origin(Audience::Channel).history_scope(),
+            Some(judge_core::HistoryScope::Public)
+        );
     }
 
     #[test]

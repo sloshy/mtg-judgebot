@@ -103,7 +103,7 @@ impl JudgeMcp {
 
     #[tool(
         name = "judge",
-        description = "Answer a Magic rules question with the built-in pipeline (the server's own model calls; costs the operator API budget). Returns a validated, cited answer, or `ambiguous` (re-ask with `pins`), `not_found`, `out_of_scope`, `busy`, `rate_limited` (this client's quota for the window), `unavailable` (no API key on the server: use begin_session instead) or `error`. Pass `thread` back for follow-up questions."
+        description = "Answer a Magic rules question with the built-in pipeline (the server's own model calls; costs the operator API budget). Returns a validated, cited answer, or `ambiguous` (re-ask with `pins`), `not_found`, `out_of_scope`, `busy`, `rate_limited` (this client's quota for the window), `unavailable` (no API key on the server: use begin_session instead) or `error`. Pass `thread` back for follow-up questions. Set `private` to keep the call off everything public: only the operator sees it."
     )]
     async fn judge(
         &self,
@@ -118,7 +118,7 @@ impl JudgeMcp {
 
     #[tool(
         name = "begin_session",
-        description = "Start answering a rules question yourself, without any server-side model call. Returns the session id and the extraction prompt: produce JSON matching its schema and pass it to submit_extraction. Use `thread` to give a follow-up question the history of earlier ones."
+        description = "Start answering a rules question yourself, without any server-side model call. Returns the session id and the extraction prompt: produce JSON matching its schema and pass it to submit_extraction. Use `thread` to give a follow-up question the history of earlier ones. Set `private` to store the session's call private."
     )]
     async fn begin_session(
         &self,

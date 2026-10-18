@@ -91,10 +91,11 @@ const TARGETS: [Target; 3] = [
         count: "SELECT count(*) FROM glossary WHERE embedding IS NULL",
         update: "UPDATE glossary SET embedding = $1 WHERE term = $2 AND embedding IS NULL",
     },
+    // A private call is never a prior-call example, so it is never embedded.
     Target {
         name: "calls",
-        select: "SELECT id::text AS key, question || E'\\n' || answer AS txt FROM calls WHERE embedding IS NULL ORDER BY id LIMIT $1",
-        count: "SELECT count(*) FROM calls WHERE embedding IS NULL",
+        select: "SELECT id::text AS key, question || E'\\n' || answer AS txt FROM calls WHERE embedding IS NULL AND NOT private ORDER BY id LIMIT $1",
+        count: "SELECT count(*) FROM calls WHERE embedding IS NULL AND NOT private",
         update: "UPDATE calls SET embedding = $1 WHERE id = $2::uuid AND embedding IS NULL",
     },
 ];

@@ -47,7 +47,7 @@ use judge_bot::{
     session::{PersistCall, Sessions},
     synth::Harness,
 };
-use judge_core::{CallStore, Deps, Operator, Resolver, Retriever, SourceOffer};
+use judge_core::{CallStore, Deps, Operator, Origin, Resolver, Retriever, SourceOffer, Visibility};
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
@@ -58,6 +58,36 @@ pub const ACQUIRE_WAIT: Duration = Duration::from_secs(10);
 pub const DEFAULT_HISTORY: usize = 5;
 /// `JUDGE_CONCURRENCY` default, as for the other interfaces.
 pub const DEFAULT_CONCURRENCY: usize = 2;
+
+/// The interface a toolbox serves. It decides what the toolbox's `judge`
+/// calls are stored as and how the session prompts are worded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transport {
+    /// `judge-cli`.
+    Cli,
+    /// `judge-mcp` on stdio, or `/mcp` under `judgebot --mcp`.
+    Mcp,
+}
+
+impl Transport {
+    /// The session prompts' wording for this interface.
+    #[must_use]
+    pub const fn harness(self) -> Harness {
+        match self {
+            Self::Cli => Harness::Cli,
+            Self::Mcp => Harness::Mcp,
+        }
+    }
+
+    /// What a `judge` call made through this interface is stored as.
+    #[must_use]
+    pub const fn origin(self, visibility: Visibility) -> Origin {
+        match self {
+            Self::Cli => Origin::Cli(visibility),
+            Self::Mcp => Origin::Mcp(visibility),
+        }
+    }
+}
 
 /// The built-in pipeline, present when models are configured.
 pub struct Pipeline {
@@ -109,6 +139,7 @@ pub struct Toolbox {
     retriever: Arc<dyn Retriever>,
     calls: Arc<dyn CallStore>,
     pipeline: Option<Pipeline>,
+    transport: Transport,
     permits: Arc<Semaphore>,
     meter: Option<Mutex<Meter>>,
     history_len: usize,
@@ -130,8 +161,9 @@ impl std::fmt::Debug for Toolbox {
 
 /// How to build a [`Toolbox`].
 pub struct Options {
-    /// Which harness the session prompts are worded for.
-    pub harness: Harness,
+    /// The interface served: what `judge` calls are stored as, and how the
+    /// session prompts are worded.
+    pub transport: Transport,
     /// The metered models for the built-in pipeline; `None` disables `judge`.
     pub models: Option<Models>,
     /// The request knobs the models were configured with.
@@ -174,7 +206,7 @@ impl Toolbox {
             Arc::clone(&retriever),
             Arc::clone(&calls) as Arc<dyn CallStore>,
             Arc::clone(&calls) as Arc<dyn PersistCall>,
-            opts.harness,
+            opts.transport.harness(),
         )
         .with_history_len(opts.history_len);
         let calls: Arc<dyn CallStore> = calls;
@@ -197,6 +229,7 @@ impl Toolbox {
             retriever,
             calls,
             pipeline,
+            transport: opts.transport,
             permits: opts.permits,
             meter: opts.judge_quota.map(|quota| {
                 Mutex::new(Meter {
@@ -243,7 +276,7 @@ impl Toolbox {
     /// # Errors
     /// A missing `DATABASE_URL`, a malformed `.env`, a bad model
     /// configuration, or a failed connection.
-    pub async fn from_env(harness: Harness) -> anyhow::Result<Self> {
+    pub async fn from_env(transport: Transport) -> anyhow::Result<Self> {
         match dotenvy::dotenv() {
             Ok(_) | Err(dotenvy::Error::Io(_)) => {}
             Err(e) => return Err(anyhow::Error::from(e).context("load .env")),
@@ -284,7 +317,7 @@ impl Toolbox {
         Ok(Self::new(
             pool,
             Options {
-                harness,
+                transport,
                 models,
                 deps_config: config.deps_config(),
                 vectors,

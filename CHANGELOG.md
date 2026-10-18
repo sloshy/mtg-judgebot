@@ -19,6 +19,19 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Every call records where it came from.** A stored call names its interface
+  (Discord, web, MCP, `judge-cli` or an agent session) and, on Discord, the asker's user
+  id and username at asking time. `judge-cli stats` counts questions by each interface
+  and how many were private, and `judge-cli failures` shows the interface and the
+  asker.
+
+- **Private calls are stored.** A `/judge private:True` answer is now kept, marked
+  private, and has rating buttons. Only the operator sees it: it is never read as a
+  later question's history, never used as an example and never embedded. The MCP
+  `judge` tool and `begin_session` take `private`, and `judge-cli judge` and `begin`
+  take `--private`. `/forget` now also removes the user's id and username from their
+  questions, and a private question's text.
+
 - **Discord interactions over HTTP.** With `DISCORD_INTERACTIONS=http`, Discord POSTs
   slash commands and button clicks to `/discord/interactions` (the application's
   Interactions Endpoint URL, a public HTTPS address such as the tunnel's) instead of
@@ -50,8 +63,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **Failed calls are kept for troubleshooting.** A call that fails for a reason the
   operator has to diagnose is stored in `failed_calls` with the question, the error and
   the answer text of each synthesis attempt (each cut to a fixed length; the newest 500
-  rows, 30 days). A question asked with `private: True` is stored too, flagged, but only
-  when the call failed. `judge-cli failures` reads it. A Discord failure stores the asker's user id, and
+  rows, 30 days). A question asked with `private: True` is stored too, flagged.
+  `judge-cli failures` reads it. A Discord failure stores the asker's user id, and
   `/forget` anonymizes those rows (id, question, error and text removed) as well as
   deleting ratings.
 
@@ -282,7 +295,13 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `docker logs judgebot`.
 - **Deploy this release with `docker compose up -d --remove-orphans`**, as below.
   `scripts/deploy.sh` is the deploy from this release on. The old container has no
-  SIGTERM handler, so this one deploy waits up to 130 seconds for it to stop.
+  SIGTERM handler, so this one deploy waits up to 130 seconds for it to stop. This
+  release's migrations also assume no earlier release is writing calls while they run.
+- **More is stored about each question.** From this release a Discord call stores the
+  asker's user id and username, and a `private: True` answer is stored (for the
+  operator only). `/help` says so. Earlier calls are labelled by interface from their
+  thread id, have no asker and stay public. An MCP or `judge-cli` call from before the
+  upgrade is labelled `agent`, because the two could not be told apart.
 - **Check the tunnel's service in Cloudflare:** the public hostname of your tunnel, under
   Zero Trust → Networks → Tunnels. `http://api:8787` needs no change. `http://judgebot:8787`
   still works but bypasses the `proxy`, so a deploy can lose a request in flight:

@@ -19,8 +19,8 @@ use judge_bot::discord::{capture::CapturingRetriever, render};
 use judge_bot::ingest::runs::FreshnessReader;
 use judge_bot::shutdown::Shutdown;
 use judge_core::{
-    About, CallStore, Deps, Freshness, JudgeError, NetworkOperator, Question, Retriever,
-    SourceOffer, Validated, Verdict, judge_traced,
+    About, CallStore, Deps, Freshness, HistoryScope, JudgeError, NetworkOperator, Origin, Question,
+    Retriever, SourceOffer, Validated, Verdict, judge_traced,
 };
 use judge_llm::SpendMeter;
 use tokio::sync::{Semaphore, SemaphorePermit};
@@ -181,7 +181,11 @@ impl App {
     /// Run the pipeline for `q` and shape the reply. Mirrors the Discord
     /// adapter's flow (history → judge → persist) minus rating buttons.
     async fn answer(&self, q: &Question, ip: IpAddr) -> ApiReply {
-        let history = match self.store.history(&q.thread_id, self.history_len).await {
+        let history = match self
+            .store
+            .history(&q.thread_id, self.history_len, HistoryScope::Public)
+            .await
+        {
             Ok(h) => h,
             Err(e) => {
                 tracing::warn!(
@@ -194,7 +198,7 @@ impl App {
         let (t0, usd0, calls0) = (Instant::now(), self.meter.spent_usd(), self.meter.calls());
         let traced = judge_traced(&self.deps, q, &history).await;
         let captured = self.capture.take(q);
-        if let Some(failed) = traced.failure(q, false, None)
+        if let Some(failed) = traced.failure(q, &Origin::Web)
             && let Err(e) = self.store.record_failure(&failed).await
         {
             tracing::warn!(
@@ -218,7 +222,7 @@ impl App {
                     // Persisting feeds session history and the prior-call
                     // retrieval source; web calls arrive unrated, exactly like an
                     // unrated Discord call. Failure only costs those.
-                    if let Err(e) = self.store.persist(q, &v, ctx).await {
+                    if let Err(e) = self.store.persist(q, &Origin::Web, &v, ctx).await {
                         tracing::error!(
                             error = format_args!("{e:#}"),
                             "persist failed; answering anyway"
@@ -653,6 +657,7 @@ mod tests {
         async fn persist(
             &self,
             q: &Question,
+            _origin: &Origin,
             _v: &Verdict<Validated>,
             _ctx: &Context,
         ) -> Result<CallId, JudgeError> {
@@ -670,7 +675,12 @@ mod tests {
         ) -> Result<(), JudgeError> {
             Ok(())
         }
-        async fn history(&self, _thread: &str, _n: usize) -> Result<Vec<Qa>, JudgeError> {
+        async fn history(
+            &self,
+            _thread: &str,
+            _n: usize,
+            _scope: HistoryScope,
+        ) -> Result<Vec<Qa>, JudgeError> {
             Ok(vec![])
         }
         async fn forget_user(&self, _user: &str) -> Result<judge_core::Forgotten, JudgeError> {

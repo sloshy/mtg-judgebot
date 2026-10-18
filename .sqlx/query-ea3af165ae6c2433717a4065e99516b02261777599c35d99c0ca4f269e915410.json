@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT c.id, c.question, c.answer, c.category, c.citations, c.cr_version,\n                           r.effective_score AS \"rating!\", r.n AS \"n!\"\n                    FROM calls c\n                    JOIN calls_rated r ON r.call_id = c.id\n                    WHERE c.category = ANY($1)\n                      AND c.retired_at IS NULL\n                      AND c.session_id IS NULL\n                      AND NOT (r.effective_score < 1.5 AND r.n >= 5)\n                      AND (cardinality($4::uuid[]) = 0 OR EXISTS (\n                            SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)\n                            WHERE x.v::uuid = ANY($4)))\n                    ORDER BY c.embedding <=> $2, c.created_at DESC\n                    LIMIT $3\n                    ",
+  "query": "\n                    SELECT c.id, c.question, c.answer, c.category, c.citations, c.cr_version,\n                           r.effective_score AS \"rating!\", r.n AS \"n!\"\n                    FROM calls c\n                    JOIN calls_rated r ON r.call_id = c.id\n                    WHERE c.category = ANY($1)\n                      AND c.retired_at IS NULL\n                      AND c.session_id IS NULL\n                      AND NOT c.private\n                      AND NOT (r.effective_score < 1.5 AND r.n >= 5)\n                      AND (cardinality($3::uuid[]) = 0 OR EXISTS (\n                            SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)\n                            WHERE x.v::uuid = ANY($3)))\n                    ORDER BY c.created_at DESC\n                    LIMIT $2\n                    ",
   "describe": {
     "columns": [
       {
@@ -95,12 +95,6 @@
     "parameters": {
       "Left": [
         "TextArray",
-        {
-          "Custom": {
-            "name": "vector",
-            "kind": "Simple"
-          }
-        },
         "Int8",
         "UuidArray"
       ]
@@ -116,5 +110,5 @@
       true
     ]
   },
-  "hash": "d08103c6238df036159137a9f2d8ce517d2ef324f3588d3e61aa6727db06f425"
+  "hash": "ea3af165ae6c2433717a4065e99516b02261777599c35d99c0ca4f269e915410"
 }

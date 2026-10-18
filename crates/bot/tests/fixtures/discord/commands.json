@@ -22,7 +22,7 @@
       {
         "type": 5,
         "name": "private",
-        "description": "Show the answer only to you. A private answer stands alone: no follow-ups, no ratings, not saved.",
+        "description": "Show the answer only to you. It reads no earlier questions here and is never shown publicly.",
         "required": false,
         "choices": [],
         "options": [],

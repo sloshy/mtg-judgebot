@@ -6,10 +6,10 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use judge_agent::{Options, Quota, Toolbox};
+use judge_agent::{Options, Quota, Toolbox, Transport};
 use judge_bot::{
     discord::endpoint::Interactions, ingest::runs::FreshnessReader, serving::Serving,
-    shutdown::Shutdown, synth::Harness,
+    shutdown::Shutdown,
 };
 use judge_core::NetworkOperator;
 use judge_llm::ApiKey;
@@ -282,7 +282,7 @@ fn routes(
         let toolbox = Toolbox::new(
             pool.clone(),
             Options {
-                harness: Harness::Mcp,
+                transport: Transport::Mcp,
                 models: Some(serving.models().clone()),
                 deps_config: judge.deps_config(),
                 vectors: serving.vectors().cloned(),

@@ -18,8 +18,8 @@ pub mod machine;
 use std::{sync::Arc, time::Duration};
 
 use judge_core::{
-    CallId, CallStore, Extraction, Qa, Resolver, Retriever, RuleChunk, RuleId, Unvalidated,
-    Validated, Verdict,
+    CallId, CallStore, Extraction, HistoryScope, Origin, Qa, Resolver, Retriever, RuleChunk,
+    RuleId, Unvalidated, Validated, Verdict, Visibility,
 };
 
 use crate::{
@@ -131,14 +131,24 @@ impl Sessions {
 
     /// Start a session for `text` in `thread` (a fresh one, or one returned
     /// by an earlier `begin`, whose persisted calls become history) and
-    /// return the extraction prompt.
+    /// return the extraction prompt. A `Private` session's call is stored
+    /// private; it reads the thread's private calls too
+    /// ([`judge_core::Origin::history_scope`]).
     ///
     /// # Errors
     /// `Invalid` for an empty or over-long question; the store.
-    pub async fn begin(&self, thread: AgentThread, text: String) -> Result<Begun, SessionError> {
+    pub async fn begin(
+        &self,
+        thread: AgentThread,
+        text: String,
+        visibility: Visibility,
+    ) -> Result<Begun, SessionError> {
+        let scope = Origin::AgentSession(visibility)
+            .history_scope()
+            .unwrap_or(HistoryScope::Public);
         let history: Vec<Qa> = match self
             .history
-            .history(thread.as_str(), self.history_len)
+            .history(thread.as_str(), self.history_len, scope)
             .await
         {
             Ok(h) => h,
@@ -150,7 +160,7 @@ impl Sessions {
                 vec![]
             }
         };
-        let session = Session::begin(SessionId::new(), thread.clone(), text, history)?;
+        let session = Session::begin(SessionId::new(), thread.clone(), text, visibility, history)?;
         let extraction = session.extraction_prompt(self.history_len)?;
         self.store.insert(&session, self.ttl).await?;
         Ok(Begun {
@@ -341,7 +351,11 @@ mod tests {
         seed(&pool).await?;
         let sessions = sessions(&pool);
         let begun = sessions
-            .begin(AgentThread::new(), "does bolt kill a 3/3?".into())
+            .begin(
+                AgentThread::new(),
+                "does bolt kill a 3/3?".into(),
+                Visibility::Public,
+            )
             .await?;
         let Extracted::Ready(prompt) = sessions
             .submit_extraction(begun.session, extraction())
@@ -389,7 +403,11 @@ mod tests {
         assert_eq!(n, 1, "exactly one call row");
         // The follow-up sees the answer as history and files under the same agent thread.
         let again = sessions
-            .begin(begun.thread.clone(), "and a 4/4?".into())
+            .begin(
+                begun.thread.clone(),
+                "and a 4/4?".into(),
+                Visibility::Public,
+            )
             .await?;
         assert!(again.extraction.user.contains("does bolt kill a 3/3?"));
         let _ = RuleId::try_new("100".to_owned())?;
@@ -404,7 +422,9 @@ mod tests {
         assert!(
             matches!(sessions.prompt(missing).await, Err(SessionError::Unknown(id)) if id == missing)
         );
-        let begun = sessions.begin(AgentThread::new(), "q?".into()).await?;
+        let begun = sessions
+            .begin(AgentThread::new(), "q?".into(), Visibility::Public)
+            .await?;
         let (s, stale) = sessions
             .store
             .load_versioned(begun.session)

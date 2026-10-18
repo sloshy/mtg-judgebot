@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"at!\",\n               thread_id, private, question, error, first_rejection, attempts\n        FROM failed_calls ORDER BY id DESC LIMIT $1\n        ",
+  "query": "\n        SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"at!\",\n               thread_id, interface, asker_name, private, question, error, first_rejection, attempts\n        FROM failed_calls ORDER BY id DESC LIMIT $1\n        ",
   "describe": {
     "columns": [
       {
@@ -22,6 +22,28 @@
       },
       {
         "ordinal": 2,
+        "name": "interface",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "failed_calls",
+            "name": "interface"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "asker_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "failed_calls",
+            "name": "asker_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "private",
         "type_info": "Bool",
         "origin": {
@@ -32,7 +54,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 5,
         "name": "question",
         "type_info": "Text",
         "origin": {
@@ -43,7 +65,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 6,
         "name": "error",
         "type_info": "Text",
         "origin": {
@@ -54,7 +76,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "first_rejection",
         "type_info": "Text",
         "origin": {
@@ -65,7 +87,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "attempts",
         "type_info": "TextArray",
         "origin": {
@@ -85,11 +107,13 @@
       null,
       false,
       false,
+      true,
+      false,
       false,
       false,
       true,
       false
     ]
   },
-  "hash": "a73d63c2d098ed38a2ef59324756a163e9c96edbff256f52b1c9d4ff77530c56"
+  "hash": "03093355302f24abe406d4f3b9af2987ef0096dd38435fac30fbb8d2f713dc5c"
 }

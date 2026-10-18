@@ -16,8 +16,8 @@ use judge_bot::{
 };
 use judge_core::{
     About, Ambiguous, CallId, Card, CardId, CardNote, CardRef, Citation, Confidence, Context,
-    Extraction, GlossaryEntry, JudgeError, Question, Rejection, Resolution, RuleChunk, RuleId,
-    Ruling, Source, Unvalidated, Validated, Verdict, judge_traced,
+    Extraction, GlossaryEntry, JudgeError, Origin, Question, Rejection, Resolution, RuleChunk,
+    RuleId, Ruling, Source, Unvalidated, Validated, Verdict, Visibility, judge_traced,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -61,6 +61,11 @@ pub struct JudgeInput {
     /// Ambiguities resolved from an earlier `ambiguous` reply.
     #[serde(default)]
     pub pins: Vec<Pin>,
+    /// Store the call private: kept out of thread history (except a private
+    /// question's own thread), the prior-call examples and anything public,
+    /// and shown only to the instance's operator.
+    #[serde(default)]
+    pub private: bool,
 }
 
 /// One ambiguous span and what it could mean.
@@ -165,6 +170,9 @@ pub struct BeginInput {
     /// can never name a Discord or web thread.
     #[serde(default)]
     pub thread: Option<AgentThread>,
+    /// Store the call private, as `judge`'s `private` does.
+    #[serde(default)]
+    pub private: bool,
 }
 
 /// A session id on its own.
@@ -419,11 +427,14 @@ impl Toolbox {
             thread_id: thread.as_str().to_owned(),
             text,
         };
-        let history = self.history(&q.thread_id).await;
+        let origin = self
+            .transport
+            .origin(Visibility::from_private(input.private));
+        let history = self.history(&q.thread_id, &origin).await;
         let (t0, usd0, calls0) = (Instant::now(), p.meter.spent_usd(), p.meter.calls());
         let traced = judge_traced(&p.deps, &q, &history).await;
         let captured = p.capture.take(&q);
-        if let Some(failed) = traced.failure(&q, false, None)
+        if let Some(failed) = traced.failure(&q, &origin)
             && let Err(e) = self.calls.record_failure(&failed).await
         {
             tracing::warn!(
@@ -438,12 +449,13 @@ impl Toolbox {
             usd = format_args!("{:.4}", p.meter.spent_usd() - usd0),
             llm_calls = p.meter.calls() - calls0,
             ok = result.is_ok(),
+            private = origin.is_private(),
             "judge"
         );
         Ok(match result {
             Ok(v) => {
                 let call = match &captured {
-                    Some(ctx) => match self.calls.persist(&q, &v, ctx).await {
+                    Some(ctx) => match self.calls.persist(&q, &origin, &v, ctx).await {
                         Ok(id) => Some(id),
                         Err(e) => {
                             tracing::error!(
@@ -477,7 +489,11 @@ impl Toolbox {
     pub async fn begin_session(&self, input: BeginInput) -> Result<Begun, OpError> {
         Ok(self
             .sessions
-            .begin(input.thread.unwrap_or_default(), input.question)
+            .begin(
+                input.thread.unwrap_or_default(),
+                input.question,
+                Visibility::from_private(input.private),
+            )
             .await?)
     }
 
@@ -742,8 +758,11 @@ impl Toolbox {
         })
     }
 
-    async fn history(&self, thread: &str) -> Vec<judge_core::Qa> {
-        match self.calls.history(thread, self.history_len).await {
+    async fn history(&self, thread: &str, origin: &Origin) -> Vec<judge_core::Qa> {
+        let Some(scope) = origin.history_scope() else {
+            return vec![];
+        };
+        match self.calls.history(thread, self.history_len, scope).await {
             Ok(h) => h,
             Err(e) => {
                 tracing::warn!(

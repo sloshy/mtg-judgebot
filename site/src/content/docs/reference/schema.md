@@ -40,22 +40,23 @@ rewritten, but only where the match is unambiguous.
 
 | Table | Contents |
 | --- | --- |
-| `calls` | Every answered question, except a Discord question asked with `private: True`. Holds the thread id, question, answer, category, source, confidence, citations, the ids of the context it was answered from, `cr_version` and an embedding. `retired_at`/`retired_reason` are set when its citations stop holding. The context ids include a fingerprint of each context card's Oracle text, taken when the call is saved. An erratum therefore retires calls *about* a card even when they cited only the CR. `session_id` is set for calls saved through an agent session. |
+| `calls` | Every answered question, private ones included. Holds the thread id, `interface` (`discord`, `web`, `mcp`, `cli`, `agent_session`, or `agent` for an MCP or `judge-cli` call from before 2.0.0), `asker_id` and `asker_name` (the Discord user id and username when asked; null for the web app and agents), `private`, `locale`, the question, answer, category, source, confidence, citations, the ids of the context it was answered from, `cr_version` and an embedding (none for a private call). `retired_at`/`retired_reason` are set when its citations stop holding. `/forget` sets `asker_id` and `asker_name` to null, and on a private call replaces the question and answer. The context ids include a fingerprint of each context card's Oracle text, taken when the call is saved. An erratum therefore retires calls *about* a card even when they cited only the CR. `session_id` is set for calls saved through an agent session. |
 | `ratings` | One row per (call, user id): score 1 to 3, whether the rater held the judge role, timestamp. `/forget` deletes a user's rows. |
 | `calls_rated` (view) | Per call: the Bayesian-smoothed mean (prior 2.0, weight 3), the vote count, the latest judge rating, and the effective score the retriever uses. |
 
-Some calls never appear as examples to the model: retired calls, calls saved through an
-agent session, and calls scoring below 1.5 with at least five votes.
+Some calls never appear as examples to the model: private calls, retired calls, calls
+saved through an agent session, and calls scoring below 1.5 with at least five votes. A
+private call is never read as a public question's thread history either.
 
 ## Operations
 
 | Table | Contents |
 | --- | --- |
-| `agent_sessions` | Agent sessions in progress (stage, question, context, rejection). Expired rows are deleted when the next session is created. |
+| `agent_sessions` | Agent sessions in progress (stage, question, `private`, context, rejection). Expired rows are deleted when the next session is created. |
 | `spend_days` | Estimated model spend and model calls of the serving processes per UTC day. Each process adds its own share every ten seconds. `JUDGE_BUDGET_PERIOD=day\|month` sums the current period from it, and `judge-cli stats` reads it. No per-user or per-question data. |
 | `spend_warnings` | One row per spend warning sent in a `day` or `month` budget period (`JUDGE_SPEND_WARN_AT`): the period, its first day, the threshold's amount and percentage, when it was sent. A process sends a warning only when its insert lands, so one process sends each. Rows older than two months are deleted as new ones are claimed. |
 | `pick_claims` | One row per "did you mean?" prompt a card was picked from: the Discord message id, when the prompt was shown and a digest of the message (8 bytes of SHA-256, not the text). It makes each prompt answer one click. No question, user or card is stored, so a `private: True` question leaves no text here. Rows older than a day are deleted as new picks are claimed. |
-| `failed_calls` | One row per call that failed for a reason the operator has to diagnose: the thread id, `private` (asked with `private: True`), `user_id` (the Discord asker; null for the web app and agents), the question, the error, why the first synthesis attempt was rejected and the answer text of each attempt, each cut to a fixed length. `/forget` sets `user_id` to null and replaces the question, error and text. Inserting a row deletes rows older than 30 days or past the newest 500 (pruning happens only on insert). An attempt rejected for tool misuse or truncated has no text. `judge-cli failures` reads it. |
+| `failed_calls` | One row per call that failed for a reason the operator has to diagnose: the thread id, `interface`, `private`, `asker_id` and `asker_name` (the Discord asker; null for the web app and agents), the question, the error, why the first synthesis attempt was rejected and the answer text of each attempt, each cut to a fixed length. `/forget` sets `asker_id` and `asker_name` to null and replaces the question, error and text. Inserting a row deletes rows older than 30 days or past the newest 500 (pruning happens only on insert). An attempt rejected for tool misuse or truncated has no text. `judge-cli failures` reads it. |
 | `refresh_runs` | One row per `judgebot ingest refresh` or scheduled refresh: when it started and finished, `trigger` (`manual` or `schedule`) and the process that ran it, the stored CR version before and after, each step's outcome (`steps`, JSON) and `ok`. A row with no `finished_at` is a run in progress or one that died. |
 | `embedding_space` | One row naming the embedder whose vectors the database holds (provider kind, model, dimensions). `ingest embed` writes it on first use and refuses to mix embedders. Only `ingest reembed --yes` changes it. |
 | `gateway_handover` | One row: when the last Discord gateway holder released the lease after its gateway closed at shutdown, or null while one holds it. A process taking the lease within 5 seconds of a release connects without the 15-second grace. |

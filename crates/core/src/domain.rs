@@ -1555,19 +1555,16 @@ mod tests {
 
 /// A call that failed for a reason the operator needs (see
 /// [`crate::JudgeError::is_operator_failure`]), with what the model sent, for
-/// `CallStore::record_failure`. Unlike a persisted call it is kept for a
-/// private question too, flagged, since a failure cannot be read without it.
+/// `CallStore::record_failure`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailedCall {
+    /// Where it came from: the interface, the asker (`/forget` anonymizes the
+    /// row by their id) and whether it was private.
+    pub origin: crate::Origin,
     /// The thread the question was asked in.
     pub thread_id: String,
     /// The question as the pipeline got it.
     pub question: String,
-    /// Whether the asker chose a private audience (`/judge private:True`).
-    pub private: bool,
-    /// The asker's Discord user id, so `/forget` can anonymize the row. `None`
-    /// where the interface does not know a user (HTTP, agent).
-    pub user_id: Option<String>,
     /// The error, in full.
     pub error: String,
     /// Why the first synthesis attempt was rejected, if it was.
@@ -1583,4 +1580,7 @@ pub struct Forgotten {
     pub ratings: u64,
     /// Failed calls anonymized: user id, question, error and attempt text removed.
     pub failures: u64,
+    /// Calls anonymized: id and username removed (and, on a private call,
+    /// the question and answer).
+    pub calls: u64,
 }

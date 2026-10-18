@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE calls\n            SET asker_id = NULL, asker_name = NULL,\n                question = CASE WHEN private THEN '[removed]' ELSE question END,\n                answer = CASE WHEN private THEN '[removed]' ELSE answer END,\n                embedding = CASE WHEN private THEN NULL ELSE embedding END,\n                citations = CASE WHEN private THEN '[]'::jsonb ELSE citations END,\n                context_ids = CASE WHEN private THEN '{}'::jsonb ELSE context_ids END\n            WHERE asker_id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "448b23c5f132d1880ee5c654290b0b0c5e4ee973054f170d3712ec8405730d37"
+}

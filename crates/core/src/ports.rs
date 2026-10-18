@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    CallId, Card, Context, Extraction, FailedCall, Forgotten, JudgeError, Qa, Question,
-    RejectedAttempt, Resolution, RuleChunk, RuleId, Score, Validated, Verdict,
+    CallId, Card, Context, Extraction, FailedCall, Forgotten, HistoryScope, JudgeError, Origin, Qa,
+    Question, RejectedAttempt, Resolution, RuleChunk, RuleId, Score, Validated, Verdict,
     verdict::Unvalidated,
 };
 
@@ -75,10 +75,13 @@ pub trait Embedder: Send + Sync {
 /// Pipeline step 6: persist calls and ratings. Only validated verdicts type-check.
 #[async_trait]
 pub trait CallStore: Send + Sync {
-    /// Store the question, verdict and the ids of the context it was answered from.
+    /// Store the question, verdict and the ids of the context it was
+    /// answered from, with where it came from. A private call is stored too:
+    /// [`Self::history`] and the prior-call examples leave it out.
     async fn persist(
         &self,
         q: &Question,
+        origin: &Origin,
         v: &Verdict<Validated>,
         ctx: &Context,
     ) -> Result<CallId, JudgeError>;
@@ -90,14 +93,20 @@ pub trait CallStore: Send + Sync {
         score: Score,
         is_judge: bool,
     ) -> Result<(), JudgeError>;
-    /// The last `n` question/answer pairs persisted in `thread_id`, oldest
-    /// first: the shape [`crate::judge`] takes as thread history. `n == 0`
-    /// yields nothing.
-    async fn history(&self, thread_id: &str, n: usize) -> Result<Vec<Qa>, JudgeError>;
-    /// Delete every rating `user_id` has recorded and anonymize the failed
-    /// calls they asked (`record_failure`), returning how many of each. A call
-    /// records the thread it was asked in, not who asked, so ratings and
-    /// failed calls are the whole of "forget me".
+    /// The last `n` question/answer pairs persisted in `thread_id` that
+    /// `scope` admits, oldest first: the shape [`crate::judge`] takes as
+    /// thread history ([`Origin::history_scope`] says which scope a question
+    /// gets). `n == 0` yields nothing.
+    async fn history(
+        &self,
+        thread_id: &str,
+        n: usize,
+        scope: HistoryScope,
+    ) -> Result<Vec<Qa>, JudgeError>;
+    /// "Forget me" for the Discord user `user_id`: delete their ratings,
+    /// remove their id and username from the calls they asked (and, on a
+    /// private call, its question and answer), and anonymize the failed calls
+    /// they asked, returning how many of each.
     async fn forget_user(&self, user_id: &str) -> Result<Forgotten, JudgeError>;
     /// Keep a failed call for troubleshooting. The store bounds the size of
     /// every field and the number of rows it keeps.

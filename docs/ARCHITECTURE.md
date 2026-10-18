@@ -293,11 +293,15 @@ Three interfaces share this pipeline through the same composition root
 
 - **Discord adapter** (`crates/bot`, the `--discord` role): `/judge` slash command, rating buttons,
   "did you mean…?" buttons, thread history.
+  - Every interface hands the store an `Origin` (`judge_core::origin`, D31): the
+    interface, the Discord asker (id and username) and whether the call is private.
+    `CallStore::persist` and `record_failure` store it; `Origin::history_scope` says
+    which earlier calls of the thread a question reads.
   - `/judge private:True` is `Audience::Private`: acknowledged ephemerally, no history
-    read, never persisted, so no rating buttons. A call that *fails* is recorded in
-    `failed_calls` for any audience, flagged `private`, through `CallStore::record_failure`
-    (D27); that is the one place a private question is stored. The audience rides in the pick button's
-    custom-id through a card pick.
+    read, persisted private (with rating buttons), so it is never a prior call and
+    never another question's history. A call that *fails* is recorded in
+    `failed_calls` for any audience through `CallStore::record_failure` (D27). The
+    audience rides in the pick button's custom-id through a card pick.
   - A card pick is answered from Discord alone, so any process holding the gateway
     answers it, after any restart. The prompt message restates the question verbatim
     above a body with no blank line in it: the lead line, the numbered choices (names cut
@@ -476,7 +480,8 @@ pictures, from one set of names:
 | Nightmare notes | hand-written markdown, likewise | `card_notes` (oracle_id, note) |
 | Curated list sources | written by each alias or note load, in its transaction | `curated_lists` (list, source `builtin`/`file`, digest, loaded_at): the refresh's `lists` step reloads only a `builtin` list whose digest is not the binary's (`judge_bot::ingest::lists`) |
 | Categories → subsections | YAML (single source of truth; the enum is generated from it) | `categories` |
-| Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity | `calls` (id, thread_id, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding) |
+| Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity | `calls` (id, thread_id, interface, asker_id, asker_name, private, locale, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding; a private call has no embedding) |
+| Failed calls | on each operator failure; pruned to 30 days / 500 rows on write | `failed_calls` (thread_id, interface, asker_id, asker_name, private, question, error, first_rejection, attempts) |
 | Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |
 | Refresh runs | one row per refresh, scheduled or `judgebot ingest refresh` | `refresh_runs` (started_at, finished_at, trigger, process, cr_before, cr_after, steps jsonb, ok) |
 

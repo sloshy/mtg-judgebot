@@ -34,7 +34,7 @@ use std::{io::Read as _, path::Path, process::ExitCode};
 
 use anyhow::{Context as _, Result};
 use judge_agent::{
-    Toolbox,
+    Toolbox, Transport,
     ops::{
         BeginInput, CardInput, ExtractionInput, FailuresInput, IdsInput, JudgeInput, LookupInput,
         NameInput, Pin, SearchInput, SessionInput, StatsInput, TermInput, VerdictInput,
@@ -43,13 +43,12 @@ use judge_agent::{
 use judge_bot::{
     ingest::runs,
     session::{AgentThread, SessionId},
-    synth::Harness,
 };
 use judge_core::{CardId, RuleId};
 use serde::Serialize;
 
-const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span=Name]... \
-| begin <question> [--thread T] | prompt <session> | status <session> \
+const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span=Name]... [--private] \
+| begin <question> [--thread T] [--private] | prompt <session> | status <session> \
 | extract <session> <file|-> | rules <session> <id>... | verdict <session> <file|-> [--persist] \
 | persist <session> | card <name> | card-info <uuid> | get-rules <id>... | search <query> [--limit N] \
 | glossary <term> | stats [--days N] | failures [--limit N] | config | about>";
@@ -103,6 +102,7 @@ const FLAGS: &[(&str, bool)] = &[
     ("--days", true),
     ("--pin", true),
     ("--persist", false),
+    ("--private", false),
 ];
 
 /// The arguments after the subcommand, split into positionals and flags.
@@ -114,6 +114,7 @@ struct Args {
     days: Option<String>,
     pins: Vec<String>,
     persist: bool,
+    private: bool,
 }
 
 /// One pass over the tokens: a known flag consumes its value, `--` ends flag
@@ -148,6 +149,7 @@ fn split_args(tokens: Vec<String>) -> Result<Args> {
             ("--days", Some(v)) => out.days = Some(v),
             ("--pin", Some(v)) => out.pins.push(v),
             ("--persist", None) => out.persist = true,
+            ("--private", None) => out.private = true,
             _ => anyhow::bail!("{USAGE}"),
         }
     }
@@ -193,31 +195,36 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     };
     // A flag the subcommand does not take is an error, not a silent no-op: a
     // `--pin` on `begin` or a `--persist` on `judge` would otherwise look honoured.
-    let uses = |thread: bool, limit: bool, pins: bool, persist: bool| -> Result<()> {
-        anyhow::ensure!(
-            thread || a.thread.is_none(),
-            "{cmd} does not take --thread; {USAGE}"
-        );
-        anyhow::ensure!(
-            limit || a.limit.is_none(),
-            "{cmd} does not take --limit; {USAGE}"
-        );
-        anyhow::ensure!(
-            pins || a.pins.is_empty(),
-            "{cmd} does not take --pin; {USAGE}"
-        );
-        anyhow::ensure!(
-            persist || !a.persist,
-            "{cmd} does not take --persist; {USAGE}"
-        );
-        Ok(())
-    };
+    let uses =
+        |thread: bool, limit: bool, pins: bool, persist: bool, private: bool| -> Result<()> {
+            anyhow::ensure!(
+                thread || a.thread.is_none(),
+                "{cmd} does not take --thread; {USAGE}"
+            );
+            anyhow::ensure!(
+                limit || a.limit.is_none(),
+                "{cmd} does not take --limit; {USAGE}"
+            );
+            anyhow::ensure!(
+                pins || a.pins.is_empty(),
+                "{cmd} does not take --pin; {USAGE}"
+            );
+            anyhow::ensure!(
+                persist || !a.persist,
+                "{cmd} does not take --persist; {USAGE}"
+            );
+            anyhow::ensure!(
+                private || !a.private,
+                "{cmd} does not take --private; {USAGE}"
+            );
+            Ok(())
+        };
     match cmd.as_str() {
-        "judge" => uses(true, false, true, false)?,
-        "begin" => uses(true, false, false, false)?,
-        "verdict" => uses(false, false, false, true)?,
-        "search" | "failures" => uses(false, true, false, false)?,
-        _ => uses(false, false, false, false)?,
+        "judge" => uses(true, false, true, false, true)?,
+        "begin" => uses(true, false, false, false, true)?,
+        "verdict" => uses(false, false, false, true, false)?,
+        "search" | "failures" => uses(false, true, false, false, false)?,
+        _ => uses(false, false, false, false, false)?,
     }
     Ok(match cmd.as_str() {
         "judge" => {
@@ -239,6 +246,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
                 question: positional(0)?.clone(),
                 thread: thread()?,
                 pins,
+                private: a.private,
             })
         }
         "begin" => {
@@ -246,6 +254,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
             Command::Begin(BeginInput {
                 question: positional(0)?.clone(),
                 thread: thread()?,
+                private: a.private,
             })
         }
         "prompt" => {
@@ -406,7 +415,7 @@ async fn run(cmd: Command) -> Result<()> {
             _ => print(&config.report()),
         };
     }
-    let toolbox = Toolbox::from_env(Harness::Cli).await?;
+    let toolbox = Toolbox::from_env(Transport::Cli).await?;
     match cmd {
         Command::Judge(i) => print(&toolbox.judge(i).await?),
         Command::Begin(i) => print(&toolbox.begin_session(i).await?),

@@ -53,13 +53,13 @@ question does, answered or not. Picking a card from a "did you mean…?" row doe
 `/judge question: … private: True` shows the answer to you alone, as Discord's "Only you
 can see this" message. A private answer stands by itself:
 
-- It reads no channel history, so it cannot be a follow-up, and nothing can follow it up.
-- An answered question is not saved to the database, so it has no rating buttons and never becomes an
-  example for a later question. It is still sent to the model provider and leaves the
-  same log lines as any question.
-- If the call fails, the question and what the model sent are kept for the operator
-  (`failed_calls`, flagged private, with your user id until `/forget`; rows older than 30 days are deleted when a later failure is recorded). Nothing is kept for a private
-  question that was answered.
+- It reads no channel history, so it cannot be a follow-up, and no later question in
+  the channel reads it.
+- It is stored like any other call, with your user id and username, marked private.
+  Only the operator can see it. It is never shown publicly and never becomes an example
+  for a later question. It is still sent to the model provider and leaves the same log
+  lines as any question.
+- It has rating buttons, which only you see.
 - "Did you mean…?" still works, privately.
 
 Discord fixes who sees a reply when the bot acknowledges the command, so a private answer
@@ -129,9 +129,12 @@ which the bot does not start without.
 
 ## `/forget`
 
-Deletes every rating you have recorded and anonymizes every failed call of yours, and tells
-you how many of each there were.
-- Ratings and failed calls are the only data tied to your user id. Questions are stored
-  against the channel, not the asker.
+Deletes every rating you have recorded, removes your user id and username from every
+question you asked, and anonymizes every failed call of yours. It tells you how many of
+each there were.
+- A question you asked in the channel keeps its text, which the channel saw, and is shown
+  as asked anonymously.
+- A private question keeps its time and thread. Its question and answer are replaced,
+  and what it cited and which cards it was about are removed.
 - A failed call keeps its time, thread and whether it was private. Its question, error and
   the model's text are replaced.

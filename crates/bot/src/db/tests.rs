@@ -9,9 +9,9 @@ use std::sync::{
 
 use async_trait::async_trait;
 use judge_core::{
-    AnswerableSource, CallStore, Category, CategoryGuess, Confidence, Extraction, InputKind,
-    JudgeError, MatchedVia, Qa, Question, Resolution, Resolver, Retriever, RuleId, Score, Source,
-    Verdict,
+    AnswerableSource, Asker, CallStore, Category, CategoryGuess, Confidence, Extraction,
+    HistoryScope, InputKind, JudgeError, MatchedVia, Origin, Qa, Question, Resolution, Resolver,
+    Retriever, RuleId, Score, Source, Verdict, Visibility,
 };
 use judge_embed::{
     EmbedBackend, EmbedError, EmbedPrice, EmbedUsage, Embedded, MeteredEmbedder, Provider, Space,
@@ -652,6 +652,69 @@ async fn lookup_rules_expands_subsections(pool: PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A call is stored with its origin, and a private one, rated well, is still
+/// never a prior-call example.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_private_call_is_stored_with_its_asker_and_never_a_prior_call(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    let retriever = PgRetriever::new(pool.clone());
+    let store = PgCallStore::new(pool.clone());
+    let q = question("how do layers work?");
+    let ctx = retriever
+        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .await?;
+    let verdict = Verdict::new(
+        "Layer 4 is where type-changing effects apply, before colour and abilities.".into(),
+        Confidence::High,
+        cite_first_rule(&ctx)?,
+        Category::Layers,
+    )
+    .validate(&ctx, AnswerableSource::Cr)?;
+    let origin = Origin::Discord {
+        asker: Asker::new(std::num::NonZeroU64::MIN.saturating_add(41), "urza"),
+        visibility: Visibility::Private,
+    };
+    let call = store.persist(&q, &origin, &verdict, &ctx).await?;
+    store.rate(call, "u1", Score::Correct, true).await?;
+    let row: (String, Option<String>, Option<String>, bool) =
+        sqlx::query_as("SELECT interface, asker_id, asker_name, private FROM calls WHERE id = $1")
+            .bind(call.into_inner())
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        row,
+        (
+            "discord".to_owned(),
+            Some("42".to_owned()),
+            Some("urza".to_owned()),
+            true
+        )
+    );
+    let after = retriever
+        .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
+        .await?;
+    assert!(after.prior.is_empty(), "{:?}", after.prior);
+    for (interface, origin) in [
+        ("web", Origin::Web),
+        ("mcp", Origin::Mcp(Visibility::Public)),
+        ("cli", Origin::Cli(Visibility::Private)),
+    ] {
+        let id = store.persist(&q, &origin, &verdict, &ctx).await?;
+        let (stored, private, asker): (String, bool, Option<String>) =
+            sqlx::query_as("SELECT interface, private, asker_id FROM calls WHERE id = $1")
+                .bind(id.into_inner())
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(
+            (stored.as_str(), private, asker),
+            (interface, origin.is_private(), None)
+        );
+    }
+    Ok(())
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Result<()> {
     seed(&pool).await?;
@@ -668,7 +731,7 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let call = store.persist(&q, &verdict, &ctx).await?;
+    let call = store.persist(&q, &Origin::Web, &verdict, &ctx).await?;
 
     let ctx2 = retriever
         .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
@@ -714,7 +777,7 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
         Category::Layers,
     )
     .validate(&ctx_bob, AnswerableSource::Cr)?;
-    let call_bob = store.persist(&q, &v2, &ctx_bob).await?;
+    let call_bob = store.persist(&q, &Origin::Web, &v2, &ctx_bob).await?;
     let with_bob = retriever
         .retrieve(
             &q,
@@ -775,13 +838,18 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
 #[sqlx::test(migrations = "./migrations")]
 async fn history_returns_the_last_n_oldest_first(pool: PgPool) -> anyhow::Result<()> {
     let store = PgCallStore::new(pool.clone());
-    assert!(store.history("t1", 5).await?.is_empty());
+    assert!(
+        store
+            .history("t1", 5, HistoryScope::Public)
+            .await?
+            .is_empty()
+    );
     // Explicit timestamps: `now()` is per statement here, but ordering must not
     // depend on how fast the inserts run.
     for (q, a, secs) in [("q1", "a1", 0.0_f64), ("q2", "a2", 1.0), ("q3", "a3", 2.0)] {
         sqlx::query(
-            "INSERT INTO calls (thread_id, question, answer, category, source, cr_version, created_at) \
-             VALUES ('t1', $1, $2, 'layers', 'cr', '20260819', timestamptz '2026-08-29 12:00:00+00' + make_interval(secs => $3))",
+            "INSERT INTO calls (thread_id, interface, question, answer, category, source, cr_version, created_at) \
+             VALUES ('t1', 'discord', $1, $2, 'layers', 'cr', '20260819', timestamptz '2026-08-29 12:00:00+00' + make_interval(secs => $3))",
         )
         .bind(q)
         .bind(a)
@@ -790,8 +858,8 @@ async fn history_returns_the_last_n_oldest_first(pool: PgPool) -> anyhow::Result
         .await?;
     }
     sqlx::query(
-        "INSERT INTO calls (thread_id, question, answer, category, source, cr_version) \
-         VALUES ('t2', 'elsewhere', 'x', 'layers', 'cr', '20260819')",
+        "INSERT INTO calls (thread_id, interface, question, answer, category, source, cr_version) \
+         VALUES ('t2', 'discord', 'elsewhere', 'x', 'layers', 'cr', '20260819')",
     )
     .execute(&pool)
     .await?;
@@ -800,16 +868,61 @@ async fn history_returns_the_last_n_oldest_first(pool: PgPool) -> anyhow::Result
         answer: a.into(),
     };
     assert_eq!(
-        store.history("t1", 2).await?,
+        store.history("t1", 2, HistoryScope::Public).await?,
         vec![qa("q2", "a2"), qa("q3", "a3")]
     );
     assert_eq!(
-        store.history("t1", 10).await?,
+        store.history("t1", 10, HistoryScope::Public).await?,
         vec![qa("q1", "a1"), qa("q2", "a2"), qa("q3", "a3")]
     );
-    assert!(store.history("t1", 0).await?.is_empty());
-    assert_eq!(store.history("t2", 5).await?, vec![qa("elsewhere", "x")]);
-    assert!(store.history("nope", 5).await?.is_empty());
+    assert!(
+        store
+            .history("t1", 0, HistoryScope::Public)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(
+        store.history("t2", 5, HistoryScope::Public).await?,
+        vec![qa("elsewhere", "x")]
+    );
+    assert!(
+        store
+            .history("nope", 5, HistoryScope::Public)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
+/// A private call is never another question's history in its thread; a
+/// private agent question reads its own thread whole.
+#[sqlx::test(migrations = "./migrations")]
+async fn history_leaves_private_calls_out_unless_asked_to(pool: PgPool) -> anyhow::Result<()> {
+    let store = PgCallStore::new(pool.clone());
+    for (q, private, secs) in [("public", false, 0.0_f64), ("private", true, 1.0)] {
+        sqlx::query(
+            "INSERT INTO calls (thread_id, interface, private, question, answer, category, source, cr_version, created_at) \
+             VALUES ('agent:t', 'mcp', $1, $2, 'a', 'layers', 'cr', '20260819', timestamptz '2026-08-29 12:00:00+00' + make_interval(secs => $3))",
+        )
+        .bind(private)
+        .bind(q)
+        .bind(secs)
+        .execute(&pool)
+        .await?;
+    }
+    let questions = |h: Vec<Qa>| h.into_iter().map(|qa| qa.question).collect::<Vec<_>>();
+    assert_eq!(
+        questions(store.history("agent:t", 5, HistoryScope::Public).await?),
+        ["public"]
+    );
+    assert_eq!(
+        questions(
+            store
+                .history("agent:t", 5, HistoryScope::WithPrivate)
+                .await?
+        ),
+        ["public", "private"]
+    );
     Ok(())
 }
 
@@ -864,7 +977,7 @@ async fn retirement_follows_citation_validity_both_ways(pool: PgPool) -> anyhow:
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let call = store.persist(&q, &verdict, &ctx).await?;
+    let call = store.persist(&q, &Origin::Web, &verdict, &ctx).await?;
     let prior_visible = || async {
         let c = retriever
             .retrieve(&q, &[], &extraction(&[Category::Layers], &[]))
@@ -980,7 +1093,7 @@ async fn retirement_sees_rulings_and_context_card_text(pool: PgPool) -> anyhow::
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let call = store.persist(&q, &verdict, &ctx).await?;
+    let call = store.persist(&q, &Origin::Web, &verdict, &ctx).await?;
     assert_eq!(retire_unsupported(&pool).await?.retired, 0);
 
     // The ruling is removed (as a refresh does before reinserting): retired, naming it.
@@ -1174,7 +1287,7 @@ async fn vectors_embed_only_into_the_stored_space(pool: PgPool) -> anyhow::Resul
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let id = store.persist(&q, &v, &ctx).await?;
+    let id = store.persist(&q, &Origin::Web, &v, &ctx).await?;
     let embedded: bool =
         sqlx::query_scalar("SELECT embedding IS NOT NULL FROM calls WHERE id = $1")
             .bind(id.into_inner())
@@ -1247,7 +1360,7 @@ async fn a_persisted_call_carries_a_vector_only_of_the_stored_space(
         }
     };
     // The stored space is the embedder's: the vector is written.
-    let id = store.persist(&q, &v, &ctx).await?;
+    let id = store.persist(&q, &Origin::Web, &v, &ctx).await?;
     assert!(embedded(id).await?);
     // The database moves to another model of the same width: the next persist, whose
     // embedder still matched a moment ago, stores no vector rather than a Voyage one.
@@ -1258,7 +1371,12 @@ async fn a_persisted_call_carries_a_vector_only_of_the_stored_space(
     };
     switch_space(&pool, &nomic).await?;
     let id = store
-        .persist(&question("Another question about lifelink?"), &v, &ctx)
+        .persist(
+            &question("Another question about lifelink?"),
+            &Origin::Web,
+            &v,
+            &ctx,
+        )
         .await?;
     assert!(!embedded(id).await?);
     assert_eq!(
@@ -1306,7 +1424,7 @@ async fn at_the_spend_cap_a_question_is_answered_and_stored_without_a_vector(
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let id = store.persist(&q, &v, &ctx).await?;
+    let id = store.persist(&q, &Origin::Web, &v, &ctx).await?;
     let null: bool = sqlx::query_scalar("SELECT embedding IS NULL FROM calls WHERE id = $1")
         .bind(id.into_inner())
         .fetch_one(&pool)
@@ -1436,11 +1554,14 @@ async fn switch_space_retypes_columns_clears_vectors_and_rebuilds_indexes_atomic
     Ok(())
 }
 
-/// `/forget` deletes exactly the caller's ratings and anonymizes their failed
-/// calls: another user's stay, the
-/// call itself stays, and a second call reports nothing left to delete.
+/// A call row as `/forget` leaves it: asker id, asker name, question, answer, private.
+type ForgottenRow = (Option<String>, Option<String>, String, String, bool);
+
+/// `/forget` deletes exactly the caller's ratings and anonymizes their calls
+/// and failed calls: another user's stay, every call stays, and a second call
+/// reports nothing left to delete.
 #[sqlx::test(migrator = "crate::MIGRATOR")]
-async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_failures(
+async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_calls(
     pool: PgPool,
 ) -> anyhow::Result<()> {
     seed(&pool).await?;
@@ -1457,16 +1578,41 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_failur
         Category::Layers,
     )
     .validate(&ctx, AnswerableSource::Cr)?;
-    let call = store.persist(&q, &verdict, &ctx).await?;
-    store.rate(call, "user-a", Score::Correct, false).await?;
-    store.rate(call, "user-b", Score::Incorrect, true).await?;
+    // User 11 asks one public and one private question; user 22 asks one.
+    let asked = |id: u64, name: &str, visibility| Origin::Discord {
+        asker: Asker::new(
+            std::num::NonZeroU64::new(id).unwrap_or(std::num::NonZeroU64::MIN),
+            name,
+        ),
+        visibility,
+    };
+    let call = store
+        .persist(&q, &asked(11, "urza", Visibility::Public), &verdict, &ctx)
+        .await?;
+    store
+        .persist(
+            &question("my private question"),
+            &asked(11, "urza", Visibility::Private),
+            &verdict,
+            &ctx,
+        )
+        .await?;
+    store
+        .persist(
+            &question("b's question"),
+            &asked(22, "mishra", Visibility::Public),
+            &verdict,
+            &ctx,
+        )
+        .await?;
+    store.rate(call, "11", Score::Correct, false).await?;
+    store.rate(call, "22", Score::Incorrect, true).await?;
 
     store
         .record_failure(&judge_core::FailedCall {
+            origin: asked(11, "urza", Visibility::Private),
             thread_id: "t".into(),
             question: "secret question".into(),
-            private: true,
-            user_id: Some("user-a".into()),
             error: "boom".into(),
             first_rejection: Some("r".into()),
             attempts: vec!["an answer".into()],
@@ -1474,38 +1620,88 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_failur
         .await?;
     store
         .record_failure(&judge_core::FailedCall {
+            origin: asked(22, "mishra", Visibility::Public),
             thread_id: "t".into(),
             question: "b's question".into(),
-            private: false,
-            user_id: Some("user-b".into()),
             error: "boom".into(),
             first_rejection: None,
             attempts: vec![],
         })
         .await?;
-    let gone = store.forget_user("user-a").await?;
-    assert_eq!((gone.ratings, gone.failures), (1, 1));
-    let again = store.forget_user("user-a").await?;
-    assert_eq!((again.ratings, again.failures), (0, 0), "idempotent");
-    let rows: Vec<(Option<String>, String, bool)> =
-        sqlx::query_as("SELECT user_id, question, private FROM failed_calls ORDER BY id")
-            .fetch_all(&pool)
-            .await?;
+    let gone = store.forget_user("11").await?;
+    assert_eq!((gone.ratings, gone.calls, gone.failures), (1, 2, 1));
+    let again = store.forget_user("11").await?;
+    assert_eq!(
+        (again.ratings, again.calls, again.failures),
+        (0, 0, 0),
+        "idempotent"
+    );
+    let rows: Vec<(Option<String>, Option<String>, String, bool)> = sqlx::query_as(
+        "SELECT asker_id, asker_name, question, private FROM failed_calls ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await?;
     assert_eq!(
         rows,
         vec![
-            (None, "[removed]".to_owned(), true),
-            (Some("user-b".to_owned()), "b's question".to_owned(), false)
+            (None, None, "[removed]".to_owned(), true),
+            (
+                Some("22".to_owned()),
+                Some("mishra".to_owned()),
+                "b's question".to_owned(),
+                false
+            )
         ]
     );
     let left: Vec<String> = sqlx::query_scalar("SELECT user_id FROM ratings ORDER BY user_id")
         .fetch_all(&pool)
         .await?;
-    assert_eq!(left, vec!["user-b".to_owned()]);
-    let calls: i64 = sqlx::query_scalar("SELECT count(*) FROM calls")
-        .fetch_one(&pool)
-        .await?;
-    assert_eq!(calls, 1, "the call is not the user's data");
+    assert_eq!(left, vec!["22".to_owned()]);
+    // Every call stays. The public one keeps its text, the private one loses
+    // it, and neither keeps who asked; the other user's is untouched.
+    let calls: Vec<ForgottenRow> = sqlx::query_as(
+        "SELECT asker_id, asker_name, question, answer, private FROM calls ORDER BY created_at, question",
+    )
+    .fetch_all(&pool)
+    .await?;
+    let cleared: (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE citations = '[]' AND context_ids = '{}'), \
+                count(*) FILTER (WHERE citations <> '[]') FROM calls WHERE private",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        cleared,
+        (1, 0),
+        "a forgotten private call keeps no citations or cards"
+    );
+    let answer = verdict.answer().to_owned();
+    assert_eq!(
+        calls,
+        vec![
+            (
+                None,
+                None,
+                "how do layers work?".to_owned(),
+                answer.clone(),
+                false
+            ),
+            (
+                None,
+                None,
+                "[removed]".to_owned(),
+                "[removed]".to_owned(),
+                true
+            ),
+            (
+                Some("22".to_owned()),
+                Some("mishra".to_owned()),
+                "b's question".to_owned(),
+                answer,
+                false
+            ),
+        ]
+    );
     Ok(())
 }
 
@@ -1521,12 +1717,20 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
             .fetch_one(&pool)
             .await?;
     let mut ids = Vec::new();
-    for thread in ["123456789", "web:0b0e", "agent:77aa", "987654321"] {
+    for (thread, interface, private) in [
+        ("123456789", "discord", false),
+        ("web:0b0e", "web", false),
+        ("agent:77aa", "mcp", true),
+        ("987654321", "discord", true),
+        ("agent:88bb", "agent", false),
+    ] {
         let id: Uuid = sqlx::query_scalar(
-            "INSERT INTO calls (thread_id, question, answer, category, source, confidence, citations,              context_ids, cr_version, created_at) VALUES ($1, 'does  it\nwork?', 'yes', 'combat', 'cr', 'high',              '[]', '{}', '20260819', ($2::date + time '12:00') AT TIME ZONE 'utc') RETURNING id",
+            "INSERT INTO calls (thread_id, interface, private, question, answer, category, source, confidence, citations,              context_ids, cr_version, created_at) VALUES ($1, $3, $4, 'does  it\nwork?', 'yes', 'combat', 'cr', 'high',              '[]', '{}', '20260819', ($2::date + time '12:00') AT TIME ZONE 'utc') RETURNING id",
         )
         .bind(thread)
         .bind(&yesterday)
+        .bind(interface)
+        .bind(private)
         .fetch_one(&pool)
         .await?;
         ids.push(id);
@@ -1552,10 +1756,21 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
     );
     let day = u.by_day.first().ok_or_else(|| anyhow::anyhow!("no day"))?;
     assert_eq!(day.day, yesterday);
-    assert_eq!((day.discord, day.web, day.agent), (2, 1, 1));
+    assert_eq!(
+        (
+            day.discord,
+            day.web,
+            day.mcp,
+            day.cli,
+            day.agent_session,
+            day.agent
+        ),
+        (2, 1, 1, 0, 0, 1)
+    );
+    assert_eq!(day.private, 2);
     assert_eq!(day.llm_calls, 9);
     assert!((u.usd - 1.25).abs() < 1e-9);
-    assert_eq!(u.questions, 4);
+    assert_eq!(u.questions, 5);
     assert_eq!(u.ratings, [2, 0, 0]);
     assert_eq!(u.retired_calls, 0);
     assert_eq!(u.lowest_rated.len(), 1, "unrated calls are not listed");
@@ -1607,8 +1822,7 @@ async fn a_failed_call_is_kept_cut_to_size_and_pruned(pool: PgPool) -> Result<()
     let failed = |n: usize| judge_core::FailedCall {
         thread_id: format!("t{n}"),
         question: "q".repeat(5_000),
-        private: n == 0,
-        user_id: None,
+        origin: Origin::Cli(Visibility::from_private(n == 0)),
         error: "empty verdict".to_owned(),
         first_rejection: Some("the answer names 111.10 without citing it".to_owned()),
         attempts: vec!["a".repeat(20_000), String::new()],

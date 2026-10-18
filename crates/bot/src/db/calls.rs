@@ -4,13 +4,13 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    CallId, CallStore, Context, FailedCall, Forgotten, InputKind, JudgeError, Qa, Question, Score,
-    Validated, Verdict, oracle_fingerprint,
+    CallId, CallStore, Context, FailedCall, Forgotten, HistoryScope, InputKind, JudgeError, Origin,
+    Qa, Question, Score, Validated, Verdict, oracle_fingerprint,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
 
-use super::{Vectors, bad_row, bad_row_from, upstream};
+use super::{CALLS_REWRITE_LOCK, Vectors, bad_row, bad_row_from, upstream};
 use crate::session::{PersistCall, SessionId};
 
 /// Calls + ratings. Only `Verdict<Validated>` can be persisted (invariant I3).
@@ -38,8 +38,9 @@ impl PgCallStore {
         }
     }
 
-    /// Embed each persisted question so later calls can be found by
-    /// similarity, subject to the space check in [`Vectors`]: a call is
+    /// Embed each persisted public question so later calls can be found by
+    /// similarity (a private call is never a prior-call example, so it is
+    /// not embedded), subject to the space check in [`Vectors`]: a call is
     /// stored without a vector rather than with one of another space
     /// (`ingest embed` fills it in later).
     #[must_use]
@@ -93,6 +94,7 @@ impl PgCallStore {
     async fn insert(
         &self,
         q: &Question,
+        origin: &Origin,
         v: &Verdict<Validated>,
         ctx: &Context,
         session: Option<SessionId>,
@@ -119,7 +121,12 @@ impl PgCallStore {
         // The HTTP call happens before the transaction; the space is then held
         // (shared lock, `db::space`) from the check to the insert, so a `reembed`
         // cannot commit in between and the vector, if kept, is of the row's space.
-        let mut embedding = self.embed(&q.text).await;
+        let mut embedding = if origin.is_private() {
+            None
+        } else {
+            self.embed(&q.text).await
+        };
+        let asker = origin.asker();
         let mut tx = self.pool.begin().await.map_err(upstream("begin persist"))?;
         if embedding.is_some() {
             let held = match &self.vectors {
@@ -135,8 +142,9 @@ impl PgCallStore {
         let id = sqlx::query_scalar!(
             r#"
             INSERT INTO calls (thread_id, question, answer, category, source, confidence,
-                               citations, context_ids, cr_version, embedding, session_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                               citations, context_ids, cr_version, embedding, session_id,
+                               interface, asker_id, asker_name, private)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (session_id) WHERE session_id IS NOT NULL
             DO UPDATE SET session_id = EXCLUDED.session_id
             RETURNING id
@@ -151,13 +159,25 @@ impl PgCallStore {
             context_ids,
             cr_version,
             embedding as _,
-            session.map(|s| s.0)
+            session.map(|s| s.0),
+            origin.interface().id(),
+            asker.map(judge_core::Asker::id_string),
+            asker
+                .and_then(|a| a.name.as_ref())
+                .map(AsRef::<str>::as_ref),
+            origin.is_private(),
         )
         .fetch_one(&mut *tx)
         .await
         .map_err(upstream("insert call"))?;
         tx.commit().await.map_err(upstream("commit persist"))?;
-        tracing::info!(call = %id, thread = %q.thread_id, "call persisted");
+        tracing::info!(
+            call = %id,
+            thread = %q.thread_id,
+            interface = %origin.interface(),
+            private = origin.is_private(),
+            "call persisted"
+        );
         Ok(CallId::new(id))
     }
 }
@@ -168,10 +188,11 @@ impl PersistCall for PgCallStore {
         &self,
         session: SessionId,
         q: &Question,
+        origin: &Origin,
         v: &Verdict<Validated>,
         ctx: &Context,
     ) -> Result<CallId, JudgeError> {
-        self.insert(q, v, ctx, Some(session)).await
+        self.insert(q, origin, v, ctx, Some(session)).await
     }
 }
 
@@ -180,10 +201,11 @@ impl CallStore for PgCallStore {
     async fn persist(
         &self,
         q: &Question,
+        origin: &Origin,
         v: &Verdict<Validated>,
         ctx: &Context,
     ) -> Result<CallId, JudgeError> {
-        self.insert(q, v, ctx, None).await
+        self.insert(q, origin, v, ctx, None).await
     }
 
     async fn rate(
@@ -225,15 +247,25 @@ impl CallStore for PgCallStore {
             .map_err(upstream("begin failure record"))?;
         sqlx::query!(
             r#"
-            INSERT INTO failed_calls (thread_id, private, user_id, question, error, first_rejection, attempts)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO failed_calls (thread_id, private, asker_id, asker_name, interface,
+                                      question, error, first_rejection, attempts)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
             failed.thread_id,
-            failed.private,
-            failed.user_id,
+            failed.origin.is_private(),
+            failed.origin.asker().map(judge_core::Asker::id_string),
+            failed
+                .origin
+                .asker()
+                .and_then(|a| a.name.as_ref())
+                .map(AsRef::<str>::as_ref),
+            failed.origin.interface().id(),
             cut(&failed.question, FAILED_QUESTION_CHARS),
             cut(&failed.error, FAILED_ERROR_CHARS),
-            failed.first_rejection.as_deref().map(|r| cut(r, FAILED_ERROR_CHARS)),
+            failed
+                .first_rejection
+                .as_deref()
+                .map(|r| cut(r, FAILED_ERROR_CHARS)),
             &attempts,
         )
         .execute(&mut *tx)
@@ -256,17 +288,47 @@ impl CallStore for PgCallStore {
 
     async fn forget_user(&self, user_id: &str) -> Result<Forgotten, JudgeError> {
         let mut tx = self.pool.begin().await.map_err(upstream("begin forget"))?;
+        // The CR loader rewrites every call's answer from a read it made
+        // earlier, under the exclusive side of this lock; holding the shared
+        // side means it cannot write a private answer back after we remove it.
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock_shared($1)",
+            CALLS_REWRITE_LOCK
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(upstream("lock calls for forget"))?;
         let ratings = sqlx::query!("DELETE FROM ratings WHERE user_id = $1", user_id)
             .execute(&mut *tx)
             .await
             .map_err(upstream("delete ratings"))?
             .rows_affected();
+        // A public call keeps its text, which the channel saw: only who asked
+        // goes. A private one was the asker's alone, so its text goes too, and
+        // with it what it cited and which cards it was about.
+        let calls = sqlx::query!(
+            r#"
+            UPDATE calls
+            SET asker_id = NULL, asker_name = NULL,
+                question = CASE WHEN private THEN '[removed]' ELSE question END,
+                answer = CASE WHEN private THEN '[removed]' ELSE answer END,
+                embedding = CASE WHEN private THEN NULL ELSE embedding END,
+                citations = CASE WHEN private THEN '[]'::jsonb ELSE citations END,
+                context_ids = CASE WHEN private THEN '{}'::jsonb ELSE context_ids END
+            WHERE asker_id = $1
+            "#,
+            user_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(upstream("anonymize calls"))?
+        .rows_affected();
         let failures = sqlx::query!(
             r#"
             UPDATE failed_calls
-            SET user_id = NULL, question = '[removed]', error = '[removed]',
+            SET asker_id = NULL, asker_name = NULL, question = '[removed]', error = '[removed]',
                 first_rejection = NULL, attempts = '{}'
-            WHERE user_id = $1
+            WHERE asker_id = $1
             "#,
             user_id
         )
@@ -275,10 +337,19 @@ impl CallStore for PgCallStore {
         .map_err(upstream("anonymize failed calls"))?
         .rows_affected();
         tx.commit().await.map_err(upstream("commit forget"))?;
-        Ok(Forgotten { ratings, failures })
+        Ok(Forgotten {
+            ratings,
+            failures,
+            calls,
+        })
     }
 
-    async fn history(&self, thread_id: &str, n: usize) -> Result<Vec<Qa>, JudgeError> {
+    async fn history(
+        &self,
+        thread_id: &str,
+        n: usize,
+        scope: HistoryScope,
+    ) -> Result<Vec<Qa>, JudgeError> {
         if n == 0 {
             return Ok(vec![]);
         }
@@ -288,12 +359,13 @@ impl CallStore for PgCallStore {
             r#"
             SELECT question, answer
             FROM calls
-            WHERE thread_id = $1
+            WHERE thread_id = $1 AND (NOT private OR $3)
             ORDER BY created_at DESC
             LIMIT $2
             "#,
             thread_id,
-            limit
+            limit,
+            matches!(scope, HistoryScope::WithPrivate),
         )
         .fetch_all(&self.pool)
         .await

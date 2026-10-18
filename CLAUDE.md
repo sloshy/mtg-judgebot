@@ -166,15 +166,23 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
 `/license` and `/forget` (`discord::command`: `definitions` is the registration, pinned
 byte-for-byte by `tests/fixtures/discord/commands.json`, and `Command::parse` the typed
 invocation; no poise, whose dispatch needs a live gateway connection; replies go
-through `discord::reply::Reply`, initial response then follow-ups, over REST), which deletes the caller's ratings and anonymizes their
-`failed_calls` rows through `CallStore::forget_user` (`Forgotten`).
+through `discord::reply::Reply`, initial response then follow-ups, over REST). `/forget`
+deletes the caller's ratings and removes their id and username from their calls and
+`failed_calls` rows (a private call's text too) through `CallStore::forget_user`
+(`Forgotten`).
 
+- **Every stored call names its origin** (`judge_core::origin::Origin`, D31): the
+  interface (`calls.interface`), the Discord asker (`asker_id`, `asker_name`, the unique
+  username snapshotted; `DiscordUsername` or NULL) and `Visibility`. `CallStore::persist`
+  and `record_failure` take it; `Origin::history_scope` decides which calls of a thread
+  a question reads (`HistoryScope`). Private calls are never prior calls (`AND NOT
+  c.private`), never embedded, and never a public question's history. The agent
+  toolbox's `Transport` (Cli | Mcp) gives its `judge` calls their interface; sessions
+  store `private` in `agent_sessions`.
 - `/judge private:True` is `discord::Audience::Private`: ephemeral, no thread history
-  read, never persisted, so no rating buttons and no prior call. A *failed* call is the exception (D27): `CallStore::record_failure` stores
-  its question and the model's answer text in `failed_calls` (flagged `private`, with the Discord asker's id until `/forget`, capped,
-  30 days / 500 rows; `judge-cli failures`), reached directly, not through `Audience::record`. `Data::answer` reaches the
-  store only through `Audience::record`, which is `None` for it. The audience is carried
-  in the "did you mean?" button's custom-id through a pick.
+  read, persisted private with rating buttons. A failed call goes to `failed_calls`
+  (D27; capped, 30 days / 500 rows; `judge-cli failures`). The audience is carried in
+  the "did you mean?" button's custom-id through a pick.
 - A "did you mean?" pick keeps no state in memory. The question is read back from the
   bot's own message (`render::PickPrompt`: `<@asker> asked: ` + the question verbatim +
   a blank line + a body with no blank line: lead line, numbered choices, notes; `parse`

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE failed_calls\n            SET asker_id = NULL, asker_name = NULL, question = '[removed]', error = '[removed]',\n                first_rejection = NULL, attempts = '{}'\n            WHERE asker_id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8a0b2731f3a86feb01eb968b960cad6a9237a0699fc79fd15c451c5a79caff6b"
+}

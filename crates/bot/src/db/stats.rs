@@ -4,8 +4,10 @@
 //! `spend_days` ledger (`crate::budget`) and `refresh_runs`
 //! (`crate::ingest::runs`).
 //!
-//! Counts are of *stored* calls, so a Discord question asked with
-//! `private: True` is in the spend and not in the questions.
+//! Counts are of *stored* calls: answered ones, private ones included
+//! (`private` says how many). A question that was not answered (a "did you
+//! mean?", an unknown card, a failure) is in the spend and not in the
+//! questions.
 
 use judge_core::JudgeError;
 use schemars::JsonSchema;
@@ -32,7 +34,12 @@ pub struct FailedRow {
     pub at: String,
     /// The thread it was asked in.
     pub thread: String,
-    /// Asked with `private: True`.
+    /// The interface: `discord`, `web`, `mcp`, `cli`, `agent_session`, or
+    /// `agent` for a row from before 2.0.0 (MCP or `judge-cli`).
+    pub interface: String,
+    /// The Discord username of the asker, when known and not forgotten.
+    pub asker: Option<String>,
+    /// Asked private.
     pub private: bool,
     /// The question.
     pub question: String,
@@ -52,7 +59,7 @@ pub async fn failures(pool: &PgPool, limit: u32) -> Result<Vec<FailedRow>, Judge
     let rows = sqlx::query!(
         r#"
         SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "at!",
-               thread_id, private, question, error, first_rejection, attempts
+               thread_id, interface, asker_name, private, question, error, first_rejection, attempts
         FROM failed_calls ORDER BY id DESC LIMIT $1
         "#,
         i64::from(limit.min(MAX_FAILURES)),
@@ -65,6 +72,8 @@ pub async fn failures(pool: &PgPool, limit: u32) -> Result<Vec<FailedRow>, Judge
         .map(|r| FailedRow {
             at: r.at,
             thread: r.thread_id,
+            interface: r.interface,
+            asker: r.asker_name,
             private: r.private,
             question: r.question,
             error: r.error,
@@ -79,12 +88,21 @@ pub async fn failures(pool: &PgPool, limit: u32) -> Result<Vec<FailedRow>, Judge
 pub struct Day {
     /// `YYYY-MM-DD`.
     pub day: String,
-    /// Calls stored that day, by interface.
+    /// Calls stored that day, by interface: `/judge` on Discord.
     pub discord: i64,
-    /// Asked through the web page or `POST /api/judge`.
+    /// Asked through the web app or `POST /api/judge`.
     pub web: i64,
-    /// Persisted by an agent session or `judge-cli judge`.
+    /// The MCP `judge` tool.
+    pub mcp: i64,
+    /// `judge-cli judge`.
+    pub cli: i64,
+    /// Persisted by an agent session.
+    pub agent_session: i64,
+    /// Stored before 2.0.0 by the MCP `judge` tool or `judge-cli judge`,
+    /// which were not told apart then.
     pub agent: i64,
+    /// Of all the above, the calls asked private.
+    pub private: i64,
     /// Estimated model spend of the `judgebot` processes and `judgebot ingest`
     /// that day, in USD: chat calls and embeddings together.
     pub usd: f64,
@@ -145,10 +163,13 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
             SELECT (now() AT TIME ZONE 'utc')::date - $1::int AS since
         ), asked AS (
             SELECT (created_at AT TIME ZONE 'utc')::date AS day,
-                   count(*) FILTER (WHERE thread_id LIKE 'web:%') AS web,
-                   count(*) FILTER (WHERE thread_id LIKE 'agent:%') AS agent,
-                   count(*) FILTER (WHERE thread_id NOT LIKE 'web:%'
-                                      AND thread_id NOT LIKE 'agent:%') AS discord
+                   count(*) FILTER (WHERE interface = 'discord') AS discord,
+                   count(*) FILTER (WHERE interface = 'web') AS web,
+                   count(*) FILTER (WHERE interface = 'mcp') AS mcp,
+                   count(*) FILTER (WHERE interface = 'cli') AS cli,
+                   count(*) FILTER (WHERE interface = 'agent_session') AS agent_session,
+                   count(*) FILTER (WHERE interface = 'agent') AS agent,
+                   count(*) FILTER (WHERE private) AS private
             FROM calls, bounds
             WHERE (created_at AT TIME ZONE 'utc')::date >= since
             GROUP BY 1
@@ -158,7 +179,11 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
         SELECT COALESCE(a.day, s.day)::text AS "day!",
                COALESCE(a.discord, 0) AS "discord!",
                COALESCE(a.web, 0) AS "web!",
+               COALESCE(a.mcp, 0) AS "mcp!",
+               COALESCE(a.cli, 0) AS "cli!",
+               COALESCE(a.agent_session, 0) AS "agent_session!",
                COALESCE(a.agent, 0) AS "agent!",
+               COALESCE(a.private, 0) AS "private!",
                COALESCE(s.micro_usd, 0) AS "micro_usd!",
                COALESCE(s.calls, 0) AS "llm_calls!"
         FROM asked a FULL JOIN spent s ON s.day = a.day
@@ -174,7 +199,11 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
         day: r.day,
         discord: r.discord,
         web: r.web,
+        mcp: r.mcp,
+        cli: r.cli,
+        agent_session: r.agent_session,
         agent: r.agent,
+        private: r.private,
         usd: usd(r.micro_usd),
         llm_calls: r.llm_calls,
     })
@@ -240,7 +269,10 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
 
     Ok(Usage {
         days,
-        questions: by_day.iter().map(|d| d.discord + d.web + d.agent).sum(),
+        questions: by_day
+            .iter()
+            .map(|d| d.discord + d.web + d.mcp + d.cli + d.agent_session + d.agent)
+            .sum(),
         usd: by_day.iter().map(|d| d.usd).sum(),
         by_day,
         ratings: [ratings.incorrect, ratings.partial, ratings.correct],

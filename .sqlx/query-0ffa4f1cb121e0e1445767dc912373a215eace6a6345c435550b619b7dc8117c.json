@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH bounds AS (\n            SELECT (now() AT TIME ZONE 'utc')::date - $1::int AS since\n        ), asked AS (\n            SELECT (created_at AT TIME ZONE 'utc')::date AS day,\n                   count(*) FILTER (WHERE interface = 'discord') AS discord,\n                   count(*) FILTER (WHERE interface = 'web') AS web,\n                   count(*) FILTER (WHERE interface = 'mcp') AS mcp,\n                   count(*) FILTER (WHERE interface = 'cli') AS cli,\n                   count(*) FILTER (WHERE interface = 'agent_session') AS agent_session,\n                   count(*) FILTER (WHERE interface = 'agent') AS agent,\n                   count(*) FILTER (WHERE private) AS private\n            FROM calls, bounds\n            WHERE (created_at AT TIME ZONE 'utc')::date >= since\n            GROUP BY 1\n        ), spent AS (\n            SELECT day, micro_usd, calls FROM spend_days, bounds WHERE day >= since\n        )\n        SELECT COALESCE(a.day, s.day)::text AS \"day!\",\n               COALESCE(a.discord, 0) AS \"discord!\",\n               COALESCE(a.web, 0) AS \"web!\",\n               COALESCE(a.mcp, 0) AS \"mcp!\",\n               COALESCE(a.cli, 0) AS \"cli!\",\n               COALESCE(a.agent_session, 0) AS \"agent_session!\",\n               COALESCE(a.agent, 0) AS \"agent!\",\n               COALESCE(a.private, 0) AS \"private!\",\n               COALESCE(s.micro_usd, 0) AS \"micro_usd!\",\n               COALESCE(s.calls, 0) AS \"llm_calls!\"\n        FROM asked a FULL JOIN spent s ON s.day = a.day\n        ORDER BY 1 DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "discord!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "web!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "mcp!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "cli!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "agent_session!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "agent!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "private!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "micro_usd!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "llm_calls!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "0ffa4f1cb121e0e1445767dc912373a215eace6a6345c435550b619b7dc8117c"
+}

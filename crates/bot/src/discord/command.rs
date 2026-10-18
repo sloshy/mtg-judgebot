@@ -197,7 +197,7 @@ pub fn definitions() -> Vec<CreateCommand> {
                 .max_length(QUESTION_MAX_CHARS),
             )
             .add_option(private_option(
-                "Show the answer only to you. A private answer stands alone: no follow-ups, no ratings, not saved.",
+                "Show the answer only to you. It reads no earlier questions here and is never shown publicly.",
             ))
             .contexts(vec![InteractionContext::Guild]),
         CreateCommand::new(CARD)

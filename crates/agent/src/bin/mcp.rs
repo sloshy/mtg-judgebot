@@ -10,8 +10,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use judge_agent::{Toolbox, mcp::serve_stdio};
-use judge_bot::synth::Harness;
+use judge_agent::{Toolbox, Transport, mcp::serve_stdio};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,7 +18,7 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
-    let toolbox = Toolbox::from_env(Harness::Mcp).await?;
+    let toolbox = Toolbox::from_env(Transport::Mcp).await?;
     tracing::info!(
         pipeline = toolbox.has_pipeline(),
         "judge-mcp serving on stdio"

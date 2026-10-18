@@ -43,6 +43,15 @@ Session-persisted calls are thread history only. Nothing can rate them, so the p
 source never shows them as examples. Session thread ids carry an `agent:` prefix that a
 Discord thread id cannot have, so a session cannot read a channel's history.
 
+## Private calls
+
+`judge` and `begin_session` take `private: true` (`--private` on `judge-cli judge` and
+`begin`). The call is stored marked private: only the operator sees it, it is never an
+example for a later question, and a public question in the same thread does not read it.
+A private question reads its own thread whole, private calls included, because an
+`agent:` thread is known only to whoever it was returned to. Every call records whether
+it came from MCP, `judge-cli` or a session.
+
 ## Lookups
 
 `card <name>`, `card-info <uuid>`, `get-rules <id>...`, `search <query> [--limit N]` and

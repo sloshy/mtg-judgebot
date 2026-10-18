@@ -93,15 +93,17 @@ citation is only shown after it has been checked against the source.\n\n\
 one card a listed nickname stands for. If a \
 name could mean several cards you get a \"did you mean…?\" row instead of a guess, and every answer lists \
 the cards it took your question to be about. Tournament policy and card prices are out of scope. Add \
-`private: True` and only you see the answer: it stands alone, with no follow-ups and no ratings, and is \
-not saved.\n\n\
+`private: True` and only you see the answer. It reads no earlier questions and no later question reads \
+it. It is still stored, for the operator only.\n\n\
 **Looking things up.** `/card` shows a card's Oracle text and rulings and `/rule` shows rules text by \
 number. Both are free and instant.\n\n\
 **Rating.** The buttons under an answer record how right it was; rating again replaces yours. Ratings decide \
 which past answers are shown as examples later — the rules themselves always outrank them. Members with the \
 server's judge role rate with an override.\n\n\
-**What is stored.** The question and answer text, the channel it was asked in, and your user id when you \
-rate. Nothing else is read: the bot sees only its slash commands. `/forget` deletes your ratings and anonymizes any failed call of yours (a call that errored is kept for debugging, with its question).\n\n\
+**What is stored.** Each question and answer, the channel it was asked in, your user id and username, \
+and your ratings. A call that errored is kept for debugging, with its question. Nothing else is read: the \
+bot sees only its slash commands. `/forget` deletes your ratings and removes your id and username from \
+your questions; a private question's text, and a failed one's, is removed too.\n\n\
 Answers are AI-generated; verify anything important with a human judge. Unofficial Fan Content under the \
 Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.\n\n";
 
@@ -181,25 +183,45 @@ the same licence. The source code of this instance is at <{}> ({revision}).\n\n{
 /// `/forget`'s confirmation, naming how much there was to forget.
 #[must_use]
 pub fn forgotten(f: judge_core::Forgotten) -> String {
-    let rated = match f.ratings {
-        1 => "1 rating".to_owned(),
-        n => format!("{n} ratings"),
+    let count = |n: u64, one: &str, many: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {many}"),
     };
-    let failed = match f.failures {
-        1 => "1 failed call of yours".to_owned(),
-        n => format!("{n} failed calls of yours"),
-    };
-    match (f.ratings, f.failures) {
-        (0, 0) => {
-            "You had no ratings or failed calls on record; there is nothing else stored about you."
-                .to_owned()
-        }
-        (_, 0) => format!("Deleted your {rated}. Nothing else is stored about you."),
-        (0, _) => format!("Anonymized {failed}. Nothing else is stored about you."),
-        _ => format!(
-            "Deleted your {rated} and anonymized {failed}. Nothing else is stored about you."
-        ),
+    let mut done = Vec::new();
+    if f.ratings > 0 {
+        done.push(format!(
+            "deleted your {}",
+            count(f.ratings, "rating", "ratings")
+        ));
     }
+    if f.calls > 0 {
+        done.push(format!(
+            "removed your id and username from {} you asked",
+            count(f.calls, "question", "questions")
+        ));
+    }
+    if f.failures > 0 {
+        done.push(format!(
+            "anonymized {} of yours",
+            count(f.failures, "failed call", "failed calls")
+        ));
+    }
+    let Some((last, rest)) = done.split_last() else {
+        return "You had no ratings, questions or failed calls on record; there is nothing else \
+                stored about you."
+            .to_owned();
+    };
+    let joined = if rest.is_empty() {
+        last.clone()
+    } else {
+        format!("{} and {last}", rest.join(", "))
+    };
+    let mut chars = joined.chars();
+    let capitalized: String = chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
+    format!("{capitalized}. Nothing else is stored about you.")
 }
 
 /// `/forget` when the deletion failed.
@@ -1895,13 +1917,28 @@ mod info_tests {
 
     #[test]
     fn forgotten_counts_in_plain_english() {
-        let f = |ratings, failures| forgotten(judge_core::Forgotten { ratings, failures });
-        assert!(f(0, 0).starts_with("You had no ratings"));
-        assert!(f(1, 0).starts_with("Deleted your 1 rating."));
-        assert!(f(7, 0).starts_with("Deleted your 7 ratings."));
-        assert!(f(0, 2).starts_with("Anonymized 2 failed calls of yours."));
+        let f = |ratings, calls, failures| {
+            forgotten(judge_core::Forgotten {
+                ratings,
+                failures,
+                calls,
+            })
+        };
+        assert_eq!(
+            f(0, 0, 0),
+            "You had no ratings, questions or failed calls on record; there is nothing else stored about you."
+        );
+        assert!(f(1, 0, 0).starts_with("Deleted your 1 rating."));
+        assert!(f(7, 0, 0).starts_with("Deleted your 7 ratings."));
+        assert!(f(0, 0, 2).starts_with("Anonymized 2 failed calls of yours."));
+        assert!(f(0, 1, 0).starts_with("Removed your id and username from 1 question you asked."));
         assert!(
-            f(1, 1).starts_with("Deleted your 1 rating and anonymized 1 failed call of yours.")
+            f(1, 0, 1).starts_with("Deleted your 1 rating and anonymized 1 failed call of yours.")
+        );
+        assert_eq!(
+            f(2, 3, 1),
+            "Deleted your 2 ratings, removed your id and username from 3 questions you asked and \
+             anonymized 1 failed call of yours. Nothing else is stored about you."
         );
     }
 }

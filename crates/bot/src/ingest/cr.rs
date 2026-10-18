@@ -1281,8 +1281,8 @@ mod tests {
         let cite = |id: &str, q: &str| serde_json::json!([{"kind": "rule", "id": id, "quote": q}]);
         let insert = |retired: bool| {
             sqlx::query_scalar::<_, uuid::Uuid>(
-                "INSERT INTO calls (thread_id, question, answer, category, source, cr_version, citations, retired_at, retired_reason) \
-                 VALUES ('t', 'q', 'See 702.19 and 702.19b. Unrelated 613.1 and 613.1a stay.', 'layers', 'cr', '20260819', $1, \
+                "INSERT INTO calls (thread_id, interface, question, answer, category, source, cr_version, citations, retired_at, retired_reason) \
+                 VALUES ('t', 'discord', 'q', 'See 702.19 and 702.19b. Unrelated 613.1 and 613.1a stay.', 'layers', 'cr', '20260819', $1, \
                          CASE WHEN $2 THEN now() END, CASE WHEN $2 THEN 'test' END) RETURNING id",
             )
             .bind(cite("702.19b", &quote))

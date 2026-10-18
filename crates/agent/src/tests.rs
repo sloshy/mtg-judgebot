@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use judge_bot::synth::Harness;
 use judge_core::{
     Category, CategoryGuess, Citation, Confidence, Extraction, RuleId, Source, Verdict,
 };
@@ -13,7 +12,7 @@ use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
 use crate::{
-    Options, Quota, Toolbox,
+    Options, Quota, Toolbox, Transport,
     ops::{
         BeginInput, ExtractionReply, IdsInput, JudgeInput, JudgeReply, LookupInput, NameInput,
         SearchInput, SessionInput, VerdictInput, VerdictReply,
@@ -72,7 +71,7 @@ fn toolbox(pool: PgPool, quota: Option<Quota>) -> Toolbox {
     Toolbox::new(
         pool,
         Options {
-            harness: Harness::Mcp,
+            transport: Transport::Mcp,
             models: None,
             deps_config: judge_bot::DepsConfig::default(),
             vectors: None,
@@ -111,7 +110,8 @@ async fn a_session_through_the_ops_layer(pool: PgPool) -> anyhow::Result<()> {
         t.judge(JudgeInput {
             question: "q?".into(),
             thread: None,
-            pins: vec![]
+            pins: vec![],
+            private: false,
         })
         .await?,
         JudgeReply::Unavailable { .. }
@@ -121,6 +121,7 @@ async fn a_session_through_the_ops_layer(pool: PgPool) -> anyhow::Result<()> {
         .begin_session(BeginInput {
             question: "does bolt's damage gain me life?".into(),
             thread: None,
+            private: false,
         })
         .await?;
     let ExtractionReply::Ready { prompt } = t
@@ -231,11 +232,17 @@ async fn a_session_through_the_ops_layer(pool: PgPool) -> anyhow::Result<()> {
         ("closed", None, Some("answered"))
     );
 
+    let stored: (String, bool) = sqlx::query_as("SELECT interface, private FROM calls")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(stored, ("agent_session".to_owned(), false));
+
     // The follow-up in the same thread sees the answer as history.
     let next = t
         .begin_session(BeginInput {
             question: "and with lifelink?".into(),
-            thread: Some(begun.thread),
+            thread: Some(begun.thread.clone()),
+            private: true,
         })
         .await?;
     assert!(
@@ -243,6 +250,62 @@ async fn a_session_through_the_ops_layer(pool: PgPool) -> anyhow::Result<()> {
             .user
             .contains("does bolt's damage gain me life?")
     );
+    // A private session's call is stored private ...
+    let ExtractionReply::Ready { .. } = t
+        .submit_extraction(crate::ops::ExtractionInput {
+            session: next.session,
+            extraction: extraction(),
+        })
+        .await?
+    else {
+        anyhow::bail!("expected ready");
+    };
+    let VerdictReply::Accepted { call: Some(_), .. } = t
+        .submit_verdict(VerdictInput {
+            session: next.session,
+            verdict: Verdict::new(
+                "Still no: lifelink would have to be on the source of the damage.".into(),
+                Confidence::High,
+                vec![Citation::Rule {
+                    id: rid("702.15")?,
+                    quote: judge_core::Quote::try_new(BODY)?,
+                }],
+                Category::Combat,
+            ),
+            persist: true,
+        })
+        .await?
+    else {
+        anyhow::bail!("expected a stored call");
+    };
+    let private: Vec<(String, bool)> =
+        sqlx::query_as("SELECT question, private FROM calls ORDER BY created_at")
+            .fetch_all(&pool)
+            .await?;
+    assert_eq!(
+        private,
+        vec![
+            ("does bolt's damage gain me life?".to_owned(), false),
+            ("and with lifelink?".to_owned(), true),
+        ]
+    );
+    // ... so a public follow-up does not read it, and a private one does.
+    let public = t
+        .begin_session(BeginInput {
+            question: "and with deathtouch?".into(),
+            thread: Some(begun.thread.clone()),
+            private: false,
+        })
+        .await?;
+    assert!(!public.extraction.user.contains("and with lifelink?"));
+    let own = t
+        .begin_session(BeginInput {
+            question: "and with deathtouch?".into(),
+            thread: Some(begun.thread),
+            private: true,
+        })
+        .await?;
+    assert!(own.extraction.user.contains("and with lifelink?"));
     Ok(())
 }
 
@@ -304,6 +367,7 @@ async fn lookups_are_bounded_and_the_judge_quota_counts(pool: PgPool) -> anyhow:
         question: "q?".into(),
         thread: None,
         pins: vec![],
+        private: false,
     };
     assert!(matches!(
         t.judge(q()).await?,

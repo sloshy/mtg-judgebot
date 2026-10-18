@@ -64,12 +64,13 @@ impl PgSessionStore {
             .map_err(|e| bad_row_from(e, "serialize session state"))?;
         sqlx::query!(
             r#"
-            INSERT INTO agent_sessions (id, thread_id, question, state, expires_at)
-            VALUES ($1, $2, $3, $4, now() + $5)
+            INSERT INTO agent_sessions (id, thread_id, question, private, state, expires_at)
+            VALUES ($1, $2, $3, $4, $5, now() + $6)
             "#,
             s.id.0,
             s.question.thread_id,
             s.question.text,
+            s.visibility.is_private(),
             state,
             ttl_interval(ttl)
         )
@@ -97,7 +98,7 @@ impl PgSessionStore {
     ) -> Result<Option<(Session, Version)>, JudgeError> {
         let row = sqlx::query!(
             r#"
-            SELECT thread_id, question, state, version
+            SELECT thread_id, question, private, state, version
             FROM agent_sessions
             WHERE id = $1 AND expires_at >= now()
             "#,
@@ -115,6 +116,7 @@ impl PgSessionStore {
                     thread_id: r.thread_id,
                     text: r.question,
                 },
+                visibility: judge_core::Visibility::from_private(r.private),
                 stage,
             };
             Ok((session, Version(r.version)))
@@ -179,6 +181,7 @@ mod tests {
             SessionId::new(),
             AgentThread::new(),
             "q".into(),
+            judge_core::Visibility::Private,
             vec![Qa {
                 question: "a".into(),
                 answer: "b".into(),

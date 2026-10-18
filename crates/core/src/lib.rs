@@ -11,6 +11,7 @@ pub mod error;
 pub mod freshness;
 pub mod judge;
 pub mod operator;
+pub mod origin;
 pub mod ports;
 pub mod quote;
 pub mod source;
@@ -25,6 +26,7 @@ pub use judge::{Deps, Traced, judge, judge_traced};
 pub use operator::{
     DiscordOperator, DiscordUsername, MissingContact, NetworkOperator, Operator, SupportEmail,
 };
+pub use origin::{Asker, HistoryScope, Origin, Visibility};
 pub use ports::{CallStore, Embedder, Extractor, InputKind, Resolver, Retriever, Synthesizer};
 pub use source::{About, Commit, CommitHash, RepositoryUrl, SourceOffer};
 pub use verdict::{
