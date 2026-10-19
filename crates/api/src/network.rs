@@ -260,6 +260,7 @@ fn routes(
             judge.source_offer().clone(),
             operator.clone(),
         )
+        .with_locale(judge.locale())
         .with_probe(match discord {
             None => Arc::new(All(vec![
                 Arc::new(pool.clone()) as Arc<dyn Probe>,

@@ -6,8 +6,10 @@
 
 use judge_bot::discord::{question, render};
 use judge_core::{
-    Ambiguous, Citation, Confidence, Context, JudgeError, Source, Validated, Verdict,
+    Ambiguous, Citation, Confidence, Context, JudgeError, Locale, Source, Validated, Verdict,
 };
+
+use crate::catalog::{self, Messages};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -20,10 +22,6 @@ pub const MAX_PIN_CHARS: usize = 200;
 /// Candidate names returned per ambiguous span (mirrors the Discord button row).
 pub const MAX_CHOICES: usize = render::MAX_CHOICES;
 
-/// Reply when an IP has used up its request window.
-pub const RATE_LIMITED: &str =
-    "You've asked several questions in a short time. Please wait a few minutes and ask again.";
-
 /// Body of `POST /api/judge`.
 #[derive(Clone, Debug, Deserialize)]
 pub struct JudgeRequest {
@@ -35,6 +33,64 @@ pub struct JudgeRequest {
     /// Resolved ambiguities from earlier `ambiguous` replies, oldest first.
     #[serde(default)]
     pub pins: Vec<Pin>,
+    /// The language the caller wants the reply's messages and labels in
+    /// (a BCP 47 tag such as `en-GB`), ahead of `Accept-Language`.
+    #[serde(default)]
+    pub locale: Option<String>,
+}
+
+/// The language a request is answered in: the body's `locale`, then
+/// `Accept-Language` (most preferred first), then the instance's, whichever
+/// first names a language with a catalog.
+#[must_use]
+pub fn request_locale(
+    body: Option<&str>,
+    accept_language: Option<&str>,
+    fallback: Locale,
+) -> Locale {
+    let accepted = accept_language.map(accepted_languages).unwrap_or_default();
+    Locale::negotiate(
+        body.into_iter().chain(accepted.iter().map(String::as_str)),
+        fallback,
+    )
+}
+
+/// The tags of an `Accept-Language` header, most preferred first: by `q`,
+/// highest first, keeping the header's order among equals. `q=0` (not
+/// acceptable) and unreadable entries are dropped.
+fn accepted_languages(header: &str) -> Vec<String> {
+    let mut tags: Vec<(u16, usize, String)> = header
+        .split(',')
+        .enumerate()
+        .filter_map(|(i, entry)| {
+            let mut parts = entry.split(';');
+            let tag = parts.next()?.trim();
+            if tag.is_empty() || tag == "*" {
+                return None;
+            }
+            let q = parts
+                .find_map(|p| p.trim().strip_prefix("q="))
+                .map_or(Some(1000), |q| {
+                    q.trim()
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|q| (0.0..=1.0).contains(q))
+                        // Clamped to 0..=1 first: the cast cannot overflow.
+                        .map(|q| {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                clippy::cast_sign_loss,
+                                reason = "q is in 0..=1, so q * 1000 is in 0..=1000"
+                            )]
+                            let thousandths = (q * 1000.0).round() as u16;
+                            thousandths
+                        })
+                })?;
+            (q > 0).then(|| (q, i, tag.to_owned()))
+        })
+        .collect();
+    tags.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    tags.into_iter().map(|(_, _, tag)| tag).collect()
 }
 
 /// One resolved "did you mean…?": the span as written and the full card name
@@ -137,26 +193,23 @@ pub struct AmbiguousView {
 ///
 /// # Errors
 /// A message suitable for a 400 body.
-pub fn validate(req: &JudgeRequest) -> Result<(), String> {
+pub fn validate(locale: Locale, req: &JudgeRequest) -> Result<(), String> {
+    let m = catalog::messages(locale);
     if req.question.trim().is_empty() {
-        return Err("question must not be empty".to_owned());
+        return Err(m.question_empty.to_owned());
     }
     if req.question.chars().count() > MAX_QUESTION_CHARS {
-        return Err(format!(
-            "question must be at most {MAX_QUESTION_CHARS} characters"
-        ));
+        return Err((m.question_too_long)(MAX_QUESTION_CHARS));
     }
     if req.pins.len() > MAX_PINS {
-        return Err(format!("at most {MAX_PINS} pins are accepted"));
+        return Err((m.too_many_pins)(MAX_PINS));
     }
     for p in &req.pins {
         if p.span.trim().is_empty() || p.name.trim().is_empty() {
-            return Err("pins must have a non-empty span and name".to_owned());
+            return Err(m.pin_empty.to_owned());
         }
         if p.span.chars().count() > MAX_PIN_CHARS || p.name.chars().count() > MAX_PIN_CHARS {
-            return Err(format!(
-                "pin spans and names must be at most {MAX_PIN_CHARS} characters"
-            ));
+            return Err((m.pin_too_long)(MAX_PIN_CHARS));
         }
     }
     Ok(())
@@ -174,7 +227,8 @@ pub fn question_text(req: &JudgeRequest) -> String {
 /// Shape a validated verdict. `ctx` (the captured retrieval context) supplies
 /// card names for ruling / Oracle-text labels; the links work without it.
 #[must_use]
-pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>) -> ApiReply {
+pub fn answer(locale: Locale, v: &Verdict<Validated>, ctx: Option<&Context>) -> ApiReply {
+    let m = catalog::messages(locale);
     ApiReply::Answer {
         answer: v.answer().to_owned(),
         confidence: v.confidence(),
@@ -183,7 +237,7 @@ pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>) -> ApiReply {
         citations: v
             .citations()
             .iter()
-            .map(|c| citation_view(c, ctx))
+            .map(|c| citation_view(m, c, ctx))
             .collect(),
         cards: v
             .cards()
@@ -199,7 +253,7 @@ pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>) -> ApiReply {
 /// Shape a failed `judge()`. Exhaustive over [`JudgeError`], so a new variant
 /// must be shaped before this compiles.
 #[must_use]
-pub fn error(e: &JudgeError) -> ApiReply {
+pub fn error(locale: Locale, e: &JudgeError) -> ApiReply {
     match e {
         JudgeError::AmbiguousCards(spans) => ApiReply::Ambiguous {
             spans: spans.iter().map(ambiguous_view).collect(),
@@ -215,7 +269,7 @@ pub fn error(e: &JudgeError) -> ApiReply {
         | JudgeError::ToolMisuse(_)
         | JudgeError::LlmRefused
         | JudgeError::Upstream(_) => ApiReply::Error {
-            message: render::error(e),
+            message: render::error(locale, e),
         },
     }
 }
@@ -233,7 +287,7 @@ fn ambiguous_view(a: &Ambiguous) -> AmbiguousView {
     }
 }
 
-fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
+fn citation_view(m: &Messages, c: &Citation, ctx: Option<&Context>) -> CitationView {
     let quote = collapse_whitespace(c.quote());
     let card_name = |id| ctx.and_then(|x| x.card(id)).map(|card| card.name.clone());
     match c {
@@ -247,10 +301,7 @@ fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
                 .and_then(|x| x.ruling(*card, ruling))
                 .map(|r| format!(" ({})", r.published_at))
                 .unwrap_or_default();
-            let label = match card_name(*card) {
-                Some(name) => format!("Ruling{date} — {name}"),
-                None => format!("Scryfall ruling{date}"),
-            };
+            let label = (m.ruling_label)(&date, card_name(*card).as_deref());
             CitationView {
                 label,
                 url: Some(render::scryfall_url(*card)),
@@ -258,19 +309,16 @@ fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
             }
         }
         Citation::PriorCall { .. } => CitationView {
-            label: "Prior call".to_owned(),
+            label: m.prior_call_label.to_owned(),
             url: None,
             quote,
         },
         Citation::OracleText { card, face, .. } => {
-            let face_note = match face {
-                0 => String::new(),
-                n => format!(", face {}", n.saturating_add(1)),
+            let face = match face {
+                0 => None,
+                n => Some(usize::try_from(*n).map_or(usize::MAX, |n| n.saturating_add(1))),
             };
-            let label = match card_name(*card) {
-                Some(name) => format!("Oracle text{face_note} — {name}"),
-                None => format!("Oracle text{face_note}"),
-            };
+            let label = (m.oracle_label)(face, card_name(*card).as_deref());
             CitationView {
                 label,
                 url: Some(render::scryfall_url(*card)),
@@ -298,14 +346,35 @@ mod tests {
             question: question.to_owned(),
             session_id: None,
             pins: vec![],
+            locale: None,
         }
     }
 
     #[test]
+    fn accept_language_is_read_by_preference_and_q_zero_is_refused() {
+        assert_eq!(
+            accepted_languages("fr-CH, fr;q=0.9, en;q=0.8, de;q=0.7, *;q=0.5"),
+            ["fr-CH", "fr", "en", "de"]
+        );
+        assert_eq!(accepted_languages("de;q=0.5, en"), ["en", "de"]);
+        assert_eq!(accepted_languages("en;q=0, es"), ["es"]);
+        assert_eq!(accepted_languages("en;q=2, es;q=abc, , pt"), ["pt"]);
+        // The body's own choice comes first, then the header, then the instance's.
+        assert_eq!(
+            request_locale(Some("en-GB"), Some("es"), Locale::En),
+            Locale::En
+        );
+        assert_eq!(
+            request_locale(Some("xx"), Some("fr, en;q=0.1"), Locale::En),
+            Locale::En
+        );
+        assert_eq!(request_locale(None, None, Locale::En), Locale::En);
+    }
+    #[test]
     fn validation_enforces_the_size_limits() {
-        assert!(validate(&req("does lifelink stack?")).is_ok());
-        assert!(validate(&req("  ")).is_err());
-        assert!(validate(&req(&"x".repeat(MAX_QUESTION_CHARS + 1))).is_err());
+        assert!(validate(Locale::En, &req("does lifelink stack?")).is_ok());
+        assert!(validate(Locale::En, &req("  ")).is_err());
+        assert!(validate(Locale::En, &req(&"x".repeat(MAX_QUESTION_CHARS + 1))).is_err());
         let mut r = req("q?");
         r.pins = vec![
             Pin {
@@ -314,22 +383,22 @@ mod tests {
             };
             MAX_PINS + 1
         ];
-        assert!(validate(&r).is_err());
+        assert!(validate(Locale::En, &r).is_err());
         r.pins = vec![Pin {
             span: " ".into(),
             name: "Urza's Tower".into(),
         }];
-        assert!(validate(&r).is_err());
+        assert!(validate(Locale::En, &r).is_err());
         r.pins = vec![Pin {
             span: "urza".into(),
             name: "n".repeat(MAX_PIN_CHARS + 1),
         }];
-        assert!(validate(&r).is_err());
+        assert!(validate(Locale::En, &r).is_err());
         r.pins = vec![Pin {
             span: "urza".into(),
             name: "Urza's Tower".into(),
         }];
-        assert!(validate(&r).is_ok());
+        assert!(validate(Locale::En, &r).is_ok());
     }
 
     #[test]
@@ -412,7 +481,7 @@ mod tests {
     #[test]
     fn answer_carries_linked_citations() -> Result<(), Box<dyn std::error::Error>> {
         let (v, ctx) = validated()?;
-        let reply = answer(&v, Some(&ctx));
+        let reply = answer(Locale::En, &v, Some(&ctx));
         let j = serde_json::to_value(&reply)?;
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("answer"));
         assert_eq!(j.get("confidence").and_then(|k| k.as_str()), Some("high"));
@@ -442,7 +511,7 @@ mod tests {
             Some("Ruling (2020-01-01) — Dark Confidant")
         );
         // Whitespace in quotes is collapsed for display.
-        let without_ctx = answer(&v, None);
+        let without_ctx = answer(Locale::En, &v, None);
         let j = serde_json::to_value(&without_ctx)?;
         assert_eq!(
             j.get("citations")
@@ -459,6 +528,7 @@ mod tests {
     fn prior_call_and_oracle_text_citations_shape() -> Result<(), Box<dyn std::error::Error>> {
         let quote = "some  prior\nanswer";
         let view = citation_view(
+            &catalog::EN,
             &Citation::PriorCall {
                 id: CallId::new(Uuid::from_u128(3)),
                 quote: judge_core::Quote::try_new(quote)?,
@@ -469,6 +539,7 @@ mod tests {
         assert_eq!(view.url, None);
         assert_eq!(view.quote, "some prior answer");
         let view = citation_view(
+            &catalog::EN,
             &Citation::OracleText {
                 card: CardId::new(Uuid::from_u128(4)),
                 face: 1,
@@ -490,7 +561,7 @@ mod tests {
                 (2..8).map(|i| card(i, &format!("Urza {i}"))).collect(),
             )),
         });
-        let j = serde_json::to_value(error(&JudgeError::AmbiguousCards(spans)))?;
+        let j = serde_json::to_value(error(Locale::En, &JudgeError::AmbiguousCards(spans)))?;
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("ambiguous"));
         let span = j
             .get("spans")
@@ -508,9 +579,10 @@ mod tests {
             Some(true)
         );
 
-        let j = serde_json::to_value(error(&JudgeError::CardsNotFound(NonEmpty::new(
-            "Xyzzy".to_owned(),
-        ))))?;
+        let j = serde_json::to_value(error(
+            Locale::En,
+            &JudgeError::CardsNotFound(NonEmpty::new("Xyzzy".to_owned())),
+        ))?;
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("not_found"));
         assert_eq!(
             j.get("names")
@@ -520,17 +592,21 @@ mod tests {
             Some("Xyzzy")
         );
 
-        let j = serde_json::to_value(error(&JudgeError::OutOfScope(Source::Tournament)))?;
+        let j = serde_json::to_value(error(
+            Locale::En,
+            &JudgeError::OutOfScope(Source::Tournament),
+        ))?;
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("error"));
         assert_eq!(
             j.get("message").and_then(|m| m.as_str()),
-            Some(render::OUT_OF_SCOPE)
+            Some(judge_bot::discord::catalog::EN.out_of_scope)
         );
 
         // Internal details never leak.
-        let j = serde_json::to_value(error(&JudgeError::Upstream(anyhow::anyhow!(
-            "secret detail"
-        ))))?;
+        let j = serde_json::to_value(error(
+            Locale::En,
+            &JudgeError::Upstream(anyhow::anyhow!("secret detail")),
+        ))?;
         assert!(!j.to_string().contains("secret"));
         Ok(())
     }

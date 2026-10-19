@@ -167,16 +167,18 @@ impl Operator {
     /// The contact as one plain-text sentence, or `None` when there is
     /// nothing to say.
     #[must_use]
-    pub fn notice(&self) -> Option<String> {
-        let how = match (&self.email, &self.discord) {
-            (Some(email), Some(discord)) => format!("{email}, or @{discord} on Discord"),
-            (Some(email), None) => email.to_string(),
-            (None, Some(discord)) => format!("@{discord} on Discord"),
+    pub fn notice(&self, locale: crate::Locale) -> Option<String> {
+        let (email, discord) = (
+            self.email.as_ref().map(ToString::to_string),
+            self.discord.as_ref().map(ToString::to_string),
+        );
+        let contact = match (email.as_deref(), discord.as_deref()) {
+            (Some(email), Some(discord)) => crate::locale::Contact::Both { email, discord },
+            (Some(email), None) => crate::locale::Contact::Email(email),
+            (None, Some(discord)) => crate::locale::Contact::Discord(discord),
             (None, None) => return None,
         };
-        Some(format!(
-            "For support, contact whoever runs this instance: {how}."
-        ))
+        Some((locale.messages().contact)(contact))
     }
 
     /// The operator as the Discord bot must know them.
@@ -321,7 +323,7 @@ mod tests {
         let email = SupportEmail::try_new("judge@example.org")?;
 
         let nobody = Operator::default();
-        assert_eq!(nobody.notice(), None);
+        assert_eq!(nobody.notice(crate::Locale::En), None);
         assert_eq!(nobody.clone().for_discord(), Err(MissingContact::Discord));
         assert_eq!(nobody.for_network(), Err(MissingContact::Email));
 
@@ -340,7 +342,7 @@ mod tests {
         assert_eq!(only_email.for_network()?.email(), &email);
 
         let both = Operator::new(Some(discord), Some(email));
-        let notice = both.notice().unwrap_or_default();
+        let notice = both.notice(crate::Locale::En).unwrap_or_default();
         assert!(notice.contains("judge@example.org"), "{notice}");
         assert!(notice.contains("@somejudge on Discord"), "{notice}");
         assert_eq!(both.clone().for_network()?.operator(), &both);

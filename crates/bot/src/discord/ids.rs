@@ -3,26 +3,32 @@
 //! either parses into an exhaustive enum or is rejected, never guessed at.
 //!
 //! Wire shapes, all well under Discord's 100-character limit (the longest
-//! possible `card` id is 89 characters, a test holds it):
+//! possible English `card` id is 89 characters, a test holds it, and a
+//! locale suffix adds a few):
 //!
 //! * `rate:<call uuid>:<1|2|3>`
-//! * `card:<asker>:<c|p>:<start>-<end>|_:<digest>:<oracle id>`: pick that
+//! * `card:<asker>:<c|p>:<start>-<end>|_:<digest>:<oracle id>[:<locale>]`: pick that
 //!   card for the ambiguous span at bytes `start..end` of the question (`_`:
 //!   the span was not found in it, so the pick appends the name). The asker
 //!   is a Discord user id, `c`/`p` the [`Audience`], the digest 16 hex digits
 //!   of the prompt's content ([`Digest`]), the oracle id 32 hex digits. The
 //!   question itself is not here: it is read back from the message the button
 //!   is on ([`super::render::PickPrompt`]), whose content must match the digest.
-//! * `retry:<asker>:<c|p>:<digest>`: ask the question on the button's message
-//!   again, after a maintenance reply ([`super::render::RetryPrompt`], whose
-//!   content must match the digest).
+//!   A last `:<locale>` (`judge_core::Locale::id`) names the language the
+//!   prompt is written in, so it is parsed with that language's template and
+//!   the answer is in the asker's language. English is written with none, the
+//!   shape every earlier build reads and sends.
+//! * `retry:<asker>:<c|p>:<digest>[:<locale>]`: ask the question on the
+//!   button's message again, after a maintenance reply
+//!   ([`super::render::RetryPrompt`], whose content must match the digest),
+//!   in the language its locale names.
 //! * `pick:<uuid>:<n>`: the shape a pick had while picks were held in memory.
 //!   It parses, to [`ButtonAction::LegacyPick`], so a button sent before the
 //!   upgrade is answered as expired rather than as unrecognised.
 
 use std::{fmt, num::NonZeroU64, ops::Range, str::FromStr};
 
-use judge_core::{CallId, CardId, Score};
+use judge_core::{CallId, CardId, Locale, Score};
 use uuid::Uuid;
 
 use super::{Audience, pick::Digest};
@@ -67,6 +73,8 @@ pub struct Retry {
     pub audience: Audience,
     /// The content of the reply this button was made for.
     pub digest: Digest,
+    /// The language the reply is written in.
+    pub locale: Locale,
 }
 
 /// One "did you mean…?" button: everything a click needs except the
@@ -84,6 +92,8 @@ pub struct Pick {
     pub digest: Digest,
     /// The card this button picks.
     pub card: CardId,
+    /// The language the prompt is written in, and the answer will be.
+    pub locale: Locale,
 }
 
 /// A non-empty byte range of a question. `u16` bounds hold any question
@@ -144,6 +154,9 @@ pub enum ParseError {
     /// A `card` whose digest is not 16 lowercase hex digits.
     #[error("digest must be 16 lowercase hex digits; got {0:?}")]
     BadDigest(String),
+    /// A `card` or `retry` whose last part names no locale.
+    #[error("not a locale: {0:?}")]
+    BadLocale(String),
 }
 
 impl ButtonAction {
@@ -179,18 +192,34 @@ impl fmt::Display for ButtonAction {
                     Some(s) => write!(f, "{}-{}", s.start, s.end)?,
                     None => f.write_str(NOT_FOUND)?,
                 }
-                write!(f, ":{}:{}", p.digest, p.card.into_inner().simple())
+                write!(f, ":{}:{}", p.digest, p.card.into_inner().simple())?;
+                write_locale(f, p.locale)
             }
-            ButtonAction::Retry(r) => write!(
-                f,
-                "{RETRY}:{}:{}:{}",
-                r.asker,
-                audience_code(r.audience),
-                r.digest
-            ),
+            ButtonAction::Retry(r) => {
+                write!(
+                    f,
+                    "{RETRY}:{}:{}:{}",
+                    r.asker,
+                    audience_code(r.audience),
+                    r.digest
+                )?;
+                write_locale(f, r.locale)
+            }
             // Never sent any more; written in the old shape for completeness.
             ButtonAction::LegacyPick => write!(f, "{LEGACY_PICK}:{}:0", Uuid::nil()),
         }
+    }
+}
+
+/// A button's `:<locale>` suffix, left out for English: an English button
+/// is then the shape a build from before the suffix also reads, so a
+/// rollback within the major (or the other container during a deploy)
+/// still answers it.
+fn write_locale(f: &mut fmt::Formatter<'_>, locale: Locale) -> fmt::Result {
+    if locale == Locale::En {
+        Ok(())
+    } else {
+        write!(f, ":{}", locale.id())
     }
 }
 
@@ -214,23 +243,41 @@ fn parse_audience(s: &str) -> Result<Audience, ParseError> {
     }
 }
 
+/// A button's last part, a locale id; none is English (a button sent
+/// before there was a choice).
+fn parse_locale(part: Option<&str>) -> Result<Locale, ParseError> {
+    match part {
+        None => Ok(Locale::En),
+        Some(id) => Locale::ALL
+            .into_iter()
+            .find(|l| l.id() == id)
+            .ok_or_else(|| ParseError::BadLocale(id.to_owned())),
+    }
+}
+
 fn parse_retry(rest: &str) -> Result<Retry, ParseError> {
     let mut parts = rest.split(':');
-    let (Some(asker), Some(audience), Some(digest), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
+    let (Some(asker), Some(audience), Some(digest), locale, None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
         return Err(ParseError::Shape);
     };
     Ok(Retry {
         asker: digits::<NonZeroU64>(asker).ok_or_else(|| ParseError::BadUser(asker.to_owned()))?,
         audience: parse_audience(audience)?,
         digest: Digest::parse(digest).ok_or_else(|| ParseError::BadDigest(digest.to_owned()))?,
+        locale: parse_locale(locale)?,
     })
 }
 
 fn parse_pick(rest: &str) -> Result<Pick, ParseError> {
     let mut parts = rest.split(':');
-    let (Some(asker), Some(audience), Some(span), Some(digest), Some(card), None) = (
+    let (Some(asker), Some(audience), Some(span), Some(digest), Some(card), locale, None) = (
+        parts.next(),
         parts.next(),
         parts.next(),
         parts.next(),
@@ -259,6 +306,7 @@ fn parse_pick(rest: &str) -> Result<Pick, ParseError> {
         span,
         digest,
         card: CardId::new(uuid(card)?),
+        locale: parse_locale(locale)?,
     })
 }
 
@@ -311,6 +359,7 @@ mod tests {
             },
             digest: Digest::parse("0123456789abcdef")?,
             card: CardId::new(Uuid::from_u128(u128::MAX)),
+            locale: Locale::En,
         })
     }
 
@@ -359,6 +408,21 @@ mod tests {
             p.map(|p| p.to_custom_id()).as_deref(),
             Some("card:42:c:5-9:0123456789abcdef:ffffffffffffffffffffffffffffffff")
         );
+        // English is written without its suffix and read with or without it.
+        assert_eq!(
+            ButtonAction::parse(
+                "card:42:c:5-9:0123456789abcdef:ffffffffffffffffffffffffffffffff:en"
+            )
+            .ok(),
+            p
+        );
+        assert!(matches!(
+            ButtonAction::parse("retry:42:c:0123456789abcdef"),
+            Ok(ButtonAction::Retry(Retry {
+                locale: Locale::En,
+                ..
+            }))
+        ));
         let p = pick(42, Audience::Private, None).map(ButtonAction::Pick);
         assert_eq!(
             p.map(|p| p.to_custom_id()).as_deref(),
@@ -383,7 +447,11 @@ mod tests {
         let card = "0123456789abcdef:ffffffffffffffffffffffffffffffff";
         for (id, want) in [
             ("card:42:c:5-9".to_owned(), ParseError::Shape),
-            (format!("card:42:c:5-9:{card}:x"), ParseError::Shape),
+            (
+                format!("card:42:c:5-9:{card}:x"),
+                ParseError::BadLocale("x".into()),
+            ),
+            (format!("card:42:c:5-9:{card}:en:x"), ParseError::Shape),
             (
                 format!("card:0:c:5-9:{card}"),
                 ParseError::BadUser("0".into()),
@@ -507,6 +575,7 @@ mod tests {
             asker: NonZeroU64::MAX,
             audience: Audience::Private,
             digest: Digest::of("x"),
+            locale: Locale::En,
         });
         let id = r.to_custom_id();
         assert!(id.starts_with("retry:18446744073709551615:p:"), "{id}");

@@ -8,7 +8,7 @@
 
 use crate::gated::Checked;
 use judge_bot::{
-    discord::{question::pin_card, render},
+    discord::{catalog, question::pin_card, render},
     session::{
         AgentThread, Begun, Extracted, Prompt, SessionError, SessionId, Stage, SynthesisPrompt,
     },
@@ -22,6 +22,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{ACQUIRE_WAIT, Toolbox};
+
+/// The language the agent tools reply in. `judge-cli` and the MCP tools are
+/// translated with the rest of the CLIs' output (#25's second half); until
+/// then they speak English, whatever `JUDGE_LOCALE` says.
+pub const AGENT_LOCALE: judge_core::Locale = judge_core::Locale::En;
 
 /// Candidate names listed for an ambiguous span.
 pub const MAX_CHOICES: usize = 10;
@@ -413,7 +418,7 @@ impl Toolbox {
         .await
         else {
             return Ok(JudgeReply::Busy {
-                message: render::BUSY.to_owned(),
+                message: catalog::messages(AGENT_LOCALE).busy.to_owned(),
             });
         };
         // Counted only once a slot is held: the quota is in pipeline runs, and
@@ -548,7 +553,7 @@ impl Toolbox {
             Ok(Extracted::Ready(prompt)) => Ok(ExtractionReply::Ready { prompt }),
             Ok(Extracted::OutOfScope { source }) => Ok(ExtractionReply::OutOfScope {
                 source,
-                message: render::OUT_OF_SCOPE.to_owned(),
+                message: catalog::messages(AGENT_LOCALE).out_of_scope.to_owned(),
             }),
             Err(SessionError::Pipeline(JudgeError::AmbiguousCards(spans))) => {
                 Ok(ExtractionReply::Ambiguous {
@@ -718,7 +723,7 @@ impl Toolbox {
     /// answer, and the rest is served regardless.
     pub async fn about(&self) -> About {
         let freshness = self.db.freshness().await;
-        self.offer().about(self.operator(), freshness)
+        self.offer().about(self.operator(), freshness, AGENT_LOCALE)
     }
 
     /// Usage, spend and the worst-rated calls: the operator's view. On the
@@ -825,7 +830,7 @@ fn judge_error(e: &JudgeError) -> JudgeReply {
             names: names.iter().cloned().collect(),
         },
         JudgeError::OutOfScope(_) => JudgeReply::OutOfScope {
-            message: render::OUT_OF_SCOPE.to_owned(),
+            message: catalog::messages(AGENT_LOCALE).out_of_scope.to_owned(),
         },
         JudgeError::BadCitation(_)
         | JudgeError::MalformedCitation(_)
@@ -834,7 +839,7 @@ fn judge_error(e: &JudgeError) -> JudgeReply {
         | JudgeError::ToolMisuse(_)
         | JudgeError::LlmRefused
         | JudgeError::Upstream(_) => JudgeReply::Error {
-            message: render::error(e),
+            message: render::error(AGENT_LOCALE, e),
         },
     }
 }

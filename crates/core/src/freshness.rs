@@ -10,7 +10,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::CrVersion;
+use crate::{CrVersion, Locale};
 
 /// The data an instance answers from, as of the moment it was read.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -39,42 +39,18 @@ impl Freshness {
     /// Latest refresh: failed
     /// ```
     #[must_use]
-    pub fn lines(&self) -> Vec<String> {
-        let rules = self
-            .cr_version
-            .as_ref()
-            .map_or_else(|| "none loaded".to_owned(), CrVersion::date);
-        let refreshed = match (self.refreshed_secs_ago, self.last_refresh_failed) {
-            (Some(secs), _) => ago(secs),
-            (None, false) => "no refresh run recorded yet".to_owned(),
-            (None, true) => "none yet".to_owned(),
-        };
+    pub fn lines(&self, locale: Locale) -> Vec<String> {
+        let m = locale.messages();
+        let date = self.cr_version.as_ref().map(CrVersion::date);
         let mut lines = vec![
-            format!("Comprehensive Rules: {rules}"),
-            format!("Last successful refresh: {refreshed}"),
+            (m.rules_line)(date.as_deref()),
+            (m.refreshed_line)(self.refreshed_secs_ago, self.last_refresh_failed),
         ];
         if self.last_refresh_failed {
-            lines.push("Latest refresh: failed".to_owned());
+            lines.push(m.refresh_failed.to_owned());
         }
         lines
     }
-}
-
-/// An age as words: `under a minute ago`, `1 minute ago`, `5 hours ago`,
-/// `3 days ago`. Minutes below an hour, hours below two days, days after.
-#[must_use]
-pub fn ago(secs: u64) -> String {
-    const MINUTE: u64 = 60;
-    const HOUR: u64 = 60 * MINUTE;
-    const DAY: u64 = 24 * HOUR;
-    let (n, unit) = match secs {
-        s if s < MINUTE => return "under a minute ago".to_owned(),
-        s if s < HOUR => (s / MINUTE, "minute"),
-        s if s < 2 * DAY => (s / HOUR, "hour"),
-        s => (s / DAY, "day"),
-    };
-    let plural = if n == 1 { "" } else { "s" };
-    format!("{n} {unit}{plural} ago")
 }
 
 #[cfg(test)]
@@ -84,23 +60,6 @@ mod tests {
     type R = anyhow::Result<()>;
 
     #[test]
-    fn ages_read_in_the_largest_whole_unit_that_stays_precise() {
-        for (secs, want) in [
-            (0, "under a minute ago"),
-            (59, "under a minute ago"),
-            (60, "1 minute ago"),
-            (3599, "59 minutes ago"),
-            (3600, "1 hour ago"),
-            (3 * 3600 + 59 * 60, "3 hours ago"),
-            (47 * 3600, "47 hours ago"),
-            (48 * 3600, "2 days ago"),
-            (400 * 86_400, "400 days ago"),
-        ] {
-            assert_eq!(ago(secs), want, "{secs}");
-        }
-    }
-
-    #[test]
     fn the_lines_name_every_fact_and_say_when_one_is_missing() -> R {
         let fresh = Freshness {
             cr_version: Some(CrVersion::try_new("20260925".to_owned())?),
@@ -108,7 +67,7 @@ mod tests {
             last_refresh_failed: false,
         };
         assert_eq!(
-            fresh.lines(),
+            fresh.lines(Locale::En),
             [
                 "Comprehensive Rules: 2026-09-25",
                 "Last successful refresh: 3 hours ago",
@@ -119,11 +78,11 @@ mod tests {
             ..fresh
         };
         assert_eq!(
-            failing.lines().last().map(String::as_str),
+            failing.lines(Locale::En).last().map(String::as_str),
             Some("Latest refresh: failed")
         );
         assert_eq!(
-            Freshness::default().lines(),
+            Freshness::default().lines(Locale::En),
             [
                 "Comprehensive Rules: none loaded",
                 "Last successful refresh: no refresh run recorded yet",
@@ -134,7 +93,7 @@ mod tests {
             ..Freshness::default()
         };
         assert_eq!(
-            never_ok.lines(),
+            never_ok.lines(Locale::En),
             [
                 "Comprehensive Rules: none loaded",
                 "Last successful refresh: none yet",

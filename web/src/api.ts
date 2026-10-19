@@ -1,6 +1,8 @@
 // Typed client for POST /api/judge. The reply shapes mirror
 // crates/api/src/shape.rs (ApiReply, tagged by `kind`).
 
+import type { Locale, Messages } from "./messages";
+
 export interface Pin {
   span: string;
   name: string;
@@ -40,29 +42,30 @@ export type ApiReply =
   | { kind: "rate_limited"; message: string }
   | { kind: "maintenance"; message: string; retry_after_secs: number };
 
-/** Ask the judge. Never throws on HTTP-level failures; those come back as
- * an `error` reply so the UI has one rendering path. */
+/** Ask the judge, asking for its replies in `locale` (none: the server
+ * chooses, from `Accept-Language` then its default). Never throws on
+ * HTTP-level failures; those come back as an `error` reply (in `m`) so the
+ * UI has one rendering path. */
 export async function askJudge(
   question: string,
   pins: Pin[],
   sessionId: string,
+  locale: Locale | undefined,
+  m: Messages,
 ): Promise<ApiReply> {
   let res: Response;
   try {
     res = await fetch("/api/judge", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question, session_id: sessionId, pins }),
+      body: JSON.stringify({ question, session_id: sessionId, pins, locale }),
     });
   } catch {
-    return { kind: "error", message: "The judge is unreachable. Is the server running?" };
+    return { kind: "error", message: m.unreachable };
   }
   const body: unknown = await res.json().catch(() => null);
   if (isReply(body)) return body;
-  return {
-    kind: "error",
-    message: `The judge answered strangely (HTTP ${res.status}). Please try again.`,
-  };
+  return { kind: "error", message: m.strangeReply(res.status) };
 }
 
 function isReply(v: unknown): v is ApiReply {
@@ -89,6 +92,10 @@ export interface About {
   /** What the data is (crates/core/src/freshness.rs `Freshness`); null when
    * the server could not read it. */
   freshness: Freshness | null;
+  /** The instance's default locale (`JUDGE_LOCALE`), and the locales the
+   * server can reply in. Absent from an older server. */
+  locale?: string;
+  locales?: string[];
 }
 
 /** The Comprehensive Rules release loaded and the last refresh. */
@@ -150,43 +157,20 @@ export function sessionId(): string {
   }
 }
 
-/** An age as words, as the server's `judge_core::freshness::ago` writes it:
- * `under a minute ago`, `5 minutes ago`, `3 hours ago`, `2 days ago`. */
-export function ago(secs: number): string {
-  const minute = 60;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-  if (secs < minute) return "under a minute ago";
-  const [n, unit] =
-    secs < hour
-      ? [Math.floor(secs / minute), "minute"]
-      : secs < 2 * day
-        ? [Math.floor(secs / hour), "hour"]
-        : [Math.floor(secs / day), "day"];
-  return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
-}
-
 /** The footer's data line: `Comprehensive Rules 2026-09-25 · refreshed 3
- * hours ago`, with `· latest refresh failed` when it did; the facts the
+ * hours ago.`, with `· latest refresh failed` when it did; the facts the
  * server could not read are said to be unknown. `elapsed` is the seconds
  * since the server answered, added to its age so the line stays current. */
-export function freshnessLine(f: Freshness | null, elapsed = 0): string {
-  if (f === null) return "Data freshness unknown";
+export function freshnessLine(f: Freshness | null, m: Messages, elapsed = 0): string {
+  if (f === null) return m.freshnessLine([m.freshnessUnknown]);
   const parts = [
-    f.cr_version === null
-      ? "No Comprehensive Rules loaded"
-      : `Comprehensive Rules ${crDate(f.cr_version)}`,
+    f.cr_version === null ? m.noRules : m.rulesVersion(m.crDate(f.cr_version)),
     f.refreshed_secs_ago !== null
-      ? `refreshed ${ago(f.refreshed_secs_ago + elapsed)}`
+      ? m.refreshed(f.refreshed_secs_ago + elapsed)
       : f.last_refresh_failed
-        ? "no successful refresh yet"
-        : "no refresh run recorded yet",
+        ? m.noSuccessfulRefresh
+        : m.noRefreshRecorded,
   ];
-  if (f.last_refresh_failed) parts.push("latest refresh failed");
-  return parts.join(" · ");
-}
-
-/** `20260819` → `2026-08-19` (matching the Discord footer). */
-export function crDate(v: string): string {
-  return /^\d{8}$/.test(v) ? `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}` : v;
+  if (f.last_refresh_failed) parts.push(m.refreshFailed);
+  return m.freshnessLine(parts);
 }

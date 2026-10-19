@@ -22,7 +22,9 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    Locale,
     freshness::Freshness,
+    locale::{Offer, Revision},
     operator::{DiscordUsername, Operator, SupportEmail},
 };
 
@@ -196,6 +198,11 @@ pub struct About {
     /// last refreshed. `null` when it was not read: the database did not
     /// answer, or the caller reads none (`judge-cli config`).
     pub freshness: Option<Freshness>,
+    /// The instance's language (`JUDGE_LOCALE`): what `notice` is written
+    /// in, and what a client whose own language is not in `locales` gets.
+    pub locale: Locale,
+    /// Every language the instance's replies can be in.
+    pub locales: Vec<Locale>,
 }
 
 impl SourceOffer {
@@ -240,47 +247,56 @@ impl SourceOffer {
             .map(|h| format!("{}/commit/{h}", self.repository))
     }
 
-    /// The revision as a phrase: `commit a37d495`, `commit a37d495, built
-    /// with uncommitted changes` or `commit unknown`.
+    /// The revision as a phrase in `locale`: `commit a37d495`, `commit
+    /// a37d495, built with uncommitted changes` or `commit unknown`.
     #[must_use]
-    pub fn revision(&self) -> String {
-        match &self.commit {
-            Commit::Known { hash, dirty: false } => format!("commit {}", hash.short()),
-            Commit::Known { hash, dirty: true } => {
-                format!("commit {}, built with uncommitted changes", hash.short())
-            }
-            Commit::Unknown => "commit unknown".to_owned(),
-        }
+    pub fn revision(&self, locale: Locale) -> String {
+        let revision = match &self.commit {
+            Commit::Known { hash, dirty } => Revision::Known {
+                short: hash.short(),
+                dirty: *dirty,
+            },
+            Commit::Unknown => Revision::Unknown,
+        };
+        (locale.messages().revision)(revision)
     }
 
-    /// The whole offer as one paragraph: name, copyright, licence, and where
-    /// the source of this very build is. Every interface shows this text or
-    /// a link-decorated rendering of exactly its facts.
+    /// The whole offer as one paragraph in `locale`: name, copyright,
+    /// licence, and where the source of this very build is. Every interface
+    /// shows this text or a link-decorated rendering of exactly its facts.
     #[must_use]
-    pub fn notice(&self) -> String {
-        format!(
-            "{PROGRAM} — {COPYRIGHT}. Free software under the {LICENSE_NAME} ({LICENSE_SPDX}, \
-             {LICENSE_URL}): you may run, study, share and modify it, and anyone offering a \
-             modified version over a network must offer its source under the same licence. \
-             The source code of this instance is at {} ({}).",
-            self.repository,
-            self.revision()
-        )
+    pub fn notice(&self, locale: Locale) -> String {
+        let repository = self.repository.to_string();
+        let revision = self.revision(locale);
+        (locale.messages().notice)(&Offer {
+            program: PROGRAM,
+            copyright: COPYRIGHT,
+            license_name: LICENSE_NAME,
+            license_spdx: LICENSE_SPDX,
+            license_url: LICENSE_URL,
+            repository: &repository,
+            revision: &revision,
+        })
     }
 
     /// [`Self::notice`], then whom to contact ([`Operator::notice`]).
     #[must_use]
-    pub fn notice_with(&self, operator: &Operator) -> String {
-        match operator.notice() {
-            Some(contact) => format!("{} {contact}", self.notice()),
-            None => self.notice(),
+    pub fn notice_with(&self, operator: &Operator, locale: Locale) -> String {
+        match operator.notice(locale) {
+            Some(contact) => format!("{} {contact}", self.notice(locale)),
+            None => self.notice(locale),
         }
     }
 
     /// The offer as data, beside who runs the instance and what its data is
-    /// (`None`: not read).
+    /// (`None`: not read), its notice in `locale`, the instance's language.
     #[must_use]
-    pub fn about(&self, operator: &Operator, freshness: Option<Freshness>) -> About {
+    pub fn about(
+        &self,
+        operator: &Operator,
+        freshness: Option<Freshness>,
+        locale: Locale,
+    ) -> About {
         About {
             program: PROGRAM.to_owned(),
             repository: self.repository.clone(),
@@ -293,15 +309,18 @@ impl SourceOffer {
             copyright: COPYRIGHT.to_owned(),
             operator_discord: operator.discord().cloned(),
             operator_email: operator.email().cloned(),
-            notice: self.notice_with(operator),
+            notice: self.notice_with(operator, locale),
             freshness,
+            locale,
+            locales: Locale::ALL.to_vec(),
         }
     }
 }
 
 impl fmt::Display for SourceOffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.repository, self.revision())
+        // Logs are English.
+        write!(f, "{} ({})", self.repository, self.revision(Locale::En))
     }
 }
 
@@ -362,7 +381,7 @@ mod tests {
     #[test]
     fn the_notice_names_every_fact_and_the_revision_is_honest() -> R {
         let clean = SourceOffer::upstream(known(false)?);
-        let n = clean.notice();
+        let n = clean.notice(crate::Locale::En);
         for needle in [
             PROGRAM,
             COPYRIGHT,
@@ -381,11 +400,15 @@ mod tests {
         );
         assert!(
             SourceOffer::upstream(known(true)?)
-                .notice()
+                .notice(crate::Locale::En)
                 .contains("commit a37d495, built with uncommitted changes")
         );
         let unknown = SourceOffer::upstream(Commit::Unknown);
-        assert!(unknown.notice().contains("(commit unknown)"));
+        assert!(
+            unknown
+                .notice(crate::Locale::En)
+                .contains("(commit unknown)")
+        );
         assert_eq!(unknown.commit_url(), None);
         Ok(())
     }
@@ -402,14 +425,14 @@ mod tests {
             refreshed_secs_ago: Some(10_800),
             last_refresh_failed: false,
         };
-        let a = offer.about(&operator, Some(freshness.clone()));
+        let a = offer.about(&operator, Some(freshness.clone()), crate::Locale::En);
         assert_eq!(a.freshness.as_ref(), Some(&freshness));
         assert_eq!(a.license, LICENSE_SPDX);
         assert_eq!(a.copyright, COPYRIGHT);
         assert!(a.dirty);
         assert_eq!(a.commit.as_ref().map(CommitHash::short), Some("a37d495"));
-        assert_eq!(a.notice, offer.notice_with(&operator));
-        assert!(a.notice.starts_with(&offer.notice()));
+        assert_eq!(a.notice, offer.notice_with(&operator, crate::Locale::En));
+        assert!(a.notice.starts_with(&offer.notice(crate::Locale::En)));
         assert!(a.notice.contains("judge@example.org"), "{}", a.notice);
         assert_eq!(
             a.operator_email.as_ref().map(AsRef::as_ref),
@@ -420,11 +443,16 @@ mod tests {
             Some("somejudge")
         );
         // A local process with no contact set says nothing about one.
-        let bare = offer.about(&Operator::default(), None);
-        assert_eq!(bare.notice, offer.notice());
+        let bare = offer.about(&Operator::default(), None, crate::Locale::En);
+        assert_eq!(bare.notice, offer.notice(crate::Locale::En));
         assert_eq!(bare.operator_email, None);
+        assert_eq!(
+            (bare.locale, bare.locales.as_slice()),
+            (crate::Locale::En, &[crate::Locale::En][..])
+        );
         // The fields a client reads: the earlier ones stay, `freshness` is
-        // added beside them, null when it was not read.
+        // added beside them, null when it was not read, then the instance's
+        // language and the ones it replies in.
         let keys: Vec<String> = match serde_json::to_value(&bare)? {
             serde_json::Value::Object(m) => m.keys().cloned().collect(),
             other => anyhow::bail!("not an object: {other}"),
@@ -445,6 +473,8 @@ mod tests {
                 "operator_email",
                 "notice",
                 "freshness",
+                "locale",
+                "locales",
             ]
         );
         assert_eq!(

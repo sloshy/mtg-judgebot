@@ -31,6 +31,7 @@ use judge_bot::{
     jobs::REFRESH_HOURS_ENV,
 };
 use judge_core::{
+    locale::LOCALE_ENV,
     operator::{OPERATOR_DISCORD_ENV, OPERATOR_EMAIL_ENV},
     source::SOURCE_URL_ENV,
 };
@@ -167,6 +168,7 @@ pub const VARS: &[Var] = &[
     ),
     setting(REFRESH_HOURS_ENV, Group::Pipeline, int(0)),
     setting(RETENTION_ENV, Group::Pipeline, int(0)),
+    setting(LOCALE_ENV, Group::Pipeline, TEXT),
     setting(WARN_AT_ENV, Group::Pipeline, TEXT),
     // A credential: whoever has the URL can post to the channel.
     secret(ALERT_WEBHOOK_ENV, Group::Pipeline),

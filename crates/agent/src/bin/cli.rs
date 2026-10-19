@@ -411,7 +411,11 @@ async fn run(cmd: Command) -> Result<()> {
         return match cmd {
             Command::About => {
                 let freshness = about_freshness().await;
-                print(&config.source_offer().about(config.operator(), freshness))
+                print(&config.source_offer().about(
+                    config.operator(),
+                    freshness,
+                    judge_agent::ops::AGENT_LOCALE,
+                ))
             }
             _ => print(&config.report()),
         };

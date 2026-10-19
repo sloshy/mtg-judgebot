@@ -68,7 +68,10 @@ was last refreshed.";
 /// tools it goes on to call.
 #[must_use]
 pub fn instructions(offer: &SourceOffer, operator: &Operator) -> String {
-    format!("{INSTRUCTIONS}\n\n{}", offer.notice_with(operator))
+    format!(
+        "{INSTRUCTIONS}\n\n{}",
+        offer.notice_with(operator, crate::ops::AGENT_LOCALE)
+    )
 }
 
 /// The MCP handler.

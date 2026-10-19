@@ -19,6 +19,14 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Translation groundwork.** Every message the Discord bot, the web app and the HTTP
+  API show now comes from a per-language catalog, and each request picks its language:
+  the Discord user's; the browser's on the web (sent as the new
+  optional `locale` field of `POST /api/judge`, else `Accept-Language`). `JUDGE_LOCALE`
+  sets the fallback. Only English ships, so nothing reads differently yet.
+  `GET /api/about` gains `locale` and `locales`. A "did you mean?" or Retry button in
+  another language will carry it in its id; English ones keep their shape.
+
 - **Call retention.** `JUDGE_CALL_RETENTION_DAYS` (unset or `0`: keep every call, as
   before) deletes answered calls older than that many days, with their ratings, at each
   refresh (a new `prune` step) or with `judgebot ingest prune`. Each run's usage record

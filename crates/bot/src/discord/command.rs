@@ -7,7 +7,13 @@ use serenity::all::{
     CreateCommandOption, InteractionContext,
 };
 
-use super::{Audience, render};
+use judge_core::Locale;
+
+use super::{
+    Audience,
+    catalog::{self, Commands},
+    render,
+};
 
 /// The longest `/judge` question, in characters: the `max_length` of its
 /// `question` option. At most [`render::PICK_QUESTION_LIMIT`], so a "did you
@@ -186,50 +192,71 @@ impl Options<'_> {
     }
 }
 
-fn private_option(description: &str) -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::Boolean, PRIVATE, description).required(false)
+/// The description of every locale but the default, under each of its
+/// Discord tags: Discord shows a user the one for their client's language,
+/// and the base description (the default locale's) otherwise.
+fn localized(text: fn(&Commands) -> &'static str) -> Vec<(&'static str, &'static str)> {
+    Locale::ALL
+        .into_iter()
+        .filter(|l| *l != Locale::default())
+        .flat_map(|l| {
+            let description = text(&catalog::messages(l).commands);
+            catalog::discord_tags(l)
+                .iter()
+                .map(move |tag| (*tag, description))
+        })
+        .collect()
 }
 
-fn text_option(name: &str, description: &str) -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::String, name, description).required(true)
+/// A command with its description in every locale.
+fn command(name: &str, text: fn(&Commands) -> &'static str) -> CreateCommand {
+    localized(text).into_iter().fold(
+        CreateCommand::new(name).description(text(&BASE.commands)),
+        |c, (tag, d)| c.description_localized(tag, d),
+    )
 }
+
+/// An option with its description in every locale.
+fn option(
+    kind: CommandOptionType,
+    name: &str,
+    text: fn(&Commands) -> &'static str,
+) -> CreateCommandOption {
+    localized(text).into_iter().fold(
+        CreateCommandOption::new(kind, name, text(&BASE.commands)),
+        |o, (tag, d)| o.description_localized(tag, d),
+    )
+}
+
+fn private_option(text: fn(&Commands) -> &'static str) -> CreateCommandOption {
+    option(CommandOptionType::Boolean, PRIVATE, text).required(false)
+}
+
+fn text_option(name: &str, text: fn(&Commands) -> &'static str) -> CreateCommandOption {
+    option(CommandOptionType::String, name, text).required(true)
+}
+
+/// The default locale's text: the descriptions Discord falls back to.
+const BASE: &catalog::Messages = catalog::messages(Locale::En);
+const _: () = assert!(matches!(Locale::ALL[0], Locale::En));
 
 /// The six commands as they are registered with Discord, in order.
 #[must_use]
 pub fn definitions() -> Vec<CreateCommand> {
     vec![
-        CreateCommand::new(JUDGE)
-            .description("Ask a Magic rules question; the answer cites the Comprehensive Rules.")
-            .add_option(
-                text_option(
-                    QUESTION,
-                    "Your rules question. Use brackets like [[Full Card Name]] to avoid ambiguity.",
-                )
-                .max_length(QUESTION_MAX_CHARS),
-            )
-            .add_option(private_option(
-                "Show the answer only to you. It reads no earlier questions here and is never shown publicly.",
-            ))
+        command(JUDGE, |c| c.judge)
+            .add_option(text_option(QUESTION, |c| c.judge_question).max_length(QUESTION_MAX_CHARS))
+            .add_option(private_option(|c| c.judge_private))
             .contexts(vec![InteractionContext::Guild]),
-        CreateCommand::new(CARD)
-            .description("Look up a card: Oracle text and rulings. Free: no model is called.")
-            .add_option(text_option(NAME, "A card name or nickname."))
-            .add_option(private_option("Show the card only to you.")),
-        CreateCommand::new(RULE)
-            .description("Look up Comprehensive Rules text by number. Free: no model is called.")
-            .add_option(text_option(
-                ID,
-                "A rule number such as 702.19, 702.19b or 702.",
-            ))
-            .add_option(private_option("Show the rule only to you.")),
-        CreateCommand::new(HELP)
-            .description("What the bot does, how to ask, what it stores, and where its source is."),
-        CreateCommand::new(LICENSE).description(
-            "Where this bot's source code is, at which commit, and under which licence.",
-        ),
-        CreateCommand::new(FORGET).description(
-            "Delete your ratings and anonymize your failed calls; nothing else is stored about you.",
-        ),
+        command(CARD, |c| c.card)
+            .add_option(text_option(NAME, |c| c.card_name))
+            .add_option(private_option(|c| c.card_private)),
+        command(RULE, |c| c.rule)
+            .add_option(text_option(ID, |c| c.rule_id))
+            .add_option(private_option(|c| c.rule_private)),
+        command(HELP, |c| c.help),
+        command(LICENSE, |c| c.license),
+        command(FORGET, |c| c.forget),
     ]
 }
 

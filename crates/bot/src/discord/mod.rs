@@ -39,6 +39,7 @@
 //!   ([`cooldown`]); a pick re-runs a question already counted and is free.
 //! * `/card` and `/rule` read the database and call no model.
 
+pub mod catalog;
 pub mod command;
 pub mod cooldown;
 pub mod endpoint;
@@ -62,8 +63,8 @@ use std::{
 
 use anyhow::Context as _;
 use judge_core::{
-    Ambiguous, Asker, CallId, CallStore, Card, Deps, DiscordOperator, JudgeError, Origin, Question,
-    Rated, Resolution, RuleId, Score, SourceOffer, Validated, Verdict, Visibility,
+    Ambiguous, Asker, CallId, CallStore, Card, Deps, DiscordOperator, JudgeError, Locale, Origin,
+    Question, Rated, Resolution, RuleId, Score, SourceOffer, Validated, Verdict, Visibility,
 };
 use judge_llm::ApiKey;
 use nonempty::NonEmpty;
@@ -303,6 +304,9 @@ pub struct Data {
     /// Open, or closed while a major upgrade migrates: then every command but
     /// `/help` and `/license` gets the maintenance reply.
     availability: Availability,
+    /// The instance's language (`JUDGE_LOCALE`), for an asker whose own is
+    /// not one the bot speaks.
+    locale: Locale,
 }
 
 impl std::fmt::Debug for Data {
@@ -327,6 +331,7 @@ impl Data {
         // `/card` reads rulings by card id only, so its library needs no vectors.
         let library = PgLibrary::new(serving.pool().clone());
         let availability = serving.availability().clone();
+        let locale = serving.judge().locale();
         Self {
             deps,
             store,
@@ -341,6 +346,7 @@ impl Data {
             library,
             registered: AtomicBool::new(false),
             availability,
+            locale,
         }
     }
 
@@ -356,7 +362,13 @@ impl Data {
 
     /// Run the pipeline for `q` and build the reply: answer with rating
     /// buttons, "did you mean…?" with pick buttons, or an error message.
-    async fn answer(&self, q: &Question, user: &User, audience: Audience) -> Outgoing {
+    async fn answer(
+        &self,
+        locale: Locale,
+        q: &Question,
+        user: &User,
+        audience: Audience,
+    ) -> Outgoing {
         let asker = user.id;
         let origin = Origin::Discord {
             asker: Asker::new(asker.into(), &user.name),
@@ -404,6 +416,7 @@ impl Data {
             Ok(v) => {
                 // No stored call, no rating buttons.
                 Outgoing::answer(
+                    locale,
                     &v,
                     context.as_ref(),
                     call,
@@ -413,7 +426,7 @@ impl Data {
                 )
             }
             Err(JudgeError::AmbiguousCards(spans)) => {
-                Outgoing::pick(asker, audience, &q.text, &spans).unwrap_or_else(|why| {
+                Outgoing::pick(locale, asker, audience, &q.text, &spans).unwrap_or_else(|why| {
                     tracing::info!(
                         chars = q.text.chars().count(),
                         bytes = q.text.len(),
@@ -422,9 +435,10 @@ impl Data {
                     );
                     Outgoing {
                         content: render::with_header(
+                            locale,
                             asker.get(),
                             &q.text,
-                            &render::did_you_mean(&spans),
+                            &render::did_you_mean(locale, &spans),
                             &self.symbols.get(),
                         ),
                         embed: None,
@@ -446,9 +460,10 @@ impl Data {
                 }
                 Outgoing {
                     content: render::with_header(
+                        locale,
                         asker.get(),
                         &q.text,
-                        &render::error(&e),
+                        &render::error(locale, &e),
                         &self.symbols.get(),
                     ),
                     embed: None,
@@ -464,21 +479,35 @@ impl Data {
         c: &ComponentInteraction,
         ack: &Ack,
     ) -> anyhow::Result<()> {
+        // Whoever clicked is told why a click did nothing in their language;
+        // what a pick or retry asks is in the asker's, carried in the button.
+        let locale = self.locale_of(&c.locale);
+        let m = catalog::messages(locale);
         match ButtonAction::parse(&c.data.custom_id) {
-            Ok(ButtonAction::Retry(retry)) => self.on_retry(http, c, ack, retry).await,
+            Ok(ButtonAction::Retry(retry)) => self.on_retry(http, c, ack, locale, retry).await,
             Ok(ButtonAction::Rate { .. } | ButtonAction::Pick(_))
                 if !self.availability.is_open() =>
             {
-                ephemeral(http, c, ack, render::MAINTENANCE).await
+                ephemeral(http, c, ack, m.maintenance).await
             }
-            Ok(ButtonAction::Rate { call, score }) => self.on_rate(http, c, ack, call, score).await,
-            Ok(ButtonAction::Pick(pick)) => self.on_pick(http, c, ack, pick).await,
-            Ok(ButtonAction::LegacyPick) => ephemeral(http, c, ack, render::EXPIRED).await,
+            Ok(ButtonAction::Rate { call, score }) => {
+                self.on_rate(http, c, ack, locale, call, score).await
+            }
+            Ok(ButtonAction::Pick(pick)) => self.on_pick(http, c, ack, locale, pick).await,
+            Ok(ButtonAction::LegacyPick) => ephemeral(http, c, ack, m.expired).await,
             Err(e) => {
                 tracing::warn!(custom_id = %c.data.custom_id, error = %e, "unparseable button");
-                ephemeral(http, c, ack, render::UNKNOWN_BUTTON).await
+                ephemeral(http, c, ack, m.unknown_button).await
             }
         }
+    }
+
+    /// The language to answer an interaction in: the user's Discord locale,
+    /// else the instance's. The guild's preferred locale is not consulted:
+    /// Discord defaults it to `en-US`, so it would hide `JUDGE_LOCALE`, the
+    /// community's own choice (one judgebot per community, D16).
+    fn locale_of(&self, user: &str) -> Locale {
+        Locale::negotiate([user], self.locale)
     }
 
     async fn on_rate(
@@ -486,9 +515,11 @@ impl Data {
         http: &Http,
         c: &ComponentInteraction,
         ack: &Ack,
+        locale: Locale,
         call: CallId,
         score: Score,
     ) -> anyhow::Result<()> {
+        let m = catalog::messages(locale);
         // Acknowledge before the role lookup (HTTP) and the upsert (DB): both
         // can outlast Discord's 3 s deadline under rate limiting or load.
         let defer = CreateInteractionResponse::Defer(
@@ -505,15 +536,15 @@ impl Data {
         let text = match self.store.rate(call, &user_id, score, is_judge).await {
             Ok(Rated::CallGone) => {
                 tracing::info!(%call, "rating for a call no longer stored");
-                render::CALL_GONE.to_owned()
+                m.call_gone.to_owned()
             }
             Ok(Rated::Recorded) => {
                 tracing::info!(%call, user = %user_id, score = score as u8, is_judge, "rated");
-                render::rated(score, is_judge, &self.offer, &self.operator)
+                render::rated(locale, score, is_judge, &self.offer, &self.operator)
             }
             Err(e) => {
                 tracing::error!(%call, error = format_args!("{e:#}"), "rate failed");
-                render::RATE_FAILED.to_owned()
+                m.rate_failed.to_owned()
             }
         };
         ephemeral_followup(http, c, &text).await
@@ -529,10 +560,12 @@ impl Data {
         http: &Http,
         c: &ComponentInteraction,
         ack: &Ack,
+        clicker: Locale,
         pick: Pick,
     ) -> anyhow::Result<()> {
+        let m = catalog::messages(clicker);
         if c.user.id.get() != pick.asker.get() {
-            return ephemeral(http, c, ack, render::NOT_YOURS).await;
+            return ephemeral(http, c, ack, m.not_yours).await;
         }
         let message = &c.message;
         let shown = pick::shown_ms(
@@ -540,7 +573,7 @@ impl Data {
             message.edited_timestamp.map(|t| t.timestamp_millis()),
         );
         if pick::expired(shown, pick::now_ms(), self.pick_ttl) {
-            return ephemeral(http, c, ack, render::EXPIRED).await;
+            return ephemeral(http, c, ack, m.expired).await;
         }
         // The message is the bot's own, so its content arrives without the
         // message-content intent. It must be the very prompt the button was
@@ -550,7 +583,7 @@ impl Data {
         // expired.
         let digest = Digest::of(&message.content);
         let prompt = (digest == pick.digest)
-            .then(|| PickPrompt::parse(&message.content))
+            .then(|| PickPrompt::parse(pick.locale, &message.content))
             .flatten()
             .filter(|p| p.asker() == pick.asker.get());
         let Some(prompt) = prompt else {
@@ -560,7 +593,7 @@ impl Data {
                 digest_matches = digest == pick.digest,
                 "a pick's message does not hold the prompt it was made for; answering as expired"
             );
-            return ephemeral(http, c, ack, render::EXPIRED).await;
+            return ephemeral(http, c, ack, m.expired).await;
         };
         // The answer goes where the message is: a private button on a channel
         // message, or the reverse, is refused.
@@ -571,28 +604,28 @@ impl Data {
                 ephemeral = ?ephemeral_flag,
                 "a pick's audience disagrees with its message; answering as expired"
             );
-            return ephemeral(http, c, ack, render::EXPIRED).await;
+            return ephemeral(http, c, ack, m.expired).await;
         };
         let name = match self.library.card(pick.card).await {
             Ok(Some(card)) if prompt.lists(&card.name) => card.name,
             Ok(Some(_)) => {
                 tracing::warn!(card = %pick.card, "a pick's card is not on its prompt's list");
-                return ephemeral(http, c, ack, render::UNKNOWN_BUTTON).await;
+                return ephemeral(http, c, ack, m.unknown_button).await;
             }
-            Ok(None) => return ephemeral(http, c, ack, render::UNKNOWN_BUTTON).await,
+            Ok(None) => return ephemeral(http, c, ack, m.unknown_button).await,
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "pick: card lookup failed");
-                return ephemeral(http, c, ack, render::PICK_FAILED).await;
+                return ephemeral(http, c, ack, m.pick_failed).await;
             }
         };
         let Some(text) = question::pin_at(prompt.question(), pick.span.map(ByteSpan::range), &name)
         else {
             tracing::warn!(span = ?pick.span, "a pick's span is not in its question; answering as expired");
-            return ephemeral(http, c, ack, render::EXPIRED).await;
+            return ephemeral(http, c, ack, m.expired).await;
         };
         // Take the permit before the claim, so a "busy" leaves the buttons usable.
         let Some(_permit) = self.acquire().await else {
-            return ephemeral(http, c, ack, render::BUSY).await;
+            return ephemeral(http, c, ack, m.busy).await;
         };
         let key = PickKey {
             message_id: message.id.get(),
@@ -602,15 +635,15 @@ impl Data {
         let pool = self.library.pool();
         match claim_pick(pool, key).await {
             Ok(true) => {}
-            Ok(false) => return ephemeral(http, c, ack, render::ALREADY_PICKED).await,
+            Ok(false) => return ephemeral(http, c, ack, m.already_picked).await,
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "pick: claim failed");
-                return ephemeral(http, c, ack, render::PICK_FAILED).await;
+                return ephemeral(http, c, ack, m.pick_failed).await;
             }
         }
         // Replace the "did you mean…?" in place, then edit it again with the verdict.
         let working = CreateInteractionResponseMessage::new()
-            .content(render::working(&name))
+            .content(render::working(pick.locale, &name))
             .components(vec![])
             .embeds(vec![]);
         let sent = respond(
@@ -635,13 +668,13 @@ impl Data {
             thread_id: c.channel_id.to_string(),
             text,
         };
-        let out = self.answer(&q, &c.user, audience).await;
+        let out = self.answer(pick.locale, &q, &c.user, audience).await;
         if let Err(e) = c.edit_response(http, out.into_edit()).await {
             // The pick is claimed and the message shows "Working on it…" with
             // no buttons: tell the asker (ephemerally) to ask again rather
             // than leave them waiting on a message that will never change.
             tracing::error!(error = %e, "edit picked reply failed; asking the user to re-ask");
-            ephemeral_followup(http, c, render::EDIT_FAILED)
+            ephemeral_followup(http, c, m.edit_failed)
                 .await
                 .context("report failed edit after pick")?;
             return Err(anyhow::Error::from(e).context("edit picked reply"));
@@ -653,17 +686,19 @@ impl Data {
 impl Data {
     /// A command while a major upgrade migrates: `/judge` gets the question
     /// back with a Retry button (in the audience it asked for), anything
-    /// else [`render::MAINTENANCE`], privately. Nothing is charged or stored.
+    /// else the catalog's `maintenance`, privately. Nothing is charged or stored.
     async fn maintenance(
         &self,
         reply: &mut Reply<'_>,
         c: &CommandInteraction,
+        locale: Locale,
         command: &Command,
     ) -> anyhow::Result<()> {
+        let m = catalog::messages(locale);
         let message = match command {
             Command::Judge { question, audience } => {
                 match (
-                    RetryPrompt::new(c.user.id.get(), question),
+                    RetryPrompt::new(locale, c.user.id.get(), question),
                     NonZeroU64::new(c.user.id.get()),
                 ) {
                     (Some(prompt), Some(asker)) => {
@@ -672,6 +707,7 @@ impl Data {
                             asker,
                             audience: *audience,
                             digest: Digest::of(&content),
+                            locale,
                         };
                         Message::default()
                             .content(content)
@@ -679,14 +715,10 @@ impl Data {
                             .no_pings()
                             .ephemeral(audience.is_private())
                     }
-                    _ => Message::default()
-                        .content(render::MAINTENANCE)
-                        .ephemeral(true),
+                    _ => Message::default().content(m.maintenance).ephemeral(true),
                 }
             }
-            _ => Message::default()
-                .content(render::MAINTENANCE)
-                .ephemeral(true),
+            _ => Message::default().content(m.maintenance).ephemeral(true),
         };
         reply.send(message).await?;
         Ok(())
@@ -702,30 +734,32 @@ impl Data {
         http: &Http,
         c: &ComponentInteraction,
         ack: &Ack,
+        clicker: Locale,
         retry: Retry,
     ) -> anyhow::Result<()> {
+        let m = catalog::messages(clicker);
         if c.user.id.get() != retry.asker.get() {
-            return ephemeral(http, c, ack, render::NOT_YOUR_RETRY).await;
+            return ephemeral(http, c, ack, m.not_your_retry).await;
         }
         let message = &c.message;
         let digest = Digest::of(&message.content);
         let prompt = (digest == retry.digest)
-            .then(|| RetryPrompt::parse(&message.content))
+            .then(|| RetryPrompt::parse(retry.locale, &message.content))
             .flatten()
             .filter(|p| p.asker() == retry.asker.get());
         let Some(prompt) = prompt else {
             tracing::warn!(message = %message.id, "a retry's message does not hold the reply it was made for");
-            return ephemeral(http, c, ack, render::EXPIRED).await;
+            return ephemeral(http, c, ack, m.expired).await;
         };
         let ephemeral_flag = message.flags.map(|f| f.contains(MessageFlags::EPHEMERAL));
         let Some(audience) = pick::audience(retry.audience, ephemeral_flag) else {
-            return ephemeral(http, c, ack, render::EXPIRED).await;
+            return ephemeral(http, c, ack, m.expired).await;
         };
         if !self.availability.is_open() {
-            return ephemeral(http, c, ack, render::STILL_UPGRADING).await;
+            return ephemeral(http, c, ack, m.still_upgrading).await;
         }
         let Some(_permit) = self.acquire().await else {
-            return ephemeral(http, c, ack, render::BUSY).await;
+            return ephemeral(http, c, ack, m.busy).await;
         };
         let key = PickKey {
             message_id: message.id.get(),
@@ -738,10 +772,10 @@ impl Data {
         let pool = self.library.pool();
         match claim_pick(pool, key).await {
             Ok(true) => {}
-            Ok(false) => return ephemeral(http, c, ack, render::ALREADY_RETRIED).await,
+            Ok(false) => return ephemeral(http, c, ack, m.already_retried).await,
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "retry: claim failed");
-                return ephemeral(http, c, ack, render::PICK_FAILED).await;
+                return ephemeral(http, c, ack, m.pick_failed).await;
             }
         }
         // The question was never charged: the maintenance reply cost nothing.
@@ -754,11 +788,11 @@ impl Data {
                     "retry: could not give the claim back"
                 );
             }
-            let text = render::cooling_down(cooldowns.limit(), wait);
+            let text = render::cooling_down(clicker, cooldowns.limit(), wait);
             return ephemeral(http, c, ack, &text).await;
         }
         let working = CreateInteractionResponseMessage::new()
-            .content(render::RETRYING)
+            .content(catalog::messages(retry.locale).retrying)
             .components(vec![])
             .embeds(vec![]);
         if let Err(e) = respond(
@@ -781,10 +815,10 @@ impl Data {
             thread_id: c.channel_id.to_string(),
             text: prompt.question().to_owned(),
         };
-        let out = self.answer(&q, &c.user, audience).await;
+        let out = self.answer(retry.locale, &q, &c.user, audience).await;
         if let Err(e) = c.edit_response(http, out.into_edit()).await {
             tracing::error!(error = %e, "edit retried reply failed; asking the user to re-ask");
-            ephemeral_followup(http, c, render::EDIT_FAILED)
+            ephemeral_followup(http, c, m.edit_failed)
                 .await
                 .context("report failed edit after retry")?;
             return Err(anyhow::Error::from(e).context("edit retried reply"));
@@ -796,7 +830,7 @@ impl Data {
 fn retry_row(retry: Retry) -> CreateActionRow {
     CreateActionRow::Buttons(vec![
         CreateButton::new(ButtonAction::Retry(retry).to_custom_id())
-            .label(render::RETRY_LABEL)
+            .label(catalog::messages(retry.locale).retry_label)
             .style(ButtonStyle::Primary),
     ])
 }
@@ -839,6 +873,7 @@ fn no_pings() -> CreateAllowedMentions {
 
 impl Outgoing {
     fn answer(
+        locale: Locale,
         v: &Verdict<Validated>,
         ctx: Option<&judge_core::Context>,
         call: Option<CallId>,
@@ -846,7 +881,7 @@ impl Outgoing {
         question: &str,
         symbols: &SymbolTable,
     ) -> Self {
-        let a = render::answer(v, ctx, asker.get(), question, symbols);
+        let a = render::answer(locale, v, ctx, asker.get(), question, symbols);
         let mut embed = CreateEmbed::new().footer(CreateEmbedFooter::new(a.footer));
         if !a.citations.is_empty() {
             embed = embed.description(a.citations);
@@ -854,7 +889,10 @@ impl Outgoing {
         Self {
             content: a.content,
             embed: Some(embed),
-            components: call.map(rating_row).into_iter().collect(),
+            components: call
+                .map(|call| rating_row(locale, call))
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -862,12 +900,14 @@ impl Outgoing {
     /// why there can be none (the caller lists the choices without buttons
     /// instead).
     fn pick(
+        locale: Locale,
         asker: UserId,
         audience: Audience,
         question: &str,
         spans: &NonEmpty<Ambiguous>,
     ) -> Result<Self, NoPick> {
-        let prompt = PickPrompt::new(asker.get(), question, spans).ok_or(NoPick::TooLong)?;
+        let prompt =
+            PickPrompt::new(locale, asker.get(), question, spans).ok_or(NoPick::TooLong)?;
         let first = spans.first();
         // A span the question does not contain is appended on the pick, as
         // `question::pin_card` does; one past `u16` cannot occur under the
@@ -884,6 +924,7 @@ impl Outgoing {
             span,
             digest: Digest::of(&content),
             card: first.candidates.first().id,
+            locale,
         };
         Ok(Self {
             content,
@@ -912,10 +953,10 @@ impl Outgoing {
     }
 }
 
-fn rating_row(call: CallId) -> CreateActionRow {
+fn rating_row(locale: Locale, call: CallId) -> CreateActionRow {
     let button = |score: Score, style: ButtonStyle| {
         CreateButton::new(ButtonAction::Rate { call, score }.to_custom_id())
-            .label(render::rating_label(score))
+            .label(render::rating_label(locale, score))
             .style(style)
     };
     CreateActionRow::Buttons(vec![
@@ -1021,16 +1062,18 @@ impl Data {
         }
     }
 
-    /// A slash command: parsed, run, and on an error answered with
-    /// [`render::FAILED`].
+    /// A slash command: parsed, run, and on an error answered with the
+    /// catalog's `failed`.
     async fn on_command(&self, http: &Http, c: &CommandInteraction, ack: &Ack) {
+        let locale = self.locale_of(&c.locale);
+        let m = catalog::messages(locale);
         let command = match Command::parse(&c.data, c.guild_id.is_some()) {
             Ok(command) => command,
             Err(why) => {
                 tracing::warn!(command = %c.data.name, error = %why, "a slash command this build cannot run");
                 let text = match why {
-                    Unparsed::NotInGuild => render::SERVER_ONLY,
-                    Unparsed::Unknown(_) | Unparsed::BadOption { .. } => render::UNKNOWN_COMMAND,
+                    Unparsed::NotInGuild => m.server_only,
+                    Unparsed::Unknown(_) | Unparsed::BadOption { .. } => m.unknown_command,
                 };
                 if let Err(e) = Reply::new(http, c, true, ack)
                     .send(Message::text(text))
@@ -1044,20 +1087,20 @@ impl Data {
         let name = command.name();
         let mut reply = Reply::new(http, c, command.ephemeral(), ack);
         if !self.availability.is_open() && !command.answers_in_maintenance() {
-            if let Err(e) = self.maintenance(&mut reply, c, &command).await {
+            if let Err(e) = self.maintenance(&mut reply, c, locale, &command).await {
                 tracing::error!(error = %e, "could not send the maintenance reply");
             }
             return;
         }
         let ran = match command {
             Command::Judge { question, audience } => {
-                self.judge(&mut reply, c, question, audience).await
+                self.judge(&mut reply, c, locale, question, audience).await
             }
-            Command::Card { name, private } => self.card(&mut reply, &name, private).await,
-            Command::Rule { id, private } => self.rule(&mut reply, &id, private).await,
-            Command::Help => self.help(&mut reply).await,
-            Command::License => self.license(&mut reply).await,
-            Command::Forget => self.forget(&mut reply, c.user.id).await,
+            Command::Card { name, private } => self.card(&mut reply, locale, &name, private).await,
+            Command::Rule { id, private } => self.rule(&mut reply, locale, &id, private).await,
+            Command::Help => self.help(&mut reply, locale).await,
+            Command::License => self.license(&mut reply, locale).await,
+            Command::Forget => self.forget(&mut reply, locale, c.user.id).await,
         };
         if let Err(error) = ran {
             tracing::error!(
@@ -1065,7 +1108,7 @@ impl Data {
                 error = format_args!("{error:#}"),
                 "command failed"
             );
-            if let Err(e) = reply.send(Message::default().content(render::FAILED)).await {
+            if let Err(e) = reply.send(Message::default().content(m.failed)).await {
                 tracing::error!(error = %e, "could not report the failure to the user");
             }
         }
@@ -1077,12 +1120,17 @@ impl Data {
         &self,
         reply: &mut Reply<'_>,
         c: &CommandInteraction,
+        locale: Locale,
         question: String,
         audience: Audience,
     ) -> anyhow::Result<()> {
         let Some(_permit) = self.acquire().await else {
             reply
-                .send(Message::default().content(render::BUSY).ephemeral(true))
+                .send(
+                    Message::default()
+                        .content(catalog::messages(locale).busy)
+                        .ephemeral(true),
+                )
                 .await?;
             return Ok(());
         };
@@ -1095,7 +1143,7 @@ impl Data {
             reply
                 .send(
                     Message::default()
-                        .content(render::cooling_down(cooldowns.limit(), wait))
+                        .content(render::cooling_down(locale, cooldowns.limit(), wait))
                         .ephemeral(true),
                 )
                 .await?;
@@ -1108,7 +1156,7 @@ impl Data {
             thread_id: c.channel_id.to_string(),
             text: question,
         };
-        let out = self.answer(&q, &c.user, audience).await;
+        let out = self.answer(locale, &q, &c.user, audience).await;
         reply
             .send(out.into_message().ephemeral(audience.is_private()))
             .await?;
@@ -1116,10 +1164,17 @@ impl Data {
     }
 
     /// `/card`: look up a card's Oracle text and rulings. No model is called.
-    async fn card(&self, reply: &mut Reply<'_>, name: &str, private: bool) -> anyhow::Result<()> {
+    async fn card(
+        &self,
+        reply: &mut Reply<'_>,
+        locale: Locale,
+        name: &str,
+        private: bool,
+    ) -> anyhow::Result<()> {
+        let m = catalog::messages(locale);
         let name = name.trim();
         if name.is_empty() || name.chars().count() > render::LOOKUP_INPUT_LIMIT {
-            return say(reply, render::LOOKUP_BAD_NAME, true).await;
+            return say(reply, m.lookup_bad_name, true).await;
         }
         // The resolver's fuzzy step and a cold pool can outlast Discord's 3 s.
         // Discord fixes the reply's visibility here, so what follows (the
@@ -1129,7 +1184,7 @@ impl Data {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "/card resolve failed");
-                return say(reply, render::LOOKUP_FAILED, true).await;
+                return say(reply, m.lookup_failed, true).await;
             }
         };
         match resolution {
@@ -1138,24 +1193,33 @@ impl Data {
                     tracing::warn!(error = format_args!("{e:#}"), "/card rulings unavailable");
                     vec![]
                 });
-                let view = render::card(&card, &rulings, &self.symbols.get());
+                let view = render::card(locale, &card, &rulings, &self.symbols.get());
                 let lookup = lookup_message(view).ephemeral(private);
                 reply.send(lookup).await?;
                 Ok(())
             }
             Resolution::Ambiguous { candidates, .. } => {
                 let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-                say(reply, &render::card_ambiguous(name, &names), true).await
+                say(reply, &render::card_ambiguous(locale, name, &names), true).await
             }
-            Resolution::NotFound { .. } => say(reply, &render::card_not_found(name), true).await,
+            Resolution::NotFound { .. } => {
+                say(reply, &render::card_not_found(locale, name), true).await
+            }
         }
     }
 
     /// `/rule`: look up Comprehensive Rules text by number. No model is
     /// called.
-    async fn rule(&self, reply: &mut Reply<'_>, id: &str, private: bool) -> anyhow::Result<()> {
+    async fn rule(
+        &self,
+        reply: &mut Reply<'_>,
+        locale: Locale,
+        id: &str,
+        private: bool,
+    ) -> anyhow::Result<()> {
+        let m = catalog::messages(locale);
         let Ok(rule) = RuleId::try_new(id.trim().trim_end_matches('.')) else {
-            return say(reply, render::LOOKUP_BAD_RULE, true).await;
+            return say(reply, m.lookup_bad_rule, true).await;
         };
         reply.defer(private).await?;
         let chunks = match self
@@ -1167,11 +1231,11 @@ impl Data {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "/rule lookup failed");
-                return say(reply, render::LOOKUP_FAILED, true).await;
+                return say(reply, m.lookup_failed, true).await;
             }
         };
-        let Some(view) = render::rules(&rule, &chunks, &self.symbols.get()) else {
-            return say(reply, &render::rule_not_found(&rule), true).await;
+        let Some(view) = render::rules(locale, &rule, &chunks, &self.symbols.get()) else {
+            return say(reply, &render::rule_not_found(locale, &rule), true).await;
         };
         reply.send(lookup_message(view).ephemeral(private)).await?;
         Ok(())
@@ -1179,13 +1243,13 @@ impl Data {
 
     /// `/help`: what the bot does, how to ask, what it stores, and where its
     /// source is.
-    async fn help(&self, reply: &mut Reply<'_>) -> anyhow::Result<()> {
+    async fn help(&self, reply: &mut Reply<'_>, locale: Locale) -> anyhow::Result<()> {
         // Deferred first: the data's freshness is a database read, and the reply
         // must not miss Discord's 3 s deadline waiting on it.
         reply.defer(true).await?;
         let freshness = self.library.freshness().await;
         // Two ephemeral messages: the second is a follow-up to the first.
-        for part in render::help(&self.offer, &self.operator, freshness.as_ref()) {
+        for part in render::help(locale, &self.offer, &self.operator, freshness.as_ref()) {
             reply.send(Message::default().content(part)).await?;
         }
         Ok(())
@@ -1193,15 +1257,21 @@ impl Data {
 
     /// `/license`: where this bot's source code is, at which commit, and
     /// under which licence.
-    async fn license(&self, reply: &mut Reply<'_>) -> anyhow::Result<()> {
-        let text = render::license(&self.offer, &self.operator);
+    async fn license(&self, reply: &mut Reply<'_>, locale: Locale) -> anyhow::Result<()> {
+        let text = render::license(locale, &self.offer, &self.operator);
         reply.send(Message::default().content(text)).await?;
         Ok(())
     }
 
     /// `/forget`: delete the caller's ratings and anonymize their failed
     /// calls.
-    async fn forget(&self, reply: &mut Reply<'_>, user: UserId) -> anyhow::Result<()> {
+    async fn forget(
+        &self,
+        reply: &mut Reply<'_>,
+        locale: Locale,
+        user: UserId,
+    ) -> anyhow::Result<()> {
+        let m = catalog::messages(locale);
         let user_id = user.to_string();
         // The id stays out of the log: the point of the command is to stop
         // keeping it.
@@ -1213,11 +1283,11 @@ impl Data {
                     failures = f.failures,
                     "forgot a user"
                 );
-                render::forgotten(f)
+                (m.forgotten)(f)
             }
             Err(e) => {
                 tracing::error!(error = format_args!("{e:#}"), "forget failed");
-                render::FORGET_FAILED.to_owned()
+                m.forget_failed.to_owned()
             }
         };
         reply.send(Message::default().content(text)).await?;
@@ -1510,13 +1580,18 @@ impl serenity::all::EventHandler for Handler {
 }
 
 /// [`Data::dispatch`] on a task of its own, so a panic in a handler is
-/// caught: it is logged, and a command is told [`render::FAILED`], as it is
-/// after an error.
+/// caught: it is logged, and a command is told the catalog's `failed`, as
+/// it is after an error.
 async fn dispatch_guarded(data: Arc<Data>, http: Arc<Http>, interaction: Interaction, ack: Ack) {
     let command = match &interaction {
         Interaction::Command(c) => Some(c.clone()),
         _ => None,
     };
+    // Chosen before the handler takes `data`, so the reply after a panic is
+    // in the language any other reply would have been.
+    let locale = command
+        .as_ref()
+        .map_or(data.locale, |c| data.locale_of(&c.locale));
     let (h, a) = (Arc::clone(&http), ack.clone());
     let ran = tokio::spawn(async move { data.dispatch(&h, &interaction, &a).await }).await;
     let Err(e) = ran else { return };
@@ -1526,7 +1601,7 @@ async fn dispatch_guarded(data: Arc<Data>, http: Arc<Http>, interaction: Interac
     tracing::error!(error = %e, "an interaction handler panicked");
     let Some(c) = command else { return };
     let ephemeral = Command::parse(&c.data, c.guild_id.is_some()).map_or(true, |c| c.ephemeral());
-    let message = || Message::default().content(render::FAILED);
+    let message = || Message::default().content(catalog::messages(locale).failed);
     // The initial response if the handler sent none, else a follow-up.
     if Reply::new(&http, &c, ephemeral, &ack)
         .send(message())
@@ -1769,6 +1844,7 @@ mod tests {
             asker: NonZeroU64::MIN,
             audience: Audience::Private,
             digest: Digest::of("x"),
+            locale: Locale::En,
         };
         assert_eq!(
             custom_ids(retry_row(retry)),
@@ -1878,7 +1954,7 @@ mod tests {
     #[test]
     fn rows_carry_typed_ids_and_at_most_five_picks() {
         let call = CallId::new(uuid::Uuid::from_u128(5));
-        assert_eq!(custom_ids(rating_row(call)).len(), 3);
+        assert_eq!(custom_ids(rating_row(Locale::En, call)).len(), 3);
         let seven = (1..=7).map(|i| card(i, &format!("Card {i}")));
         let candidates = NonEmpty::collect(seven).unwrap_or_else(|| NonEmpty::new(card(1, "x")));
         let base = Pick {
@@ -1887,6 +1963,7 @@ mod tests {
             span: ByteSpan::new(3..7),
             digest: Digest::of("prompt"),
             card: candidates.first().id,
+            locale: Locale::En,
         };
         let ids = custom_ids(pick_row(base, &candidates));
         assert_eq!(ids.len(), render::MAX_CHOICES);
@@ -1918,7 +1995,13 @@ mod tests {
     fn a_pick_carries_the_span_the_click_pins() {
         let asker = UserId::new(42);
         let question = "Does BOB die to bob?";
-        let out = Outgoing::pick(asker, Audience::Channel, question, &spans("bob"));
+        let out = Outgoing::pick(
+            Locale::En,
+            asker,
+            Audience::Channel,
+            question,
+            &spans("bob"),
+        );
         let Ok(out) = out else {
             unreachable!("a short question fits");
         };
@@ -1934,7 +2017,7 @@ mod tests {
         assert_eq!((p.asker.get(), p.audience), (42, Audience::Channel));
         // Every button names the prompt it is on.
         assert_eq!(p.digest, Digest::of(&out.content));
-        let prompt = PickPrompt::parse(&out.content);
+        let prompt = PickPrompt::parse(Locale::En, &out.content);
         assert!(
             prompt
                 .as_ref()
@@ -1952,7 +2035,13 @@ mod tests {
             Some(question::pin_card(question, "bob", "Dark Confidant"))
         );
         // A span the question does not contain travels as "append".
-        let out = Outgoing::pick(asker, Audience::Private, question, &spans("urza"));
+        let out = Outgoing::pick(
+            Locale::En,
+            asker,
+            Audience::Private,
+            question,
+            &spans("urza"),
+        );
         let ids = out
             .map(|o| {
                 o.components
@@ -1968,7 +2057,7 @@ mod tests {
         // Too long for the message: no buttons, the caller lists the choices.
         let long = "q".repeat(render::CONTENT_LIMIT);
         assert_eq!(
-            Outgoing::pick(asker, Audience::Channel, &long, &spans("q")).err(),
+            Outgoing::pick(Locale::En, asker, Audience::Channel, &long, &spans("q")).err(),
             Some(NoPick::TooLong)
         );
     }

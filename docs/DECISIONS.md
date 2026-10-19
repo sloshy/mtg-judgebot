@@ -1350,3 +1350,41 @@ unset or `0` to keep every call (the default), 1 to 3650 otherwise.
   path stores a citation of one: persist and session validation both check it against
   stored rows. Rejected: retiring every call that cited a pruned one, which would let the
   retention retire newer, still-correct answers.
+
+## D35. Typed message catalogs
+
+*Decided 2026-10-18.*
+
+The app should be usable by people who do not speak English natively. Every surface's
+text therefore lives in a catalog, one per language, and each request picks its
+language. Only English ships. The rules material, the model prompts, the answers and the
+logs stay English: logs so they can be grepped and pasted into bug reports, the rest
+until answering in other languages is taken on (#25's future work). Two pieces of text
+are data rather than messages and stay as they come: a card symbol's `alt` text
+(Scryfall's description of it) and the web page's static `<title>` and meta tags.
+
+- **A catalog is a struct with a field per message**, one value per `judge_core::Locale`
+  (core's own text in `judge_core::locale`, Discord's in `judge_bot::discord::catalog`,
+  the HTTP API's in `judge_api::catalog`, the web app's in `web/src/messages.ts`,
+  checked with `satisfies Messages`). A message with values is a function, and so are
+  plurals and durations, so each language writes its own rules. A new language is a
+  `Locale` variant and one value per catalog, and the compiler lists every message it
+  misses. The API's catalog names the Discord catalog's pipeline replies rather than
+  copying them. Rejected: string keys looked up at run time (Fluent, gettext), where a
+  missing message is a fallback nobody notices.
+- **Choosing the language.** The asker's first, then `JUDGE_LOCALE` (validated at
+  `Config` load, default `en`): on Discord the user's locale; on the
+  web the browser's languages, sent as `POST /api/judge`'s `locale`, then
+  `Accept-Language`. A language with no catalog falls through. The guild's preferred
+  locale is not consulted: Discord defaults it to `en-US`, so it would almost always
+  hide `JUDGE_LOCALE`, the community's own choice (D16). The agent tools speak
+  English until the CLIs' output is translated (`judge_agent::ops::AGENT_LOCALE`).
+- **Parsed-back messages carry their language.** A "did you mean?" or Retry message is
+  read back by re-rendering its template, so the button's id carries the locale it was
+  written in (`:<locale>`; English writes none, the shape every earlier build reads, so a
+  rollback within the major or the other container mid-deploy still answers it), and the
+  answer is in the asker's language even when someone else clicks. The question limits
+  (`PICK_QUESTION_LIMIT`, `RETRY_QUESTION_LIMIT`) are the least over every locale's
+  templates, computed at compile time.
+- **Command descriptions** register the default locale's text as the base and every
+  other locale's as `description_localizations`, under that locale's Discord tags.

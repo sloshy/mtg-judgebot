@@ -68,7 +68,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D34),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D35),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -307,7 +307,7 @@ release with migrations pending). `Major`: `main` starts the roles with
 `maintenance::Availability::upgrading()`, then `SchemaHold::exclusive` (every process
 holds `SCHEMA_LOCK` shared for life) → `at_startup` → `downgrade` → `set_open`, and only
 then the scheduler. Closed: Discord commands but `/help`/`/license` get
-`render::MAINTENANCE`, `/judge` a `RetryPrompt` + `retry:` button (`ids::Retry`, claimed
+the catalog's `maintenance`, `/judge` a `RetryPrompt` + `retry:` button (`ids::Retry`, claimed
 in `pick_claims`, charged to the cooldown on retry); `/api/judge` 503 `maintenance` with
 `Retry-After`; `/mcp` ops fail through `gated::Guard::Instance`; `/api/health` fails
 through the `Maintenance` probe.
@@ -755,6 +755,15 @@ Key cross-file facts that aren't obvious from any one file:
   are disjoint, and every equivalent key names an id in one of them. Extend the set when
   adding capability. `rescore` re-scores old runs after gold edits. Rule ids written
   unquoted in YAML are rejected, because floats drop trailing zeros.
+- **Text is in typed catalogs** (D35): a struct with a field per message, one value
+  per `judge_core::Locale` (only `En`): `judge_core::locale` (core), `discord::catalog`,
+  `judge_api::catalog`, `web/src/messages.ts` (`satisfies Messages`). No user-facing
+  string inline elsewhere; logs stay English. `Locale` is negotiated per request
+  (Discord user → `JUDGE_LOCALE`; web body `locale` → `Accept-Language` →
+  `JUDGE_LOCALE`). `ids::Pick`/`Retry` end in `:<locale>` for any locale but `en` (absent = `en`, the
+  shape older builds read), and
+  `PICK_QUESTION_LIMIT`/`RETRY_QUESTION_LIMIT` are the minimum over all catalogs. The
+  agent tools stay English (`ops::AGENT_LOCALE`) until the CLIs are translated.
 - **Discord layer:** interaction logic is kept pure and unit-tested (`render.rs`,
   `ids.rs` typed button custom-ids, `pick.rs` a pick prompt's age, digest and audience,
   `question.rs` span pinning, where `find_span` + `pin_at` equal `pin_card`). Replies

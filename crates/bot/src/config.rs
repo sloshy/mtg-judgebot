@@ -79,6 +79,7 @@ use crate::{
     ingest::prune::{self, Retention},
     jobs::{self, Jobs, Schedule},
 };
+use judge_core::{Locale, locale::LOCALE_ENV};
 
 /// The environment variable naming the config file.
 pub const CONFIG_ENV: &str = "JUDGE_CONFIG";
@@ -1058,6 +1059,16 @@ pub enum ConfigError {
         /// The value as set.
         value: String,
     },
+    /// `JUDGE_LOCALE` names no language the interfaces have a catalog for.
+    #[error(
+        "{}={value:?}: not a supported language (one of: {})",
+        LOCALE_ENV,
+        Locale::supported()
+    )]
+    BadLocale {
+        /// The value as set.
+        value: String,
+    },
     /// A key that does not apply to the provider as configured.
     #[error("providers.{provider}: {key} {reason}")]
     Misplaced {
@@ -1190,6 +1201,7 @@ impl ConfigError {
             Self::BadContact { var, .. } | Self::BadBudget { var, .. } => env(var),
             Self::BadSchedule { .. } => env(jobs::REFRESH_HOURS_ENV),
             Self::BadRetention { .. } => env(prune::RETENTION_ENV),
+            Self::BadLocale { .. } => env(LOCALE_ENV),
             Self::MissingContact(MissingContact::Discord) => env(OPERATOR_DISCORD_ENV),
             Self::MissingContact(MissingContact::Email) => env(OPERATOR_EMAIL_ENV),
             Self::EmbedDimensions { .. } => toml("models.embed.dimensions".to_owned()),
@@ -1585,6 +1597,9 @@ pub struct Config {
     /// How often the long-running processes refresh the data
     /// (`JUDGE_REFRESH_HOURS`).
     refresh: Schedule,
+    /// The instance's language (`JUDGE_LOCALE`): what an asker whose own
+    /// language has no catalog is answered in.
+    locale: Locale,
 }
 
 /// The budget settings from `env`, blank meaning unset.
@@ -1647,6 +1662,16 @@ pub fn refresh_schedule(env: impl Fn(&str) -> Option<String>) -> Result<Schedule
 pub fn call_retention(env: impl Fn(&str) -> Option<String>) -> Result<Retention, ConfigError> {
     Retention::parse(env(prune::RETENTION_ENV).as_deref())
         .map_err(|value| ConfigError::BadRetention { value })
+}
+
+/// The instance's language from `env` (`JUDGE_LOCALE`), blank meaning
+/// English.
+///
+/// # Errors
+/// [`ConfigError::BadLocale`] for a language with no catalog.
+pub fn instance_locale(env: impl Fn(&str) -> Option<String>) -> Result<Locale, ConfigError> {
+    Locale::parse_setting(env(LOCALE_ENV).as_deref())
+        .map_err(|value| ConfigError::BadLocale { value })
 }
 
 /// The commit stamped into this binary by `build.rs`.
@@ -1793,6 +1818,7 @@ impl Config {
             operator,
             budget: budget(&env)?,
             refresh: refresh_schedule(&env)?,
+            locale: instance_locale(&env)?,
         })
     }
 
@@ -1896,6 +1922,7 @@ impl Config {
             operator: operator(&env)?,
             budget: budget(&env)?,
             refresh: refresh_schedule(&env)?,
+            locale: instance_locale(&env)?,
         })
     }
 
@@ -1916,6 +1943,12 @@ impl Config {
     #[must_use]
     pub fn budget(&self) -> &Budget {
         &self.budget
+    }
+
+    /// The instance's language (`JUDGE_LOCALE`).
+    #[must_use]
+    pub const fn locale(&self) -> Locale {
+        self.locale
     }
 
     /// What the long-running processes run beside their requests, and where
@@ -2123,7 +2156,7 @@ impl Config {
         serde_json::json!({
             "source": self.source.to_string(),
             // The data is not read here: `freshness` is null.
-            "source_offer": self.offer.about(&self.operator, None),
+            "source_offer": self.offer.about(&self.operator, None, self.locale),
             "spend_cap_usd": self.meter.max_spend_usd(),
             "providers": providers,
             "models": {
@@ -3103,6 +3136,19 @@ model = "qwen3:8b"
             let m = e.to_string();
             m.contains("JUDGE_ALERT_WEBHOOK") && !m.contains("secret-token")
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn the_instance_locale_defaults_to_english_and_refuses_an_unknown_language() -> R {
+        let with = |v: &'static str| {
+            Config::from_vars(move |k: &str| (k == LOCALE_ENV).then(|| v.to_owned()))
+        };
+        assert_eq!(Config::from_vars(|_| None)?.locale(), Locale::En);
+        assert_eq!(with("en-GB")?.locale(), Locale::En);
+        let err = with("klingon").err().ok_or("klingon must be refused")?;
+        assert!(matches!(err, ConfigError::BadLocale { .. }), "{err}");
+        assert!(err.to_string().contains("one of: en"), "{err}");
         Ok(())
     }
 

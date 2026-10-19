@@ -1,0 +1,590 @@
+//! The Discord surface's text, one [`Messages`] per [`Locale`]
+//! (`judge_core::locale`). Every reply, button label and command description
+//! the bot sends comes from here; [`super::render`] fills them in and fits
+//! them to Discord's limits. A field per message, so a new locale's catalog
+//! that misses one does not compile.
+//!
+//! The pipeline's replies (busy, out of scope, a failed answer, the spend
+//! cap, an unknown card, "did you mean…?") are here too, and the HTTP API
+//! sends them as its `message`s (`judge_api::shape`), so the two interfaces
+//! say the same thing.
+//!
+//! The pieces a "did you mean…?" or a Retry message is parsed back from
+//! (`asked` and `pick_*`, `retry_body`) are plain `&str`s, so the question
+//! limits can be computed over every locale at compile time
+//! ([`super::render::PICK_QUESTION_LIMIT`]).
+
+use std::{fmt, time::Duration};
+
+use judge_core::{Confidence, Forgotten, Locale, Score};
+
+/// One locale's Discord text.
+#[derive(Clone, Copy)]
+pub struct Messages {
+    // ---- the pipeline's replies, shared with the HTTP API ----
+    /// Every judge slot is taken.
+    pub busy: &'static str,
+    /// Tournament-policy and non-rules questions.
+    pub out_of_scope: &'static str,
+    /// The pipeline errored or could not produce a verified answer.
+    pub failed: &'static str,
+    /// The operator's spend cap has been reached.
+    pub spend_cap: &'static str,
+    /// No card matched: the names as listed (each already bolded), joined
+    /// by the caller with [`Self::or`].
+    pub cards_not_found: fn(&str) -> String,
+    /// Joins alternatives in a list (`A or B`).
+    pub or: &'static str,
+    /// The buttonless "did you mean…?" lead, given the span.
+    pub did_you_mean_head: fn(&str) -> String,
+    /// After the listed choices, how many more there are.
+    pub did_you_mean_more: fn(usize) -> String,
+    /// The buttonless "did you mean…?" closing line.
+    pub did_you_mean_tail: &'static str,
+    /// Any command but `/help` and `/license` while a major upgrade migrates.
+    pub maintenance: &'static str,
+
+    // ---- the restated question and the "did you mean…?" prompt ----
+    /// Between the asker's mention and the question: ` asked: `.
+    pub asked: &'static str,
+    /// The prompt's lead, before the span.
+    pub pick_head: &'static str,
+    /// The prompt's lead, after the span.
+    pub pick_ask: &'static str,
+    /// More candidates than buttons.
+    pub pick_more: &'static str,
+    /// One more ambiguous name follows.
+    pub pick_later_one: &'static str,
+    /// Several more follow: before the count.
+    pub pick_later_head: &'static str,
+    /// Several more follow: after the count.
+    pub pick_later_tail: &'static str,
+
+    // ---- buttons and their replies ----
+    /// A pick answered too late, or its message no longer holds the question.
+    pub expired: &'static str,
+    /// A second click on a pick.
+    pub already_picked: &'static str,
+    /// A pick that could not be checked.
+    pub pick_failed: &'static str,
+    /// Someone other than the asker picked.
+    pub not_yours: &'static str,
+    /// Someone other than the asker pressed Retry.
+    pub not_your_retry: &'static str,
+    /// A Retry pressed a second time.
+    pub already_retried: &'static str,
+    /// A retried question's message while it is answered.
+    pub retrying: &'static str,
+    /// A pick's message while it is judged, given the card.
+    pub working: fn(&str) -> String,
+    /// A button whose id did not parse.
+    pub unknown_button: &'static str,
+    /// A rating button's label.
+    pub rating_label: fn(Score) -> &'static str,
+    /// The rating's acknowledgement, given its label and whether it counts
+    /// as a judge's.
+    pub rated: fn(&str, bool) -> String,
+    /// After an *Incorrect* rating: whom to tell, given the operator's
+    /// username.
+    pub report_wrong: fn(&str) -> String,
+    /// After [`Self::report_wrong`]: the issue form, given its URL.
+    pub report_link: fn(&str) -> String,
+    /// The rating could not be stored.
+    pub rate_failed: &'static str,
+    /// A rating of an answer the retention deleted.
+    pub call_gone: &'static str,
+    /// The maintenance reply's body, above its Retry button.
+    pub retry_body: &'static str,
+    /// The Retry button's label.
+    pub retry_label: &'static str,
+    /// A Retry pressed while the upgrade is still migrating.
+    pub still_upgrading: &'static str,
+    /// The message could not be updated with the answer.
+    pub edit_failed: &'static str,
+
+    // ---- the answer's embed ----
+    /// The footer's confidence and CR line.
+    pub footer_meta: fn(Confidence, &str) -> String,
+    /// The footer's line naming the resolved cards, joined.
+    pub cards_line: fn(&str) -> String,
+    /// A ruling citation's label: its date (with a leading space) and card
+    /// name, either possibly absent.
+    pub ruling_label: fn(&str, Option<&str>) -> String,
+    /// An Oracle-text citation's label: the face (from 2, when not the
+    /// first) and card name.
+    pub oracle_label: fn(Option<usize>, Option<&str>) -> String,
+    /// A prior call citation's label.
+    pub prior_call_label: &'static str,
+
+    // ---- commands ----
+    /// A command this build does not have.
+    pub unknown_command: &'static str,
+    /// `/judge` outside a server.
+    pub server_only: &'static str,
+    /// Past the per-user allowance: the limit, its window, and the wait.
+    pub cooling_down: fn(u32, Duration, Duration) -> String,
+    /// `/help`'s fixed part.
+    pub help_body: &'static str,
+    /// `/help`'s data section heading.
+    pub data_heading: &'static str,
+    /// `/help`'s data section when it could not be read.
+    pub data_unknown: &'static str,
+    /// Who runs the bot: the username (in a code span) and the email, if any.
+    pub contact: fn(&str, Option<&str>) -> String,
+    /// `/license`'s heading.
+    pub license_heading: &'static str,
+    /// `/license`'s offer: program, copyright, licence name, licence URL,
+    /// repository and the (possibly linked) revision.
+    pub license: fn(&License<'_>) -> String,
+    /// `/forget`'s confirmation.
+    pub forgotten: fn(Forgotten) -> String,
+    /// `/forget` failed.
+    pub forget_failed: &'static str,
+    /// `/card` with a blank or over-long name.
+    pub lookup_bad_name: &'static str,
+    /// `/rule` with something that is not a rule number.
+    pub lookup_bad_rule: &'static str,
+    /// A lookup the database could not serve.
+    pub lookup_failed: &'static str,
+    /// `/card` for a card with no rulings.
+    pub no_rulings: &'static str,
+    /// `/card`'s rulings heading, given how many.
+    pub rulings_heading: fn(usize) -> String,
+    /// `/card` when the name could mean several cards: the lead, given the
+    /// name.
+    pub card_ambiguous_head: fn(&str) -> String,
+    /// `/card` when the name could mean several cards: the closing line.
+    pub card_ambiguous_tail: &'static str,
+    /// `/card` when nothing matched, given the name.
+    pub card_not_found: fn(&str) -> String,
+    /// `/rule`'s title: the rule asked for, and its heading if it has one.
+    pub rule_title: fn(&str, Option<&str>) -> String,
+    /// `/rule`'s footer and a CR date: `CR 2026-08-19`.
+    pub cr_label: fn(&str) -> String,
+    /// Appended when even the first rule had to be cut.
+    pub long_rule_note: &'static str,
+    /// `/rule` when the number names nothing.
+    pub rule_not_found: fn(&str) -> String,
+    /// After a list cut to fit an embed, given how many lines were left
+    /// out (the citations, `/card`'s rulings).
+    pub more_lines: fn(usize) -> String,
+
+    // ---- command registration ----
+    /// The commands' descriptions, as Discord lists them.
+    pub commands: Commands,
+}
+
+/// The facts `/license` states.
+#[derive(Clone, Copy, Debug)]
+pub struct License<'a> {
+    /// The program's name.
+    pub program: &'a str,
+    /// The copyright line.
+    pub copyright: &'a str,
+    /// The licence, in words.
+    pub license_name: &'a str,
+    /// Where to read it.
+    pub license_url: &'a str,
+    /// Where the source is.
+    pub repository: &'a str,
+    /// The revision phrase, linked to the commit when the build knew it.
+    pub revision: &'a str,
+}
+
+/// The six commands' descriptions and their options' (Discord allows 100
+/// characters each; a test holds every locale to it).
+#[derive(Clone, Copy, Debug)]
+pub struct Commands {
+    /// `/judge`.
+    pub judge: &'static str,
+    /// `/judge question:`.
+    pub judge_question: &'static str,
+    /// `/judge private:`.
+    pub judge_private: &'static str,
+    /// `/card`.
+    pub card: &'static str,
+    /// `/card name:`.
+    pub card_name: &'static str,
+    /// `/card private:`.
+    pub card_private: &'static str,
+    /// `/rule`.
+    pub rule: &'static str,
+    /// `/rule id:`.
+    pub rule_id: &'static str,
+    /// `/rule private:`.
+    pub rule_private: &'static str,
+    /// `/help`.
+    pub help: &'static str,
+    /// `/license`.
+    pub license: &'static str,
+    /// `/forget`.
+    pub forget: &'static str,
+}
+
+impl fmt::Debug for Messages {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("discord::catalog::Messages")
+    }
+}
+
+/// The Discord text in `locale`.
+#[must_use]
+pub const fn messages(locale: Locale) -> &'static Messages {
+    match locale {
+        Locale::En => &EN,
+    }
+}
+
+/// The Discord locale tags a locale's text is registered under for command
+/// descriptions (`description_localizations`). Empty for the default
+/// locale, whose text is the base description.
+#[must_use]
+pub const fn discord_tags(locale: Locale) -> &'static [&'static str] {
+    match locale {
+        Locale::En => &[],
+    }
+}
+
+/// English.
+pub const EN: Messages = Messages {
+    busy: "I'm answering as many questions as I can right now; please try again in a minute.",
+    out_of_scope: "I only answer Comprehensive Rules and Commander rules questions. Tournament policy \
+                   (MTR/IPG) and questions that aren't about the rules are out of my scope: for \
+                   policy, see the Magic Tournament Rules or ask a tournament judge.",
+    failed: "Sorry, I couldn't produce a verified answer this time. Please try again, or rephrase the question.",
+    spend_cap: "I've hit my spending cap for now, so I can't answer until the operator raises it.",
+    cards_not_found: |listed| {
+        format!(
+            "I couldn't find a card called {listed}. Check the spelling, or write the full name as [[Full Card Name]]."
+        )
+    },
+    or: " or ",
+    did_you_mean_head: |span| {
+        format!("I'm not sure which card you mean by **{span}**. Did you mean…?")
+    },
+    did_you_mean_more: |n| format!("…and {n} more."),
+    did_you_mean_tail: "Ask again with the card you mean written as [[Full Card Name]].",
+    maintenance: "Judgebot is being upgraded and will be back in a minute or two. \
+Please try again shortly.",
+
+    asked: " asked: ",
+    pick_head: "I'm not sure which card you mean by **",
+    pick_ask: "**. Did you mean…?",
+    pick_more: "(Showing the first five. If yours isn't here, write its full name as [[Full Card Name]].)",
+    pick_later_one: "After that I'll ask about one more name.",
+    pick_later_head: "After that I'll ask about ",
+    pick_later_tail: " more names.",
+
+    expired: "That choice has expired, or the message no longer holds the question. \
+              Please ask it again.",
+    already_picked: "A card has already been picked for that question.",
+    pick_failed: "Sorry, I couldn't take that pick just now. Please try again.",
+    not_yours: "Only the person who asked can pick a card for that question.",
+    not_your_retry: "Only the person who asked can retry that question.",
+    already_retried: "That question has already been asked again.",
+    retrying: "Asking again. Working on it…",
+    working: |card| format!("Got it: **{card}**. Working on it…"),
+    unknown_button: "I don't recognise that button any more.",
+    rating_label: |score| match score {
+        Score::Incorrect => "Incorrect",
+        Score::Partial => "Partially correct",
+        Score::Correct => "Correct",
+    },
+    rated: |label, as_judge| {
+        let who = if as_judge { " as a judge ruling" } else { "" };
+        format!("Recorded your rating{who}: {label}. Rating again replaces it.")
+    },
+    report_wrong: |username| {
+        format!(
+            "If the ruling is wrong, tell `@{username}`, who runs this bot, what you asked and what \
+the right answer is."
+        )
+    },
+    report_link: |url| format!(" Or [report it to the project](<{url}>)."),
+    rate_failed: "Sorry, I couldn't record that rating. Please try again.",
+    call_gone: "This answer is no longer stored, so it can't be rated.",
+    retry_body: "Judgebot is being upgraded and will be back in a minute or two. \
+Press **Retry** to ask this again.",
+    retry_label: "Retry",
+    still_upgrading: "Still upgrading. Press **Retry** again in a minute; your question is kept on the message.",
+    edit_failed: "I worked out an answer but couldn't update the message. Please ask the question again.",
+
+    footer_meta: |confidence, cr| {
+        let level = match confidence {
+            Confidence::Low => "Low",
+            Confidence::Medium => "Medium",
+            Confidence::High => "High",
+        };
+        format!("Confidence: {level} · CR {cr}")
+    },
+    cards_line: |names| format!("Cards: {names}"),
+    ruling_label: |date, name| match name {
+        Some(name) => format!("Ruling{date} — {name}"),
+        None => format!("Scryfall ruling{date}"),
+    },
+    oracle_label: |face, name| {
+        let face_note = face.map(|n| format!(", face {n}")).unwrap_or_default();
+        match name {
+            Some(name) => format!("Oracle text{face_note} — {name}"),
+            None => format!("Oracle text{face_note}"),
+        }
+    },
+    prior_call_label: "prior call",
+
+    unknown_command: "I don't recognise that command in this version. Please try again in a minute.",
+    server_only: "`/judge` works in a server only, not in direct messages.",
+    cooling_down: |max, window, wait| {
+        format!(
+            "You've asked {max} questions in the last {}, which is this bot's limit per person. Try \
+again in {}. `/card` and `/rule` lookups are not limited.",
+            en_span(window),
+            en_span(wait)
+        )
+    },
+    help_body: "**MTG Judgebot** answers Magic: The Gathering rules questions like a judge: every \
+claim carries a citation to the Comprehensive Rules, an official ruling, or a card's Oracle text, and a \
+citation is only shown after it has been checked against the source.\n\n\
+**Asking.** `/judge question: <your question>`. Nicknames work (\"bob\", \"goyf\"). Use brackets like \
+`[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the card with exactly that name, or the \
+one card a listed nickname stands for. If a \
+name could mean several cards you get a \"did you mean…?\" row instead of a guess, and every answer lists \
+the cards it took your question to be about. Tournament policy and card prices are out of scope. Add \
+`private: True` and only you see the answer. It reads no earlier questions and no later question reads \
+it. It is still stored, for the operator only.\n\n\
+**Looking things up.** `/card` shows a card's Oracle text and rulings and `/rule` shows rules text by \
+number. Both are free and instant.\n\n\
+**Rating.** The buttons under an answer record how right it was; rating again replaces yours. Ratings decide \
+which past answers are shown as examples later — the rules themselves always outrank them. Members with the \
+server's judge role rate with an override.\n\n\
+**What is stored.** Each question and answer, the channel it was asked in, your user id and username, \
+and your ratings. A call that errored is kept for debugging, with its question. Nothing else is read: the \
+bot sees only its slash commands. `/forget` deletes your ratings and removes your id and username from \
+your questions; a private question's text, and a failed one's, is removed too.\n\n\
+Answers are AI-generated; verify anything important with a human judge. Unofficial Fan Content under the \
+Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.\n\n",
+    data_heading: "**Data.**",
+    data_unknown: "**Data.** Unknown: the database did not answer.",
+    contact: |username, email| {
+        let email = email.map(|e| format!(" or `{e}`")).unwrap_or_default();
+        format!(
+            "**Who runs this bot.** `@{username}` on Discord{email}. Tell them about problems with this \
+instance."
+        )
+    },
+    license_heading: "**Source and licence.**",
+    license: |l| {
+        format!(
+            "{} — {}. Free software under the [{}](<{}>): you may run, study, \
+share and modify it, and anyone offering a modified version over a network must offer its source under \
+the same licence. The source code of this instance is at <{}> ({}).",
+            l.program, l.copyright, l.license_name, l.license_url, l.repository, l.revision
+        )
+    },
+    forgotten: en_forgotten,
+    forget_failed: "Sorry, I couldn't forget you just now. Please try again.",
+    lookup_bad_name: "Give me a card name or nickname (at most 200 characters).",
+    lookup_bad_rule: "That doesn't look like a rule number. Try `702.19`, `702.19b`, or `702` for a whole section.",
+    lookup_failed: "Sorry, I couldn't look that up just now. Please try again.",
+    no_rulings: "No rulings.",
+    rulings_heading: |n| format!("**Rulings ({n})**"),
+    card_ambiguous_head: |name| format!("\"{name}\" could be several cards:"),
+    card_ambiguous_tail: "Ask again with the full name.",
+    card_not_found: |name| {
+        format!(
+            "I couldn't find a card called \"{name}\". Check the spelling, or use the full name."
+        )
+    },
+    rule_title: |asked, heading| match heading {
+        Some(heading) => format!("CR {asked} — {heading}"),
+        None => format!("CR {asked}"),
+    },
+    cr_label: |date| format!("CR {date}"),
+    long_rule_note: "\n\nThis rule is longer than Discord shows. Ask for one sub-rule (add its letter), or follow the title link.",
+    rule_not_found: |id| format!("There is no rule {id} in the Comprehensive Rules I have loaded."),
+    more_lines: |n| format!("… and {n} more"),
+
+    commands: Commands {
+        judge: "Ask a Magic rules question; the answer cites the Comprehensive Rules.",
+        judge_question: "Your rules question. Use brackets like [[Full Card Name]] to avoid ambiguity.",
+        judge_private: "Show the answer only to you. It reads no earlier questions here and is never shown publicly.",
+        card: "Look up a card: Oracle text and rulings. Free: no model is called.",
+        card_name: "A card name or nickname.",
+        card_private: "Show the card only to you.",
+        rule: "Look up Comprehensive Rules text by number. Free: no model is called.",
+        rule_id: "A rule number such as 702.19, 702.19b or 702.",
+        rule_private: "Show the rule only to you.",
+        help: "What the bot does, how to ask, what it stores, and where its source is.",
+        license: "Where this bot's source code is, at which commit, and under which licence.",
+        forget: "Delete your ratings and anonymize your failed calls; nothing else is stored about you.",
+    },
+};
+
+/// A duration as an English reader says it: `45 seconds`, `1 minute`, `10
+/// minutes`. Rounded up, so "try again in" never sends someone back too
+/// early.
+fn en_span(d: Duration) -> String {
+    let secs = d
+        .as_secs()
+        .saturating_add(u64::from(d.subsec_nanos() > 0))
+        .max(1);
+    let (n, unit) = if secs < 60 {
+        (secs, "second")
+    } else {
+        (secs.div_ceil(60), "minute")
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// `/forget`'s confirmation in English, naming how much there was to forget.
+fn en_forgotten(f: Forgotten) -> String {
+    let count = |n: u64, one: &str, many: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {many}"),
+    };
+    let mut done = Vec::new();
+    if f.ratings > 0 {
+        done.push(format!(
+            "deleted your {}",
+            count(f.ratings, "rating", "ratings")
+        ));
+    }
+    if f.calls > 0 {
+        done.push(format!(
+            "removed your id and username from {} you asked",
+            count(f.calls, "question", "questions")
+        ));
+    }
+    if f.failures > 0 {
+        done.push(format!(
+            "anonymized {} of yours",
+            count(f.failures, "failed call", "failed calls")
+        ));
+    }
+    let Some((last, rest)) = done.split_last() else {
+        return "You had no ratings, questions or failed calls on record; there is nothing else \
+                stored about you."
+            .to_owned();
+    };
+    let joined = if rest.is_empty() {
+        last.clone()
+    } else {
+        format!("{} and {last}", rest.join(", "))
+    };
+    let mut chars = joined.chars();
+    let capitalized: String = chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
+    format!("{capitalized}. Nothing else is stored about you.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Discord's limit on a command or option description, in characters.
+    const DESCRIPTION_LIMIT: usize = 100;
+
+    /// Every locale renders every message, and its command descriptions fit.
+    #[test]
+    fn every_locale_renders_every_message() {
+        for l in Locale::ALL {
+            let m = messages(l);
+            let texts = [
+                m.busy.to_owned(),
+                m.out_of_scope.to_owned(),
+                m.failed.to_owned(),
+                m.spend_cap.to_owned(),
+                (m.cards_not_found)("**X**"),
+                (m.did_you_mean_head)("bob"),
+                (m.did_you_mean_more)(3),
+                m.did_you_mean_tail.to_owned(),
+                m.maintenance.to_owned(),
+                m.pick_head.to_owned(),
+                m.pick_ask.to_owned(),
+                m.pick_more.to_owned(),
+                m.pick_later_one.to_owned(),
+                m.expired.to_owned(),
+                m.already_picked.to_owned(),
+                m.pick_failed.to_owned(),
+                m.not_yours.to_owned(),
+                m.not_your_retry.to_owned(),
+                m.already_retried.to_owned(),
+                m.retrying.to_owned(),
+                (m.working)("Card"),
+                m.unknown_button.to_owned(),
+                (m.rating_label)(Score::Partial).to_owned(),
+                (m.rated)("Correct", true),
+                (m.report_wrong)("op"),
+                (m.report_link)("https://example.com"),
+                m.rate_failed.to_owned(),
+                m.call_gone.to_owned(),
+                m.retry_body.to_owned(),
+                m.retry_label.to_owned(),
+                m.still_upgrading.to_owned(),
+                m.edit_failed.to_owned(),
+                (m.footer_meta)(Confidence::High, "2026-08-19"),
+                (m.cards_line)("A · B"),
+                (m.ruling_label)(" (2018-07-13)", Some("Blood Moon")),
+                (m.ruling_label)("", None),
+                (m.oracle_label)(Some(2), None),
+                m.prior_call_label.to_owned(),
+                m.unknown_command.to_owned(),
+                m.server_only.to_owned(),
+                (m.cooling_down)(6, Duration::from_mins(10), Duration::from_secs(1)),
+                m.help_body.to_owned(),
+                m.data_heading.to_owned(),
+                m.data_unknown.to_owned(),
+                (m.contact)("op", Some("a@b.c")),
+                m.license_heading.to_owned(),
+                m.forget_failed.to_owned(),
+                (m.forgotten)(Forgotten::default()),
+                m.lookup_bad_name.to_owned(),
+                m.lookup_bad_rule.to_owned(),
+                m.lookup_failed.to_owned(),
+                m.no_rulings.to_owned(),
+                (m.rulings_heading)(2),
+                (m.card_ambiguous_head)("bob"),
+                m.card_ambiguous_tail.to_owned(),
+                (m.card_not_found)("bob"),
+                (m.rule_title)("702", None),
+                (m.cr_label)("2026-08-19"),
+                m.long_rule_note.to_owned(),
+                (m.rule_not_found)("999"),
+                (m.more_lines)(3),
+            ];
+            for t in &texts {
+                assert!(!t.trim().is_empty(), "{l}: an empty message");
+            }
+            let c = m.commands;
+            for d in [
+                c.judge,
+                c.judge_question,
+                c.judge_private,
+                c.card,
+                c.card_name,
+                c.card_private,
+                c.rule,
+                c.rule_id,
+                c.rule_private,
+                c.help,
+                c.license,
+                c.forget,
+            ] {
+                let n = d.chars().count();
+                assert!(
+                    (1..=DESCRIPTION_LIMIT).contains(&n),
+                    "{l}: {d:?} is {n} characters"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn english_spans_round_up_and_count_in_whole_units() {
+        assert_eq!(en_span(Duration::from_millis(1)), "1 second");
+        assert_eq!(en_span(Duration::from_secs(45)), "45 seconds");
+        assert_eq!(en_span(Duration::from_secs(60)), "1 minute");
+        assert_eq!(en_span(Duration::from_secs(61)), "2 minutes");
+    }
+}

@@ -25,6 +25,7 @@
 //! consequence of being started: see [`interfaces`] and `judgebot`'s roles.
 //! The web page is served only where an operator asked for it.
 
+pub mod catalog;
 pub mod config;
 pub mod discord;
 pub mod http;

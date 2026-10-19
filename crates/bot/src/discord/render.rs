@@ -11,12 +11,12 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use judge_core::{
-    Ambiguous, Card, CardId, Citation, Confidence, Context, DiscordOperator, EXAMPLE_PREFIX,
-    Freshness, JudgeError, RuleChunk, RuleId, Ruling, Score, SourceOffer, Validated, Verdict,
-    source,
+    Ambiguous, Card, CardId, Citation, Context, DiscordOperator, EXAMPLE_PREFIX, Freshness,
+    JudgeError, Locale, RuleChunk, RuleId, Ruling, Score, SourceOffer, Validated, Verdict, source,
 };
 use nonempty::NonEmpty;
 
+use super::catalog::{self, License, Messages};
 use super::cooldown::UserLimit;
 use super::mana::{Rendered, SymbolTable};
 
@@ -49,74 +49,7 @@ pub const HEADER_LIMIT: usize = CONTENT_LIMIT / 4;
 /// (verified 2026-08-30: ids look like `R70219b`, see [`rule_anchor`]).
 pub const CR_MIRROR_URL: &str = "https://yawgatog.com/resources/magic-rules/";
 
-/// Reply when every judge slot is taken.
-pub const BUSY: &str =
-    "I'm answering as many questions as I can right now; please try again in a minute.";
-/// Fixed reply for tournament-policy and non-rules questions (ARCHITECTURE.md §3 step 3).
-pub const OUT_OF_SCOPE: &str = "I only answer Comprehensive Rules and Commander rules questions. Tournament policy \
-                                (MTR/IPG) and questions that aren't about the rules are out of my scope: for \
-                                policy, see the Magic Tournament Rules or ask a tournament judge.";
-/// Generic failure: the pipeline errored or could not produce a verified answer.
-pub const FAILED: &str = "Sorry, I couldn't produce a verified answer this time. Please try again, or rephrase the question.";
-/// The operator's Anthropic spend cap has been reached.
-pub const SPEND_CAP: &str =
-    "I've hit my spending cap for now, so I can't answer until the operator raises it.";
-/// A "did you mean…?" was answered too late, or its message no longer holds
-/// the question its button was made for (a button sent before the upgrade
-/// that made picks stateless, a client still showing an earlier prompt).
-pub const EXPIRED: &str = "That choice has expired, or the message no longer holds the question. \
-                           Please ask it again.";
-/// A "did you mean…?" whose pick was already taken (a second click).
-pub const ALREADY_PICKED: &str = "A card has already been picked for that question.";
-/// A "did you mean…?" click that could not be checked (the database did not answer).
-pub const PICK_FAILED: &str = "Sorry, I couldn't take that pick just now. Please try again.";
-/// Someone other than the asker pressed a "did you mean…?" button.
-pub const NOT_YOURS: &str = "Only the person who asked can pick a card for that question.";
-/// Someone other than the asker pressed a Retry button.
-pub const NOT_YOUR_RETRY: &str = "Only the person who asked can retry that question.";
-/// A Retry pressed a second time.
-pub const ALREADY_RETRIED: &str = "That question has already been asked again.";
-/// What a retried question's message shows while it is answered.
-pub const RETRYING: &str = "Asking again. Working on it…";
-/// A button whose `custom_id` did not parse.
-pub const UNKNOWN_BUTTON: &str = "I don't recognise that button any more.";
-/// A slash command this build does not have, or whose options it cannot
-/// read: Discord still lists another release's commands for a moment after
-/// a deploy.
-pub const UNKNOWN_COMMAND: &str =
-    "I don't recognise that command in this version. Please try again in a minute.";
-/// `/judge` outside a server.
-pub const SERVER_ONLY: &str = "`/judge` works in a server only, not in direct messages.";
-/// The rating could not be stored.
-pub const RATE_FAILED: &str = "Sorry, I couldn't record that rating. Please try again.";
-
-/// A rating of an answer the instance no longer keeps (its retention deleted it).
-pub const CALL_GONE: &str = "This answer is no longer stored, so it can't be rated.";
-
-/// The fixed part of `/help`: what the bot does, how to ask, what it stores.
-const HELP_BODY: &str = "**MTG Judgebot** answers Magic: The Gathering rules questions like a judge: every \
-claim carries a citation to the Comprehensive Rules, an official ruling, or a card's Oracle text, and a \
-citation is only shown after it has been checked against the source.\n\n\
-**Asking.** `/judge question: <your question>`. Nicknames work (\"bob\", \"goyf\"). Use brackets like \
-`[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the card with exactly that name, or the \
-one card a listed nickname stands for. If a \
-name could mean several cards you get a \"did you mean…?\" row instead of a guess, and every answer lists \
-the cards it took your question to be about. Tournament policy and card prices are out of scope. Add \
-`private: True` and only you see the answer. It reads no earlier questions and no later question reads \
-it. It is still stored, for the operator only.\n\n\
-**Looking things up.** `/card` shows a card's Oracle text and rulings and `/rule` shows rules text by \
-number. Both are free and instant.\n\n\
-**Rating.** The buttons under an answer record how right it was; rating again replaces yours. Ratings decide \
-which past answers are shown as examples later — the rules themselves always outrank them. Members with the \
-server's judge role rate with an override.\n\n\
-**What is stored.** Each question and answer, the channel it was asked in, your user id and username, \
-and your ratings. A call that errored is kept for debugging, with its question. Nothing else is read: the \
-bot sees only its slash commands. `/forget` deletes your ratings and removes your id and username from \
-your questions; a private question's text, and a failed one's, is removed too.\n\n\
-Answers are AI-generated; verify anything important with a human judge. Unofficial Fan Content under the \
-Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.\n\n";
-
-/// `/help`, as the two messages it is sent in: [`HELP_BODY`] and what the
+/// `/help`, as the two messages it is sent in: the fixed body and what the
 /// data is ([`data`]), then what `/license` says — where this instance's code
 /// is, at which commit, under which licence, so the AGPL's network clause is
 /// met on the bot's own surface, and who runs it. Two because the body and
@@ -124,29 +57,32 @@ Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfal
 /// under it by a wide margin. Ephemeral, so neither clutters a channel.
 #[must_use]
 pub fn help(
+    locale: Locale,
     offer: &SourceOffer,
     operator: &DiscordOperator,
     freshness: Option<&Freshness>,
 ) -> [String; 2] {
+    let m = catalog::messages(locale);
     [
-        format!("{}\n\n{}", HELP_BODY.trim_end(), data(freshness)),
-        license(offer, operator),
+        format!("{}\n\n{}", m.help_body.trim_end(), data(locale, freshness)),
+        license(locale, offer, operator),
     ]
 }
 
 /// What the data is, as `/help` lists it: the CR release and the last
 /// refresh ([`Freshness::lines`]), or a line saying it could not be read.
 #[must_use]
-pub fn data(freshness: Option<&Freshness>) -> String {
+pub fn data(locale: Locale, freshness: Option<&Freshness>) -> String {
+    let m = catalog::messages(locale);
     match freshness {
         Some(f) => {
-            let mut out = "**Data.**".to_owned();
-            for line in f.lines() {
+            let mut out = m.data_heading.to_owned();
+            for line in f.lines(locale) {
                 let _ = write!(out, "\n- {line}");
             }
             out
         }
-        None => "**Data.** Unknown: the database did not answer.".to_owned(),
+        None => m.data_unknown.to_owned(),
     }
 }
 
@@ -154,90 +90,36 @@ pub fn data(freshness: Option<&Freshness>) -> String {
 /// one and would otherwise italicise. The support address follows when the
 /// operator set one too.
 #[must_use]
-pub fn contact(operator: &DiscordOperator) -> String {
-    let email = operator
-        .operator()
-        .email()
-        .map(|e| format!(" or `{e}`"))
-        .unwrap_or_default();
-    format!(
-        "**Who runs this bot.** `@{}` on Discord{email}. Tell them about problems with this \
-instance.",
-        operator.username()
-    )
+pub fn contact(locale: Locale, operator: &DiscordOperator) -> String {
+    let email = operator.operator().email().map(ToString::to_string);
+    (catalog::messages(locale).contact)(operator.username().as_ref(), email.as_deref())
 }
 
 /// `/license`: the source offer alone. Links are wrapped in `<…>` so Discord
 /// does not unfurl them into embeds; the commit links into the repository
 /// when the build knew it. [`contact`] follows it.
 #[must_use]
-pub fn license(offer: &SourceOffer, operator: &DiscordOperator) -> String {
+pub fn license(locale: Locale, offer: &SourceOffer, operator: &DiscordOperator) -> String {
+    let m = catalog::messages(locale);
     let revision = match offer.commit_url() {
-        Some(url) => format!("[{}](<{url}>)", offer.revision()),
-        None => offer.revision(),
+        Some(url) => format!("[{}](<{url}>)", offer.revision(locale)),
+        None => offer.revision(locale),
     };
+    let repository = offer.repository().to_string();
     format!(
-        "**Source and licence.** {} — {}. Free software under the [{}](<{}>): you may run, study, \
-share and modify it, and anyone offering a modified version over a network must offer its source under \
-the same licence. The source code of this instance is at <{}> ({revision}).\n\n{}",
-        source::PROGRAM,
-        source::COPYRIGHT,
-        source::LICENSE_NAME,
-        source::LICENSE_URL,
-        offer.repository(),
-        contact(operator),
+        "{} {}\n\n{}",
+        m.license_heading,
+        (m.license)(&License {
+            program: source::PROGRAM,
+            copyright: source::COPYRIGHT,
+            license_name: source::LICENSE_NAME,
+            license_url: source::LICENSE_URL,
+            repository: &repository,
+            revision: &revision,
+        }),
+        contact(locale, operator),
     )
 }
-
-/// `/forget`'s confirmation, naming how much there was to forget.
-#[must_use]
-pub fn forgotten(f: judge_core::Forgotten) -> String {
-    let count = |n: u64, one: &str, many: &str| match n {
-        1 => format!("1 {one}"),
-        n => format!("{n} {many}"),
-    };
-    let mut done = Vec::new();
-    if f.ratings > 0 {
-        done.push(format!(
-            "deleted your {}",
-            count(f.ratings, "rating", "ratings")
-        ));
-    }
-    if f.calls > 0 {
-        done.push(format!(
-            "removed your id and username from {} you asked",
-            count(f.calls, "question", "questions")
-        ));
-    }
-    if f.failures > 0 {
-        done.push(format!(
-            "anonymized {} of yours",
-            count(f.failures, "failed call", "failed calls")
-        ));
-    }
-    let Some((last, rest)) = done.split_last() else {
-        return "You had no ratings, questions or failed calls on record; there is nothing else \
-                stored about you."
-            .to_owned();
-    };
-    let joined = if rest.is_empty() {
-        last.clone()
-    } else {
-        format!("{} and {last}", rest.join(", "))
-    };
-    let mut chars = joined.chars();
-    let capitalized: String = chars
-        .next()
-        .map(|c| c.to_uppercase().chain(chars).collect())
-        .unwrap_or_default();
-    format!("{capitalized}. Nothing else is stored about you.")
-}
-
-/// `/forget` when the deletion failed.
-pub const FORGET_FAILED: &str = "Sorry, I couldn't forget you just now. Please try again.";
-/// A card pick was processed but the message could not be updated with the result.
-pub const EDIT_FAILED: &str =
-    "I worked out an answer but couldn't update the message. Please ask the question again.";
 
 /// A rendered answer: message content plus the embed holding the citations.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -257,6 +139,7 @@ pub struct Answer {
 /// become emoji from `symbols` — [`SymbolTable::empty`] leaves them as `{W}`.
 #[must_use]
 pub fn answer(
+    locale: Locale,
     v: &Verdict<Validated>,
     ctx: Option<&Context>,
     asker: u64,
@@ -266,12 +149,12 @@ pub fn answer(
     let lines: Vec<Rendered> = v
         .citations()
         .iter()
-        .map(|c| citation_line(c, ctx, symbols))
+        .map(|c| citation_line(locale, c, ctx, symbols))
         .collect();
     Answer {
-        content: with_header(asker, question, v.answer(), symbols),
-        citations: fit_lines(&lines, EMBED_DESCRIPTION_LIMIT),
-        footer: footer(v),
+        content: with_header(locale, asker, question, v.answer(), symbols),
+        citations: fit_lines(locale, &lines, EMBED_DESCRIPTION_LIMIT),
+        footer: footer(locale, v),
     }
 }
 
@@ -279,9 +162,10 @@ pub fn answer(
 /// [`QUESTION_LIMIT`] chars. The `<@…>` mention renders in Discord; whether it
 /// *pings* is decided by the message's allowed-mentions, not here.
 #[must_use]
-pub fn header(asker: u64, question: &str) -> String {
+pub fn header(locale: Locale, asker: u64, question: &str) -> String {
     format!(
-        "<@{asker}> asked: {}",
+        "{PROMPT_MENTION}{asker}{PROMPT_CLOSE}{}{}",
+        catalog::messages(locale).asked,
         fit(&collapse_whitespace(question), QUESTION_LIMIT)
     )
 }
@@ -295,8 +179,14 @@ pub fn header(asker: u64, question: &str) -> String {
 /// a [`PickPrompt`], which must restate the question verbatim and whose
 /// question length `/judge` bounds instead.
 #[must_use]
-pub fn with_header(asker: u64, question: &str, body: &str, symbols: &SymbolTable) -> String {
-    let head = Rendered::substitute(&header(asker, question), symbols).fit(HEADER_LIMIT);
+pub fn with_header(
+    locale: Locale,
+    asker: u64,
+    question: &str,
+    body: &str,
+    symbols: &SymbolTable,
+) -> String {
+    let head = Rendered::substitute(&header(locale, asker, question), symbols).fit(HEADER_LIMIT);
     let room = CONTENT_LIMIT
         .saturating_sub(head.chars().count())
         .saturating_sub(SEPARATOR.chars().count());
@@ -337,13 +227,10 @@ pub fn scryfall_url(card: CardId) -> String {
 /// or a misspelling was taken to mean the card they had in mind. Names are
 /// separated by ` · `, not commas, because names contain commas.
 #[must_use]
-pub fn footer(v: &Verdict<Validated>) -> String {
-    let meta = format!(
-        "Confidence: {} · CR {}",
-        confidence_label(v.confidence()),
-        cr_date(v.cr_version().as_ref())
-    );
-    match cards_line(v) {
+pub fn footer(locale: Locale, v: &Verdict<Validated>) -> String {
+    let m = catalog::messages(locale);
+    let meta = (m.footer_meta)(v.confidence(), &cr_date(v.cr_version().as_ref()));
+    match cards_line(m, v) {
         Some(cards) => format!("{cards}\n{meta}"),
         None => meta,
     }
@@ -354,15 +241,12 @@ pub fn footer(v: &Verdict<Validated>) -> String {
 pub const CARDS_LINE_LIMIT: usize = 300;
 
 /// `Cards: A · B`, or `None` when the question named no card.
-fn cards_line(v: &Verdict<Validated>) -> Option<String> {
+fn cards_line(m: &Messages, v: &Verdict<Validated>) -> Option<String> {
     if v.cards().is_empty() {
         return None;
     }
     let names: Vec<&str> = v.cards().iter().map(|c| c.name.as_str()).collect();
-    Some(fit(
-        &format!("Cards: {}", names.join(" · ")),
-        CARDS_LINE_LIMIT,
-    ))
+    Some(fit(&(m.cards_line)(&names.join(" · ")), CARDS_LINE_LIMIT))
 }
 
 /// One compact citation line: `[702.19b](…rule url…) “quote”`. Rule and card
@@ -376,7 +260,13 @@ fn cards_line(v: &Verdict<Validated>) -> Option<String> {
 /// [`CITATION_LINE_LIMIT`] once its symbols are emoji, which is what Discord
 /// counts. [`fit_lines`] then fits the lines to the embed.
 #[must_use]
-pub fn citation_line(c: &Citation, ctx: Option<&Context>, symbols: &SymbolTable) -> Rendered {
+pub fn citation_line(
+    locale: Locale,
+    c: &Citation,
+    ctx: Option<&Context>,
+    symbols: &SymbolTable,
+) -> Rendered {
+    let m = catalog::messages(locale);
     let quote = fit(&collapse_whitespace(c.quote()), QUOTE_LIMIT);
     let card_name = |id: CardId| ctx.and_then(|x| x.card(id)).map(|card| card.name.clone());
     let prefix = match c {
@@ -388,22 +278,16 @@ pub fn citation_line(c: &Citation, ctx: Option<&Context>, symbols: &SymbolTable)
                 .and_then(|x| x.ruling(*card, ruling))
                 .map(|r| format!(" ({})", r.published_at))
                 .unwrap_or_default();
-            let label = match card_name(*card) {
-                Some(name) => format!("Ruling{date} — {name}"),
-                None => format!("Scryfall ruling{date}"),
-            };
+            let label = (m.ruling_label)(&date, card_name(*card).as_deref());
             format!("[{label}]({}) “", scryfall_url(*card))
         }
-        Citation::PriorCall { .. } => "[prior call] “".to_owned(),
+        Citation::PriorCall { .. } => format!("[{}] “", m.prior_call_label),
         Citation::OracleText { card, face, .. } => {
-            let face_note = match face {
-                0 => String::new(),
-                n => format!(", face {}", n.saturating_add(1)),
+            let face = match face {
+                0 => None,
+                n => Some(usize::try_from(*n).map_or(usize::MAX, |n| n.saturating_add(1))),
             };
-            let label = match card_name(*card) {
-                Some(name) => format!("Oracle text{face_note} — {name}"),
-                None => format!("Oracle text{face_note}"),
-            };
+            let label = (m.oracle_label)(face, card_name(*card).as_deref());
             format!("[{label}]({}) “", scryfall_url(*card))
         }
     };
@@ -425,21 +309,19 @@ const CLOSING_QUOTE: &str = "”";
 /// be offered ([`PickPrompt::new`] refused the question): the choices as a
 /// list and how to ask again with one named.
 #[must_use]
-pub fn did_you_mean(spans: &NonEmpty<Ambiguous>) -> String {
+pub fn did_you_mean(locale: Locale, spans: &NonEmpty<Ambiguous>) -> String {
+    let m = catalog::messages(locale);
     let first = spans.first();
-    let mut content = format!(
-        "I'm not sure which card you mean by **{}**. Did you mean…?",
-        display_span(&first.query)
-    );
+    let mut content = (m.did_you_mean_head)(&display_span(&first.query));
     for (i, card) in first.candidates.iter().take(MAX_CHOICES).enumerate() {
         // Writing to a String cannot fail.
         let _ = write!(content, "\n{}. {}", i + 1, card.name);
     }
     let hidden = first.candidates.len().saturating_sub(MAX_CHOICES);
     if hidden > 0 {
-        let _ = write!(content, "\n…and {hidden} more.");
+        let _ = write!(content, "\n{}", (m.did_you_mean_more)(hidden));
     }
-    content.push_str("\nAsk again with the card you mean written as [[Full Card Name]].");
+    let _ = write!(content, "\n{}", m.did_you_mean_tail);
     fit(&content, CONTENT_LIMIT)
 }
 
@@ -470,6 +352,8 @@ pub fn did_you_mean(spans: &NonEmpty<Ambiguous>) -> String {
 /// message limit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickPrompt {
+    /// The language the prompt is written in, carried in its buttons' ids.
+    locale: Locale,
     asker: u64,
     question: String,
     /// The ambiguous span as shown, in [`display_span`] form.
@@ -483,14 +367,7 @@ pub struct PickPrompt {
 }
 
 const PROMPT_MENTION: &str = "<@";
-const PROMPT_ASKED: &str = "> asked: ";
-const PICK_HEAD: &str = "I'm not sure which card you mean by **";
-const PICK_ASK: &str = "**. Did you mean…?";
-const PICK_MORE: &str =
-    "(Showing the first five. If yours isn't here, write its full name as [[Full Card Name]].)";
-const PICK_LATER_ONE: &str = "After that I'll ask about one more name.";
-const PICK_LATER_HEAD: &str = "After that I'll ask about ";
-const PICK_LATER_TAIL: &str = " more names.";
+const PROMPT_CLOSE: &str = ">";
 /// Digits in the largest `u64` (a user id, a count).
 const U64_DIGITS: usize = 20;
 /// `\n5. `: a list line's newline and number ([`MAX_CHOICES`] has one digit).
@@ -503,24 +380,68 @@ pub const PICK_SPAN_LIMIT: usize = 100;
 /// far shorter; the few past it are cut with [`TRUNCATION_MARKER`], and the
 /// button still carries the name (to [`BUTTON_LABEL_LIMIT`]).
 pub const PICK_NAME_LIMIT: usize = 60;
-/// Most characters a [`PickPrompt`] spends before the question. Fixed text is
+/// Most characters a prompt in `m` spends before the question. Fixed text is
 /// counted in bytes, which is never less than characters.
-pub const PICK_PREFIX_MAX: usize = PROMPT_MENTION.len() + U64_DIGITS + PROMPT_ASKED.len();
-/// Most characters a [`PickPrompt`] spends after the question, blank line included.
-pub const PICK_BODY_MAX: usize = SEPARATOR.len()
-    + PICK_HEAD.len()
-    + PICK_SPAN_LIMIT
-    + PICK_ASK.len()
-    + MAX_CHOICES * (PICK_ITEM_HEAD + PICK_NAME_LIMIT)
-    + 1
-    + PICK_MORE.len()
-    + 1
-    + PICK_LATER_HEAD.len()
-    + U64_DIGITS
-    + PICK_LATER_TAIL.len();
-/// The longest question, in characters, that a [`PickPrompt`] always holds
-/// within [`CONTENT_LIMIT`]: `/judge`'s `max_length` is held to it.
-pub const PICK_QUESTION_LIMIT: usize = CONTENT_LIMIT - PICK_PREFIX_MAX - PICK_BODY_MAX;
+const fn prefix_max(m: &Messages) -> usize {
+    PROMPT_MENTION.len() + U64_DIGITS + PROMPT_CLOSE.len() + m.asked.len()
+}
+
+/// Most characters a [`PickPrompt`] in `m` spends after the question, blank
+/// line included.
+const fn pick_body_max(m: &Messages) -> usize {
+    SEPARATOR.len()
+        + m.pick_head.len()
+        + PICK_SPAN_LIMIT
+        + m.pick_ask.len()
+        + MAX_CHOICES * (PICK_ITEM_HEAD + PICK_NAME_LIMIT)
+        + 1
+        + m.pick_more.len()
+        + 1
+        + max(
+            m.pick_later_one.len(),
+            m.pick_later_head.len() + U64_DIGITS + m.pick_later_tail.len(),
+        )
+}
+
+const fn max(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
+}
+
+/// The longest question a [`PickPrompt`] in `m` always holds.
+const fn pick_question_limit(m: &Messages) -> usize {
+    CONTENT_LIMIT - prefix_max(m) - pick_body_max(m)
+}
+
+/// The longest question a [`RetryPrompt`] in `m` always holds.
+const fn retry_question_limit(m: &Messages) -> usize {
+    CONTENT_LIMIT - prefix_max(m) - SEPARATOR.len() - m.retry_body.len()
+}
+
+/// The least over every locale's catalog of the pick (`retry` false) or
+/// retry question limit. (A `const fn` cannot call through a function
+/// pointer, hence the flag.)
+const fn least(retry: bool) -> usize {
+    let mut least = usize::MAX;
+    let mut rest: &[Locale] = &Locale::ALL;
+    while let [locale, tail @ ..] = rest {
+        let m = catalog::messages(*locale);
+        let n = if retry {
+            retry_question_limit(m)
+        } else {
+            pick_question_limit(m)
+        };
+        if n < least {
+            least = n;
+        }
+        rest = tail;
+    }
+    least
+}
+
+/// The longest question, in characters, that a [`PickPrompt`] in any locale
+/// always holds within [`CONTENT_LIMIT`]: `/judge`'s `max_length` is held to
+/// it.
+pub const PICK_QUESTION_LIMIT: usize = least(false);
 
 /// A span as a [`PickPrompt`] shows it: whitespace collapsed to single
 /// spaces (so never a line break) and cut to [`PICK_SPAN_LIMIT`].
@@ -544,9 +465,15 @@ impl PickPrompt {
     /// Multilingual Plane; the caller then offers no buttons
     /// ([`did_you_mean`]) rather than cut the question.
     #[must_use]
-    pub fn new(asker: u64, question: &str, spans: &NonEmpty<Ambiguous>) -> Option<Self> {
+    pub fn new(
+        locale: Locale,
+        asker: u64,
+        question: &str,
+        spans: &NonEmpty<Ambiguous>,
+    ) -> Option<Self> {
         let first = spans.first();
         let p = Self {
+            locale,
             asker,
             question: question.to_owned(),
             span: display_span(&first.query),
@@ -568,6 +495,12 @@ impl PickPrompt {
         self.asker
     }
 
+    /// The language it is written in.
+    #[must_use]
+    pub const fn locale(&self) -> Locale {
+        self.locale
+    }
+
     /// The question, byte for byte as asked.
     #[must_use]
     pub fn question(&self) -> &str {
@@ -585,24 +518,25 @@ impl PickPrompt {
     /// The message content.
     #[must_use]
     pub fn render(&self) -> String {
+        let m = catalog::messages(self.locale);
         let mut out = format!(
-            "{PROMPT_MENTION}{}{PROMPT_ASKED}{}{SEPARATOR}{PICK_HEAD}{}{PICK_ASK}",
-            self.asker, self.question, self.span
+            "{PROMPT_MENTION}{}{PROMPT_CLOSE}{}{}{SEPARATOR}{}{}{}",
+            self.asker, m.asked, self.question, m.pick_head, self.span, m.pick_ask
         );
         for (i, name) in self.choices.iter().enumerate() {
             // Writing to a String cannot fail.
             let _ = write!(out, "\n{}. {name}", i + 1);
         }
         if self.more {
-            let _ = write!(out, "\n{PICK_MORE}");
+            let _ = write!(out, "\n{}", m.pick_more);
         }
         match self.later {
             0 => {}
             1 => {
-                let _ = write!(out, "\n{PICK_LATER_ONE}");
+                let _ = write!(out, "\n{}", m.pick_later_one);
             }
             n => {
-                let _ = write!(out, "\n{PICK_LATER_HEAD}{n}{PICK_LATER_TAIL}");
+                let _ = write!(out, "\n{}{n}{}", m.pick_later_head, m.pick_later_tail);
             }
         }
         out
@@ -613,12 +547,15 @@ impl PickPrompt {
         c.chars().count() <= CONTENT_LIMIT && c.encode_utf16().count() <= CONTENT_LIMIT
     }
 
-    /// Read a prompt back from a message's content: `None` unless rendering
-    /// what was read reproduces `content` exactly (and it fits the limit).
+    /// Read a prompt in `locale` (its buttons say which) back from a
+    /// message's content: `None` unless rendering what was read reproduces
+    /// `content` exactly (and it fits the limit).
     #[must_use]
-    pub fn parse(content: &str) -> Option<Self> {
+    pub fn parse(locale: Locale, content: &str) -> Option<Self> {
+        let m = catalog::messages(locale);
         let rest = content.strip_prefix(PROMPT_MENTION)?;
-        let (asker, rest) = rest.split_once(PROMPT_ASKED)?;
+        let (asker, rest) = rest.split_once(PROMPT_CLOSE)?;
+        let rest = rest.strip_prefix(m.asked)?;
         if asker.is_empty() || !asker.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
@@ -627,8 +564,8 @@ impl PickPrompt {
         let mut lines = body.split('\n').peekable();
         let span = lines
             .next()?
-            .strip_prefix(PICK_HEAD)?
-            .strip_suffix(PICK_ASK)?;
+            .strip_prefix(m.pick_head)?
+            .strip_suffix(m.pick_ask)?;
         let mut choices = Vec::new();
         while let Some(name) = lines.peek().and_then(|l| {
             let number = choices.len().saturating_add(1);
@@ -639,14 +576,14 @@ impl PickPrompt {
             choices.push(name.to_owned());
             lines.next();
         }
-        let more = lines.next_if_eq(&PICK_MORE).is_some();
+        let more = lines.next_if_eq(&m.pick_more).is_some();
         let later = match lines.next() {
             None => 0,
-            Some(PICK_LATER_ONE) => 1,
+            Some(t) if t == m.pick_later_one => 1,
             Some(t) => {
                 let n = t
-                    .strip_prefix(PICK_LATER_HEAD)?
-                    .strip_suffix(PICK_LATER_TAIL)?;
+                    .strip_prefix(m.pick_later_head)?
+                    .strip_suffix(m.pick_later_tail)?;
                 if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
                     return None;
                 }
@@ -657,6 +594,7 @@ impl PickPrompt {
             return None;
         }
         let p = Self {
+            locale,
             asker,
             question: question.to_owned(),
             span: span.to_owned(),
@@ -670,26 +608,9 @@ impl PickPrompt {
     }
 }
 
-/// What any command but `/help` and `/license` gets while the instance is
-/// migrating for a major upgrade ([`crate::maintenance`]).
-pub const MAINTENANCE: &str = "Judgebot is being upgraded and will be back in a minute or two. \
-Please try again shortly.";
-
-/// A Retry clicked while the upgrade is still migrating.
-pub const STILL_UPGRADING: &str =
-    "Still upgrading. Press **Retry** again in a minute; your question is kept on the message.";
-
-/// The Retry button's label.
-pub const RETRY_LABEL: &str = "Retry";
-
-/// The body of a [`RetryPrompt`].
-const RETRY_BODY: &str = "Judgebot is being upgraded and will be back in a minute or two. \
-Press **Retry** to ask this again.";
-
-/// The longest question, in characters, that a [`RetryPrompt`] always holds
-/// within [`CONTENT_LIMIT`].
-pub const RETRY_QUESTION_LIMIT: usize =
-    CONTENT_LIMIT - PICK_PREFIX_MAX - SEPARATOR.len() - RETRY_BODY.len();
+/// The longest question, in characters, that a [`RetryPrompt`] in any
+/// locale always holds within [`CONTENT_LIMIT`].
+pub const RETRY_QUESTION_LIMIT: usize = least(true);
 
 /// A `/judge` answered with the maintenance reply, carrying the whole
 /// question so its Retry button ([`super::ids::Retry`]) asks it again from
@@ -705,16 +626,19 @@ pub const RETRY_QUESTION_LIMIT: usize =
 /// recovers a question the bot did not write.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetryPrompt {
+    /// The language it is written in, carried in its button's id.
+    locale: Locale,
     asker: u64,
     question: String,
 }
 
 impl RetryPrompt {
     /// The reply for `question`, or `None` when it would not fit
-    /// [`CONTENT_LIMIT`] (the caller then sends [`MAINTENANCE`] alone).
+    /// [`CONTENT_LIMIT`] (the caller then sends the maintenance reply alone).
     #[must_use]
-    pub fn new(asker: u64, question: &str) -> Option<Self> {
+    pub fn new(locale: Locale, asker: u64, question: &str) -> Option<Self> {
         let p = Self {
+            locale,
             asker,
             question: question.to_owned(),
         };
@@ -736,10 +660,17 @@ impl RetryPrompt {
     /// The message content.
     #[must_use]
     pub fn render(&self) -> String {
+        let m = catalog::messages(self.locale);
         format!(
-            "{PROMPT_MENTION}{}{PROMPT_ASKED}{}{SEPARATOR}{RETRY_BODY}",
-            self.asker, self.question
+            "{PROMPT_MENTION}{}{PROMPT_CLOSE}{}{}{SEPARATOR}{}",
+            self.asker, m.asked, self.question, m.retry_body
         )
+    }
+
+    /// The language it is written in.
+    #[must_use]
+    pub const fn locale(&self) -> Locale {
+        self.locale
     }
 
     fn fits(&self) -> bool {
@@ -747,18 +678,21 @@ impl RetryPrompt {
         c.chars().count() <= CONTENT_LIMIT && c.encode_utf16().count() <= CONTENT_LIMIT
     }
 
-    /// Read a reply back from a message's content: `None` unless rendering
-    /// what was read reproduces `content` exactly.
+    /// Read a reply in `locale` back from a message's content: `None`
+    /// unless rendering what was read reproduces `content` exactly.
     #[must_use]
-    pub fn parse(content: &str) -> Option<Self> {
+    pub fn parse(locale: Locale, content: &str) -> Option<Self> {
+        let m = catalog::messages(locale);
         let rest = content.strip_prefix(PROMPT_MENTION)?;
-        let (asker, rest) = rest.split_once(PROMPT_ASKED)?;
+        let (asker, rest) = rest.split_once(PROMPT_CLOSE)?;
+        let rest = rest.strip_prefix(m.asked)?;
         if asker.is_empty() || !asker.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
         let asker: u64 = asker.parse().ok()?;
-        let question = rest.strip_suffix(RETRY_BODY)?.strip_suffix(SEPARATOR)?;
+        let question = rest.strip_suffix(m.retry_body)?.strip_suffix(SEPARATOR)?;
         let p = Self {
+            locale,
             asker,
             question: question.to_owned(),
         };
@@ -771,28 +705,23 @@ impl RetryPrompt {
 /// the buttonless "did you mean…?" ([`did_you_mean`]); the Discord adapter
 /// offers buttons through [`PickPrompt`] instead whenever it can.
 #[must_use]
-pub fn error(e: &JudgeError) -> String {
+pub fn error(locale: Locale, e: &JudgeError) -> String {
+    let m = catalog::messages(locale);
     match e {
-        JudgeError::AmbiguousCards(spans) => did_you_mean(spans),
+        JudgeError::AmbiguousCards(spans) => did_you_mean(locale, spans),
         JudgeError::CardsNotFound(names) => {
             let listed: Vec<String> = names.iter().map(|n| format!("**{n}**")).collect();
-            fit(
-                &format!(
-                    "I couldn't find a card called {}. Check the spelling, or write the full name as [[Full Card Name]].",
-                    listed.join(" or ")
-                ),
-                CONTENT_LIMIT,
-            )
+            fit(&(m.cards_not_found)(&listed.join(m.or)), CONTENT_LIMIT)
         }
-        JudgeError::OutOfScope(_) => OUT_OF_SCOPE.to_owned(),
-        JudgeError::Upstream(err) if is_spend_cap(err) => SPEND_CAP.to_owned(),
+        JudgeError::OutOfScope(_) => m.out_of_scope.to_owned(),
+        JudgeError::Upstream(err) if is_spend_cap(err) => m.spend_cap.to_owned(),
         JudgeError::BadCitation(_)
         | JudgeError::MalformedCitation(_)
         | JudgeError::EmptyVerdict(_)
         | JudgeError::UncitedRules(_)
         | JudgeError::ToolMisuse(_)
         | JudgeError::LlmRefused
-        | JudgeError::Upstream(_) => FAILED.to_owned(),
+        | JudgeError::Upstream(_) => m.failed.to_owned(),
     }
 }
 
@@ -803,12 +732,8 @@ fn is_spend_cap(err: &anyhow::Error) -> bool {
 
 /// Label of a rating button.
 #[must_use]
-pub const fn rating_label(score: Score) -> &'static str {
-    match score {
-        Score::Incorrect => "Incorrect",
-        Score::Partial => "Partially correct",
-        Score::Correct => "Correct",
-    }
+pub fn rating_label(locale: Locale, score: Score) -> &'static str {
+    (catalog::messages(locale).rating_label)(score)
 }
 
 /// Ephemeral acknowledgement of a rating. An *Incorrect* one also says where
@@ -816,25 +741,22 @@ pub const fn rating_label(score: Score) -> &'static str {
 /// source is on GitHub, through that repository's wrong-ruling issue form.
 #[must_use]
 pub fn rated(
+    locale: Locale,
     score: Score,
     is_judge: bool,
     offer: &SourceOffer,
     operator: &DiscordOperator,
 ) -> String {
-    let who = if is_judge { " as a judge ruling" } else { "" };
-    let mut out = format!(
-        "Recorded your rating{who}: {}. Rating again replaces it.",
-        rating_label(score)
-    );
+    let m = catalog::messages(locale);
+    let mut out = (m.rated)(rating_label(locale, score), is_judge);
     if matches!(score, Score::Incorrect) {
         let _ = write!(
             out,
-            "\n\nIf the ruling is wrong, tell `@{}`, who runs this bot, what you asked and what \
-the right answer is.",
-            operator.username()
+            "\n\n{}",
+            (m.report_wrong)(operator.username().as_ref())
         );
         if let Some(url) = report_url(offer) {
-            let _ = write!(out, " Or [report it to the project](<{url}>).");
+            out.push_str(&(m.report_link)(&url));
         }
     }
     out
@@ -870,29 +792,8 @@ pub fn report_url(offer: &SourceOffer) -> Option<String> {
 
 /// Refusal of a `/judge` past the per-user allowance.
 #[must_use]
-pub fn cooling_down(limit: UserLimit, wait: Duration) -> String {
-    format!(
-        "You've asked {} questions in the last {}, which is this bot's limit per person. Try \
-again in {}. `/card` and `/rule` lookups are not limited.",
-        limit.max,
-        span(limit.window),
-        span(wait)
-    )
-}
-
-/// A duration as a reader says it: `45 seconds`, `1 minute`, `10 minutes`.
-/// Rounded up, so "try again in" never sends someone back too early.
-fn span(d: Duration) -> String {
-    let secs = d
-        .as_secs()
-        .saturating_add(u64::from(d.subsec_nanos() > 0))
-        .max(1);
-    let (n, unit) = if secs < 60 {
-        (secs, "second")
-    } else {
-        (secs.div_ceil(60), "minute")
-    };
-    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+pub fn cooling_down(locale: Locale, limit: UserLimit, wait: Duration) -> String {
+    (catalog::messages(locale).cooling_down)(limit.max.get(), limit.window, wait)
 }
 
 /// Longest `/card` name accepted, in characters: a bound on what reaches the
@@ -900,14 +801,6 @@ fn span(d: Duration) -> String {
 pub const LOOKUP_INPUT_LIMIT: usize = 200;
 /// Discord's limit on an embed title, in characters.
 pub const EMBED_TITLE_LIMIT: usize = 256;
-/// `/card` with a blank or over-long name.
-pub const LOOKUP_BAD_NAME: &str = "Give me a card name or nickname (at most 200 characters).";
-/// `/rule` with something that is not a rule number.
-pub const LOOKUP_BAD_RULE: &str =
-    "That doesn't look like a rule number. Try `702.19`, `702.19b`, or `702` for a whole section.";
-/// A lookup the database could not serve.
-pub const LOOKUP_FAILED: &str = "Sorry, I couldn't look that up just now. Please try again.";
-
 /// An embed for a lookup: a linked title over a description.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lookup {
@@ -924,7 +817,8 @@ pub struct Lookup {
 /// `/card`: every face's cost, type line and Oracle text, then the rulings,
 /// newest first, as many whole ones as fit.
 #[must_use]
-pub fn card(card: &Card, rulings: &[Ruling], symbols: &SymbolTable) -> Lookup {
+pub fn card(locale: Locale, card: &Card, rulings: &[Ruling], symbols: &SymbolTable) -> Lookup {
+    let m = catalog::messages(locale);
     let mut lines: Vec<Rendered> = Vec::new();
     let many = card.faces.len() > 1;
     for face in &card.faces {
@@ -948,9 +842,9 @@ pub fn card(card: &Card, rulings: &[Ruling], symbols: &SymbolTable) -> Lookup {
         lines.push(Rendered::default());
     }
     if rulings.is_empty() {
-        lines.push(Rendered::plain("No rulings."));
+        lines.push(Rendered::plain(m.no_rulings));
     } else {
-        lines.push(Rendered::plain(format!("**Rulings ({})**", rulings.len())));
+        lines.push(Rendered::plain((m.rulings_heading)(rulings.len())));
         for r in rulings {
             let mut line = Rendered::plain(format!("`{}` ", r.published_at));
             line.append(Rendered::substitute(&collapse_whitespace(&r.text), symbols));
@@ -960,30 +854,28 @@ pub fn card(card: &Card, rulings: &[Ruling], symbols: &SymbolTable) -> Lookup {
     Lookup {
         title: fit(&card.name, EMBED_TITLE_LIMIT),
         url: scryfall_url(card.id),
-        description: fit_lines(&lines, EMBED_DESCRIPTION_LIMIT),
+        description: fit_lines(locale, &lines, EMBED_DESCRIPTION_LIMIT),
         footer: None,
     }
 }
 
 /// `/card` when the name could mean several cards.
 #[must_use]
-pub fn card_ambiguous(name: &str, candidates: &[&str]) -> String {
-    let mut out = format!("\"{}\" could be several cards:", fit(name, QUESTION_LIMIT));
+pub fn card_ambiguous(locale: Locale, name: &str, candidates: &[&str]) -> String {
+    let m = catalog::messages(locale);
+    let mut out = (m.card_ambiguous_head)(&fit(name, QUESTION_LIMIT));
     for c in candidates.iter().take(MAX_CHOICES * 2) {
         let _ = write!(out, "\n- {c}");
     }
-    out.push_str("\nAsk again with the full name.");
+    let _ = write!(out, "\n{}", m.card_ambiguous_tail);
     fit(&out, CONTENT_LIMIT)
 }
 
 /// `/card` when nothing matched.
 #[must_use]
-pub fn card_not_found(name: &str) -> String {
+pub fn card_not_found(locale: Locale, name: &str) -> String {
     fit(
-        &format!(
-            "I couldn't find a card called \"{}\". Check the spelling, or use the full name.",
-            fit(name, QUESTION_LIMIT)
-        ),
+        &(catalog::messages(locale).card_not_found)(&fit(name, QUESTION_LIMIT)),
         CONTENT_LIMIT,
     )
 }
@@ -992,7 +884,13 @@ pub fn card_not_found(name: &str) -> String {
 /// under the line they belong to, as many whole ones as fit. `None` when the
 /// number names nothing in the loaded CR.
 #[must_use]
-pub fn rules(asked: &RuleId, chunks: &[RuleChunk], symbols: &SymbolTable) -> Option<Lookup> {
+pub fn rules(
+    locale: Locale,
+    asked: &RuleId,
+    chunks: &[RuleChunk],
+    symbols: &SymbolTable,
+) -> Option<Lookup> {
+    let m = catalog::messages(locale);
     let first = chunks.first()?;
     let mut lines: Vec<Rendered> = Vec::new();
     for c in chunks {
@@ -1010,44 +908,37 @@ pub fn rules(asked: &RuleId, chunks: &[RuleChunk], symbols: &SymbolTable) -> Opt
         }
         lines.push(line);
     }
-    let heading = if first.heading.is_empty() {
-        format!("CR {asked}")
-    } else {
-        format!("CR {asked} — {}", first.heading)
-    };
+    let heading = (m.rule_title)(
+        asked.as_ref(),
+        Some(first.heading.as_str()).filter(|h| !h.is_empty()),
+    );
     // A few rules (205.3, 608.2) are longer than an embed on their own. Cut,
     // they would stop mid-sentence with nothing to say why, so say where the
     // rest is.
-    let budget = EMBED_DESCRIPTION_LIMIT - LONG_RULE_NOTE.chars().count();
+    let budget = EMBED_DESCRIPTION_LIMIT.saturating_sub(m.long_rule_note.chars().count());
     let cut = lines.first().is_some_and(|l| l.len() > budget);
-    let mut description = fit_lines(&lines, budget);
+    let mut description = fit_lines(locale, &lines, budget);
     if cut {
-        description.push_str(LONG_RULE_NOTE);
+        description.push_str(m.long_rule_note);
     }
     Some(Lookup {
         title: fit(&heading, EMBED_TITLE_LIMIT),
         url: rule_url(asked),
         description,
-        footer: Some(format!("CR {}", cr_date(first.cr_version.as_ref()))),
+        footer: Some((m.cr_label)(&cr_date(first.cr_version.as_ref()))),
     })
 }
 
-/// Appended when even the first rule had to be cut.
-const LONG_RULE_NOTE: &str = "\n\nThis rule is longer than Discord shows. Ask for one sub-rule (add its letter), or follow the title link.";
-
 /// `/rule` when the number names nothing.
 #[must_use]
-pub fn rule_not_found(id: &RuleId) -> String {
-    format!("There is no rule {id} in the Comprehensive Rules I have loaded.")
+pub fn rule_not_found(locale: Locale, id: &RuleId) -> String {
+    (catalog::messages(locale).rule_not_found)(id.as_ref())
 }
 
 /// Shown on the "did you mean…?" message while the pick is being judged.
 #[must_use]
-pub fn working(card: &str) -> String {
-    fit(
-        &format!("Got it: **{card}**. Working on it…"),
-        CONTENT_LIMIT,
-    )
+pub fn working(locale: Locale, card: &str) -> String {
+    fit(&(catalog::messages(locale).working)(card), CONTENT_LIMIT)
 }
 
 /// A button label: the card name, cut to [`BUTTON_LABEL_LIMIT`] chars.
@@ -1082,7 +973,8 @@ pub fn fit(text: &str, limit: usize) -> String {
     out
 }
 
-/// Characters held back for the "… and N more" note while lines remain.
+/// The least held back for the "… and N more" note while lines remain;
+/// [`fit_lines`] holds back more when the locale's note is longer.
 const NOTE_RESERVE: usize = 24;
 
 /// Join `lines` with newlines, dropping whole trailing lines (rather than
@@ -1090,7 +982,11 @@ const NOTE_RESERVE: usize = 24;
 /// Lengths are counted as Discord counts them, so an emoji tag costs its full
 /// `<:mana_w:123…>` width here even though it shows as one symbol.
 #[must_use]
-pub fn fit_lines(lines: &[Rendered], limit: usize) -> String {
+pub fn fit_lines(locale: Locale, lines: &[Rendered], limit: usize) -> String {
+    let more = catalog::messages(locale).more_lines;
+    // At most every line is dropped, and the note never shrinks as the
+    // count grows, so this holds room for whatever count it ends up saying.
+    let note_reserve = NOTE_RESERVE.max(more(lines.len()).chars().count().saturating_add(1));
     let mut out = Rendered::default();
     let mut shown = 0usize;
     for line in lines {
@@ -1100,7 +996,7 @@ pub fn fit_lines(lines: &[Rendered], limit: usize) -> String {
             .saturating_add(line.len());
         // Leave room for the "… and N more" note if this is not the last line.
         let reserve = if shown.saturating_add(1) < lines.len() {
-            NOTE_RESERVE
+            note_reserve
         } else {
             0
         };
@@ -1119,17 +1015,10 @@ pub fn fit_lines(lines: &[Rendered], limit: usize) -> String {
             // Even the first line did not fit: cut it rather than show nothing.
             return lines.first().map(|l| l.fit(limit)).unwrap_or_default();
         }
-        out.push_str(&format!("\n… and {dropped} more"));
+        out.push_str("\n");
+        out.push_str(&more(dropped));
     }
     out.fit(limit)
-}
-
-const fn confidence_label(c: Confidence) -> &'static str {
-    match c {
-        Confidence::Low => "Low",
-        Confidence::Medium => "Medium",
-        Confidence::High => "High",
-    }
 }
 
 /// `20260819` → `2026-08-19` (the `CrVersion` invariant guarantees eight ASCII digits).
@@ -1147,6 +1036,13 @@ fn collapse_whitespace(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use judge_core::Confidence;
+
+    const FAILED: &str = catalog::EN.failed;
+    const OUT_OF_SCOPE: &str = catalog::EN.out_of_scope;
+    const SPEND_CAP: &str = catalog::EN.spend_cap;
+    const PICK_LATER_ONE: &str = catalog::EN.pick_later_one;
+    const PICK_MORE: &str = catalog::EN.pick_more;
     use judge_core::{
         AnswerableSource, Card, CardId, Category, Context, CrVersion, EmptyVerdict, Face, Layout,
         RuleChunk, RuleId, Source, ruling_key,
@@ -1214,7 +1110,7 @@ mod tests {
         )
         .validate(&ctx, AnswerableSource::Cr)?;
         assert_eq!(
-            footer(&v),
+            footer(Locale::En, &v),
             "Cards: Ragavan, Nimble Pilferer · Blood Moon\nConfidence: High · CR 2026-08-19"
         );
         let many = Context {
@@ -1233,7 +1129,7 @@ mod tests {
             Category::Combat,
         )
         .validate(&many, AnswerableSource::Cr)?;
-        let f = footer(&v);
+        let f = footer(Locale::En, &v);
         let first = f.lines().next().unwrap_or_default();
         assert_eq!(first.chars().count(), CARDS_LINE_LIMIT, "{f}");
         assert!(f.ends_with("\nConfidence: High · CR 2026-08-19"), "{f}");
@@ -1282,10 +1178,10 @@ mod tests {
 
     #[test]
     fn header_mentions_the_asker_and_truncates_the_question() {
-        let h = header(ASKER, "Does  trample\nwork here?");
+        let h = header(Locale::En, ASKER, "Does  trample\nwork here?");
         assert_eq!(h, "<@1000000000000000042> asked: Does trample work here?");
         let long = "why ".repeat(200);
-        let h = header(ASKER, &long);
+        let h = header(Locale::En, ASKER, &long);
         assert!(h.starts_with("<@1000000000000000042> asked: why why"));
         assert!(h.ends_with(TRUNCATION_MARKER), "{h}");
         assert!(
@@ -1297,10 +1193,11 @@ mod tests {
 
     #[test]
     fn with_header_prefixes_and_keeps_the_content_budget() {
-        let c = with_header(ASKER, "short?", "The answer.", &no_symbols());
+        let c = with_header(Locale::En, ASKER, "short?", "The answer.", &no_symbols());
         assert_eq!(c, "<@1000000000000000042> asked: short?\n\nThe answer.");
         // An over-long body is cut from the end; the header survives intact.
         let c = with_header(
+            Locale::En,
             ASKER,
             &"q ".repeat(400),
             &"body ".repeat(1000),
@@ -1316,6 +1213,7 @@ mod tests {
     fn answer_respects_both_limits() -> Res {
         let v = validated(&"word ".repeat(1000), 60)?;
         let a = answer(
+            Locale::En,
             &v,
             None,
             ASKER,
@@ -1344,7 +1242,7 @@ mod tests {
     #[test]
     fn short_answer_follows_the_header_with_one_citation_per_line() -> Res {
         let v = validated(LONG_ENOUGH, 2)?;
-        let a = answer(&v, None, ASKER, "trample?", &no_symbols());
+        let a = answer(Locale::En, &v, None, ASKER, "trample?", &no_symbols());
         assert_eq!(
             a.content,
             format!("<@1000000000000000042> asked: trample?\n\n{LONG_ENOUGH}")
@@ -1391,19 +1289,19 @@ mod tests {
             quote: judge_core::Quote::try_new("a  ruling\nwith   space")?,
         };
         assert_eq!(
-            citation_line(&r, Some(&ctx), &no_symbols()).to_string(),
+            citation_line(Locale::En, &r, Some(&ctx), &no_symbols()).to_string(),
             format!("[Ruling — Dark Confidant]({url}) “a ruling with space”")
         );
         // Without a context the link still works; only the name is missing.
         assert_eq!(
-            citation_line(&r, None, &no_symbols()).to_string(),
+            citation_line(Locale::En, &r, None, &no_symbols()).to_string(),
             format!("[Scryfall ruling]({url}) “a ruling with space”")
         );
         let p = Citation::PriorCall {
             id: judge_core::CallId::new(Uuid::from_u128(2)),
             quote: judge_core::Quote::try_new("x".repeat(300))?,
         };
-        let line = citation_line(&p, Some(&ctx), &no_symbols()).to_string();
+        let line = citation_line(Locale::En, &p, Some(&ctx), &no_symbols()).to_string();
         assert!(line.starts_with("[prior call] “"));
         assert!(line.chars().count() <= QUOTE_LIMIT + 20);
         assert!(line.contains(TRUNCATION_MARKER));
@@ -1413,11 +1311,11 @@ mod tests {
             quote: judge_core::Quote::try_new("Flying")?,
         };
         assert_eq!(
-            citation_line(&o, Some(&ctx), &no_symbols()).to_string(),
+            citation_line(Locale::En, &o, Some(&ctx), &no_symbols()).to_string(),
             format!("[Oracle text — Dark Confidant]({url}) “Flying”")
         );
         assert_eq!(
-            citation_line(&o, None, &no_symbols()).to_string(),
+            citation_line(Locale::En, &o, None, &no_symbols()).to_string(),
             format!("[Oracle text]({url}) “Flying”")
         );
         let back = Citation::OracleText {
@@ -1426,7 +1324,7 @@ mod tests {
             quote: judge_core::Quote::try_new("Insectile")?,
         };
         assert_eq!(
-            citation_line(&back, Some(&ctx), &no_symbols()).to_string(),
+            citation_line(Locale::En, &back, Some(&ctx), &no_symbols()).to_string(),
             format!("[Oracle text, face 2 — Dark Confidant]({url}) “Insectile”")
         );
         Ok(())
@@ -1445,6 +1343,7 @@ mod tests {
         let lines: Vec<Rendered> = (0..40)
             .map(|i| {
                 citation_line(
+                    Locale::En,
                     &Citation::ScryfallRuling {
                         card: id,
                         ruling: ruling_key("2020-01-01", &i.to_string()),
@@ -1456,7 +1355,7 @@ mod tests {
             })
             .collect();
         assert!(lines.iter().all(|l| l.len() > 300));
-        let out = fit_lines(&lines, EMBED_DESCRIPTION_LIMIT);
+        let out = fit_lines(Locale::En, &lines, EMBED_DESCRIPTION_LIMIT);
         assert!(
             out.chars().count() <= EMBED_DESCRIPTION_LIMIT,
             "{}",
@@ -1472,7 +1371,7 @@ mod tests {
             .map(|i| format!("line {i} {}", "x".repeat(30)))
             .collect();
         let lines: Vec<Rendered> = texts.iter().map(Rendered::plain).collect();
-        let out = fit_lines(&lines, 120);
+        let out = fit_lines(Locale::En, &lines, 120);
         assert!(out.chars().count() <= 120, "{out}");
         assert!(
             out.lines()
@@ -1480,10 +1379,10 @@ mod tests {
                 .is_some_and(|l| l == texts.first().map_or("", String::as_str))
         );
         assert!(out.ends_with(" more"), "{out}");
-        assert_eq!(fit_lines(&[], 100), "");
+        assert_eq!(fit_lines(Locale::En, &[], 100), "");
         // One over-long line is cut rather than dropped.
         let one = vec![Rendered::plain("y".repeat(500))];
-        let out = fit_lines(&one, 50);
+        let out = fit_lines(Locale::En, &one, 50);
         assert_eq!(out.chars().count(), 50);
     }
 
@@ -1499,6 +1398,7 @@ mod tests {
             ..Context::default()
         };
         let line = citation_line(
+            Locale::En,
             &Citation::OracleText {
                 card: id,
                 face: 0,
@@ -1514,7 +1414,14 @@ mod tests {
         );
         // A symbol with no emoji uploaded stays as Scryfall wrote it.
         let v = validated("Tap it for {G}, not {W}: the elf makes green mana only.", 1)?;
-        let a = answer(&v, Some(&ctx), ASKER, "how much for {G}?", &symbols);
+        let a = answer(
+            Locale::En,
+            &v,
+            Some(&ctx),
+            ASKER,
+            "how much for {G}?",
+            &symbols,
+        );
         assert!(
             a.content
                 .contains(&format!("Tap it for <:mana_g:{GREEN_ID}>, not {{W}}:")),
@@ -1540,7 +1447,7 @@ mod tests {
         // Every length up to and past what QUESTION_LIMIT allows.
         for repeats in [1usize, 40, 68, 100, 400] {
             let question = "{T}".repeat(repeats);
-            let a = answer(&v, None, ASKER, &question, &symbols);
+            let a = answer(Locale::En, &v, None, ASKER, &question, &symbols);
             assert!(
                 a.content.chars().count() <= CONTENT_LIMIT,
                 "{repeats}: {} chars",
@@ -1575,16 +1482,16 @@ mod tests {
             face: 0,
             quote: judge_core::Quote::try_new("{T}".repeat(300))?,
         };
-        let line = citation_line(&heavy, None, &symbols);
+        let line = citation_line(Locale::En, &heavy, None, &symbols);
         assert!(
             line.len() <= CITATION_LINE_LIMIT,
             "one line took {} of {EMBED_DESCRIPTION_LIMIT}",
             line.len()
         );
         let lines: Vec<Rendered> = (0..6)
-            .map(|_| citation_line(&heavy, None, &symbols))
+            .map(|_| citation_line(Locale::En, &heavy, None, &symbols))
             .collect();
-        let out = fit_lines(&lines, EMBED_DESCRIPTION_LIMIT);
+        let out = fit_lines(Locale::En, &lines, EMBED_DESCRIPTION_LIMIT);
         assert!(out.chars().count() <= EMBED_DESCRIPTION_LIMIT);
         assert!(
             out.lines().count() >= 4,
@@ -1600,7 +1507,7 @@ mod tests {
         // the limit while the sent message would not be.
         let symbols = SymbolTable::new([("mana_t".to_owned(), TAP_ID)]);
         let v = validated(&"{T}".repeat(600), 1)?;
-        let a = answer(&v, None, ASKER, "symbols?", &symbols);
+        let a = answer(Locale::En, &v, None, ASKER, "symbols?", &symbols);
         assert!(
             a.content.chars().count() <= CONTENT_LIMIT,
             "{}",
@@ -1649,23 +1556,23 @@ mod tests {
             ambiguous("urza", &seven),
             vec![ambiguous("bob", &["Dark Confidant", "Bob's Burgers"])],
         ));
-        let text = did_you_mean(&spans);
+        let text = did_you_mean(Locale::En, &spans);
         assert!(text.contains("**urza**") && text.contains("Did you mean"));
         assert!(text.contains("\n1. Urza's Mine"), "{text}");
         assert!(text.contains("5. Urza's Bauble") && !text.contains("Urza's Rage"));
         assert!(text.contains("…and 2 more."), "{text}");
         assert!(text.ends_with("written as [[Full Card Name]]."), "{text}");
         // error() renders the same text for the variant.
-        assert_eq!(error(&JudgeError::AmbiguousCards(spans)), text);
+        assert_eq!(error(Locale::En, &JudgeError::AmbiguousCards(spans)), text);
         let one = NonEmpty::new(ambiguous(
             "bruna",
             &["Bruna, the Fading Light", "Bruna, Light of Alabaster"],
         ));
-        assert!(!did_you_mean(&one).contains("more."));
+        assert!(!did_you_mean(Locale::En, &one).contains("more."));
     }
 
     fn prompt_for(question: &str, spans: &NonEmpty<Ambiguous>) -> Option<PickPrompt> {
-        PickPrompt::new(ASKER, question, spans)
+        PickPrompt::new(Locale::En, ASKER, question, spans)
     }
 
     #[test]
@@ -1758,7 +1665,7 @@ mod tests {
                 let Some(p) = p else { continue };
                 let content = p.render();
                 assert!(content.chars().count() <= CONTENT_LIMIT, "{q:?}");
-                let back = PickPrompt::parse(&content);
+                let back = PickPrompt::parse(Locale::En, &content);
                 assert_eq!(back.as_ref(), Some(&p), "{q:?}");
                 assert_eq!(back.as_ref().map(PickPrompt::question), Some(q));
                 assert_eq!(back.as_ref().map(PickPrompt::asker), Some(ASKER));
@@ -1776,7 +1683,12 @@ mod tests {
             ambiguous(&span, &seven),
             vec![ambiguous("x", &["C", "D"]); 3],
         ));
-        let mut p = PickPrompt::new(u64::MAX, &"q".repeat(PICK_QUESTION_LIMIT), &spans);
+        let mut p = PickPrompt::new(
+            Locale::En,
+            u64::MAX,
+            &"q".repeat(PICK_QUESTION_LIMIT),
+            &spans,
+        );
         if let Some(p) = p.as_mut() {
             p.later = usize::MAX;
         }
@@ -1790,10 +1702,10 @@ mod tests {
         );
         // Characters outside the BMP count twice in UTF-16: refused, not cut.
         let cards = "🃏".repeat(PICK_QUESTION_LIMIT);
-        assert_eq!(PickPrompt::new(ASKER, &cards, &spans), None);
+        assert_eq!(PickPrompt::new(Locale::En, ASKER, &cards, &spans), None);
         // So is anything past the content limit.
         assert_eq!(
-            PickPrompt::new(ASKER, &"q".repeat(CONTENT_LIMIT), &spans),
+            PickPrompt::new(Locale::En, ASKER, &"q".repeat(CONTENT_LIMIT), &spans),
             None
         );
     }
@@ -1804,14 +1716,26 @@ mod tests {
         let Some(good) = prompt_for("does bob die?", &spans).map(|p| p.render()) else {
             unreachable!("a short question fits");
         };
-        assert!(PickPrompt::parse(&good).is_some());
+        assert!(PickPrompt::parse(Locale::En, &good).is_some());
         let tampered = [
             String::new(),
             // What the message says while the pick is judged, and an answer.
-            working("Dark Confidant"),
-            with_header(ASKER, "does bob die?", "Yes, it dies.", &no_symbols()),
+            working(Locale::En, "Dark Confidant"),
+            with_header(
+                Locale::En,
+                ASKER,
+                "does bob die?",
+                "Yes, it dies.",
+                &no_symbols(),
+            ),
             // The buttonless reply.
-            with_header(ASKER, "does bob die?", &did_you_mean(&spans), &no_symbols()),
+            with_header(
+                Locale::En,
+                ASKER,
+                "does bob die?",
+                &did_you_mean(Locale::En, &spans),
+                &no_symbols(),
+            ),
             good.replacen("<@", "<@!", 1),
             good.replacen("<@1", "<@a", 1),
             good.replacen("<@1000000000000000042>", "<@>", 1),
@@ -1838,7 +1762,7 @@ mod tests {
             good.replace("\n\n", " "),
         ];
         for t in &tampered {
-            assert_eq!(PickPrompt::parse(t), None, "{t:?}");
+            assert_eq!(PickPrompt::parse(Locale::En, t), None, "{t:?}");
         }
         // A second prompt appended after a blank line is a different, valid
         // prompt whose question is everything before the last blank line.
@@ -1847,7 +1771,7 @@ mod tests {
             good.split_once("\n\n").map_or("", |(_, b)| b)
         );
         assert_eq!(
-            PickPrompt::parse(&nested).map(|p| p.question().to_owned()),
+            PickPrompt::parse(Locale::En, &nested).map(|p| p.question().to_owned()),
             Some(good.clone())
         );
     }
@@ -1858,33 +1782,40 @@ mod tests {
             "Xyzzy".to_owned(),
             vec!["Plugh".to_owned()],
         )));
-        let m = error(&not_found);
+        let m = error(Locale::En, &not_found);
         assert!(
             m.contains("**Xyzzy**") && m.contains("**Plugh**") && m.contains("[[Full Card Name]]"),
             "{m}"
         );
 
         for s in [Source::Tournament, Source::OutOfScope] {
-            assert_eq!(error(&JudgeError::OutOfScope(s)), OUT_OF_SCOPE);
+            assert_eq!(error(Locale::En, &JudgeError::OutOfScope(s)), OUT_OF_SCOPE);
         }
         let bad = Citation::Rule {
             id: RuleId::try_new("702.19b".to_owned())?,
             quote: judge_core::Quote::try_new("nope")?,
         };
-        assert_eq!(error(&JudgeError::BadCitation(bad)), FAILED);
+        assert_eq!(error(Locale::En, &JudgeError::BadCitation(bad)), FAILED);
         assert_eq!(
-            error(&JudgeError::EmptyVerdict(EmptyVerdict::NoCitations)),
+            error(
+                Locale::En,
+                &JudgeError::EmptyVerdict(EmptyVerdict::NoCitations)
+            ),
             FAILED
         );
         assert_eq!(
-            error(&JudgeError::EmptyVerdict(EmptyVerdict::ShortAnswer {
-                chars: 3
-            })),
+            error(
+                Locale::En,
+                &JudgeError::EmptyVerdict(EmptyVerdict::ShortAnswer { chars: 3 })
+            ),
             FAILED
         );
-        assert_eq!(error(&JudgeError::LlmRefused), FAILED);
+        assert_eq!(error(Locale::En, &JudgeError::LlmRefused), FAILED);
         assert_eq!(
-            error(&JudgeError::Upstream(anyhow::anyhow!("db down"))),
+            error(
+                Locale::En,
+                &JudgeError::Upstream(anyhow::anyhow!("db down"))
+            ),
             FAILED
         );
         let cap = judge_llm::LlmError::SpendCapExceeded {
@@ -1892,27 +1823,37 @@ mod tests {
             cap: 5.0,
         };
         assert_eq!(
-            error(&JudgeError::Upstream(
-                anyhow::Error::new(cap).context("extract")
-            )),
+            error(
+                Locale::En,
+                &JudgeError::Upstream(anyhow::Error::new(cap).context("extract"))
+            ),
             SPEND_CAP
         );
         // Nothing internal leaks into the generic message.
-        assert!(!error(&JudgeError::Upstream(anyhow::anyhow!("secret detail"))).contains("secret"));
+        assert!(
+            !error(
+                Locale::En,
+                &JudgeError::Upstream(anyhow::anyhow!("secret detail"))
+            )
+            .contains("secret")
+        );
         Ok(())
     }
 
     #[test]
     fn labels() {
-        assert_eq!(rating_label(Score::Incorrect), "Incorrect");
-        assert_eq!(rating_label(Score::Partial), "Partially correct");
-        assert_eq!(rating_label(Score::Correct), "Correct");
+        assert_eq!(rating_label(Locale::En, Score::Incorrect), "Incorrect");
+        assert_eq!(
+            rating_label(Locale::En, Score::Partial),
+            "Partially correct"
+        );
+        assert_eq!(rating_label(Locale::En, Score::Correct), "Correct");
         assert_eq!(button_label("  Dark Confidant "), "Dark Confidant");
         let long = "Asmoranomardicadaistinaculdacar ".repeat(4);
         let l = button_label(&long);
         assert_eq!(l.chars().count(), BUTTON_LABEL_LIMIT);
         assert!(l.ends_with('…'));
-        assert!(working("Bob").contains("**Bob**"));
+        assert!(working(Locale::En, "Bob").contains("**Bob**"));
     }
 
     #[test]
@@ -1954,7 +1895,7 @@ mod info_tests {
             refreshed_secs_ago: Some(u64::MAX),
             last_refresh_failed: true,
         };
-        let parts = help(&offer, &operator, Some(&freshness));
+        let parts = help(Locale::En, &offer, &operator, Some(&freshness));
         for part in &parts {
             assert!(
                 !part.is_empty() && part.chars().count() <= CONTENT_LIMIT,
@@ -1979,7 +1920,7 @@ mod info_tests {
         ] {
             assert!(help.contains(needle), "{needle}\n{help}");
         }
-        assert_eq!(parts.last(), Some(&license(&offer, &operator)));
+        assert_eq!(parts.last(), Some(&license(Locale::En, &offer, &operator)));
         // Without a support address the username stands alone.
         let alone = judge_core::Operator::new(
             Some(judge_core::DiscordUsername::try_new("somejudge")?),
@@ -1987,12 +1928,16 @@ mod info_tests {
         )
         .for_discord()?;
         assert!(
-            contact(&alone).contains("`@somejudge` on Discord. "),
+            contact(Locale::En, &alone).contains("`@somejudge` on Discord. "),
             "{}",
-            contact(&alone)
+            contact(Locale::En, &alone)
         );
         // An unstamped build says so and links nothing for the commit.
-        let unknown = license(&SourceOffer::upstream(judge_core::Commit::Unknown), &alone);
+        let unknown = license(
+            Locale::En,
+            &SourceOffer::upstream(judge_core::Commit::Unknown),
+            &alone,
+        );
         assert!(unknown.contains("(commit unknown)"), "{unknown}");
         assert!(!unknown.contains("/commit/"), "{unknown}");
         Ok(())
@@ -2006,15 +1951,15 @@ mod info_tests {
             last_refresh_failed: false,
         };
         assert_eq!(
-            data(Some(&fresh)),
+            data(Locale::En, Some(&fresh)),
             "**Data.**\n- Comprehensive Rules: 2026-09-25\n- Last successful refresh: 3 hours ago"
         );
         assert_eq!(
-            data(Some(&Freshness::default())),
+            data(Locale::En, Some(&Freshness::default())),
             "**Data.**\n- Comprehensive Rules: none loaded\n- Last successful refresh: no refresh run recorded yet"
         );
         assert_eq!(
-            data(None),
+            data(Locale::En, None),
             "**Data.** Unknown: the database did not answer."
         );
         Ok(())
@@ -2023,7 +1968,7 @@ mod info_tests {
     #[test]
     fn forgotten_counts_in_plain_english() {
         let f = |ratings, calls, failures| {
-            forgotten(judge_core::Forgotten {
+            (catalog::EN.forgotten)(judge_core::Forgotten {
                 ratings,
                 failures,
                 calls,
@@ -2076,12 +2021,12 @@ mod lookup_tests {
     #[test]
     fn only_an_incorrect_rating_says_where_to_report_it() -> Res {
         let (offer, op) = (offer("https://github.com/someone/fork")?, operator()?);
-        assert!(rated(Score::Correct, true, &offer, &op).contains("judge"));
-        assert!(!rated(Score::Correct, false, &offer, &op).contains("judge"));
+        assert!(rated(Locale::En, Score::Correct, true, &offer, &op).contains("judge"));
+        assert!(!rated(Locale::En, Score::Correct, false, &offer, &op).contains("judge"));
         for score in [Score::Correct, Score::Partial] {
-            assert!(!rated(score, false, &offer, &op).contains("a_judge"));
+            assert!(!rated(Locale::En, score, false, &offer, &op).contains("a_judge"));
         }
-        let wrong = rated(Score::Incorrect, false, &offer, &op);
+        let wrong = rated(Locale::En, Score::Incorrect, false, &offer, &op);
         assert!(wrong.contains("`@a_judge`"), "{wrong}");
         assert!(
             wrong
@@ -2118,6 +2063,7 @@ mod lookup_tests {
         }
         // Without the form the operator is still named.
         let wrong = rated(
+            Locale::En,
             Score::Incorrect,
             false,
             &offer("https://gitlab.com/someone/fork")?,
@@ -2133,15 +2079,17 @@ mod lookup_tests {
             max: NonZeroU32::new(6).unwrap_or(NonZeroU32::MIN),
             window: Duration::from_mins(10),
         };
-        let text = cooling_down(limit, Duration::from_millis(61_500));
+        let text = cooling_down(Locale::En, limit, Duration::from_millis(61_500));
         assert!(
             text.contains("6 questions in the last 10 minutes"),
             "{text}"
         );
         assert!(text.contains("again in 2 minutes"), "{text}");
         assert!(text.contains("`/card`"));
-        assert!(cooling_down(limit, Duration::from_millis(200)).contains("in 1 second."));
-        assert!(cooling_down(limit, Duration::from_secs(60)).contains("in 1 minute."));
+        assert!(
+            cooling_down(Locale::En, limit, Duration::from_millis(200)).contains("in 1 second.")
+        );
+        assert!(cooling_down(Locale::En, limit, Duration::from_secs(60)).contains("in 1 minute."));
     }
 
     fn bolt() -> Card {
@@ -2179,6 +2127,7 @@ mod lookup_tests {
     fn a_card_shows_every_face_and_whole_rulings_within_the_embed() {
         let symbols = SymbolTable::new([("mana_r".to_owned(), 1_234_567_890_123_456_789)]);
         let few = card(
+            Locale::En,
             &bolt(),
             &[ruling("You divide the damage\nas you cast it.")],
             &symbols,
@@ -2203,7 +2152,7 @@ mod lookup_tests {
                 ))
             })
             .collect();
-        let full = card(&bolt(), &many, &symbols);
+        let full = card(Locale::En, &bolt(), &many, &symbols);
         assert!(full.description.chars().count() <= EMBED_DESCRIPTION_LIMIT);
         assert!(full.description.contains("**Rulings (200)**"));
         assert!(
@@ -2212,7 +2161,7 @@ mod lookup_tests {
         );
 
         assert!(
-            card(&bolt(), &[], &symbols)
+            card(Locale::En, &bolt(), &[], &symbols)
                 .description
                 .ends_with("No rulings.")
         );
@@ -2221,10 +2170,10 @@ mod lookup_tests {
     #[test]
     fn card_misses_echo_a_bounded_name_and_ping_nobody_by_construction() {
         let long = "x".repeat(5000);
-        assert!(card_not_found(&long).chars().count() <= CONTENT_LIMIT);
+        assert!(card_not_found(Locale::En, &long).chars().count() <= CONTENT_LIMIT);
         let names: Vec<String> = (0..50).map(|n| format!("Urza's Thing {n}")).collect();
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-        let text = card_ambiguous("urza", &refs);
+        let text = card_ambiguous(Locale::En, "urza", &refs);
         assert!(text.chars().count() <= CONTENT_LIMIT);
         assert_eq!(text.matches("\n- ").count(), MAX_CHOICES * 2);
     }
@@ -2253,7 +2202,7 @@ mod lookup_tests {
             "702.19b The controller assigns damage.",
             &["A 2/2."],
         )?];
-        let Some(view) = rules(&asked, &chunks, &SymbolTable::empty()) else {
+        let Some(view) = rules(Locale::En, &asked, &chunks, &SymbolTable::empty()) else {
             return Err("a rule with a chunk renders".into());
         };
         assert_eq!(view.title, "CR 702.19b — Trample");
@@ -2263,7 +2212,7 @@ mod lookup_tests {
                 .contains("702.19b The controller assigns damage.\n> Example: A 2/2.")
         );
         assert_eq!(view.footer.as_deref(), Some("CR 2026-08-19"));
-        assert!(rules(&asked, &[], &SymbolTable::empty()).is_none());
+        assert!(rules(Locale::En, &asked, &[], &SymbolTable::empty()).is_none());
 
         // A rule-level chunk carries its examples in the body, each quoted
         // under the line it belongs to.
@@ -2273,7 +2222,7 @@ mod lookup_tests {
             "903.3. Each deck has a commander.\nExample: Face down.\n903.3a Some cards can be.",
             &[],
         )?];
-        let Some(view) = rules(&asked, &chunks, &SymbolTable::empty()) else {
+        let Some(view) = rules(Locale::En, &asked, &chunks, &SymbolTable::empty()) else {
             return Err("a rule with a chunk renders".into());
         };
         assert!(view.description.contains(
@@ -2289,7 +2238,7 @@ mod lookup_tests {
         let chunks: Vec<RuleChunk> = (1..=60)
             .map(|n| chunk(&format!("702.{n}"), &format!("702.{n}. {body}"), &[]))
             .collect::<Result<_, _>>()?;
-        let Some(view) = rules(&asked, &chunks, &SymbolTable::empty()) else {
+        let Some(view) = rules(Locale::En, &asked, &chunks, &SymbolTable::empty()) else {
             return Err("a section renders".into());
         };
         assert!(view.description.chars().count() <= EMBED_DESCRIPTION_LIMIT);
@@ -2299,7 +2248,7 @@ mod lookup_tests {
         // One rule longer than the embed: cut, and told where the rest is.
         let asked = RuleId::try_new("205.3".to_owned())?;
         let long = [chunk("205.3", &"A very long rule. ".repeat(500), &[])?];
-        let Some(view) = rules(&asked, &long, &SymbolTable::empty()) else {
+        let Some(view) = rules(Locale::En, &asked, &long, &SymbolTable::empty()) else {
             return Err("a long rule renders".into());
         };
         assert!(view.description.chars().count() <= EMBED_DESCRIPTION_LIMIT);
@@ -2323,18 +2272,24 @@ mod retry_tests {
             "two\n\nparagraphs\n\nhere",
             "{W}{U} and [[Bolt]]",
         ] {
-            let p = RetryPrompt::new(42, q).map(|p| p.render());
-            let back = p.as_deref().and_then(RetryPrompt::parse);
+            let p = RetryPrompt::new(Locale::En, 42, q).map(|p| p.render());
+            let back = p.as_deref().and_then(|c| RetryPrompt::parse(Locale::En, c));
             assert_eq!(back.as_ref().map(RetryPrompt::question), Some(q), "{q:?}");
             assert_eq!(back.map(|b| b.asker()), Some(42));
         }
         let longest = "é".repeat(RETRY_QUESTION_LIMIT);
-        assert!(RetryPrompt::new(u64::MAX, &longest).is_some());
-        let content = RetryPrompt::new(1, "q")
+        assert!(RetryPrompt::new(Locale::En, u64::MAX, &longest).is_some());
+        let content = RetryPrompt::new(Locale::En, 1, "q")
             .map(|p| p.render())
             .unwrap_or_default();
-        assert_eq!(RetryPrompt::parse(&format!("{content} ")), None);
-        assert_eq!(RetryPrompt::parse(&content.replace("<@1>", "<@x>")), None);
-        assert_eq!(RetryPrompt::parse(MAINTENANCE), None);
+        assert_eq!(RetryPrompt::parse(Locale::En, &format!("{content} ")), None);
+        assert_eq!(
+            RetryPrompt::parse(Locale::En, &content.replace("<@1>", "<@x>")),
+            None
+        );
+        assert_eq!(
+            RetryPrompt::parse(Locale::En, catalog::EN.maintenance),
+            None
+        );
     }
 }

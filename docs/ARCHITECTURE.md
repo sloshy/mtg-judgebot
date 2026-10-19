@@ -321,6 +321,12 @@ Three interfaces share this pipeline through the same composition root
     interface, the Discord asker (id and username) and whether the call is private.
     `CallStore::persist` and `record_failure` store it; `Origin::history_scope` says
     which earlier calls of the thread a question reads.
+  - Every user-facing string comes from a per-language catalog (D35): core's
+    (`judge_core::locale`: the source offer, the contact, the freshness lines),
+    Discord's (`discord::catalog`), the API's (`judge_api::catalog`) and the web app's
+    (`web/src/messages.ts`). A request's `Locale` is the asker's language (Discord user,
+    then guild; the browser's), else `JUDGE_LOCALE`. Pick and Retry ids carry the
+    locale their message was written in.
   - Every interface runs a question through `judge_bot::run::run` (D33): judge, store
     the call or the failed call, and record the run in `judge_runs` with its charges.
     It returns the context the answer was judged from, the run's `Outcome` and cost.

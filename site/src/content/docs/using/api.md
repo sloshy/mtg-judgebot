@@ -29,6 +29,7 @@ curl -s http://localhost:8787/api/judge \
 | `question` | string, required | Not blank, at most 1000 characters. `[[Full Card Name]]` matches that exact card. |
 | `session_id` | UUID, optional | Questions sharing one share history, so a follow-up works. Generate it on the client. Without one the question stands alone. |
 | `pins` | array, optional | Resolved ambiguities, at most 8: `{"span": "<as the ambiguous reply gave it>", "name": "<the full name chosen>"}`, each string at most 200 characters. |
+| `locale` | string, optional | The language for the reply's `message`s and citation `label`s, as a language tag such as `en-GB`. When it names no language the instance speaks, the `Accept-Language` header decides, then `JUDGE_LOCALE`. `kind` codes are never translated. The answer itself is English. |
 
 An answer takes twenty to forty-five seconds. Every reply to a `POST` is JSON tagged by
 `kind`, including a request that cannot be read, which gets an `error` with a 4xx status
@@ -83,7 +84,8 @@ healthcheck and the tunnel's start condition use it.
 The source offer and the operator contact as JSON: `program`, `repository`, `commit`,
 `commit_url`, `dirty`, `license`, `license_name`, `license_url`, `copyright`,
 `operator_email`, `operator_discord` and a ready-to-show `notice`. The web app's footer is
-built from it.
+built from it. `locale` is the instance's language (`JUDGE_LOCALE`), which `notice` is
+written in, and `locales` every language its replies can be in.
 
 `freshness` says what the instance's data is:
 

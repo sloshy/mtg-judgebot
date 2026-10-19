@@ -16,19 +16,20 @@ use axum::{
     response::{IntoResponse as _, Response},
     routing::{get, post},
 };
-use judge_bot::discord::render;
 use judge_bot::ingest::runs::FreshnessReader;
 use judge_bot::maintenance::{self, Availability};
 use judge_bot::run;
 use judge_bot::shutdown::Shutdown;
 use judge_core::{
-    About, CallStore, Deps, Freshness, HistoryScope, NetworkOperator, Origin, Question, SourceOffer,
+    About, CallStore, Deps, Freshness, HistoryScope, Locale, NetworkOperator, Origin, Question,
+    SourceOffer,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
 use crate::{
+    catalog,
     config::{ApiConfig, ClientIpSource},
     interfaces::Interfaces,
     limit::RateLimiter,
@@ -121,6 +122,9 @@ pub struct App {
     data: Option<Arc<dyn DataStatus>>,
     /// Open, or closed for a major upgrade's migration.
     availability: Availability,
+    /// The instance's language (`JUDGE_LOCALE`), for a caller whose own has
+    /// no catalog.
+    locale: Locale,
 }
 
 impl std::fmt::Debug for App {
@@ -154,7 +158,16 @@ impl App {
             operator,
             data: None,
             availability: Availability::open(),
+            locale: Locale::default(),
         }
+    }
+
+    /// Answer a caller whose language has no catalog in `locale`
+    /// (`JUDGE_LOCALE`).
+    #[must_use]
+    pub const fn with_locale(mut self, locale: Locale) -> Self {
+        self.locale = locale;
+        self
     }
 
     /// Answer questions only while `availability` is open, and the
@@ -200,7 +213,13 @@ impl App {
 
     /// Run the pipeline for `q` and shape the reply. Mirrors the Discord
     /// adapter's flow (history → judge → persist) minus rating buttons.
-    async fn answer(&self, q: &Question, ip: IpAddr, slot: OwnedSemaphorePermit) -> ApiReply {
+    async fn answer(
+        &self,
+        locale: Locale,
+        q: &Question,
+        ip: IpAddr,
+        slot: OwnedSemaphorePermit,
+    ) -> ApiReply {
         let history = match self
             .store
             .history(&q.thread_id, self.history_len, HistoryScope::Public)
@@ -230,7 +249,7 @@ impl App {
             "POST /api/judge"
         );
         match ran.result {
-            Ok(v) => shape::answer(&v, ran.context.as_ref()),
+            Ok(v) => shape::answer(locale, &v, ran.context.as_ref()),
             Err(e) => {
                 // The line above classifies the outcome; a genuine failure also
                 // needs its cause, or the operator sees `outcome=upstream` and
@@ -240,7 +259,7 @@ impl App {
                 if e.is_operator_failure() {
                     tracing::warn!(thread = %q.thread_id, error = format_args!("{e:#}"), "judge failed");
                 }
-                shape::error(&e)
+                shape::error(locale, &e)
             }
         }
     }
@@ -391,7 +410,10 @@ async fn about(State(app): State<Arc<App>>) -> Json<About> {
         Some(d) => d.freshness().await,
         None => None,
     };
-    Json(app.offer.about(app.operator.operator(), freshness))
+    Json(
+        app.offer
+            .about(app.operator.operator(), freshness, app.locale),
+    )
 }
 
 /// The peer address, when the server was started with connect info (tests
@@ -442,7 +464,15 @@ async fn judge_route(
     headers: HeaderMap,
     JudgeBody(req): JudgeBody,
 ) -> Response {
-    if let Err(message) = shape::validate(&req) {
+    let locale = shape::request_locale(
+        req.locale.as_deref(),
+        headers
+            .get(axum::http::header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+        app.locale,
+    );
+    let m = catalog::messages(locale);
+    if let Err(message) = shape::validate(locale, &req) {
         return (StatusCode::BAD_REQUEST, Json(ApiReply::Error { message })).into_response();
     }
     // Before the rate limit: a maintenance reply costs the caller nothing.
@@ -454,7 +484,7 @@ async fn judge_route(
                 maintenance::RETRY_AFTER.as_secs().to_string(),
             )],
             Json(ApiReply::Maintenance {
-                message: maintenance::MESSAGE.to_owned(),
+                message: m.maintenance.to_owned(),
                 retry_after_secs: maintenance::RETRY_AFTER.as_secs(),
             }),
         )
@@ -466,7 +496,7 @@ async fn judge_route(
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ApiReply::RateLimited {
-                message: shape::RATE_LIMITED.to_owned(),
+                message: m.rate_limited.to_owned(),
             }),
         )
             .into_response();
@@ -475,7 +505,7 @@ async fn judge_route(
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ApiReply::Busy {
-                message: render::BUSY.to_owned(),
+                message: m.busy.to_owned(),
             }),
         )
             .into_response();
@@ -486,7 +516,7 @@ async fn judge_route(
         thread_id: format!("web:{session}"),
         text: shape::question_text(&req),
     };
-    (StatusCode::OK, Json(app.answer(&q, ip, slot).await)).into_response()
+    (StatusCode::OK, Json(app.answer(locale, &q, ip, slot).await)).into_response()
 }
 
 /// The address rate limiting buckets on: `CF-Connecting-IP` behind Cloudflare,

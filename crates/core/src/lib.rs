@@ -10,6 +10,7 @@ pub mod domain;
 pub mod error;
 pub mod freshness;
 pub mod judge;
+pub mod locale;
 pub mod operator;
 pub mod origin;
 pub mod ports;
@@ -26,6 +27,7 @@ pub use domain::*;
 pub use error::JudgeError;
 pub use freshness::Freshness;
 pub use judge::{Deps, Traced, judge, judge_traced};
+pub use locale::Locale;
 pub use operator::{
     DiscordOperator, DiscordUsername, MissingContact, NetworkOperator, Operator, SupportEmail,
 };

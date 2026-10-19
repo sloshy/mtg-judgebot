@@ -1,31 +1,29 @@
-import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  For,
+  Match,
+  onCleanup,
+  Show,
+  Switch,
+} from "solid-js";
 import { createStore } from "solid-js/store";
 import {
   type About,
   type ApiReply,
   askJudge,
-  crDate,
   fetchAbout,
   freshnessLine,
   type Pin,
   sessionId,
 } from "./api";
 import Markdown from "./Markdown";
+import { isLocale, type Locale, type Messages, messages, pickLocale } from "./messages";
 import Symbols from "./Symbols";
 
 const MAX_QUESTION_CHARS = 1000;
-
-/** Shown before the first question. Each is a common ruling with a short,
- * unambiguous answer, and between them they exercise a nickname ("bob",
- * "goyf"), bracketed names and the Commander rules. Choosing one fills the
- * box rather than asking: an answer costs the operator money and the visitor
- * one of their rate-limited questions, so sending it stays their decision. */
-const EXAMPLES = [
-  "I attack with a 5/5 that has trample and deathtouch and they block with a 4/4. How much damage can I trample over?",
-  "My opponent has bob and flips a goyf off the top. How much life does he lose?",
-  "I control [[Blood Artist]] and my opponent casts [[Wrath of God]]. Does Blood Artist trigger for the other creatures that die with it?",
-  "My commander is [[Kenrith, the Returned King]]. Can I run Nicol Bolas, the Ravager in the deck?",
-] as const;
 
 interface Entry {
   question: string;
@@ -33,9 +31,6 @@ interface Entry {
   /** null while the judge is thinking. */
   reply: ApiReply | null;
 }
-
-const CONFIDENCE_LABEL = { low: "Low", medium: "Medium", high: "High" } as const;
-const SOURCE_LABEL = { cr: "Comprehensive Rules", commander: "Commander rules" } as const;
 
 export default function App() {
   const [entries, setEntries] = createStore<Entry[]>([]);
@@ -56,6 +51,19 @@ export default function App() {
   const [now, setNow] = createSignal(Date.now());
   const tick = setInterval(() => setNow(Date.now()), 60_000);
   onCleanup(() => clearInterval(tick));
+  // The visitor's first browser language we have a catalog for; failing
+  // that, the instance's default once /api/about names one we have. Only
+  // a browser match is sent with a question, so one asked before
+  // /api/about answers still gets the instance's default from the server.
+  const browserLocale = pickLocale(navigator.languages, undefined);
+  const locale = createMemo<Locale>(() => {
+    const instance = about()?.locale;
+    return browserLocale ?? (isLocale(instance) ? instance : "en");
+  });
+  const m = createMemo(() => messages(locale()));
+  createEffect(() => {
+    document.documentElement.lang = locale();
+  });
 
   async function ask(question: string, pins: Pin[], index?: number) {
     const i = index ?? entries.length;
@@ -66,7 +74,7 @@ export default function App() {
     }
     setWaiting(true);
     try {
-      const reply = await askJudge(question, pins, session);
+      const reply = await askJudge(question, pins, session, browserLocale, m());
       setEntries(i, "reply", reply);
     } finally {
       setWaiting(false);
@@ -81,10 +89,13 @@ export default function App() {
     void ask(question, []);
   }
 
+  /** Choosing an example fills the box rather than asking: an answer costs
+   * the operator money and the visitor one of their rate-limited questions,
+   * so sending it stays their decision. */
   function tryExample(question: string) {
     // Never over something the visitor typed; one example may replace another.
     const typed = draft().trim();
-    if (!typed || EXAMPLES.some((e) => e === typed)) setDraft(question);
+    if (!typed || m().examples.some((e) => e === typed)) setDraft(question);
     box?.focus();
   }
 
@@ -107,11 +118,9 @@ export default function App() {
       <header>
         <h1>
           <img src="/favicon.png" alt="" width="32" height="32" />
-          MTG Judgebot
+          {m().title}
         </h1>
-        <p class="tagline">
-          Ask a Magic: The Gathering rules question; the answer cites the Comprehensive Rules.
-        </p>
+        <p class="tagline">{m().tagline}</p>
       </header>
 
       <For each={entries}>
@@ -120,14 +129,10 @@ export default function App() {
             <p class="question">
               <Symbols text={entry.question} />
             </p>
-            <Show
-              when={entry.reply}
-              fallback={
-                <p class="thinking">Consulting the rules… this usually takes 20–45 seconds.</p>
-              }
-            >
+            <Show when={entry.reply} fallback={<p class="thinking">{m().thinking}</p>}>
               {(reply) => (
                 <Reply
+                  m={m()}
                   reply={reply()}
                   onPick={(span, name) => pick(i(), span, name)}
                   onRetry={() => retry(i())}
@@ -141,9 +146,9 @@ export default function App() {
 
       <Show when={entries.length === 0}>
         <section class="examples" aria-labelledby="examples-title">
-          <h2 id="examples-title">Try one</h2>
+          <h2 id="examples-title">{m().examplesTitle}</h2>
           <ul>
-            <For each={EXAMPLES}>
+            <For each={m().examples}>
               {(question) => (
                 <li>
                   <button type="button" onClick={() => tryExample(question)}>
@@ -169,39 +174,39 @@ export default function App() {
           }}
           maxLength={MAX_QUESTION_CHARS}
           rows="3"
-          placeholder="Does lifelink stack? Use brackets like [[Full Card Name]] to avoid ambiguity."
+          placeholder={m().placeholder}
           disabled={waiting()}
         />
         <button type="submit" disabled={waiting() || !draft().trim()}>
-          {waiting() ? "Judging…" : "Ask the judge"}
+          {waiting() ? m().judging : m().ask}
         </button>
       </form>
 
       <footer>
+        <p>{m().notRated}</p>
         <p>
-          Answers here can't be rated. Answers are AI-generated; verify anything important with a
-          human judge.
+          {m().fanContent((label) => (
+            <a href="https://company.wizards.com/en/legal/fancontentpolicy">{label}</a>
+          ))}
         </p>
         <p>
-          MTG Judgebot is unofficial Fan Content permitted under the{" "}
-          <a href="https://company.wizards.com/en/legal/fancontentpolicy">Fan Content Policy</a>.
-          Not approved or endorsed by Wizards of the Coast. Portions of the materials used are
-          property of Wizards of the Coast. ©Wizards of the Coast LLC.
-        </p>
-        <p>
-          The Comprehensive Rules come from Wizards of the Coast. Card data, rulings and card
-          symbols come from <a href="https://scryfall.com">Scryfall</a>, which is not affiliated
-          with this project. Rule links go to the{" "}
-          <a href="https://yawgatog.com/resources/magic-rules/">Yawgatog</a> mirror.
+          {m().dataSources(
+            (label) => (
+              <a href="https://scryfall.com">{label}</a>
+            ),
+            (label) => (
+              <a href="https://yawgatog.com/resources/magic-rules/">{label}</a>
+            ),
+          )}
         </p>
         <Show when={about()}>
           {(a) => (
             <p>
-              {freshnessLine(a().freshness, Math.max(0, Math.floor((now() - aboutAt) / 1000)))}.
+              {freshnessLine(a().freshness, m(), Math.max(0, Math.floor((now() - aboutAt) / 1000)))}
             </p>
           )}
         </Show>
-        <SourceOffer about={about() ?? null} />
+        <SourceOffer m={m()} about={about() ?? null} />
       </footer>
     </main>
   );
@@ -212,58 +217,50 @@ export default function App() {
  * an operator who points JUDGE_SOURCE_URL at their fork is covered here
  * without touching the page; while they are missing the footer says so
  * instead of guessing a repository. */
-function SourceOffer(props: { about: About | null }) {
+function SourceOffer(props: { m: Messages; about: About | null }) {
   return (
     <p class="source-offer">
       <Show
         when={props.about}
-        fallback={
-          <>
-            Free software under the{" "}
-            <a href="https://www.gnu.org/licenses/agpl-3.0.html">
-              GNU Affero General Public License
-            </a>
-            . The source offer for this instance (repository and commit) comes from{" "}
-            <code>GET /api/about</code>, which has not answered.
-          </>
-        }
+        fallback={props.m.offerUnanswered(
+          (label) => <a href="https://www.gnu.org/licenses/agpl-3.0.html">{label}</a>,
+          <code>GET /api/about</code>,
+        )}
       >
         {(a) => (
           <>
-            {a().program} — {a().copyright}. Free software under the{" "}
-            <a href={a().license_url}>{a().license_name}</a>; anyone offering a modified version
-            over a network must offer its source under the same licence.{" "}
-            <a href={a().repository}>Source code of this instance</a>{" "}
-            <Show when={a().commit} fallback={<>(commit unknown)</>}>
-              {(commit) => (
-                <>
-                  (commit{" "}
-                  <Show when={a().commit_url} fallback={<code>{commit().slice(0, 7)}</code>}>
-                    {(url) => (
-                      <a href={url()}>
-                        <code>{commit().slice(0, 7)}</code>
-                      </a>
-                    )}
-                  </Show>
-                  <Show when={a().dirty}>, built with uncommitted changes</Show>)
-                </>
-              )}
-            </Show>
-            .
+            {props.m.offer({
+              program: a().program,
+              copyright: a().copyright,
+              license: <a href={a().license_url}>{a().license_name}</a>,
+              source: (label) => <a href={a().repository}>{label}</a>,
+              commit: (
+                <Show when={a().commit} fallback={props.m.commitUnknown}>
+                  {(commit) => (
+                    // A fragment, so the message is a tracked expression.
+                    <>
+                      {props.m.commitKnown(
+                        <Show when={a().commit_url} fallback={<code>{commit().slice(0, 7)}</code>}>
+                          {(url) => (
+                            <a href={url()}>
+                              <code>{commit().slice(0, 7)}</code>
+                            </a>
+                          )}
+                        </Show>,
+                        a().dirty,
+                      )}
+                    </>
+                  )}
+                </Show>
+              ),
+            })}
             <Show when={a().operator_email}>
               {(email) => (
                 <>
-                  {" "}
-                  For support, contact whoever runs this instance:{" "}
-                  <a href={`mailto:${email()}`}>{email()}</a>
-                  <Show when={a().operator_discord}>
-                    {(discord) => (
-                      <>
-                        , or <code>@{discord()}</code> on Discord
-                      </>
-                    )}
-                  </Show>
-                  .
+                  {props.m.support(
+                    <a href={`mailto:${email()}`}>{email()}</a>,
+                    a().operator_discord ? <code>@{a().operator_discord}</code> : null,
+                  )}
                 </>
               )}
             </Show>
@@ -275,6 +272,7 @@ function SourceOffer(props: { about: About | null }) {
 }
 
 function Reply(props: {
+  m: Messages;
   reply: ApiReply;
   onPick: (span: string, name: string) => void;
   onRetry: () => void;
@@ -305,9 +303,7 @@ function Reply(props: {
                           </a>
                         )}
                       </Show>{" "}
-                      <span class="cite-quote">
-                        “<Symbols text={c.quote} />”
-                      </span>
+                      <span class="cite-quote">{props.m.quoted(<Symbols text={c.quote} />)}</span>
                     </li>
                   )}
                 </For>
@@ -315,11 +311,11 @@ function Reply(props: {
             </Show>
             <Show when={r().cards.length > 0}>
               <p class="meta cards">
-                Cards:{" "}
+                {props.m.cardsLabel}{" "}
                 <For each={r().cards}>
                   {(card, j) => (
                     <>
-                      {j() > 0 && " · "}
+                      {j() > 0 && props.m.separator}
                       <a href={card.url} target="_blank" rel="noopener noreferrer">
                         {card.name}
                       </a>
@@ -329,8 +325,11 @@ function Reply(props: {
               </p>
             </Show>
             <p class="meta">
-              Confidence: {CONFIDENCE_LABEL[r().confidence]} · CR {crDate(r().cr_version)} ·{" "}
-              {SOURCE_LABEL[r().source]}
+              {props.m.answerMeta(
+                props.m.confidence[r().confidence],
+                props.m.crDate(r().cr_version),
+                props.m.source[r().source],
+              )}
             </p>
           </div>
         )}
@@ -342,10 +341,7 @@ function Reply(props: {
             <Show when={first()}>
               {(span) => (
                 <div class="ambiguous">
-                  <p>
-                    I'm not sure which card you mean by <strong>{span().query}</strong>. Did you
-                    mean…?
-                  </p>
+                  <p>{props.m.whichCard(<strong>{span().query}</strong>)}</p>
                   <div class="choices">
                     <For each={span().choices}>
                       {(name) => (
@@ -356,19 +352,15 @@ function Reply(props: {
                     </For>
                   </div>
                   <Show when={span().truncated}>
-                    <p class="hint">
-                      Showing the first five. If yours isn't here, re-ask writing its full name as
-                      [[Full Card Name]].
-                    </p>
+                    <p class="hint">{props.m.choicesTruncated}</p>
                   </Show>
                   <Show when={r().spans.length > 1}>
                     <p class="hint">
-                      After that I'll ask about{" "}
-                      {r()
-                        .spans.slice(1)
-                        .map((s) => s.query)
-                        .join(", ")}
-                      .
+                      {props.m.askAfter(
+                        r()
+                          .spans.slice(1)
+                          .map((s) => s.query),
+                      )}
                     </p>
                   </Show>
                 </div>
@@ -378,19 +370,14 @@ function Reply(props: {
         }}
       </Match>
       <Match when={props.reply.kind === "not_found" && props.reply}>
-        {(r) => (
-          <p class="notice">
-            I couldn't find a card called {r().names.join(" or ")}. Check the spelling, or write the
-            full name as [[Full Card Name]].
-          </p>
-        )}
+        {(r) => <p class="notice">{props.m.notFound(r().names)}</p>}
       </Match>
       <Match when={props.reply.kind === "maintenance" && props.reply}>
         {(r) => (
           <div class="maintenance">
             <p class="notice">{r().message}</p>
             <button type="button" onClick={() => props.onRetry()} disabled={props.waiting}>
-              Try again
+              {props.m.tryAgain}
             </button>
           </div>
         )}
