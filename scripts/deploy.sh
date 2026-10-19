@@ -72,6 +72,7 @@ case "$wait_secs" in '' | *[!0-9]*) die "DEPLOY_WAIT_SECS must be a number of se
 # The proxy mounts proxy/; without a file it can load it answers nothing
 # once the old container is gone. Checked before anything changes.
 [ -f proxy/Caddyfile ] || die "proxy/Caddyfile is missing: run this from a full checkout (git pull)"
+log "checking that proxy/Caddyfile loads"
 docker compose run --rm --no-deps -T proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 ||
   die "proxy/Caddyfile does not load: docker compose run --rm --no-deps proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
 
@@ -101,9 +102,16 @@ case "${#running[@]}" in
   *) die "${#running[@]} $service containers are running, so an earlier deploy did not finish; stop all but one (docker ps), then deploy again" ;;
 esac
 
-# What the new image's migrations are; it changes nothing.
+# What the new image's migrations are; it changes nothing. A one-off
+# container that reads the migration ledger: seconds, unless the database
+# does not answer. Its stdin is closed, and a container that outlives the
+# timeout is removed by name.
+probe_secs=120
+probe_name="judgebot-deploy-probe-$$"
 probe_log="$(mktemp)"
-upgrade="$(timeout 120 docker compose run --rm --no-deps -T "$service" ingest upgrade 2>"$probe_log" | sed -n 's/^upgrade: //p' | tail -n 1 || true)"
+log "asking the new image what its migrations are (at most ${probe_secs}s)"
+upgrade="$(timeout -k 10 "$probe_secs" docker compose run --rm --no-deps -T --name "$probe_name" "$service" ingest upgrade </dev/null 2>"$probe_log" | sed -n 's/^upgrade: //p' | tail -n 1 || true)"
+docker rm -f "$probe_name" >/dev/null 2>&1 || true
 case "$upgrade" in
   in-place | major | major-from-1.x)
     rm -f "$probe_log"
@@ -112,7 +120,7 @@ case "$upgrade" in
   *)
     tail -n 20 "$probe_log" >&2
     rm -f "$probe_log"
-    die "could not read what the new image's migrations are: docker compose run --rm --no-deps $service ingest upgrade"
+    die "could not read what the new image's migrations are within ${probe_secs}s (its log is above): docker compose run --rm --no-deps $service ingest upgrade"
     ;;
 esac
 
@@ -145,6 +153,17 @@ abandon() {
   exit 1
 }
 
+# A line every 30 s while a wait goes on, so a long one is not mistaken for
+# a hang: `progress <started> <what>`.
+progress() {
+  local waited=$((SECONDS - $1)) bucket
+  bucket=$((waited / 30))
+  if [ "$bucket" -gt 0 ] && [ "$bucket" != "${last_progress:-0}" ]; then
+    last_progress=$bucket
+    log "still waiting (${waited}s): $2"
+  fi
+}
+
 # The new container's state, or abandon when it has exited or restarted.
 inspect() {
   local state
@@ -158,9 +177,11 @@ inspect() {
 # Wait until the new container is healthy. A major upgrade's is reported
 # unhealthy while it waits and migrates, so it may pass through that state.
 wait_healthy() {
-  local deadline=$((SECONDS + wait_secs))
+  local started=$SECONDS deadline=$((SECONDS + wait_secs))
+  last_progress=0
   while :; do
     inspect
+    progress "$started" "the new container is $status, health $health"
     case "$health" in
       healthy | none) return 0 ;;
       starting) ;;
@@ -183,9 +204,11 @@ maintenance_up() {
 # With no listener (the gateway with no HTTP role) the healthcheck passes
 # whatever the process does, so a major upgrade's end is read from its log.
 wait_migrated() {
-  local deadline=$((SECONDS + wait_secs))
+  local started=$SECONDS deadline=$((SECONDS + wait_secs))
+  last_progress=0
   until docker logs "$new" 2>&1 | grep -q -e 'schema migrated; answering questions' -e 'migrated the schema; joining it'; do
     inspect
+    progress "$started" "the new container has not finished migrating (docker compose logs $service)"
     [ "$SECONDS" -lt "$deadline" ] || abandon "the new container did not migrate within ${wait_secs}s"
     sleep 2
   done
@@ -251,9 +274,12 @@ else
     # It answers with the maintenance reply and waits for the old one to go;
     # it is stopped once the new one does (or, with no listener, is healthy).
     log "a major upgrade: waiting for the new container to answer with its maintenance reply, then stopping the old one"
+    started=$SECONDS
+    last_progress=0
     deadline=$((SECONDS + wait_secs))
     until maintenance_up; do
       inspect
+      progress "$started" "the new container does not answer yet"
       [ "$health" != healthy ] || break
       [ "$SECONDS" -lt "$deadline" ] || abandon "the new container did not answer within ${wait_secs}s"
       sleep 1
@@ -290,6 +316,19 @@ esac
 # without it.
 stage=proxy
 docker compose up -d --no-deps proxy
-docker compose exec -T proxy caddy reload --adapter caddyfile --config /etc/caddy/Caddyfile >/dev/null 2>&1 ||
-  die "the proxy did not load proxy/Caddyfile"
+# A proxy started a moment ago may not have opened its admin API yet, so a
+# few tries; Caddy's own answer is shown when none succeeds.
+reload_log="$(mktemp)"
+for try in 1 2 3 4 5; do
+  if docker compose exec -T proxy caddy reload --adapter caddyfile --config /etc/caddy/Caddyfile >"$reload_log" 2>&1; then
+    break
+  fi
+  [ "$try" -lt 5 ] || {
+    tail -n 20 "$reload_log" >&2
+    rm -f "$reload_log"
+    die "the proxy did not load proxy/Caddyfile (Caddy's answer is above): docker compose exec proxy caddy reload --adapter caddyfile --config /etc/caddy/Caddyfile"
+  }
+  sleep 2
+done
+rm -f "$reload_log"
 log "deployed: $(docker inspect -f '{{.Name}} {{.Config.Image}}' "$new")"
