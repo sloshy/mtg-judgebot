@@ -68,7 +68,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D35),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D36),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -599,6 +599,15 @@ What a `judgebot` process does is a launch option, not a consequence of starting
 
 Also true of `api`:
 
+- **The public feed** (D36, #26): `judge_bot::feed` is every public read of `calls`
+  (`page`, `call`), each with `NOT c.private` and the `JUDGE_FEED_DAYS` window in SQL,
+  username only (never `asker_id`); missing, private and too old are one `None`.
+  `judge_api::feed` serves `GET /api/feed` (cursor `<µs>.<id>`, 20 a page) and
+  `GET /api/calls/{id}` under `--web` unless `JUDGE_FEED=false` (`Config::feed`),
+  with their own read limiter (`feed::READ_LIMIT`). `/api/about` carries `feed`, and
+  under `--web` an unrouted `/api/` path is a JSON 404, not `index.html`. The web app
+  routes `/feed`, `/calls/<id>`, `/users/<name>` in `web/src/router.ts`; `/help`
+  mentions the feed unless it is off.
 - `mcp::router` gates with `route_layer`, not `layer`. `layer` wraps a router's fallback
   too, and merging that into a router with no web fallback made the 401 the catch-all for
   every unrouted path.
@@ -861,6 +870,8 @@ Key cross-file facts that aren't obvious from any one file:
   for real.
 - `JUDGE_BUDGET_PERIOD`, `JUDGE_ALERT_WEBHOOK` (D19; the webhook also hears the
   scheduled refresh).
+- `JUDGE_FEED` (default on), `JUDGE_FEED_DAYS` (unset/`0` = no window, `1..=3650`),
+  validated at `Config` load (D36).
 - `JUDGE_CALL_RETENTION_DAYS` (unset/`0` = keep, `1..=3650`, validated at `Config`
   load; D34): the refresh's `prune` step (`ingest::prune`) and `judgebot ingest prune`
   delete older calls with their ratings. `judge_runs` stay (`call_id` SET NULL), and

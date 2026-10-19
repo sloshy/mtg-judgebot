@@ -19,6 +19,15 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Public feed.** The web app lists answered questions from every interface at `/feed`,
+  newest first, with where each was asked and the Discord asker's username (anonymous
+  otherwise), filterable by interface; `/calls/<id>` is one answer's page and
+  `/users/<name>` one user's questions. Only questions asked private stay off it. New
+  endpoints `GET /api/feed` and `GET /api/calls/{id}`, with their own read limit per
+  address (120 a minute). `JUDGE_FEED=false` turns it off; `JUDGE_FEED_DAYS` hides older
+  calls without deleting them. `/help` says public questions may be listed. Under
+  `--web`, an unknown `/api/` path is now a JSON 404 rather than the page.
+
 - **Translation groundwork.** Every message the Discord bot, the web app and the HTTP
   API show now comes from a per-language catalog, and each request picks its language:
   the Discord user's; the browser's on the web (sent as the new
@@ -359,6 +368,10 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
+- **The feed lists every earlier public call.** Turning it on (the default) lists every
+  call not asked private, including those asked before this release, with the asker's
+  username where one was stored. To keep them unlisted, set `JUDGE_FEED=false` (or a short
+  `JUDGE_FEED_DAYS`) in `.env` before upgrading.
 - **The `judgebot` container has no fixed name.** Compose names it after the
   checkout's directory (`mtg-judgebot-judgebot-1`). Use the service name with Compose
   (`docker compose logs judgebot`, `docker compose exec judgebot …`) instead of

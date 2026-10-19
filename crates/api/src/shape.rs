@@ -5,8 +5,10 @@
 //! module only decides the wire shape the web client sees.
 
 use judge_bot::discord::{question, render};
+use judge_bot::feed::Names;
 use judge_core::{
-    Ambiguous, Citation, Confidence, Context, JudgeError, Locale, Source, Validated, Verdict,
+    Ambiguous, CardId, CardRef, Citation, Confidence, Context, JudgeError, Locale, RulingKey,
+    Source, Validated, Verdict,
 };
 
 use crate::catalog::{self, Messages};
@@ -237,16 +239,48 @@ pub fn answer(locale: Locale, v: &Verdict<Validated>, ctx: Option<&Context>) -> 
         citations: v
             .citations()
             .iter()
-            .map(|c| citation_view(m, c, ctx))
+            .map(|c| citation_view(m, c, &ctx))
             .collect(),
-        cards: v
-            .cards()
-            .iter()
-            .map(|c| CardView {
-                name: c.name.clone(),
-                url: render::scryfall_url(c.id),
-            })
-            .collect(),
+        cards: v.cards().iter().map(card_view).collect(),
+    }
+}
+
+/// A resolved card, linked.
+#[must_use]
+pub fn card_view(c: &CardRef) -> CardView {
+    CardView {
+        name: c.name.clone(),
+        url: render::scryfall_url(c.id),
+    }
+}
+
+/// Where a citation's label finds the card's name and the ruling's date:
+/// the context an answer was judged from, or what a feed read looked up.
+pub trait Labels {
+    /// The card's name.
+    fn card_name(&self, id: CardId) -> Option<String>;
+    /// The ruling's date, `YYYY-MM-DD`.
+    fn ruling_date(&self, card: CardId, key: &RulingKey) -> Option<String>;
+}
+
+impl Labels for Option<&Context> {
+    fn card_name(&self, id: CardId) -> Option<String> {
+        self.and_then(|x| x.card(id)).map(|card| card.name.clone())
+    }
+
+    fn ruling_date(&self, card: CardId, key: &RulingKey) -> Option<String> {
+        self.and_then(|x| x.ruling(card, key))
+            .map(|r| r.published_at.clone())
+    }
+}
+
+impl Labels for Names {
+    fn card_name(&self, id: CardId) -> Option<String> {
+        self.card(id).map(str::to_owned)
+    }
+
+    fn ruling_date(&self, card: CardId, key: &RulingKey) -> Option<String> {
+        self.ruling(card, key).map(str::to_owned)
     }
 }
 
@@ -287,9 +321,11 @@ fn ambiguous_view(a: &Ambiguous) -> AmbiguousView {
     }
 }
 
-fn citation_view(m: &Messages, c: &Citation, ctx: Option<&Context>) -> CitationView {
+/// One citation, labelled in `m` from `labels`.
+#[must_use]
+pub fn citation_view(m: &Messages, c: &Citation, labels: &impl Labels) -> CitationView {
     let quote = collapse_whitespace(c.quote());
-    let card_name = |id| ctx.and_then(|x| x.card(id)).map(|card| card.name.clone());
+    let card_name = |id| labels.card_name(id);
     match c {
         Citation::Rule { id, .. } => CitationView {
             label: id.to_string(),
@@ -297,9 +333,9 @@ fn citation_view(m: &Messages, c: &Citation, ctx: Option<&Context>) -> CitationV
             quote,
         },
         Citation::ScryfallRuling { card, ruling, .. } => {
-            let date = ctx
-                .and_then(|x| x.ruling(*card, ruling))
-                .map(|r| format!(" ({})", r.published_at))
+            let date = labels
+                .ruling_date(*card, ruling)
+                .map(|d| format!(" ({d})"))
                 .unwrap_or_default();
             let label = (m.ruling_label)(&date, card_name(*card).as_deref());
             CitationView {
@@ -533,7 +569,7 @@ mod tests {
                 id: CallId::new(Uuid::from_u128(3)),
                 quote: judge_core::Quote::try_new(quote)?,
             },
-            None,
+            &None::<&Context>,
         );
         assert_eq!(view.label, "Prior call");
         assert_eq!(view.url, None);
@@ -545,7 +581,7 @@ mod tests {
                 face: 1,
                 quote: judge_core::Quote::try_new("Flying")?,
             },
-            None,
+            &None::<&Context>,
         );
         assert_eq!(view.label, "Oracle text, face 2");
         assert!(view.url.is_some_and(|u| u.contains("oracleid")));

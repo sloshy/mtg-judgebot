@@ -1388,3 +1388,37 @@ are data rather than messages and stay as they come: a card symbol's `alt` text
   templates, computed at compile time.
 - **Command descriptions** register the default locale's text as the base and every
   other locale's as `description_localizations`, under that locale's Discord tags.
+
+## D36. Public feed of answered calls
+
+*Decided 2026-10-18.*
+
+The web app lists every answered call not asked private, from every interface, newest
+first (#26). A judgebot's answers are already public where they were asked; listing them
+lets a community read what the bot has said and spot wrong answers without being in the
+channel. `JUDGE_FEED=false` turns it off.
+
+- **Private is the only exclusion.** A Discord channel's visibility is not checked: the
+  bot has no view of who can see a channel, and guessing would make "public" mean
+  something different per server. `private: True` (or an agent call's `private`) is the
+  one way to keep a call off it, and `/help` says so.
+- **What is public is decided in SQL.** `judge_bot::feed` holds every public read, each
+  with `NOT c.private` and the `JUDGE_FEED_DAYS` window in its `WHERE`, and selects the
+  username only, never the asker id. A missing, private or too-old call is the same
+  `None`, so a 404 says nothing about which. Failed calls live in another table.
+- **Names are the username snapshotted at asking time** (D31), anonymous otherwise, and
+  `/forget` clears them. Servers and channels are never shown, and a Discord mention in
+  the text (`<@id>`, `<#id>`) is shown as `@…` / `#…`. A username Discord later hands to
+  someone else still lists the earlier holder's calls under it: the name is what was
+  shown when they were asked.
+- **The window hides, retention deletes.** `JUDGE_FEED_DAYS` limits the public reads only;
+  prior-call examples and the operator's tools still see older calls.
+  `JUDGE_CALL_RETENTION_DAYS` (D34) is the deletion.
+- **Keyset pages** on `(created_at, id)`, with partial indexes that leave private calls
+  out. The cursor is opaque to clients. Rejected: offset pages, which shift as calls
+  arrive.
+- **Reads have their own rate limit** (120 a minute per address), apart from the
+  questions' 4 per 5 minutes, so browsing never costs a question.
+- **No back-dating cut-off.** Earlier public calls are listed too; the upgrade notes say
+  how to keep them unlisted.
+

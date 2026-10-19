@@ -371,6 +371,12 @@ Three interfaces share this pipeline through the same composition root
     nobody named is not mounted.
   - `GET /api/health` and `GET /api/about` are served whatever interfaces are off.
     The container healthcheck needs the first.
+  - The public feed (D36): `GET /api/feed` (keyset pages) and `GET /api/calls/{id}`,
+    mounted beside the page under `--web` unless `JUDGE_FEED=false`, over
+    `judge_bot::feed`, whose queries are the only public reads of `calls` (no private
+    call, nothing older than `JUDGE_FEED_DAYS`). They have their own per-address read
+    limit. The page routes `/feed`, `/calls/<id>` and `/users/<name>` client-side
+    (`web/src/router.ts`); an unrouted `/api/` path is a JSON 404.
   - `/api/about` is the source offer (`judge_core::source`): repository, built
     commit, licence and copyright. The AGPL requires every remote interface to
     offer it. The web app's footer reads it from there. Discord gives the same in

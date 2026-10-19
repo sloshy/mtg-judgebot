@@ -19,6 +19,7 @@ use nonempty::NonEmpty;
 use super::catalog::{self, License, Messages};
 use super::cooldown::UserLimit;
 use super::mana::{Rendered, SymbolTable};
+use crate::feed::Feed;
 
 /// Discord's limit on message `content`, in characters.
 pub const CONTENT_LIMIT: usize = 2000;
@@ -49,23 +50,38 @@ pub const HEADER_LIMIT: usize = CONTENT_LIMIT / 4;
 /// (verified 2026-08-30: ids look like `R70219b`, see [`rule_anchor`]).
 pub const CR_MIRROR_URL: &str = "https://yawgatog.com/resources/magic-rules/";
 
-/// `/help`, as the two messages it is sent in: the fixed body and what the
-/// data is ([`data`]), then what `/license` says — where this instance's code
-/// is, at which commit, under which licence, so the AGPL's network clause is
-/// met on the bot's own surface, and who runs it. Two because the body and
-/// the longest offer and contact together pass [`CONTENT_LIMIT`]; each is
-/// under it by a wide margin. Ephemeral, so neither clutters a channel.
+/// `/help`, as the two messages it is sent in: how to use the bot and what
+/// the data is ([`data`]); then what is stored, the public feed (unless
+/// `feed` is off), and what `/license` says — where this instance's code is,
+/// at which commit, under which licence, so the AGPL's network clause is met
+/// on the bot's own surface, and who runs it. Two because together they pass
+/// [`CONTENT_LIMIT`]; a test holds each under it at its longest. Ephemeral,
+/// so neither clutters a channel.
 #[must_use]
 pub fn help(
     locale: Locale,
     offer: &SourceOffer,
     operator: &DiscordOperator,
     freshness: Option<&Freshness>,
+    feed: Feed,
 ) -> [String; 2] {
     let m = catalog::messages(locale);
+    let mut privacy = vec![m.help_stored];
+    if feed.is_on() {
+        privacy.push(m.help_feed);
+    }
     [
-        format!("{}\n\n{}", m.help_body.trim_end(), data(locale, freshness)),
-        license(locale, offer, operator),
+        format!(
+            "{}\n\n{}\n\n{}",
+            m.help_body,
+            m.help_disclaimer,
+            data(locale, freshness)
+        ),
+        format!(
+            "{}\n\n{}",
+            privacy.join("\n\n"),
+            license(locale, offer, operator)
+        ),
     ]
 }
 
@@ -1895,7 +1911,13 @@ mod info_tests {
             refreshed_secs_ago: Some(u64::MAX),
             last_refresh_failed: true,
         };
-        let parts = help(Locale::En, &offer, &operator, Some(&freshness));
+        let parts = help(
+            Locale::En,
+            &offer,
+            &operator,
+            Some(&freshness),
+            Feed::default(),
+        );
         for part in &parts {
             assert!(
                 !part.is_empty() && part.chars().count() <= CONTENT_LIMIT,
@@ -1916,11 +1938,20 @@ mod info_tests {
             "`@a_judge.with_the_longest_name_32` on Discord",
             "`judgebot-support@some-organisation.example-hosting-company.com`",
             "**Data.**\n- Comprehensive Rules: 2026-09-25\n- Last successful refresh: ",
+            "**What is stored.**",
+            "**The feed.**",
             " days ago\n- Latest refresh: failed",
         ] {
             assert!(help.contains(needle), "{needle}\n{help}");
         }
-        assert_eq!(parts.last(), Some(&license(Locale::En, &offer, &operator)));
+        assert!(
+            parts
+                .last()
+                .is_some_and(|p| p.ends_with(&license(Locale::En, &offer, &operator))),
+            "the second part ends with what /license says"
+        );
+        let off = super::help(Locale::En, &offer, &operator, None, Feed::Off).join("\n\n");
+        assert!(off.contains("**What is stored.**") && !off.contains("**The feed.**"));
         // Without a support address the username stands alone.
         let alone = judge_core::Operator::new(
             Some(judge_core::DiscordUsername::try_new("somejudge")?),

@@ -28,6 +28,7 @@
 pub mod catalog;
 pub mod config;
 pub mod discord;
+pub mod feed;
 pub mod http;
 pub mod interfaces;
 pub mod limit;

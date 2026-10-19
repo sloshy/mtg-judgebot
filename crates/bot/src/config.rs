@@ -76,6 +76,7 @@ use crate::{
     alert::{ALERT_WEBHOOK_ENV, AlertWebhook},
     budget::{self, Budget, Period, Thresholds},
     db::Vectors,
+    feed::{self, BadFeed, Feed},
     ingest::prune::{self, Retention},
     jobs::{self, Jobs, Schedule},
 };
@@ -1069,6 +1070,22 @@ pub enum ConfigError {
         /// The value as set.
         value: String,
     },
+    /// `JUDGE_FEED` is not a boolean.
+    #[error("{}={value:?}: not true or false", feed::FEED_ENV)]
+    BadFeed {
+        /// The value as set.
+        value: String,
+    },
+    /// `JUDGE_FEED_DAYS` is not a whole number of days in range.
+    #[error(
+        "{}={value:?}: not a whole number of days from 1 to {} (0 or unset shows every call)",
+        feed::FEED_DAYS_ENV,
+        Feed::MAX_DAYS
+    )]
+    BadFeedDays {
+        /// The value as set.
+        value: String,
+    },
     /// A key that does not apply to the provider as configured.
     #[error("providers.{provider}: {key} {reason}")]
     Misplaced {
@@ -1202,6 +1219,8 @@ impl ConfigError {
             Self::BadSchedule { .. } => env(jobs::REFRESH_HOURS_ENV),
             Self::BadRetention { .. } => env(prune::RETENTION_ENV),
             Self::BadLocale { .. } => env(LOCALE_ENV),
+            Self::BadFeed { .. } => env(feed::FEED_ENV),
+            Self::BadFeedDays { .. } => env(feed::FEED_DAYS_ENV),
             Self::MissingContact(MissingContact::Discord) => env(OPERATOR_DISCORD_ENV),
             Self::MissingContact(MissingContact::Email) => env(OPERATOR_EMAIL_ENV),
             Self::EmbedDimensions { .. } => toml("models.embed.dimensions".to_owned()),
@@ -1600,6 +1619,8 @@ pub struct Config {
     /// The instance's language (`JUDGE_LOCALE`): what an asker whose own
     /// language has no catalog is answered in.
     locale: Locale,
+    /// The public feed (`JUDGE_FEED`, `JUDGE_FEED_DAYS`).
+    feed: Feed,
 }
 
 /// The budget settings from `env`, blank meaning unset.
@@ -1672,6 +1693,21 @@ pub fn call_retention(env: impl Fn(&str) -> Option<String>) -> Result<Retention,
 pub fn instance_locale(env: impl Fn(&str) -> Option<String>) -> Result<Locale, ConfigError> {
     Locale::parse_setting(env(LOCALE_ENV).as_deref())
         .map_err(|value| ConfigError::BadLocale { value })
+}
+
+/// The public feed's settings from `env` (`JUDGE_FEED`, `JUDGE_FEED_DAYS`).
+///
+/// # Errors
+/// [`ConfigError::BadFeed`] or [`ConfigError::BadFeedDays`].
+pub fn feed_settings(env: impl Fn(&str) -> Option<String>) -> Result<Feed, ConfigError> {
+    Feed::parse(
+        env(feed::FEED_ENV).as_deref(),
+        env(feed::FEED_DAYS_ENV).as_deref(),
+    )
+    .map_err(|e| match e {
+        BadFeed::Flag(value) => ConfigError::BadFeed { value },
+        BadFeed::Days(value) => ConfigError::BadFeedDays { value },
+    })
 }
 
 /// The commit stamped into this binary by `build.rs`.
@@ -1819,6 +1855,7 @@ impl Config {
             budget: budget(&env)?,
             refresh: refresh_schedule(&env)?,
             locale: instance_locale(&env)?,
+            feed: feed_settings(&env)?,
         })
     }
 
@@ -1923,6 +1960,7 @@ impl Config {
             budget: budget(&env)?,
             refresh: refresh_schedule(&env)?,
             locale: instance_locale(&env)?,
+            feed: feed_settings(&env)?,
         })
     }
 
@@ -1949,6 +1987,12 @@ impl Config {
     #[must_use]
     pub const fn locale(&self) -> Locale {
         self.locale
+    }
+
+    /// The public feed (`JUDGE_FEED`, `JUDGE_FEED_DAYS`).
+    #[must_use]
+    pub const fn feed(&self) -> Feed {
+        self.feed
     }
 
     /// What the long-running processes run beside their requests, and where
@@ -3149,6 +3193,20 @@ model = "qwen3:8b"
         let err = with("klingon").err().ok_or("klingon must be refused")?;
         assert!(matches!(err, ConfigError::BadLocale { .. }), "{err}");
         assert!(err.to_string().contains("one of: en"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_feed_is_on_by_default_and_a_bad_setting_stops_the_load() -> R {
+        let with = |k0: &'static str, v: &'static str| {
+            Config::from_vars(move |k: &str| (k == k0).then(|| v.to_owned()))
+        };
+        assert_eq!(Config::from_vars(|_| None)?.feed(), Feed::default());
+        assert_eq!(with(feed::FEED_ENV, "false")?.feed(), Feed::Off);
+        let err = with(feed::FEED_ENV, "nope").err().ok_or("refused")?;
+        assert!(matches!(err, ConfigError::BadFeed { .. }), "{err}");
+        let err = with(feed::FEED_DAYS_ENV, "9999").err().ok_or("refused")?;
+        assert!(matches!(err, ConfigError::BadFeedDays { .. }), "{err}");
         Ok(())
     }
 

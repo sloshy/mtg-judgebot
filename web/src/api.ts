@@ -1,5 +1,6 @@
-// Typed client for POST /api/judge. The reply shapes mirror
-// crates/api/src/shape.rs (ApiReply, tagged by `kind`).
+// Typed client for the HTTP API. The reply shapes mirror
+// crates/api/src/shape.rs (ApiReply, tagged by `kind`) and
+// crates/api/src/feed.rs (the feed's pages and entries).
 
 import type { Locale, Messages } from "./messages";
 
@@ -96,6 +97,8 @@ export interface About {
    * server can reply in. Absent from an older server. */
   locale?: string;
   locales?: string[];
+  /** Whether the public feed is served here. Absent from an older server. */
+  feed?: boolean;
 }
 
 /** The Comprehensive Rules release loaded and the last refresh. */
@@ -173,4 +176,123 @@ export function freshnessLine(f: Freshness | null, m: Messages, elapsed = 0): st
   ];
   if (f.last_refresh_failed) parts.push(m.refreshFailed);
   return m.freshnessLine(parts);
+}
+
+/** Where a feed entry was asked (crates/bot/src/feed.rs `Asked`). */
+export type Interface = "discord" | "web" | "mcp" | "cli" | "agent_session" | "agent";
+
+/** One public call (crates/api/src/feed.rs `EntryView`). */
+export interface FeedEntry {
+  id: string;
+  /** RFC 3339 UTC. */
+  asked_at: string;
+  interface: Interface;
+  /** The Discord username; null is anonymous. */
+  asker: string | null;
+  question: string;
+  answer: string;
+  confidence: "low" | "medium" | "high";
+  source: "cr" | "commander";
+  cr_version: string;
+  citations: CitationView[];
+  cards: CardView[];
+  ratings: {
+    correct: number;
+    partial: number;
+    incorrect: number;
+    judge: "correct" | "partial" | "incorrect" | null;
+  };
+  /** Why it no longer serves as an example; null while its citations hold. */
+  retired: string | null;
+}
+
+/** A page of the feed: newest first, `next` the cursor of the one after. */
+export interface FeedPage {
+  entries: FeedEntry[];
+  next: string | null;
+}
+
+/** A read of the feed: the value, or the server's message (in `m` when it
+ * sent none). */
+export type Read<T> = { ok: true; value: T } | { ok: false; status: number; message: string };
+
+/** Which calls a feed page holds. */
+export interface FeedQuery {
+  cursor?: string;
+  interface?: Interface;
+  user?: string;
+}
+
+async function read<T>(path: string, m: Messages, valid: (v: unknown) => v is T): Promise<Read<T>> {
+  let res: Response;
+  try {
+    res = await fetch(path);
+  } catch {
+    return { ok: false, status: 0, message: m.unreachable };
+  }
+  const body: unknown = await res.json().catch(() => null);
+  if (res.ok && valid(body)) return { ok: true, value: body };
+  const message =
+    typeof body === "object" &&
+    body !== null &&
+    typeof (body as { message?: unknown }).message === "string"
+      ? (body as { message: string }).message
+      : m.strangeReply(res.status);
+  return { ok: false, status: res.status, message };
+}
+
+function withLocale(params: URLSearchParams, locale: Locale | undefined): string {
+  if (locale !== undefined) params.set("locale", locale);
+  const q = params.toString();
+  return q === "" ? "" : `?${q}`;
+}
+
+/** GET /api/feed. */
+export function fetchFeed(
+  q: FeedQuery,
+  locale: Locale | undefined,
+  m: Messages,
+): Promise<Read<FeedPage>> {
+  const params = new URLSearchParams();
+  if (q.cursor) params.set("cursor", q.cursor);
+  if (q.interface) params.set("interface", q.interface);
+  if (q.user) params.set("user", q.user);
+  return read(`/api/feed${withLocale(params, locale)}`, m, isFeedPage);
+}
+
+/** GET /api/calls/{id}. */
+export function fetchCall(
+  id: string,
+  locale: Locale | undefined,
+  m: Messages,
+): Promise<Read<FeedEntry>> {
+  return read(
+    `/api/calls/${encodeURIComponent(id)}${withLocale(new URLSearchParams(), locale)}`,
+    m,
+    isEntry,
+  );
+}
+
+function isFeedPage(v: unknown): v is FeedPage {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    Array.isArray(o.entries) &&
+    o.entries.every(isEntry) &&
+    (o.next === null || typeof o.next === "string")
+  );
+}
+
+function isEntry(v: unknown): v is FeedEntry {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.id === "string" &&
+    typeof o.question === "string" &&
+    typeof o.answer === "string" &&
+    Array.isArray(o.citations) &&
+    Array.isArray(o.cards) &&
+    typeof o.ratings === "object" &&
+    o.ratings !== null
+  );
 }

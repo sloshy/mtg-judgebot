@@ -125,6 +125,12 @@ pub struct Messages {
     pub cooling_down: fn(u32, Duration, Duration) -> String,
     /// `/help`'s fixed part.
     pub help_body: &'static str,
+    /// `/help`'s paragraph on what is stored, opening its second reply.
+    pub help_stored: &'static str,
+    /// `/help`'s paragraph on the public feed, shown unless `JUDGE_FEED=false`.
+    pub help_feed: &'static str,
+    /// `/help`'s closing paragraph: AI-generated, unofficial.
+    pub help_disclaimer: &'static str,
     /// `/help`'s data section heading.
     pub data_heading: &'static str,
     /// `/help`'s data section when it could not be read.
@@ -355,13 +361,16 @@ it. It is still stored, for the operator only.\n\n\
 number. Both are free and instant.\n\n\
 **Rating.** The buttons under an answer record how right it was; rating again replaces yours. Ratings decide \
 which past answers are shown as examples later — the rules themselves always outrank them. Members with the \
-server's judge role rate with an override.\n\n\
-**What is stored.** Each question and answer, the channel it was asked in, your user id and username, \
+server's judge role rate with an override.",
+    help_stored: "**What is stored.** Each question and answer, the channel it was asked in, your user id and username, \
 and your ratings. A call that errored is kept for debugging, with its question. Nothing else is read: the \
 bot sees only its slash commands. `/forget` deletes your ratings and removes your id and username from \
-your questions; a private question's text, and a failed one's, is removed too.\n\n\
-Answers are AI-generated; verify anything important with a human judge. Unofficial Fan Content under the \
-Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.\n\n",
+your questions; a private question's text, and a failed one's, is removed too.",
+    help_feed: "**The feed.** A question not asked private may be listed with its answer on this \
+instance's public web feed, with your username (anonymous once you use `/forget`). The channel and server \
+are never shown.",
+    help_disclaimer: "Answers are AI-generated; verify anything important with a human judge. Unofficial \
+Fan Content under the Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.",
     data_heading: "**Data.**",
     data_unknown: "**Data.** Unknown: the database did not answer.",
     contact: |username, email| {
@@ -533,6 +542,9 @@ mod tests {
                 m.server_only.to_owned(),
                 (m.cooling_down)(6, Duration::from_mins(10), Duration::from_secs(1)),
                 m.help_body.to_owned(),
+                m.help_stored.to_owned(),
+                m.help_feed.to_owned(),
+                m.help_disclaimer.to_owned(),
                 m.data_heading.to_owned(),
                 m.data_unknown.to_owned(),
                 (m.contact)("op", Some("a@b.c")),

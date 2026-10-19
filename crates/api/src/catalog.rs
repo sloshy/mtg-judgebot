@@ -38,6 +38,18 @@ pub struct Messages {
     pub oracle_label: fn(Option<usize>, Option<&str>) -> String,
     /// A prior call citation's label.
     pub prior_call_label: &'static str,
+    /// An `/api/` path this listener does not serve.
+    pub not_routed: &'static str,
+    /// A feed `cursor` that is not one the feed wrote.
+    pub bad_cursor: &'static str,
+    /// A feed `interface` that is none, given the ones there are.
+    pub bad_interface: fn(&str) -> String,
+    /// A feed `user` that is not a Discord username.
+    pub bad_user: &'static str,
+    /// No public call has that id (or it is older than the feed shows).
+    pub call_not_found: &'static str,
+    /// The feed could not be read.
+    pub feed_failed: &'static str,
 }
 
 impl fmt::Debug for Messages {
@@ -68,6 +80,12 @@ Your question was not answered; please try again shortly.",
     ruling_label: discord::EN.ruling_label,
     oracle_label: discord::EN.oracle_label,
     prior_call_label: "Prior call",
+    not_routed: "Nothing is served at this path.",
+    bad_cursor: "cursor must be the `next` of an earlier page",
+    bad_interface: |all| format!("interface must be one of: {all}"),
+    bad_user: "user must be a Discord username",
+    call_not_found: "There is no public call with that id.",
+    feed_failed: "Sorry, the feed couldn't be read just now. Please try again.",
 };
 
 #[cfg(test)]
@@ -90,6 +108,12 @@ mod tests {
                 (m.ruling_label)("", Some("Blood Moon")),
                 (m.oracle_label)(None, None),
                 m.prior_call_label.to_owned(),
+                m.not_routed.to_owned(),
+                m.bad_cursor.to_owned(),
+                (m.bad_interface)("web"),
+                m.bad_user.to_owned(),
+                m.call_not_found.to_owned(),
+                m.feed_failed.to_owned(),
             ] {
                 assert!(!t.trim().is_empty(), "{l}");
             }

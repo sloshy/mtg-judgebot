@@ -23,11 +23,34 @@ page offers four examples. Choosing one fills the box but does not send it, beca
 answer spends the operator's money and one of the visitor's rate-limited questions.
 
 Nobody is logged in there, so the web app has **no rating buttons**, and nothing about the
-visitor is stored beyond a random session id that groups their questions. The footer
+visitor is stored beyond a random session id that groups their questions. Their questions
+are listed on the [feed](#the-feed) without a name. The footer
 names the source repository, the commit the instance was built from and the operator's
 support address (`JUDGE_OPERATOR_EMAIL`, without which the web app does not start). A
 line above it gives the Comprehensive Rules release loaded and how long ago the data was
 last refreshed, for example `Comprehensive Rules 2026-09-25 · refreshed 3 hours ago`.
+
+## The feed
+
+`/feed` lists answered questions from every interface, newest first: Discord, the web app,
+the MCP `judge` tool, `judge-cli` and agent sessions. Each entry shows where it was asked,
+when, the Discord username of whoever asked (anonymous for the web, the agent tools, calls
+from before 2.0.0 and anyone who used `/forget`), the question, the answer with its
+citations and cards, how it was rated, and a note when its citations no longer hold.
+
+- Only a question asked with `private: True` (or an agent call made private) stays off it.
+  A Discord question asked in a channel few people can see is still listed. Servers and
+  channels are never shown, and a mention in a question shows as `@…` or `#…`.
+- `/feed?interface=discord` (or `web`, `mcp`, `cli`, `agent_session`) lists one
+  interface's.
+- `/calls/<id>` is one answer's own page, and `/users/<name>` one Discord user's public
+  questions.
+- `JUDGE_FEED=false` removes the pages and their endpoints. `JUDGE_FEED_DAYS` hides calls
+  older than that many days from all of them, without deleting anything
+  (`JUDGE_CALL_RETENTION_DAYS` deletes).
+
+Turning the feed on lists every earlier public call too, including those asked before it
+existed.
 
 ## Enabling
 
@@ -45,7 +68,8 @@ notice and a **Try again** button that sends the same question once the upgrade 
 
 Anonymous traffic is rate limited per address (`API_RATE_LIMIT` questions per
 `API_RATE_WINDOW_SECS`, default 4 per 5 minutes), ahead of the `JUDGE_CONCURRENCY` slots
-and the spend cap. The [HTTP API](../../using/api/) page has the request and reply
+and the spend cap. The feed's reads have a window of their own, 120 a minute per address,
+so browsing does not use up questions. The [HTTP API](../../using/api/) page has the request and reply
 shapes, and the [deployment runbook](../../self-hosting/deployment/) puts a Cloudflare
 rate-limiting rule in front of all of it.
 

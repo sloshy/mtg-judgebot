@@ -27,6 +27,7 @@ use judge_bot::{
     budget::{PERIOD_ENV, WARN_AT_ENV},
     config::{ANTHROPIC_KEY_ENV, CONFIG_ENV, MAX_SPEND_ENV, VOYAGE_KEY_ENV},
     db::migrate::AUTO_MIGRATE_ENV,
+    feed::{FEED_DAYS_ENV, FEED_ENV},
     ingest::prune::RETENTION_ENV,
     jobs::REFRESH_HOURS_ENV,
 };
@@ -184,6 +185,8 @@ pub const VARS: &[Var] = &[
             values: &["peer", "cloudflare"],
         },
     ),
+    setting(FEED_ENV, Group::Http, Widget::Toggle),
+    setting(FEED_DAYS_ENV, Group::Http, int(0)),
     secret("MCP_TOKEN", Group::Mcp),
     setting("MCP_ALLOWED_HOSTS", Group::Mcp, TEXT),
     setting("MCP_JUDGE_LIMIT", Group::Mcp, int(1)),

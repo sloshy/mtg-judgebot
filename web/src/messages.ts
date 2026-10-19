@@ -13,6 +13,7 @@
 // text as it comes.
 
 import type { JSX } from "solid-js";
+import type { FeedEntry, Interface } from "./api";
 
 /** The locales the page has a catalog for. */
 export const LOCALES = ["en"] as const;
@@ -89,6 +90,37 @@ export type Messages = {
   commitKnown: (hash: JSX.Element, dirty: boolean) => JSX.Element;
   /** The operator's contact, after the source offer. */
   support: (email: JSX.Element, discord: JSX.Element | null) => JSX.Element;
+
+  /** The links between the page's routes. */
+  navAsk: string;
+  navFeed: string;
+  /** Under the question box when the feed is served. */
+  askIsPublic: string;
+  feedTitle: string;
+  feedIntro: string;
+  /** The feed's filter for every interface. */
+  feedAll: string;
+  /** Each interface's name, as the feed labels an entry. */
+  interfaceName: Record<Interface, string>;
+  /** An entry with no username. */
+  anonymous: string;
+  /** An entry's lead line: who, where, when (a link to its own page). */
+  entryMeta: (asker: JSX.Element, via: string, when: JSX.Element) => JSX.Element;
+  /** When an entry was asked, from its RFC 3339 time. */
+  askedAt: (iso: string) => string;
+  /** How an entry was rated. */
+  ratingsLine: (r: FeedEntry["ratings"]) => string;
+  /** Under an entry whose citations no longer hold. */
+  retiredNote: (reason: string) => string;
+  loading: string;
+  loadMore: string;
+  feedEmpty: string;
+  /** `/users/<name>`'s heading. */
+  userTitle: (name: string) => string;
+  /** A route that names nothing. */
+  pageMissing: string;
+  /** A link back to the question box. */
+  backToAsk: string;
 };
 
 /** `20260819` → `2026-08-19` (matching the Discord footer). */
@@ -204,6 +236,48 @@ export const en = {
     discord === null ? "" : [", or ", discord, " on Discord"],
     ".",
   ],
+
+  navAsk: "Ask",
+  navFeed: "Feed",
+  askIsPublic:
+    "Questions asked here are listed with their answers on the public feed, without a name.",
+  feedTitle: "Recent answers",
+  feedIntro:
+    "Every question not asked privately, newest first: from Discord, from this page and from the agent tools.",
+  feedAll: "All",
+  interfaceName: {
+    discord: "Discord",
+    web: "Web",
+    mcp: "MCP",
+    cli: "judge-cli",
+    agent_session: "Agent session",
+    agent: "Agent",
+  },
+  anonymous: "Anonymous",
+  entryMeta: (asker, via, when) => [asker, ` · ${via} · `, when],
+  askedAt: (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime())
+      ? iso
+      : new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(d);
+  },
+  ratingsLine: (r) => {
+    const total = r.correct + r.partial + r.incorrect;
+    const judge =
+      r.judge === null
+        ? ""
+        : ` · a judge rated it ${{ correct: "correct", partial: "partially correct", incorrect: "incorrect" }[r.judge]}`;
+    return total === 0
+      ? "Not rated yet."
+      : `Rated ${r.correct} correct, ${r.partial} partially correct, ${r.incorrect} incorrect${judge}.`;
+  },
+  retiredNote: (reason) => `No longer used as an example: ${reason}`,
+  loading: "Loading…",
+  loadMore: "Show older answers",
+  feedEmpty: "Nothing here yet.",
+  userTitle: (name) => `Questions asked by @${name}`,
+  pageMissing: "There is nothing at this address.",
+  backToAsk: "Ask a question",
 } satisfies Messages;
 
 const CATALOGS: Record<Locale, Messages> = { en };

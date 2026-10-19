@@ -11,6 +11,11 @@ The HTTP interfaces serve three routes on `API_ADDR`:
   `JUDGE_ROLES` leaves it out).
 - `GET /api/health` and `GET /api/about`, served whenever any of `--api`, `--web` and
   `--mcp` is on.
+- `GET /api/feed` and `GET /api/calls/{id}`, the public feed, on with `--web` unless
+  `JUDGE_FEED=false`.
+
+With `--web`, any other path under `/api/` is a `404` with a JSON `error` body rather than
+the web app's page.
 
 There is no authentication. The API is the anonymous interface, bounded by a per-address
 rate limit, the concurrency slots and the spend cap. It sends no CORS headers, so call it
@@ -85,7 +90,8 @@ The source offer and the operator contact as JSON: `program`, `repository`, `com
 `commit_url`, `dirty`, `license`, `license_name`, `license_url`, `copyright`,
 `operator_email`, `operator_discord` and a ready-to-show `notice`. The web app's footer is
 built from it. `locale` is the instance's language (`JUDGE_LOCALE`), which `notice` is
-written in, and `locales` every language its replies can be in.
+written in, and `locales` every language its replies can be in. `feed` says whether this
+listener serves the feed.
 
 `freshness` says what the instance's data is:
 
@@ -106,6 +112,46 @@ outage.
 ```json
 "freshness": {"cr_version": "20260925", "refreshed_secs_ago": 10800, "last_refresh_failed": false}
 ```
+
+## `GET /api/feed`
+
+A page of answered calls not asked private, newest first, 20 at a time:
+
+```sh
+curl 'http://localhost:8787/api/feed?interface=discord'
+```
+
+```json
+{"entries": [{"id": "…", "asked_at": "2026-10-18T12:00:00Z", "interface": "discord",
+  "asker": "alice", "question": "…", "answer": "…", "confidence": "high", "source": "cr",
+  "cr_version": "20260925", "citations": [{"label": "702.19b", "url": "…", "quote": "…"}],
+  "cards": [{"name": "…", "url": "…"}],
+  "ratings": {"correct": 2, "partial": 0, "incorrect": 0, "judge": null},
+  "retired": null}],
+ "next": "1760788800000000.0d3f…"}
+```
+
+The query parameters are all optional:
+
+- `cursor`: the previous page's `next`. `next` is `null` on the last page.
+- `interface`: `discord`, `web`, `mcp`, `cli`, `agent_session`, or `agent` (MCP and
+  `judge-cli` before 2.0.0, which were not told apart).
+- `user`: a Discord username, with or without `@`.
+- `locale`: the language of the citation labels and messages, ahead of `Accept-Language`.
+
+`asker` is `null` for an anonymous call. Asker ids are never sent. `ratings.judge` is the
+latest rating by a member with the judge role (`correct`, `partial`, `incorrect`), or
+`null`. `retired` is why the call no longer serves as an example, or `null`. A query that
+does not parse is a `400` `error`.
+
+## `GET /api/calls/{id}`
+
+One entry, in the same shape. A private call, a call older than `JUDGE_FEED_DAYS` and an id
+that names nothing are the same `404` `error`.
+
+Both routes answer `429` `rate_limited` past 120 reads a minute per address (a window of
+their own, apart from the questions') and `503` `maintenance` while a major upgrade
+migrates.
 
 ## MCP
 

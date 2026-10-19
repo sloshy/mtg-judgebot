@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT r.oracle_id, r.key AS \"key!\",\n                   to_char(r.published_at, 'YYYY-MM-DD') AS \"date!\"\n            FROM rulings r\n            JOIN UNNEST($1::uuid[], $2::text[]) AS w(oracle_id, key)\n              ON r.oracle_id = w.oracle_id AND r.key = w.key\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oracle_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "rulings",
+            "name": "oracle_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "key!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rulings",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "date!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "620cbcabe79966ad480618fcebf7ad727dda70f6a8f543bb5fe0d40fb8365724"
+}

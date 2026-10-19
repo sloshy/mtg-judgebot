@@ -14,7 +14,7 @@ use axum::{
     extract::{ConnectInfo, FromRequest, FromRequestParts, Request, State},
     http::{HeaderMap, StatusCode, request::Parts},
     response::{IntoResponse as _, Response},
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use judge_bot::ingest::runs::FreshnessReader;
 use judge_bot::maintenance::{self, Availability};
@@ -24,6 +24,7 @@ use judge_core::{
     About, CallStore, Deps, Freshness, HistoryScope, Locale, NetworkOperator, Origin, Question,
     SourceOffer,
 };
+use serde::Serialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
@@ -31,6 +32,7 @@ use uuid::Uuid;
 use crate::{
     catalog,
     config::{ApiConfig, ClientIpSource},
+    feed::{self, PublicCalls},
     interfaces::Interfaces,
     limit::RateLimiter,
     shape::{self, ApiReply, JudgeRequest},
@@ -125,6 +127,10 @@ pub struct App {
     /// The instance's language (`JUDGE_LOCALE`), for a caller whose own has
     /// no catalog.
     locale: Locale,
+    /// The public feed's reads, when the feed is served.
+    public_calls: Option<Arc<dyn PublicCalls>>,
+    /// The feed reads' own per-address window ([`feed::READ_LIMIT`]).
+    reads: RateLimiter,
 }
 
 impl std::fmt::Debug for App {
@@ -159,7 +165,42 @@ impl App {
             data: None,
             availability: Availability::open(),
             locale: Locale::default(),
+            public_calls: None,
+            reads: RateLimiter::new(feed::READ_LIMIT, feed::READ_WINDOW),
         }
+    }
+
+    /// Serve the public feed (`GET /api/feed`, `GET /api/calls/{id}`) from
+    /// `calls`, where the web page is served.
+    #[must_use]
+    pub fn with_public_calls(mut self, calls: Arc<dyn PublicCalls>) -> Self {
+        self.public_calls = Some(calls);
+        self
+    }
+
+    /// The instance's language.
+    pub(crate) const fn locale(&self) -> Locale {
+        self.locale
+    }
+
+    /// The feed's reads, when it is served.
+    pub(crate) fn public_calls(&self) -> Option<Arc<dyn PublicCalls>> {
+        self.public_calls.clone()
+    }
+
+    /// Whether the instance is open (not migrating a major upgrade).
+    pub(crate) fn is_open(&self) -> bool {
+        self.availability.is_open()
+    }
+
+    /// What the rate limiters bucket on.
+    pub(crate) const fn client_ip_source(&self) -> ClientIpSource {
+        self.client_ip
+    }
+
+    /// Count a feed read from `ip`; `false` when its window is used up.
+    pub(crate) fn allow_read(&self, ip: IpAddr) -> bool {
+        self.reads.allow(ip)
     }
 
     /// Answer a caller whose language has no catalog in `locale`
@@ -289,8 +330,18 @@ pub fn router(app: Arc<App>, interfaces: &Interfaces, web_dist: &Path) -> Router
         router = router.route("/api/judge", post(judge_route));
     }
     if interfaces.web() {
-        let files =
-            ServeDir::new(web_dist).not_found_service(ServeFile::new(web_dist.join("index.html")));
+        if app.public_calls.is_some() {
+            router = router
+                .route("/api/feed", get(feed::feed_route))
+                .route("/api/calls/{id}", get(feed::call_route));
+        }
+        // An endpoint that is not served is a JSON 404, not the page: the
+        // page's fallback below would answer it with `index.html`.
+        router = router.route("/api/{*rest}", any(api_not_found));
+        // `fallback`, not `not_found_service`: the page's own routes
+        // (`/feed`, `/calls/<id>`) are pages, served 200, so a link to one
+        // unfurls and is crawled as a page rather than a missing one.
+        let files = ServeDir::new(web_dist).fallback(ServeFile::new(web_dist.join("index.html")));
         router = router.fallback_service(files);
     }
     router.with_state(app)
@@ -401,24 +452,53 @@ async fn health(State(app): State<Arc<App>>) -> (StatusCode, String) {
     }
 }
 
+/// `GET /api/about`: the source offer and what this listener serves.
+#[derive(Debug, Serialize)]
+struct AboutReply {
+    #[serde(flatten)]
+    about: About,
+    /// Whether the public feed is served here (`/feed`, `GET /api/feed`).
+    feed: bool,
+}
+
 /// The source offer as JSON (`judge_core::About`): repository, commit,
 /// licence, copyright, the operator's support address, the notice in one
 /// string, and the data's freshness (null when it cannot be read: the offer
-/// is served whatever the database does).
-async fn about(State(app): State<Arc<App>>) -> Json<About> {
+/// is served whatever the database does); and whether the feed is served.
+async fn about(State(app): State<Arc<App>>) -> Json<AboutReply> {
     let freshness = match &app.data {
         Some(d) => d.freshness().await,
         None => None,
     };
-    Json(
-        app.offer
+    Json(AboutReply {
+        about: app
+            .offer
             .about(app.operator.operator(), freshness, app.locale),
+        feed: app.public_calls.is_some(),
+    })
+}
+
+/// An `/api/` path nothing here serves.
+async fn api_not_found(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    let locale = shape::request_locale(
+        None,
+        headers
+            .get(axum::http::header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+        app.locale,
+    );
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiReply::Error {
+            message: catalog::messages(locale).not_routed.to_owned(),
+        }),
     )
+        .into_response()
 }
 
 /// The peer address, when the server was started with connect info (tests
 /// drive the router directly and have none). Infallible by construction.
-struct PeerAddr(Option<SocketAddr>);
+pub(crate) struct PeerAddr(pub(crate) Option<SocketAddr>);
 
 impl<S: Send + Sync> FromRequestParts<S> for PeerAddr {
     type Rejection = std::convert::Infallible;
@@ -529,7 +609,11 @@ async fn judge_route(
 /// mint a fresh allowance per request against a paid endpoint. A missing
 /// `CF-Connecting-IP` falls back to the peer, which over-counts (everything
 /// behind the proxy shares one bucket) rather than under-counting.
-fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, source: ClientIpSource) -> IpAddr {
+pub(crate) fn client_ip(
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+    source: ClientIpSource,
+) -> IpAddr {
     let trusted = match source {
         ClientIpSource::PeerAddr => None,
         ClientIpSource::CloudflareConnectingIp => headers
@@ -1181,6 +1265,199 @@ mod tests {
                 "{j}"
             );
         }
+        Ok(())
+    }
+
+    /// Serves one public call (id 1) and a page holding it.
+    struct StubFeed;
+
+    fn stub_entry() -> judge_bot::feed::Entry {
+        judge_bot::feed::Entry {
+            id: CallId::new(Uuid::from_u128(1)),
+            asked_at: "2026-10-18T12:00:00Z".into(),
+            asked: judge_bot::feed::Asked::Discord,
+            asker: Some("alice".into()),
+            question: "does trample stack?".into(),
+            answer: "No.".into(),
+            confidence: Confidence::High,
+            source: Source::Cr,
+            cr_version: "20260819".into(),
+            citations: vec![],
+            cards: vec![],
+            ratings: judge_bot::feed::Ratings {
+                judge: Some(Score::Partial),
+                ..judge_bot::feed::Ratings::default()
+            },
+            retired: None,
+        }
+    }
+
+    #[async_trait]
+    impl PublicCalls for StubFeed {
+        async fn page(
+            &self,
+            _filter: &judge_bot::feed::Filter,
+            after: Option<judge_bot::feed::Cursor>,
+        ) -> Result<judge_bot::feed::Page, JudgeError> {
+            Ok(judge_bot::feed::Page {
+                entries: if after.is_none() {
+                    vec![stub_entry()]
+                } else {
+                    vec![]
+                },
+                next: after
+                    .is_none()
+                    .then(|| "1.00000000000000000000000000000001".parse().ok())
+                    .flatten(),
+                names: judge_bot::feed::Names::default(),
+            })
+        }
+
+        async fn call(
+            &self,
+            id: CallId,
+        ) -> Result<Option<(judge_bot::feed::Entry, judge_bot::feed::Names)>, JudgeError> {
+            Ok((id == CallId::new(Uuid::from_u128(1)))
+                .then(|| (stub_entry(), judge_bot::feed::Names::default())))
+        }
+    }
+
+    /// The web page with the feed served from [`StubFeed`] (or not), open
+    /// or closed for an upgrade.
+    fn feed_app(feed: bool, availability: Availability) -> Router {
+        let store = Arc::new(StubStore::default());
+        let cfg = test_cfg(10, Path::new("does-not-exist"));
+        let app = App::new(
+            stub_deps(),
+            store as Arc<dyn CallStore>,
+            &cfg,
+            SourceOffer::upstream(judge_core::Commit::Unknown),
+            test_operator(),
+        )
+        .with_availability(availability);
+        let app = if feed {
+            app.with_public_calls(Arc::new(StubFeed))
+        } else {
+            app
+        };
+        router(
+            Arc::new(app),
+            &Interfaces::of(&nonempty![Interface::Web]),
+            Path::new("does-not-exist"),
+        )
+    }
+
+    async fn get_json(
+        router: &Router,
+        path: &str,
+    ) -> Result<(StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
+        let res = router
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty())?)
+            .await?;
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 16).await?;
+        Ok((status, serde_json::from_slice(&bytes)?))
+    }
+
+    fn kind(j: &serde_json::Value) -> Option<&str> {
+        j.get("kind").and_then(serde_json::Value::as_str)
+    }
+
+    #[tokio::test]
+    async fn the_feed_pages_and_a_call_has_its_own_address() -> Res {
+        let app = feed_app(true, Availability::open());
+        let (status, j) = get_json(&app, "/api/feed").await?;
+        assert_eq!(status, StatusCode::OK, "{j}");
+        let first = j.pointer("/entries/0").ok_or("an entry")?;
+        assert_eq!(first.get("interface"), Some(&serde_json::json!("discord")));
+        assert_eq!(first.get("asker"), Some(&serde_json::json!("alice")));
+        assert_eq!(
+            first.pointer("/ratings/judge"),
+            Some(&serde_json::json!("partial"))
+        );
+        assert!(first.get("asker_id").is_none(), "{first}");
+        let next = j
+            .get("next")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("next")?;
+        let (status, j) = get_json(
+            &app,
+            &format!("/api/feed?cursor={next}&interface=discord&user=@alice"),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{j}");
+        assert_eq!(j.get("next"), Some(&serde_json::Value::Null));
+
+        let one = Uuid::from_u128(1);
+        let (status, j) = get_json(&app, &format!("/api/calls/{one}")).await?;
+        assert_eq!(status, StatusCode::OK, "{j}");
+        assert_eq!(j.get("id"), Some(&serde_json::json!(one)));
+        for missing in [Uuid::from_u128(2).to_string(), "not-a-call".to_owned()] {
+            let (status, j) = get_json(&app, &format!("/api/calls/{missing}")).await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+            assert_eq!(kind(&j), Some("error"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_feed_query_that_does_not_read_is_a_400() -> Res {
+        let app = feed_app(true, Availability::open());
+        for q in [
+            "cursor=nope",
+            "interface=telegram",
+            "user=not%20a%20name",
+            "cursor=1.2.3",
+        ] {
+            let (status, j) = get_json(&app, &format!("/api/feed?{q}")).await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{q}: {j}");
+            assert_eq!(kind(&j), Some("error"), "{q}");
+        }
+        Ok(())
+    }
+
+    /// `JUDGE_FEED=false` (no reader): no endpoints, a JSON 404 rather than
+    /// the page, and `/api/about` says so.
+    #[tokio::test]
+    async fn a_feed_turned_off_is_not_served_and_about_says_so() -> Res {
+        for on in [true, false] {
+            let app = feed_app(on, Availability::open());
+            let (_, about) = get_json(&app, "/api/about").await?;
+            assert_eq!(about.get("feed"), Some(&serde_json::json!(on)));
+            assert!(
+                about.get("repository").is_some(),
+                "the offer is flattened in"
+            );
+            if !on {
+                for path in [
+                    "/api/feed",
+                    "/api/calls/00000000-0000-0000-0000-000000000001",
+                ] {
+                    let (status, j) = get_json(&app, path).await?;
+                    assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+                    assert_eq!(kind(&j), Some("error"), "{path}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn feed_reads_wait_out_an_upgrade_and_have_their_own_limit() -> Res {
+        let closed = feed_app(true, Availability::upgrading());
+        let (status, j) = get_json(&closed, "/api/feed").await?;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(kind(&j), Some("maintenance"));
+
+        // The question limit is 10 here; reads are counted apart.
+        let app = feed_app(true, Availability::open());
+        for _ in 0..crate::feed::READ_LIMIT {
+            assert_eq!(get_json(&app, "/api/feed").await?.0, StatusCode::OK);
+        }
+        let (status, j) = get_json(&app, "/api/calls/00000000-0000-0000-0000-000000000001").await?;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(kind(&j), Some("rate_limited"));
         Ok(())
     }
 

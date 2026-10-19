@@ -108,10 +108,11 @@ the text is restored.
 
 Two replies, both ephemeral, so only you see them:
 
-- what the bot does, how to ask and what it stores, ending with a **Data.** list: the
-  Comprehensive Rules release loaded, when the data was last refreshed, and whether the
-  latest refresh failed
-- the same notice as `/license`: where the source is and who runs this instance.
+- what the bot does and how to ask, ending with a **Data.** list: the Comprehensive Rules
+  release loaded, when the data was last refreshed, and whether the latest refresh failed
+- what it stores, that a question not asked private may be listed on the web app's public
+  feed (unless the operator set `JUDGE_FEED=false`), then the same notice as `/license`:
+  where the source is and who runs this instance.
 
 ## `/license`
 
@@ -142,7 +143,7 @@ Deletes every rating you have recorded, removes your user id and username from e
 question you asked, and anonymizes every failed call of yours. It tells you how many of
 each there were.
 - A question you asked in the channel keeps its text, which the channel saw, and is shown
-  as asked anonymously.
+  as asked anonymously, on the web app's feed too.
 - A private question keeps its time and thread. Its question and answer are replaced,
   and what it cited and which cards it was about are removed.
 - A failed call keeps its time, thread and whether it was private. Its question, error and

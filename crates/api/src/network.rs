@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use judge_agent::{Client, Options, Quota, Toolbox, Transport};
 use judge_bot::{
-    discord::endpoint::Interactions, ingest::runs::FreshnessReader, serving::Serving,
+    discord::endpoint::Interactions, feed::Feed, ingest::runs::FreshnessReader, serving::Serving,
     shutdown::Shutdown,
 };
 use judge_core::NetworkOperator;
@@ -17,6 +17,7 @@ use judge_llm::ApiKey;
 use crate::{
     ApiConfig, App, Interfaces, Refused, bind,
     discord::{All, Open},
+    feed::{PgPublicCalls, PublicCalls},
     http::{self, Maintenance, Probe},
     router, serve_on,
 };
@@ -91,7 +92,7 @@ impl Network {
         if self.interfaces.web() && !self.interfaces.api() {
             out.push(
                 "--web without --api: the page is served but POST /api/judge is not, \
-                 so questions asked on it fail (405 from the static file service) \
+                 so questions asked on it fail (404) \
                  unless another process answers them",
             );
         }
@@ -238,6 +239,21 @@ impl Network {
     }
 }
 
+/// The public feed's reads: served beside the page (`--web`) unless
+/// `JUDGE_FEED=false`.
+fn feed_reads(
+    feed: Feed,
+    interfaces: &Interfaces,
+    pool: &sqlx::PgPool,
+) -> Option<Arc<dyn PublicCalls>> {
+    match feed {
+        Feed::On { window } if interfaces.web() => {
+            Some(Arc::new(PgPublicCalls::new(pool.clone(), window)))
+        }
+        Feed::On { .. } | Feed::Off => None,
+    }
+}
+
 /// The router for `interfaces`, the MCP transport mounted when asked for,
 /// and Discord's interactions endpoint with `discord`.
 fn routes(
@@ -249,35 +265,38 @@ fn routes(
 ) -> axum::Router {
     let judge = serving.judge();
     let pool = serving.pool();
+    let feed = feed_reads(judge.feed(), interfaces, pool);
     // /api/health answers 503 when Postgres does not: the compose healthcheck
     // and the tunnel's readiness key off it. MCP's `judge` bills to the same
     // meter as the page (the process's one), so it is under the same budget.
-    let app = Arc::new(
-        App::new(
-            serving.deps(),
-            serving.store(),
-            cfg,
-            judge.source_offer().clone(),
-            operator.clone(),
-        )
-        .with_locale(judge.locale())
-        .with_probe(match discord {
-            None => Arc::new(All(vec![
-                Arc::new(pool.clone()) as Arc<dyn Probe>,
-                Arc::new(Maintenance(serving.availability().clone())),
-            ])),
-            // The endpoint before maintenance, as in `interactions_only`.
-            Some(i) => Arc::new(All(vec![
-                Arc::new(pool.clone()) as Arc<dyn Probe>,
-                Arc::new(Open(i.clone())),
-                Arc::new(Maintenance(serving.availability().clone())),
-            ])),
-        })
-        .with_availability(serving.availability().clone())
-        // /api/about reads the run record for the data's freshness, cached
-        // for a minute: the page asks on every load.
-        .with_data_status(Arc::new(FreshnessReader::new(pool.clone()))),
-    );
+    let app = App::new(
+        serving.deps(),
+        serving.store(),
+        cfg,
+        judge.source_offer().clone(),
+        operator.clone(),
+    )
+    .with_locale(judge.locale())
+    .with_probe(match discord {
+        None => Arc::new(All(vec![
+            Arc::new(pool.clone()) as Arc<dyn Probe>,
+            Arc::new(Maintenance(serving.availability().clone())),
+        ])),
+        // The endpoint before maintenance, as in `interactions_only`.
+        Some(i) => Arc::new(All(vec![
+            Arc::new(pool.clone()) as Arc<dyn Probe>,
+            Arc::new(Open(i.clone())),
+            Arc::new(Maintenance(serving.availability().clone())),
+        ])),
+    })
+    .with_availability(serving.availability().clone())
+    // /api/about reads the run record for the data's freshness, cached
+    // for a minute: the page asks on every load.
+    .with_data_status(Arc::new(FreshnessReader::new(pool.clone())));
+    let app = Arc::new(match feed {
+        Some(reads) => app.with_public_calls(reads),
+        None => app,
+    });
     let mut routes = router(Arc::clone(&app), interfaces, &cfg.web_dist);
     // The MCP transport shares the judge slots (one JUDGE_CONCURRENCY for
     // both interfaces) and the metered models (one cap). It takes the flag

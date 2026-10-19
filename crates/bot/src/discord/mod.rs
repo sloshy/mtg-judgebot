@@ -78,6 +78,7 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::{
     db::{PgLibrary, PickKey, claim_pick, release_pick},
+    feed::Feed,
     maintenance::Availability,
     run,
     serving::Serving,
@@ -307,6 +308,8 @@ pub struct Data {
     /// The instance's language (`JUDGE_LOCALE`), for an asker whose own is
     /// not one the bot speaks.
     locale: Locale,
+    /// Whether `/help` says public calls may be on the web feed.
+    feed: Feed,
 }
 
 impl std::fmt::Debug for Data {
@@ -332,6 +335,7 @@ impl Data {
         let library = PgLibrary::new(serving.pool().clone());
         let availability = serving.availability().clone();
         let locale = serving.judge().locale();
+        let feed = serving.judge().feed();
         Self {
             deps,
             store,
@@ -347,6 +351,7 @@ impl Data {
             registered: AtomicBool::new(false),
             availability,
             locale,
+            feed,
         }
     }
 
@@ -1249,7 +1254,13 @@ impl Data {
         reply.defer(true).await?;
         let freshness = self.library.freshness().await;
         // Two ephemeral messages: the second is a follow-up to the first.
-        for part in render::help(locale, &self.offer, &self.operator, freshness.as_ref()) {
+        for part in render::help(
+            locale,
+            &self.offer,
+            &self.operator,
+            freshness.as_ref(),
+            self.feed,
+        ) {
             reply.send(Message::default().content(part)).await?;
         }
         Ok(())

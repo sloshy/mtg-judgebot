@@ -1,0 +1,186 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.id,\n               (extract(epoch FROM c.created_at) * 1000000)::bigint AS \"at_micros!\",\n               to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"asked_at!\",\n               c.interface, c.asker_name, c.question, c.answer, c.confidence, c.source,\n               c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS \"cards!\",\n               rt.correct AS \"correct!\", rt.partial AS \"partial!\", rt.incorrect AS \"incorrect!\",\n               rt.judge, c.retired_reason\n        FROM calls c\n        CROSS JOIN LATERAL (\n            SELECT count(*) FILTER (WHERE r.score = 3) AS correct,\n                   count(*) FILTER (WHERE r.score = 2) AS partial,\n                   count(*) FILTER (WHERE r.score = 1) AS incorrect,\n                   (array_agg(r.score ORDER BY r.ts DESC) FILTER (WHERE r.is_judge))[1] AS judge\n            FROM ratings r WHERE r.call_id = c.id\n        ) rt\n        WHERE NOT c.private\n          AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))\n          AND c.id = $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "at_micros!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "asked_at!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "interface",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "interface"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "asker_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "asker_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "question",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "question"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "answer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "answer"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "confidence",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "confidence"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "cr_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "cr_version"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "citations",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "citations"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "cards!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "correct!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "partial!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "incorrect!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "judge",
+        "type_info": "Int2",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
+        "name": "retired_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "retired_reason"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      true
+    ]
+  },
+  "hash": "fb943a9e15349cb34303096b1193c3b8e87bac5529e2a3441e8fa97e35cd6999"
+}

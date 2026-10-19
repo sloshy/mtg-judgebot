@@ -10,6 +10,7 @@ import {
   Switch,
 } from "solid-js";
 import { createStore } from "solid-js/store";
+import Answer from "./Answer";
 import {
   type About,
   type ApiReply,
@@ -19,8 +20,9 @@ import {
   type Pin,
   sessionId,
 } from "./api";
-import Markdown from "./Markdown";
+import { CallPage, FeedPage } from "./Feed";
 import { isLocale, type Locale, type Messages, messages, pickLocale } from "./messages";
+import { follow, href, route } from "./router";
 import Symbols from "./Symbols";
 
 const MAX_QUESTION_CHARS = 1000;
@@ -113,74 +115,158 @@ export default function App() {
     void ask(entry.question, [...entry.pins, { span, name }], index);
   }
 
+  // The feed's pages exist only where the server serves the feed.
+  const feed = () => about()?.feed === true;
+
   return (
-    <main class="app">
+    // Links between the page's own routes move without a reload (`follow`).
+    // biome-ignore lint/a11y/useKeyWithClickEvents: the links inside take the keyboard; this only intercepts their clicks.
+    <main class="app" onClick={follow}>
       <header>
         <h1>
           <img src="/favicon.png" alt="" width="32" height="32" />
           {m().title}
         </h1>
         <p class="tagline">{m().tagline}</p>
+        <Show when={feed()}>
+          <nav class="meta">
+            <a
+              href={href({ page: "ask" })}
+              aria-current={route().page === "ask" ? "page" : undefined}
+            >
+              {m().navAsk}
+            </a>
+            {m().separator}
+            <a
+              href={href({ page: "feed" })}
+              aria-current={route().page === "feed" ? "page" : undefined}
+            >
+              {m().navFeed}
+            </a>
+          </nav>
+        </Show>
       </header>
 
-      <For each={entries}>
-        {(entry, i) => (
-          <section class="exchange">
-            <p class="question">
-              <Symbols text={entry.question} />
-            </p>
-            <Show when={entry.reply} fallback={<p class="thinking">{m().thinking}</p>}>
-              {(reply) => (
-                <Reply
-                  m={m()}
-                  reply={reply()}
-                  onPick={(span, name) => pick(i(), span, name)}
-                  onRetry={() => retry(i())}
-                  waiting={waiting()}
-                />
-              )}
-            </Show>
+      <Switch>
+        <Match when={route().page === "ask"}>{null}</Match>
+        <Match when={!about.loading && !feed() && route().page !== "missing"}>
+          <p class="notice">{m().pageMissing}</p>
+        </Match>
+        <Match when={about.loading}>
+          <p class="thinking">{m().loading}</p>
+        </Match>
+        <Match
+          when={(() => {
+            const r = route();
+            return r.page === "feed" ? r : false;
+          })()}
+        >
+          {(r) => (
+            <FeedPage
+              m={m()}
+              locale={browserLocale}
+              query={{ interface: r().interface, user: r().user }}
+              title={m().feedTitle}
+              filters={true}
+            />
+          )}
+        </Match>
+        <Match
+          when={(() => {
+            const r = route();
+            return r.page === "user" ? r : false;
+          })()}
+        >
+          {(r) => (
+            <FeedPage
+              m={m()}
+              locale={browserLocale}
+              query={{ user: r().name }}
+              title={m().userTitle(r().name)}
+              filters={false}
+            />
+          )}
+        </Match>
+        <Match
+          when={(() => {
+            const r = route();
+            return r.page === "call" ? r : false;
+          })()}
+        >
+          {(r) => <CallPage m={m()} locale={browserLocale} id={r().id} />}
+        </Match>
+        <Match when={route().page === "missing"}>
+          <p class="notice">{m().pageMissing}</p>
+          <p>
+            <a href={href({ page: "ask" })}>{m().backToAsk}</a>
+          </p>
+        </Match>
+      </Switch>
+
+      {/* Kept mounted off its route, so a conversation survives a look at the feed. */}
+      <div hidden={route().page !== "ask"}>
+        <For each={entries}>
+          {(entry, i) => (
+            <section class="exchange">
+              <p class="question">
+                <Symbols text={entry.question} />
+              </p>
+              <Show when={entry.reply} fallback={<p class="thinking">{m().thinking}</p>}>
+                {(reply) => (
+                  <Reply
+                    m={m()}
+                    reply={reply()}
+                    onPick={(span, name) => pick(i(), span, name)}
+                    onRetry={() => retry(i())}
+                    waiting={waiting()}
+                  />
+                )}
+              </Show>
+            </section>
+          )}
+        </For>
+
+        <Show when={entries.length === 0}>
+          <section class="examples" aria-labelledby="examples-title">
+            <h2 id="examples-title">{m().examplesTitle}</h2>
+            <ul>
+              <For each={m().examples}>
+                {(question) => (
+                  <li>
+                    <button type="button" onClick={() => tryExample(question)}>
+                      <Symbols text={question} />
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
           </section>
-        )}
-      </For>
+        </Show>
 
-      <Show when={entries.length === 0}>
-        <section class="examples" aria-labelledby="examples-title">
-          <h2 id="examples-title">{m().examplesTitle}</h2>
-          <ul>
-            <For each={m().examples}>
-              {(question) => (
-                <li>
-                  <button type="button" onClick={() => tryExample(question)}>
-                    <Symbols text={question} />
-                  </button>
-                </li>
-              )}
-            </For>
-          </ul>
-        </section>
-      </Show>
-
-      <form class="ask" onSubmit={submit}>
-        <textarea
-          ref={box}
-          value={draft()}
-          onInput={(e) => setDraft(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              e.currentTarget.form?.requestSubmit();
-            }
-          }}
-          maxLength={MAX_QUESTION_CHARS}
-          rows="3"
-          placeholder={m().placeholder}
-          disabled={waiting()}
-        />
-        <button type="submit" disabled={waiting() || !draft().trim()}>
-          {waiting() ? m().judging : m().ask}
-        </button>
-      </form>
+        <form class="ask" onSubmit={submit}>
+          <textarea
+            ref={box}
+            value={draft()}
+            onInput={(e) => setDraft(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                e.currentTarget.form?.requestSubmit();
+              }
+            }}
+            maxLength={MAX_QUESTION_CHARS}
+            rows="3"
+            placeholder={m().placeholder}
+            disabled={waiting()}
+          />
+          <button type="submit" disabled={waiting() || !draft().trim()}>
+            {waiting() ? m().judging : m().ask}
+          </button>
+        </form>
+        <Show when={feed()}>
+          <p class="hint">{m().askIsPublic}</p>
+        </Show>
+      </div>
 
       <footer>
         <p>{m().notRated}</p>
@@ -281,58 +367,7 @@ function Reply(props: {
   return (
     <Switch>
       <Match when={props.reply.kind === "answer" && props.reply}>
-        {(r) => (
-          <div class="answer">
-            <p class="answer-text">
-              <Markdown text={r().answer} />
-            </p>
-            <Show when={r().citations.length > 0}>
-              <ul class="citations">
-                <For each={r().citations}>
-                  {(c) => (
-                    <li>
-                      <Show when={c.url} fallback={<span class="cite-label">{c.label}</span>}>
-                        {(url) => (
-                          <a
-                            class="cite-label"
-                            href={url()}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            {c.label}
-                          </a>
-                        )}
-                      </Show>{" "}
-                      <span class="cite-quote">{props.m.quoted(<Symbols text={c.quote} />)}</span>
-                    </li>
-                  )}
-                </For>
-              </ul>
-            </Show>
-            <Show when={r().cards.length > 0}>
-              <p class="meta cards">
-                {props.m.cardsLabel}{" "}
-                <For each={r().cards}>
-                  {(card, j) => (
-                    <>
-                      {j() > 0 && props.m.separator}
-                      <a href={card.url} target="_blank" rel="noopener noreferrer">
-                        {card.name}
-                      </a>
-                    </>
-                  )}
-                </For>
-              </p>
-            </Show>
-            <p class="meta">
-              {props.m.answerMeta(
-                props.m.confidence[r().confidence],
-                props.m.crDate(r().cr_version),
-                props.m.source[r().source],
-              )}
-            </p>
-          </div>
-        )}
+        {(r) => <Answer m={props.m} answer={r()} />}
       </Match>
       <Match when={props.reply.kind === "ambiguous" && props.reply}>
         {(r) => {
