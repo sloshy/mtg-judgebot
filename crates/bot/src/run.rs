@@ -272,8 +272,14 @@ mod tests {
         ) -> Result<CallId, JudgeError> {
             Err(anyhow::anyhow!("unused").into())
         }
-        async fn rate(&self, _c: CallId, _u: &str, _s: Score, _j: bool) -> Result<(), JudgeError> {
-            Ok(())
+        async fn rate(
+            &self,
+            _c: CallId,
+            _u: &str,
+            _s: Score,
+            _j: bool,
+        ) -> Result<judge_core::Rated, JudgeError> {
+            Ok(judge_core::Rated::Recorded)
         }
         async fn history(
             &self,

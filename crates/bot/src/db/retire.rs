@@ -27,7 +27,9 @@
 //! answers from current rule text. Nor does retiring a call cascade to calls
 //! that cite it as a prior call: such a citation quotes what that answer *said*,
 //! which stays true, and the citing call's own rule and card dependencies are
-//! checked independently.
+//! checked independently. For the same reason a cited call that no longer
+//! exists (deleted by the retention, `ingest::prune`) is not a reason to
+//! retire its citers: its quote was checked when the citing call was stored.
 //!
 //! Both directions are computed on every run: a call is restored when its
 //! citations hold again (a rule reworded back, a ruling re-added), so the state
@@ -128,13 +130,13 @@ pub async fn retire_unsupported(pool: &PgPool) -> Result<RetireSummary, JudgeErr
         })
         .collect();
 
-    let ctx = context_for(&mut tx, &calls).await?;
+    let (ctx, deleted) = context_for(&mut tx, &calls).await?;
 
     let mut summary = RetireSummary::default();
     for call in &calls {
         summary.checked += 1;
         let was_retired = call.retired_reason.is_some();
-        match (reason_to_retire(call, &ctx), was_retired) {
+        match (reason_to_retire(call, &ctx, &deleted), was_retired) {
             (None, false) => {}
             (None, true) => {
                 sqlx::query!(
@@ -184,11 +186,16 @@ pub async fn retire_unsupported(pool: &PgPool) -> Result<RetireSummary, JudgeErr
 /// every context card still reads as it did. A call with no readable citations
 /// is retired: every persisted verdict had at least one, so an empty or
 /// undecodable list is a broken record, not a call that depends on nothing.
-fn reason_to_retire(call: &StoredCall, ctx: &Context) -> Option<String> {
+/// A citation of a prior call in `deleted` (no longer stored) holds.
+fn reason_to_retire(call: &StoredCall, ctx: &Context, deleted: &BTreeSet<Uuid>) -> Option<String> {
+    let holds = |c: &Citation| match c {
+        Citation::PriorCall { id, .. } if deleted.contains(&id.into_inner()) => true,
+        c => citation_supported(c, ctx),
+    };
     let reason = match &call.citations {
         Err(e) => format!("stored citations do not decode: {e}"),
         Ok(c) if c.is_empty() => "no citations".to_owned(),
-        Ok(c) => match c.iter().find(|c| !citation_supported(c, ctx)) {
+        Ok(c) => match c.iter().find(|c| !holds(c)) {
             Some(c) => format!("unsupported citation: {c}"),
             None => changed_card(call, ctx)?,
         },
@@ -222,11 +229,12 @@ fn truncate(s: &str, chars: usize) -> String {
 
 /// Everything the calls depend on, loaded once: exactly the rules, cards (with
 /// faces), rulings and prior-call answers their citations name, plus the cards
-/// their contexts were fingerprinted with, nothing else.
+/// their contexts were fingerprinted with, nothing else; and the cited prior
+/// calls that are no longer stored.
 async fn context_for(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     calls: &[StoredCall],
-) -> Result<Context, JudgeError> {
+) -> Result<(Context, BTreeSet<Uuid>), JudgeError> {
     let mut rule_ids: BTreeSet<String> = BTreeSet::new();
     let mut card_ids: BTreeSet<Uuid> = BTreeSet::new();
     let mut call_ids: BTreeSet<Uuid> = BTreeSet::new();
@@ -255,27 +263,36 @@ async fn context_for(
     let rules = rules::by_ids(&mut **tx, &[], &rule_ids).await?;
     let cards = cards::load_cards(&mut **tx, &card_ids).await?;
     let rulings = retrieve::load_rulings(&mut **tx, &card_ids).await?;
-    let prior = prior_answers(&mut **tx, &call_ids).await?;
-    Ok(Context {
-        cards,
-        rules,
-        rulings,
-        prior,
-        ..Context::default()
-    })
+    let (prior, stored) = prior_answers(&mut **tx, &call_ids).await?;
+    let deleted = call_ids
+        .iter()
+        .copied()
+        .filter(|id| !stored.contains(id))
+        .collect();
+    Ok((
+        Context {
+            cards,
+            rules,
+            rulings,
+            prior,
+            ..Context::default()
+        },
+        deleted,
+    ))
 }
 
 /// The cited prior calls, with only what a `prior_call` citation is checked
 /// against (the answer text) filled in meaningfully. Retired or not: the quote
 /// is of the answer as written, which does not change with its status. A row
 /// with an unreadable `cr_version` is skipped with a warning, as retrieval
-/// skips it, so one corrupt row retires its citers rather than aborting the pass.
+/// skips it, so one corrupt row retires its citers rather than aborting the
+/// pass. Also every id of `ids` still stored, corrupt or not.
 async fn prior_answers(
     pool: impl sqlx::PgExecutor<'_>,
     ids: &[Uuid],
-) -> Result<Vec<PriorCall>, JudgeError> {
+) -> Result<(Vec<PriorCall>, BTreeSet<Uuid>), JudgeError> {
     if ids.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), BTreeSet::new()));
     }
     let rows = sqlx::query!(
         "SELECT id, question, answer, category, cr_version FROM calls WHERE id = ANY($1)",
@@ -284,7 +301,8 @@ async fn prior_answers(
     .fetch_all(pool)
     .await
     .map_err(upstream("cited prior calls"))?;
-    Ok(rows
+    let stored = rows.iter().map(|r| r.id).collect();
+    let prior = rows
         .into_iter()
         .filter_map(|r| {
             let cr_version = match CrVersion::try_new(r.cr_version) {
@@ -305,5 +323,6 @@ async fn prior_answers(
                 rating_count: 0,
             })
         })
-        .collect())
+        .collect();
+    Ok((prior, stored))
 }

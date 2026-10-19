@@ -90,6 +90,9 @@ pub const SERVER_ONLY: &str = "`/judge` works in a server only, not in direct me
 /// The rating could not be stored.
 pub const RATE_FAILED: &str = "Sorry, I couldn't record that rating. Please try again.";
 
+/// A rating of an answer the instance no longer keeps (its retention deleted it).
+pub const CALL_GONE: &str = "This answer is no longer stored, so it can't be rated.";
+
 /// The fixed part of `/help`: what the bot does, how to ask, what it stores.
 const HELP_BODY: &str = "**MTG Judgebot** answers Magic: The Gathering rules questions like a judge: every \
 claim carries a citation to the Comprehensive Rules, an official ruling, or a card's Oracle text, and a \

@@ -62,6 +62,15 @@ pub trait Synthesizer: Send + Sync {
     ) -> Result<Verdict<Unvalidated>, JudgeError>;
 }
 
+/// What became of a rating ([`CallStore::rate`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rated {
+    /// Stored, or replaced the rater's earlier one.
+    Recorded,
+    /// The call is no longer stored, so there is nothing to rate.
+    CallGone,
+}
+
 /// What an embedding will be used for; retrieval quality depends on telling
 /// the provider which side of the search a text is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -102,14 +111,15 @@ pub trait CallStore: Send + Sync {
         ctx: &Context,
         tally: &Tally,
     ) -> Result<CallId, JudgeError>;
-    /// Record (or replace) one user's rating of a call.
+    /// Record (or replace) one user's rating of a call, or say the call is
+    /// no longer stored (the retention deleted it).
     async fn rate(
         &self,
         call: CallId,
         user_id: &str,
         score: Score,
         is_judge: bool,
-    ) -> Result<(), JudgeError>;
+    ) -> Result<Rated, JudgeError>;
     /// The last `n` question/answer pairs persisted in `thread_id` that
     /// `scope` admits, oldest first: the shape [`crate::judge`] takes as
     /// thread history ([`Origin::history_scope`] says which scope a question

@@ -68,7 +68,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D33),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D34),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -429,7 +429,9 @@ cargo run -r -p judgebot -- ingest rules latest         # the CR linked from Wiz
                                                         # its version differs from max(rules.cr_version)
 cargo run -r -p judgebot -- ingest retire               # retire/restore calls by whether their citations
                                                         # (and their context cards' Oracle text) still hold
-cargo run -r -p judgebot -- ingest refresh              # cards + rules latest + lists + retire + embed + emoji; every
+cargo run -r -p judgebot -- ingest prune                # delete calls older than JUDGE_CALL_RETENTION_DAYS
+                                                        # (with their ratings; judge_runs stay, unlinked)
+cargo run -r -p judgebot -- ingest refresh              # cards + rules latest + lists + prune + retire + embed + emoji; every
                                                         # step runs even if one fails, exit≠0 if any did;
                                                         # recorded in refresh_runs
 scripts/refresh-data.sh              # a refresh now (or an operator's own cron with JUDGE_REFRESH_HOURS=0):
@@ -850,6 +852,10 @@ Key cross-file facts that aren't obvious from any one file:
   for real.
 - `JUDGE_BUDGET_PERIOD`, `JUDGE_ALERT_WEBHOOK` (D19; the webhook also hears the
   scheduled refresh).
+- `JUDGE_CALL_RETENTION_DAYS` (unset/`0` = keep, `1..=3650`, validated at `Config`
+  load; D34): the refresh's `prune` step (`ingest::prune`) and `judgebot ingest prune`
+  delete older calls with their ratings. `judge_runs` stay (`call_id` SET NULL), and
+  the retirement pass treats a cited prior call that no longer exists as supported.
 
 For the HTTP API it also holds:
 

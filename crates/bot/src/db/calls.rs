@@ -5,7 +5,7 @@ use std::{fmt, sync::Arc};
 use async_trait::async_trait;
 use judge_core::{
     CallId, CallStore, Context, FailedCall, FailedCallId, Forgotten, HistoryScope, InputKind,
-    JudgeError, Left, Origin, Qa, Question, RunRecord, Score, Tally, Validated, Verdict,
+    JudgeError, Left, Origin, Qa, Question, Rated, RunRecord, Score, Tally, Validated, Verdict,
     oracle_fingerprint,
 };
 use pgvector::Vector;
@@ -231,12 +231,14 @@ impl CallStore for PgCallStore {
         user_id: &str,
         score: Score,
         is_judge: bool,
-    ) -> Result<(), JudgeError> {
+    ) -> Result<Rated, JudgeError> {
         let score = i16::from(score as u8);
-        sqlx::query!(
+        // No row when the call is gone (the retention deleted it); a call
+        // deleted between the check and the insert fails the foreign key.
+        let written = sqlx::query!(
             r#"
             INSERT INTO ratings (call_id, user_id, score, is_judge)
-            VALUES ($1, $2, $3, $4)
+            SELECT $1, $2, $3, $4 WHERE EXISTS (SELECT 1 FROM calls WHERE id = $1)
             ON CONFLICT (call_id, user_id)
             DO UPDATE SET score = EXCLUDED.score, is_judge = EXCLUDED.is_judge, ts = now()
             "#,
@@ -246,9 +248,13 @@ impl CallStore for PgCallStore {
             is_judge
         )
         .execute(&self.pool)
-        .await
-        .map_err(upstream("upsert rating"))?;
-        Ok(())
+        .await;
+        match written {
+            Ok(done) if done.rows_affected() == 0 => Ok(Rated::CallGone),
+            Ok(_) => Ok(Rated::Recorded),
+            Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => Ok(Rated::CallGone),
+            Err(e) => Err(upstream("upsert rating")(e)),
+        }
     }
 
     async fn record_failure(&self, failed: &FailedCall) -> Result<FailedCallId, JudgeError> {

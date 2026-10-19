@@ -67,7 +67,8 @@ up to an hour for a command that holds it, so two never overlap. `migrate` (its 
 | `reembed [--yes] [--clear]` | Make the database hold the configured embedder's space: retype the columns, clear every vector, record the space, then embed all. Without `--yes` it prints the row counts and a rough cost and changes nothing. When the database is already in the right space, it only fills empty rows. `--clear` re-pays every row. |
 | `emoji` | Upload Scryfall's card symbols as the bot's application emoji. Needs only `DISCORD_TOKEN`. |
 | `retire` | Retire calls whose citations no longer hold against current rules, rulings and Oracle text. Restore those that hold again. |
-| `refresh` | `cards`, `rules latest`, `lists` (reload a built-in alias or note list an upgrade changed), `retire`, `embed`, `emoji`. Every step runs even if one fails, and the exit code is ≠ 0 if any did. `embed` with no embedder and `emoji` with no `DISCORD_TOKEN` are skipped, not failed. Each run is recorded in `refresh_runs`. `judgebot --jobs` runs the same steps every `JUDGE_REFRESH_HOURS`, taking turns with this command through the lease. |
+| `prune` | Delete calls older than `JUDGE_CALL_RETENTION_DAYS`, with their ratings. Their usage records in `judge_runs` stay. Does nothing when the variable is unset or `0`. |
+| `refresh` | `cards`, `rules latest`, `lists` (reload a built-in alias or note list an upgrade changed), `prune`, `retire`, `embed`, `emoji`. Every step runs even if one fails, and the exit code is ≠ 0 if any did. `prune` with no retention, `embed` with no embedder and `emoji` with no `DISCORD_TOKEN` are skipped, not failed. Each run is recorded in `refresh_runs`. `judgebot --jobs` runs the same steps every `JUDGE_REFRESH_HOURS`, taking turns with this command through the lease. |
 
 ## `judgebot backup`
 

@@ -1315,3 +1315,38 @@ dashboard and the admin surfaces read cost, models and outcomes from them.
 - **Not recorded.** An agent-driven session has no run row: its model is the agent, and
   its steps span processes. Ingest, search and eval runs pass their own tallies and
   read or drop them.
+
+## D34. Call retention
+
+*Decided 2026-10-18.*
+
+An operator can bound how long answered calls are kept: `JUDGE_CALL_RETENTION_DAYS`,
+unset or `0` to keep every call (the default), 1 to 3650 otherwise.
+
+- **Opt-in.** Kept calls are the prior-call examples and the thread history, so deleting
+  them makes answers worse. That is the operator's trade to make, not a default. The
+  docs suggest 90 days. Rejected: a default retention, which would quietly delete an
+  instance's best examples after an upgrade.
+- **A refresh step.** `prune` runs in every refresh, after `lists` and before `retire`,
+  so the pass does not check calls about to go. It is also `judgebot ingest prune`.
+  Under the refresh lease like every data-writing step, so a scheduled run, a cron run
+  and a manual one take turns, and the schema check before each step applies. With the
+  schedule off, the operator crons either. Rejected: a separate scheduler task, which
+  would need its own lease, skew check and record for a daily `DELETE`.
+- **What goes and what stays.** A call goes with its ratings (`ON DELETE CASCADE`). Its
+  `judge_runs` row stays, with `call_id` set NULL (D33), so cost and outcome records
+  cover the whole history; counts read from `calls` (`judge-cli stats` today) cover
+  only what is kept. `failed_calls` keeps its own bound (D27). Deletion runs in batches
+  of 1000, oldest first, on an index of `created_at`, until a batch finds nothing. A
+  call locked by a writer in progress is skipped (`SKIP LOCKED`) and goes next time. A
+  batch that deadlocks with `/forget` (ratings then calls, the cascade's opposite
+  order) is tried again. A rating of a deleted call is `Rated::CallGone`, answered as
+  such rather than as a failure to retry.
+- **Citations of a deleted call hold.** A `prior_call` citation quotes what an answer
+  said, checked when the citing call was stored. The retirement pass already declines
+  to cascade a retirement for that reason, so it treats a cited call that no longer
+  exists as supported. A cited call that exists but cannot be read still retires its
+  citers. The pass cannot tell a deleted call from one that was never stored, but no
+  path stores a citation of one: persist and session validation both check it against
+  stored rows. Rejected: retiring every call that cited a pruned one, which would let the
+  retention retire newer, still-correct answers.

@@ -63,7 +63,7 @@ use std::{
 use anyhow::Context as _;
 use judge_core::{
     Ambiguous, Asker, CallId, CallStore, Card, Deps, DiscordOperator, JudgeError, Origin, Question,
-    Resolution, RuleId, Score, SourceOffer, Validated, Verdict, Visibility,
+    Rated, Resolution, RuleId, Score, SourceOffer, Validated, Verdict, Visibility,
 };
 use judge_llm::ApiKey;
 use nonempty::NonEmpty;
@@ -503,7 +503,11 @@ impl Data {
         };
         let user_id = c.user.id.to_string();
         let text = match self.store.rate(call, &user_id, score, is_judge).await {
-            Ok(()) => {
+            Ok(Rated::CallGone) => {
+                tracing::info!(%call, "rating for a call no longer stored");
+                render::CALL_GONE.to_owned()
+            }
+            Ok(Rated::Recorded) => {
                 tracing::info!(%call, user = %user_id, score = score as u8, is_judge, "rated");
                 render::rated(score, is_judge, &self.offer, &self.operator)
             }

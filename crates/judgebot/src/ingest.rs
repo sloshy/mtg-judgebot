@@ -14,9 +14,10 @@
 //!                                       #   (--clear: redo all)
 //! judgebot ingest emoji                 # Scryfall card symbols -> the bot's Discord application emoji
 //! judgebot ingest retire                # retire/restore calls by whether their citations still hold
+//! judgebot ingest prune                 # delete calls older than JUDGE_CALL_RETENTION_DAYS, with their ratings
 //! judgebot ingest migrate               # apply the embedded schema migrations (the serving roles do this at
 //!                                       #   startup; this is for an empty database, or JUDGE_AUTO_MIGRATE=false)
-//! judgebot ingest refresh               # cards, rules latest, lists, retire, embed, emoji — the scheduled job
+//! judgebot ingest refresh               # cards, rules latest, lists, prune, retire, embed, emoji — the scheduled job
 //! judgebot ingest upgrade               # print what this binary's pending migrations are (`upgrade: in-place`,
 //!                                       #   `upgrade: major` or `upgrade: major-from-1.x`), changing nothing;
 //!                                       #   scripts/deploy.sh asks the new image before it deploys
@@ -57,8 +58,8 @@ use anyhow::{Context as _, Result};
 use judge_bot::budget::{self, Budget};
 use judge_bot::ingest::{
     Embedder, RefreshLease, aliases, cache_dir, connect, cr, embed, embedder_from_config, emoji,
-    ensure_writable, init, lease, lists::ListText, notes, reembed, refresh, retire, runs::Trigger,
-    schema, scryfall,
+    ensure_writable, init, lease, lists::ListText, notes, prune, reembed, refresh, retire,
+    runs::Trigger, schema, scryfall,
 };
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
@@ -99,6 +100,7 @@ pub enum Leased {
         clear: bool,
     },
     Retire,
+    Prune,
     Refresh,
 }
 
@@ -133,7 +135,7 @@ impl Yaml {
 const LATEST: &str = "latest";
 
 /// The usage `judgebot ingest --help` prints.
-pub const USAGE: &str = "usage: judgebot ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | migrate | refresh | upgrade>\n\
+pub const USAGE: &str = "usage: judgebot ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | prune | migrate | refresh | upgrade>\n\
 init: the whole first load (migrate, cards, rules latest, aliases, notes, embed, emoji); safe to run again.\n\
 aliases, notes: with no file, the lists this binary was built with (data/*.yaml), which refresh then keeps current; a file is yours, and refresh leaves it alone.";
 
@@ -170,6 +172,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
         }
         Some("emoji") => Ok(Command::Emoji),
         Some("retire") => leased(Leased::Retire),
+        Some("prune") => leased(Leased::Prune),
         Some("migrate") => Ok(Command::Migrate),
         Some("upgrade") => Ok(Command::Upgrade),
         Some("refresh") => leased(Leased::Refresh),
@@ -247,6 +250,10 @@ pub async fn run(cmd: Command) -> Result<()> {
             let meter = SpendMeter::from_env()?;
             // Inputs first, so a typo fails now rather than after a wait.
             let job = Job::prepare(cmd, &meter)?;
+            if let Job::Nothing(why) = job {
+                tracing::info!("{why}");
+                return Ok(());
+            }
             let pool = connect().await?;
             let ledger = budget::start(pool.clone(), meter.clone(), budget()?, PROCESS).await;
             // Waits (with a warning) for a refresh or step in progress, so cron
@@ -288,7 +295,10 @@ enum Job {
         clear: bool,
     },
     Retire,
+    Prune(prune::Days),
     Refresh,
+    /// Nothing to do, and why: no lease needed.
+    Nothing(&'static str),
 }
 
 impl Job {
@@ -307,6 +317,14 @@ impl Job {
                 clear,
             },
             Leased::Retire => Self::Retire,
+            // Read before the lease, so a bad value fails at once and an
+            // unset one waits for nothing (`run` sees `Keep` first).
+            Leased::Prune => match prune::Retention::from_env()? {
+                prune::Retention::Days(days) => Self::Prune(days),
+                prune::Retention::Keep => Self::Nothing(
+                    "JUDGE_CALL_RETENTION_DAYS is unset or 0: every call is kept, nothing to prune",
+                ),
+            },
             // Its embedder is read at its embed step: a configuration that
             // does not load fails that step, and the others still run.
             Leased::Refresh => Self::Refresh,
@@ -336,6 +354,11 @@ impl Job {
                 clear,
             } => reembed::run(lease, embedder.as_deref(), yes, clear).await,
             Self::Retire => retire(lease).await.map(drop),
+            Self::Prune(days) => prune::run(lease, days).await.map(drop),
+            Self::Nothing(why) => {
+                tracing::info!("{why}");
+                Ok(())
+            }
             Self::Refresh => refresh(lease, cache_dir, Trigger::Manual, meter)
                 .await
                 .ensure_ok(),
@@ -397,6 +420,7 @@ mod tests {
             &["embed"],
             &["reembed"],
             &["retire"],
+            &["prune"],
             &["refresh"],
         ] {
             assert!(matches!(parse(args)?, Command::Leased(_)), "{args:?}");

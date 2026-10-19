@@ -31,6 +31,7 @@ pub mod embed;
 pub mod emoji;
 pub mod lists;
 pub mod notes;
+pub mod prune;
 pub mod reembed;
 mod renumber;
 pub mod runs;
@@ -258,10 +259,9 @@ impl InitSteps {
     }
 }
 
-/// What `init` ran of the refresh steps, as the run record stores it: each
-/// step it reached, then every one it did not reach as skipped
-/// ([`Skip::InitStopped`]), in [`Step::ALL`] order (`init` runs them in that
-/// order). A failure outside those steps (such as the lease lost between them)
+/// What `init` ran of the refresh steps, as the run record stores it: every
+/// step in [`Step::ALL`] order, the ones it did not reach as skipped
+/// ([`Skip::InitStopped`]). A failure outside those steps (such as the lease lost between them)
 /// fails the run all the same ([`RunReport::aborted`]).
 fn init_report(
     mut steps: Vec<StepReport>,
@@ -270,11 +270,13 @@ fn init_report(
     cr_after: Option<String>,
     recorded: bool,
 ) -> RunReport {
-    for step in Step::ALL {
-        if !steps.iter().any(|s| s.step() == step) {
-            steps.push(step.skipped(Skip::InitStopped));
-        }
-    }
+    let steps: Vec<StepReport> = Step::ALL
+        .into_iter()
+        .map(|step| match steps.iter().position(|s| s.step() == step) {
+            Some(i) => steps.swap_remove(i),
+            None => step.skipped(Skip::InitStopped),
+        })
+        .collect();
     let aborted = failed && !steps.iter().any(StepReport::failed);
     RunReport {
         steps,
@@ -336,6 +338,8 @@ async fn init_data(
     if let Some(e) = failed {
         return Err(e);
     }
+    // A first load has nothing old to prune; the next refresh applies the retention.
+    reports.push(Step::Prune.skipped(Skip::NotInInit));
     // Nothing to retire in a fresh database; a re-run over a used one does
     // what a refresh would after loading the same data.
     let t = steps.next(lease, "retire").await?;
@@ -430,8 +434,10 @@ fn has_discord_token() -> bool {
 /// Every scheduled step ([`Step::ALL`]), in dependency order: cards and rules
 /// first, then the built-in curated lists where an upgrade changed them
 /// ([`lists::refresh`]; they resolve against the cards, and nothing later
-/// reads them), then the retirement pass over the calls that cite the cards
-/// and rules, then `embed` so a new CR's rows are embedded in the same run,
+/// reads them), then the calls past `JUDGE_CALL_RETENTION_DAYS` deleted
+/// ([`prune`], skipped when every call is kept), so the retirement pass does
+/// not check them, then the retirement pass over the calls that cite the
+/// cards and rules, then `embed` so a new CR's rows are embedded in the same run,
 /// then the emoji. A failed
 /// step is logged and the rest still run; the report names every failure
 /// ([`RunReport::ensure_ok`]).
@@ -620,6 +626,13 @@ async fn refresh_step(
         Step::Cards => StepReport::Cards(Outcome::of(scryfall::run(lease, cache_dir).await)),
         Step::Rules => StepReport::Rules(Outcome::of(cr::run_latest(lease, cache_dir).await)),
         Step::Lists => StepReport::Lists(lists::refresh(lease).await),
+        Step::Prune => StepReport::Prune(match prune::Retention::from_env() {
+            Ok(prune::Retention::Keep) => Outcome::Skipped {
+                reason: Skip::KeepCalls,
+            },
+            Ok(prune::Retention::Days(days)) => Outcome::of(prune::run(lease, days).await),
+            Err(e) => Outcome::of(Err(e)),
+        }),
         Step::Retire => StepReport::Retire(Outcome::of(retire(lease).await)),
         Step::Embed => StepReport::Embed(match configured_embedder(meter) {
             Ok(Some(embedder)) => match over_ceiling(lease, trigger).await {
@@ -673,8 +686,8 @@ mod tests {
     use super::*;
     use crate::{clock::manual::Manual, lease::testing::HANG};
 
-    /// `init`'s record has every refresh step, in order: those it reached,
-    /// then the rest as skipped because it stopped; a failure outside them
+    /// `init`'s record has every refresh step, in order, the ones it did
+    /// not reach skipped because it stopped; a failure outside them
     /// fails the run all the same.
     #[test]
     fn an_init_run_is_recorded_with_every_step() {
@@ -686,6 +699,7 @@ mod tests {
             ok(Step::Cards),
             Step::Rules.skipped(Skip::NoEmbedder),
             Step::Lists.skipped(Skip::NoEmbedder),
+            Step::Prune.skipped(Skip::NotInInit),
             Step::Retire.skipped(Skip::NoEmbedder),
             Step::Embed.skipped(Skip::NoEmbedder),
             Step::Emoji.skipped(Skip::NoDiscordToken),

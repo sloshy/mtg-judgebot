@@ -681,8 +681,8 @@ mod tests {
             _user: &str,
             _score: Score,
             _judge: bool,
-        ) -> Result<(), JudgeError> {
-            Ok(())
+        ) -> Result<judge_core::Rated, JudgeError> {
+            Ok(judge_core::Rated::Recorded)
         }
         async fn history(
             &self,

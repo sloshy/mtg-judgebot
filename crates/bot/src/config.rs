@@ -76,6 +76,7 @@ use crate::{
     alert::{ALERT_WEBHOOK_ENV, AlertWebhook},
     budget::{self, Budget, Period, Thresholds},
     db::Vectors,
+    ingest::prune::{self, Retention},
     jobs::{self, Jobs, Schedule},
 };
 
@@ -1046,6 +1047,17 @@ pub enum ConfigError {
         /// The value as set.
         value: String,
     },
+    /// `JUDGE_CALL_RETENTION_DAYS` is set but is not a whole number of days
+    /// in range.
+    #[error(
+        "{}={value:?}: not a whole number of days from 1 to {} (0 or unset keeps every call)",
+        prune::RETENTION_ENV,
+        prune::MAX_RETENTION_DAYS
+    )]
+    BadRetention {
+        /// The value as set.
+        value: String,
+    },
     /// A key that does not apply to the provider as configured.
     #[error("providers.{provider}: {key} {reason}")]
     Misplaced {
@@ -1177,6 +1189,7 @@ impl ConfigError {
             Self::BadSourceUrl { .. } => env(SOURCE_URL_ENV),
             Self::BadContact { var, .. } | Self::BadBudget { var, .. } => env(var),
             Self::BadSchedule { .. } => env(jobs::REFRESH_HOURS_ENV),
+            Self::BadRetention { .. } => env(prune::RETENTION_ENV),
             Self::MissingContact(MissingContact::Discord) => env(OPERATOR_DISCORD_ENV),
             Self::MissingContact(MissingContact::Email) => env(OPERATOR_EMAIL_ENV),
             Self::EmbedDimensions { .. } => toml("models.embed.dimensions".to_owned()),
@@ -1625,6 +1638,17 @@ pub fn refresh_schedule(env: impl Fn(&str) -> Option<String>) -> Result<Schedule
         .map_err(|value| ConfigError::BadSchedule { value })
 }
 
+/// The call retention from `env` (`JUDGE_CALL_RETENTION_DAYS`), blank or
+/// `0` keeping every call.
+///
+/// # Errors
+/// [`ConfigError::BadRetention`] for anything but a whole number from 0 to
+/// [`prune::MAX_RETENTION_DAYS`].
+pub fn call_retention(env: impl Fn(&str) -> Option<String>) -> Result<Retention, ConfigError> {
+    Retention::parse(env(prune::RETENTION_ENV).as_deref())
+        .map_err(|value| ConfigError::BadRetention { value })
+}
+
 /// The commit stamped into this binary by `build.rs`.
 #[must_use]
 pub fn build_commit() -> Commit {
@@ -1757,6 +1781,9 @@ impl Config {
         let meter = SpendMeter::from_var(env(MAX_SPEND_ENV).as_deref())?;
         let offer = source_offer(&env)?;
         let operator = operator(&env)?;
+        // Validated here so a bad value stops startup; the refresh's `prune`
+        // step reads it when it runs, as its embed step reloads the models.
+        call_retention(&env)?;
         Ok(Self {
             source: Source::File(path.to_path_buf()),
             chat: Some(Chat { extract, synth }),
@@ -1857,6 +1884,9 @@ impl Config {
                 })
             })
             .transpose()?;
+        // Validated here so a bad value stops startup; the refresh's `prune`
+        // step reads it when it runs, as its embed step reloads the models.
+        call_retention(&env)?;
         Ok(Self {
             source: Source::Environment,
             chat,

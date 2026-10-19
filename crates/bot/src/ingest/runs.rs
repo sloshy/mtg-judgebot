@@ -28,6 +28,7 @@
 //!  {"step": "rules",  "outcome": "ok", "summary": {"cr": "updated", "version": "20260819", "url": "https://…"}},
 //!  {"step": "lists",  "outcome": "ok", "summary": {"aliases": {"action": "reloaded", "rows": 54, "unresolved": 0},
 //!                                                "notes": {"action": "kept", "reason": "file"}}},
+//!  {"step": "prune",  "outcome": "ok", "summary": {"days": 90, "calls": 12, "ratings": 3}},
 //!  {"step": "retire", "outcome": "ok", "summary": {"checked": 40, "retired": 1, "restored": 0, "still_retired": 2}},
 //!  {"step": "embed",  "outcome": "skipped", "reason": "no_embedder"},
 //!  {"step": "emoji",  "outcome": "failed", "error": "GET https://api.scryfall.com/symbology: …"}]
@@ -68,7 +69,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
-use super::{cr, emoji, lists};
+use super::{cr, emoji, lists, prune};
 use crate::db::RetireSummary;
 
 /// What started a run.
@@ -101,6 +102,8 @@ pub enum Step {
     /// The built-in curated lists, reloaded where an upgrade changed them
     /// ([`super::lists`]).
     Lists,
+    /// Calls past `JUDGE_CALL_RETENTION_DAYS` deleted ([`super::prune`]).
+    Prune,
     /// The retirement pass over stored calls.
     Retire,
     /// Vectors for every empty row.
@@ -111,10 +114,11 @@ pub enum Step {
 
 impl Step {
     /// Every step, in the order [`super::refresh`] runs them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Cards,
         Self::Rules,
         Self::Lists,
+        Self::Prune,
         Self::Retire,
         Self::Embed,
         Self::Emoji,
@@ -128,6 +132,7 @@ impl Step {
             Self::Cards => StepReport::Cards(Outcome::Skipped { reason }),
             Self::Rules => StepReport::Rules(Outcome::Skipped { reason }),
             Self::Lists => StepReport::Lists(Outcome::Skipped { reason }),
+            Self::Prune => StepReport::Prune(Outcome::Skipped { reason }),
             Self::Retire => StepReport::Retire(Outcome::Skipped { reason }),
             Self::Embed => StepReport::Embed(Outcome::Skipped { reason }),
             Self::Emoji => StepReport::Emoji(Outcome::Skipped { reason }),
@@ -142,6 +147,7 @@ impl Step {
             Self::Cards => StepReport::Cards(Outcome::failure(error)),
             Self::Rules => StepReport::Rules(Outcome::failure(error)),
             Self::Lists => StepReport::Lists(Outcome::failure(error)),
+            Self::Prune => StepReport::Prune(Outcome::failure(error)),
             Self::Retire => StepReport::Retire(Outcome::failure(error)),
             Self::Embed => StepReport::Embed(Outcome::failure(error)),
             Self::Emoji => StepReport::Emoji(Outcome::failure(error)),
@@ -155,6 +161,7 @@ impl Step {
             Self::Cards => "cards",
             Self::Rules => "rules",
             Self::Lists => "lists",
+            Self::Prune => "prune",
             Self::Retire => "retire",
             Self::Embed => "embed",
             Self::Emoji => "emoji",
@@ -194,6 +201,11 @@ pub enum Skip {
     /// `judgebot ingest init` stops at its first failure (each step needs the
     /// one before it), so this one was not started.
     InitStopped,
+    /// `JUDGE_CALL_RETENTION_DAYS` is unset or 0: every call is kept.
+    KeepCalls,
+    /// `judgebot ingest init` is a first load and prunes nothing; the next
+    /// refresh does.
+    NotInInit,
 }
 
 impl Skip {
@@ -217,6 +229,8 @@ impl std::fmt::Display for Skip {
             Self::SchemaBehind => "migrations are pending: run `judgebot ingest migrate`",
             Self::RunTimedOut => "not run: the refresh timed out at an earlier step",
             Self::InitStopped => "not run: init stops at its first failure",
+            Self::KeepCalls => "JUDGE_CALL_RETENTION_DAYS is unset or 0: every call is kept",
+            Self::NotInInit => "not run by init: the next refresh prunes",
             Self::EmbedCeiling { rows, ceiling } => {
                 return write!(
                     f,
@@ -318,6 +332,8 @@ pub enum StepReport {
     Rules(Outcome<cr::Outcome>),
     /// What became of each curated list.
     Lists(Outcome<lists::Summary>),
+    /// What the retention deleted.
+    Prune(Outcome<prune::Pruned>),
     /// What the retirement pass changed.
     Retire(Outcome<RetireSummary>),
     /// Rows embedded per table.
@@ -334,6 +350,7 @@ impl StepReport {
             Self::Cards(_) => Step::Cards,
             Self::Rules(_) => Step::Rules,
             Self::Lists(_) => Step::Lists,
+            Self::Prune(_) => Step::Prune,
             Self::Retire(_) => Step::Retire,
             Self::Embed(_) => Step::Embed,
             Self::Emoji(_) => Step::Emoji,
@@ -347,6 +364,7 @@ impl StepReport {
             Self::Cards(o) => o.skip(),
             Self::Rules(o) => o.skip(),
             Self::Lists(o) => o.skip(),
+            Self::Prune(o) => o.skip(),
             Self::Retire(o) => o.skip(),
             Self::Embed(o) => o.skip(),
             Self::Emoji(o) => o.skip(),
@@ -360,6 +378,7 @@ impl StepReport {
             Self::Cards(o) => o.failed(),
             Self::Rules(o) => o.failed(),
             Self::Lists(o) => o.failed(),
+            Self::Prune(o) => o.failed(),
             Self::Retire(o) => o.failed(),
             Self::Embed(o) => o.failed(),
             Self::Emoji(o) => o.failed(),
@@ -372,6 +391,7 @@ impl StepReport {
             Self::Cards(o) => o.log(step),
             Self::Rules(o) => o.log(step),
             Self::Lists(o) => o.log(step),
+            Self::Prune(o) => o.log(step),
             Self::Retire(o) => o.log(step),
             Self::Embed(o) => o.log(step),
             Self::Emoji(o) => o.log(step),

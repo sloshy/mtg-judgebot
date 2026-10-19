@@ -676,15 +676,18 @@ steps, in order:
    the version differs.
 3. `lists`: reloads the built-in alias and note lists when an upgrade changed them, and
    leaves a list you loaded from your own file alone (see below).
-4. `retire`: re-checks every stored call's citations against the data just loaded (see
+4. `prune`: deletes calls older than `JUDGE_CALL_RETENTION_DAYS`, with their ratings
+   (see Retention below). Skipped when the variable is unset or `0`.
+5. `retire`: re-checks every stored call's citations against the data just loaded (see
    below).
-5. `embed`: only rows whose text changed. The CR loader nulls the embedding of those
+6. `embed`: only rows whose text changed. The CR loader nulls the embedding of those
    rows alone, so a new CR costs the embedder a few hundred rules, not all of them.
-6. `emoji`: uploads any card symbol Scryfall added. Skipped when `DISCORD_TOKEN` is
+7. `emoji`: uploads any card symbol Scryfall added. Skipped when `DISCORD_TOKEN` is
    unset.
 
 Each step runs even if an earlier one failed. A step that cannot run for want of
-configuration (`embed` with no embedder, `emoji` with no `DISCORD_TOKEN`) logs
+configuration (`prune` with no retention, `embed` with no embedder, `emoji` with no
+`DISCORD_TOKEN`) logs
 `refresh step skipped` with the reason and does not count as a failure. Most days a run
 costs one Scryfall download and nothing else. It takes a few minutes on a NAS, mostly
 parsing the `default_cards` file. The CR load is one transaction, so retrieval sees the
@@ -692,6 +695,27 @@ old rules or the new, never a mix. The `cards` step commits in batches: each car
 changes together with its faces, and the rulings change in one transaction after the
 cards. A `cards` step cut short leaves some cards refreshed, and the next run finishes
 the rest.
+
+### Retention
+
+`JUDGE_CALL_RETENTION_DAYS` bounds how long answered calls are kept: 1 to 3650 days,
+unset or `0` to keep every call (the default). 90 is a sensible choice. The refresh's
+`prune` step deletes calls past it with their ratings, as does `judgebot ingest prune`
+by hand. With `JUDGE_REFRESH_HOURS=0`, cron one of the two.
+
+- **Usage survives.** Each run's usage record (`judge_runs`: outcome, models, tokens,
+  cost) stays, unlinked from the deleted call, and so does the daily spend ledger.
+  `judge-cli stats` counts questions and ratings from the stored calls, so for days past
+  the retention it shows the spend and fewer (or no) questions.
+- **Examples go.** A deleted call is no longer a prior-call example or part of a
+  thread's history, so a well-rated old answer stops guiding new ones.
+- **Citations stay.** A newer call that cited a deleted one keeps that citation, and
+  the retirement pass does not retire it for it.
+- **Ratings stop.** A rating button on a deleted answer replies that it is no longer
+  stored.
+- **Failed calls** have their own bound: 30 days or the newest 500.
+
+A value out of range stops every binary that loads the configuration.
 
 ### Schedule
 

@@ -49,6 +49,9 @@ Operators should know these properties. The reasoning behind each is in
     text and, for a Discord question, the asker's user id and username. Pruned to 30
     days / 500 rows when a later failure is recorded.
 
+  Calls are kept until the operator's `JUDGE_CALL_RETENTION_DAYS` (unset: kept), then
+  deleted with their ratings by the next refresh.
+
   `/forget` deletes the user's ratings and removes their id and username from their calls
   and failed calls. A private call loses its question, answer, citations and card ids too,
   and a failed one its text. A public call keeps its text, which the channel saw.

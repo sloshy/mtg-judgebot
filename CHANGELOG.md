@@ -19,6 +19,15 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Call retention.** `JUDGE_CALL_RETENTION_DAYS` (unset or `0`: keep every call, as
+  before) deletes answered calls older than that many days, with their ratings, at each
+  refresh (a new `prune` step) or with `judgebot ingest prune`. Each run's usage record
+  (`judge_runs`) and the daily spend ledger stay. `judge-cli stats` counts questions and
+  ratings from the stored calls, so its counts for days past the retention drop to
+  what is left. A deleted call stops being an example for later answers; a newer call
+  that cited it keeps its citation. A rating button on a deleted answer says it is no
+  longer stored.
+
 - **Every judge run is recorded with its cost.** A `/judge`, a web question, an MCP
   `judge` and a `judge-cli judge` each leave a `judge_runs` row, whatever the outcome
   (answered, ambiguous, not found, out of scope, refused, at the spend cap, failed),

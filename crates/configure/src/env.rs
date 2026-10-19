@@ -27,6 +27,7 @@ use judge_bot::{
     budget::{PERIOD_ENV, WARN_AT_ENV},
     config::{ANTHROPIC_KEY_ENV, CONFIG_ENV, MAX_SPEND_ENV, VOYAGE_KEY_ENV},
     db::migrate::AUTO_MIGRATE_ENV,
+    ingest::prune::RETENTION_ENV,
     jobs::REFRESH_HOURS_ENV,
 };
 use judge_core::{
@@ -165,6 +166,7 @@ pub const VARS: &[Var] = &[
         },
     ),
     setting(REFRESH_HOURS_ENV, Group::Pipeline, int(0)),
+    setting(RETENTION_ENV, Group::Pipeline, int(0)),
     setting(WARN_AT_ENV, Group::Pipeline, TEXT),
     // A credential: whoever has the URL can post to the channel.
     secret(ALERT_WEBHOOK_ENV, Group::Pipeline),

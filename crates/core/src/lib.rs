@@ -30,7 +30,9 @@ pub use operator::{
     DiscordOperator, DiscordUsername, MissingContact, NetworkOperator, Operator, SupportEmail,
 };
 pub use origin::{Asker, HistoryScope, Interface, Origin, Visibility};
-pub use ports::{CallStore, Embedder, Extractor, InputKind, Resolver, Retriever, Synthesizer};
+pub use ports::{
+    CallStore, Embedder, Extractor, InputKind, Rated, Resolver, Retriever, Synthesizer,
+};
 pub use run::{FailedCallId, Left, Outcome, RunRecord};
 pub use source::{About, Commit, CommitHash, RepositoryUrl, SourceOffer};
 pub use usage::{Bill, Charge, Cost, Stage, Tally, Tokens};

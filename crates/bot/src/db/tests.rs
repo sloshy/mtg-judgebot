@@ -2165,3 +2165,94 @@ async fn every_outcome_and_stage_is_storable(pool: PgPool) -> anyhow::Result<()>
     assert_eq!(usize::try_from(n)?, Outcome::ALL.len());
     Ok(())
 }
+
+/// The retention deletes calls past it with their ratings and nothing
+/// younger; a call that cited a deleted one as a prior call stays live.
+#[sqlx::test(migrations = "./migrations")]
+async fn prune_deletes_old_calls_and_their_ratings_and_retires_no_citer(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    use crate::ingest::prune::{self, Days};
+    seed(&pool).await?;
+    let retriever = PgRetriever::new(pool.clone());
+    let store = PgCallStore::new(pool.clone());
+    let q = question("how do layers work?");
+    let ctx = retriever
+        .retrieve(
+            &q,
+            &[],
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
+        .await?;
+    let answer = "Layer 4 is where type-changing effects apply, before colour and abilities.";
+    let verdict = || {
+        Verdict::new(
+            answer.into(),
+            Confidence::High,
+            cite_first_rule(&ctx)?,
+            Category::Layers,
+        )
+        .validate(&ctx, AnswerableSource::Cr)
+        .map_err(anyhow::Error::from)
+    };
+    let tally = judge_core::Tally::new();
+    let old = store
+        .persist(&q, &Origin::Web, &verdict()?, &ctx, &tally)
+        .await?;
+    let new = store
+        .persist(&q, &Origin::Web, &verdict()?, &ctx, &tally)
+        .await?;
+    store.rate(old, "1", Score::Correct, false).await?;
+    store.rate(new, "1", Score::Correct, false).await?;
+    // The newer call also cites the older one as a prior call.
+    sqlx::query(
+        "UPDATE calls SET citations = citations || jsonb_build_array(jsonb_build_object(
+             'kind', 'prior_call', 'id', $2::uuid, 'quote', 'type-changing effects apply'))
+         WHERE id = $1",
+    )
+    .bind(new.into_inner())
+    .bind(old.into_inner())
+    .execute(&pool)
+    .await?;
+    retire_unsupported(&pool).await?;
+    assert!(!retirement_state(&pool, new).await?.0, "its citations hold");
+
+    sqlx::query("UPDATE calls SET created_at = now() - interval '91 days' WHERE id = $1")
+        .bind(old.into_inner())
+        .execute(&pool)
+        .await?;
+    let mut lease = crate::ingest::lease(&pool, "prune-test").await?;
+    let days = Days::new(90).ok_or_else(|| anyhow::anyhow!("90 days"))?;
+    let pruned = prune::run(&mut lease, days).await?;
+    assert_eq!((pruned.days, pruned.calls, pruned.ratings), (90, 1, 1));
+    let left: Vec<(uuid::Uuid,)> = sqlx::query_as("SELECT id FROM calls")
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(left, vec![(new.into_inner(),)]);
+    let ratings: i64 = sqlx::query_scalar("SELECT count(*) FROM ratings")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(ratings, 1, "the younger call keeps its rating");
+    assert_eq!(
+        store.rate(old, "2", Score::Correct, false).await?,
+        judge_core::Rated::CallGone,
+        "a rating of a deleted call says so"
+    );
+    assert_eq!(
+        store.rate(new, "2", Score::Correct, false).await?,
+        judge_core::Rated::Recorded
+    );
+    // Nothing more to delete the second time.
+    assert_eq!(prune::run(&mut lease, days).await?.calls, 0);
+    lease.release().await;
+
+    let s = retire_unsupported(&pool).await?;
+    assert_eq!((s.checked, s.retired), (1, 0));
+    assert_eq!(
+        retirement_state(&pool, new).await?,
+        (false, None),
+        "a citation of a deleted call still holds"
+    );
+    Ok(())
+}
