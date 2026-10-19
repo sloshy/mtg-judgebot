@@ -1549,11 +1549,14 @@ mod tests {
         let (pid, started) = waiting(&base, "judgebot gateway (second) waiting").await?;
         let past = (bound * 3).as_secs_f64();
         eventually("the standby's statement outliving the bound", || async {
+            // The same statement (pid and start), still running. Not its wait
+            // event: a backend waiting for a lock clears that for an instant
+            // each time it wakes and sleeps again, which other tests' catalog
+            // changes on the cluster make it do.
             let age: Option<f64> = sqlx::query_scalar(
                 "SELECT extract(epoch FROM clock_timestamp() - query_start)::float8
                  FROM pg_stat_activity
-                 WHERE pid = $1 AND query_start::text = $2
-                   AND state = 'active' AND wait_event_type = 'Lock'",
+                 WHERE pid = $1 AND query_start::text = $2 AND state = 'active'",
             )
             .bind(pid)
             .bind(&started)
