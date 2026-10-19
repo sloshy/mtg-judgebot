@@ -8,7 +8,7 @@ import type { Interface } from "./api";
 
 export type Route =
   | { page: "ask" }
-  | { page: "feed"; interface?: Interface; user?: string }
+  | { page: "feed"; interface?: Interface; user?: string; q?: string }
   | { page: "call"; id: string }
   | { page: "user"; name: string }
   | { page: "missing" };
@@ -40,6 +40,7 @@ export function parseRoute(url: URL): Route {
       page: "feed",
       interface: isInterface(asked) ? asked : undefined,
       user: url.searchParams.get("user") ?? undefined,
+      q: url.searchParams.get("q") || undefined,
     };
   }
   if (parts.length === 2 && first === "calls" && second) return { page: "call", id: second };
@@ -56,6 +57,7 @@ export function href(route: Route): string {
       const q = new URLSearchParams();
       if (route.interface) q.set("interface", route.interface);
       if (route.user) q.set("user", route.user);
+      if (route.q) q.set("q", route.q);
       const s = q.toString();
       return s === "" ? "/feed" : `/feed?${s}`;
     }

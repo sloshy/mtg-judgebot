@@ -260,22 +260,27 @@ code {
 
 .theme-select {
   position: relative;
-  padding-right: 10px;
+  /* The select fills the whole pill, so a click anywhere on it opens the
+     menu; the icon and caret are drawn over it and let clicks through. */
+  padding: 0;
   cursor: pointer;
 }
 
-.theme-select:focus-within {
+.theme-select:has(select:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .theme-select select {
   appearance: none;
+  align-self: stretch;
+  min-height: 42px;
   border: none;
+  border-radius: 999px;
   background: transparent;
   color: inherit;
   font: inherit;
-  padding: 0 14px 0 0;
+  padding: 0 30px 0 36px;
   cursor: pointer;
 }
 
@@ -295,7 +300,10 @@ code {
 }
 
 .theme-icon {
+  position: absolute;
+  left: 12px;
   flex: none;
+  pointer-events: none;
 }
 
 .skip-link {
@@ -588,36 +596,6 @@ code {
   gap: 4px;
 }
 
-.attachment {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-}
-
-.attachment[open] {
-  border-color: var(--line-strong);
-}
-
-.attachment summary {
-  list-style: none;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 44px;
-  padding: 6px 12px 6px 8px;
-  cursor: pointer;
-  border-radius: 12px;
-  font-size: 0.875rem;
-}
-
-.attachment summary::-webkit-details-marker {
-  display: none;
-}
-
-.attachment summary:hover {
-  background: var(--surface-2);
-}
-
 .kind {
   flex: none;
   display: grid;
@@ -647,32 +625,6 @@ code {
   box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
-.attachment-label {
-  flex: none;
-  max-width: 55%;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Opened, the whole label shows, wrapping as it needs to. */
-.attachment[open] .attachment-label {
-  flex: 1;
-  max-width: none;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.attachment-preview {
-  flex: 1;
-  min-width: 0;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .chevron {
   flex: none;
   margin-left: auto;
@@ -680,7 +632,6 @@ code {
   transition: transform 0.15s ease;
 }
 
-.attachment[open] > summary .chevron,
 .attachments-folded[open] > summary .chevron {
   transform: rotate(180deg);
 }
@@ -746,31 +697,49 @@ code {
   box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
-.attachment[open] .attachment-preview {
-  visibility: hidden;
+.attachments-folded ul {
+  gap: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
 }
 
-.attachment-body {
-  padding: 0 14px 12px 48px;
+.citation-row + .citation-row {
+  border-top: 1px solid var(--line);
+}
+
+/* One citation in the open section: its kind, then its label over the quote. */
+.citation {
+  display: flex;
+  gap: 10px;
+  padding: 10px 14px 12px 8px;
   font-size: 0.9375rem;
 }
 
-.attachment-body blockquote {
-  margin: 0;
-  overflow-wrap: anywhere;
-  padding-left: 12px;
-  border-left: 3px solid var(--line-strong);
-  color: var(--ink);
+.citation-body {
+  flex: 1;
+  min-width: 0;
 }
 
-.attachment-body a {
+.citation-label {
+  margin: 4px 0 4px;
+  font-size: 0.875rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.citation-label a {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 32px;
-  margin-top: 6px;
-  font-size: 0.875rem;
-  font-weight: 600;
+}
+
+.citation blockquote {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--line-strong);
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 .out-icon {
@@ -1617,6 +1586,7 @@ code {
     position: absolute;
     inset: 0;
     width: 100%;
+    padding: 0;
     opacity: 0;
   }
 
@@ -1714,14 +1684,6 @@ code {
     white-space: nowrap;
   }
 
-  .attachment-body {
-    padding-left: 14px;
-  }
-
-  .attachment-label {
-    max-width: 70%;
-  }
-
   .tabs a {
     padding: 0 14px;
   }
@@ -1743,4 +1705,45 @@ code {
   .brand span {
     font-size: 1rem;
   }
+}
+
+/* The feed's search: a field with its icon inside, and a Search chip. */
+.search {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 14px 0 40px;
+  border: 1px solid var(--field-line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.search input::placeholder {
+  color: var(--muted);
+}
+
+.search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.search-icon {
+  position: absolute;
+  left: 14px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.search button {
+  flex: none;
+  min-height: 44px;
 }

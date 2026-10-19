@@ -1404,11 +1404,13 @@ mod tests {
     #[tokio::test]
     async fn a_feed_query_that_does_not_read_is_a_400() -> Res {
         let app = feed_app(true, Availability::open());
+        let long = format!("q={}", "x".repeat(judge_bot::feed::MAX_SEARCH_CHARS + 1));
         for q in [
             "cursor=nope",
             "interface=telegram",
             "user=not%20a%20name",
             "cursor=1.2.3",
+            long.as_str(),
         ] {
             let (status, j) = get_json(&app, &format!("/api/feed?{q}")).await?;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{q}: {j}");

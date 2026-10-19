@@ -4,8 +4,73 @@ import { type FeedEntry, type FeedQuery, fetchCall, fetchFeed, type Interface } 
 import { BotMessage, Message, Notice, PersonAvatar, Typing } from "./Chat";
 import { feedView, type View, ViewSwitch } from "./Controls";
 import type { Locale, Messages } from "./messages";
-import { href, visit } from "./router";
+import { href, navigate, visit } from "./router";
 import Symbols from "./Symbols";
+
+/** A Discord username written with its `@`: the search box's way to ask
+ * for one asker's calls rather than for text. */
+const USERNAME = /^@((?!.*\.\.)[a-z0-9_.]{2,32})$/;
+
+/** The longest search the server takes (`feed::MAX_SEARCH_CHARS`). */
+const MAX_SEARCH = 100;
+
+/** The feed's search: text in the question, the answer or the asker's
+ * name, or `@name` for one Discord user's calls. Sent on Enter, kept in the
+ * address, so a search is a link like any other feed. */
+function SearchBox(props: { m: Messages; query: FeedQuery }) {
+  let input: HTMLInputElement | undefined;
+  const shown = () => (props.query.user ? `@${props.query.user}` : (props.query.q ?? ""));
+  return (
+    <search>
+      <form
+        class="search"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const text = (input?.value ?? "").trim();
+          const user = USERNAME.exec(text.toLowerCase())?.[1];
+          navigate(
+            href({
+              page: "feed",
+              interface: props.query.interface,
+              user,
+              // By character, so a cut never splits an emoji in two.
+              q:
+                user === undefined && text !== ""
+                  ? Array.from(text).slice(0, MAX_SEARCH).join("")
+                  : undefined,
+            }),
+          );
+        }}
+      >
+        <label class="sr-only" for="feed-search">
+          {props.m.searchLabel}
+        </label>
+        <svg class="search-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+          <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <path
+            d="m13 13 4.5 4.5"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          />
+        </svg>
+        <input
+          id="feed-search"
+          ref={input}
+          type="search"
+          value={shown()}
+          placeholder={props.m.searchPlaceholder}
+          maxLength={MAX_SEARCH}
+          autocomplete="off"
+          enterkeyhint="search"
+        />
+        <button type="submit" class="chip">
+          {props.m.searchButton}
+        </button>
+      </form>
+    </search>
+  );
+}
 
 const FILTERS: readonly Interface[] = ["discord", "web", "mcp", "cli", "agent_session"];
 
@@ -258,12 +323,15 @@ export function FeedPage(props: {
           </Show>
         </div>
       </header>
+      <Show when={props.filters}>
+        <SearchBox m={props.m} query={props.query} />
+      </Show>
       <div class="toolbar">
         <Show when={props.filters}>
           <nav class="filters" aria-label={props.m.filtersLabel}>
             <a
               class="chip"
-              href={href({ page: "feed" })}
+              href={href({ page: "feed", user: props.query.user, q: props.query.q })}
               aria-current={props.query.interface === undefined ? "page" : undefined}
             >
               {props.m.feedAll}
@@ -272,7 +340,12 @@ export function FeedPage(props: {
               {(i) => (
                 <a
                   class="chip"
-                  href={href({ page: "feed", interface: i })}
+                  href={href({
+                    page: "feed",
+                    interface: i,
+                    user: props.query.user,
+                    q: props.query.q,
+                  })}
                   aria-current={props.query.interface === i ? "page" : undefined}
                 >
                   {props.m.interfaceName[i]}
@@ -291,7 +364,13 @@ export function FeedPage(props: {
           fallback={
             <Show when={failure() === null}>
               <BotMessage m={props.m}>
-                <p class="bubble bubble-bot">{props.m.feedEmpty}</p>
+                <p class="bubble bubble-bot">
+                  {props.query.q || (props.filters && props.query.user)
+                    ? props.m.searchEmpty(
+                        props.query.user ? `@${props.query.user}` : (props.query.q ?? ""),
+                      )
+                    : props.m.feedEmpty}
+                </p>
               </BotMessage>
             </Show>
           }

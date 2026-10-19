@@ -138,6 +138,9 @@ The query parameters are all optional:
 - `interface`: `discord`, `web`, `mcp`, `cli`, `agent_session`, or `agent` (MCP and
   `judge-cli` before 2.0.0, which were not told apart).
 - `user`: a Discord username, with or without `@`.
+- `q`: text to search for, at most 100 characters: a call matches when its question,
+  its answer or its asker's username contains it, ignoring case. A mention in the text
+  is searched as the feed shows it (`@…`), so it never matches an id.
 - `locale`: the language of the citation labels and messages, ahead of `Accept-Language`.
 
 `asker` is `null` for an anonymous call. Asker ids are never sent. `ratings.judge` is the

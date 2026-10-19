@@ -46,6 +46,8 @@ pub struct Messages {
     pub bad_interface: fn(&str) -> String,
     /// A feed `user` that is not a Discord username.
     pub bad_user: &'static str,
+    /// A feed `q` over the limit, given it.
+    pub bad_search: fn(usize) -> String,
     /// No public call has that id (or it is older than the feed shows).
     pub call_not_found: &'static str,
     /// The feed could not be read.
@@ -84,6 +86,7 @@ Your question was not answered; please try again shortly.",
     bad_cursor: "cursor must be the `next` of an earlier page",
     bad_interface: |all| format!("interface must be one of: {all}"),
     bad_user: "user must be a Discord username",
+    bad_search: |n| format!("q must be at most {n} characters"),
     call_not_found: "There is no public call with that id.",
     feed_failed: "Sorry, the feed couldn't be read just now. Please try again.",
 };
@@ -112,6 +115,7 @@ mod tests {
                 m.bad_cursor.to_owned(),
                 (m.bad_interface)("web"),
                 m.bad_user.to_owned(),
+                (m.bad_search)(100),
                 m.call_not_found.to_owned(),
                 m.feed_failed.to_owned(),
             ] {

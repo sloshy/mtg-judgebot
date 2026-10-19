@@ -226,6 +226,8 @@ export interface FeedQuery {
   cursor?: string;
   interface?: Interface;
   user?: string;
+  /** Text the question, answer or asker's username contains. */
+  q?: string;
 }
 
 async function read<T>(path: string, m: Messages, valid: (v: unknown) => v is T): Promise<Read<T>> {
@@ -262,6 +264,7 @@ export function fetchFeed(
   if (q.cursor) params.set("cursor", q.cursor);
   if (q.interface) params.set("interface", q.interface);
   if (q.user) params.set("user", q.user);
+  if (q.q) params.set("q", q.q);
   return read(`/api/feed${withLocale(params, locale)}`, m, isFeedPage);
 }
 

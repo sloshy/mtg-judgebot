@@ -121,6 +121,12 @@ export type Messages = {
   pageMissing: string;
   /** A link back to the question box. */
   backToAsk: string;
+  /** The feed's search box: its label, the hint inside it, its button. */
+  searchLabel: string;
+  searchPlaceholder: string;
+  searchButton: string;
+  /** A search that matched nothing, given what was searched for. */
+  searchEmpty: (text: string) => string;
 
   /** Before the visitor's own question, for screen readers. */
   you: string;
@@ -130,8 +136,6 @@ export type Messages = {
   citationsTitle: (count: number) => string;
   /** The badge on a citation of the Comprehensive Rules. */
   ruleBadge: string;
-  /** The link inside an expanded citation, to the text it quotes. */
-  openCitation: (label: string) => string;
   /** Under the question box on a keyboard. */
   keyHint: string;
   /** The conversation on the ask page, for screen readers. */
@@ -327,12 +331,15 @@ export const en = {
   userTitle: (name) => `Questions asked by @${name}`,
   pageMissing: "There is nothing at this address.",
   backToAsk: "Ask a question",
+  searchLabel: "Search the answers",
+  searchPlaceholder: "Search, or @username",
+  searchButton: "Search",
+  searchEmpty: (text) => `No answers match “${text}”.`,
 
   you: "You: ",
   pinned: (span, name) => `“${span}” means ${name}`,
   citationsTitle: (count) => (count === 1 ? "1 citation" : `${count} citations`),
   ruleBadge: "CR",
-  openCitation: (label) => `Open ${label}`,
   keyHint: "Enter sends · Shift+Enter adds a line",
   conversationLabel: "Conversation with the judge",
   navLabel: "Pages",

@@ -86,6 +86,9 @@ pub struct FeedQuery {
     pub interface: Option<String>,
     /// Only calls asked by this Discord username.
     pub user: Option<String>,
+    /// Only calls whose question, answer or asker's username contains this
+    /// text (case-insensitive), at most `feed::MAX_SEARCH_CHARS` characters.
+    pub q: Option<String>,
     /// The language for the labels and messages, ahead of `Accept-Language`.
     pub locale: Option<String>,
 }
@@ -251,7 +254,20 @@ pub fn parse_query(m: &Messages, q: &FeedQuery) -> Result<(Filter, Option<Cursor
                 .map_err(|_| m.bad_user.to_owned())?,
         ),
     };
-    Ok((Filter { asked, user }, after))
+    let search = match blank(&q.q) {
+        None => None,
+        Some(text) => {
+            Some(feed::Search::parse(&text).ok_or_else(|| (m.bad_search)(feed::MAX_SEARCH_CHARS))?)
+        }
+    };
+    Ok((
+        Filter {
+            asked,
+            user,
+            search,
+        },
+        after,
+    ))
 }
 
 /// `GET /api/feed`.

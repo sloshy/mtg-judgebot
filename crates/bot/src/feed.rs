@@ -230,6 +230,43 @@ pub struct Filter {
     pub asked: Option<Asked>,
     /// Only calls asked by this Discord username.
     pub user: Option<judge_core::DiscordUsername>,
+    /// Only calls whose question, answer or asker's username contains this.
+    pub search: Option<Search>,
+}
+
+/// The longest search the feed takes, in characters.
+pub const MAX_SEARCH_CHARS: usize = 100;
+
+/// Text a feed search looks for: trimmed, 1 to [`MAX_SEARCH_CHARS`]
+/// characters, matched case-insensitively as a substring.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Search(String);
+
+impl Search {
+    /// `text` as a search, or `None` when it is blank, too long, or holds a
+    /// NUL (which Postgres text cannot).
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        (!text.is_empty() && text.chars().count() <= MAX_SEARCH_CHARS && !text.contains('\0'))
+            .then(|| Self(text.to_owned()))
+    }
+
+    /// The `ILIKE` pattern: the text with `\`, `%` and `_` escaped (the
+    /// default escape character), between two `%`.
+    #[must_use]
+    pub fn pattern(&self) -> String {
+        let mut out = String::with_capacity(self.0.len() + 2);
+        out.push('%');
+        for c in self.0.chars() {
+            if matches!(c, '\\' | '%' | '_') {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out.push('%');
+        out
+    }
 }
 
 /// How a call has been rated: counts, and the judge override when a member
@@ -390,6 +427,13 @@ pub async fn page(
           AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))
           AND ($2::text IS NULL OR c.interface = $2)
           AND ($3::text IS NULL OR c.asker_name = $3)
+          -- The text exactly as the feed shows it (`without_mentions`: each
+          -- mention as `@…` or `#…`), so no part of a mention's id is ever
+          -- searched and nobody can find who was mentioned by trying ids.
+          AND ($7::text IS NULL
+               OR regexp_replace(c.question, '<(@)[!&]?[0-9]+>|<(#)[0-9]+>', '\1\2…', 'g') ILIKE $7
+               OR regexp_replace(c.answer, '<(@)[!&]?[0-9]+>|<(#)[0-9]+>', '\1\2…', 'g') ILIKE $7
+               OR c.asker_name ILIKE $7)
           AND ($4::bigint IS NULL
                OR (c.created_at, c.id) < ('epoch'::timestamptz + $4 * interval '1 microsecond', $5))
         ORDER BY c.created_at DESC, c.id DESC
@@ -401,6 +445,7 @@ pub async fn page(
         after.map(|c| c.at_micros),
         after.map_or(Uuid::nil(), |c| c.id),
         limit,
+        filter.search.as_ref().map(Search::pattern),
     )
     .fetch_all(pool)
     .await
@@ -769,6 +814,49 @@ mod tests {
             );
         }
 
+        // A search matches the text and the asker's username, never a
+        // mention's id, and never a private call.
+        sqlx::query("UPDATE calls SET question = 'see 5<@98765>5 about it' WHERE id = $1")
+            .bind(web)
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE calls SET question = 'see this too' WHERE id = $1")
+            .bind(hidden)
+            .execute(&pool)
+            .await?;
+        let found = |text: &str| Filter {
+            search: Search::parse(text),
+            ..Filter::default()
+        };
+        assert_eq!(ids(&page(&pool, None, &found("SEE"), None).await?), [web]);
+        assert_eq!(
+            ids(&page(&pool, None, &found("alic"), None).await?),
+            [alice]
+        );
+        assert!(
+            page(&pool, None, &found("98765"), None)
+                .await?
+                .entries
+                .is_empty()
+        );
+        // Not across the mention either: its digits are never read.
+        assert!(
+            page(&pool, None, &found("55"), None)
+                .await?
+                .entries
+                .is_empty()
+        );
+        assert_eq!(
+            ids(&page(&pool, None, &found("5@…5 about"), None).await?),
+            [web]
+        );
+        assert!(
+            page(&pool, None, &found("%"), None)
+                .await?
+                .entries
+                .is_empty()
+        );
+
         let Some((entry, names)) = call(&pool, None, CallId::new(alice)).await? else {
             anyhow::bail!("alice's call is public");
         };
@@ -837,6 +925,17 @@ mod tests {
                 .await?;
         assert_eq!(seen, all);
         Ok(())
+    }
+
+    #[test]
+    fn a_search_is_bounded_and_matches_its_text_literally() {
+        assert_eq!(Search::parse("  "), None);
+        assert_eq!(Search::parse(&"x".repeat(MAX_SEARCH_CHARS + 1)), None);
+        assert_eq!(Search::parse("a\0b"), None);
+        assert_eq!(
+            Search::parse(" 100%_off\\ ").map(|s| s.pattern()),
+            Some("%100\\%\\_off\\\\%".to_owned())
+        );
     }
 
     #[test]

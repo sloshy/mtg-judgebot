@@ -11,8 +11,8 @@ one side, the judge's answers on the other, and the question box docked at the b
 runs the same pipeline as the Discord bot and shows the same answer:
 
 - the ruling
-- its citations, one line each, marked as a rule, a ruling, Oracle text or a prior call;
-  each opens to the verbatim quote and a link to its source
+- its citations, in one section that shows each one's label (a rule, a ruling, Oracle
+  text or a prior call) and opens to every verbatim quote, each linked to its source
 - the cards the question was resolved to
 - the confidence and the CR version.
 
@@ -50,6 +50,8 @@ citations and cards, how it was rated, and a note when its citations no longer h
   channels are never shown, and a mention in a question shows as `@…` or `#…`.
 - `/feed?interface=discord` (or `web`, `mcp`, `cli`, `agent_session`) lists one
   interface's.
+- The search box finds answers whose question, answer or asker's username contains what
+  you type (`/feed?q=…`); `@name` lists one Discord user's (`/feed?user=name`).
 - **Compact** (the default) shows one line per question, which opens in place to the
   whole exchange; **Expanded** shows every exchange in full.
 - `/calls/<id>` is one answer's own page, and `/users/<name>` one Discord user's public

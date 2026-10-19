@@ -231,7 +231,7 @@ export default function App() {
               <FeedPage
                 m={m()}
                 locale={browserLocale}
-                query={{ interface: r().interface, user: r().user }}
+                query={{ interface: r().interface, user: r().user, q: r().q }}
                 title={m().feedTitle}
                 filters={true}
               />

@@ -21,7 +21,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 - **Public feed.** The web app lists answered questions from every interface at `/feed`,
   newest first, with where each was asked and the Discord asker's username (anonymous
-  otherwise), filterable by interface; `/calls/<id>` is one answer's page and
+  otherwise), filterable by interface and searchable (`q`: the question, the answer or
+  the asker's username); `/calls/<id>` is one answer's page and
   `/users/<name>` one user's questions. Only questions asked private stay off it. New
   endpoints `GET /api/feed` and `GET /api/calls/{id}`, with their own read limit per
   address (120 a minute). `JUDGE_FEED=false` turns it off; `JUDGE_FEED_DAYS` hides older
@@ -30,7 +31,7 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 - **A new web app design.** The page reads as a conversation with the judge: questions
   and answers as messages, the question box docked at the bottom, citations as one-line
-  attachments marked rule, ruling, Oracle text or prior call that open to the quote, and
+  a section listing each one's label that opens to every quote, and
   replies that are not answers as titled notices. The header links to the documentation
   and has a theme switch (Auto, Dark, Light). The feed has a Compact view (one line per
   question, the default) and an Expanded one. Figtree is bundled; nothing is loaded from

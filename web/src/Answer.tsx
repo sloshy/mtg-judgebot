@@ -53,7 +53,7 @@ export default function Answer(props: {
     <ul>
       <For each={props.answer.citations}>
         {(c) => (
-          <li>
+          <li class="citation-row">
             <Citation m={props.m} citation={c} />
           </li>
         )}
@@ -84,31 +84,20 @@ export default function Answer(props: {
         </p>
       </Show>
       <Show when={props.answer.citations.length > 0}>
-        <Show
-          when={props.clamp === true}
-          fallback={
-            <section class="attachments" aria-label={title()}>
-              <p class="attachments-title" aria-hidden="true">
-                {title()}
-              </p>
-              {list()}
-            </section>
-          }
-        >
-          {/* In the feed the citations fold to one line naming them. */}
-          <details class="attachments attachments-folded">
-            <summary>
-              <span class="attachments-title">{title()}</span>
-              <span class="attachments-labels" aria-hidden="true">
-                <For each={props.answer.citations}>
-                  {(c) => <span class={`tag-${kindOf(c)}`}>{c.label}</span>}
-                </For>
-              </span>
-              <Chevron />
-            </summary>
-            {list()}
-          </details>
-        </Show>
+        {/* One section for all of them: closed, a line naming each; open,
+            every citation in full. */}
+        <details class="attachments attachments-folded">
+          <summary>
+            <span class="attachments-title">{title()}</span>
+            <span class="attachments-labels" aria-hidden="true">
+              <For each={props.answer.citations}>
+                {(c) => <span class={`tag-${kindOf(c)}`}>{c.label}</span>}
+              </For>
+            </span>
+            <Chevron />
+          </summary>
+          {list()}
+        </details>
       </Show>
       <Show when={props.answer.cards.length > 0}>
         <p class="cards">
@@ -135,45 +124,40 @@ export default function Answer(props: {
   );
 }
 
-/** One citation, folded to a line: its kind, its label and the start of the
- * quote. Opened, the whole verbatim quote and a link to where it is. */
+/** One citation: its kind, its label (a link to where it is, when it has a
+ * public page) and the whole verbatim quote. */
 function Citation(props: { m: Messages; citation: CitationView }) {
   const kind = () => kindOf(props.citation);
   return (
-    <details class="attachment">
-      <summary>
-        <span class={`kind kind-${kind()}`}>
-          <Switch>
-            <Match when={kind() === "rule"}>{props.m.ruleBadge}</Match>
-            <Match when={kind() === "oracle_text"}>
-              <CardGlyph />
-            </Match>
-            <Match when={kind() === "ruling"}>
-              <RulingGlyph />
-            </Match>
-            <Match when={kind() === "prior_call"}>
-              <PriorCallGlyph />
-            </Match>
-          </Switch>
-        </span>
-        <span class="attachment-label">{props.citation.label}</span>
-        <span class="attachment-preview" aria-hidden="true">
-          <Symbols text={props.citation.quote} />
-        </span>
-        <Chevron />
-      </summary>
-      <div class="attachment-body">
+    <div class="citation">
+      <span class={`kind kind-${kind()}`}>
+        <Switch>
+          <Match when={kind() === "rule"}>{props.m.ruleBadge}</Match>
+          <Match when={kind() === "oracle_text"}>
+            <CardGlyph />
+          </Match>
+          <Match when={kind() === "ruling"}>
+            <RulingGlyph />
+          </Match>
+          <Match when={kind() === "prior_call"}>
+            <PriorCallGlyph />
+          </Match>
+        </Switch>
+      </span>
+      <div class="citation-body">
+        <p class="citation-label">
+          <Show when={props.citation.url} fallback={props.citation.label}>
+            {(url) => (
+              <a href={url()} target="_blank" rel="noopener noreferrer">
+                {props.citation.label}
+                <OutIcon />
+              </a>
+            )}
+          </Show>
+        </p>
         <blockquote>{props.m.quoted(<Symbols text={props.citation.quote} />)}</blockquote>
-        <Show when={props.citation.url}>
-          {(url) => (
-            <a href={url()} target="_blank" rel="noopener noreferrer">
-              {props.m.openCitation(props.citation.label)}
-              <OutIcon />
-            </a>
-          )}
-        </Show>
       </div>
-    </details>
+    </div>
   );
 }
 
