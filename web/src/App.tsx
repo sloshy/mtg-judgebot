@@ -1,3 +1,4 @@
+import "@fontsource-variable/figtree";
 import {
   createEffect,
   createMemo,
@@ -20,18 +21,33 @@ import {
   type Pin,
   sessionId,
 } from "./api";
+import { BotAvatar, BotMessage, Notice, Typing } from "./Chat";
+import { ThemeSelect } from "./Controls";
 import { CallPage, FeedPage } from "./Feed";
+import { DOCS_URL } from "./links";
 import { isLocale, type Locale, type Messages, messages, pickLocale } from "./messages";
 import { follow, href, route } from "./router";
 import Symbols from "./Symbols";
 
 const MAX_QUESTION_CHARS = 1000;
+/** The question box grows with its text up to this many pixels, then scrolls. */
+const MAX_BOX_HEIGHT = 200;
 
 interface Entry {
   question: string;
   pins: Pin[];
   /** null while the judge is thinking. */
   reply: ApiReply | null;
+}
+
+/** Scroll to the exchange `i` (its question at the top, under the bar). */
+function reveal(i: number) {
+  requestAnimationFrame(() => {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document
+      .getElementById(`exchange-${i}`)
+      ?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+  });
 }
 
 export default function App() {
@@ -71,6 +87,7 @@ export default function App() {
     const i = index ?? entries.length;
     if (index === undefined) {
       setEntries(i, { question, pins, reply: null });
+      reveal(i);
     } else {
       setEntries(i, { pins, reply: null });
     }
@@ -78,8 +95,16 @@ export default function App() {
     try {
       const reply = await askJudge(question, pins, session, browserLocale, m());
       setEntries(i, "reply", reply);
+      // Start the reply where its question is, not wherever it ends.
+      reveal(i);
     } finally {
       setWaiting(false);
+      // The box was disabled while the judge worked, which took the focus
+      // from it; give it back for the next question, except on a touch
+      // screen, where it would raise the keyboard over the answer.
+      if (document.activeElement === document.body && !matchMedia("(pointer: coarse)").matches) {
+        box?.focus({ preventScroll: true });
+      }
     }
   }
 
@@ -89,6 +114,13 @@ export default function App() {
     if (!question || waiting()) return;
     setDraft("");
     void ask(question, []);
+  }
+
+  /** Grow the box with its text (where CSS `field-sizing` cannot). */
+  function fit() {
+    if (!box || CSS.supports("field-sizing", "content")) return;
+    box.style.height = "auto";
+    box.style.height = `${Math.min(box.scrollHeight, MAX_BOX_HEIGHT)}px`;
   }
 
   /** Choosing an example fills the box rather than asking: an answer costs
@@ -115,186 +147,303 @@ export default function App() {
     void ask(entry.question, [...entry.pins, { span, name }], index);
   }
 
+  createEffect(() => {
+    draft();
+    fit();
+  });
+
+  // Links between the page's own routes move without a reload (`follow`).
+  document.addEventListener("click", follow);
+  onCleanup(() => document.removeEventListener("click", follow));
+
   // The feed's pages exist only where the server serves the feed.
   const feed = () => about()?.feed === true;
 
   return (
-    // Links between the page's own routes move without a reload (`follow`).
-    // biome-ignore lint/a11y/useKeyWithClickEvents: the links inside take the keyboard; this only intercepts their clicks.
-    <main class="app" onClick={follow}>
-      <header>
-        <h1>
-          <img src="/favicon.png" alt="" width="32" height="32" />
-          {m().title}
-        </h1>
-        <p class="tagline">{m().tagline}</p>
-        <Show when={feed()}>
-          <nav class="meta">
-            <a
-              href={href({ page: "ask" })}
-              aria-current={route().page === "ask" ? "page" : undefined}
-            >
-              {m().navAsk}
+    <div class="app">
+      <a class="skip-link" href="#main">
+        {m().skipToContent}
+      </a>
+      <header class="topbar">
+        <div class="topbar-inner">
+          <h1 class="brand">
+            <a href={href({ page: "ask" })}>
+              <BotAvatar />
+              <span class="brand-name">{m().title}</span>
             </a>
-            {m().separator}
-            <a
-              href={href({ page: "feed" })}
-              aria-current={route().page === "feed" ? "page" : undefined}
-            >
-              {m().navFeed}
+          </h1>
+          <div class="topbar-end">
+            <Show when={feed()}>
+              <nav class="tabs" aria-label={m().navLabel}>
+                <a
+                  href={href({ page: "ask" })}
+                  aria-current={route().page === "ask" ? "page" : undefined}
+                >
+                  {m().navAsk}
+                </a>
+                <a
+                  href={href({ page: "feed" })}
+                  aria-current={
+                    route().page === "feed" || route().page === "call" || route().page === "user"
+                      ? "page"
+                      : undefined
+                  }
+                >
+                  {m().navFeed}
+                </a>
+              </nav>
+            </Show>
+            <a class="docs-link" href={DOCS_URL}>
+              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+                <path
+                  d="M3 4.5c2.5-1 5-1 7 .8 2-1.8 4.5-1.8 7-.8v11c-2.5-1-5-1-7 .8-2-1.8-4.5-1.8-7-.8zM10 5.3v11"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              {m().navDocs}
             </a>
-          </nav>
-        </Show>
+            <ThemeSelect m={m()} />
+          </div>
+        </div>
       </header>
 
-      <Switch>
-        <Match when={route().page === "ask"}>{null}</Match>
-        <Match when={!about.loading && !feed() && route().page !== "missing"}>
-          <p class="notice">{m().pageMissing}</p>
-        </Match>
-        <Match when={about.loading}>
-          <p class="thinking">{m().loading}</p>
-        </Match>
-        <Match
-          when={(() => {
-            const r = route();
-            return r.page === "feed" ? r : false;
-          })()}
-        >
-          {(r) => (
-            <FeedPage
-              m={m()}
-              locale={browserLocale}
-              query={{ interface: r().interface, user: r().user }}
-              title={m().feedTitle}
-              filters={true}
-            />
-          )}
-        </Match>
-        <Match
-          when={(() => {
-            const r = route();
-            return r.page === "user" ? r : false;
-          })()}
-        >
-          {(r) => (
-            <FeedPage
-              m={m()}
-              locale={browserLocale}
-              query={{ user: r().name }}
-              title={m().userTitle(r().name)}
-              filters={false}
-            />
-          )}
-        </Match>
-        <Match
-          when={(() => {
-            const r = route();
-            return r.page === "call" ? r : false;
-          })()}
-        >
-          {(r) => <CallPage m={m()} locale={browserLocale} id={r().id} />}
-        </Match>
-        <Match when={route().page === "missing"}>
-          <p class="notice">{m().pageMissing}</p>
-          <p>
-            <a href={href({ page: "ask" })}>{m().backToAsk}</a>
-          </p>
-        </Match>
-      </Switch>
-
-      {/* Kept mounted off its route, so a conversation survives a look at the feed. */}
-      <div hidden={route().page !== "ask"}>
-        <For each={entries}>
-          {(entry, i) => (
-            <section class="exchange">
-              <p class="question">
-                <Symbols text={entry.question} />
-              </p>
-              <Show when={entry.reply} fallback={<p class="thinking">{m().thinking}</p>}>
-                {(reply) => (
-                  <Reply
-                    m={m()}
-                    reply={reply()}
-                    onPick={(span, name) => pick(i(), span, name)}
-                    onRetry={() => retry(i())}
-                    waiting={waiting()}
-                  />
-                )}
-              </Show>
+      <main class="main" id="main" tabIndex={-1}>
+        <Switch>
+          <Match when={route().page === "ask"}>{null}</Match>
+          <Match when={!about.loading && !feed() && route().page !== "missing"}>
+            <Missing m={m()} />
+          </Match>
+          <Match when={about.loading}>
+            <section class="page">
+              <Typing m={m()} loading={true} />
             </section>
-          )}
-        </For>
+          </Match>
+          <Match
+            when={(() => {
+              const r = route();
+              return r.page === "feed" ? r : false;
+            })()}
+          >
+            {(r) => (
+              <FeedPage
+                m={m()}
+                locale={browserLocale}
+                query={{ interface: r().interface, user: r().user }}
+                title={m().feedTitle}
+                filters={true}
+              />
+            )}
+          </Match>
+          <Match
+            when={(() => {
+              const r = route();
+              return r.page === "user" ? r : false;
+            })()}
+          >
+            {(r) => (
+              <FeedPage
+                m={m()}
+                locale={browserLocale}
+                query={{ user: r().name }}
+                title={m().userTitle(r().name)}
+                filters={false}
+                user={r().name}
+              />
+            )}
+          </Match>
+          <Match
+            when={(() => {
+              const r = route();
+              return r.page === "call" ? r : false;
+            })()}
+          >
+            {(r) => <CallPage m={m()} locale={browserLocale} id={r().id} />}
+          </Match>
+          <Match when={route().page === "missing"}>
+            <Missing m={m()} />
+          </Match>
+        </Switch>
 
-        <Show when={entries.length === 0}>
-          <section class="examples" aria-labelledby="examples-title">
-            <h2 id="examples-title">{m().examplesTitle}</h2>
-            <ul>
-              <For each={m().examples}>
-                {(question) => (
-                  <li>
-                    <button type="button" onClick={() => tryExample(question)}>
-                      <Symbols text={question} />
-                    </button>
-                  </li>
-                )}
-              </For>
-            </ul>
-          </section>
-        </Show>
-
-        <form class="ask" onSubmit={submit}>
-          <textarea
-            ref={box}
-            value={draft()}
-            onInput={(e) => setDraft(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                e.currentTarget.form?.requestSubmit();
+        {/* Kept mounted off its route, so a conversation survives a look at the feed. */}
+        <div class="ask-view" hidden={route().page !== "ask"}>
+          <section class="conversation" aria-label={m().conversationLabel}>
+            {/* The judge introduces itself; once the visitor has asked, the
+                introduction stays as its first message. */}
+            <Show
+              when={entries.length === 0}
+              fallback={
+                <BotMessage m={m()}>
+                  <p class="bubble bubble-bot">{m().tagline}</p>
+                </BotMessage>
               }
-            }}
-            maxLength={MAX_QUESTION_CHARS}
-            rows="3"
-            placeholder={m().placeholder}
-            disabled={waiting()}
-          />
-          <button type="submit" disabled={waiting() || !draft().trim()}>
-            {waiting() ? m().judging : m().ask}
-          </button>
-        </form>
-        <Show when={feed()}>
-          <p class="hint">{m().askIsPublic}</p>
-        </Show>
-      </div>
+            >
+              <div class="greeting">
+                <BotAvatar size={64} />
+                <h2>{m().title}</h2>
+                <p>{m().tagline}</p>
+              </div>
+            </Show>
 
-      <footer>
-        <p>{m().notRated}</p>
-        <p>
-          {m().fanContent((label) => (
-            <a href="https://company.wizards.com/en/legal/fancontentpolicy">{label}</a>
-          ))}
-        </p>
-        <p>
-          {m().dataSources(
-            (label) => (
-              <a href="https://scryfall.com">{label}</a>
-            ),
-            (label) => (
-              <a href="https://yawgatog.com/resources/magic-rules/">{label}</a>
-            ),
-          )}
-        </p>
-        <Show when={about()}>
-          {(a) => (
-            <p>
-              {freshnessLine(a().freshness, m(), Math.max(0, Math.floor((now() - aboutAt) / 1000)))}
+            <Show when={entries.length === 0}>
+              <section class="suggestions" aria-labelledby="examples-title">
+                <h3 id="examples-title">{m().examplesTitle}</h3>
+                <ul>
+                  <For each={m().examples}>
+                    {(question) => (
+                      <li>
+                        <button type="button" onClick={() => tryExample(question)}>
+                          <Symbols text={question} />
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </section>
+            </Show>
+
+            <For each={entries}>
+              {(entry, i) => (
+                <div class="exchange" id={`exchange-${i()}`}>
+                  <div class="msg-user">
+                    <p class="bubble bubble-user">
+                      <span class="sr-only">{m().you}</span>
+                      <Symbols text={entry.question} />
+                    </p>
+                    <For each={entry.pins}>
+                      {(pin) => <p class="pin">{m().pinned(pin.span, pin.name)}</p>}
+                    </For>
+                  </div>
+                  <div aria-live="polite">
+                    <Show when={entry.reply} fallback={<Typing m={m()} />}>
+                      {(reply) => (
+                        <Reply
+                          m={m()}
+                          reply={reply()}
+                          onPick={(span, name) => pick(i(), span, name)}
+                          onRetry={() => retry(i())}
+                          waiting={waiting()}
+                        />
+                      )}
+                    </Show>
+                  </div>
+                </div>
+              )}
+            </For>
+          </section>
+
+          <form class="composer" onSubmit={submit}>
+            <div class="composer-box">
+              <textarea
+                ref={box}
+                value={draft()}
+                onInput={(e) => setDraft(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    e.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                maxLength={MAX_QUESTION_CHARS}
+                rows="1"
+                aria-label={m().placeholder}
+                placeholder={m().placeholder}
+                disabled={waiting()}
+              />
+              <button type="submit" class="send" disabled={waiting() || !draft().trim()}>
+                <span class="send-label">{waiting() ? m().judging : m().ask}</span>
+                <Show
+                  when={waiting()}
+                  fallback={
+                    <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
+                      <path
+                        d="M10 16V4M4.5 9.5 10 4l5.5 5.5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  }
+                >
+                  <span class="spinner" aria-hidden="true" />
+                </Show>
+              </button>
+            </div>
+            <p class="composer-hint">
+              <Show when={feed()}>
+                <span>{m().askIsPublic}</span>
+              </Show>
+              <span class="keys">{m().keyHint}</span>
             </p>
-          )}
-        </Show>
-        <SourceOffer m={m()} about={about() ?? null} />
+          </form>
+        </div>
+      </main>
+
+      <footer class="site-footer">
+        <div class="footer-inner">
+          <div class="footer-lead">
+            <p class="footer-brand">
+              <BotAvatar />
+              <span>{m().title}</span>
+            </p>
+            <p class="footer-warning">{m().notRated}</p>
+            <Show when={about()}>
+              {(a) => (
+                <p class="footer-fresh">
+                  {freshnessLine(
+                    a().freshness,
+                    m(),
+                    Math.max(0, Math.floor((now() - aboutAt) / 1000)),
+                  )}
+                </p>
+              )}
+            </Show>
+          </div>
+          <ul class="footer-list">
+            <li>
+              {m().fanContent((label) => (
+                <a href="https://company.wizards.com/en/legal/fancontentpolicy">{label}</a>
+              ))}
+            </li>
+            <li>
+              {m().dataSources(
+                (label) => (
+                  <a href="https://scryfall.com">{label}</a>
+                ),
+                (label) => (
+                  <a href="https://yawgatog.com/resources/magic-rules/">{label}</a>
+                ),
+              )}
+            </li>
+            <li>
+              <SourceOffer m={m()} about={about() ?? null} />
+            </li>
+          </ul>
+        </div>
       </footer>
-    </main>
+    </div>
+  );
+}
+
+/** A route that names nothing, said by the judge with a way back. */
+function Missing(props: { m: Messages }) {
+  return (
+    <section class="page">
+      <BotMessage m={props.m}>
+        <Notice tone="note" title={props.m.missingTitle}>
+          <p>{props.m.pageMissing}</p>
+          <p class="quick-replies">
+            <a class="chip chip-action" href={href({ page: "ask" })}>
+              {props.m.backToAsk}
+            </a>
+          </p>
+        </Notice>
+      </BotMessage>
+    </section>
   );
 }
 
@@ -365,72 +514,99 @@ function Reply(props: {
   waiting: boolean;
 }) {
   return (
-    <Switch>
-      <Match when={props.reply.kind === "answer" && props.reply}>
-        {(r) => <Answer m={props.m} answer={r()} />}
-      </Match>
-      <Match when={props.reply.kind === "ambiguous" && props.reply}>
-        {(r) => {
-          const first = () => r().spans[0];
-          return (
-            <Show when={first()}>
-              {(span) => (
-                <div class="ambiguous">
-                  <p>{props.m.whichCard(<strong>{span().query}</strong>)}</p>
-                  <div class="choices">
-                    <For each={span().choices}>
-                      {(name) => (
-                        <button type="button" onClick={() => props.onPick(span().query, name)}>
-                          {name}
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                  <Show when={span().truncated}>
-                    <p class="hint">{props.m.choicesTruncated}</p>
-                  </Show>
-                  <Show when={r().spans.length > 1}>
-                    <p class="hint">
-                      {props.m.askAfter(
-                        r()
-                          .spans.slice(1)
-                          .map((s) => s.query),
-                      )}
-                    </p>
-                  </Show>
-                </div>
-              )}
-            </Show>
-          );
-        }}
-      </Match>
-      <Match when={props.reply.kind === "not_found" && props.reply}>
-        {(r) => <p class="notice">{props.m.notFound(r().names)}</p>}
-      </Match>
-      <Match when={props.reply.kind === "maintenance" && props.reply}>
-        {(r) => (
-          <div class="maintenance">
-            <p class="notice">{r().message}</p>
-            <button type="button" onClick={() => props.onRetry()} disabled={props.waiting}>
-              {props.m.tryAgain}
-            </button>
-          </div>
-        )}
-      </Match>
-      <Match
-        when={
-          props.reply.kind !== "answer" &&
-          props.reply.kind !== "ambiguous" &&
-          props.reply.kind !== "not_found" &&
-          props.reply.kind !== "maintenance" &&
-          props.reply
-        }
-      >
-        {(r) => {
-          const failed = r() as Extract<ApiReply, { message: string }>;
-          return <p class="notice">{failed.message}</p>;
-        }}
-      </Match>
-    </Switch>
+    <BotMessage m={props.m}>
+      <Switch>
+        <Match when={props.reply.kind === "answer" && props.reply}>
+          {(r) => <Answer m={props.m} answer={r()} />}
+        </Match>
+        <Match when={props.reply.kind === "ambiguous" && props.reply}>
+          {(r) => {
+            const first = () => r().spans[0];
+            return (
+              <Show when={first()}>
+                {(span) => (
+                  <>
+                    <div class="bubble bubble-bot">
+                      <p>{props.m.whichCard(<strong>{span().query}</strong>)}</p>
+                      <Show when={span().truncated}>
+                        <p class="bubble-note">{props.m.choicesTruncated}</p>
+                      </Show>
+                      <Show when={r().spans.length > 1}>
+                        <p class="bubble-note">
+                          {props.m.askAfter(
+                            r()
+                              .spans.slice(1)
+                              .map((s) => s.query),
+                          )}
+                        </p>
+                      </Show>
+                    </div>
+                    <div class="quick-replies">
+                      <For each={span().choices}>
+                        {(name) => (
+                          <button
+                            type="button"
+                            class="chip chip-action"
+                            disabled={props.waiting}
+                            onClick={() => props.onPick(span().query, name)}
+                          >
+                            {name}
+                          </button>
+                        )}
+                      </For>
+                    </div>
+                  </>
+                )}
+              </Show>
+            );
+          }}
+        </Match>
+        <Match when={props.reply.kind === "not_found" && props.reply}>
+          {(r) => (
+            <Notice tone="caution" title={props.m.replyTitle.not_found}>
+              <p>{props.m.notFound(r().names)}</p>
+            </Notice>
+          )}
+        </Match>
+        <Match when={props.reply.kind === "maintenance" && props.reply}>
+          {(r) => (
+            <Notice tone="note" title={props.m.replyTitle.maintenance}>
+              <p>{r().message}</p>
+              <p class="quick-replies">
+                <button
+                  type="button"
+                  class="chip chip-action"
+                  onClick={() => props.onRetry()}
+                  disabled={props.waiting}
+                >
+                  {props.m.tryAgain}
+                </button>
+              </p>
+            </Notice>
+          )}
+        </Match>
+        <Match
+          when={
+            props.reply.kind !== "answer" &&
+            props.reply.kind !== "ambiguous" &&
+            props.reply.kind !== "not_found" &&
+            props.reply.kind !== "maintenance" &&
+            props.reply
+          }
+        >
+          {(r) => {
+            const failed = r() as Extract<ApiReply, { kind: "error" | "busy" | "rate_limited" }>;
+            return (
+              <Notice
+                tone={failed.kind === "error" ? "danger" : "caution"}
+                title={props.m.replyTitle[failed.kind]}
+              >
+                <p>{failed.message}</p>
+              </Notice>
+            );
+          }}
+        </Match>
+      </Switch>
+    </BotMessage>
   );
 }

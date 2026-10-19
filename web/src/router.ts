@@ -68,11 +68,23 @@ export function href(route: Route): string {
   }
 }
 
-const [current, setCurrent] = createSignal<Route>(parseRoute(new URL(window.location.href)));
+// Equal routes are one route, so a fragment link (`#main`) moving the
+// address bar does not count as a new page and reload what is on it.
+const [current, setCurrent] = createSignal<Route>(parseRoute(new URL(window.location.href)), {
+  equals: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+});
 window.addEventListener("popstate", () => setCurrent(parseRoute(new URL(window.location.href))));
 
 /** The route the page is on. */
 export const route = current;
+
+// Bumped by every `navigate`, so a click on the route already shown (the
+// Feed tab on the feed) reloads it although the route itself is unchanged.
+const [visits, setVisits] = createSignal(0);
+
+/** How many times the visitor has navigated: a page that reloads on a
+ * repeated click of its own link reads it. */
+export const visit = visits;
 
 /** Go to `to` without reloading, as a new history entry. */
 export function navigate(to: string): void {
@@ -81,8 +93,13 @@ export function navigate(to: string): void {
     window.location.assign(url);
     return;
   }
-  window.history.pushState(null, "", url);
+  // The same address again is a reload of it, not a new history entry.
+  const here = window.location.pathname + window.location.search;
+  if (url.pathname + url.search !== here || url.hash !== window.location.hash) {
+    window.history.pushState(null, "", url);
+  }
   setCurrent(parseRoute(url));
+  setVisits((n) => n + 1);
   window.scrollTo(0, 0);
 }
 
@@ -96,6 +113,13 @@ export function follow(e: MouseEvent): void {
   if (!a || a.target || a.hasAttribute("download")) return;
   const url = new URL(a.href, window.location.href);
   if (url.origin !== window.location.origin || url.pathname.startsWith("/api/")) return;
+  // A fragment on this same page (the skip link) is the browser's to scroll to.
+  if (
+    url.hash !== "" &&
+    url.pathname === window.location.pathname &&
+    url.search === window.location.search
+  )
+    return;
   e.preventDefault();
   navigate(url.pathname + url.search);
 }

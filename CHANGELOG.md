@@ -28,6 +28,18 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   calls without deleting them. `/help` says public questions may be listed. Under
   `--web`, an unknown `/api/` path is now a JSON 404 rather than the page.
 
+- **A new web app design.** The page reads as a conversation with the judge: questions
+  and answers as messages, the question box docked at the bottom, citations as one-line
+  attachments marked rule, ruling, Oracle text or prior call that open to the quote, and
+  replies that are not answers as titled notices. The header links to the documentation
+  and has a theme switch (Auto, Dark, Light). The feed has a Compact view (one line per
+  question, the default) and an Expanded one. Figtree is bundled; nothing is loaded from
+  another site.
+
+- **Citation kinds in the HTTP API.** Every citation in a reply or a feed entry carries
+  `kind` (`rule`, `ruling`, `oracle_text`, `prior_call`), so a client can tell them apart
+  without reading the label, which may be translated.
+
 - **Translation groundwork.** Every message the Discord bot, the web app and the HTTP
   API show now comes from a per-language catalog, and each request picks its language:
   the Discord user's; the browser's on the web (sent as the new

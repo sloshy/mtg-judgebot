@@ -9,7 +9,12 @@ export interface Pin {
   name: string;
 }
 
+/** What a citation quotes (crates/api/src/shape.rs). */
+export type CitationKind = "rule" | "ruling" | "oracle_text" | "prior_call";
+
 export interface CitationView {
+  /** Absent from an older server. */
+  kind?: CitationKind;
   label: string;
   url: string | null;
   quote: string;

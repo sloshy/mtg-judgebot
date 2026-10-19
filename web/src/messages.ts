@@ -121,6 +121,55 @@ export type Messages = {
   pageMissing: string;
   /** A link back to the question box. */
   backToAsk: string;
+
+  /** Before the visitor's own question, for screen readers. */
+  you: string;
+  /** Under a question, a "did you mean…?" choice it was re-asked with. */
+  pinned: (span: string, name: string) => string;
+  /** The heading over an answer's citations. */
+  citationsTitle: (count: number) => string;
+  /** The badge on a citation of the Comprehensive Rules. */
+  ruleBadge: string;
+  /** The link inside an expanded citation, to the text it quotes. */
+  openCitation: (label: string) => string;
+  /** Under the question box on a keyboard. */
+  keyHint: string;
+  /** The conversation on the ask page, for screen readers. */
+  conversationLabel: string;
+  /** The links between the page's routes, for screen readers. */
+  navLabel: string;
+  /** The feed's interface filters, for screen readers. */
+  filtersLabel: string;
+  /** A divider between days in the feed, from an RFC 3339 time. */
+  dayLabel: (iso: string) => string;
+  /** The time of day an entry was asked, from its RFC 3339 time. */
+  askedTime: (iso: string) => string;
+  /** Unfolds a long answer in the feed, and folds it again. */
+  showMore: string;
+  showLess: string;
+
+  /** The header's link to the documentation site. */
+  navDocs: string;
+  /** A link past the header to the page's content. */
+  skipToContent: string;
+  /** The theme picker: its accessible name and its choices. */
+  themeLabel: string;
+  themeName: Record<"auto" | "dark" | "light", string>;
+  /** The title of the notice each reply other than an answer or a
+   * "did you mean…?" comes in. */
+  replyTitle: Record<"not_found" | "error" | "busy" | "rate_limited" | "maintenance", string>;
+  /** The title of the notice on an address that names nothing. */
+  missingTitle: string;
+  /** The title of the notice on `/calls/<id>` when there is no such call. */
+  callMissingTitle: string;
+  /** The feed's two layouts. */
+  viewLabel: string;
+  viewCompact: string;
+  viewExpanded: string;
+  /** The tag on a retired entry in the compact feed. */
+  retiredBadge: string;
+  /** An answer's confidence, as the compact feed tags it. */
+  confidenceTag: (confidence: string) => string;
 };
 
 /** `20260819` → `2026-08-19` (matching the Discord footer). */
@@ -278,6 +327,49 @@ export const en = {
   userTitle: (name) => `Questions asked by @${name}`,
   pageMissing: "There is nothing at this address.",
   backToAsk: "Ask a question",
+
+  you: "You: ",
+  pinned: (span, name) => `“${span}” means ${name}`,
+  citationsTitle: (count) => (count === 1 ? "1 citation" : `${count} citations`),
+  ruleBadge: "CR",
+  openCitation: (label) => `Open ${label}`,
+  keyHint: "Enter sends · Shift+Enter adds a line",
+  conversationLabel: "Conversation with the judge",
+  navLabel: "Pages",
+  filtersLabel: "Filter by interface",
+  dayLabel: (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime())
+      ? iso
+      : new Intl.DateTimeFormat("en", { dateStyle: "full" }).format(d);
+  },
+  askedTime: (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime())
+      ? iso
+      : new Intl.DateTimeFormat("en", { timeStyle: "short" }).format(d);
+  },
+  showMore: "Show the whole answer",
+  showLess: "Show less",
+
+  navDocs: "Docs",
+  skipToContent: "Skip to content",
+  themeLabel: "Theme",
+  themeName: { auto: "Auto", dark: "Dark", light: "Light" },
+  replyTitle: {
+    not_found: "Card not found",
+    error: "Error",
+    busy: "Busy",
+    rate_limited: "Rate limited",
+    maintenance: "Maintenance",
+  },
+  missingTitle: "Page not found",
+  callMissingTitle: "Answer not found",
+  viewLabel: "Layout",
+  viewCompact: "Compact",
+  viewExpanded: "Expanded",
+  retiredBadge: "Retired",
+  confidenceTag: (confidence) => `${confidence} confidence`,
 } satisfies Messages;
 
 const CATALOGS: Record<Locale, Messages> = { en };

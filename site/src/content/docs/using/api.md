@@ -49,6 +49,7 @@ An answer takes twenty to forty-five seconds. Every reply to a `POST` is JSON ta
   "cr_version": "20260819",
   "citations": [
     {
+      "kind": "rule",
       "label": "702.19b",
       "url": "https://yawgatog.com/resources/magic-rules/#R70219b",
       "quote": "…"
@@ -60,7 +61,7 @@ An answer takes twenty to forty-five seconds. Every reply to a `POST` is JSON ta
 
 | `kind` | Status | Fields | Meaning |
 | --- | --- | --- | --- |
-| `answer` | 200 | `answer`, `confidence` (`low`/`medium`/`high`), `source` (`cr`/`commander`), `cr_version` (`YYYYMMDD`), `citations`, `cards` | A validated verdict. Every citation's `quote` was checked verbatim against its source. `url` is `null` for a prior call, which has no public page. |
+| `answer` | 200 | `answer`, `confidence` (`low`/`medium`/`high`), `source` (`cr`/`commander`), `cr_version` (`YYYYMMDD`), `citations`, `cards` | A validated verdict. Every citation's `quote` was checked verbatim against its source. A citation's `kind` is `rule`, `ruling`, `oracle_text` or `prior_call`; its `label` is for display and may be translated. `url` is `null` for a prior call, which has no public page. |
 | `ambiguous` | 200 | `spans`: `[{"query", "choices", "truncated"}]` | A name matched several cards. Ask again with the same `question` and a `pins` entry per span. At most five `choices` each; `truncated` says there were more. |
 | `not_found` | 200 | `names` | Card names that matched nothing. |
 | `error` | 200 or 4xx | `message` | 200 for a question the judge declined or could not answer: out of scope, no verified answer, the spend cap. 400 for a body that is not JSON or a request over the limits above, 413 for a body over 2 MB, 415 for a missing `Content-Type` or one that is not JSON (`application/json` or `application/*+json`), 422 for JSON of the wrong shape (a missing `question`, a `session_id` that is not a UUID). |
@@ -124,7 +125,7 @@ curl 'http://localhost:8787/api/feed?interface=discord'
 ```json
 {"entries": [{"id": "…", "asked_at": "2026-10-18T12:00:00Z", "interface": "discord",
   "asker": "alice", "question": "…", "answer": "…", "confidence": "high", "source": "cr",
-  "cr_version": "20260925", "citations": [{"label": "702.19b", "url": "…", "quote": "…"}],
+  "cr_version": "20260925", "citations": [{"kind": "rule", "label": "702.19b", "url": "…", "quote": "…"}],
   "cards": [{"name": "…", "url": "…"}],
   "ratings": {"correct": 2, "partial": 0, "incorrect": 0, "judge": null},
   "retired": null}],

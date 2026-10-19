@@ -159,9 +159,26 @@ pub enum ApiReply {
     },
 }
 
+/// What a citation quotes, so a client can tell them apart without reading
+/// the (translated) label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CitationKind {
+    /// A Comprehensive Rules rule.
+    Rule,
+    /// An official Scryfall ruling.
+    Ruling,
+    /// A card's current Oracle text.
+    OracleText,
+    /// An earlier answer.
+    PriorCall,
+}
+
 /// One citation, pre-linked the way the Discord embed links them.
 #[derive(Clone, Debug, Serialize)]
 pub struct CitationView {
+    /// What it quotes.
+    pub kind: CitationKind,
     /// Display label, e.g. `702.19b` or `Ruling (2018-07-13) — Blood Moon`.
     pub label: String,
     /// Where the source can be read, when it is public (rules and Scryfall
@@ -328,6 +345,7 @@ pub fn citation_view(m: &Messages, c: &Citation, labels: &impl Labels) -> Citati
     let card_name = |id| labels.card_name(id);
     match c {
         Citation::Rule { id, .. } => CitationView {
+            kind: CitationKind::Rule,
             label: id.to_string(),
             url: Some(render::rule_url(id)),
             quote,
@@ -339,12 +357,14 @@ pub fn citation_view(m: &Messages, c: &Citation, labels: &impl Labels) -> Citati
                 .unwrap_or_default();
             let label = (m.ruling_label)(&date, card_name(*card).as_deref());
             CitationView {
+                kind: CitationKind::Ruling,
                 label,
                 url: Some(render::scryfall_url(*card)),
                 quote,
             }
         }
         Citation::PriorCall { .. } => CitationView {
+            kind: CitationKind::PriorCall,
             label: m.prior_call_label.to_owned(),
             url: None,
             quote,
@@ -356,6 +376,7 @@ pub fn citation_view(m: &Messages, c: &Citation, labels: &impl Labels) -> Citati
             };
             let label = (m.oracle_label)(face, card_name(*card).as_deref());
             CitationView {
+                kind: CitationKind::OracleText,
                 label,
                 url: Some(render::scryfall_url(*card)),
                 quote,
@@ -572,6 +593,7 @@ mod tests {
             &None::<&Context>,
         );
         assert_eq!(view.label, "Prior call");
+        assert_eq!(view.kind, CitationKind::PriorCall);
         assert_eq!(view.url, None);
         assert_eq!(view.quote, "some prior answer");
         let view = citation_view(
@@ -584,6 +606,7 @@ mod tests {
             &None::<&Context>,
         );
         assert_eq!(view.label, "Oracle text, face 2");
+        assert_eq!(view.kind, CitationKind::OracleText);
         assert!(view.url.is_some_and(|u| u.contains("oracleid")));
         Ok(())
     }

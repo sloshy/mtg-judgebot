@@ -2,13 +2,22 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>MTG Judgebot</title>
+    <script>
+      // A stored Dark or Light choice (web/src/theme.ts), applied before the
+      // first paint so the page does not flash the system theme first.
+      try {
+        const t = localStorage.getItem("judgebot-theme");
+        if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
     <meta
       name="description"
       content="Ask a Magic: The Gathering rules question and get a judge-style answer where every claim cites the Comprehensive Rules, an official ruling or the card's Oracle text."
     />
-    <meta name="theme-color" content="#1f2933" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f5fb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111017" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="MTG Judgebot" />
     <meta

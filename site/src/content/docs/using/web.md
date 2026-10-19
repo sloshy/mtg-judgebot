@@ -6,13 +6,19 @@ sidebar:
 ---
 
 The web app is a SolidJS single-page app, built into the image and served by `judgebot` at
-<http://localhost:8787>. It runs the same pipeline as the Discord bot and shows the same
-answer:
+<http://localhost:8787>. It reads like a conversation with the judge: your questions on
+one side, the judge's answers on the other, and the question box docked at the bottom. It
+runs the same pipeline as the Discord bot and shows the same answer:
 
 - the ruling
-- a citation per line, linked to its source
+- its citations, one line each, marked as a rule, a ruling, Oracle text or a prior call;
+  each opens to the verbatim quote and a link to its source
 - the cards the question was resolved to
 - the confidence and the CR version.
+
+A reply that is not an answer (busy, rate limited, a card not found, an error, the
+maintenance notice) is a titled notice in the judge's message. The header links to this
+documentation and has a theme switch (Auto, Dark, Light).
 
 Answers are written in the light Markdown Discord renders (bold card names, rule numbers
 in backticks). The web app renders the same three marks and nothing else.
@@ -24,7 +30,8 @@ answer spends the operator's money and one of the visitor's rate-limited questio
 
 Nobody is logged in there, so the web app has **no rating buttons**, and nothing about the
 visitor is stored beyond a random session id that groups their questions. Their questions
-are listed on the [feed](#the-feed) without a name. The footer
+are listed on the [feed](#the-feed) without a name. The browser itself remembers the theme
+and the feed's layout (`localStorage`); neither is sent to the server. The footer
 names the source repository, the commit the instance was built from and the operator's
 support address (`JUDGE_OPERATOR_EMAIL`, without which the web app does not start). A
 line above it gives the Comprehensive Rules release loaded and how long ago the data was
@@ -43,6 +50,8 @@ citations and cards, how it was rated, and a note when its citations no longer h
   channels are never shown, and a mention in a question shows as `@…` or `#…`.
 - `/feed?interface=discord` (or `web`, `mcp`, `cli`, `agent_session`) lists one
   interface's.
+- **Compact** (the default) shows one line per question, which opens in place to the
+  whole exchange; **Expanded** shows every exchange in full.
 - `/calls/<id>` is one answer's own page, and `/users/<name>` one Discord user's public
   questions.
 - `JUDGE_FEED=false` removes the pages and their endpoints. `JUDGE_FEED_DAYS` hides calls

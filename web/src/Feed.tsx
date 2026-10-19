@@ -1,40 +1,203 @@
-import { createResource, createSignal, For, Match, Show, Switch } from "solid-js";
+import { createMemo, createResource, createSignal, For, Match, Show, Switch } from "solid-js";
 import Answer from "./Answer";
 import { type FeedEntry, type FeedQuery, fetchCall, fetchFeed, type Interface } from "./api";
+import { BotMessage, Message, Notice, PersonAvatar, Typing } from "./Chat";
+import { feedView, type View, ViewSwitch } from "./Controls";
 import type { Locale, Messages } from "./messages";
-import { href } from "./router";
+import { href, visit } from "./router";
 import Symbols from "./Symbols";
 
 const FILTERS: readonly Interface[] = ["discord", "web", "mcp", "cli", "agent_session"];
 
-/** One public call: who asked where and when, the question, the answer, its ratings. */
-export function Entry(props: { m: Messages; entry: FeedEntry }) {
-  const asker = () =>
-    props.entry.asker === null ? (
-      props.m.anonymous
-    ) : (
-      <a href={href({ page: "user", name: props.entry.asker })}>@{props.entry.asker}</a>
-    );
+/** The local calendar day of an RFC 3339 time, for grouping entries. */
+function day(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toDateString();
+}
+
+/** A line across the timeline naming the day of the entries under it. */
+export function DayDivider(props: { m: Messages; iso: string }) {
+  return (
+    <p class="day-divider">
+      <span>{props.m.dayLabel(props.iso)}</span>
+    </p>
+  );
+}
+
+/** Who asked: a link to their page, or "Anonymous". */
+function Asker(props: { m: Messages; entry: FeedEntry }) {
+  return (
+    <Show when={props.entry.asker} fallback={props.m.anonymous}>
+      {(name) => <a href={href({ page: "user", name: name() })}>@{name()}</a>}
+    </Show>
+  );
+}
+
+/** Where and when: the interface's badge and the time, linking to the call's page. */
+function AskedVia(props: { m: Messages; entry: FeedEntry }) {
+  return (
+    <>
+      <span class="badge">{props.m.interfaceName[props.entry.interface]}</span>
+      <a
+        class="msg-time"
+        href={href({ page: "call", id: props.entry.id })}
+        title={props.m.askedAt(props.entry.asked_at)}
+      >
+        <time datetime={props.entry.asked_at}>{props.m.askedTime(props.entry.asked_at)}</time>
+      </a>
+    </>
+  );
+}
+
+/** The judge's side of a call: the answer, its ratings and whether it is retired. */
+function JudgeReply(props: { m: Messages; entry: FeedEntry; clamp?: boolean }) {
+  return (
+    <BotMessage m={props.m}>
+      <Answer m={props.m} answer={props.entry} clamp={props.clamp} />
+      <p class="msg-meta ratings">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+          <path
+            d="M8 1.8 9.9 5.7l4.2.6-3 3 .7 4.2L8 11.5l-3.8 2 .7-4.2-3-3 4.2-.6z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linejoin="round"
+          />
+        </svg>
+        {props.m.ratingsLine(props.entry.ratings)}
+      </p>
+      <Show when={props.entry.retired}>
+        {(reason) => <p class="retired">{props.m.retiredNote(reason())}</p>}
+      </Show>
+    </BotMessage>
+  );
+}
+
+/** One public call as an exchange: the asker's question (who, where, when),
+ * then the judge's reply. */
+export function Entry(props: { m: Messages; entry: FeedEntry; clamp?: boolean }) {
   return (
     <article class="exchange">
-      <p class="meta">
-        {props.m.entryMeta(
-          asker(),
-          props.m.interfaceName[props.entry.interface],
-          <a href={href({ page: "call", id: props.entry.id })}>
-            <time datetime={props.entry.asked_at}>{props.m.askedAt(props.entry.asked_at)}</time>
-          </a>,
-        )}
-      </p>
-      <p class="question">
-        <Symbols text={props.entry.question} />
-      </p>
-      <Answer m={props.m} answer={props.entry} />
-      <p class="meta">{props.m.ratingsLine(props.entry.ratings)}</p>
-      <Show when={props.entry.retired}>
-        {(reason) => <p class="hint">{props.m.retiredNote(reason())}</p>}
-      </Show>
+      <Message
+        class="msg-asker"
+        avatar={<PersonAvatar name={props.entry.asker} />}
+        name={<Asker m={props.m} entry={props.entry} />}
+        header={<AskedVia m={props.m} entry={props.entry} />}
+      >
+        <p class="bubble bubble-asker">
+          <Symbols text={props.entry.question} />
+        </p>
+      </Message>
+      <JudgeReply m={props.m} entry={props.entry} clamp={props.clamp} />
     </article>
+  );
+}
+
+/** One call as a line: who, the question, where, when and how sure. It opens
+ * in place onto the judge's reply. */
+function Row(props: { m: Messages; entry: FeedEntry }) {
+  return (
+    <details class="row">
+      <summary class="row-line">
+        <PersonAvatar name={props.entry.asker} />
+        <span class="row-question">
+          <Symbols text={props.entry.question} />
+        </span>
+        <span class="row-facts">
+          <span class="badge">{props.m.interfaceName[props.entry.interface]}</span>
+          <time datetime={props.entry.asked_at}>{props.m.askedTime(props.entry.asked_at)}</time>
+          <span class={`row-confidence confidence-text-${props.entry.confidence}`}>
+            <span class={`confidence confidence-${props.entry.confidence}`} aria-hidden="true" />
+            {props.m.confidenceTag(props.m.confidence[props.entry.confidence])}
+          </span>
+          <Show when={props.entry.retired}>
+            <span class="tag-retired">{props.m.retiredBadge}</span>
+          </Show>
+        </span>
+        <svg
+          class="chevron row-chevron"
+          viewBox="0 0 16 16"
+          width="14"
+          height="14"
+          aria-hidden="true"
+        >
+          <path
+            d="m4 6 4 4 4-4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </summary>
+      <div class="row-body">
+        <p class="row-meta">
+          <span class="msg-name">
+            <Asker m={props.m} entry={props.entry} />
+          </span>
+          <a class="msg-time" href={href({ page: "call", id: props.entry.id })}>
+            <time datetime={props.entry.asked_at}>{props.m.askedAt(props.entry.asked_at)}</time>
+          </a>
+        </p>
+        <JudgeReply m={props.m} entry={props.entry} />
+      </div>
+    </details>
+  );
+}
+
+/** Entries under a divider for each day, as lines or as full exchanges. */
+function Timeline(props: { m: Messages; entries: FeedEntry[]; view: View }) {
+  // Keyed by the day's name (a string), so a group already shown keeps its
+  // rows, and whatever the visitor opened in them, when an older page is
+  // appended; only its entry list grows.
+  const groups = createMemo(() => {
+    const out = new Map<string, FeedEntry[]>();
+    for (const entry of props.entries) {
+      const key = day(entry.asked_at);
+      const list = out.get(key);
+      if (list) list.push(entry);
+      else out.set(key, [entry]);
+    }
+    return out;
+  });
+  const keys = () => [...groups().keys()];
+  return (
+    <For each={keys()}>
+      {(key) => {
+        const group = {
+          get entries() {
+            return groups().get(key) ?? [];
+          },
+          get iso() {
+            return groups().get(key)?.[0]?.asked_at ?? "";
+          },
+        };
+        return (
+          <>
+            <DayDivider m={props.m} iso={group.iso} />
+            <Show
+              when={props.view === "compact"}
+              fallback={
+                <For each={group.entries}>
+                  {(entry) => <Entry m={props.m} entry={entry} clamp={true} />}
+                </For>
+              }
+            >
+              <ul class="rows">
+                <For each={group.entries}>
+                  {(entry) => (
+                    <li>
+                      <Row m={props.m} entry={entry} />
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+          </>
+        );
+      }}
+    </For>
   );
 }
 
@@ -45,6 +208,8 @@ export function FeedPage(props: {
   query: FeedQuery;
   title: string;
   filters: boolean;
+  /** The asker whose page this is, for the heading's avatar. */
+  user?: string;
 }) {
   const [entries, setEntries] = createSignal<FeedEntry[]>([]);
   const [next, setNext] = createSignal<string | null>(null);
@@ -78,41 +243,83 @@ export function FeedPage(props: {
   }
   // Each query is its own feed: start over when it changes.
   const [first] = createResource(
-    () => ({ ...props.query }),
+    () => ({ ...props.query, visit: visit() }),
     () => load(),
   );
 
   return (
-    <section>
-      <h2>{props.title}</h2>
-      <Show when={props.filters}>
-        <p class="meta">{props.m.feedIntro}</p>
-        <p class="meta">
-          <a href={href({ page: "feed" })}>{props.m.feedAll}</a>
-          <For each={FILTERS}>
-            {(i) => (
-              <>
-                {props.m.separator}
-                <a href={href({ page: "feed", interface: i })}>{props.m.interfaceName[i]}</a>
-              </>
-            )}
-          </For>
-        </p>
-      </Show>
-      <Show when={!first.loading} fallback={<p class="thinking">{props.m.loading}</p>}>
-        <For
-          each={entries()}
-          fallback={<Show when={failure() === null}>{<p>{props.m.feedEmpty}</p>}</Show>}
+    <section class="page">
+      <header class="page-head">
+        <Show when={props.user}>{(name) => <PersonAvatar name={name()} large={true} />}</Show>
+        <div>
+          <h2>{props.title}</h2>
+          <Show when={props.filters}>
+            <p class="page-intro">{props.m.feedIntro}</p>
+          </Show>
+        </div>
+      </header>
+      <div class="toolbar">
+        <Show when={props.filters}>
+          <nav class="filters" aria-label={props.m.filtersLabel}>
+            <a
+              class="chip"
+              href={href({ page: "feed" })}
+              aria-current={props.query.interface === undefined ? "page" : undefined}
+            >
+              {props.m.feedAll}
+            </a>
+            <For each={FILTERS}>
+              {(i) => (
+                <a
+                  class="chip"
+                  href={href({ page: "feed", interface: i })}
+                  aria-current={props.query.interface === i ? "page" : undefined}
+                >
+                  {props.m.interfaceName[i]}
+                </a>
+              )}
+            </For>
+          </nav>
+        </Show>
+        <Show when={entries().length > 0}>
+          <ViewSwitch m={props.m} />
+        </Show>
+      </div>
+      <Show when={!first.loading} fallback={<Typing m={props.m} loading={true} />}>
+        <Show
+          when={entries().length > 0}
+          fallback={
+            <Show when={failure() === null}>
+              <BotMessage m={props.m}>
+                <p class="bubble bubble-bot">{props.m.feedEmpty}</p>
+              </BotMessage>
+            </Show>
+          }
         >
-          {(entry) => <Entry m={props.m} entry={entry} />}
-        </For>
+          <Timeline m={props.m} entries={entries()} view={feedView()} />
+        </Show>
       </Show>
-      <Show when={failure()}>{(message) => <p class="notice">{message()}</p>}</Show>
+      <Show when={failure()}>
+        {(message) => (
+          <BotMessage m={props.m}>
+            <Notice tone="danger" title={props.m.replyTitle.error} role="alert">
+              <p>{message()}</p>
+            </Notice>
+          </BotMessage>
+        )}
+      </Show>
       <Show when={next()}>
         {(cursor) => (
-          <button type="button" disabled={loading()} onClick={() => void load(cursor())}>
-            {loading() ? props.m.loading : props.m.loadMore}
-          </button>
+          <p class="more">
+            <button
+              type="button"
+              class="button-quiet"
+              disabled={loading()}
+              onClick={() => void load(cursor())}
+            >
+              {loading() ? props.m.loading : props.m.loadMore}
+            </button>
+          </p>
         )}
       </Show>
     </section>
@@ -126,19 +333,47 @@ export function CallPage(props: { m: Messages; locale: Locale | undefined; id: s
     (id) => fetchCall(id, props.locale, props.m),
   );
   return (
-    <Switch fallback={<p class="thinking">{props.m.loading}</p>}>
-      <Match when={call()?.ok === true && call()}>
-        {(r) => {
-          const read = r();
-          return read.ok ? <Entry m={props.m} entry={read.value} /> : null;
-        }}
-      </Match>
-      <Match when={call()?.ok === false && call()}>
-        {(r) => {
-          const read = r();
-          return read.ok ? null : <p class="notice">{read.message}</p>;
-        }}
-      </Match>
-    </Switch>
+    <section class="page">
+      <p class="back">
+        <a href={href({ page: "feed" })}>
+          <span aria-hidden="true">←</span>
+          {props.m.navFeed}
+        </a>
+      </p>
+      <Switch fallback={<Typing m={props.m} loading={true} />}>
+        <Match when={call()?.ok === true && call()}>
+          {(r) => {
+            const read = r();
+            return read.ok ? (
+              <>
+                <DayDivider m={props.m} iso={read.value.asked_at} />
+                <Entry m={props.m} entry={read.value} />
+              </>
+            ) : null;
+          }}
+        </Match>
+        <Match when={call()?.ok === false && call()}>
+          {(r) => {
+            const read = r();
+            return read.ok ? null : (
+              <BotMessage m={props.m}>
+                <Show
+                  when={read.status === 404}
+                  fallback={
+                    <Notice tone="danger" title={props.m.replyTitle.error} role="alert">
+                      <p>{read.message}</p>
+                    </Notice>
+                  }
+                >
+                  <Notice tone="note" title={props.m.callMissingTitle}>
+                    <p>{read.message}</p>
+                  </Notice>
+                </Show>
+              </BotMessage>
+            );
+          }}
+        </Match>
+      </Switch>
+    </section>
   );
 }
