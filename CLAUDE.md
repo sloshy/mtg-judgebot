@@ -621,14 +621,18 @@ Also true of `api`:
   routes `/feed`, `/calls/<id>`, `/users/<name>` in `web/src/router.ts`; `/help`
   mentions the feed unless it is off. `ratings` counts Discord and web apart
   (`Ratings { discord, web, judge }`); `reasons` only with `JUDGE_PUBLIC_FEEDBACK=true`
-  (`feed::Reasons`), never the rater's identity. `/api/about` also carries `ratings`.
+  (`feed::Reasons`), never the rater's identity. `/api/about` also carries `ratings`
+  and `public_feedback`; a dismissed queue item's reason is left out of `reasons`, and
+  `@everyone`/`@here` are broken (`feed::public_text`).
 - `mcp::router` gates with `route_layer`, not `layer`. `layer` wraps a router's fallback
   too, and merging that into a router with no web fallback made the 401 the catch-all for
   every unrouted path.
 - Web ratings: `POST /api/calls/{id}/feedback` (`judge_api::rating`, beside
   `/api/judge`, D38) as the tab's session (`web:<uuid>`, the history id). The server
   decides replacing: an earlier rating without `replace: true` is a 409 `confirm`,
-  nothing written. Its own limiter (`rating::LIMIT`, 30 per 10 min), a 16 KiB body,
+  nothing written. Without `replace` the write is `CallStore::rate_if_new`
+  (insert-only, re-read on conflict → `RatedNew::Taken` → 409), so a race cannot
+  replace unasked; Discord keeps `rate`'s upsert. Its own limiter (`rating::LIMIT`, 30 per 10 min), a 16 KiB body,
   `deny_unknown_fields`, a public in-window call only (`feed::rateable`), the IP via
   `client_ip` and the UA stored. `/api/judge`'s answer carries `call`.
 - "Did you mean?" is stateless, via `pins` → `pin_card` rewriting. Session
@@ -901,7 +905,8 @@ Key cross-file facts that aren't obvious from any one file:
   delete older calls with their ratings. `judge_runs` stay (`call_id` SET NULL), and
   the retirement pass treats a cited prior call that no longer exists as supported.
 - `JUDGE_PUBLIC_FEEDBACK` (default false, validated at `Config` load; D38): the feed
-  shows raters' reasons without identity.
+  shows raters' reasons without identity (raters are told: `rated_public`,
+  `form_*_hint_public`, `rateFormNotePublic`); dismissing an item hides its reason.
 - `FEEDBACK_IP_DAYS` (default 90, `1..=3650`, validated at `Config` load; D38): web
   ratings' ip/user_agent are cleared past it on every rating write (`PgCallStore`) and
   by the refresh's `sweep` step.
