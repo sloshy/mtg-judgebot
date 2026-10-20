@@ -30,7 +30,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   per streak), recovers or hits its embed ceiling, when a script fails
   (`scripts/alert.sh`), and when the Discord role finds `DISCORD_INTERACTIONS` and the
   application's Interactions Endpoint URL disagree, or refuses a signed interaction for
-  its timestamp (once per streak; a wrong host clock refuses them all). `judge-cli stats` reads the ledger. The cap *reserves*
+  its timestamp (once per streak; a wrong host clock refuses them all). `judge-cli stats` reads the ledger and the period and cap the processes record in `budget_setting`. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop
   against wiremock, not the live API. A full 22-question gold run costs ~$1.70.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
@@ -632,7 +632,14 @@ Also true of `api`:
   exist only via `CostAccess` / `ModelAccess` from `stats::Disclosure`
   (`JUDGE_PUBLIC_COST`, `JUDGE_PUBLIC_MODELS`); a `model` filter without models is a
   400. Run figures are null under a user filter. `/api/about` carries `stats`. Web:
-  `/dashboard`, and the admin Dashboard at `/admin/usage`.
+  `/dashboard`, and the admin Dashboard at `/admin/usage`. Each report runs in one
+  read-only transaction with a statement timeout (`PUBLIC_TIMEOUT` 5 s,
+  `OPERATOR_TIMEOUT` 1 min); past it the public route answers 503 busy
+  (`StatsError::TimedOut`). A public range that ends before `JUDGE_FEED_DAYS` is a 400
+  (`BadRange::BeforeWindow`). The public and operator scopes are two `UNION ALL`
+  branches, so a generic plan still uses the partial indexes. The report's budget is the
+  `budget_setting` row that `budget::sync` (`record_setting`) writes beside
+  `spend_days`; null until a process has written it.
 - `mcp::router` gates with `route_layer`, not `layer`. `layer` wraps a router's fallback
   too, and merging that into a router with no web fallback made the 401 the catch-all for
   every unrouted path.
