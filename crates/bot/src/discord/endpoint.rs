@@ -104,7 +104,10 @@ impl Received {
 }
 
 type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
-type Run = Arc<dyn Fn(Interaction, Ack) -> Task + Send + Sync>;
+/// The handler: the interaction, a submitted form's raw `data.components`
+/// (serenity drops what a Label holds, [`super::feedback`]), and the
+/// acknowledgement to tell.
+type Run = Arc<dyn Fn(Interaction, Option<serde_json::Value>, Ack) -> Task + Send + Sync>;
 
 struct Endpoint {
     verifier: Verifier,
@@ -166,11 +169,12 @@ impl Interactions {
         if let Some(hook) = alert {
             let _ = self.0.alert.set(hook);
         }
-        let run: Run = Arc::new(move |interaction, ack| {
+        let run: Run = Arc::new(move |interaction, form, ack| {
             Box::pin(super::dispatch_guarded(
                 Arc::clone(&data),
                 Arc::clone(&http),
                 interaction,
+                form,
                 ack,
             ))
         });
@@ -294,11 +298,15 @@ impl Interactions {
         if matches!(interaction, Interaction::Ping(_)) {
             return Received::Pong;
         }
-        let ack = Ack::new();
+        let form = match interaction {
+            Interaction::Modal(_) => super::feedback::submitted(body),
+            _ => None,
+        };
+        let ack = Ack::arrived_at(arrived);
         // Taken here, before the spawn, so the drain counts the interaction
         // from the moment it was accepted.
         let work = endpoint.shutdown.work();
-        let handler = (endpoint.run)(interaction, ack.clone());
+        let handler = (endpoint.run)(interaction, form, ack.clone());
         let mut task = tokio::spawn(async move {
             let _work = work;
             handler.await;
@@ -433,7 +441,7 @@ mod tests {
     ) -> Option<(Interactions, Arc<AtomicUsize>)> {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&calls);
-        let run: Run = Arc::new(move |_, ack: Ack| {
+        let run: Run = Arc::new(move |_, _, ack: Ack| {
             counted.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 if acks {

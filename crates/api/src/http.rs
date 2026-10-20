@@ -795,11 +795,17 @@ mod tests {
         async fn rate(
             &self,
             _call: CallId,
-            _user: &str,
-            _score: Score,
-            _judge: bool,
+            _rater: &judge_core::Rater,
+            _rating: &judge_core::Rating,
         ) -> Result<judge_core::Rated, JudgeError> {
             Ok(judge_core::Rated::Recorded)
+        }
+        async fn earlier_rating(
+            &self,
+            _call: CallId,
+            _rater: judge_core::RaterId,
+        ) -> Result<Option<judge_core::Earlier>, JudgeError> {
+            Ok(None)
         }
         async fn history(
             &self,

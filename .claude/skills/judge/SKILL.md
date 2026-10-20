@@ -1,6 +1,6 @@
 ---
 name: judge
-description: "Answer a Magic: The Gathering (MTG) rules question with the judgebot pipeline. Either call its built-in model (costs API budget) or do the model's work yourself through a session whose citations are validated against the Comprehensive Rules (CR), Oracle text and Scryfall rulings. Also for looking up cards, CR rules text, rulings and glossary terms, and for the operator's reads of the instance (stored calls, private ones included, failed calls, usage and spend). Use when asked a rules question, to check a ruling or an interaction, to consult the judgebot database, or to troubleshoot what the instance answered."
+description: "Answer a Magic: The Gathering (MTG) rules question with the judgebot pipeline. Either call its built-in model (costs API budget) or do the model's work yourself through a session whose citations are validated against the Comprehensive Rules (CR), Oracle text and Scryfall rulings. Also for looking up cards, CR rules text, rulings and glossary terms, and for the operator's reads of the instance (stored calls, private ones included, failed calls, usage and spend) and working its feedback queue (ratings given a reason). Use when asked a rules question, to check a ruling or an interaction, to consult the judgebot database, to troubleshoot what the instance answered, or to work through the feedback queue."
 ---
 
 # Judge
@@ -151,11 +151,58 @@ stdio `judge-mcp` (whoever runs them holds the database), and on `/mcp` only wit
 - `admin_failures {limit?}` / `judge-cli failures [--limit N]`: failed calls with the
   question, the error, the first rejection and each attempt's text.
 - `admin_usage {days?}` / `judge-cli stats [--days N]`: questions and spend per day, runs
-  by model and outcome, ratings, the lowest-rated calls, recent data refreshes.
+  by model and outcome, ratings, the lowest-rated calls, the feedback queue's counts by
+  category, recent data refreshes.
 
 To look into a reported bad answer: find it with `admin_calls` (`q` with words from it,
 or `asker`), read it with `admin_call`, then reproduce it with a session above.
 `judge-cli admin-url` prints the admin web page's address for a person.
+
+## The feedback queue
+
+Every *Partially correct* or *Incorrect* rating given a reason is an item in the
+feedback queue: the category (`wrong_conclusion`, `missed_part`, `bad_citation`,
+`wrong_card`, `misread_question`, `wrong_refusal`, `outdated`, `other`), and optionally
+what is wrong and the right answer, in the rater's words. The reasons are for the
+operator, never the model: nothing in retrieval reads them. Same access as the reads
+above.
+
+- `queue_list {cursor?, status?, category?, interface?, rater?}` / `judge-cli queue
+  [--status open|resolved|dismissed] [--category C] [--interface I] [--rater discord|web]
+  [--cursor C]`: newest first (by when each was opened or reopened), 50 a page. Each item
+  has its `id`, the reason, the rating as it stands now (`score`), the rater, the
+  operator's `note` and `fixed_by`, and the call's question on one line.
+- `queue_show {item}` / `judge-cli queue-show <item>`: the item with its call whole
+  (question and answer verbatim, citations, cards, the run's models, retired state, every
+  rating with its reason).
+- `queue_resolve {item, note, fixed_by?}` / `judge-cli queue-resolve <item> --note N
+  [--fixed-by F]`: fixed. `note` (required, at most 2000 characters) says what was wrong
+  and what you did; `fixed_by` (at most 200) names the fix.
+- `queue_dismiss {item, note}` / `judge-cli queue-dismiss <item> --note N`: nothing to
+  fix (the answer was right, or the reason is not about the answer), and why.
+
+To work the queue:
+
+1. `queue_list` with `status: "open"`. Take one item at a time.
+2. `queue_show` it. Read the reason against the answer and its citations. A rater can
+   be wrong too: check the claim against the CR (`get_rules`, `search_rules`) and the
+   card (`card_info`) before you change anything.
+3. Reproduce it with a session (`begin_session` with the call's question, no API spend),
+   not `judge`. What the session shows decides the fix:
+   - The wrong card was resolved, or a nickname missed: an alias in `data/aliases.yaml`.
+   - A card whose interaction the material does not explain: a note in
+     `data/notes.yaml`.
+   - The right rule was not retrieved, or the prompt led the model astray: a retrieval
+     or prompt change. Check retrieval with `cargo run -p judge-eval -- recall` (no API
+     spend), and add the question to `eval/gold.yaml` when it is a new capability.
+   - The answer was right: dismiss it, saying which rule settles it.
+4. Make the fix, then `queue_resolve` with a note naming what you found and did and
+   `fixed_by` naming the change (a commit, the `notes.yaml` entry). Resolving changes no
+   answer by itself: a fix in the data reaches new questions after the next load.
+
+A rater who replaces their reason reopens the item, with your note kept. An item whose
+rater re-rated the answer Correct stays only if it has a note. The admin web page's
+Feedback tab (`judge-cli admin-url`) is the same queue for a person.
 
 ## Running the CLI
 

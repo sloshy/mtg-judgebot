@@ -16,7 +16,7 @@
 
 use std::{fmt, time::Duration};
 
-use judge_core::{Confidence, Forgotten, Locale, Score};
+use judge_core::{Confidence, Fault, FeedbackCategory, Forgotten, Locale, Score};
 
 /// One locale's Discord text.
 #[derive(Clone, Copy)]
@@ -81,11 +81,11 @@ pub struct Messages {
     pub unknown_button: &'static str,
     /// A rating button's label.
     pub rating_label: fn(Score) -> &'static str,
-    /// The rating's acknowledgement, given its label and whether it counts
-    /// as a judge's.
-    pub rated: fn(&str, bool) -> String,
-    /// After an *Incorrect* rating: whom to tell, given the operator's
-    /// username.
+    /// The rating's acknowledgement, given its label, its reason's category
+    /// (labelled) when it has one, and whether it counts as a judge's.
+    pub rated: fn(&str, Option<&str>, bool) -> String,
+    /// After an *Incorrect* rating: who reads the reason, given the
+    /// operator's username.
     pub report_wrong: fn(&str) -> String,
     /// After [`Self::report_wrong`]: the issue form, given its URL.
     pub report_link: fn(&str) -> String,
@@ -93,6 +93,45 @@ pub struct Messages {
     pub rate_failed: &'static str,
     /// A rating of an answer the retention deleted.
     pub call_gone: &'static str,
+    /// Correct clicked again: it is already recorded.
+    pub already_rated: &'static str,
+    /// "You already rated this…": the earlier rating's label, its
+    /// category's label when it had one, and the new rating's label.
+    pub replace_prompt: fn(&str, Option<&str>, &str) -> String,
+    /// The Replace button's label.
+    pub replace_label: &'static str,
+    /// The Keep button's label.
+    pub keep_label: &'static str,
+    /// After Keep: the rating on record now, given its label and its
+    /// category's label when it has one.
+    pub on_record: fn(&str, Option<&str>) -> String,
+    /// After Keep, when the rater has no rating on the answer any more.
+    pub no_rating: &'static str,
+    /// A feedback category, as the form lists it (at most 100 characters).
+    pub category_label: fn(FeedbackCategory) -> &'static str,
+    /// The rating form's title (at most 45 characters).
+    pub form_title: fn(Fault) -> &'static str,
+    /// The form's category menu: its label (at most 45 characters).
+    pub form_category: &'static str,
+    /// The category menu's placeholder (at most 100 characters).
+    pub form_category_placeholder: &'static str,
+    /// "What's wrong": the field's label (at most 45 characters).
+    pub form_wrong: &'static str,
+    /// Its hint (at most 100 characters).
+    pub form_wrong_hint: &'static str,
+    /// "The right answer": the field's label (at most 45 characters).
+    pub form_right: &'static str,
+    /// Its hint (at most 100 characters).
+    pub form_right_hint: &'static str,
+    /// Above the category menu shown before the form when interactions
+    /// arrive over the gateway, given the rating's label.
+    pub category_prompt: fn(&str) -> String,
+    /// A form that came back without its category: nothing was recorded.
+    pub form_incomplete: &'static str,
+    /// A form field over its limit, given the limit: nothing was recorded.
+    pub form_too_long: fn(usize) -> String,
+    /// A form field holding a control character: nothing was recorded.
+    pub form_bad_text: &'static str,
     /// The maintenance reply's body, above its Retry button.
     pub retry_body: &'static str,
     /// The Retry button's label.
@@ -296,19 +335,76 @@ Please try again shortly.",
         Score::Partial => "Partially correct",
         Score::Correct => "Correct",
     },
-    rated: |label, as_judge| {
+    rated: |label, category, as_judge| {
         let who = if as_judge { " as a judge ruling" } else { "" };
-        format!("Recorded your rating{who}: {label}. Rating again replaces it.")
+        match category {
+            Some(category) => format!(
+                "Recorded your rating{who}: {label} ({category}). The operator sees your reason \
+beside the answer. Rating again asks before replacing it."
+            ),
+            None => {
+                format!(
+                    "Recorded your rating{who}: {label}. Rating again asks before replacing it."
+                )
+            }
+        }
     },
-    report_wrong: |username| {
+    report_wrong: |username| format!("`@{username}` runs this bot and reads every reason given."),
+    report_link: |url| {
         format!(
-            "If the ruling is wrong, tell `@{username}`, who runs this bot, what you asked and what \
-the right answer is."
+            " If the rules themselves are answered wrong, you can also [report it to the project](<{url}>)."
         )
     },
-    report_link: |url| format!(" Or [report it to the project](<{url}>)."),
     rate_failed: "Sorry, I couldn't record that rating. Please try again.",
     call_gone: "This answer is no longer stored, so it can't be rated.",
+    already_rated: "You already rated this answer **Correct**. Nothing changed.",
+    replace_prompt: |earlier, category, new| {
+        let category = category.map(|c| format!(" ({c})")).unwrap_or_default();
+        format!("You already rated this answer **{earlier}**{category}. Replace it with **{new}**?")
+    },
+    replace_label: "Replace",
+    keep_label: "Keep",
+    on_record: |label, category| {
+        let category = category.map(|c| format!(" ({c})")).unwrap_or_default();
+        format!("Nothing changed. Your rating on record: **{label}**{category}.")
+    },
+    no_rating: "Nothing changed. You have no rating on this answer.",
+    category_label: |category| match category {
+        FeedbackCategory::WrongConclusion => "Wrong conclusion",
+        FeedbackCategory::MissedPart => "Missed part of the question",
+        FeedbackCategory::BadCitation => "A citation doesn't support it",
+        FeedbackCategory::WrongCard => "Wrong card",
+        FeedbackCategory::MisreadQuestion => "Misread the question",
+        FeedbackCategory::WrongRefusal => "Shouldn't have refused",
+        FeedbackCategory::Outdated => "Outdated",
+        FeedbackCategory::Other => "Other",
+    },
+    form_title: |fault| match fault {
+        Fault::Incorrect => "Incorrect: what went wrong?",
+        Fault::Partial => "Partially correct: what's missing?",
+    },
+    form_category: "What kind of problem?",
+    form_category_placeholder: "Choose one",
+    form_wrong: "What's wrong",
+    form_wrong_hint: "Optional. What did the answer get wrong?",
+    form_right: "The right answer",
+    form_right_hint: "Optional. What should it have said?",
+    category_prompt: |label| {
+        format!(
+            "You rated this answer **{label}**. What kind of problem is it? Choose one, then add \
+details in the form."
+        )
+    },
+    form_incomplete: "That form came back without a category, so nothing was recorded. Please rate the \
+answer again.",
+    form_bad_text: "A field held a character that isn't text, so nothing was recorded. Please rate the \
+answer again.",
+    form_too_long: |limit| {
+        format!(
+            "Each field takes at most {limit} characters, so nothing was recorded. Please rate the \
+answer again."
+        )
+    },
     retry_body: "Judgebot is being upgraded and will be back in a minute or two. \
 Press **Retry** to ask this again.",
     retry_label: "Retry",
@@ -359,13 +455,15 @@ the cards it took your question to be about. Tournament policy and card prices a
 it. It is still stored, for the operator only.\n\n\
 **Looking things up.** `/card` shows a card's Oracle text and rulings and `/rule` shows rules text by \
 number. Both are free and instant.\n\n\
-**Rating.** The buttons under an answer record how right it was; rating again replaces yours. Ratings decide \
-which past answers are shown as examples later — the rules themselves always outrank them. Members with the \
-server's judge role rate with an override.",
+**Rating.** The buttons under an answer record how right it was. *Partially correct* and *Incorrect* \
+open a short form (what kind of problem, what's wrong, the right answer) that goes to the operator. Rating \
+again asks before it replaces yours. Ratings decide which past answers are shown as examples later — the \
+rules themselves always outrank them. Members with the server's judge role rate with an override.",
     help_stored: "**What is stored.** Each question and answer, the channel it was asked in, your user id and username, \
-and your ratings. A call that errored is kept for debugging, with its question. Nothing else is read: the \
-bot sees only its slash commands. `/forget` deletes your ratings and removes your id and username from \
-your questions; a private question's text, and a failed one's, is removed too.",
+and your ratings with the reasons you give. A call that errored is kept for debugging, with its question. \
+Nothing else is read: the bot sees only its slash commands. `/forget` deletes your ratings and their \
+reasons and removes your id and username from your questions; a private question's text, and a failed \
+one's, is removed too.",
     help_feed: "**The feed.** A question not asked private may be listed with its answer on this \
 instance's public web feed, with your username (anonymous once you use `/forget`). The channel and server \
 are never shown.",
@@ -452,8 +550,13 @@ fn en_forgotten(f: Forgotten) -> String {
     };
     let mut done = Vec::new();
     if f.ratings > 0 {
+        let reasons = if f.feedback > 0 {
+            " with their reasons"
+        } else {
+            ""
+        };
         done.push(format!(
-            "deleted your {}",
+            "deleted your {}{reasons}",
             count(f.ratings, "rating", "ratings")
         ));
     }
@@ -523,7 +626,18 @@ mod tests {
                 (m.working)("Card"),
                 m.unknown_button.to_owned(),
                 (m.rating_label)(Score::Partial).to_owned(),
-                (m.rated)("Correct", true),
+                (m.rated)("Correct", None, true),
+                (m.rated)("Incorrect", Some("Wrong card"), false),
+                m.already_rated.to_owned(),
+                (m.replace_prompt)("Partially correct", Some("Wrong card"), "Incorrect"),
+                m.replace_label.to_owned(),
+                m.keep_label.to_owned(),
+                (m.on_record)("Incorrect", Some("Wrong card")),
+                m.no_rating.to_owned(),
+                (m.category_prompt)("Incorrect"),
+                m.form_incomplete.to_owned(),
+                (m.form_too_long)(1000),
+                m.form_bad_text.to_owned(),
                 (m.report_wrong)("op"),
                 (m.report_link)("https://example.com"),
                 m.rate_failed.to_owned(),
@@ -588,6 +702,38 @@ mod tests {
                     (1..=DESCRIPTION_LIMIT).contains(&n),
                     "{l}: {d:?} is {n} characters"
                 );
+            }
+        }
+    }
+
+    /// The form's pieces fit Discord's limits in every locale: a modal
+    /// over one is refused whole.
+    #[test]
+    fn the_rating_form_fits_discords_limits() {
+        let fits = |text: &str, limit: usize| {
+            let n = text.chars().count();
+            (1..=limit).contains(&n)
+        };
+        for l in Locale::ALL {
+            let m = messages(l);
+            for f in [Fault::Partial, Fault::Incorrect] {
+                assert!(fits((m.form_title)(f), 45), "{l}: title");
+            }
+            for label in [m.form_category, m.form_wrong, m.form_right] {
+                assert!(fits(label, 45), "{l}: {label:?}");
+            }
+            for hint in [
+                m.form_category_placeholder,
+                m.form_wrong_hint,
+                m.form_right_hint,
+            ] {
+                assert!(fits(hint, 100), "{l}: {hint:?}");
+            }
+            for c in FeedbackCategory::ALL {
+                assert!(fits((m.category_label)(c), 100), "{l}: {c}");
+            }
+            for label in [m.replace_label, m.keep_label] {
+                assert!(fits(label, 80), "{l}: {label:?}");
             }
         }
     }

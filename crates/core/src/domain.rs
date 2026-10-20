@@ -1576,8 +1576,11 @@ pub struct FailedCall {
 /// What `/forget` removed ([`crate::CallStore::forget_user`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Forgotten {
-    /// Ratings deleted.
+    /// Ratings deleted, with their reasons.
     pub ratings: u64,
+    /// Their feedback-queue items deleted (the operator's notes on them
+    /// included).
+    pub feedback: u64,
     /// Failed calls anonymized: user id, question, error and attempt text removed.
     pub failures: u64,
     /// Calls anonymized: id and username removed (and, on a private call,

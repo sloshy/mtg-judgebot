@@ -1,0 +1,267 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT (extract(epoch FROM q.opened_at) * 1000000)::bigint AS \"at_micros!\",\n               q.id, q.call_id, q.status,\n               to_char(q.opened_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"opened_at!\",\n               to_char(q.resolved_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS resolved_at,\n               q.note, q.fixed_by, r.score, r.category, r.what_wrong, r.right_answer,\n               r.rater_kind, r.user_id, r.web_name, r.is_judge, host(r.ip) AS ip, r.user_agent,\n               to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"rated_at!\",\n               c.interface, c.private, c.question, c.retired_reason\n        FROM feedback_queue q\n        JOIN ratings r ON r.call_id = q.call_id AND r.user_id = q.user_id\n        JOIN calls c ON c.id = q.call_id\n        WHERE q.id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "at_micros!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "feedback_queue",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "call_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "feedback_queue",
+            "name": "call_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feedback_queue",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "opened_at!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "resolved_at",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "note",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feedback_queue",
+            "name": "note"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "fixed_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feedback_queue",
+            "name": "fixed_by"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "score",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "score"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "category",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "what_wrong",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "what_wrong"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "right_answer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "right_answer"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "rater_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "rater_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "web_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "web_name"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "is_judge",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "is_judge"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "ip",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "user_agent",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "user_agent"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "rated_at!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 19,
+        "name": "interface",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "interface"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "private",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "private"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "question",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "question"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "retired_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "retired_reason"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      false,
+      null,
+      null,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      null,
+      true,
+      null,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "5548c35b9c4a9308583de58b77d5caa20457b3e28c84d591b76641e0a70aab6c"
+}

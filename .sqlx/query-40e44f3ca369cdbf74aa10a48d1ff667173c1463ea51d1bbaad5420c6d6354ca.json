@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                DELETE FROM feedback_queue\n                WHERE call_id = $1 AND user_id = $2 AND note IS NULL AND fixed_by IS NULL\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "40e44f3ca369cdbf74aa10a48d1ff667173c1463ea51d1bbaad5420c6d6354ca"
+}

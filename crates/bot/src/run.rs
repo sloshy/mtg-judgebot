@@ -184,7 +184,7 @@ mod tests {
     use async_trait::async_trait;
     use judge_core::{
         Card, Charge, Extraction, Extractor, FailedCall, FailedCallId, Forgotten, HistoryScope,
-        RejectedAttempt, Resolution, Resolver, Retriever, RuleChunk, RuleId, Score, Synthesizer,
+        RejectedAttempt, Resolution, Resolver, Retriever, RuleChunk, RuleId, Synthesizer,
         Unvalidated,
     };
     use tokio::sync::Notify;
@@ -275,11 +275,17 @@ mod tests {
         async fn rate(
             &self,
             _c: CallId,
-            _u: &str,
-            _s: Score,
-            _j: bool,
+            _r: &judge_core::Rater,
+            _s: &judge_core::Rating,
         ) -> Result<judge_core::Rated, JudgeError> {
             Ok(judge_core::Rated::Recorded)
+        }
+        async fn earlier_rating(
+            &self,
+            _c: CallId,
+            _r: judge_core::RaterId,
+        ) -> Result<Option<judge_core::Earlier>, JudgeError> {
+            Ok(None)
         }
         async fn history(
             &self,

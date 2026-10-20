@@ -10,6 +10,13 @@
 //!     raters.
 //!   - `GET /admin/api/failures?limit`: the failed calls.
 //!   - `GET /admin/api/usage?days`: usage and spend.
+//!   - `GET /admin/api/queue?cursor&status&category&interface&rater`: the
+//!     feedback queue (#27, D38), newest first.
+//!   - `GET /admin/api/queue/{id}`: one item with its call, whole.
+//!   - `POST /admin/api/queue/{id}/resolve` and `…/dismiss`, body
+//!     `{"note", "fixed_by"}`: close an item. A write, behind the same
+//!     bearer: the token travels in a header, never a cookie, so another
+//!     site's page cannot send it.
 //! * `/admin` and the pages under it: the web app (`WEB_DIST`), which reads
 //!   the token from the address's `#token=` fragment. `/` redirects there;
 //!   the page's assets are served, nothing else.
@@ -34,16 +41,20 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse as _, Redirect, Response},
-    routing::{any, get},
+    routing::{any, get, post},
 };
 use judge_bot::{
     admin::{AdminSettings, AdminToken, CallDetail, CallFilter, CallsPage, FilterText, RunRow},
     db::stats::{self, FailedRow, Usage},
     feed::{self, Asked, Cursor, Names},
+    feedback::{QueueDetail, QueueFilter, QueueItem, QueuePage},
     maintenance::{self, Availability},
     shutdown::Shutdown,
 };
-use judge_core::{CallId, Confidence, JudgeError, Locale, Source};
+use judge_core::{
+    CallId, Close, Closing, Confidence, FeedbackCategory, FixedBy, JudgeError, Locale, QueueNote,
+    QueueStatus, RaterKind, Source,
+};
 use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -234,8 +245,8 @@ impl AdminListening {
     }
 }
 
-/// The operator's reads, behind a trait so the routes are tested without a
-/// database.
+/// The operator's reads, and the feedback queue's one write (closing an
+/// item), behind a trait so the routes are tested without a database.
 #[async_trait::async_trait]
 pub trait AdminReads: Send + Sync {
     /// A page of every stored call.
@@ -250,6 +261,16 @@ pub trait AdminReads: Send + Sync {
     async fn failures(&self, limit: u32) -> Result<Vec<FailedRow>, JudgeError>;
     /// Usage over the last `days`.
     async fn usage(&self, days: u32) -> Result<Usage, JudgeError>;
+    /// A page of the feedback queue.
+    async fn queue(
+        &self,
+        filter: QueueFilter,
+        after: Option<Cursor>,
+    ) -> Result<QueuePage, JudgeError>;
+    /// One feedback item with its call; `None` when there is none.
+    async fn item(&self, id: Uuid) -> Result<Option<(QueueDetail, Names)>, JudgeError>;
+    /// Close a feedback item; `None` when there is none. The one write.
+    async fn close(&self, id: Uuid, close: &Close) -> Result<Option<QueueItem>, JudgeError>;
 }
 
 /// [`AdminReads`] over the database.
@@ -276,6 +297,22 @@ impl AdminReads for PgAdminReads {
 
     async fn usage(&self, days: u32) -> Result<Usage, JudgeError> {
         stats::usage(&self.0, days).await
+    }
+
+    async fn queue(
+        &self,
+        filter: QueueFilter,
+        after: Option<Cursor>,
+    ) -> Result<QueuePage, JudgeError> {
+        judge_bot::feedback::list(&self.0, filter, after).await
+    }
+
+    async fn item(&self, id: Uuid) -> Result<Option<(QueueDetail, Names)>, JudgeError> {
+        judge_bot::feedback::show(&self.0, id).await
+    }
+
+    async fn close(&self, id: Uuid, close: &Close) -> Result<Option<QueueItem>, JudgeError> {
+        judge_bot::feedback::close(&self.0, id, close).await
     }
 }
 
@@ -309,6 +346,10 @@ pub fn router(
         .route("/admin/api/calls/{id}", get(call_route))
         .route("/admin/api/failures", get(failures_route))
         .route("/admin/api/usage", get(usage_route))
+        .route("/admin/api/queue", get(queue_route))
+        .route("/admin/api/queue/{id}", get(item_route))
+        .route("/admin/api/queue/{id}/resolve", post(resolve_route))
+        .route("/admin/api/queue/{id}/dismiss", post(dismiss_route))
         .route("/admin/api/{*rest}", any(not_routed))
         .route("/admin/api", any(not_routed))
         .route("/admin/api/", any(not_routed))
@@ -659,6 +700,214 @@ async fn usage_route(
     }
 }
 
+/// `GET /admin/api/queue`'s query.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct QueueQuery {
+    /// The `next` of the previous page.
+    pub cursor: Option<String>,
+    /// `open`, `resolved` or `dismissed`.
+    pub status: Option<String>,
+    /// A feedback category id.
+    pub category: Option<String>,
+    /// The call's interface.
+    pub interface: Option<String>,
+    /// `discord` or `web`.
+    pub rater: Option<String>,
+}
+
+/// The filter and cursor a queue query names.
+///
+/// # Errors
+/// The message for a 400.
+pub fn parse_queue_query(
+    m: &Messages,
+    q: &QueueQuery,
+) -> Result<(QueueFilter, Option<Cursor>), String> {
+    fn one<T: Copy>(
+        m: &Messages,
+        name: &str,
+        raw: Option<&String>,
+        all: &[T],
+        id: fn(T) -> &'static str,
+    ) -> Result<Option<T>, String> {
+        match raw.map(|v| v.trim()).filter(|v| !v.is_empty()) {
+            None => Ok(None),
+            Some(v) => all
+                .iter()
+                .copied()
+                .find(|t| id(*t) == v)
+                .map(Some)
+                .ok_or_else(|| {
+                    (m.bad_choice)(
+                        name,
+                        &all.iter().map(|t| id(*t)).collect::<Vec<_>>().join(", "),
+                    )
+                }),
+        }
+    }
+    let after = match q.cursor.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        None => None,
+        Some(c) => Some(c.parse::<Cursor>().map_err(|()| m.bad_cursor.to_owned())?),
+    };
+    Ok((
+        QueueFilter {
+            status: one(
+                m,
+                "status",
+                q.status.as_ref(),
+                &QueueStatus::ALL,
+                QueueStatus::id,
+            )?,
+            category: one(
+                m,
+                "category",
+                q.category.as_ref(),
+                &FeedbackCategory::ALL,
+                FeedbackCategory::id,
+            )?,
+            asked: one(m, "interface", q.interface.as_ref(), &Asked::ALL, Asked::id)?,
+            rater: one(m, "rater", q.rater.as_ref(), &RaterKind::ALL, RaterKind::id)?,
+        },
+        after,
+    ))
+}
+
+async fn queue_route(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    query: Result<Query<QueueQuery>, QueryRejection>,
+) -> Response {
+    let m = messages(&state, &headers);
+    if let Some(reply) = closed(&state, m) {
+        return reply;
+    }
+    let q = match query {
+        Ok(Query(q)) => q,
+        Err(e) => return error(e.status(), e.body_text()),
+    };
+    let (filter, after) = match parse_queue_query(m, &q) {
+        Ok(ok) => ok,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    match state.reads.queue(filter, after).await {
+        Ok(page) => Json(page).into_response(),
+        Err(e) => failed(m, "GET /admin/api/queue", &e),
+    }
+}
+
+/// One feedback item as the admin page shows it: the item, and its call as
+/// [`call_view`] shapes one.
+#[derive(Clone, Debug, Serialize)]
+pub struct ItemView {
+    /// The item.
+    pub item: QueueItem,
+    /// Its call, whole.
+    pub call: CallView,
+}
+
+async fn item_route(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> Response {
+    let m = messages(&state, &headers);
+    if let Some(reply) = closed(&state, m) {
+        return reply;
+    }
+    let Ok(id) = Uuid::try_parse(&id) else {
+        return error(StatusCode::NOT_FOUND, m.admin_item_not_found);
+    };
+    match state.reads.item(id).await {
+        Ok(Some((detail, names))) => Json(ItemView {
+            item: detail.item,
+            call: call_view(m, detail.call, &names),
+        })
+        .into_response(),
+        Ok(None) => error(StatusCode::NOT_FOUND, m.admin_item_not_found),
+        Err(e) => failed(m, "GET /admin/api/queue/{id}", &e),
+    }
+}
+
+/// A closing's body.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloseBody {
+    /// What was found and done.
+    pub note: String,
+    /// What fixed it (a resolve only means something with one, but either
+    /// takes it).
+    #[serde(default)]
+    pub fixed_by: Option<String>,
+}
+
+/// The closing `body` asks for.
+///
+/// # Errors
+/// The message for a 400.
+pub fn parse_close(m: &Messages, closing: Closing, body: &CloseBody) -> Result<Close, String> {
+    let note = QueueNote::try_new(body.note.clone())
+        .map_err(|_| (m.bad_note)(judge_core::feedback::QUEUE_NOTE_MAX_CHARS))?;
+    let fixed_by = body
+        .fixed_by
+        .as_deref()
+        .map_or(Ok(None), FixedBy::optional)
+        .map_err(|_| (m.bad_fixed_by)(judge_core::feedback::FIXED_BY_MAX_CHARS))?;
+    Ok(Close {
+        closing,
+        note,
+        fixed_by,
+    })
+}
+
+async fn close_route(
+    state: &AdminState,
+    headers: &HeaderMap,
+    id: &str,
+    body: Result<Json<CloseBody>, axum::extract::rejection::JsonRejection>,
+    closing: Closing,
+) -> Response {
+    let m = messages(state, headers);
+    if let Some(reply) = closed(state, m) {
+        return reply;
+    }
+    let Ok(id) = Uuid::try_parse(id) else {
+        return error(StatusCode::NOT_FOUND, m.admin_item_not_found);
+    };
+    let Ok(Json(body)) = body else {
+        return error(StatusCode::BAD_REQUEST, m.bad_body);
+    };
+    let close = match parse_close(m, closing, &body) {
+        Ok(close) => close,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    match state.reads.close(id, &close).await {
+        Ok(Some(item)) => {
+            tracing::info!(%id, status = %item.status, "feedback item closed");
+            Json(item).into_response()
+        }
+        Ok(None) => error(StatusCode::NOT_FOUND, m.admin_item_not_found),
+        Err(e) => failed(m, "POST /admin/api/queue/{id}", &e),
+    }
+}
+
+async fn resolve_route(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: Result<Json<CloseBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    close_route(&state, &headers, &id, body, Closing::Resolved).await
+}
+
+async fn dismiss_route(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: Result<Json<CloseBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    close_route(&state, &headers, &id, body, Closing::Dismissed).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,6 +991,201 @@ mod tests {
                 "no usage in the stub"
             )))
         }
+        async fn queue(
+            &self,
+            filter: QueueFilter,
+            _after: Option<Cursor>,
+        ) -> Result<QueuePage, JudgeError> {
+            Ok(QueuePage {
+                items: if filter.status == Some(QueueStatus::Dismissed) {
+                    vec![]
+                } else {
+                    vec![item(QueueStatus::Open, None)]
+                },
+                next: None,
+            })
+        }
+        async fn item(&self, id: Uuid) -> Result<Option<(QueueDetail, Names)>, JudgeError> {
+            let call = self.call(CallId::new(Uuid::from_u128(1))).await?;
+            Ok(call
+                .filter(|_| id == Uuid::from_u128(5))
+                .map(|(call, names)| {
+                    (
+                        QueueDetail {
+                            item: item(QueueStatus::Open, None),
+                            call,
+                        },
+                        names,
+                    )
+                }))
+        }
+        async fn close(&self, id: Uuid, close: &Close) -> Result<Option<QueueItem>, JudgeError> {
+            Ok((id == Uuid::from_u128(5))
+                .then(|| item(close.closing.status(), Some(close.note.to_string()))))
+        }
+    }
+
+    fn item(status: QueueStatus, note: Option<String>) -> QueueItem {
+        QueueItem {
+            id: Uuid::from_u128(5),
+            call: Uuid::from_u128(1),
+            status,
+            opened_at: "2026-10-20T12:00:00Z".into(),
+            resolved_at: None,
+            note,
+            fixed_by: None,
+            score: "incorrect".into(),
+            category: Some(FeedbackCategory::WrongCard),
+            wrong: Some("Bob".into()),
+            right: None,
+            rater_kind: RaterKind::Discord,
+            rater: "42".into(),
+            rater_name: None,
+            judge: false,
+            ip: None,
+            user_agent: None,
+            rated_at: "2026-10-20T12:00:00Z".into(),
+            interface: Asked::Discord,
+            private: false,
+            question: "q".into(),
+            retired: None,
+        }
+    }
+
+    async fn post(
+        router: &Router,
+        path: &str,
+        auth: Option<&str>,
+        body: &str,
+    ) -> Result<(StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
+        let mut req = Request::post(path).header(header::CONTENT_TYPE, "application/json");
+        if let Some(a) = auth {
+            req = req.header(header::AUTHORIZATION, a);
+        }
+        let res = router
+            .clone()
+            .oneshot(req.body(Body::from(body.to_owned()))?)
+            .await?;
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 16).await?;
+        Ok((status, serde_json::from_slice(&bytes)?))
+    }
+
+    /// The queue's reads and its one write: the write needs the token like
+    /// every read, takes a note, and answers the item as it now stands.
+    #[tokio::test]
+    async fn the_queue_reads_and_closes_behind_the_token() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dist = dist()?;
+        let app = app(&dist, Availability::open()).ok_or("app")?;
+        let bearer = format!("Bearer {TOKEN}");
+        let item = "/admin/api/queue/00000000-0000-0000-0000-000000000005";
+        for path in ["/admin/api/queue", item] {
+            let (status, _, _) = send(&app, path, None).await?;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+        }
+        let resolve = format!("{item}/resolve");
+        let (status, _) = post(&app, &resolve, None, r#"{"note":"x"}"#).await?;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "a write without the token"
+        );
+        let (status, _) = post(&app, &resolve, Some("Bearer nope"), r#"{"note":"x"}"#).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, _, body) = send(&app, "/admin/api/queue?status=open", Some(&bearer)).await?;
+        assert_eq!(status, StatusCode::OK);
+        let j: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(
+            j.pointer("/items/0/category"),
+            Some(&serde_json::json!("wrong_card"))
+        );
+        let (status, _, body) = send(&app, item, Some(&bearer)).await?;
+        assert_eq!(status, StatusCode::OK);
+        let j: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(j.pointer("/call/answer"), Some(&serde_json::json!("No.")));
+        assert_eq!(j.pointer("/item/status"), Some(&serde_json::json!("open")));
+
+        let (status, j) = post(
+            &app,
+            &resolve,
+            Some(&bearer),
+            r#"{"note":" added a note ","fixed_by":"abc123"}"#,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{j}");
+        assert_eq!(j.get("status"), Some(&serde_json::json!("resolved")));
+        assert_eq!(j.get("note"), Some(&serde_json::json!("added a note")));
+        let (status, j) = post(
+            &app,
+            &format!("{item}/dismiss"),
+            Some(&bearer),
+            r#"{"note":"spam"}"#,
+        )
+        .await?;
+        assert_eq!(
+            (status, j.get("status")),
+            (StatusCode::OK, Some(&serde_json::json!("dismissed")))
+        );
+
+        for (path, body, expected) in [
+            (
+                resolve.as_str(),
+                r#"{"note":"  "}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (resolve.as_str(), r#"{"nope":1}"#, StatusCode::BAD_REQUEST),
+            (
+                resolve.as_str(),
+                r#"{"note":"a\u0000b"}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                resolve.as_str(),
+                r#"{"note":"ok","fixed_by":"x\u0000"}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (resolve.as_str(), "not json", StatusCode::BAD_REQUEST),
+            (
+                "/admin/api/queue/00000000-0000-0000-0000-000000000009/dismiss",
+                r#"{"note":"x"}"#,
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "/admin/api/queue/nope/resolve",
+                r#"{"note":"x"}"#,
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let (status, j) = post(&app, path, Some(&bearer), body).await?;
+            assert_eq!(status, expected, "{path} {body}: {j}");
+            assert_eq!(j.get("kind"), Some(&serde_json::json!("error")), "{path}");
+        }
+        for (path, expected) in [
+            ("/admin/api/queue?status=closed", StatusCode::BAD_REQUEST),
+            ("/admin/api/queue?category=typo", StatusCode::BAD_REQUEST),
+            ("/admin/api/queue?rater=mcp", StatusCode::BAD_REQUEST),
+            (
+                "/admin/api/queue?interface=telegram",
+                StatusCode::BAD_REQUEST,
+            ),
+            ("/admin/api/queue?cursor=nope", StatusCode::BAD_REQUEST),
+            (
+                "/admin/api/queue/00000000-0000-0000-0000-000000000009",
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let (status, _, body) = send(&app, path, Some(&bearer)).await?;
+            assert_eq!(
+                status,
+                expected,
+                "{path}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        std::fs::remove_dir_all(&dist)?;
+        Ok(())
     }
 
     fn admin_token() -> Option<AdminToken> {

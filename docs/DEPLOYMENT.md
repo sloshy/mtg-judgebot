@@ -344,7 +344,8 @@ A shell on the host can use the same tools without the network:
 
 This step is optional. The `--admin` role serves the operator's pages: every stored
 call, private ones included, with who asked, its ratings and their raters, its run's
-models and cost; the failed calls; and the usage and spend (D37). It listens on a port
+models and cost; the feedback queue, where every rating given a reason waits to be
+resolved or dismissed (D38); the failed calls; and the usage and spend (D37). It listens on a port
 of its own that the public never reaches:
 
 - inside the container on `0.0.0.0:8789` (`ADMIN_ADDR`, set by compose);
@@ -385,7 +386,9 @@ cloudflared shares the compose network and could reach `judgebot:8789` directly.
 token is the guard on that path, which is one reason it must be long and its own.
 
 **Agents.** The same reads are MCP tools (`admin_calls`, `admin_call`, `admin_failures`,
-`admin_usage`) and `judge-cli` subcommands (`calls`, `call`, `failures`, `stats`). The
+`admin_usage`) and `judge-cli` subcommands (`calls`, `call`, `failures`, `stats`), and
+so is the feedback queue (`queue_list`, `queue_show`, `queue_resolve`, `queue_dismiss`;
+`judge-cli queue`, `queue-show`, `queue-resolve`, `queue-dismiss`). The
 recommended route for an agent on another machine is stdio `judge-mcp` over SSH. It
 needs no token and no open port, because whoever can run it already holds the database:
 
@@ -737,11 +740,15 @@ steps, in order:
    leaves a list you loaded from your own file alone (see below).
 4. `prune`: deletes calls older than `JUDGE_CALL_RETENTION_DAYS`, with their ratings
    (see Retention below). Skipped when the variable is unset or `0`.
-5. `retire`: re-checks every stored call's citations against the data just loaded (see
+5. `sweep`: clears the address and user agent of web ratings older than
+   `FEEDBACK_IP_DAYS` (default 90), keeping the ratings and their reasons. Every rating
+   written does the same, so this step is what clears them on an instance nobody rates
+   on.
+6. `retire`: re-checks every stored call's citations against the data just loaded (see
    below).
-6. `embed`: only rows whose text changed. The CR loader nulls the embedding of those
+7. `embed`: only rows whose text changed. The CR loader nulls the embedding of those
    rows alone, so a new CR costs the embedder a few hundred rules, not all of them.
-7. `emoji`: uploads any card symbol Scryfall added. Skipped when `DISCORD_TOKEN` is
+8. `emoji`: uploads any card symbol Scryfall added. Skipped when `DISCORD_TOKEN` is
    unset.
 
 Each step runs even if an earlier one failed. A step that cannot run for want of

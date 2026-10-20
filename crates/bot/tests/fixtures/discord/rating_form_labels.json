@@ -1,0 +1,79 @@
+{
+  "type": 9,
+  "data": {
+    "custom_id": "rate-form:00000000-0000-0000-0000-000000000000:1",
+    "title": "Incorrect: what went wrong?",
+    "components": [
+      {
+        "type": 18,
+        "label": "What kind of problem?",
+        "component": {
+          "type": 3,
+          "custom_id": "category",
+          "placeholder": "Choose one",
+          "required": true,
+          "min_values": 1,
+          "max_values": 1,
+          "options": [
+            {
+              "label": "Wrong conclusion",
+              "value": "wrong_conclusion"
+            },
+            {
+              "label": "Missed part of the question",
+              "value": "missed_part"
+            },
+            {
+              "label": "A citation doesn't support it",
+              "value": "bad_citation"
+            },
+            {
+              "label": "Wrong card",
+              "value": "wrong_card"
+            },
+            {
+              "label": "Misread the question",
+              "value": "misread_question"
+            },
+            {
+              "label": "Shouldn't have refused",
+              "value": "wrong_refusal"
+            },
+            {
+              "label": "Outdated",
+              "value": "outdated"
+            },
+            {
+              "label": "Other",
+              "value": "other"
+            }
+          ]
+        }
+      },
+      {
+        "type": 18,
+        "label": "What's wrong",
+        "description": "Optional. What did the answer get wrong?",
+        "component": {
+          "type": 4,
+          "custom_id": "wrong",
+          "style": 2,
+          "required": false,
+          "max_length": 1000
+        }
+      },
+      {
+        "type": 18,
+        "label": "The right answer",
+        "description": "Optional. What should it have said?",
+        "component": {
+          "type": 4,
+          "custom_id": "right",
+          "style": 2,
+          "required": false,
+          "max_length": 1000
+        }
+      }
+    ]
+  }
+}

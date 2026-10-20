@@ -11,8 +11,9 @@ A Discord bot that answers Magic: The Gathering rules questions. Users reference
 cards by full name, partial name, or nickname ("bob" → Dark Confidant). Every
 answer cites its sources: Comprehensive Rules (CR) sections, Scryfall rulings,
 and/or prior rated calls. Answers and user-submitted calls are rated 1–3
-(incorrect / partially correct / correct). Ratings feed back into retrieval as
-*examples*, never as authorities over the CR.
+(incorrect / partially correct / correct), the two that find fault with a reason for the
+operator's feedback queue. Ratings feed back into retrieval as *examples*, never as
+authorities over the CR; reasons never reach the model.
 
 ## 2. Entity-first hybrid retrieval
 
@@ -331,6 +332,19 @@ Three interfaces share this pipeline through the same composition root
   - Every interface runs a question through `judge_bot::run::run` (D33): judge, store
     the call or the failed call, and record the run in `judge_runs` with its charges.
     It returns the context the answer was judged from, the run's `Outcome` and cost.
+  - A rating click (D38) reads the rater's earlier rating of the call
+    (`CallStore::earlier_rating`, bounded at 1.5 s from arrival, nothing deferred before it) and
+    `judge_core::feedback::next_step` decides: the same Correct again is "already
+    recorded", any other earlier rating gets a private Replace / Keep prompt, else
+    Correct is recorded (deferred, then the judge-role lookup and `CallStore::rate`) and
+    a fault asks its reason. Over HTTP that is one modal, written as JSON
+    (`discord::feedback::modal`: the category menu and both texts in Label components),
+    its values read from the request body (`feedback::submitted`), because serenity
+    0.12.5 reads a Label as an empty action row. Over the gateway a private category
+    menu (`rate-cat:`) comes first and the modal holds the texts in action rows, the
+    category in its id (`ids::FormId`). The submission defers, looks the role up and
+    stores the rating with its reason (`Rating::faulted`). Every step's id carries the
+    call and the score; maintenance answers each with the maintenance reply.
   - `/judge private:True` is `Audience::Private`: acknowledged ephemerally, no history
     read, persisted private (with rating buttons), so it is never a prior call and
     never another question's history. A call that *fails* is recorded in
@@ -399,8 +413,9 @@ Three interfaces share this pipeline through the same composition root
     bot cannot start without `JUDGE_OPERATOR_DISCORD`, and the network roles
     cannot start without `JUDGE_OPERATOR_EMAIL`, whichever of them it opens. A local
     `judge-cli` or stdio `judge-mcp` holds a plain `Operator` and needs neither.
-  - There are no rating endpoints, because anonymous callers are not
-    accountable identities.
+  - There are no rating endpoints yet. The storage takes a web rater (`Rater::Web`,
+    `user_id` `web:<session uuid>`, D38), and `calls_rated` never counts one, because
+    anonymous callers are not accountable identities.
   - Ambiguity is returned as data and resolved statelessly. The client re-asks
     with `pins: [{span, name}]`, which the server rewrites to `[[Full Name]]`
     with the same `pin_card` used by the Discord buttons.
@@ -414,14 +429,18 @@ Three interfaces share this pipeline through the same composition root
     refuses an `ADMIN_ADDR` on `API_ADDR`'s port.
   - `/admin/api/*` behind `ADMIN_TOKEN` (constant-time bearer, `no-store`): `calls`
     (every call, private ones included, filtered by interface, asker, model, visibility
-    and text; keyset pages), `calls/{id}` (origin, ratings with raters, runs with
-    charges), `failures` and `usage`. The queries are `judge_bot::admin` and
-    `db::stats`. The network roles' listener answers `/admin` paths 404.
+    and text; keyset pages), `calls/{id}` (origin, ratings with raters and reasons, runs
+    with charges), `failures`, `usage`, and the feedback queue (D38): `queue` (filtered
+    by status, category, interface and rater kind; keyset pages), `queue/{id}` (the item
+    with its call whole) and the one write, `POST queue/{id}/resolve` and `…/dismiss`
+    with `{note, fixed_by}`. The queries are `judge_bot::admin`, `judge_bot::feedback`
+    and `db::stats`. The network roles' listener answers `/admin` paths 404.
   - `/admin` and below serve the web app, whose admin pages are a chunk of their own.
     The page takes the token from the address's `#token=` (`judge-cli admin-url`), keeps
     it in `sessionStorage` and sends it only as a header.
   - The same reads are agent operations (`admin_calls`, `admin_call`,
-    `admin_failures`, `admin_usage`), each taking a `judge_agent::admin::Admin` that
+    `admin_failures`, `admin_usage`, `queue_list`, `queue_show`, `queue_resolve`,
+    `queue_dismiss`), each taking a `judge_agent::admin::Admin` that
     only `Toolbox::from_env` (a standalone toolbox) and the `MCP_ADMIN_TOKEN` handler
     hand out.
 - **Config editor** (`crates/configure`, binary `judge-config`): a page on
@@ -449,7 +468,9 @@ Three interfaces share this pipeline through the same composition root
     serves nothing and warns.
   - The operator's reads are operations too (D37): `admin_calls`, `admin_call`,
     `admin_failures`, `admin_usage` (`judge-cli calls`, `call`, `failures`,
-    `stats`). Each takes an `admin::Admin`, which `judge_agent` constructs only beside a
+    `stats`), and the feedback queue's (D38): `queue_list`, `queue_show`,
+    `queue_resolve`, `queue_dismiss` (`judge-cli queue`, `queue-show`, `queue-resolve`,
+    `queue-dismiss`). Each takes an `admin::Admin`, which `judge_agent` constructs only beside a
     standalone toolbox (`Toolbox::from_env` returns `Local`) and in
     `mcp::admin_http_service`; an instance toolbox (`Client::instance`) gets none.
     What a connection may call is its handler's type: `JudgeMcp<Public>` (what
@@ -551,7 +572,8 @@ pictures, from one set of names:
 | Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity; deleted with their ratings past `JUDGE_CALL_RETENTION_DAYS` by the refresh's `prune` step (D34) | `calls` (id, thread_id, interface, asker_id, asker_name, private, locale, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding; a private call has no embedding) |
 | Failed calls | on each operator failure; pruned to 30 days / 500 rows on write | `failed_calls` (thread_id, interface, asker_id, asker_name, private, question, error, first_rejection, attempts) |
 | Judge runs | one row per built-in pipeline run, any outcome (D33) | `judge_runs` (started_at, finished_at, interface, private, outcome, retried, tool_round, call_id, failed_call_id) + `judge_run_charges` (run_id, seq, stage, provider, model, tokens, micro_usd, cost_estimated) |
-| Ratings | continuous | `ratings` (call_id, user_id, score, is_judge, ts) |
+| Ratings | continuous; a web rating's address and user agent cleared past `FEEDBACK_IP_DAYS` by every rating write and the refresh's `sweep` step (D38) | `ratings` (call_id, user_id, score, is_judge, ts, rater_kind `discord`/`web`, category, what_wrong, right_answer, web_name, ip, user_agent) |
+| Feedback queue | one item per rating given a reason; reopened by a replaced reason | `feedback_queue` (id, call_id + user_id → ratings, status `open`/`resolved`/`dismissed`, note, fixed_by, opened_at, resolved_at) |
 | Refresh runs | one row per refresh, scheduled or `judgebot ingest refresh` | `refresh_runs` (started_at, finished_at, trigger, process, cr_before, cr_after, steps jsonb, ok) |
 
 The loaders in the table (cards, rulings, the CR, symbols, nicknames, notes) and the
@@ -632,10 +654,12 @@ off (error log, never mixed). The space is re-checked on every use, and anything
 writes a vector holds it under a shared advisory lock. `ingest reembed --yes` switches the
 database in one transaction after probing the new embedder (`docs/PROVIDERS.md` §4.3).
 
-Rating aggregation: Bayesian-smoothed mean (prior 2.0, weight 3). A rating with
+Rating aggregation: Bayesian-smoothed mean (prior 2.0, weight 3) over Discord ratings
+only (`calls_rated` reads `rater_kind = 'discord'`). A rating with
 `is_judge = true` (operator-assigned role) dominates crowd votes. It is used for
 labeling and ordering *among* prior calls, and for exclusion (< 1.5 with ≥ 5
-votes). It never ranks prior calls above CR chunks.
+votes). It never ranks prior calls above CR chunks. A rating's reason is read by the
+operator's queue alone.
 
 ## 5. Domain model
 
@@ -685,7 +709,8 @@ The build was eval-first: retrieval was measured before any synthesis existed.
 ## 7. Non-goals
 
 - Tournament policy (MTR/IPG). The bot declines those questions rather than winging them.
-- Accounts or ratings on the web app. Its visitors are anonymous, so it never rates.
+- Accounts on the web app. Its visitors are anonymous, so a rating from it would never
+  count toward retrieval (D10).
 - Retraining of any kind.
 - Automatic detection of "nightmare" cards (the notes are curated by hand).
 - Multi-server tenancy. The bot is meant to be run by each community for itself

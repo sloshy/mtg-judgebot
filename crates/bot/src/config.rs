@@ -1060,6 +1060,17 @@ pub enum ConfigError {
         /// The value as set.
         value: String,
     },
+    /// `FEEDBACK_IP_DAYS` is not a whole number of days in range.
+    #[error(
+        "{}={value:?}: not a whole number of days from 1 to {} (unset keeps web raters' addresses {} days)",
+        crate::feedback::IP_DAYS_ENV,
+        crate::feedback::MAX_IP_DAYS,
+        crate::feedback::DEFAULT_IP_DAYS
+    )]
+    BadFeedbackIpDays {
+        /// The value as set.
+        value: String,
+    },
     /// `JUDGE_LOCALE` names no language the interfaces have a catalog for.
     #[error(
         "{}={value:?}: not a supported language (one of: {})",
@@ -1218,6 +1229,7 @@ impl ConfigError {
             Self::BadContact { var, .. } | Self::BadBudget { var, .. } => env(var),
             Self::BadSchedule { .. } => env(jobs::REFRESH_HOURS_ENV),
             Self::BadRetention { .. } => env(prune::RETENTION_ENV),
+            Self::BadFeedbackIpDays { .. } => env(crate::feedback::IP_DAYS_ENV),
             Self::BadLocale { .. } => env(LOCALE_ENV),
             Self::BadFeed { .. } => env(feed::FEED_ENV),
             Self::BadFeedDays { .. } => env(feed::FEED_DAYS_ENV),
@@ -1685,6 +1697,19 @@ pub fn call_retention(env: impl Fn(&str) -> Option<String>) -> Result<Retention,
         .map_err(|value| ConfigError::BadRetention { value })
 }
 
+/// How long a web rating keeps its address and user agent, from `env`
+/// (`FEEDBACK_IP_DAYS`), blank meaning 90 days.
+///
+/// # Errors
+/// [`ConfigError::BadFeedbackIpDays`] for anything but a whole number from 1
+/// to [`crate::feedback::MAX_IP_DAYS`].
+pub fn feedback_ip_days(
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<crate::feedback::IpDays, ConfigError> {
+    crate::feedback::IpDays::parse(env(crate::feedback::IP_DAYS_ENV).as_deref())
+        .map_err(|value| ConfigError::BadFeedbackIpDays { value })
+}
+
 /// The instance's language from `env` (`JUDGE_LOCALE`), blank meaning
 /// English.
 ///
@@ -1845,6 +1870,8 @@ impl Config {
         // Validated here so a bad value stops startup; the refresh's `prune`
         // step reads it when it runs, as its embed step reloads the models.
         call_retention(&env)?;
+        // Likewise: the call store and the refresh's `sweep` step read it.
+        feedback_ip_days(&env)?;
         Ok(Self {
             source: Source::File(path.to_path_buf()),
             chat: Some(Chat { extract, synth }),
@@ -1950,6 +1977,8 @@ impl Config {
         // Validated here so a bad value stops startup; the refresh's `prune`
         // step reads it when it runs, as its embed step reloads the models.
         call_retention(&env)?;
+        // Likewise: the call store and the refresh's `sweep` step read it.
+        feedback_ip_days(&env)?;
         Ok(Self {
             source: Source::Environment,
             chat,
@@ -3207,6 +3236,26 @@ model = "qwen3:8b"
         assert!(matches!(err, ConfigError::BadFeed { .. }), "{err}");
         let err = with(feed::FEED_DAYS_ENV, "9999").err().ok_or("refused")?;
         assert!(matches!(err, ConfigError::BadFeedDays { .. }), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_bad_feedback_address_window_stops_the_load() -> R {
+        let with = |v: &'static str| {
+            Config::from_vars(move |k: &str| {
+                (k == crate::feedback::IP_DAYS_ENV).then(|| v.to_owned())
+            })
+        };
+        assert!(with("30").is_ok());
+        assert!(with("").is_ok());
+        for bad in ["0", "3651", "ninety"] {
+            let err = with(bad).err().ok_or("refused")?;
+            assert!(
+                matches!(err, ConfigError::BadFeedbackIpDays { .. }),
+                "{err}"
+            );
+            assert!(err.to_string().contains("FEEDBACK_IP_DAYS"), "{err}");
+        }
         Ok(())
     }
 

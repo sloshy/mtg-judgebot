@@ -8,7 +8,13 @@
 // travels only as an `Authorization: Bearer` header, never in a query.
 
 import type { CitationView, Interface } from "../api";
-import type { AdminCallFilter } from "../router";
+import type {
+  AdminCallFilter,
+  AdminQueueFilter,
+  FeedbackCategory,
+  QueueStatus,
+  RaterKind,
+} from "../router";
 import type { AdminMessages } from "./messages";
 
 const TOKEN_KEY = "judgebot-admin-token";
@@ -166,12 +172,20 @@ export interface Run {
   charges: Charge[];
 }
 
-/** One rating with its rater (`judge_bot::admin::RatingRow`). */
+/** A rating's score. */
+export type Score = "correct" | "partial" | "incorrect";
+
+/** One rating with its rater and reason (`judge_bot::admin::RatingRow`). */
 export interface Rating {
   user: string;
-  score: "correct" | "partial" | "incorrect";
+  kind: RaterKind;
+  name: string | null;
+  score: Score;
   judge: boolean;
   at: string;
+  category: FeedbackCategory | null;
+  wrong: string | null;
+  right: string | null;
 }
 
 /** Everything stored about a call (`judge_api::admin::CallView`). */
@@ -297,8 +311,19 @@ export interface Usage {
     ratings: number;
     retired: boolean;
   }[];
+  /** The feedback queue by category (`judge_bot::feedback::QueueCount`). */
+  feedback: QueueCount[];
   refresh_runs: RefreshRun[];
   refresh_runs_note: string | null;
+}
+
+/** Items per category by status; a null category is an item re-rated
+ * Correct. */
+export interface QueueCount {
+  category: FeedbackCategory | null;
+  open: number;
+  resolved: number;
+  dismissed: number;
 }
 
 /** GET /admin/api/usage. */
@@ -316,4 +341,115 @@ function isUsage(v: unknown): v is Usage {
     Array.isArray(v.lowest_rated) &&
     Array.isArray(v.refresh_runs)
   );
+}
+
+/** One feedback item (`judge_bot::feedback::QueueItem`). */
+export interface QueueItem {
+  id: string;
+  call: string;
+  status: QueueStatus;
+  opened_at: string;
+  resolved_at: string | null;
+  note: string | null;
+  fixed_by: string | null;
+  /** The rating as it stands now. */
+  score: Score;
+  category: FeedbackCategory | null;
+  wrong: string | null;
+  right: string | null;
+  rater_kind: RaterKind;
+  rater: string;
+  rater_name: string | null;
+  judge: boolean;
+  ip: string | null;
+  user_agent: string | null;
+  rated_at: string;
+  interface: Interface;
+  private: boolean;
+  question: string;
+  retired: string | null;
+}
+
+/** A page of the queue (`judge_bot::feedback::QueuePage`). */
+export interface QueuePage {
+  items: QueueItem[];
+  next: string | null;
+}
+
+/** GET /admin/api/queue. */
+export function fetchQueue(
+  filter: AdminQueueFilter,
+  cursor: string | undefined,
+  token: string,
+  m: AdminMessages,
+): Promise<Read<QueuePage>> {
+  const q = new URLSearchParams();
+  if (cursor) q.set("cursor", cursor);
+  if (filter.status) q.set("status", filter.status);
+  if (filter.category) q.set("category", filter.category);
+  if (filter.interface) q.set("interface", filter.interface);
+  if (filter.rater) q.set("rater", filter.rater);
+  const s = q.toString();
+  return read(`/admin/api/queue${s === "" ? "" : `?${s}`}`, token, m, isQueuePage);
+}
+
+function isQueueItem(v: unknown): v is QueueItem {
+  return (
+    object(v) &&
+    typeof v.id === "string" &&
+    typeof v.call === "string" &&
+    typeof v.status === "string" &&
+    typeof v.question === "string"
+  );
+}
+
+function isQueuePage(v: unknown): v is QueuePage {
+  return (
+    object(v) &&
+    Array.isArray(v.items) &&
+    v.items.every(isQueueItem) &&
+    (v.next === null || typeof v.next === "string")
+  );
+}
+
+/** One item with its call (`judge_api::admin::ItemView`). */
+export interface ItemView {
+  item: QueueItem;
+  call: CallDetail;
+}
+
+/** GET /admin/api/queue/{id}. */
+export function fetchItem(id: string, token: string, m: AdminMessages): Promise<Read<ItemView>> {
+  return read(`/admin/api/queue/${encodeURIComponent(id)}`, token, m, isItemView);
+}
+
+function isItemView(v: unknown): v is ItemView {
+  return object(v) && isQueueItem(v.item) && isCallDetail(v.call);
+}
+
+/** POST /admin/api/queue/{id}/resolve or …/dismiss: the item as it now
+ * stands. */
+export async function closeItem(
+  id: string,
+  closing: "resolve" | "dismiss",
+  body: { note: string; fixed_by?: string },
+  token: string,
+  m: AdminMessages,
+): Promise<Read<QueueItem>> {
+  let res: Response;
+  try {
+    res = await fetch(`/admin/api/queue/${encodeURIComponent(id)}/${closing}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+  } catch {
+    return { ok: false, status: 0, message: m.unreachable };
+  }
+  const reply: unknown = await res.json().catch(() => null);
+  if (res.ok && isQueueItem(reply)) return { ok: true, value: reply };
+  const message =
+    object(reply) && typeof reply.message === "string" ? reply.message : m.strangeReply(res.status);
+  return { ok: false, status: res.ok ? 502 : res.status, message };
 }

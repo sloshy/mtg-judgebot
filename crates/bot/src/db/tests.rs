@@ -27,6 +27,29 @@ use super::{
     space::{VECTOR_TABLES, column_width, record_space, stored_counts, stored_space, switch_space},
 };
 
+/// A Discord rater with user id `id`.
+fn rater(id: u64, judge: bool) -> judge_core::Rater {
+    judge_core::Rater::Discord {
+        user: std::num::NonZeroU64::new(id).unwrap_or(std::num::NonZeroU64::MIN),
+        judge,
+    }
+}
+
+/// A rating of `score`, a fault given the reason "wrong card".
+fn rating(score: Score) -> judge_core::Rating {
+    match judge_core::Fault::of(score) {
+        None => judge_core::Rating::Correct,
+        Some(fault) => judge_core::Rating::faulted(
+            fault,
+            judge_core::Reason {
+                category: judge_core::FeedbackCategory::WrongCard,
+                wrong: None,
+                right: None,
+            },
+        ),
+    }
+}
+
 const BOB: Uuid = Uuid::from_u128(1);
 const URZA_MINE: Uuid = Uuid::from_u128(2);
 const URZA_TOWER: Uuid = Uuid::from_u128(3);
@@ -686,7 +709,9 @@ async fn a_private_call_is_stored_with_its_asker_and_never_a_prior_call(
     let call = store
         .persist(&q, &origin, &verdict, &ctx, &judge_core::Tally::new())
         .await?;
-    store.rate(call, "u1", Score::Correct, true).await?;
+    store
+        .rate(call, &rater(1, true), &rating(Score::Correct))
+        .await?;
     let row: (String, Option<String>, Option<String>, bool) =
         sqlx::query_as("SELECT interface, asker_id, asker_name, private FROM calls WHERE id = $1")
             .bind(call.into_inner())
@@ -833,8 +858,12 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
         .await?;
 
     // rate() upserts on (call_id, user_id).
-    store.rate(call, "u1", Score::Correct, false).await?;
-    store.rate(call, "u1", Score::Incorrect, true).await?;
+    store
+        .rate(call, &rater(1, false), &rating(Score::Correct))
+        .await?;
+    store
+        .rate(call, &rater(1, true), &rating(Score::Incorrect))
+        .await?;
     let (n, score, judge): (i64, i16, bool) = sqlx::query_as(
         "SELECT count(*), min(score), bool_or(is_judge) FROM ratings WHERE call_id = $1",
     )
@@ -862,8 +891,10 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
     );
 
     // Five crowd votes of 1 push smoothed_mean below 1.5 -> excluded.
-    for u in ["u2", "u3", "u4", "u5"] {
-        store.rate(call, u, Score::Incorrect, false).await?;
+    for u in [2, 3, 4, 5] {
+        store
+            .rate(call, &rater(u, false), &rating(Score::Incorrect))
+            .await?;
     }
     let ctx4 = retriever
         .retrieve(
@@ -875,7 +906,9 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
         .await?;
     assert!(ctx4.prior.is_empty());
     // ... unless a judge says otherwise: the judge score dominates the exclusion too.
-    store.rate(call, "u1", Score::Correct, true).await?;
+    store
+        .rate(call, &rater(1, true), &rating(Score::Correct))
+        .await?;
     let ctx5 = retriever
         .retrieve(
             &q,
@@ -1727,8 +1760,12 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_calls(
             &judge_core::Tally::new(),
         )
         .await?;
-    store.rate(call, "11", Score::Correct, false).await?;
-    store.rate(call, "22", Score::Incorrect, true).await?;
+    store
+        .rate(call, &rater(11, false), &rating(Score::Correct))
+        .await?;
+    store
+        .rate(call, &rater(22, true), &rating(Score::Incorrect))
+        .await?;
 
     store
         .record_failure(&judge_core::FailedCall {
@@ -1750,14 +1787,25 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_calls(
             attempts: vec![],
         })
         .await?;
+    // User 11 also has a reason on a call of their own, in the queue.
+    store
+        .rate(call, &rater(11, false), &rating(Score::Partial))
+        .await?;
     let gone = store.forget_user("11").await?;
-    assert_eq!((gone.ratings, gone.calls, gone.failures), (1, 2, 1));
+    assert_eq!(
+        (gone.ratings, gone.feedback, gone.calls, gone.failures),
+        (1, 1, 2, 1)
+    );
     let again = store.forget_user("11").await?;
     assert_eq!(
-        (again.ratings, again.calls, again.failures),
-        (0, 0, 0),
+        (again.ratings, again.feedback, again.calls, again.failures),
+        (0, 0, 0, 0),
         "idempotent"
     );
+    let items: Vec<String> = sqlx::query_scalar("SELECT user_id FROM feedback_queue")
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(items, vec!["22".to_owned()], "only user 22's item is left");
     let rows: Vec<(Option<String>, Option<String>, String, bool)> = sqlx::query_as(
         "SELECT asker_id, asker_name, question, private FROM failed_calls ORDER BY id",
     )
@@ -2203,8 +2251,12 @@ async fn prune_deletes_old_calls_and_their_ratings_and_retires_no_citer(
     let new = store
         .persist(&q, &Origin::Web, &verdict()?, &ctx, &tally)
         .await?;
-    store.rate(old, "1", Score::Correct, false).await?;
-    store.rate(new, "1", Score::Correct, false).await?;
+    store
+        .rate(old, &rater(1, false), &rating(Score::Correct))
+        .await?;
+    store
+        .rate(new, &rater(1, false), &rating(Score::Correct))
+        .await?;
     // The newer call also cites the older one as a prior call.
     sqlx::query(
         "UPDATE calls SET citations = citations || jsonb_build_array(jsonb_build_object(
@@ -2235,12 +2287,16 @@ async fn prune_deletes_old_calls_and_their_ratings_and_retires_no_citer(
         .await?;
     assert_eq!(ratings, 1, "the younger call keeps its rating");
     assert_eq!(
-        store.rate(old, "2", Score::Correct, false).await?,
+        store
+            .rate(old, &rater(2, false), &rating(Score::Correct))
+            .await?,
         judge_core::Rated::CallGone,
         "a rating of a deleted call says so"
     );
     assert_eq!(
-        store.rate(new, "2", Score::Correct, false).await?,
+        store
+            .rate(new, &rater(2, false), &rating(Score::Correct))
+            .await?,
         judge_core::Rated::Recorded
     );
     // Nothing more to delete the second time.

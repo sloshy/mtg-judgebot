@@ -4,21 +4,27 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    CallId, CallStore, Context, FailedCall, FailedCallId, Forgotten, HistoryScope, InputKind,
-    JudgeError, Left, Origin, Qa, Question, Rated, RunRecord, Score, Tally, Validated, Verdict,
-    oracle_fingerprint,
+    CallId, CallStore, Context, Earlier, FailedCall, FailedCallId, FeedbackCategory, Forgotten,
+    HistoryScope, InputKind, JudgeError, Left, Origin, Qa, Question, Rated, Rater, RaterId, Rating,
+    RunRecord, Score, Tally, Validated, Verdict, oracle_fingerprint,
 };
 use pgvector::Vector;
 use sqlx::PgPool;
 
 use super::{CALLS_REWRITE_LOCK, Vectors, bad_row, bad_row_from, upstream};
-use crate::session::{PersistCall, SessionId};
+use crate::{
+    feedback::{self, IpDays},
+    session::{PersistCall, SessionId},
+};
 
 /// Calls + ratings. Only `Verdict<Validated>` can be persisted (invariant I3).
 #[derive(Clone)]
 pub struct PgCallStore {
     pool: PgPool,
     vectors: Option<Arc<Vectors>>,
+    /// How long a web rating keeps its address (`FEEDBACK_IP_DAYS`): every
+    /// rating written sweeps the older ones.
+    ip_days: IpDays,
 }
 
 impl fmt::Debug for PgCallStore {
@@ -30,13 +36,22 @@ impl fmt::Debug for PgCallStore {
 }
 
 impl PgCallStore {
-    /// A store that leaves `calls.embedding` NULL (no embedder).
+    /// A store that leaves `calls.embedding` NULL (no embedder), sweeping
+    /// web raters' addresses after the environment's `FEEDBACK_IP_DAYS`.
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
             vectors: None,
+            ip_days: IpDays::from_env(),
         }
+    }
+
+    /// The same store, sweeping web raters' addresses after `days`.
+    #[must_use]
+    pub const fn with_ip_days(mut self, days: IpDays) -> Self {
+        self.ip_days = days;
+        self
     }
 
     /// Embed each persisted public question so later calls can be found by
@@ -228,33 +243,136 @@ impl CallStore for PgCallStore {
     async fn rate(
         &self,
         call: CallId,
-        user_id: &str,
-        score: Score,
-        is_judge: bool,
+        rater: &Rater,
+        rating: &Rating,
     ) -> Result<Rated, JudgeError> {
-        let score = i16::from(score as u8);
+        let id = rater.id();
+        let user_id = id.stored();
+        let (name, ip, user_agent) = match rater {
+            Rater::Discord { .. } => (None, None, None),
+            Rater::Web {
+                name,
+                ip,
+                user_agent,
+                ..
+            } => (
+                name.as_ref().map(|n| AsRef::<str>::as_ref(n).to_owned()),
+                ip.map(|i| i.to_string()),
+                user_agent.as_ref().map(|u| u.as_str().to_owned()),
+            ),
+        };
+        let reason = rating.reason();
+        let text =
+            |t: Option<&judge_core::FeedbackText>| t.map(|t| AsRef::<str>::as_ref(t).to_owned());
+        let mut tx = self.pool.begin().await.map_err(upstream("begin rating"))?;
         // No row when the call is gone (the retention deleted it); a call
         // deleted between the check and the insert fails the foreign key.
+        // Every field is written, so a replaced rating keeps nothing of the
+        // reason, name or address it replaces.
         let written = sqlx::query!(
             r#"
-            INSERT INTO ratings (call_id, user_id, score, is_judge)
-            SELECT $1, $2, $3, $4 WHERE EXISTS (SELECT 1 FROM calls WHERE id = $1)
+            INSERT INTO ratings (call_id, user_id, score, is_judge, rater_kind, category,
+                                 what_wrong, right_answer, web_name, ip, user_agent)
+            SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text::inet, $11
+            WHERE EXISTS (SELECT 1 FROM calls WHERE id = $1)
             ON CONFLICT (call_id, user_id)
-            DO UPDATE SET score = EXCLUDED.score, is_judge = EXCLUDED.is_judge, ts = now()
+            DO UPDATE SET score = EXCLUDED.score, is_judge = EXCLUDED.is_judge,
+                          rater_kind = EXCLUDED.rater_kind, category = EXCLUDED.category,
+                          what_wrong = EXCLUDED.what_wrong, right_answer = EXCLUDED.right_answer,
+                          web_name = EXCLUDED.web_name, ip = EXCLUDED.ip,
+                          user_agent = EXCLUDED.user_agent, ts = now()
             "#,
             call.into_inner(),
             user_id,
-            score,
-            is_judge
+            i16::from(rating.score() as u8),
+            rater.is_judge(),
+            id.kind().id(),
+            reason.map(|r| r.category.id()),
+            text(reason.and_then(|r| r.wrong.as_ref())),
+            text(reason.and_then(|r| r.right.as_ref())),
+            name,
+            ip,
+            user_agent,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await;
         match written {
-            Ok(done) if done.rows_affected() == 0 => Ok(Rated::CallGone),
-            Ok(_) => Ok(Rated::Recorded),
-            Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => Ok(Rated::CallGone),
-            Err(e) => Err(upstream("upsert rating")(e)),
+            Ok(done) if done.rows_affected() == 0 => return Ok(Rated::CallGone),
+            Ok(_) => {}
+            Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
+                return Ok(Rated::CallGone);
+            }
+            Err(e) => return Err(upstream("upsert rating")(e)),
         }
+        // Lock order: the rating row (above), then its queue item (below),
+        // as `forget_user` takes them; the sweep skips rows it cannot lock.
+        if reason.is_some() {
+            // A new reason is new work: open the item, or reopen it with the
+            // operator's earlier note kept for reference.
+            sqlx::query!(
+                r#"
+                INSERT INTO feedback_queue (call_id, user_id) VALUES ($1, $2)
+                ON CONFLICT (call_id, user_id)
+                DO UPDATE SET status = 'open', resolved_at = NULL, opened_at = now()
+                "#,
+                call.into_inner(),
+                user_id,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(upstream("open a queue item"))?;
+        } else {
+            // Re-rated Correct: nothing left to work on, but the operator's
+            // own writing on an item is never deleted by a rater.
+            sqlx::query!(
+                r#"
+                DELETE FROM feedback_queue
+                WHERE call_id = $1 AND user_id = $2 AND note IS NULL AND fixed_by IS NULL
+                "#,
+                call.into_inner(),
+                user_id,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(upstream("drop a queue item"))?;
+        }
+        feedback::sweep(&mut *tx, self.ip_days)
+            .await
+            .map_err(upstream("sweep raters' addresses"))?;
+        tx.commit().await.map_err(upstream("commit rating"))?;
+        Ok(Rated::Recorded)
+    }
+
+    async fn earlier_rating(
+        &self,
+        call: CallId,
+        rater: RaterId,
+    ) -> Result<Option<Earlier>, JudgeError> {
+        let Some(row) = sqlx::query!(
+            "SELECT score, category FROM ratings WHERE call_id = $1 AND user_id = $2",
+            call.into_inner(),
+            rater.stored(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(upstream("read a rating"))?
+        else {
+            return Ok(None);
+        };
+        let score = match row.score {
+            1 => Score::Incorrect,
+            2 => Score::Partial,
+            3 => Score::Correct,
+            n => return Err(bad_row(format!("ratings.score {n}"))),
+        };
+        let category = row
+            .category
+            .as_deref()
+            .map(|c| {
+                FeedbackCategory::parse(c).ok_or_else(|| bad_row(format!("ratings.category {c:?}")))
+            })
+            .transpose()?;
+        Ok(Some(Earlier { score, category }))
     }
 
     async fn record_failure(&self, failed: &FailedCall) -> Result<FailedCallId, JudgeError> {
@@ -410,6 +528,24 @@ impl CallStore for PgCallStore {
         .execute(&mut *tx)
         .await
         .map_err(upstream("lock calls for forget"))?;
+        // Lock order: a user's `ratings` rows, then their `feedback_queue`
+        // items, the order `rate` takes them in (it upserts the rating, then
+        // the item). Taking the items first deadlocked against a re-rate.
+        // So the ratings are locked first, then the items are deleted (to
+        // count them: deleting the ratings would take them along uncounted,
+        // the foreign key cascades), then the ratings.
+        sqlx::query!(
+            "SELECT 1 AS locked FROM ratings WHERE user_id = $1 FOR UPDATE",
+            user_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(upstream("lock ratings for forget"))?;
+        let feedback = sqlx::query!("DELETE FROM feedback_queue WHERE user_id = $1", user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(upstream("delete feedback items"))?
+            .rows_affected();
         let ratings = sqlx::query!("DELETE FROM ratings WHERE user_id = $1", user_id)
             .execute(&mut *tx)
             .await
@@ -451,6 +587,7 @@ impl CallStore for PgCallStore {
         tx.commit().await.map_err(upstream("commit forget"))?;
         Ok(Forgotten {
             ratings,
+            feedback,
             failures,
             calls,
         })

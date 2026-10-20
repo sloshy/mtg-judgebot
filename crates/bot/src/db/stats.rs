@@ -1,6 +1,6 @@
 //! What an operator asks of a running instance: how much is it used, what
-//! does it cost, which answers did people think were wrong, and how did the
-//! last data refreshes go. Read-only, over `calls`, `ratings`, the
+//! does it cost, which answers did people think were wrong (and how much of
+//! the feedback queue is still open), and how did the last data refreshes go. Read-only, over `calls`, `ratings`, the
 //! `spend_days` ledger (`crate::budget`), the run record (`judge_runs`,
 //! `judge_run_charges`) and `refresh_runs` (`crate::ingest::runs`).
 //!
@@ -188,6 +188,9 @@ pub struct Usage {
     pub retired_calls: i64,
     /// The rated calls with the lowest effective score, worst first.
     pub lowest_rated: Vec<RatedCall>,
+    /// The feedback queue, whatever the window: items per category by
+    /// status, every category listed ([`crate::feedback::counts`]).
+    pub feedback: Vec<crate::feedback::QueueCount>,
     /// The latest data refresh runs ([`RECENT_RUNS`]), newest first,
     /// whatever the window.
     pub refresh_runs: Vec<RecentRun>,
@@ -382,6 +385,7 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
         ratings: [ratings.incorrect, ratings.partial, ratings.correct],
         retired_calls,
         lowest_rated,
+        feedback: crate::feedback::counts(pool).await?,
         refresh_runs,
         refresh_runs_note,
     })

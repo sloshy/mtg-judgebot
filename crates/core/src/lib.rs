@@ -8,6 +8,7 @@
 pub mod category;
 pub mod domain;
 pub mod error;
+pub mod feedback;
 pub mod freshness;
 pub mod judge;
 pub mod locale;
@@ -25,6 +26,10 @@ pub mod verdict;
 pub use category::{Category, UnknownCategory};
 pub use domain::*;
 pub use error::JudgeError;
+pub use feedback::{
+    Close, Closing, Earlier, Fault, FeedbackCategory, FeedbackText, FixedBy, Next, QueueNote,
+    QueueStatus, Rater, RaterId, RaterKind, Rating, Reason, UserAgent, WebName,
+};
 pub use freshness::Freshness;
 pub use judge::{Deps, Traced, judge, judge_traced};
 pub use locale::Locale;

@@ -21,11 +21,16 @@
 //!
 //! # The operator's reads: private calls and askers included (D37)
 //! judge-cli stats [--days N]                   # usage, spend, runs by model and outcome, worst-rated
-//!                                              #  calls, recent refreshes
+//!                                              #  calls, the feedback queue by category, recent refreshes
 //! judge-cli failures [--limit N]               # the newest failed calls: question, error, what the model sent
 //! judge-cli calls [--interface I] [--asker A] [--model M] [--private | --public] [--search Q] [--cursor C]
 //!                                              # every stored call, newest first, 50 a page
 //! judge-cli call <id>                          # one call: origin, answer, ratings with raters, run, charges
+//! judge-cli queue [--status S] [--category C] [--interface I] [--rater discord|web] [--cursor C]
+//!                                              # the feedback queue: ratings given a reason, newest first
+//! judge-cli queue-show <item>                  # one item with its call's question, answer, citations, cards
+//! judge-cli queue-resolve <item> --note N [--fixed-by F]   # fixed: what was done, and what fixed it
+//! judge-cli queue-dismiss <item> --note N      # nothing to fix, and why
 //! judge-cli admin-url                          # the admin page's address with its #token= (ADMIN_TOKEN)
 //! ```
 //!
@@ -43,9 +48,9 @@ use anyhow::{Context as _, Result};
 use judge_agent::{
     Toolbox, Transport,
     ops::{
-        BeginInput, CallInput, CallsInput, CardInput, ExtractionInput, FailuresInput, IdsInput,
-        JudgeInput, LookupInput, NameInput, Pin, SearchInput, SessionInput, StatsInput, TermInput,
-        VerdictInput,
+        BeginInput, CallInput, CallsInput, CardInput, CloseInput, ExtractionInput, FailuresInput,
+        IdsInput, ItemInput, JudgeInput, LookupInput, NameInput, Pin, QueueInput, SearchInput,
+        SessionInput, StatsInput, TermInput, VerdictInput,
     },
     release::Notice,
 };
@@ -55,7 +60,7 @@ use judge_bot::{
     ingest::runs,
     session::{AgentThread, SessionId},
 };
-use judge_core::{CallId, CardId, RuleId};
+use judge_core::{CallId, CardId, FeedbackCategory, QueueStatus, RaterKind, RuleId};
 use serde::Serialize;
 
 const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span=Name]... [--private] \
@@ -64,7 +69,9 @@ const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span
 | persist <session> | card <name> | card-info <uuid> | get-rules <id>... | search <query> [--limit N] \
 | glossary <term> | config | about | stats [--days N] | failures [--limit N] \
 | calls [--interface I] [--asker A] [--model M] [--private | --public] [--search Q] [--cursor C] \
-| call <id> | admin-url>";
+| call <id> | queue [--status S] [--category C] [--interface I] [--rater R] [--cursor C] \
+| queue-show <item> | queue-resolve <item> --note N [--fixed-by F] | queue-dismiss <item> --note N \
+| admin-url>";
 
 #[derive(Debug)]
 enum Command {
@@ -104,6 +111,14 @@ enum Command {
     Calls(CallsInput),
     /// One stored call, whole.
     Call(CallInput),
+    /// The feedback queue.
+    Queue(QueueInput),
+    /// One feedback item with its call.
+    QueueShow(ItemInput),
+    /// Resolve a feedback item.
+    QueueResolve(CloseInput),
+    /// Dismiss a feedback item.
+    QueueDismiss(CloseInput),
     /// The admin page's address with its token; needs no database.
     AdminUrl,
     /// The resolved `judge.toml` (or environment) setup; needs no database.
@@ -128,6 +143,11 @@ const FLAGS: &[(&str, bool)] = &[
     ("--model", true),
     ("--search", true),
     ("--cursor", true),
+    ("--status", true),
+    ("--category", true),
+    ("--rater", true),
+    ("--note", true),
+    ("--fixed-by", true),
 ];
 
 /// The arguments after the subcommand, split into positionals and flags.
@@ -146,6 +166,11 @@ struct Args {
     model: Option<String>,
     search: Option<String>,
     cursor: Option<String>,
+    status: Option<String>,
+    category: Option<String>,
+    rater: Option<String>,
+    note: Option<String>,
+    fixed_by: Option<String>,
 }
 
 /// One pass over the tokens: a known flag consumes its value, `--` ends flag
@@ -187,6 +212,11 @@ fn split_args(tokens: Vec<String>) -> Result<Args> {
             ("--model", Some(v)) => out.model = Some(v),
             ("--search", Some(v)) => out.search = Some(v),
             ("--cursor", Some(v)) => out.cursor = Some(v),
+            ("--status", Some(v)) => out.status = Some(v),
+            ("--category", Some(v)) => out.category = Some(v),
+            ("--rater", Some(v)) => out.rater = Some(v),
+            ("--note", Some(v)) => out.note = Some(v),
+            ("--fixed-by", Some(v)) => out.fixed_by = Some(v),
             _ => anyhow::bail!("{USAGE}"),
         }
     }
@@ -267,19 +297,54 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
         cmd == "stats" || a.days.is_none(),
         "{cmd} does not take --days; {USAGE}"
     );
-    // The call list's own flags, on it alone.
-    if cmd != "calls" {
-        for (given, flag) in [
-            (a.public, "--public"),
-            (a.interface.is_some(), "--interface"),
-            (a.asker.is_some(), "--asker"),
-            (a.model.is_some(), "--model"),
-            (a.search.is_some(), "--search"),
-            (a.cursor.is_some(), "--cursor"),
-        ] {
-            anyhow::ensure!(!given, "{cmd} does not take {flag}; {USAGE}");
-        }
+    // The lists' own flags, on them alone.
+    let calls = cmd == "calls";
+    let queue = cmd == "queue";
+    let closing = cmd == "queue-resolve" || cmd == "queue-dismiss";
+    for (given, flag, takes) in [
+        (a.public, "--public", calls),
+        (a.interface.is_some(), "--interface", calls || queue),
+        (a.asker.is_some(), "--asker", calls),
+        (a.model.is_some(), "--model", calls),
+        (a.search.is_some(), "--search", calls),
+        (a.cursor.is_some(), "--cursor", calls || queue),
+        (a.status.is_some(), "--status", queue),
+        (a.category.is_some(), "--category", queue),
+        (a.rater.is_some(), "--rater", queue),
+        (a.note.is_some(), "--note", closing),
+        (a.fixed_by.is_some(), "--fixed-by", cmd == "queue-resolve"),
+    ] {
+        anyhow::ensure!(takes || !given, "{cmd} does not take {flag}; {USAGE}");
     }
+    let interface = || {
+        a.interface
+            .as_deref()
+            .map(|i| {
+                Asked::parse(i).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--interface must be one of: {}",
+                        Asked::ALL.map(Asked::id).join(", ")
+                    )
+                })
+            })
+            .transpose()
+    };
+    let item = |n: usize| -> Result<uuid::Uuid> {
+        positional(n)?
+            .parse()
+            .context("the item id must be a uuid (as `queue` lists it)")
+    };
+    let close = || -> Result<CloseInput> {
+        no_extra(1)?;
+        Ok(CloseInput {
+            item: item(0)?,
+            note: a
+                .note
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("{cmd} needs --note; {USAGE}"))?,
+            fixed_by: a.fixed_by.clone(),
+        })
+    };
     Ok(match cmd.as_str() {
         "judge" => {
             no_extra(1)?;
@@ -416,21 +481,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
                 !(a.private && a.public),
                 "--private and --public together name no call; {USAGE}"
             );
-            let interface = a
-                .interface
-                .as_deref()
-                .map(|i| {
-                    Asked::parse(i).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "--interface must be one of: {}",
-                            Asked::ALL.map(Asked::id).join(", ")
-                        )
-                    })
-                })
-                .transpose()?;
             Command::Calls(CallsInput {
                 cursor: a.cursor.clone(),
-                interface,
+                interface: interface()?,
                 asker: a.asker.clone(),
                 model: a.model.clone(),
                 private: if a.private {
@@ -449,6 +502,51 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
                 call: CallId::new(positional(0)?.parse().context("call id must be a uuid")?),
             })
         }
+        "queue" => {
+            no_extra(0)?;
+            let one_of = |flag: &str, ids: &[&str]| {
+                anyhow::anyhow!("{flag} must be one of: {}", ids.join(", "))
+            };
+            Command::Queue(QueueInput {
+                cursor: a.cursor.clone(),
+                status: a
+                    .status
+                    .as_deref()
+                    .map(|s| {
+                        QueueStatus::parse(s).ok_or_else(|| {
+                            one_of("--status", &QueueStatus::ALL.map(QueueStatus::id))
+                        })
+                    })
+                    .transpose()?,
+                category: a
+                    .category
+                    .as_deref()
+                    .map(|c| {
+                        FeedbackCategory::parse(c).ok_or_else(|| {
+                            one_of(
+                                "--category",
+                                &FeedbackCategory::ALL.map(FeedbackCategory::id),
+                            )
+                        })
+                    })
+                    .transpose()?,
+                interface: interface()?,
+                rater: a
+                    .rater
+                    .as_deref()
+                    .map(|r| {
+                        RaterKind::parse(r)
+                            .ok_or_else(|| one_of("--rater", &RaterKind::ALL.map(RaterKind::id)))
+                    })
+                    .transpose()?,
+            })
+        }
+        "queue-show" => {
+            no_extra(1)?;
+            Command::QueueShow(ItemInput { item: item(0)? })
+        }
+        "queue-resolve" => Command::QueueResolve(close()?),
+        "queue-dismiss" => Command::QueueDismiss(close()?),
         "admin-url" => {
             no_extra(0)?;
             Command::AdminUrl
@@ -573,6 +671,10 @@ async fn run(cmd: Command) -> Result<()> {
         Command::Failures(i) => print(&toolbox.failures(&admin, i).await?),
         Command::Calls(i) => print(&toolbox.admin_calls(&admin, i).await?),
         Command::Call(i) => print(&toolbox.admin_call(&admin, i).await?),
+        Command::Queue(i) => print(&toolbox.queue_list(&admin, i).await?),
+        Command::QueueShow(i) => print(&toolbox.queue_show(&admin, i).await?),
+        Command::QueueResolve(i) => print(&toolbox.queue_resolve(&admin, i).await?),
+        Command::QueueDismiss(i) => print(&toolbox.queue_dismiss(&admin, i).await?),
         Command::Config | Command::About | Command::AdminUrl => {
             anyhow::bail!("unreachable: handled above")
         }
@@ -824,6 +926,61 @@ mod tests {
             vec!["stats", "--asker", "alice"],
             vec!["judge", "q", "--public"],
             vec!["search", "q", "--model", "m"],
+        ] {
+            assert!(parse(&bad).is_err(), "{bad:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_queue_takes_its_filters_and_closing_needs_a_note() -> Result<()> {
+        let Command::Queue(q) = parse(&[
+            "queue",
+            "--status",
+            "open",
+            "--category",
+            "wrong_card",
+            "--interface",
+            "web",
+            "--rater",
+            "discord",
+        ])?
+        else {
+            anyhow::bail!("queue")
+        };
+        assert_eq!(q.status, Some(QueueStatus::Open));
+        assert_eq!(q.category, Some(FeedbackCategory::WrongCard));
+        assert_eq!(q.interface, Some(Asked::Web));
+        assert_eq!(q.rater, Some(RaterKind::Discord));
+        let id = "0b6a0f4e-1c5b-4a2e-9d3e-7f4c1b2a3d4e";
+        assert!(matches!(parse(&["queue-show", id])?, Command::QueueShow(_)));
+        let Command::QueueResolve(c) = parse(&[
+            "queue-resolve",
+            id,
+            "--note",
+            "added a note",
+            "--fixed-by",
+            "abc123",
+        ])?
+        else {
+            anyhow::bail!("resolve")
+        };
+        assert_eq!(c.note, "added a note");
+        assert_eq!(c.fixed_by.as_deref(), Some("abc123"));
+        assert!(matches!(
+            parse(&["queue-dismiss", id, "--note", "spam"])?,
+            Command::QueueDismiss(_)
+        ));
+        for bad in [
+            vec!["queue", "--status", "closed"],
+            vec!["queue", "--category", "typo"],
+            vec!["queue", "--rater", "mcp"],
+            vec!["queue", "--asker", "alice"],
+            vec!["queue-show", "not-a-uuid"],
+            vec!["queue-resolve", id],
+            vec!["queue-dismiss", id, "--note", "x", "--fixed-by", "y"],
+            vec!["calls", "--status", "open"],
+            vec!["stats", "--note", "x"],
         ] {
             assert!(parse(&bad).is_err(), "{bad:?}");
         }

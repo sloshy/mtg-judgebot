@@ -199,10 +199,12 @@ The bot has two limits of its own. Neither applies to `/card` and `/rule`.
   per ten minutes, and `0` turns it off.
 - `JUDGE_CONCURRENCY` runs in flight at once.
 
-An *Incorrect* rating tells the rater to contact you. When the repository
-`JUDGE_SOURCE_URL` names is on GitHub, it also links that repository's *Wrong or unhelpful
-ruling* issue form. A fork has Issues off until you enable them under the repository's
-*Settings → General → Features*.
+A *Partially correct* or *Incorrect* rating asks the rater why, and the reason lands in
+your feedback queue: the admin page's Feedback tab, `judge-cli queue`, or the admin MCP
+tools ([Agents](../../using/agents/#admin-tools)). An *Incorrect* rating's confirmation
+names you. When the repository `JUDGE_SOURCE_URL` names is on GitHub, it also links that
+repository's *Wrong or unhelpful ruling* issue form. A fork has Issues off until you
+enable them under the repository's *Settings → General → Features*.
 
 ## The judge role
 
@@ -227,9 +229,9 @@ Your application is bound by the [Discord Developer Policy](https://support-dev.
 and Terms of Service like any other. Two points matter for a judgebot:
 
 - It must not collect more data than it needs. This one stores each question with its
-  channel and the asker's id and username, ratings per user, and failed calls with the
-  asker's id. `/forget` deletes a user's ratings and removes them from their questions
-  and failed calls.
+  channel and the asker's id and username, ratings per user with the reasons they give,
+  and failed calls with the asker's id. `/forget` deletes a user's ratings and reasons
+  and removes them from their questions and failed calls.
 - Magic content is used under Wizards of the Coast's
   [Fan Content Policy](../../reference/attribution/), which your instance's `/help` already
   states.

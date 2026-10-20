@@ -34,9 +34,9 @@ use crate::{
     Toolbox,
     admin::Admin,
     ops::{
-        BeginInput, CallInput, CallsInput, CardInput, ExtractionInput, FailuresInput, IdsInput,
-        JudgeInput, LookupInput, NameInput, SearchInput, SessionInput, StatsInput, TermInput,
-        VerdictInput,
+        BeginInput, CallInput, CallsInput, CardInput, CloseInput, ExtractionInput, FailuresInput,
+        IdsInput, ItemInput, JudgeInput, LookupInput, NameInput, QueueInput, SearchInput,
+        SessionInput, StatsInput, TermInput, VerdictInput,
     },
 };
 
@@ -79,10 +79,15 @@ pub const ADMIN_INSTRUCTIONS: &str = "\
 Admin tools (this connection holds the operator's credential): `admin_calls` (every stored call, \
 private ones included, newest first, filterable by interface, asker, model, private flag and text), \
 `admin_call` (one call with its origin, ratings and their raters, runs and charges), \
-`admin_failures` (failed calls: the question, the error, what the model sent) and `admin_usage` \
-(questions, spend, runs by model and outcome, ratings, the lowest-rated calls, recent data \
-refreshes). They return people's questions and Discord ids: keep them to the operator's own \
-conversation.";
+`admin_failures` (failed calls: the question, the error, what the model sent), `admin_usage` \
+(questions, spend, runs by model and outcome, ratings, the lowest-rated calls, the feedback queue's \
+counts, recent data refreshes), and the feedback queue: `queue_list` (every rating given a reason, \
+newest first, filterable by status, category, interface and rater kind), `queue_show` (one item with \
+its call's question, answer, citations, cards, models and every rating) and `queue_resolve` / \
+`queue_dismiss` (close an item with a note and, for a fix, what fixed it). To work an item, read it \
+with `queue_show`, reproduce the question with a session (`begin_session` …) rather than `judge`, \
+fix the cause (a card note, an alias, a prompt), then resolve it saying what you did. They return \
+people's questions and Discord ids: keep them to the operator's own conversation.";
 
 /// [`INSTRUCTIONS`] with the source offer and the operator's contact
 /// appended: the notice reaches every MCP client at initialization, whatever
@@ -456,6 +461,70 @@ impl JudgeMcp<Privileged> {
     }
 
     #[tool(
+        name = "queue_list",
+        description = "Admin: the feedback queue, every Partially correct or Incorrect rating given a reason, newest first (by when it was opened or last reopened), 50 a page (pass `next` back as `cursor`). Filter by `status` (open, resolved, dismissed), `category` (wrong_conclusion, missed_part, bad_citation, wrong_card, misread_question, wrong_refusal, outdated, other), `interface` (of the call) and `rater` (discord, web). Each item has the reason, the rating as it stands now, the rater, the operator's note and the call's question on one line."
+    )]
+    async fn queue_list(
+        &self,
+        Parameters(input): Parameters<QueueInput>,
+    ) -> Result<Json<judge_bot::feedback::QueuePage>, String> {
+        tracing::info!(tool = "queue_list", "admin tool called");
+        self.toolbox
+            .queue_list(&self.access.0, input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
+    }
+
+    #[tool(
+        name = "queue_show",
+        description = "Admin: one feedback item by id with everything stored about its call: the question and answer verbatim, citations, cards, the run's models and cost, retired state, and every rating with its reason. `item` is null for an id with no item."
+    )]
+    async fn queue_show(
+        &self,
+        Parameters(input): Parameters<ItemInput>,
+    ) -> Result<Json<crate::ops::ItemReply>, String> {
+        tracing::info!(tool = "queue_show", "admin tool called");
+        self.toolbox
+            .queue_show(&self.access.0, input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
+    }
+
+    #[tool(
+        name = "queue_resolve",
+        description = "Admin: resolve a feedback item: it was fixed. `note` (required, at most 2000 characters) says what was wrong and what was done; `fixed_by` (optional, at most 200) names the fix: a commit, a data/notes.yaml entry, an alias. A rater who later replaces their reason reopens the item, with the note kept."
+    )]
+    async fn queue_resolve(
+        &self,
+        Parameters(input): Parameters<CloseInput>,
+    ) -> Result<Json<crate::ops::ClosedReply>, String> {
+        tracing::info!(tool = "queue_resolve", "admin tool called");
+        self.toolbox
+            .queue_resolve(&self.access.0, input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
+    }
+
+    #[tool(
+        name = "queue_dismiss",
+        description = "Admin: dismiss a feedback item: nothing to fix (the answer was right, or the reason is not about the answer). `note` (required) says why."
+    )]
+    async fn queue_dismiss(
+        &self,
+        Parameters(input): Parameters<CloseInput>,
+    ) -> Result<Json<crate::ops::ClosedReply>, String> {
+        tracing::info!(tool = "queue_dismiss", "admin tool called");
+        self.toolbox
+            .queue_dismiss(&self.access.0, input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
+    }
+
+    #[tool(
         name = "admin_usage",
         description = "Admin: usage over the last `days` UTC days (default 30, at most 366): stored calls per day and interface, spend per day, the runs by model (tokens, cost) and by outcome, ratings, the lowest-rated calls and the latest data refreshes."
     )]
@@ -607,7 +676,16 @@ mod tests {
             .collect()
     }
 
-    const ADMIN_TOOLS: [&str; 4] = ["admin_calls", "admin_call", "admin_failures", "admin_usage"];
+    const ADMIN_TOOLS: [&str; 8] = [
+        "admin_calls",
+        "admin_call",
+        "admin_failures",
+        "admin_usage",
+        "queue_list",
+        "queue_show",
+        "queue_resolve",
+        "queue_dismiss",
+    ];
 
     /// The public handler has no admin tool, and the operator's has every
     /// public tool and the admin ones.

@@ -19,6 +19,29 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Ratings with reasons.** On Discord, *Partially correct* and *Incorrect* now ask why:
+  a form with the kind of problem (wrong conclusion, missed part of the question, a
+  citation doesn't support it, wrong card, misread the question, shouldn't have
+  refused, outdated, other) and, optionally, what's wrong and the right answer, up to
+  1000 characters each. With `DISCORD_INTERACTIONS=http` it is one form; over the
+  gateway the kind of problem is a menu first, then the form. *Correct* is recorded at
+  once, as before. Rating an answer you already rated asks first (**Replace** or
+  **Keep**), and pressing *Correct* again says it is already recorded. Rating buttons on
+  answers posted before the upgrade get the new flow. Private answers have the buttons
+  too. The reasons go to the operator, never the model, and web ratings (still to come)
+  will never count toward the examples.
+- **The feedback queue.** Every rating given a reason is an item for the operator,
+  beside the call's question, answer, citations and cards: the admin page's new
+  Feedback tab, `judge-cli queue`, `queue-show`, `queue-resolve` and `queue-dismiss`,
+  and the admin MCP tools `queue_list`, `queue_show`, `queue_resolve` and
+  `queue_dismiss`, filterable by status, kind of problem, interface and kind of rater.
+  An item is resolved (with a note and what fixed it) or dismissed (with a note); a
+  rater who replaces their reason reopens it. `judge-cli stats` and the Usage page gain
+  the queue's counts by kind of problem. The `judge` skill walks an agent through it.
+- **`FEEDBACK_IP_DAYS`.** How long a rating given on the web keeps the address and user
+  agent it came from (default 90 days, 1 to 3650). Every rating written clears older
+  ones, and so does a new refresh step, `sweep`, between `prune` and `retire`.
+
 - **Admin interface.** A new role, `--admin`, serves the operator's pages on a port of
   its own (`ADMIN_ADDR`, default `127.0.0.1:8789`) behind a new `ADMIN_TOKEN`: every
   stored call, private ones included, filterable by interface, asker, model, visibility
@@ -397,6 +420,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
+- **Earlier ratings keep their scores and have no reasons.** A *Partially correct* or
+  *Incorrect* rating given before this release opens no feedback-queue item; it still
+  counts toward the examples and in `judge-cli stats`' lowest-rated list.
 - **The proxy publishes a second port.** The first deploy of this release recreates the
   `proxy` service to publish `127.0.0.1:8789` (the admin interface), which interrupts
   `127.0.0.1:8787` and the tunnel for a few seconds. If something on the host already

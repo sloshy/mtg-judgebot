@@ -29,6 +29,8 @@ four kinds of source:
 
 Discord users rate each answer 1 to 3. Ratings never make the bot "learn" in the model
 sense. They decide which old answers the model sees later as examples, and nothing else.
+A rating that finds fault comes with a reason (what kind of problem, what is wrong, the
+right answer), which goes to the operator's feedback queue, not to the model.
 
 The system is one Postgres database, a handful of Rust binaries, two paid APIs
 (a chat model for reasoning, an embedding model for search), and a daily data refresh the long-running processes run themselves.
@@ -500,7 +502,8 @@ handling lives, so you can read further.
 ## 8. Feedback and stale answers
 
 Stored answers are an asset (examples for future questions) and a liability (they go
-stale). Two mechanisms keep them current without a human curator.
+stale). Two mechanisms keep them current without a human curator, and a third hands the
+rest to one.
 
 **Retirement.** Every call's citations are its declared dependencies on the world. The
 refresh's retirement pass re-runs the same substring check that admitted each citation, against today's
@@ -526,6 +529,14 @@ Step 3 rejects a cross-reference that was pointed at a different rule rather tha
 renumbered. Matched calls get their citation ids, quoted ids and answer text rewritten in
 one pass. Anything ambiguous is left for the retirement pass to judge. The principle is the
 same as card resolution: never guess.
+
+**The feedback queue.** Some wrong answers are not stale, just wrong: the card was
+misread, the right rule never retrieved. A *Partially correct* or *Incorrect* rating
+asks the rater why, and each reason becomes an item in a queue the operator works from
+the admin page, `judge-cli` or an agent's MCP tools, beside the call's full material. The
+fix lands in the data (a card note, a nickname) or the code (retrieval, a prompt), and
+the item is resolved with a note saying what was done. A rater who replaces their reason
+reopens it.
 
 ---
 

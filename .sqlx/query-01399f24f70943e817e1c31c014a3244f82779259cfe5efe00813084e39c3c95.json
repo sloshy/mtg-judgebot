@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT r.category,\n               count(*) FILTER (WHERE q.status = 'open') AS \"open!\",\n               count(*) FILTER (WHERE q.status = 'resolved') AS \"resolved!\",\n               count(*) FILTER (WHERE q.status = 'dismissed') AS \"dismissed!\"\n        FROM feedback_queue q\n        JOIN ratings r ON r.call_id = q.call_id AND r.user_id = q.user_id\n        GROUP BY r.category\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "category",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "open!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "resolved!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "dismissed!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "01399f24f70943e817e1c31c014a3244f82779259cfe5efe00813084e39c3c95"
+}

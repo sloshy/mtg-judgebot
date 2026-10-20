@@ -19,6 +19,7 @@ pub mod db;
 pub mod discord;
 pub mod extract;
 pub mod feed;
+pub mod feedback;
 pub mod ingest;
 pub mod jobs;
 pub mod lease;

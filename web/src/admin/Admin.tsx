@@ -1,9 +1,10 @@
-// The admin pages: the operator's view of every stored call, the failed
-// calls, and the usage and spend. Served by the --admin listener only
-// (ADMIN_ADDR, loopback), behind ADMIN_TOKEN (docs/DECISIONS.md D37).
+// The admin pages: the operator's view of every stored call, the feedback
+// queue, the failed calls, and the usage and spend. Served by the --admin
+// listener only (ADMIN_ADDR, loopback), behind ADMIN_TOKEN
+// (docs/DECISIONS.md D37, D38).
 //
 // The shell is the public page's bar with the admin tabs; each view is its
-// own file. The feedback queue (#27) adds one entry to TABS and one view.
+// own file.
 
 import "@fontsource-variable/figtree";
 import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
@@ -16,6 +17,7 @@ import { forgetToken, type Read, takeToken } from "./api";
 import { CallPage } from "./Call";
 import { CallsPage } from "./Calls";
 import { FailuresPage } from "./Failures";
+import { FeedbackPage, ItemPage } from "./Feedback";
 import { type AdminMessages, adminMessages } from "./messages";
 import { UsagePage } from "./Usage";
 
@@ -36,6 +38,11 @@ const TABS: readonly {
   on: AdminView["view"][];
 }[] = [
   { view: { view: "calls", filter: {} }, label: (m) => m.navCalls, on: ["calls", "call"] },
+  {
+    view: { view: "feedback", filter: { status: "open" } },
+    label: (m) => m.navFeedback,
+    on: ["feedback", "item"],
+  },
   { view: { view: "failures" }, label: (m) => m.navFailures, on: ["failures"] },
   { view: { view: "usage" }, label: (m) => m.navUsage, on: ["usage"] },
 ];
@@ -129,6 +136,22 @@ export default function Admin() {
                 })()}
               >
                 {(v) => <CallPage ctx={ctx(t())} id={v().id} />}
+              </Match>
+              <Match
+                when={(() => {
+                  const v = view();
+                  return v.view === "feedback" ? v : false;
+                })()}
+              >
+                {(v) => <FeedbackPage ctx={ctx(t())} filter={v().filter} />}
+              </Match>
+              <Match
+                when={(() => {
+                  const v = view();
+                  return v.view === "item" ? v : false;
+                })()}
+              >
+                {(v) => <ItemPage ctx={ctx(t())} id={v().id} />}
               </Match>
               <Match when={view().view === "failures"}>
                 <FailuresPage ctx={ctx(t())} />

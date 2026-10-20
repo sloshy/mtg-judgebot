@@ -50,15 +50,16 @@ A Discord question asked with `private: True` is stored too, but only the operat
 see it: it is never shown to anyone else, never read as another question's history and
 never used as an example. A failed call is kept with what the model sent, until a later
 failure finds it older than 30 days, so the operator can diagnose it. When someone
-presses a rating button, the instance stores their Discord user id and the score. It
-stores nothing else. The bot receives only its own slash commands and button presses,
+presses a rating button, the instance stores their Discord user id, the score and, for
+*Partially correct* or *Incorrect*, the reason they give in its form. It stores nothing
+else. The bot receives only its own slash commands and button presses,
 never channel messages.
 
 Every answered question not asked private is listed on the web app's public feed, with
 the Discord asker's username, unless the operator turns it off (`JUDGE_FEED=false`).
 Servers and channels are never shown there.
 
-`/forget` deletes a user's ratings and removes their id and username from every question
+`/forget` deletes a user's ratings and reasons and removes their id and username from every question
 they asked. A private question loses its text too, and so does a failed one. A public
 question keeps its text, which the channel saw. A question from the web app or an agent
 has no user id.

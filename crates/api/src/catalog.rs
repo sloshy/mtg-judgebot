@@ -62,6 +62,19 @@ pub struct Messages {
     pub admin_call_not_found: &'static str,
     /// An admin read failed.
     pub admin_failed: &'static str,
+    /// A queue filter naming no value it takes: the filter's name and the
+    /// values, joined.
+    pub bad_choice: fn(&str, &str) -> String,
+    /// A feedback item id that names no item.
+    pub admin_item_not_found: &'static str,
+    /// A closing's note blank, over its limit or holding a control
+    /// character, given the limit.
+    pub bad_note: fn(usize) -> String,
+    /// A closing's "fixed by" over its limit or holding a control character,
+    /// given the limit.
+    pub bad_fixed_by: fn(usize) -> String,
+    /// A closing's body that is not the JSON it takes.
+    pub bad_body: &'static str,
 }
 
 impl fmt::Debug for Messages {
@@ -104,6 +117,13 @@ Your question was not answered; please try again shortly.",
     bad_filter: |name, n| format!("{name} must be at most {n} characters"),
     admin_call_not_found: "There is no call with that id.",
     admin_failed: "The database could not be read just now. Please try again.",
+    bad_choice: |name, all| format!("{name} must be one of: {all}"),
+    admin_item_not_found: "There is no feedback item with that id.",
+    bad_note: |n| format!("note must be 1 to {n} characters of text, without control characters"),
+    bad_fixed_by: |n| {
+        format!("fixed_by must be at most {n} characters of text, without control characters")
+    },
+    bad_body: "The body must be JSON: {\"note\": \"…\", \"fixed_by\": \"…\"} (fixed_by optional).",
 };
 
 #[cfg(test)]
@@ -138,6 +158,11 @@ mod tests {
                 (m.bad_filter)("asker", 100),
                 m.admin_call_not_found.to_owned(),
                 m.admin_failed.to_owned(),
+                (m.bad_choice)("status", "open, resolved, dismissed"),
+                m.admin_item_not_found.to_owned(),
+                (m.bad_note)(2000),
+                (m.bad_fixed_by)(200),
+                m.bad_body.to_owned(),
             ] {
                 assert!(!t.trim().is_empty(), "{l}");
             }

@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE feedback_queue\n        SET status = $2, note = $3, fixed_by = $4, resolved_at = now()\n        WHERE id = $1\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "feedback_queue",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6bb07b469af5daae8d21d8def5fe616c5ffb07ad94c800cad6b0706e1885f46a"
+}

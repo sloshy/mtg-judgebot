@@ -17,10 +17,19 @@
 //!   Q&A → persist → answer + three rating buttons. Beyond
 //!   [`Config::max_concurrent`] runs in flight a caller waits up to
 //!   [`ACQUIRE_WAIT`] for a slot (FIFO), then gets "busy".
-//! * Rating button → deferred ephemeral ack → `CallStore::rate` (`is_judge` =
-//!   the member holds the [`Config::judge_role`] role, looked up over HTTP)
-//!   → ephemeral follow-up. The ack comes first so a slow role lookup or DB
-//!   cannot blow Discord's 3 s deadline.
+//! * Rating button (D38) → the rater's earlier rating of the call, read
+//!   within Discord's 3 s (nothing is deferred first: a form must be the
+//!   click's initial response) → [`judge_core::feedback::next_step`]: the
+//!   same Correct again is "already recorded"; any other earlier rating gets
+//!   a private Replace / Keep prompt first; otherwise Correct is recorded
+//!   (deferred ack, then the judge-role lookup over HTTP and
+//!   `CallStore::rate`) and *Partially correct* or *Incorrect* opens the
+//!   rating form ([`feedback`]): over HTTP one modal with the category menu
+//!   and the two texts, over the gateway a private category menu first and
+//!   then a modal with the texts. Submitting it defers, looks up the role,
+//!   stores the rating with its reason (which opens a feedback-queue item)
+//!   and confirms privately. Every step's id carries the call and score
+//!   ([`ids`]), so any process answers it.
 //! * `AmbiguousCards` → up to five "did you mean…?" buttons for the first
 //!   ambiguous span, on a message that restates the question verbatim
 //!   ([`render::PickPrompt`]). Nothing is held in memory: a click is answered
@@ -43,6 +52,7 @@ pub mod catalog;
 pub mod command;
 pub mod cooldown;
 pub mod endpoint;
+pub mod feedback;
 pub mod gateway;
 pub mod ids;
 pub mod mana;
@@ -63,16 +73,20 @@ use std::{
 
 use anyhow::Context as _;
 use judge_core::{
-    Ambiguous, Asker, CallId, CallStore, Card, Deps, DiscordOperator, JudgeError, Locale, Origin,
-    Question, Rated, Resolution, RuleId, Score, SourceOffer, Validated, Verdict, Visibility,
+    Ambiguous, Asker, CallId, CallStore, Card, Deps, DiscordOperator, Earlier, Fault,
+    FeedbackCategory, JudgeError, Locale, Next, Origin, Question, Rated, Rater, RaterId, Rating,
+    Resolution, RuleId, Score, SourceOffer, Validated, Verdict, Visibility,
+    feedback::{next_step, replace_step},
 };
 use judge_llm::ApiKey;
 use nonempty::NonEmpty;
 use serenity::all::{
-    ButtonStyle, CommandInteraction, ComponentInteraction, CreateActionRow, CreateAllowedMentions,
-    CreateButton, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
-    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, EditInteractionResponse,
-    GatewayIntents, GuildId, Http, Interaction, Member, MessageFlags, Ready, User, UserId,
+    ButtonStyle, CommandInteraction, ComponentInteraction, ComponentInteractionDataKind,
+    CreateActionRow, CreateAllowedMentions, CreateButton, CreateEmbed, CreateEmbedFooter,
+    CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
+    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
+    GatewayIntents, GuildId, Http, Interaction, InteractionId, Member, MessageFlags,
+    ModalInteraction, Ready, User, UserId,
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -87,7 +101,9 @@ use crate::{
 pub use command::QUESTION_MAX_CHARS;
 use command::{Command, Unparsed};
 use cooldown::{Cooldowns, UserLimit};
-use ids::{ButtonAction, ByteSpan, Pick, Retry};
+use feedback::FormProblem;
+use ids::{ButtonAction, ByteSpan, FormId, Pick, Retry};
+use judge_core::feedback::BadText;
 use mana::{SharedSymbols, SymbolTable};
 use pick::Digest;
 use render::{PickPrompt, RetryPrompt};
@@ -310,6 +326,9 @@ pub struct Data {
     locale: Locale,
     /// Whether `/help` says public calls may be on the web feed.
     feed: Feed,
+    /// How interactions arrive, which decides how a rating form is laid out
+    /// ([`feedback::Layout`]).
+    delivery: Delivery,
 }
 
 impl std::fmt::Debug for Data {
@@ -352,6 +371,7 @@ impl Data {
             availability,
             locale,
             feed,
+            delivery: cfg.interactions,
         }
     }
 
@@ -490,13 +510,22 @@ impl Data {
         let m = catalog::messages(locale);
         match ButtonAction::parse(&c.data.custom_id) {
             Ok(ButtonAction::Retry(retry)) => self.on_retry(http, c, ack, locale, retry).await,
-            Ok(ButtonAction::Rate { .. } | ButtonAction::Pick(_))
-                if !self.availability.is_open() =>
-            {
-                ephemeral(http, c, ack, m.maintenance).await
-            }
+            Ok(
+                ButtonAction::Rate { .. }
+                | ButtonAction::Replace { .. }
+                | ButtonAction::Keep { .. }
+                | ButtonAction::Category { .. }
+                | ButtonAction::Pick(_),
+            ) if !self.availability.is_open() => ephemeral(http, c, ack, m.maintenance).await,
             Ok(ButtonAction::Rate { call, score }) => {
                 self.on_rate(http, c, ack, locale, call, score).await
+            }
+            Ok(ButtonAction::Replace { call, score }) => {
+                self.on_replace(http, c, ack, locale, call, score).await
+            }
+            Ok(ButtonAction::Keep { call }) => self.on_keep(http, c, ack, locale, call).await,
+            Ok(ButtonAction::Category { call, fault }) => {
+                self.on_category(http, c, ack, locale, call, fault).await
             }
             Ok(ButtonAction::Pick(pick)) => self.on_pick(http, c, ack, locale, pick).await,
             Ok(ButtonAction::LegacyPick) => ephemeral(http, c, ack, m.expired).await,
@@ -515,6 +544,10 @@ impl Data {
         Locale::negotiate([user], self.locale)
     }
 
+    /// A rating button: what the rater's earlier rating of the call says
+    /// to do ([`judge_core::feedback::next_step`]). Nothing is deferred
+    /// before the read: a form must be the click's initial response, so the
+    /// read is bounded by [`EARLIER_BUDGET`], inside Discord's 3 s.
     async fn on_rate(
         &self,
         http: &Http,
@@ -525,34 +558,332 @@ impl Data {
         score: Score,
     ) -> anyhow::Result<()> {
         let m = catalog::messages(locale);
-        // Acknowledge before the role lookup (HTTP) and the upsert (DB): both
-        // can outlast Discord's 3 s deadline under rate limiting or load.
+        let Ok(earlier) = self.current_rating(ack, call, c.user.id).await else {
+            return ephemeral(http, c, ack, m.rate_failed).await;
+        };
+        match next_step(score, earlier) {
+            Next::AlreadyRecorded => ephemeral(http, c, ack, m.already_rated).await,
+            Next::Confirm(earlier) => {
+                let prompt = CreateInteractionResponseMessage::new()
+                    .content(render::replace_prompt(locale, earlier, score))
+                    .components(vec![replace_row(locale, call, score)])
+                    .ephemeral(true);
+                respond(http, c, ack, CreateInteractionResponse::Message(prompt))
+                    .await
+                    .context("ask before replacing a rating")
+            }
+            Next::Record => {
+                self.record_correct(http, c, ack, locale, call, Shown::New)
+                    .await
+            }
+            Next::Form(fault) => {
+                self.ask_reason(http, c, ack, locale, call, fault, Shown::New)
+                    .await
+            }
+        }
+    }
+
+    /// The rater's rating of `call` as it stands, read within
+    /// [`EARLIER_BUDGET`] of the interaction's arrival (of now, over the
+    /// gateway), so the initial response that follows still makes Discord's
+    /// 3 s. `Err` when the read failed or took too long (logged).
+    async fn current_rating(
+        &self,
+        ack: &Ack,
+        call: CallId,
+        user: UserId,
+    ) -> Result<Option<Earlier>, ()> {
+        let rater = RaterId::Discord(user.into());
+        match tokio::time::timeout_at(
+            ack.deadline(EARLIER_BUDGET),
+            self.store.earlier_rating(call, rater),
+        )
+        .await
+        {
+            Ok(Ok(earlier)) => Ok(earlier),
+            Ok(Err(e)) => {
+                tracing::error!(%call, error = format_args!("{e:#}"), "reading the earlier rating failed");
+                Err(())
+            }
+            Err(_) => {
+                tracing::warn!(%call, "reading the earlier rating took too long to answer the click");
+                Err(())
+            }
+        }
+    }
+
+    /// Keep on "you already rated this": nothing changes, and the prompt
+    /// says what is on record now. A prompt stays clickable after its
+    /// Replace went on to a form (whose submission cannot touch the prompt),
+    /// so "kept" is read back rather than assumed.
+    async fn on_keep(
+        &self,
+        http: &Http,
+        c: &ComponentInteraction,
+        ack: &Ack,
+        locale: Locale,
+        call: CallId,
+    ) -> anyhow::Result<()> {
+        let m = catalog::messages(locale);
+        let text = match self.current_rating(ack, call, c.user.id).await {
+            Ok(Some(now)) => render::on_record(locale, now),
+            Ok(None) => m.no_rating.to_owned(),
+            Err(()) => m.rate_failed.to_owned(),
+        };
+        let kept = CreateInteractionResponseMessage::new()
+            .content(text)
+            .components(vec![]);
+        respond(http, c, ack, CreateInteractionResponse::UpdateMessage(kept))
+            .await
+            .context("keep the earlier rating")
+    }
+
+    /// Replace on "you already rated this": the new rating's flow, shown in
+    /// place of the prompt.
+    async fn on_replace(
+        &self,
+        http: &Http,
+        c: &ComponentInteraction,
+        ack: &Ack,
+        locale: Locale,
+        call: CallId,
+        score: Score,
+    ) -> anyhow::Result<()> {
+        match replace_step(score) {
+            Next::Form(fault) => {
+                self.ask_reason(http, c, ack, locale, call, fault, Shown::Update)
+                    .await
+            }
+            // `replace_step` never confirms; record whatever is not a form.
+            Next::Record | Next::AlreadyRecorded | Next::Confirm(_) => {
+                self.record_correct(http, c, ack, locale, call, Shown::Update)
+                    .await
+            }
+        }
+    }
+
+    /// Record Correct: acknowledged first (the role lookup and the upsert
+    /// can outlast Discord's 3 s), then confirmed privately, as a new
+    /// message or in place of the prompt the click was on.
+    async fn record_correct(
+        &self,
+        http: &Http,
+        c: &ComponentInteraction,
+        ack: &Ack,
+        locale: Locale,
+        call: CallId,
+        shown: Shown,
+    ) -> anyhow::Result<()> {
+        let acknowledge = match shown {
+            Shown::New => CreateInteractionResponse::Defer(
+                CreateInteractionResponseMessage::new().ephemeral(true),
+            ),
+            Shown::Update => CreateInteractionResponse::Acknowledge,
+        };
+        respond(http, c, ack, acknowledge)
+            .await
+            .context("acknowledge rating")?;
+        let judge = self.is_judge(http, c.guild_id, c.member.as_ref()).await;
+        let rater = Rater::Discord {
+            user: c.user.id.into(),
+            judge,
+        };
+        let text = self.rate(locale, call, &rater, &Rating::Correct).await;
+        match shown {
+            Shown::New => ephemeral_followup(http, c, &text).await,
+            Shown::Update => c
+                .edit_response(
+                    http,
+                    EditInteractionResponse::new()
+                        .content(text)
+                        .components(vec![]),
+                )
+                .await
+                .map(drop)
+                .context("confirm the replaced rating"),
+        }
+    }
+
+    /// Ask the reason for `fault`: over HTTP the one form, over the gateway
+    /// the category menu that leads to it ([`feedback`] says why).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the interaction, its acknowledgement, and the rating step"
+    )]
+    async fn ask_reason(
+        &self,
+        http: &Http,
+        c: &ComponentInteraction,
+        ack: &Ack,
+        locale: Locale,
+        call: CallId,
+        fault: Fault,
+        shown: Shown,
+    ) -> anyhow::Result<()> {
+        match self.delivery {
+            Delivery::Http => {
+                let form = feedback::modal(locale, feedback::form(call, fault));
+                respond_raw(http, c.id, &c.token, ack, &form)
+                    .await
+                    .context("open the rating form")
+            }
+            Delivery::Gateway => {
+                let m = catalog::messages(locale);
+                let menu = CreateInteractionResponseMessage::new()
+                    .content((m.category_prompt)(render::rating_label(
+                        locale,
+                        fault.score(),
+                    )))
+                    .components(vec![category_row(locale, call, fault)]);
+                // The flag belongs on a new message only: an update keeps
+                // the private prompt private.
+                let response = match shown {
+                    Shown::New => CreateInteractionResponse::Message(menu.ephemeral(true)),
+                    Shown::Update => CreateInteractionResponse::UpdateMessage(menu),
+                };
+                respond(http, c, ack, response)
+                    .await
+                    .context("ask the rating's category")
+            }
+        }
+    }
+
+    /// The category chosen from the menu (over the gateway): open the form
+    /// for the texts, the category in its id.
+    async fn on_category(
+        &self,
+        http: &Http,
+        c: &ComponentInteraction,
+        ack: &Ack,
+        locale: Locale,
+        call: CallId,
+        fault: Fault,
+    ) -> anyhow::Result<()> {
+        let chosen = match &c.data.kind {
+            ComponentInteractionDataKind::StringSelect { values } => {
+                values.first().and_then(|v| FeedbackCategory::parse(v))
+            }
+            _ => None,
+        };
+        let Some(category) = chosen else {
+            tracing::warn!(custom_id = %c.data.custom_id, "a category menu without a category");
+            return ephemeral(http, c, ack, catalog::messages(locale).unknown_button).await;
+        };
+        let form = FormId {
+            call,
+            fault,
+            category: Some(category),
+        };
+        respond_raw(http, c.id, &c.token, ack, &feedback::modal(locale, form))
+            .await
+            .context("open the rating form")
+    }
+
+    /// A submitted rating form: the reason read from it, then, acknowledged
+    /// (the role lookup and the upsert can outlast Discord's 3 s), the
+    /// rating stored with it and confirmed privately. `raw` is the
+    /// submission's own `data.components` when the HTTP endpoint kept them;
+    /// over the gateway they are read from serenity's parse, which holds
+    /// what an action row holds.
+    async fn on_form(
+        &self,
+        http: &Http,
+        f: &ModalInteraction,
+        raw: Option<&serde_json::Value>,
+        ack: &Ack,
+    ) -> anyhow::Result<()> {
+        let locale = self.locale_of(&f.locale);
+        let m = catalog::messages(locale);
+        let form = match FormId::parse(&f.data.custom_id) {
+            Ok(form) => form,
+            Err(e) => {
+                tracing::warn!(custom_id = %f.data.custom_id, error = %e, "unparseable form");
+                return modal_ephemeral(http, f, ack, m.unknown_button).await;
+            }
+        };
+        if !self.availability.is_open() {
+            return modal_ephemeral(http, f, ack, m.maintenance).await;
+        }
+        let components = match raw {
+            Some(v) => v.clone(),
+            None => serde_json::to_value(&f.data.components).unwrap_or_default(),
+        };
+        let reason = match feedback::reason(form, &feedback::fields(&components)) {
+            Ok(reason) => reason,
+            Err(FormProblem::NoCategory) => {
+                tracing::warn!(call = %form.call, "a rating form came back without its category");
+                return modal_ephemeral(http, f, ack, m.form_incomplete).await;
+            }
+            Err(FormProblem::BadText(BadText::TooLong { limit })) => {
+                return modal_ephemeral(http, f, ack, &(m.form_too_long)(limit)).await;
+            }
+            Err(FormProblem::BadText(BadText::Control)) => {
+                return modal_ephemeral(http, f, ack, m.form_bad_text).await;
+            }
+        };
         let defer = CreateInteractionResponse::Defer(
             CreateInteractionResponseMessage::new().ephemeral(true),
         );
-        respond(http, c, ack, defer)
+        respond_modal(http, f, ack, defer)
             .await
-            .context("acknowledge rating")?;
-        let is_judge = match (c.guild_id, c.member.as_ref()) {
+            .context("acknowledge the rating form")?;
+        let judge = self.is_judge(http, f.guild_id, f.member.as_ref()).await;
+        let rater = Rater::Discord {
+            user: f.user.id.into(),
+            judge,
+        };
+        let rating = Rating::faulted(form.fault, reason);
+        let text = self.rate(locale, form.call, &rater, &rating).await;
+        let msg = CreateInteractionResponseFollowup::new()
+            .content(text)
+            .ephemeral(true);
+        f.create_followup(http, msg)
+            .await
+            .map(drop)
+            .context("confirm the rating")
+    }
+
+    /// Whether the member holds the judge role, looked up over HTTP.
+    async fn is_judge(&self, http: &Http, guild: Option<GuildId>, member: Option<&Member>) -> bool {
+        match (guild, member) {
             (Some(guild), Some(member)) => has_role(http, guild, member, &self.judge_role).await,
             _ => false,
-        };
-        let user_id = c.user.id.to_string();
-        let text = match self.store.rate(call, &user_id, score, is_judge).await {
+        }
+    }
+
+    /// Store `rating` and say what became of it, in `locale`.
+    async fn rate(&self, locale: Locale, call: CallId, rater: &Rater, rating: &Rating) -> String {
+        let m = catalog::messages(locale);
+        let user = rater.id().stored();
+        match self.store.rate(call, rater, rating).await {
             Ok(Rated::CallGone) => {
                 tracing::info!(%call, "rating for a call no longer stored");
                 m.call_gone.to_owned()
             }
             Ok(Rated::Recorded) => {
-                tracing::info!(%call, user = %user_id, score = score as u8, is_judge, "rated");
-                render::rated(locale, score, is_judge, &self.offer, &self.operator)
+                let category = rating.reason().map(|r| r.category);
+                tracing::info!(
+                    %call,
+                    %user,
+                    score = rating.score() as u8,
+                    category = category.map(FeedbackCategory::id),
+                    is_judge = rater.is_judge(),
+                    "rated"
+                );
+                render::rated(
+                    locale,
+                    rating.score(),
+                    category,
+                    rater.is_judge(),
+                    &self.offer,
+                    &self.operator,
+                )
             }
             Err(e) => {
                 tracing::error!(%call, error = format_args!("{e:#}"), "rate failed");
                 m.rate_failed.to_owned()
             }
-        };
-        ephemeral_followup(http, c, &text).await
+        }
     }
 
     /// A "did you mean…?" click, answered from the button and the message it
@@ -971,6 +1302,55 @@ fn rating_row(locale: Locale, call: CallId) -> CreateActionRow {
     ])
 }
 
+/// Replace and Keep, under "you already rated this…".
+fn replace_row(locale: Locale, call: CallId, score: Score) -> CreateActionRow {
+    let m = catalog::messages(locale);
+    CreateActionRow::Buttons(vec![
+        CreateButton::new(ButtonAction::Replace { call, score }.to_custom_id())
+            .label(m.replace_label)
+            .style(ButtonStyle::Primary),
+        CreateButton::new(ButtonAction::Keep { call }.to_custom_id())
+            .label(m.keep_label)
+            .style(ButtonStyle::Secondary),
+    ])
+}
+
+/// The category menu shown before the form over the gateway.
+fn category_row(locale: Locale, call: CallId, fault: Fault) -> CreateActionRow {
+    let m = catalog::messages(locale);
+    let options = FeedbackCategory::ALL
+        .into_iter()
+        .map(|c| CreateSelectMenuOption::new((m.category_label)(c), c.id()))
+        .collect();
+    CreateActionRow::SelectMenu(
+        CreateSelectMenu::new(
+            ButtonAction::Category { call, fault }.to_custom_id(),
+            CreateSelectMenuKind::String { options },
+        )
+        .placeholder(m.form_category_placeholder)
+        .min_values(1)
+        .max_values(1),
+    )
+}
+
+/// Where a rating step's reply goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    /// A new private message (a click on an answer's buttons, whose
+    /// message is not ours to change).
+    New,
+    /// In place of the private prompt the click was on.
+    Update,
+}
+
+/// How long after an interaction arrives a rating click may spend reading
+/// the rater's earlier rating before it answers "couldn't record". Over
+/// HTTP the endpoint answers Discord at [`endpoint::ACK_WAIT`] from arrival
+/// whatever happens, so the read ends well before it, leaving the REST
+/// callback the rest; over the gateway it counts from dispatch.
+const EARLIER_BUDGET: Duration = Duration::from_millis(1_500);
+const _: () = assert!(EARLIER_BUDGET.as_millis() + 1_000 <= endpoint::ACK_WAIT.as_millis());
+
 /// One button per candidate, the first [`render::MAX_CHOICES`]: `base` with
 /// each one's card.
 fn pick_row(base: Pick, candidates: &NonEmpty<Card>) -> CreateActionRow {
@@ -1018,6 +1398,49 @@ async fn respond(
     sent
 }
 
+/// A modal submission's initial response, told to `ack` as [`respond`] is.
+async fn respond_modal(
+    http: &Http,
+    f: &ModalInteraction,
+    ack: &Ack,
+    response: CreateInteractionResponse,
+) -> serenity::Result<()> {
+    let sent = f.create_response(http, response).await;
+    ack.sent();
+    sent
+}
+
+/// An initial response serenity has no builder for (the rating form's
+/// modal), sent as JSON and told to `ack` as [`respond`] is.
+async fn respond_raw(
+    http: &Http,
+    id: InteractionId,
+    token: &str,
+    ack: &Ack,
+    response: &serde_json::Value,
+) -> serenity::Result<()> {
+    let sent = http
+        .create_interaction_response(id, token, response, vec![])
+        .await;
+    ack.sent();
+    sent
+}
+
+/// A private message as a modal submission's initial response.
+async fn modal_ephemeral(
+    http: &Http,
+    f: &ModalInteraction,
+    ack: &Ack,
+    text: &str,
+) -> anyhow::Result<()> {
+    let msg = CreateInteractionResponseMessage::new()
+        .content(text)
+        .ephemeral(true);
+    respond_modal(http, f, ack, CreateInteractionResponse::Message(msg))
+        .await
+        .context("respond to the rating form")
+}
+
 /// An ephemeral follow-up after a deferred acknowledgement.
 async fn ephemeral_followup(
     http: &Http,
@@ -1049,16 +1472,28 @@ async fn has_role(http: &Http, guild: GuildId, member: &Member, role_name: &str)
 }
 
 impl Data {
-    /// Answer an interaction, however it arrived: a slash command or a
-    /// button. Other kinds (autocomplete, modals) are not registered, so
-    /// none arrive. Never fails: a handler's error is logged here, and a
-    /// command's is reported to the user.
-    async fn dispatch(&self, http: &Http, interaction: &Interaction, ack: &Ack) {
+    /// Answer an interaction, however it arrived: a slash command, a
+    /// button or menu, or a submitted rating form (`form`: its raw
+    /// `data.components`, when the HTTP endpoint kept them). Autocomplete is
+    /// not registered, so none arrives. Never fails: a handler's error is
+    /// logged here, and a command's is reported to the user.
+    async fn dispatch(
+        &self,
+        http: &Http,
+        interaction: &Interaction,
+        form: Option<&serde_json::Value>,
+        ack: &Ack,
+    ) {
         match interaction {
             Interaction::Command(c) => self.on_command(http, c, ack).await,
             Interaction::Component(c) => {
                 if let Err(e) = self.on_component(http, c, ack).await {
                     tracing::error!(error = format_args!("{e:#}"), "button handler failed");
+                }
+            }
+            Interaction::Modal(f) => {
+                if let Err(e) = self.on_form(http, f, form, ack).await {
+                    tracing::error!(error = format_args!("{e:#}"), "rating form handler failed");
                 }
             }
             other => {
@@ -1580,10 +2015,13 @@ impl serenity::all::EventHandler for Handler {
 
     async fn interaction_create(&self, ctx: serenity::all::Context, interaction: Interaction) {
         let _work = self.shutdown.work();
+        // Over the gateway serenity has already parsed the event: a form's
+        // values are read from that parse (`Data::on_form`).
         dispatch_guarded(
             Arc::clone(&self.data),
             Arc::clone(&ctx.http),
             interaction,
+            None,
             Ack::none(),
         )
         .await;
@@ -1593,7 +2031,13 @@ impl serenity::all::EventHandler for Handler {
 /// [`Data::dispatch`] on a task of its own, so a panic in a handler is
 /// caught: it is logged, and a command is told the catalog's `failed`, as
 /// it is after an error.
-async fn dispatch_guarded(data: Arc<Data>, http: Arc<Http>, interaction: Interaction, ack: Ack) {
+async fn dispatch_guarded(
+    data: Arc<Data>,
+    http: Arc<Http>,
+    interaction: Interaction,
+    form: Option<serde_json::Value>,
+    ack: Ack,
+) {
     let command = match &interaction {
         Interaction::Command(c) => Some(c.clone()),
         _ => None,
@@ -1604,7 +2048,10 @@ async fn dispatch_guarded(data: Arc<Data>, http: Arc<Http>, interaction: Interac
         .as_ref()
         .map_or(data.locale, |c| data.locale_of(&c.locale));
     let (h, a) = (Arc::clone(&http), ack.clone());
-    let ran = tokio::spawn(async move { data.dispatch(&h, &interaction, &a).await }).await;
+    let ran = tokio::spawn(async move {
+        data.dispatch(&h, &interaction, form.as_ref(), &a).await;
+    })
+    .await;
     let Err(e) = ran else { return };
     if !e.is_panic() {
         return;
@@ -2080,7 +2527,11 @@ mod tests {
     #[test]
     fn initial_responses_go_through_respond() {
         let call = concat!(".create", "_response(");
-        assert_eq!(include_str!("mod.rs").matches(call).count(), 1);
+        // `respond` (a button) and `respond_modal` (a submitted form).
+        assert_eq!(include_str!("mod.rs").matches(call).count(), 2);
         assert_eq!(include_str!("reply.rs").matches(call).count(), 2);
+        // `respond_raw`: the rating form's modal, sent as JSON.
+        let raw = concat!(".create_interaction", "_response(");
+        assert_eq!(include_str!("mod.rs").matches(raw).count(), 1);
     }
 }

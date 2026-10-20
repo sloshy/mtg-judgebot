@@ -17,7 +17,9 @@ use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::Context as _;
-use judge_core::{CallId, CardId, CardRef, Citation, Confidence, JudgeError, Source};
+use judge_core::{
+    CallId, CardId, CardRef, Citation, Confidence, FeedbackCategory, JudgeError, RaterKind, Source,
+};
 use judge_llm::ApiKey;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -334,17 +336,28 @@ pub struct CallsPage {
     pub models: Vec<String>,
 }
 
-/// One rating, with who gave it.
+/// One rating, with who gave it and why.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct RatingRow {
-    /// The rater's Discord user id.
+    /// The rater: a Discord user id, or `web:<session uuid>`.
     pub user: String,
+    /// A Discord user or a web session.
+    pub kind: RaterKind,
+    /// The name a web rater gave.
+    pub name: Option<String>,
     /// `correct`, `partial` or `incorrect`.
     pub score: String,
     /// Whether the rater held the judge role.
     pub judge: bool,
     /// When, RFC 3339 UTC.
     pub at: String,
+    /// The reason's category, for a rating that finds fault and was given
+    /// one.
+    pub category: Option<FeedbackCategory>,
+    /// What is wrong, in the rater's words.
+    pub wrong: Option<String>,
+    /// The right answer, in the rater's words.
+    pub right: Option<String>,
 }
 
 /// One billed request of a run.
@@ -598,7 +611,7 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
         .collect();
     let ratings = sqlx::query!(
         r#"
-        SELECT user_id, score, is_judge,
+        SELECT user_id, rater_kind, web_name, score, is_judge, category, what_wrong, right_answer,
                to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "at!"
         FROM ratings WHERE call_id = $1 ORDER BY ts, user_id
         "#,
@@ -609,17 +622,24 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
     .map_err(upstream("read a call's ratings"))?
     .into_iter()
     .map(|r| {
-        let score = match r.score {
-            1 => "incorrect",
-            2 => "partial",
-            3 => "correct",
-            n => return Err(bad_row(format!("ratings.score {n}"))),
-        };
         Ok(RatingRow {
             user: r.user_id,
-            score: score.to_owned(),
+            kind: RaterKind::parse(&r.rater_kind)
+                .ok_or_else(|| bad_row(format!("ratings.rater_kind {:?}", r.rater_kind)))?,
+            name: r.web_name,
+            score: crate::feedback::score_id(r.score)?.to_owned(),
             judge: r.is_judge,
             at: r.at,
+            category: r
+                .category
+                .as_deref()
+                .map(|c| {
+                    FeedbackCategory::parse(c)
+                        .ok_or_else(|| bad_row(format!("ratings.category {c:?}")))
+                })
+                .transpose()?,
+            wrong: r.what_wrong,
+            right: r.right_answer,
         })
     })
     .collect::<Result<Vec<_>, JudgeError>>()?;

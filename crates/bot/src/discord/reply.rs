@@ -114,27 +114,46 @@ impl Message {
 /// Tells whoever is waiting that an interaction's initial response has
 /// been sent: the interactions endpoint ([`super::endpoint`]) answers
 /// Discord's POST only then. [`Ack::none`] for an interaction from the
-/// gateway, where nobody waits.
+/// gateway, where nobody waits. It also knows when an interaction posted to
+/// the endpoint arrived, so a handler can fit its work before the initial
+/// response inside Discord's 3 s ([`Self::deadline`]).
 #[derive(Clone, Debug, Default)]
-pub struct Ack(Option<std::sync::Arc<tokio::sync::Notify>>);
+pub struct Ack {
+    notify: Option<std::sync::Arc<tokio::sync::Notify>>,
+    arrived: Option<tokio::time::Instant>,
+}
 
 impl Ack {
     /// Nobody waits.
     #[must_use]
     pub const fn none() -> Self {
-        Self(None)
+        Self {
+            notify: None,
+            arrived: None,
+        }
     }
 
-    /// An acknowledgement [`Self::wait`] can wait for.
+    /// An acknowledgement [`Self::wait`] can wait for, for an interaction
+    /// that arrived at `arrived`.
     #[must_use]
-    pub fn new() -> Self {
-        Self(Some(std::sync::Arc::default()))
+    pub fn arrived_at(arrived: tokio::time::Instant) -> Self {
+        Self {
+            notify: Some(std::sync::Arc::default()),
+            arrived: Some(arrived),
+        }
+    }
+
+    /// `budget` after the interaction arrived, or after now when its
+    /// arrival is unknown (over the gateway).
+    #[must_use]
+    pub fn deadline(&self, budget: std::time::Duration) -> tokio::time::Instant {
+        self.arrived.unwrap_or_else(tokio::time::Instant::now) + budget
     }
 
     /// The initial response has been sent, or its sending failed: either way
     /// nothing more will come of it.
     pub fn sent(&self) {
-        if let Some(n) = &self.0 {
+        if let Some(n) = &self.notify {
             // A permit is stored when nobody is waiting yet.
             n.notify_one();
         }
@@ -142,7 +161,7 @@ impl Ack {
 
     /// Until [`Self::sent`]; forever for [`Self::none`].
     pub async fn wait(&self) {
-        match &self.0 {
+        match &self.notify {
             Some(n) => n.notified().await,
             None => std::future::pending().await,
         }

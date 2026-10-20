@@ -98,15 +98,24 @@ instructions, fixed at startup, do not carry.
 
 ## Admin tools
 
-The operator's reads are operations too (D37). They return private material: other
-people's questions, Discord user ids and usernames, raters and failed questions.
+The operator's reads are operations too (D37), and so is the feedback queue (D38). They
+return private material: other people's questions, Discord user ids and usernames,
+raters, their reasons and failed questions.
 
 | MCP tool | `judge-cli` | What it returns |
 | --- | --- | --- |
 | `admin_calls` | `calls` | Every stored call, private ones included, newest first, 50 a page. Filters: `interface`, `asker` (username or Discord id), `model`, `private` (true / false), `q` (text). |
 | `admin_call` | `call <id>` | One call whole: origin, question, answer, citations, ratings with raters, the run with each billed request. |
 | `admin_failures` | `failures` | The newest failed calls: question, error, first rejection, each attempt's text. |
-| `admin_usage` | `stats` | Questions and spend per day, runs by model and outcome, ratings, the lowest-rated calls, the latest data refreshes. |
+| `admin_usage` | `stats` | Questions and spend per day, runs by model and outcome, ratings, the lowest-rated calls, the feedback queue's counts by category, the latest data refreshes. |
+| `queue_list` | `queue` | The feedback queue: every *Partially correct* or *Incorrect* rating given a reason, newest first, 50 a page. Filters: `status` (open / resolved / dismissed), `category`, `interface`, `rater` (discord / web). |
+| `queue_show` | `queue-show <item>` | One item with its call whole: question, answer, citations, cards, models, retired state, every rating with its reason. |
+| `queue_resolve` | `queue-resolve <item> --note N [--fixed-by F]` | Close an item as fixed, saying what was done and what fixed it (a commit, a notes entry). The one write. |
+| `queue_dismiss` | `queue-dismiss <item> --note N` | Close an item with nothing to fix, saying why. |
+
+A rater who replaces their reason reopens the item, with the note kept. The `judge`
+skill (`.claude/skills/judge/SKILL.md`) walks an agent through the queue: read an item,
+reproduce it with a session, fix the cause, resolve it with a note.
 
 Who gets them:
 

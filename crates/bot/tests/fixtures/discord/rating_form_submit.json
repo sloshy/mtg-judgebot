@@ -1,0 +1,63 @@
+{
+  "id": "1300000000000000001",
+  "application_id": "1200000000000000002",
+  "type": 5,
+  "token": "aW50ZXJhY3Rpb246MTMwMDAwMDAwMDAwMDAwMDAwMQ",
+  "version": 1,
+  "guild_id": "1100000000000000003",
+  "channel_id": "1100000000000000004",
+  "channel": { "id": "1100000000000000004", "type": 0, "name": "rules", "guild_id": "1100000000000000003" },
+  "member": {
+    "user": {
+      "id": "42",
+      "username": "rater",
+      "discriminator": "0",
+      "global_name": "Rater",
+      "avatar": null,
+      "public_flags": 0
+    },
+    "roles": [],
+    "joined_at": "2026-01-01T00:00:00.000000+00:00",
+    "deaf": false,
+    "mute": false,
+    "flags": 0,
+    "pending": false,
+    "permissions": "0",
+    "nick": null,
+    "avatar": null,
+    "premium_since": null,
+    "communication_disabled_until": null
+  },
+  "locale": "en-US",
+  "guild_locale": "en-US",
+  "app_permissions": "0",
+  "entitlements": [],
+  "authorizing_integration_owners": { "0": "1100000000000000003" },
+  "context": 0,
+  "attachment_size_limit": 10485760,
+  "data": {
+    "custom_id": "rate-form:00000000-0000-0000-0000-000000000000:1",
+    "components": [
+      {
+        "type": 18,
+        "id": 1,
+        "component": { "type": 3, "id": 2, "custom_id": "category", "values": ["wrong_card"] }
+      },
+      {
+        "type": 18,
+        "id": 3,
+        "component": {
+          "type": 4,
+          "id": 4,
+          "custom_id": "wrong",
+          "value": "  It read Bob as the wrong card.  "
+        }
+      },
+      {
+        "type": 18,
+        "id": 5,
+        "component": { "type": 4, "id": 6, "custom_id": "right", "value": "" }
+      }
+    ]
+  }
+}

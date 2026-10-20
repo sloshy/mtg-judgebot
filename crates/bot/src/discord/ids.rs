@@ -25,10 +25,20 @@
 //! * `pick:<uuid>:<n>`: the shape a pick had while picks were held in memory.
 //!   It parses, to [`ButtonAction::LegacyPick`], so a button sent before the
 //!   upgrade is answered as expired rather than as unrecognised.
+//! * `rate-replace:<call uuid>:<1|2|3>` and `rate-keep:<call uuid>`: the
+//!   answer to "you already rated this; replace it?" (D38).
+//! * `rate-cat:<call uuid>:<1|2>`: the category menu a gateway-delivered
+//!   rating shows before its form ([`super::feedback`]).
+//!
+//! A rating's form (a modal) has an id of its own, [`FormId`]:
+//! `rate-form:<call uuid>:<1|2>[:<category>]`, the category present when it
+//! was chosen before the form opened. Each step carries the call and the
+//! score, so any process answers any step, after any restart. The rater's
+//! language is not carried: every interaction names its user's own.
 
 use std::{fmt, num::NonZeroU64, ops::Range, str::FromStr};
 
-use judge_core::{CallId, CardId, Locale, Score};
+use judge_core::{CallId, CardId, Fault, FeedbackCategory, Locale, Score};
 use uuid::Uuid;
 
 use super::{Audience, pick::Digest};
@@ -37,6 +47,10 @@ use super::{Audience, pick::Digest};
 pub const CUSTOM_ID_LIMIT: usize = 100;
 
 const RATE: &str = "rate";
+const REPLACE: &str = "rate-replace";
+const KEEP: &str = "rate-keep";
+const CATEGORY: &str = "rate-cat";
+const FORM: &str = "rate-form";
 const CARD: &str = "card";
 const RETRY: &str = "retry";
 const LEGACY_PICK: &str = "pick";
@@ -62,6 +76,125 @@ pub enum ButtonAction {
     /// A pick button from a release that held the question in memory
     /// (`pick:<uuid>:<n>`). Nothing can answer it any more.
     LegacyPick,
+    /// Replace the rater's earlier rating of `call` with `score`.
+    Replace {
+        /// The call being rated.
+        call: CallId,
+        /// The new rating.
+        score: Score,
+    },
+    /// Keep the rater's earlier rating of `call`.
+    Keep {
+        /// The call.
+        call: CallId,
+    },
+    /// The category menu of a rating that finds fault (a string select;
+    /// the chosen category is the interaction's value, not in the id).
+    Category {
+        /// The call being rated.
+        call: CallId,
+        /// The fault being given a reason.
+        fault: Fault,
+    },
+}
+
+/// A rating form's (modal's) `custom_id`: the call, the fault, and the
+/// category when it was chosen before the form opened (the form then has
+/// no category menu of its own).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FormId {
+    /// The call being rated.
+    pub call: CallId,
+    /// The fault being given a reason.
+    pub fault: Fault,
+    /// The category, when chosen beforehand.
+    pub category: Option<FeedbackCategory>,
+}
+
+impl FormId {
+    /// The `custom_id` to put on the form. At most 65 characters.
+    #[must_use]
+    pub fn to_custom_id(&self) -> String {
+        self.to_string()
+    }
+
+    /// Parse a form's `custom_id` back.
+    ///
+    /// # Errors
+    /// Anything but `rate-form:<call uuid>:<1|2>[:<category>]`.
+    pub fn parse(custom_id: &str) -> Result<Self, ParseError> {
+        custom_id.parse()
+    }
+}
+
+impl fmt::Display for FormId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{FORM}:{}:{}", self.call, fault_digit(self.fault))?;
+        match self.category {
+            Some(c) => write!(f, ":{}", c.id()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl FromStr for FormId {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, ParseError> {
+        let len = s.chars().count();
+        if len > CUSTOM_ID_LIMIT {
+            return Err(ParseError::TooLong(len));
+        }
+        let (kind, rest) = s.split_once(':').ok_or(ParseError::Shape)?;
+        if kind != FORM {
+            return Err(ParseError::UnknownKind(kind.to_owned()));
+        }
+        let mut parts = rest.split(':');
+        let (Some(call), Some(fault), category, None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(ParseError::Shape);
+        };
+        Ok(Self {
+            call: CallId::new(uuid(call)?),
+            fault: parse_fault(fault)?,
+            category: category
+                .map(|c| {
+                    FeedbackCategory::parse(c).ok_or_else(|| ParseError::BadCategory(c.to_owned()))
+                })
+                .transpose()?,
+        })
+    }
+}
+
+const fn fault_digit(fault: Fault) -> u8 {
+    fault.score() as u8
+}
+
+fn parse_score(n: &str) -> Result<Score, ParseError> {
+    match n {
+        "1" => Ok(Score::Incorrect),
+        "2" => Ok(Score::Partial),
+        "3" => Ok(Score::Correct),
+        other => Err(ParseError::BadScore(other.to_owned())),
+    }
+}
+
+fn parse_fault(n: &str) -> Result<Fault, ParseError> {
+    match n {
+        "1" => Ok(Fault::Incorrect),
+        "2" => Ok(Fault::Partial),
+        other => Err(ParseError::BadScore(other.to_owned())),
+    }
+}
+
+/// `<call uuid>:<digit>`, the digit read by `digit`.
+fn call_and<T>(
+    rest: &str,
+    digit: impl Fn(&str) -> Result<T, ParseError>,
+) -> Result<(CallId, T), ParseError> {
+    let (id, n) = rest.split_once(':').ok_or(ParseError::Shape)?;
+    Ok((CallId::new(uuid(id)?), digit(n)?))
 }
 
 /// A maintenance reply's Retry button. The question is on the message.
@@ -157,6 +290,9 @@ pub enum ParseError {
     /// A `card` or `retry` whose last part names no locale.
     #[error("not a locale: {0:?}")]
     BadLocale(String),
+    /// A rating form whose last part names no feedback category.
+    #[error("not a feedback category: {0:?}")]
+    BadCategory(String),
 }
 
 impl ButtonAction {
@@ -207,6 +343,13 @@ impl fmt::Display for ButtonAction {
             }
             // Never sent any more; written in the old shape for completeness.
             ButtonAction::LegacyPick => write!(f, "{LEGACY_PICK}:{}:0", Uuid::nil()),
+            ButtonAction::Replace { call, score } => {
+                write!(f, "{REPLACE}:{call}:{}", *score as u8)
+            }
+            ButtonAction::Keep { call } => write!(f, "{KEEP}:{call}"),
+            ButtonAction::Category { call, fault } => {
+                write!(f, "{CATEGORY}:{call}:{}", fault_digit(*fault))
+            }
         }
     }
 }
@@ -321,15 +464,19 @@ impl FromStr for ButtonAction {
         let (kind, rest) = s.split_once(':').ok_or(ParseError::Shape)?;
         match kind {
             RATE => {
-                let (id, n) = rest.split_once(':').ok_or(ParseError::Shape)?;
-                let call = CallId::new(uuid(id)?);
-                let score = match n {
-                    "1" => Score::Incorrect,
-                    "2" => Score::Partial,
-                    "3" => Score::Correct,
-                    other => return Err(ParseError::BadScore(other.to_owned())),
-                };
+                let (call, score) = call_and(rest, parse_score)?;
                 Ok(ButtonAction::Rate { call, score })
+            }
+            REPLACE => {
+                let (call, score) = call_and(rest, parse_score)?;
+                Ok(ButtonAction::Replace { call, score })
+            }
+            KEEP => Ok(ButtonAction::Keep {
+                call: CallId::new(uuid(rest)?),
+            }),
+            CATEGORY => {
+                let (call, fault) = call_and(rest, parse_fault)?;
+                Ok(ButtonAction::Category { call, fault })
             }
             CARD => parse_pick(rest).map(ButtonAction::Pick),
             RETRY => parse_retry(rest).map(ButtonAction::Retry),
@@ -567,6 +714,115 @@ mod tests {
             matches!(ButtonAction::parse(&long), Err(ParseError::TooLong(n)) if n > CUSTOM_ID_LIMIT)
         );
         assert!(ParseError::Shape.to_string().contains("<kind>"));
+    }
+
+    #[test]
+    fn the_rating_steps_round_trip_and_fit() -> Result<(), ParseError> {
+        let call = CallId::new(Uuid::from_u128(u128::MAX));
+        let mut ids = vec![ButtonAction::Keep { call }];
+        for score in [Score::Incorrect, Score::Partial, Score::Correct] {
+            ids.push(ButtonAction::Rate { call, score });
+            ids.push(ButtonAction::Replace { call, score });
+        }
+        for fault in [Fault::Partial, Fault::Incorrect] {
+            ids.push(ButtonAction::Category { call, fault });
+        }
+        for a in ids {
+            let id = a.to_custom_id();
+            assert!(id.chars().count() <= CUSTOM_ID_LIMIT, "{id}");
+            assert_eq!(ButtonAction::parse(&id)?, a);
+        }
+        let mut longest = 0;
+        for fault in [Fault::Partial, Fault::Incorrect] {
+            for category in FeedbackCategory::ALL.map(Some).into_iter().chain([None]) {
+                let form = FormId {
+                    call,
+                    fault,
+                    category,
+                };
+                let id = form.to_custom_id();
+                longest = longest.max(id.chars().count());
+                assert_eq!(FormId::parse(&id)?, form);
+            }
+        }
+        assert_eq!(longest, 65);
+        Ok(())
+    }
+
+    /// The shapes on the wire, an old rating button's among them: a message
+    /// posted before ratings had reasons gets the new flow from its old
+    /// button.
+    #[test]
+    fn the_rating_shapes_are_stable() -> Result<(), ParseError> {
+        let nil = "00000000-0000-0000-0000-000000000000";
+        let call = CallId::new(Uuid::nil());
+        assert_eq!(
+            ButtonAction::parse(&format!("rate:{nil}:1"))?,
+            ButtonAction::Rate {
+                call,
+                score: Score::Incorrect
+            }
+        );
+        assert_eq!(
+            ButtonAction::Replace {
+                call,
+                score: Score::Partial
+            }
+            .to_custom_id(),
+            format!("rate-replace:{nil}:2")
+        );
+        assert_eq!(
+            ButtonAction::Keep { call }.to_custom_id(),
+            format!("rate-keep:{nil}")
+        );
+        assert_eq!(
+            ButtonAction::Category {
+                call,
+                fault: Fault::Incorrect
+            }
+            .to_custom_id(),
+            format!("rate-cat:{nil}:1")
+        );
+        assert_eq!(
+            FormId {
+                call,
+                fault: Fault::Partial,
+                category: Some(FeedbackCategory::WrongCard)
+            }
+            .to_custom_id(),
+            format!("rate-form:{nil}:2:wrong_card")
+        );
+        for (bad, want) in [
+            (
+                format!("rate-cat:{nil}:3"),
+                ParseError::BadScore("3".into()),
+            ),
+            (
+                format!("rate-keep:{nil}:1"),
+                ParseError::BadUuid(format!("{nil}:1")),
+            ),
+            (format!("rate-replace:{nil}"), ParseError::Shape),
+        ] {
+            assert_eq!(ButtonAction::parse(&bad), Err(want), "{bad}");
+        }
+        for (bad, want) in [
+            (
+                format!("rate-form:{nil}:3"),
+                ParseError::BadScore("3".into()),
+            ),
+            (
+                format!("rate-form:{nil}:1:typo"),
+                ParseError::BadCategory("typo".into()),
+            ),
+            (format!("rate-form:{nil}:1:other:x"), ParseError::Shape),
+            (
+                format!("rate:{nil}:1"),
+                ParseError::UnknownKind("rate".into()),
+            ),
+        ] {
+            assert_eq!(FormId::parse(&bad), Err(want), "{bad}");
+        }
+        Ok(())
     }
 
     #[test]

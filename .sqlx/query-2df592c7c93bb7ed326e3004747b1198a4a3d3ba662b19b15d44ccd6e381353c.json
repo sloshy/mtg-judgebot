@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT score, category FROM ratings WHERE call_id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "score",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "score"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "category",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ratings",
+            "name": "category"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "2df592c7c93bb7ed326e3004747b1198a4a3d3ba662b19b15d44ccd6e381353c"
+}

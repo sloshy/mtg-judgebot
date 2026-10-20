@@ -61,7 +61,15 @@ Operators should know these properties. The reasoning behind each is in
   - the question and answer text of every call, private ones included
   - the Discord thread or web session id it was asked in, and the interface
   - for a Discord question, the asker's user id and username at asking time
-  - the Discord user id of anyone who presses a rating button
+  - the Discord user id of anyone who presses a rating button, the score, and for a
+    *Partially correct* or *Incorrect* rating the reason they give in its form (a
+    category and up to two texts of 1000 characters), which the operator reads in the
+    feedback queue (`feedback_queue`, with the operator's note on it)
+  - for a rating given on the web (the storage takes one; the web app's rating form is
+    still to come): the browser session id, the name the rater gave, and the address and
+    user agent it came from. Address and user agent are cleared once the rating is
+    `FEEDBACK_IP_DAYS` old (default 90, at most 3650, never kept for good) by every
+    rating written and by each refresh's `sweep` step; the rating and its reason stay.
   - for a call that failed (`failed_calls`): the question, the error, the model's answer
     text and, for a Discord question, the asker's user id and username. Pruned to 30
     days / 500 rows when a later failure is recorded.
@@ -69,7 +77,8 @@ Operators should know these properties. The reasoning behind each is in
   Calls are kept until the operator's `JUDGE_CALL_RETENTION_DAYS` (unset: kept), then
   deleted with their ratings by the next refresh.
 
-  `/forget` deletes the user's ratings and removes their id and username from their calls
+  `/forget` deletes the user's ratings with their reasons and feedback-queue items (the
+  operator's notes on them included), and removes their id and username from their calls
   and failed calls. A private call loses its question, answer, citations and card ids too,
   and a failed one its text. A public call keeps its text, which the channel saw.
   - for each run of the pipeline (`judge_runs`): the interface, whether it was private,
@@ -80,6 +89,6 @@ Operators should know these properties. The reasoning behind each is in
     no user id; rows are deleted after a day.
 
   The bot requests no gateway intents, so it never receives message content beyond the
-  slash-command input. Process logs at `info` record each rating with the user id. The
-  compose file rotates them at 30 MB per container. Shipping or dropping them is up to the
-  operator.
+  slash-command input. Process logs at `info` record each rating with the user id and its
+  reason's category (never the reason's text). The compose file rotates them at 30 MB per
+  container. Shipping or dropping them is up to the operator.

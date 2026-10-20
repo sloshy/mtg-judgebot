@@ -17,7 +17,7 @@
 //! judgebot ingest prune                 # delete calls older than JUDGE_CALL_RETENTION_DAYS, with their ratings
 //! judgebot ingest migrate               # apply the embedded schema migrations (the serving roles do this at
 //!                                       #   startup; this is for an empty database, or JUDGE_AUTO_MIGRATE=false)
-//! judgebot ingest refresh               # cards, rules latest, lists, prune, retire, embed, emoji — the scheduled job
+//! judgebot ingest refresh               # cards, rules latest, lists, prune, sweep, retire, embed, emoji — the scheduled job
 //! judgebot ingest upgrade               # print what this binary's pending migrations are (`upgrade: in-place`,
 //!                                       #   `upgrade: major` or `upgrade: major-from-1.x`), changing nothing;
 //!                                       #   scripts/deploy.sh asks the new image before it deploys

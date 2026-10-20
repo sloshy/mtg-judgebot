@@ -3,9 +3,9 @@
 use async_trait::async_trait;
 
 use crate::{
-    CallId, Card, Context, Extraction, FailedCall, FailedCallId, Forgotten, HistoryScope,
-    JudgeError, Origin, Qa, Question, RejectedAttempt, Resolution, RuleChunk, RuleId, RunRecord,
-    Score, Tally, Validated, Verdict, verdict::Unvalidated,
+    CallId, Card, Context, Earlier, Extraction, FailedCall, FailedCallId, Forgotten, HistoryScope,
+    JudgeError, Origin, Qa, Question, Rater, RaterId, Rating, RejectedAttempt, Resolution,
+    RuleChunk, RuleId, RunRecord, Tally, Validated, Verdict, verdict::Unvalidated,
 };
 
 /// Pipeline steps 1 + 3: entity extraction and classification (one LLM call).
@@ -111,15 +111,21 @@ pub trait CallStore: Send + Sync {
         ctx: &Context,
         tally: &Tally,
     ) -> Result<CallId, JudgeError>;
-    /// Record (or replace) one user's rating of a call, or say the call is
-    /// no longer stored (the retention deleted it).
-    async fn rate(
+    /// Record (or replace) one rater's rating of a call, with its reason
+    /// when it finds fault, or say the call is no longer stored (the
+    /// retention deleted it). A reason opens the rating's feedback-queue
+    /// item, or reopens it; a Correct closes nothing but drops an item the
+    /// operator has not written on. Each write also clears web raters'
+    /// addresses older than `FEEDBACK_IP_DAYS`.
+    async fn rate(&self, call: CallId, rater: &Rater, rating: &Rating)
+    -> Result<Rated, JudgeError>;
+    /// The rater's current rating of a call, if they have one. One indexed
+    /// read: a Discord click must be answered within 3 s of arriving.
+    async fn earlier_rating(
         &self,
         call: CallId,
-        user_id: &str,
-        score: Score,
-        is_judge: bool,
-    ) -> Result<Rated, JudgeError>;
+        rater: RaterId,
+    ) -> Result<Option<Earlier>, JudgeError>;
     /// The last `n` question/answer pairs persisted in `thread_id` that
     /// `scope` admits, oldest first: the shape [`crate::judge`] takes as
     /// thread history ([`Origin::history_scope`] says which scope a question
@@ -130,8 +136,8 @@ pub trait CallStore: Send + Sync {
         n: usize,
         scope: HistoryScope,
     ) -> Result<Vec<Qa>, JudgeError>;
-    /// "Forget me" for the Discord user `user_id`: delete their ratings,
-    /// remove their id and username from the calls they asked (and, on a
+    /// "Forget me" for the Discord user `user_id`: delete their ratings
+    /// with their reasons and feedback-queue items, remove their id and username from the calls they asked (and, on a
     /// private call, its question and answer), and anonymize the failed calls
     /// they asked, returning how many of each.
     async fn forget_user(&self, user_id: &str) -> Result<Forgotten, JudgeError>;

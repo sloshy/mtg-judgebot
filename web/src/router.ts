@@ -25,12 +25,48 @@ export interface AdminCallFilter {
   q?: string;
 }
 
-/** The admin pages, under /admin (served by the --admin listener only).
- * The feedback queue (#27) is one more view here and one more tab in
- * admin/Admin.tsx. */
+/** A feedback item's state (`judge_core::QueueStatus`). */
+export type QueueStatus = "open" | "resolved" | "dismissed";
+/** What kind of problem a rater found (`judge_core::FeedbackCategory`). */
+export type FeedbackCategory =
+  | "wrong_conclusion"
+  | "missed_part"
+  | "bad_citation"
+  | "wrong_card"
+  | "misread_question"
+  | "wrong_refusal"
+  | "outdated"
+  | "other";
+/** Who rated (`judge_core::RaterKind`). */
+export type RaterKind = "discord" | "web";
+
+export const QUEUE_STATUSES: readonly QueueStatus[] = ["open", "resolved", "dismissed"];
+export const FEEDBACK_CATEGORIES: readonly FeedbackCategory[] = [
+  "wrong_conclusion",
+  "missed_part",
+  "bad_citation",
+  "wrong_card",
+  "misread_question",
+  "wrong_refusal",
+  "outdated",
+  "other",
+];
+export const RATER_KINDS: readonly RaterKind[] = ["discord", "web"];
+
+/** Which items the feedback queue shows (GET /admin/api/queue). */
+export interface AdminQueueFilter {
+  status?: QueueStatus;
+  category?: FeedbackCategory;
+  interface?: Interface;
+  rater?: RaterKind;
+}
+
+/** The admin pages, under /admin (served by the --admin listener only). */
 export type AdminView =
   | { view: "calls"; filter: AdminCallFilter }
   | { view: "call"; id: string }
+  | { view: "feedback"; filter: AdminQueueFilter }
+  | { view: "item"; id: string }
   | { view: "failures" }
   | { view: "usage"; days?: number }
   | { view: "missing" };
@@ -39,6 +75,10 @@ const INTERFACES: readonly Interface[] = ["discord", "web", "mcp", "cli", "agent
 
 function isInterface(v: string | null): v is Interface {
   return INTERFACES.some((i) => i === v);
+}
+
+function oneOf<T extends string>(all: readonly T[], v: string | null): T | undefined {
+  return all.find((x) => x === v);
 }
 
 /** The admin view `parts` (the path after /admin) and `params` name. */
@@ -59,6 +99,18 @@ function parseAdmin(parts: (string | undefined)[], params: URLSearchParams): Adm
     };
   }
   if (parts.length === 2 && first === "calls" && second) return { view: "call", id: second };
+  if (parts.length === 1 && first === "feedback") {
+    return {
+      view: "feedback",
+      filter: {
+        status: oneOf(QUEUE_STATUSES, params.get("status")),
+        category: oneOf(FEEDBACK_CATEGORIES, params.get("category")),
+        interface: oneOf(INTERFACES, params.get("interface")),
+        rater: oneOf(RATER_KINDS, params.get("rater")),
+      },
+    };
+  }
+  if (parts.length === 2 && first === "feedback" && second) return { view: "item", id: second };
   if (parts.length === 1 && first === "failures") return { view: "failures" };
   if (parts.length === 1 && first === "usage") {
     const days = Number.parseInt(params.get("days") ?? "", 10);
@@ -82,6 +134,17 @@ function adminHref(v: AdminView): string {
     }
     case "call":
       return `/admin/calls/${encodeURIComponent(v.id)}`;
+    case "feedback": {
+      const q = new URLSearchParams();
+      if (v.filter.status) q.set("status", v.filter.status);
+      if (v.filter.category) q.set("category", v.filter.category);
+      if (v.filter.interface) q.set("interface", v.filter.interface);
+      if (v.filter.rater) q.set("rater", v.filter.rater);
+      const s = q.toString();
+      return s === "" ? "/admin/feedback" : `/admin/feedback?${s}`;
+    }
+    case "item":
+      return `/admin/feedback/${encodeURIComponent(v.id)}`;
     case "failures":
       return "/admin/failures";
     case "usage":

@@ -29,7 +29,7 @@ export function CallPage(props: { ctx: AdminContext; id: string }) {
         <Match when={call()?.ok === true && call()}>
           {(r) => {
             const read = r();
-            return read.ok ? <Detail ctx={props.ctx} call={read.value} /> : null;
+            return read.ok ? <CallDetailView ctx={props.ctx} call={read.value} /> : null;
           }}
         </Match>
         <Match when={call()?.ok === false && call()}>
@@ -52,7 +52,9 @@ export function CallPage(props: { ctx: AdminContext; id: string }) {
   );
 }
 
-function Detail(props: { ctx: AdminContext; call: CallDetail }) {
+/** A call whole: the exchange, what is stored with it, its ratings with
+ * their reasons, and its run. The feedback item page shows it too. */
+export function CallDetailView(props: { ctx: AdminContext; call: CallDetail }) {
   const m = () => props.ctx.m;
   const c = () => props.call;
   return (
@@ -142,8 +144,29 @@ function Detail(props: { ctx: AdminContext; call: CallDetail }) {
             <For each={c().ratings}>
               {(r) => (
                 <li>
-                  <span>{m().ratingLine(r.user, r.score, r.judge)}</span>
+                  <span>
+                    {m().ratingLine(m().raterText(r.kind, r.user, r.name), r.score, r.judge)}
+                    <Show when={r.category}>
+                      {(c) => (
+                        <span class="badge admin-rating-reason">{m().categoryName[c()]}</span>
+                      )}
+                    </Show>
+                  </span>
                   <time datetime={r.at}>{m().when(r.at)}</time>
+                  <Show when={r.wrong}>
+                    {(text) => (
+                      <p class="admin-rating-text">
+                        <strong>{m().reasonWrong}:</strong> {text()}
+                      </p>
+                    )}
+                  </Show>
+                  <Show when={r.right}>
+                    {(text) => (
+                      <p class="admin-rating-text">
+                        <strong>{m().reasonRight}:</strong> {text()}
+                      </p>
+                    )}
+                  </Show>
                 </li>
               )}
             </For>

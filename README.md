@@ -11,7 +11,8 @@ Ask in plain language. Nicknames such as "bob", "goyf" and "snappy" work. Every 
 the answer is **backed by a checked, clickable citation**: a Comprehensive Rules section,
 an official Scryfall ruling, the card's current Oracle text, or a past answer. On Discord,
 members rate answers as correct, partially correct or incorrect, and ratings decide which
-past answers new ones draw on as examples.
+past answers new ones draw on as examples. A rating that finds fault says why, and the
+reason goes to the operator's feedback queue to be fixed.
 
 <img src="site/src/assets/screenshots/discord-answer-citations.png" width="720" alt="A Discord reply to /judge about revealing an X-cost spell to Dark Confidant: a two-paragraph ruling with a rule number inline and mana symbols drawn as pictures, an embed quoting a dated ruling, the card's Oracle text and rule 107.3g, the card the question resolved to, the confidence and CR version, and three rating buttons.">
 
@@ -44,7 +45,8 @@ More answers, copied verbatim from a published evaluation run, are on the
    with a note on what failed. One that fails again is never shown.
 5. **Learn from ratings.** Ratings decide which past answers the model sees as examples.
    A member with the Judge role outranks the crowd, and the rules always outrank past
-   answers.
+   answers. *Partially correct* and *Incorrect* come with a reason, which the operator
+   works through in a feedback queue.
 
 ## What it takes
 

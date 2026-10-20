@@ -333,7 +333,12 @@ mod gate_tests {
         assert_eq!(status, StatusCode::OK, "{judge}");
         let judge = tool_names(&judge);
         assert!(judge.contains(&"judge".to_owned()), "{judge:?}");
-        assert!(!judge.iter().any(|t| t.starts_with("admin_")), "{judge:?}");
+        assert!(
+            !judge
+                .iter()
+                .any(|t| t.starts_with("admin_") || t.starts_with("queue_")),
+            "{judge:?}"
+        );
 
         let (status, admin) = rpc(&router, ADMIN, "tools/list", None).await?;
         assert_eq!(status, StatusCode::OK, "{admin}");
@@ -343,6 +348,10 @@ mod gate_tests {
             "admin_call",
             "admin_failures",
             "admin_usage",
+            "queue_list",
+            "queue_show",
+            "queue_resolve",
+            "queue_dismiss",
             "judge",
         ] {
             assert!(admin.contains(&t.to_owned()), "{t} missing: {admin:?}");

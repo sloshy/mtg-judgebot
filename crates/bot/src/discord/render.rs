@@ -11,8 +11,9 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use judge_core::{
-    Ambiguous, Card, CardId, Citation, Context, DiscordOperator, EXAMPLE_PREFIX, Freshness,
-    JudgeError, Locale, RuleChunk, RuleId, Ruling, Score, SourceOffer, Validated, Verdict, source,
+    Ambiguous, Card, CardId, Citation, Context, DiscordOperator, EXAMPLE_PREFIX, Earlier,
+    FeedbackCategory, Freshness, JudgeError, Locale, RuleChunk, RuleId, Ruling, Score, SourceOffer,
+    Validated, Verdict, source,
 };
 use nonempty::NonEmpty;
 
@@ -752,19 +753,25 @@ pub fn rating_label(locale: Locale, score: Score) -> &'static str {
     (catalog::messages(locale).rating_label)(score)
 }
 
-/// Ephemeral acknowledgement of a rating. An *Incorrect* one also says where
-/// a wrong ruling can be reported: to the operator, and, when the instance's
-/// source is on GitHub, through that repository's wrong-ruling issue form.
+/// Ephemeral acknowledgement of a rating, naming its reason's category
+/// when it has one. An *Incorrect* one also names who reads the reasons,
+/// and, when the instance's source is on GitHub, links that repository's
+/// wrong-ruling issue form.
 #[must_use]
 pub fn rated(
     locale: Locale,
     score: Score,
+    category: Option<FeedbackCategory>,
     is_judge: bool,
     offer: &SourceOffer,
     operator: &DiscordOperator,
 ) -> String {
     let m = catalog::messages(locale);
-    let mut out = (m.rated)(rating_label(locale, score), is_judge);
+    let mut out = (m.rated)(
+        rating_label(locale, score),
+        category.map(m.category_label),
+        is_judge,
+    );
     if matches!(score, Score::Incorrect) {
         let _ = write!(
             out,
@@ -776,6 +783,28 @@ pub fn rated(
         }
     }
     out
+}
+
+/// "You already rated this…": the rater's `earlier` rating and the `new`
+/// one they clicked, above Replace and Keep.
+#[must_use]
+pub fn replace_prompt(locale: Locale, earlier: Earlier, new: Score) -> String {
+    let m = catalog::messages(locale);
+    (m.replace_prompt)(
+        rating_label(locale, earlier.score),
+        earlier.category.map(m.category_label),
+        rating_label(locale, new),
+    )
+}
+
+/// After Keep: the rating the rater has on record now.
+#[must_use]
+pub fn on_record(locale: Locale, now: Earlier) -> String {
+    let m = catalog::messages(locale);
+    (m.on_record)(
+        rating_label(locale, now.score),
+        now.category.map(m.category_label),
+    )
 }
 
 /// The wrong-ruling issue form of the repository this instance's source is
@@ -2001,10 +2030,21 @@ mod info_tests {
         let f = |ratings, calls, failures| {
             (catalog::EN.forgotten)(judge_core::Forgotten {
                 ratings,
+                feedback: 0,
                 failures,
                 calls,
             })
         };
+        let with_reasons = (catalog::EN.forgotten)(judge_core::Forgotten {
+            ratings: 2,
+            feedback: 1,
+            failures: 0,
+            calls: 0,
+        });
+        assert!(
+            with_reasons.starts_with("Deleted your 2 ratings with their reasons."),
+            "{with_reasons}"
+        );
         assert_eq!(
             f(0, 0, 0),
             "You had no ratings, questions or failed calls on record; there is nothing else stored about you."
@@ -2052,13 +2092,21 @@ mod lookup_tests {
     #[test]
     fn only_an_incorrect_rating_says_where_to_report_it() -> Res {
         let (offer, op) = (offer("https://github.com/someone/fork")?, operator()?);
-        assert!(rated(Locale::En, Score::Correct, true, &offer, &op).contains("judge"));
-        assert!(!rated(Locale::En, Score::Correct, false, &offer, &op).contains("judge"));
+        assert!(rated(Locale::En, Score::Correct, None, true, &offer, &op).contains("judge"));
+        assert!(!rated(Locale::En, Score::Correct, None, false, &offer, &op).contains("judge"));
         for score in [Score::Correct, Score::Partial] {
-            assert!(!rated(Locale::En, score, false, &offer, &op).contains("a_judge"));
+            assert!(!rated(Locale::En, score, None, false, &offer, &op).contains("a_judge"));
         }
-        let wrong = rated(Locale::En, Score::Incorrect, false, &offer, &op);
+        let wrong = rated(
+            Locale::En,
+            Score::Incorrect,
+            Some(FeedbackCategory::WrongCard),
+            false,
+            &offer,
+            &op,
+        );
         assert!(wrong.contains("`@a_judge`"), "{wrong}");
+        assert!(wrong.contains("Incorrect (Wrong card)"), "{wrong}");
         assert!(
             wrong
                 .contains("<https://github.com/someone/fork/issues/new?template=wrong_answer.yml>"),
@@ -2066,6 +2114,41 @@ mod lookup_tests {
         );
         assert!(wrong.chars().count() <= CONTENT_LIMIT);
         Ok(())
+    }
+
+    /// Keep says what is on record now, not what the prompt once showed:
+    /// a Replace on the same prompt may have changed it since.
+    #[test]
+    fn keep_reads_back_the_rating_on_record() {
+        let now = Earlier {
+            score: Score::Incorrect,
+            category: Some(FeedbackCategory::WrongCard),
+        };
+        assert_eq!(
+            on_record(Locale::En, now),
+            "Nothing changed. Your rating on record: **Incorrect** (Wrong card)."
+        );
+    }
+
+    #[test]
+    fn the_replace_prompt_names_both_ratings() {
+        let earlier = Earlier {
+            score: Score::Partial,
+            category: Some(FeedbackCategory::WrongCard),
+        };
+        assert_eq!(
+            replace_prompt(Locale::En, earlier, Score::Incorrect),
+            "You already rated this answer **Partially correct** (Wrong card). Replace it with \
+             **Incorrect**?"
+        );
+        let legacy = Earlier {
+            score: Score::Incorrect,
+            category: None,
+        };
+        assert_eq!(
+            replace_prompt(Locale::En, legacy, Score::Correct),
+            "You already rated this answer **Incorrect**. Replace it with **Correct**?"
+        );
     }
 
     #[test]
@@ -2096,6 +2179,7 @@ mod lookup_tests {
         let wrong = rated(
             Locale::En,
             Score::Incorrect,
+            None,
             false,
             &offer("https://gitlab.com/someone/fork")?,
             &operator()?,

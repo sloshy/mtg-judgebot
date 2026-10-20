@@ -87,12 +87,17 @@ from the address bar. From another machine, forward the port over SSH
 - **Calls**: every stored call, private ones included, newest first. Filters for the
   interface, the asker (Discord username or id), the model, private or public, and text.
 - **A call**: the exchange as the feed shows it, then what is stored with it: who asked
-  and where, the thread, every rating with its rater, and the run that answered it with
-  each billed request's model, tokens and cost.
+  and where, the thread, every rating with its rater and reason, and the run that
+  answered it with each billed request's model, tokens and cost.
+- **Feedback**: the feedback queue, open items first when the tab opens. Every
+  *Partially correct* or *Incorrect* rating given a reason, newest first, filtered by
+  status, kind of problem, interface and rater. An item shows the rater's reason, its
+  state, the call whole, and a form that resolves it (with a note and what fixed it) or
+  dismisses it (with a note). A rater who replaces their reason reopens it.
 - **Failures**: the failed calls, each opening onto the error and what the model sent.
 - **Usage**: questions and spend over 7, 30, 90 days or a year, spend per day as a
-  chart, the runs by model and outcome, ratings, the lowest-rated calls and the latest
-  data refreshes.
+  chart, the runs by model and outcome, ratings, the lowest-rated calls, the feedback
+  queue's counts by kind of problem and the latest data refreshes.
 
 ## Limits
 

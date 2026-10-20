@@ -5,6 +5,7 @@
 
 import type { Interface } from "../api";
 import type { Locale } from "../messages";
+import type { FeedbackCategory, QueueStatus, RaterKind } from "../router";
 
 export type AdminMessages = {
   /** The bar's name for the admin pages. */
@@ -12,6 +13,7 @@ export type AdminMessages = {
   /** The tabs, and their accessible name. */
   navLabel: string;
   navCalls: string;
+  navFeedback: string;
   navFailures: string;
   navUsage: string;
 
@@ -95,6 +97,57 @@ export type AdminMessages = {
   stageName: Record<"extraction" | "synthesis" | "tool_round" | "embedding", string>;
   tokens: (input: number | null, output: number | null) => string;
 
+  feedbackTitle: string;
+  feedbackIntro: string;
+  feedbackEmpty: string;
+  loadMoreFeedback: string;
+  filterStatus: string;
+  filterCategory: string;
+  filterRater: string;
+  /** Each status, category, kind of rater and score by name. */
+  statusName: Record<QueueStatus, string>;
+  categoryName: Record<FeedbackCategory, string>;
+  raterName: Record<RaterKind, string>;
+  scoreName: Record<Rating, string>;
+  /** An item whose rating was re-rated Correct has no category. */
+  noCategory: string;
+  /** Who rated: a Discord user id, or a web session with the name given. */
+  raterText: (kind: RaterKind, rater: string, name: string | null) => string;
+  judgeTag: string;
+  backToFeedback: string;
+  itemMissingTitle: string;
+  /** The item page's sections and facts. */
+  reasonTitle: string;
+  reasonWrong: string;
+  reasonRight: string;
+  reasonNoText: string;
+  itemTitle: string;
+  factStatus: string;
+  factRating: string;
+  factRater: string;
+  factOpened: string;
+  factRated: string;
+  factClosed: string;
+  factNote: string;
+  factFixedBy: string;
+  factAddress: string;
+  factUserAgent: string;
+  openCall: string;
+  /** The closing form. */
+  closeTitle: string;
+  closeIntro: string;
+  closeNote: string;
+  closeNotePlaceholder: string;
+  closeFixedBy: string;
+  closeFixedByPlaceholder: string;
+  resolve: string;
+  dismiss: string;
+  saving: string;
+  closed: (status: QueueStatus) => string;
+  /** The usage page's queue section. */
+  queueCountsTitle: string;
+  queueCountLine: (open: number, resolved: number, dismissed: number) => string;
+
   failuresTitle: string;
   failuresIntro: string;
   failuresEmpty: string;
@@ -141,6 +194,7 @@ export const en = {
   title: "Admin",
   navLabel: "Admin pages",
   navCalls: "Calls",
+  navFeedback: "Feedback",
   navFailures: "Failures",
   navUsage: "Usage",
 
@@ -238,6 +292,66 @@ export const en = {
     input === null || output === null
       ? "no usage reported"
       : `${count.format(input)} in · ${count.format(output)} out`,
+
+  feedbackTitle: "Feedback",
+  feedbackIntro:
+    "Every Partially correct or Incorrect rating given a reason, newest first: what to look into, and what was done.",
+  feedbackEmpty: "No feedback matches.",
+  loadMoreFeedback: "Show older feedback",
+  filterStatus: "Status",
+  filterCategory: "Problem",
+  filterRater: "Rater",
+  statusName: { open: "Open", resolved: "Resolved", dismissed: "Dismissed" },
+  categoryName: {
+    wrong_conclusion: "Wrong conclusion",
+    missed_part: "Missed part of the question",
+    bad_citation: "A citation doesn't support it",
+    wrong_card: "Wrong card",
+    misread_question: "Misread the question",
+    wrong_refusal: "Shouldn't have refused",
+    outdated: "Outdated",
+    other: "Other",
+  },
+  raterName: { discord: "Discord", web: "Web" },
+  scoreName: { correct: "Correct", partial: "Partially correct", incorrect: "Incorrect" },
+  noCategory: "No reason (re-rated correct)",
+  raterText: (kind, rater, name) =>
+    kind === "discord"
+      ? `Discord user ${rater}`
+      : `${name ?? "Anonymous"} (web session ${rater.replace(/^web:/, "").slice(0, 8)})`,
+  judgeTag: "Judge",
+  backToFeedback: "Feedback",
+  itemMissingTitle: "Feedback not found",
+  reasonTitle: "Reason",
+  reasonWrong: "What's wrong",
+  reasonRight: "The right answer",
+  reasonNoText: "No details given.",
+  itemTitle: "The item",
+  factStatus: "Status",
+  factRating: "Rating now",
+  factRater: "Rater",
+  factOpened: "Opened",
+  factRated: "Rated",
+  factClosed: "Closed",
+  factNote: "Note",
+  factFixedBy: "Fixed by",
+  factAddress: "Address",
+  factUserAgent: "Browser",
+  openCall: "The call's page",
+  closeTitle: "Close it",
+  closeIntro:
+    "Say what you found and did. A rater who replaces their reason reopens the item, with this note kept.",
+  closeNote: "Note",
+  closeNotePlaceholder: "What was wrong, and what was done",
+  closeFixedBy: "Fixed by",
+  closeFixedByPlaceholder: "A commit, a notes.yaml entry, an alias",
+  resolve: "Resolve",
+  dismiss: "Dismiss",
+  saving: "Saving…",
+  closed: (status) => (status === "dismissed" ? "Dismissed." : "Resolved."),
+  queueCountsTitle: "Feedback queue",
+  queueCountLine: (open, resolved, dismissed) =>
+    `${open} open · ${resolved} resolved · ${dismissed} dismissed`,
 
   failuresTitle: "Failures",
   failuresIntro:

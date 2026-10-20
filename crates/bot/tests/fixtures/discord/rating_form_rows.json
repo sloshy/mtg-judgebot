@@ -1,0 +1,37 @@
+{
+  "type": 9,
+  "data": {
+    "custom_id": "rate-form:00000000-0000-0000-0000-000000000000:2:wrong_card",
+    "title": "Partially correct: what's missing?",
+    "components": [
+      {
+        "type": 1,
+        "components": [
+          {
+            "type": 4,
+            "custom_id": "wrong",
+            "style": 2,
+            "label": "What's wrong",
+            "placeholder": "Optional. What did the answer get wrong?",
+            "required": false,
+            "max_length": 1000
+          }
+        ]
+      },
+      {
+        "type": 1,
+        "components": [
+          {
+            "type": 4,
+            "custom_id": "right",
+            "style": 2,
+            "label": "The right answer",
+            "placeholder": "Optional. What should it have said?",
+            "required": false,
+            "max_length": 1000
+          }
+        ]
+      }
+    ]
+  }
+}

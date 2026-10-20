@@ -175,6 +175,36 @@ function Report(props: { ctx: AdminContext; usage: Usage }) {
         </Show>
       </section>
 
+      <section class="admin-section" aria-labelledby="queue-title">
+        <h3 id="queue-title">{m().queueCountsTitle}</h3>
+        <Show
+          when={(u().feedback ?? []).some((c) => c.open + c.resolved + c.dismissed > 0)}
+          fallback={<p class="admin-empty">{m().nothingYet}</p>}
+        >
+          <ul class="admin-list">
+            <For each={(u().feedback ?? []).filter((c) => c.open + c.resolved + c.dismissed > 0)}>
+              {(c) => (
+                <li>
+                  <Show when={c.category} fallback={<span>{m().noCategory}</span>}>
+                    {(category) => (
+                      <a
+                        href={href({
+                          page: "admin",
+                          view: { view: "feedback", filter: { category: category() } },
+                        })}
+                      >
+                        {m().categoryName[category()]}
+                      </a>
+                    )}
+                  </Show>
+                  <span>{m().queueCountLine(c.open, c.resolved, c.dismissed)}</span>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+      </section>
+
       <section class="admin-section" aria-labelledby="refresh-title">
         <h3 id="refresh-title">{m().refreshTitle}</h3>
         <Show when={u().refresh_runs_note}>{(note) => <p class="admin-note">{note()}</p>}</Show>

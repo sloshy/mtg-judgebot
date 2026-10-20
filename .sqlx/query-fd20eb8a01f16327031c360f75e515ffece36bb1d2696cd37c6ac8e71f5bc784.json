@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO feedback_queue (call_id, user_id) VALUES ($1, $2)\n                ON CONFLICT (call_id, user_id)\n                DO UPDATE SET status = 'open', resolved_at = NULL, opened_at = now()\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fd20eb8a01f16327031c360f75e515ffece36bb1d2696cd37c6ac8e71f5bc784"
+}

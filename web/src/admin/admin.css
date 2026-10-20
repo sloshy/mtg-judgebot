@@ -10,6 +10,68 @@
   font-weight: 700;
 }
 
+/* A feedback item's state: open stands out, closed ones recede. */
+.tag-status {
+  padding: 1px 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.tag-status-open {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* The rater's reason, as their message. */
+.admin-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-reason p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.admin-reason h4 {
+  margin: 8px 0 0;
+  font-size: 0.8125rem;
+}
+
+.admin-rating-reason {
+  margin-left: 8px;
+}
+
+.admin-list li > .admin-rating-text {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.admin-close textarea {
+  min-height: 5rem;
+  padding: 8px 12px;
+  border: 1px solid var(--field-line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 400;
+  resize: vertical;
+}
+
+.admin-close textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* A call line is a link to its page, not a fold. */
 a.admin-row {
   display: block;
@@ -73,6 +135,7 @@ a.admin-row {
 .admin-actions {
   grid-column: 1 / -1;
   display: flex;
+  align-items: center;
   gap: 8px;
   margin: 0;
 }
@@ -250,6 +313,25 @@ a.admin-row {
 }
 
 @media (max-width: 600px) {
+  /* Four tabs and the theme switch: the tabs narrow, and past that they
+     scroll in their own strip rather than widen the page. */
+  .admin .topbar-end {
+    flex: 1;
+    justify-content: flex-end;
+  }
+
+  .admin .tabs {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .admin .tabs a {
+    flex: none;
+    padding: 0 9px;
+    font-size: 0.875rem;
+  }
+
   .admin-row .row-line {
     grid-template-columns: 32px minmax(0, 1fr);
     grid-template-areas:

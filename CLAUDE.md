@@ -68,7 +68,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D37),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D38),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -169,7 +169,8 @@ Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`
 byte-for-byte by `tests/fixtures/discord/commands.json`, and `Command::parse` the typed
 invocation; no poise, whose dispatch needs a live gateway connection; replies go
 through `discord::reply::Reply`, initial response then follow-ups, over REST). `/forget`
-deletes the caller's ratings and removes their id and username from their calls and
+deletes the caller's ratings with their reasons and feedback-queue items (`feedback` in
+`Forgotten`) and removes their id and username from their calls and
 `failed_calls` rows (a private call's text too) through `CallStore::forget_user`
 (`Forgotten`).
 
@@ -204,6 +205,16 @@ deletes the caller's ratings and removes their id and username from their calls 
 - `/card` and `/rule` are model-free lookups, rendered by pure `render::card` / `rules`.
 - An *Incorrect* rating's ephemeral reply names the operator and, when the source offer
   is a GitHub repository, links its `wrong_answer.yml` issue form (`render::report_url`).
+- **Ratings with reasons** (D38): a rating click reads `CallStore::earlier_rating` within
+  `EARLIER_WAIT` (2 s, no defer), then `judge_core::feedback::next_step`: the same Correct
+  is already recorded; another earlier rating gets Replace/Keep (`rate-replace:` /
+  `rate-keep:`); Correct is recorded; Partial/Incorrect open the form
+  (`discord::feedback`). Over HTTP the form is one modal written as JSON (Label + string
+  select + text inputs), its values read from the raw body (`feedback::submitted`),
+  because serenity 0.12.5 parses a Label as an empty action row and the gateway gives
+  no raw payload. Over the gateway a `rate-cat:` menu comes first, then a rows modal,
+  the category in `ids::FormId`. Every initial response goes through `respond`,
+  `respond_modal` or `respond_raw` (`ack.sent()`).
 - **Interactions over HTTP** (`DISCORD_INTERACTIONS=http`, `discord::Delivery`, D30):
   no gateway, no lease. `serve` reads the application (`GET /applications/@me`,
   retried) for its id and `verify_key`, registers, starts `symbols::watch` and opens
@@ -431,7 +442,7 @@ cargo run -r -p judgebot -- ingest retire               # retire/restore calls b
                                                         # (and their context cards' Oracle text) still hold
 cargo run -r -p judgebot -- ingest prune                # delete calls older than JUDGE_CALL_RETENTION_DAYS
                                                         # (with their ratings; judge_runs stay, unlinked)
-cargo run -r -p judgebot -- ingest refresh              # cards + rules latest + lists + prune + retire + embed + emoji; every
+cargo run -r -p judgebot -- ingest refresh              # cards + rules latest + lists + prune + sweep + retire + embed + emoji; every
                                                         # step runs even if one fails, exit≠0 if any did;
                                                         # recorded in refresh_runs
 scripts/refresh-data.sh              # a refresh now (or an operator's own cron with JUDGE_REFRESH_HOURS=0):
@@ -670,7 +681,10 @@ Key cross-file facts that aren't obvious from any one file:
 - **Ratings shape retrieval, nothing else.** The `calls_rated` view is a Bayesian mean
   (prior 2.0, weight 3) with a judge-role override (`effective_score`). Prior calls below
   1.5 with ≥5 votes are excluded, as are retired calls. Prior calls are always rendered
-  *after* CR material as examples.
+  *after* CR material as examples. `calls_rated` counts Discord ratings only
+  (`rater_kind`). A rating's reason (`judge_core::Rating`, `feedback_queue`) reaches the
+  operator's queue (`judge_bot::feedback`, ops `queue_*`, `/admin/api/queue*`), never
+  retrieval.
 - **A call is retired when its citations stop holding, not when the CR changes.**
   - `retire_unsupported` (`db/retire.rs`) is run by `ingest retire` and inside every
     refresh (both through `ingest::retire`, under the refresh lease). It re-runs `citation_supported` over every stored call against
@@ -775,7 +789,8 @@ Key cross-file facts that aren't obvious from any one file:
   `PICK_QUESTION_LIMIT`/`RETRY_QUESTION_LIMIT` are the minimum over all catalogs. The
   agent tools stay English (`ops::AGENT_LOCALE`) until the CLIs are translated.
 - **Discord layer:** interaction logic is kept pure and unit-tested (`render.rs`,
-  `ids.rs` typed button custom-ids, `pick.rs` a pick prompt's age, digest and audience,
+  `ids.rs` typed button custom-ids, `feedback.rs` the rating form's JSON and its submitted
+  values, `pick.rs` a pick prompt's age, digest and audience,
   `question.rs` span pinning, where `find_span` + `pin_at` equal `pin_card`). Replies
   open with a non-pinging `<@user> asked:` header. Rule citations link
   to the Yawgatog CR mirror (anchor = `R` + id with dots stripped). Rulings and Oracle
@@ -877,6 +892,9 @@ Key cross-file facts that aren't obvious from any one file:
   load; D34): the refresh's `prune` step (`ingest::prune`) and `judgebot ingest prune`
   delete older calls with their ratings. `judge_runs` stay (`call_id` SET NULL), and
   the retirement pass treats a cited prior call that no longer exists as supported.
+- `FEEDBACK_IP_DAYS` (default 90, `1..=3650`, validated at `Config` load; D38): web
+  ratings' ip/user_agent are cleared past it on every rating write (`PgCallStore`) and
+  by the refresh's `sweep` step.
 
 For the HTTP API it also holds:
 

@@ -338,8 +338,10 @@ async fn init_data(
     if let Some(e) = failed {
         return Err(e);
     }
-    // A first load has nothing old to prune; the next refresh applies the retention.
+    // A first load has nothing old to prune or sweep; the next refresh
+    // applies the retention and the address window.
     reports.push(Step::Prune.skipped(Skip::NotInInit));
+    reports.push(Step::Sweep.skipped(Skip::NotInInit));
     // Nothing to retire in a fresh database; a re-run over a used one does
     // what a refresh would after loading the same data.
     let t = steps.next(lease, "retire").await?;
@@ -436,7 +438,8 @@ fn has_discord_token() -> bool {
 /// ([`lists::refresh`]; they resolve against the cards, and nothing later
 /// reads them), then the calls past `JUDGE_CALL_RETENTION_DAYS` deleted
 /// ([`prune`], skipped when every call is kept), so the retirement pass does
-/// not check them, then the retirement pass over the calls that cite the
+/// not check them, then the web raters' addresses past `FEEDBACK_IP_DAYS`
+/// cleared ([`crate::feedback::sweep`]), then the retirement pass over the calls that cite the
 /// cards and rules, then `embed` so a new CR's rows are embedded in the same run,
 /// then the emoji. A failed
 /// step is logged and the rest still run; the report names every failure
@@ -633,6 +636,7 @@ async fn refresh_step(
             Ok(prune::Retention::Days(days)) => Outcome::of(prune::run(lease, days).await),
             Err(e) => Outcome::of(Err(e)),
         }),
+        Step::Sweep => StepReport::Sweep(Outcome::of(sweep(lease).await)),
         Step::Retire => StepReport::Retire(Outcome::of(retire(lease).await)),
         Step::Embed => StepReport::Embed(match configured_embedder(meter) {
             Ok(Some(embedder)) => match over_ceiling(lease, trigger).await {
@@ -658,6 +662,28 @@ async fn refresh_step(
             }
         }),
     }
+}
+
+/// Clear the web raters' addresses older than this process's
+/// `FEEDBACK_IP_DAYS` (the call store does it on every rating too, so this
+/// step is what clears them on an instance nobody rates on).
+///
+/// # Errors
+/// The database.
+pub async fn sweep(lease: &mut RefreshLease) -> Result<crate::feedback::Swept> {
+    let days = crate::feedback::IpDays::from_env();
+    let ratings = crate::feedback::sweep(lease.pool(), days)
+        .await
+        .context("clearing web raters' addresses")?;
+    tracing::info!(
+        days = days.get(),
+        ratings,
+        "web raters' addresses past the window cleared"
+    );
+    Ok(crate::feedback::Swept {
+        days: days.get(),
+        ratings,
+    })
 }
 
 /// The spend guard on an unattended run: a [`Trigger::Schedule`] run with
@@ -700,6 +726,7 @@ mod tests {
             Step::Rules.skipped(Skip::NoEmbedder),
             Step::Lists.skipped(Skip::NoEmbedder),
             Step::Prune.skipped(Skip::NotInInit),
+            Step::Sweep.skipped(Skip::NotInInit),
             Step::Retire.skipped(Skip::NoEmbedder),
             Step::Embed.skipped(Skip::NoEmbedder),
             Step::Emoji.skipped(Skip::NoDiscordToken),

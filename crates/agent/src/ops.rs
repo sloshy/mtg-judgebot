@@ -12,17 +12,20 @@ use judge_bot::{
     db::stats::{FailedRow, Usage},
     discord::{catalog, question::pin_card, render},
     feed::{Asked, Cursor, Search},
+    feedback::{QueueDetail, QueueFilter, QueueItem, QueuePage},
     session::{
         AgentThread, Begun, Extracted, Prompt, SessionError, SessionId, Stage, SynthesisPrompt,
     },
 };
 use judge_core::{
-    About, Ambiguous, CallId, Card, CardId, CardNote, CardRef, Citation, Confidence, Context,
-    Extraction, GlossaryEntry, JudgeError, Origin, Question, Rejection, Resolution, RuleChunk,
-    RuleId, Ruling, Source, Unvalidated, Validated, Verdict, Visibility,
+    About, Ambiguous, CallId, Card, CardId, CardNote, CardRef, Citation, Close, Closing,
+    Confidence, Context, Extraction, FeedbackCategory, FixedBy, GlossaryEntry, JudgeError, Origin,
+    Question, QueueNote, QueueStatus, RaterKind, Rejection, Resolution, RuleChunk, RuleId, Ruling,
+    Source, Unvalidated, Validated, Verdict, Visibility,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{ACQUIRE_WAIT, Toolbox};
 
@@ -421,6 +424,61 @@ pub struct CallReply {
     /// The call with its runs, charges and raters; `None` when there is no
     /// call with that id (never stored, or deleted by the retention).
     pub call: Option<CallDetail>,
+}
+
+/// Which feedback items `queue_list` lists. Every field narrows.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct QueueInput {
+    /// The `next` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Only items in this state (`open`, `resolved`, `dismissed`).
+    #[serde(default)]
+    pub status: Option<QueueStatus>,
+    /// Only items whose reason has this category.
+    #[serde(default)]
+    pub category: Option<FeedbackCategory>,
+    /// Only items on calls asked through this interface.
+    #[serde(default)]
+    pub interface: Option<Asked>,
+    /// Only items from this kind of rater (`discord`, `web`).
+    #[serde(default)]
+    pub rater: Option<RaterKind>,
+}
+
+/// A feedback item by id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ItemInput {
+    /// The item's id, as `queue_list` gives it.
+    pub item: Uuid,
+}
+
+/// How to close a feedback item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CloseInput {
+    /// The item's id.
+    pub item: Uuid,
+    /// What was found and done (required, at most 2000 characters).
+    pub note: String,
+    /// What fixed it: a commit, a `data/notes.yaml` entry, an alias (at
+    /// most 200 characters).
+    #[serde(default)]
+    pub fixed_by: Option<String>,
+}
+
+/// Reply of `queue_show`.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct ItemReply {
+    /// The item with its call's full material; `None` for an id with no
+    /// item (never one, or gone with its rating or call).
+    pub item: Option<QueueDetail>,
+}
+
+/// Reply of `queue_resolve` and `queue_dismiss`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ClosedReply {
+    /// The item as it now stands; `None` for an id with no item.
+    pub item: Option<QueueItem>,
 }
 
 /// A glossary term.
@@ -833,6 +891,73 @@ impl Toolbox {
         })
     }
 
+    /// A page of the feedback queue: every rating given a reason, newest
+    /// first, with the reason and enough of the call to recognise it. An
+    /// admin operation.
+    ///
+    /// # Errors
+    /// A cursor that does not read, or the store.
+    pub async fn queue_list(
+        &self,
+        _admin: &Admin,
+        input: QueueInput,
+    ) -> Result<QueuePage, OpError> {
+        let db = self.db.check().await?;
+        let (filter, after) = queue_filter(&input)?;
+        Ok(db.library().queue(filter, after).await?)
+    }
+
+    /// One feedback item with everything stored about its call: question,
+    /// answer, citations, cards, models, retired state, every rating. An
+    /// admin operation.
+    ///
+    /// # Errors
+    /// The store.
+    pub async fn queue_show(&self, _admin: &Admin, input: ItemInput) -> Result<ItemReply, OpError> {
+        let db = self.db.check().await?;
+        Ok(ItemReply {
+            item: db.library().queue_item(input.item).await?,
+        })
+    }
+
+    /// Resolve a feedback item: fixed, with a note and what fixed it. An
+    /// admin operation.
+    ///
+    /// # Errors
+    /// A blank or over-long note or "fixed by", or the store.
+    pub async fn queue_resolve(
+        &self,
+        _admin: &Admin,
+        input: CloseInput,
+    ) -> Result<ClosedReply, OpError> {
+        self.close_item(Closing::Resolved, input).await
+    }
+
+    /// Dismiss a feedback item: nothing to fix, with a note. An admin
+    /// operation.
+    ///
+    /// # Errors
+    /// A blank or over-long note or "fixed by", or the store.
+    pub async fn queue_dismiss(
+        &self,
+        _admin: &Admin,
+        input: CloseInput,
+    ) -> Result<ClosedReply, OpError> {
+        self.close_item(Closing::Dismissed, input).await
+    }
+
+    async fn close_item(
+        &self,
+        closing: Closing,
+        input: CloseInput,
+    ) -> Result<ClosedReply, OpError> {
+        let close = close_input(closing, &input)?;
+        let db = self.db.check().await?;
+        Ok(ClosedReply {
+            item: db.library().close_item(input.item, &close).await?,
+        })
+    }
+
     /// Glossary lookup.
     ///
     /// # Errors
@@ -918,6 +1043,55 @@ pub fn calls_filter(input: &CallsInput) -> Result<(CallFilter, Option<Cursor>), 
         },
         after,
     ))
+}
+
+/// The queue filter and cursor `input` names.
+///
+/// # Errors
+/// A cursor `queue_list` did not write.
+pub fn queue_filter(input: &QueueInput) -> Result<(QueueFilter, Option<Cursor>), OpError> {
+    let after = input
+        .cursor
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(|c| {
+            c.parse::<Cursor>()
+                .map_err(|()| anyhow::anyhow!("cursor must be the `next` of an earlier page"))
+        })
+        .transpose()?;
+    Ok((
+        QueueFilter {
+            status: input.status,
+            category: input.category,
+            asked: input.interface,
+            rater: input.rater,
+        },
+        after,
+    ))
+}
+
+/// The closing `input` asks for, its note and "fixed by" checked.
+///
+/// # Errors
+/// A blank or over-long note, or an over-long "fixed by".
+pub fn close_input(closing: Closing, input: &CloseInput) -> Result<Close, OpError> {
+    let note = QueueNote::try_new(input.note.clone()).map_err(|_| {
+        anyhow::anyhow!(
+            "note must be 1 to {} characters of text, without control characters",
+            judge_core::feedback::QUEUE_NOTE_MAX_CHARS
+        )
+    })?;
+    let fixed_by = input
+        .fixed_by
+        .as_deref()
+        .map_or(Ok(None), FixedBy::optional)
+        .map_err(|e| anyhow::anyhow!("fixed_by must be {e}"))?;
+    Ok(Close {
+        closing,
+        note,
+        fixed_by,
+    })
 }
 
 fn check_question(q: &str) -> Result<(), OpError> {
@@ -1202,6 +1376,47 @@ mod tests {
         ] {
             assert!(calls_filter(&bad).is_err(), "{bad:?}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn closing_an_item_takes_a_bounded_note() -> Result<(), OpError> {
+        let input = |note: &str, fixed_by: Option<&str>| CloseInput {
+            item: Uuid::nil(),
+            note: note.to_owned(),
+            fixed_by: fixed_by.map(str::to_owned),
+        };
+        let close = close_input(Closing::Resolved, &input(" added a note ", Some("  ")))?;
+        assert_eq!(AsRef::<str>::as_ref(&close.note), "added a note");
+        assert_eq!(close.fixed_by, None, "a blank fix is none");
+        for bad in [
+            input("   ", None),
+            input(
+                &"n".repeat(judge_core::feedback::QUEUE_NOTE_MAX_CHARS + 1),
+                None,
+            ),
+            input(
+                "ok",
+                Some(&"f".repeat(judge_core::feedback::FIXED_BY_MAX_CHARS + 1)),
+            ),
+            input("a\u{0}b", None),
+            input("ok", Some("a\u{0}b")),
+        ] {
+            assert!(close_input(Closing::Dismissed, &bad).is_err(), "{bad:?}");
+        }
+        let (filter, after) = queue_filter(&QueueInput {
+            cursor: Some(" ".into()),
+            status: Some(QueueStatus::Open),
+            ..QueueInput::default()
+        })?;
+        assert_eq!((filter.status, after), (Some(QueueStatus::Open), None));
+        assert!(
+            queue_filter(&QueueInput {
+                cursor: Some("nope".into()),
+                ..QueueInput::default()
+            })
+            .is_err()
+        );
         Ok(())
     }
 

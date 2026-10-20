@@ -159,15 +159,20 @@ migrates.
 
 ## Admin API
 
-The operator's reads are served by the `--admin` listener only (`ADMIN_ADDR`, loopback),
-never on this one, which answers `/admin` paths `404`. Every route takes
-`Authorization: Bearer <ADMIN_TOKEN>` and answers `401` without it; replies carry
-`Cache-Control: no-store`, and an error is the same `{"kind": "error", "message"}`.
+The operator's reads, and the feedback queue's one write, are served by the `--admin`
+listener only (`ADMIN_ADDR`, loopback), never on this one, which answers `/admin` paths
+`404`. Every route takes `Authorization: Bearer <ADMIN_TOKEN>` and answers `401` without
+it; replies carry `Cache-Control: no-store`, and an error is the same
+`{"kind": "error", "message"}`.
 
 | Route | Returns |
 | --- | --- |
 | `GET /admin/api/calls?cursor&interface&asker&model&private&q` | `{calls, next, models}`: every stored call, private ones included, newest first, 50 a page. `asker` is a Discord username or user id, `private` is `true` or `false`, `models` lists every chat model a run has billed. |
-| `GET /admin/api/calls/{id}` | One call whole, its citations labelled as an answer's are, with `ratings` (rater, score, judge) and `runs` (outcome, retry, tool round, `charges`). `404` for an id with no call. |
+| `GET /admin/api/calls/{id}` | One call whole, its citations labelled as an answer's are, with `ratings` (rater, kind, score, judge, and a fault's `category`, `wrong`, `right`) and `runs` (outcome, retry, tool round, `charges`). `404` for an id with no call. |
+| `GET /admin/api/queue?cursor&status&category&interface&rater` | `{items, next}`: the feedback queue, every rating given a reason, newest first (by when each was opened or reopened), 50 a page. `status` is `open`, `resolved` or `dismissed`; `category` a feedback category id; `rater` `discord` or `web`. |
+| `GET /admin/api/queue/{id}` | `{item, call}`: one item and its call whole, as above. `404` for an id with no item. |
+| `POST /admin/api/queue/{id}/resolve` | Body `{"note": "…", "fixed_by": "…"}` (`note` 1 to 2000 characters, `fixed_by` optional, up to 200): the item closed as fixed, as it now stands. `400` for a bad body, `404` for no item. |
+| `POST /admin/api/queue/{id}/dismiss` | The same body: the item closed with nothing to fix. |
 | `GET /admin/api/failures?limit` | `{failures}`: the newest failed calls (default 50, at most 100). |
 | `GET /admin/api/usage?days` | The usage report `judge-cli stats` prints, over the last `days` (default 30). |
 

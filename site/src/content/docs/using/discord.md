@@ -84,16 +84,36 @@ Both post in the channel. Add `private: True` to see the result alone.
 
 ## Rating buttons
 
-Every answer has three buttons: **Incorrect**, **Partially correct**, **Correct**. Rating
-again replaces your earlier rating. A rating changes one thing: which past answers are
-shown to the model as *examples* when a similar question comes in. Scores are smoothed (a
-Bayesian mean with a prior of "partially correct" and a weight of three votes), so one
-early vote cannot swing an answer's standing. Answers rated below 1.5 with at least five
-votes are excluded.
+Every answer has three buttons: **Incorrect**, **Partially correct**, **Correct**. A
+rating's score changes one thing: which past answers are shown to the model as
+*examples* when a similar question comes in. Scores are smoothed (a Bayesian mean with a
+prior of "partially correct" and a weight of three votes), so one early vote cannot
+swing an answer's standing. Answers rated below 1.5 with at least five votes are
+excluded.
 
-After an **Incorrect** rating, the confirmation (which only you see) names the operator
-to tell about a wrong ruling. When the instance's source is on GitHub, it also links that
-repository's *Wrong or unhelpful ruling* issue form.
+- **Correct** is recorded at once.
+- **Partially correct** and **Incorrect** open a short form, which only you see:
+  - *What kind of problem?* (required): wrong conclusion, missed part of the question, a
+    citation doesn't support it, wrong card, misread the question, shouldn't have
+    refused, outdated, or other.
+  - *What's wrong* and *The right answer* (both optional, up to 1000 characters each).
+
+  Submitting it records the rating with its reason. Closing the form records nothing.
+  On a bot whose interactions arrive over the gateway (the default), the kind of
+  problem is a menu in a private message first, and choosing it opens the form for the
+  two texts.
+- The reason goes to the operator's feedback queue, beside the question, the answer,
+  its citations and cards, so they can fix what went wrong (a card note, a nickname, a
+  prompt). The model never reads it.
+- Rating an answer you already rated asks first: "You already rated this answer
+  **Partially correct** (Wrong card). Replace it with **Incorrect**?" **Replace** goes on
+  to the new rating's form, or records Correct; **Keep** changes nothing and says what is
+  on record. Pressing
+  **Correct** again on an answer you rated Correct says it is already recorded.
+
+After an **Incorrect** rating, the confirmation names the operator, who reads every
+reason given. When the instance's source is on GitHub, it also links that repository's
+*Wrong or unhelpful ruling* issue form, for a wrong answer the project should hear about.
 
 Members holding the server's judge role (`JUDGE_ROLE`, default `Judge`) rate with an
 override. The most recent judge rating replaces the crowd's score for that answer. The

@@ -158,6 +158,41 @@ impl PgLibrary {
         crate::admin::calls(&self.pool, filter, after).await
     }
 
+    /// A page of the feedback queue ([`crate::feedback::list`]).
+    ///
+    /// # Errors
+    /// `Upstream` from sqlx.
+    pub async fn queue(
+        &self,
+        filter: crate::feedback::QueueFilter,
+        after: Option<crate::feedback::Cursor>,
+    ) -> Result<crate::feedback::QueuePage, JudgeError> {
+        crate::feedback::list(&self.pool, filter, after).await
+    }
+
+    /// One feedback item with its call ([`crate::feedback::show`]).
+    ///
+    /// # Errors
+    /// `Upstream` from sqlx.
+    pub async fn queue_item(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<Option<crate::feedback::QueueDetail>, JudgeError> {
+        Ok(crate::feedback::show(&self.pool, id).await?.map(|(d, _)| d))
+    }
+
+    /// Resolve or dismiss a feedback item ([`crate::feedback::close`]).
+    ///
+    /// # Errors
+    /// `Upstream` from sqlx.
+    pub async fn close_item(
+        &self,
+        id: uuid::Uuid,
+        close: &judge_core::Close,
+    ) -> Result<Option<crate::feedback::QueueItem>, JudgeError> {
+        crate::feedback::close(&self.pool, id, close).await
+    }
+
     /// Everything stored about one call ([`crate::admin::call`]).
     ///
     /// # Errors

@@ -263,20 +263,27 @@ why the weekly backup exists (D26).
 
 *Decided 2026-08-29.*
 
-Ratings shape retrieval and nothing else. Answers can be rated 1–3 on Discord. A rating
-changes one thing: which prior calls are shown to the model as *examples* for a similar
-question.
+*Revised 2026-10-20:* a rating that finds fault now carries a reason for the operator
+(D38). The reason never reaches retrieval, and neither does a web rating.
+
+Ratings shape retrieval and nothing else. Answers can be rated 1–3 on Discord. A rating's
+score changes one thing: which prior calls are shown to the model as *examples* for a
+similar question.
 
 - Scores are a Bayesian mean (prior 2.0, weight 3), so one early vote cannot swing a
   call's standing.
 - Calls below 1.5 with at least five votes are excluded.
 - A member holding the operator's judge role overrides the crowd (`effective_score`).
+- Only Discord ratings count. `calls_rated` reads `rater_kind = 'discord'`, so a rating
+  with no identity behind it (a web browser session's, D38) never moves a call's
+  standing: it is noise.
+- A rating's reason (a category, what is wrong, the right answer) goes to the operator's
+  feedback queue and nowhere else. The model never reads a rater's words.
 
 Prior calls are always rendered *after* the CR material and labelled as precedent, never
-authority. The CR outranks anything the community has said. The anonymous web app never
-rates, because a rating with no identity behind it is noise. A Discord call records who
-asked (D31). `/forget` deletes a user's ratings and removes them from their calls and
-failed calls.
+authority. The CR outranks anything the community has said. A Discord call records who
+asked (D31). `/forget` deletes a user's ratings with their reasons and feedback-queue
+items, and removes them from their calls and failed calls.
 
 ## D11. Call retirement
 
@@ -1494,3 +1501,67 @@ their own; an agent uses the same operations through MCP or the CLI.
   connector).
 - **Opt-in.** The compose service's default roles stay `--discord --api --web --jobs`:
   `--admin` needs a token nobody has set yet.
+
+## D38. Ratings with reasons
+
+*Decided 2026-10-20.*
+
+A rating and a piece of feedback are one thing (#27). *Correct* is recorded at once.
+*Partially correct* and *Incorrect* are recorded with a reason: a category, and optionally
+what is wrong and the right answer. The reason goes to a work queue the operator clears
+from the admin surfaces (D37), beside the call's question, answer, citations and cards.
+It never reaches the model (D10).
+
+- **A rating is a sum, not a score with optional fields.** `judge_core::Rating` is
+  `Correct | Partial(Reason) | Incorrect(Reason)`, so a Correct with a reason cannot be
+  built. `Reason` holds a `FeedbackCategory` (an exhaustive enum of eight) and two
+  optional `FeedbackText`s (trimmed, 1 to 1000 characters; blank is none). The table's
+  checks say the same: a reason only on a score below 3, texts only with a category.
+  A rating from before reasons has a fault and no category, and opens no item.
+- **The queue is its own table, keyed on the rating.** `feedback_queue` holds the
+  operator's state (status `open | resolved | dismissed`, note, "fixed by", when it
+  closed), with a foreign key to the rating that cascades. A replaced reason reopens the
+  item, keeping the operator's note. Re-rating as Correct drops an item nobody wrote on
+  and keeps one with a note or a "fixed by". Rejected: the state as columns on
+  `ratings`, where the rater's next upsert would overwrite the operator's note.
+- **A rating is replaced only after asking.** A click reads the rater's earlier rating
+  first (`CallStore::earlier_rating`, one indexed read, bounded at 1.5 s from the interaction's arrival) and
+  `judge_core::feedback::next_step` decides: the same Correct again is "already
+  recorded"; any other earlier rating gets a private Replace / Keep prompt; otherwise
+  Correct is recorded and a fault asks for its reason. **Keep** reads the rating back
+  and says what is on record, since a prompt stays clickable after its Replace went on
+  to a form. The write is still an upsert, so two racing clicks end with the last.
+- **The form is the click's initial response.** Discord opens a modal only as the first
+  answer to an interaction, so a fault's click is not deferred: the earlier-rating read
+  happens inside Discord's 3 s. Submitting the form defers, looks the judge role up and
+  stores the rating.
+- **One form over HTTP, a category menu first over the gateway.** Discord takes a menu
+  in a modal only inside a Label component (type 18). serenity 0.12.5 can build neither
+  and reads a submitted Label as an empty action row, dropping the values inside; over
+  the gateway serenity parses the event before the bot sees it, and offers no raw
+  payload. So with `DISCORD_INTERACTIONS=http` the modal (written as JSON,
+  `discord::feedback::modal`) holds the category menu and both texts, and the endpoint
+  reads the values from the request body. Over the gateway the click shows a private
+  category menu, whose choice opens a modal holding the two texts in action rows, the
+  category carried in its id. Rejected: vendoring a patched serenity, a fork to carry
+  for one struct; the menu-first flow everywhere, which costs the HTTP deployment a
+  step.
+- **Stateless steps.** Every id carries the call and the score (`rate-replace:`,
+  `rate-keep:`, `rate-cat:`, and the form's `rate-form:<call>:<1|2>[:<category>]`), so
+  any process answers any step after any restart. An old `rate:<call>:<n>` button gets
+  the new flow. Maintenance answers every step with the maintenance reply (D32).
+- **Two kinds of rater.** `ratings.rater_kind` is `discord` (the user id) or `web` (the
+  browser session: `user_id` is `web:<session uuid>`, so the primary key is unchanged).
+  `judge_core::Rater` keeps a web rater's name, address and user agent off a Discord
+  rating by type, and the table by check. The web app's buttons and form are the next
+  step of #27; the storage is ready for them.
+- **Addresses expire.** A web rating keeps its address and user agent for
+  `FEEDBACK_IP_DAYS` (default 90, 1 to 3650; there is no "keep forever"), for dealing
+  with abuse. Every rating written clears older ones, and so does the refresh's `sweep`
+  step, so an instance nobody rates on still clears them. The rating and its reason
+  stay.
+- **Worked from the admin surfaces.** `queue_list`, `queue_show`, `queue_resolve` and
+  `queue_dismiss` are operations in `judge_agent::ops` behind the `Admin` capability
+  (`judge-cli queue …`, stdio `judge-mcp`, `/mcp` with `MCP_ADMIN_TOKEN`), and the admin
+  listener serves them as `/admin/api/queue*` and the Feedback page. Closing is the one
+  write there: a POST behind the same bearer, which a browser never sends on its own.
