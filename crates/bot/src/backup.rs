@@ -181,7 +181,7 @@ impl Backup {
             }
         };
         let attempt = self.take().await;
-        self.tell(schedule::manual_alert(&attempt, before, now))
+        self.tell(schedule::manual_alert(self.locale(), &attempt, before, now))
             .await;
         attempt
     }
@@ -327,6 +327,14 @@ impl Backup {
         }
     }
 
+    /// The language of the webhook's alerts (`JUDGE_LOCALE`).
+    fn locale(&self) -> judge_core::Locale {
+        self.settings.alert.as_ref().map_or_else(
+            judge_core::Locale::default,
+            crate::alert::AlertWebhook::locale,
+        )
+    }
+
     /// Post `text` to the webhook, if there is one and something to say.
     async fn tell(&self, text: Option<String>) {
         if let (Some(hook), Some(text)) = (&self.settings.alert, text) {
@@ -388,7 +396,7 @@ pub async fn serve(backup: Backup) -> std::convert::Infallible {
             });
             match checked {
                 Checked::NotDue { in_secs, newest } => {
-                    let (next, note) = streak.listed();
+                    let (next, note) = streak.listed(backup.locale());
                     streak = next;
                     backup.tell(note).await;
                     let newest = newest.map_or_else(|| "none".to_owned(), |n| n.to_string());
@@ -400,7 +408,8 @@ pub async fn serve(backup: Backup) -> std::convert::Infallible {
                     }
                 }
                 Checked::Attempted { attempt, before } => {
-                    let (next, told) = streak.attempted(&attempt, before, Stamp::now().unix());
+                    let (next, told) =
+                        streak.attempted(backup.locale(), &attempt, before, Stamp::now().unix());
                     streak = next;
                     backup.tell(told).await;
                     if attempt.ok() {

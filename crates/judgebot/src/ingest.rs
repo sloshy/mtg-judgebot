@@ -134,10 +134,9 @@ impl Yaml {
 /// The `rules` argument that means "whatever Wizards currently publishes".
 const LATEST: &str = "latest";
 
-/// The usage `judgebot ingest --help` prints.
-pub const USAGE: &str = "usage: judgebot ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | prune | migrate | refresh | upgrade>\n\
-init: the whole first load (migrate, cards, rules latest, aliases, notes, embed, emoji); safe to run again.\n\
-aliases, notes: with no file, the lists this binary was built with (data/*.yaml), which refresh then keeps current; a file is yours, and refresh leaves it alone.";
+/// The usage an error quotes: English, as every error is (`--help` prints
+/// the catalog's, in the reader's language).
+pub const USAGE: &str = crate::catalog::EN.ingest_usage;
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
     let leased = |l| Ok(Command::Leased(l));

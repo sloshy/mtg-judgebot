@@ -30,7 +30,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   per streak), recovers or hits its embed ceiling, when a script fails
   (`scripts/alert.sh`), and when the Discord role finds `DISCORD_INTERACTIONS` and the
   application's Interactions Endpoint URL disagree, or refuses a signed interaction for
-  its timestamp (once per streak; a wrong host clock refuses them all). `judge-cli stats` reads the ledger and the period and cap the processes record in `budget_setting`. The cap *reserves*
+  its timestamp (once per streak; a wrong host clock refuses them all). Alerts are written
+  in `JUDGE_LOCALE` (`judge_bot::alert::catalog`). `judge-cli stats` reads the ledger and the period and cap the processes record in `budget_setting`. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop
   against wiremock, not the live API. A full 22-question gold run costs ~$1.70.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
@@ -107,8 +108,9 @@ menu button.
 
 `components.Footer` is overridden by `site/src/components/Footer.astro`: Starlight's own
 footer, then the Fan Content Policy statement and the data sources (Wizards, Scryfall,
-Yawgatog). Starlight renders the footer on splash pages too, so it is on every page. The
-web app's footer (`web/src/App.tsx`) carries the same text; change them together.
+Yawgatog). Starlight renders the footer on splash pages too, so it is on every page. Its
+text lives in `site/src/i18n.ts`. The web app's footer (`web/src/App.tsx`, text in
+`web/src/messages.ts`) carries the same text; change them together.
 
 **The icon** is 32x32 pixel art and must stay pixelated, so it is a PNG, never an SVG or a
 smoothed resize. `assets/icon.png` is the 512px original (the README, a Discord app's
@@ -134,7 +136,9 @@ lychee over the built site's internal links. A `lint` job runs `cargo deny check
 `judge.example.toml`'s hand-aligned comments), `typos` (`_typos.toml`), shellcheck,
 actionlint, hadolint (`.hadolint.yaml`), `check_icons` (the icon's copies are
 byte-identical and the right size) and `check_pg_major` (the `Dockerfile`'s `PG_MAJOR`
-equals the compose `db` image's major, so the backup's `pg_dump` can dump it) and
+equals the compose `db` image's major, so the backup's `pg_dump` can dump it),
+`check_stub_locale` (the dev-only `stub-locale` feature is enabled nowhere but
+`[dev-dependencies]`) and
 `scripts/release-version.sh` (web/ and site/'s `package.json` versions equal the crates'
 one `[workspace.package]` version; `publish-image.yml` runs it with the release tag,
 which must match, and its `## [X.Y.Z]` changelog heading). Every tool's config records why each
@@ -566,7 +570,9 @@ and `bot` ← the other bins):
     above its line, which becomes its help.
   - A new `ConfigError` variant needs a `location()` arm. The match is exhaustive.
   - The page (`crates/configure/ui/`) is plain JS under a strict CSP, built with no
-    `innerHTML`, linted by web's Biome in `check.sh web`.
+    `innerHTML`, linted by web's Biome in `check.sh web`. `app.js` is an ES module and
+    its text is in `ui/messages.js` (one object per locale, held to English's keys by a
+    Rust test); server text is `judge_configure::catalog`.
 
 `judge_bot::build_deps(pool, Models, embedder)` is the composition root shared by the bot,
 eval, the HTTP API and the agent's `judge` tool. `Models::{single, pair, priced}` take the
@@ -808,14 +814,21 @@ Key cross-file facts that aren't obvious from any one file:
   adding capability. `rescore` re-scores old runs after gold edits. Rule ids written
   unquoted in YAML are rejected, because floats drop trailing zeros.
 - **Text is in typed catalogs** (D35): a struct with a field per message, one value
-  per `judge_core::Locale` (only `En`): `judge_core::locale` (core), `discord::catalog`,
-  `judge_api::catalog`, `web/src/messages.ts` (`satisfies Messages`). No user-facing
+  per `judge_core::Locale` (only `En` ships), picked through `Catalogs::new(en, stub)`
+  so a new variant breaks every surface: `judge_core::locale` (core),
+  `discord::catalog`, `judge_api::catalog`, `judge_bot::alert::catalog`,
+  `judge_agent::catalog`, judgebot's `catalog.rs`, `judge_configure::catalog`;
+  `web/src/messages.ts` and `web/src/admin/messages.ts` (`satisfies Messages`),
+  `site/src/i18n.ts`. The dev-only `stub-locale` feature adds `Locale::Stub` (`qps`,
+  every message `⟦name values⟧`) so tests render every message in a second locale;
+  `check_stub_locale` keeps it out of shipped builds. Command lines read the terminal
+  locale (LC_ALL → LC_MESSAGES → LANG), then `JUDGE_LOCALE`. No user-facing
   string inline elsewhere; logs stay English. `Locale` is negotiated per request
   (Discord user → `JUDGE_LOCALE`; web body `locale` → `Accept-Language` →
   `JUDGE_LOCALE`). `ids::Pick`/`Retry` end in `:<locale>` for any locale but `en` (absent = `en`, the
   shape older builds read), and
   `PICK_QUESTION_LIMIT`/`RETRY_QUESTION_LIMIT` are the minimum over all catalogs. The
-  agent tools stay English (`ops::AGENT_LOCALE`) until the CLIs are translated.
+  agent tools stay English (`ops::AGENT_LOCALE`): models read them.
 - **Discord layer:** interaction logic is kept pure and unit-tested (`render.rs`,
   `ids.rs` typed button custom-ids, `feedback.rs` the rating form's JSON and its submitted
   values, `pick.rs` a pick prompt's age, digest and audience,

@@ -343,27 +343,32 @@ impl Name {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Value(String);
 
-/// Why a value cannot be written.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+/// Why a value cannot be written. Each carries the variable's name and
+/// nothing else, so no text for it can quote the value. Its text is the
+/// catalog's (`catalog::Messages::bad_value`); `Display` is English.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BadValue {
     /// A line break would end the assignment.
-    #[error("{0}: a value must be one line")]
     Multiline(String),
     /// Needs quoting, and holds a `'` along with a character double quotes
     /// do not protect.
-    #[error("{0}: a value holding ' and any of \" \\ $ ` cannot be written to .env")]
     Unquotable(String),
     /// The written line would not read back as the value.
-    #[error("{0}: the value would not read back unchanged from .env")]
     RoundTrip(String),
     /// The current value is not shown ([`Shown::Hidden`]), so it is not
     /// replaced either: the page never saw what it would overwrite.
-    #[error("{0} is set to a value this editor does not show; replace it instead")]
     Hidden(String),
     /// A replacement must say something: a blank one is no replacement.
-    #[error("{0}: an empty replacement; cancel it to keep the current value")]
     Empty(String),
 }
+
+impl std::fmt::Display for BadValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&(crate::catalog::EN.bad_value)(self))
+    }
+}
+
+impl std::error::Error for BadValue {}
 
 impl Value {
     /// The value for `setting`, trimmed.
@@ -433,28 +438,31 @@ impl Value {
     }
 }
 
-/// Why a `.env` cannot be edited as it stands.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+/// Why a `.env` cannot be edited as it stands. Its text is the catalog's
+/// (`catalog::Messages::bad_env`); `Display` is English.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BadEnv {
     /// dotenvy cannot read it, so neither can the binaries. dotenvy's own
     /// message quotes the line, which may hold a secret, so only the line
     /// number is kept.
-    #[error(
-        ".env{}: dotenvy cannot read it (an unquoted space, an unclosed quote?), so the binaries would refuse it too",
-        line.map(|n| format!(" line {n}")).unwrap_or_default()
-    )]
     Unreadable {
         /// The first line dotenvy refuses on its own, when one does.
         line: Option<usize>,
     },
     /// A variable is assigned more than once, so which one wins depends on
     /// the reader (dotenvy keeps the first, Compose the last).
-    #[error(".env assigns {0} more than once; keep one line")]
     Duplicate(String),
     /// dotenvy reads an assignment this editor cannot place on a line.
-    #[error(".env assigns {0} on a line this editor cannot rewrite; write it as {0}=value")]
     Unplaced(String),
 }
+
+impl std::fmt::Display for BadEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&(crate::catalog::EN.bad_env)(self))
+    }
+}
+
+impl std::error::Error for BadEnv {}
 
 /// What the editor may show of a setting's value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

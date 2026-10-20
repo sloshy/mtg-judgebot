@@ -284,6 +284,9 @@ services:
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
       RUST_LOG: info
+      # The language of its alerts: .env's, which this service does not read
+      # whole (Compose substitutes from it). Blank is English.
+      JUDGE_LOCALE: ${JUDGE_LOCALE:-}
       # .env.deploy also holds the tunnel's token, which is not this
       # container's business; `environment` overrides `env_file`.
       TUNNEL_TOKEN: ""

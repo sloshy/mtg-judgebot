@@ -29,9 +29,10 @@ use uuid::Uuid;
 
 use crate::{ACQUIRE_WAIT, Toolbox};
 
-/// The language the agent tools reply in. `judge-cli` and the MCP tools are
-/// translated with the rest of the CLIs' output (#25's second half); until
-/// then they speak English, whatever `JUDGE_LOCALE` says.
+/// The language the agent tools reply in: English, whatever `JUDGE_LOCALE`
+/// says, for good. Models read them, and their prompts, notices and the
+/// pipeline replies they relay are written for one (D35). `judge-cli`'s usage,
+/// which a person reads, is in `judge_agent::catalog`.
 pub const AGENT_LOCALE: judge_core::Locale = judge_core::Locale::En;
 
 /// Candidate names listed for an ambiguous span.

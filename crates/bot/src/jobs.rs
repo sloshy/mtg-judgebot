@@ -57,6 +57,7 @@
 
 use std::{num::NonZeroU16, panic::AssertUnwindSafe, time::Duration};
 
+use judge_core::Locale;
 use judge_llm::SpendMeter;
 use sqlx::{
     PgPool,
@@ -65,7 +66,7 @@ use sqlx::{
 use tokio::time::Instant;
 
 use crate::{
-    alert::{self, AlertWebhook},
+    alert::{self, AlertWebhook, catalog::RefreshFailure},
     clock::{Clock, Tokio},
     db::migrate,
     ingest::{
@@ -271,53 +272,37 @@ pub fn with_unrecorded(mut history: RunHistory, since: Option<Duration>) -> RunH
 /// progress) is news to nobody: it alerts nothing. The texts name steps and
 /// counts, never an error message: those can carry URLs, and the log has them.
 #[must_use]
-pub fn alerts(process: &str, previous: &RunHistory, report: &RunReport) -> Vec<String> {
+pub fn alerts(
+    locale: Locale,
+    process: &str,
+    previous: &RunHistory,
+    report: &RunReport,
+) -> Vec<String> {
+    let m = alert::catalog::messages(locale);
     let mut out = Vec::new();
     if let Some(started) = &previous.abandoned_started_at
         && previous.failed_streak == 1
     {
-        out.push(format!(
-            "judgebot: a data refresh started at {started} never finished; its process may have \
-             died (out of memory?) or lost the database. `{process}` is running the next one."
-        ));
+        out.push((m.refresh_abandoned)(process, started));
     }
     let failed_before = previous.last_finished_ok == Some(false);
     match report.outcome() {
-        RunOutcome::Ok if failed_before => out.push(format!(
-            "judgebot `{process}`: a scheduled data refresh succeeded. The refresh before it had \
-             failed."
-        )),
+        RunOutcome::Ok if failed_before => out.push((m.refresh_recovered)(process)),
         RunOutcome::Failed if !failed_before => {
             let steps: Vec<&str> = report.failed().iter().map(|s| s.name()).collect();
-            let what = match (steps.as_slice(), report.timed_out) {
-                ([], true) => format!(
-                    "timed out: it was dropped after {} min",
-                    runs::ABANDONED_AFTER.as_secs() / 60
-                ),
-                ([one], timed_out) => format!(
-                    "failed (step {one}){}",
-                    if timed_out {
-                        timed_out_text()
-                    } else {
-                        String::new()
-                    }
-                ),
-                (many, timed_out) => format!(
-                    "failed (steps {}){}",
-                    many.join(", "),
-                    if timed_out {
-                        timed_out_text()
-                    } else {
-                        String::new()
-                    }
-                ),
+            let failure = if steps.is_empty() && report.timed_out {
+                RefreshFailure::Dropped {
+                    after_mins: runs::ABANDONED_AFTER.as_secs() / 60,
+                }
+            } else {
+                RefreshFailure::Steps {
+                    steps: &steps,
+                    timed_out_hours: report
+                        .timed_out
+                        .then_some(ingest::RUN_TIMEOUT.as_secs() / 3600),
+                }
             };
-            out.push(format!(
-                "judgebot `{process}`: a scheduled data refresh {what}. It is retried after an \
-                 hour, then less often while it keeps failing; the log has each error \
-                 (`refresh step failed`). You will be told again when it succeeds, not on each \
-                 retry."
-            ));
+            out.push((m.refresh_failed)(process, failure));
         }
         RunOutcome::Ok | RunOutcome::Failed | RunOutcome::Stopped => {}
     }
@@ -327,35 +312,17 @@ pub fn alerts(process: &str, previous: &RunHistory, report: &RunReport) -> Vec<S
                 reason: Skip::EmbedCeiling { rows, ceiling },
             }) = step
             {
-                out.push(format!(
-                    "judgebot `{process}`: a scheduled data refresh did not embed {rows} rows, \
-                     more than the {ceiling} it embeds unattended. If that spend is expected (a \
-                     new embedder, an interrupted reembed), run `judgebot ingest embed` \
-                     (`docker compose run --rm refresh embed`); vector search misses those rows \
-                     until then."
-                ));
+                out.push((m.embed_ceiling)(process, *rows, *ceiling));
             }
         }
     }
     out
 }
 
-/// The time-out clause of a failure alert.
-fn timed_out_text() -> String {
-    format!(
-        ", timing out after {} h; the steps after it were not run",
-        ingest::RUN_TIMEOUT.as_secs() / 3600
-    )
-}
-
-/// What the webhook is told the first time a check panics.
+/// What the webhook is told the first time a check panics, in `locale`.
 #[must_use]
-pub fn panic_alert(process: &str) -> String {
-    format!(
-        "judgebot `{process}`: the scheduled data refresh check crashed (a panic; the log has \
-         it). It is tried again at every check; you will not be told again until a refresh \
-         succeeds."
-    )
+pub fn panic_alert(locale: Locale, process: &str) -> String {
+    (alert::catalog::messages(locale).refresh_panicked)(process)
 }
 
 /// Why the schedule is paused.
@@ -773,6 +740,9 @@ async fn schedule_loop(
         .idle_timeout(POOL_IDLE)
         .connect_lazy_with(bounded(options));
     let client = alert::client();
+    let locale = alert
+        .as_ref()
+        .map_or_else(Locale::default, AlertWebhook::locale);
     let cache_dir = ingest::cache_dir();
     let mut memory = Memory::default();
     // Outside the task, so a panic cannot lose it.
@@ -801,7 +771,8 @@ async fn schedule_loop(
                 {
                     panic_told &= !report.ok();
                     finished(every, &previous, &report, secs, process);
-                    send(alert.as_ref(), &client, alerts(process, &previous, &report)).await;
+                    let told = alerts(locale, process, &previous, &report);
+                    send(alert.as_ref(), &client, told).await;
                 }
             }
             Err(e) => {
@@ -810,7 +781,7 @@ async fn schedule_loop(
                     "the scheduled refresh check panicked; the next check runs as scheduled"
                 );
                 if !std::mem::replace(&mut panic_told, true) {
-                    send(alert.as_ref(), &client, vec![panic_alert(process)]).await;
+                    send(alert.as_ref(), &client, vec![panic_alert(locale, process)]).await;
                 }
             }
         }
@@ -1042,9 +1013,23 @@ mod tests {
         RunReport::of(vec![StepReport::Cards(Outcome::Ok { summary: () })])
     }
 
+    /// An alert is written in the webhook's language (`JUDGE_LOCALE`).
+    #[test]
+    fn alerts_are_written_in_the_webhooks_language() {
+        let told = alerts(
+            Locale::Stub,
+            "bot",
+            &RunHistory::default(),
+            &failed(&[Step::Cards]),
+        );
+        assert_eq!(told, vec!["⟦refresh_failed bot cards 0⟧".to_owned()]);
+        assert_eq!(panic_alert(Locale::Stub, "bot"), "⟦refresh_panicked bot⟧");
+    }
+
     #[test]
     fn a_failure_is_told_once_per_streak_and_the_recovery_once() {
         let first = alerts(
+            Locale::En,
             "bot",
             &h(Some(hours(25)), None, Some(true)),
             &failed(&[Step::Cards]),
@@ -1058,6 +1043,7 @@ mod tests {
             "{first:?}"
         );
         let two = alerts(
+            Locale::En,
             "bot",
             &RunHistory::default(),
             &failed(&[Step::Cards, Step::Rules]),
@@ -1067,24 +1053,30 @@ mod tests {
             "{two:?}"
         );
         let retry = alerts(
+            Locale::En,
             "api",
             &h(None, Some(hours(2)), Some(false)),
             &failed(&[Step::Cards]),
         );
         assert!(retry.is_empty(), "a retry that fails again is not news");
-        let back = alerts("api", &h(None, Some(hours(2)), Some(false)), &fine());
+        let back = alerts(
+            Locale::En,
+            "api",
+            &h(None, Some(hours(2)), Some(false)),
+            &fine(),
+        );
         assert_eq!(back.len(), 1);
         assert!(
             back.iter()
                 .all(|t| t.contains("succeeded") && t.contains("before it had failed")),
             "{back:?}"
         );
-        assert!(alerts("api", &h(None, None, Some(true)), &fine()).is_empty());
+        assert!(alerts(Locale::En, "api", &h(None, None, Some(true)), &fine()).is_empty());
     }
 
     #[test]
     fn a_time_out_says_so() {
-        let dropped = alerts("bot", &RunHistory::default(), &timed_out(true));
+        let dropped = alerts(Locale::En, "bot", &RunHistory::default(), &timed_out(true));
         assert!(
             dropped
                 .iter()
@@ -1093,7 +1085,7 @@ mod tests {
         );
         let mut inner = failed(&[Step::Rules]);
         inner.timed_out = true;
-        let told = alerts("bot", &RunHistory::default(), &inner);
+        let told = alerts(Locale::En, "bot", &RunHistory::default(), &inner);
         assert!(
             told.iter()
                 .any(|t| t.contains("(step rules), timing out after 3 h")),
@@ -1111,7 +1103,7 @@ mod tests {
         );
         assert_eq!(stopped.outcome(), RunOutcome::Stopped);
         for previous in [RunHistory::default(), h(None, Some(hours(2)), Some(false))] {
-            assert!(alerts("bot", &previous, &stopped).is_empty());
+            assert!(alerts(Locale::En, "bot", &previous, &stopped).is_empty());
         }
     }
 
@@ -1121,7 +1113,7 @@ mod tests {
             abandoned_started_at: Some("2026-10-09 05:00Z".into()),
             ..h(Some(hours(30)), Some(hours(4)), Some(false))
         };
-        let told = alerts("api", &died, &failed(&[Step::Cards]));
+        let told = alerts(Locale::En, "api", &died, &failed(&[Step::Cards]));
         assert_eq!(told.len(), 1, "the death, not the retry: {told:?}");
         assert!(
             told.iter()
@@ -1132,7 +1124,7 @@ mod tests {
             ..died
         };
         assert!(
-            alerts("api", &again, &failed(&[Step::Cards])).is_empty(),
+            alerts(Locale::En, "api", &again, &failed(&[Step::Cards])).is_empty(),
             "a crash loop is told once"
         );
     }
@@ -1159,7 +1151,7 @@ mod tests {
             },
         })]);
         let previous = h(Some(hours(25)), None, Some(true));
-        let told = alerts("api", &previous, &run);
+        let told = alerts(Locale::En, "api", &previous, &run);
         assert_eq!(told.len(), 1, "{told:?}");
         assert!(
             told.iter()
@@ -1169,7 +1161,10 @@ mod tests {
             last_finished_ceiling: true,
             ..previous
         };
-        assert!(alerts("api", &again, &run).is_empty(), "already told");
+        assert!(
+            alerts(Locale::En, "api", &again, &run).is_empty(),
+            "already told"
+        );
     }
 
     /// The rules the schedule needs to see before it runs anything.

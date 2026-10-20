@@ -37,10 +37,11 @@ use std::{
     time::Duration,
 };
 
+use judge_core::Locale;
 use serenity::all::{Http, Interaction, Verifier};
 
 use super::{Data, Delivery, reply::Ack};
-use crate::shutdown::Shutdown;
+use crate::{alert::catalog as alert, shutdown::Shutdown};
 
 /// Where the endpoint is served.
 pub const PATH: &str = "/discord/interactions";
@@ -228,15 +229,13 @@ impl Interactions {
             );
             return;
         }
-        let text = format!(
-            "Discord interaction refused: its signed timestamp is {} from this host's clock \
-             (allowed: {} s). One is a replay; every interaction refused means this host's \
-             clock is wrong, and Discord's commands get no answer until it is fixed.",
-            skew.map_or_else(|| "unreadable".to_owned(), |s| format!("{s} s")),
-            FRESHNESS.as_secs()
-        );
-        tracing::error!("{text}");
+        let text = |locale| {
+            (crate::alert::catalog::messages(locale).discord_clock)(skew, FRESHNESS.as_secs())
+        };
+        // Logs stay English; the webhook hears its own language.
+        tracing::error!("{}", text(Locale::En));
         if let Some(hook) = self.0.alert.get().cloned() {
+            let text = text(hook.locale());
             tokio::spawn(async move {
                 crate::alert::post(&crate::alert::client(), &hook, "Discord clock alert", &text)
                     .await;
@@ -362,29 +361,19 @@ pub fn verifier(verify_key: &str) -> anyhow::Result<Verifier> {
 }
 
 /// What is wrong when `mode` meets the application's Interactions Endpoint
-/// URL (`url`), as the operator should read it; `None` when they agree.
+/// URL (`url`), as the operator should read it in `locale`; `None` when they
+/// agree.
 #[must_use]
-pub fn mismatch(mode: Delivery, url: Option<&str>) -> Option<String> {
-    match (mode, url.map(str::trim).filter(|u| !u.is_empty())) {
-        (Delivery::Gateway, Some(url)) => Some(format!(
-            "Discord delivers this application's interactions to {url}, not over the gateway, \
-             so none reach this process: set {}=http, or clear the Interactions Endpoint URL \
-             in the Developer Portal",
-            Delivery::ENV
-        )),
-        (Delivery::Http, None) => Some(format!(
-            "{}=http, but the application has no Interactions Endpoint URL, so Discord \
-             delivers its interactions over the gateway, which this process does not open: \
-             save https://<your public host>{PATH} as the Interactions Endpoint URL in the \
-             Developer Portal (General Information)",
-            Delivery::ENV
-        )),
-        (Delivery::Http, Some(url)) if !url.trim_end_matches('/').ends_with(PATH) => Some(format!(
-            "Discord delivers this application's interactions to {url}, which does not \
-                 end in {PATH}, where this process receives them"
-        )),
-        (Delivery::Gateway, None) | (Delivery::Http, Some(_)) => None,
-    }
+pub fn mismatch(locale: Locale, mode: Delivery, url: Option<&str>) -> Option<String> {
+    let found = match (mode, url.map(str::trim).filter(|u| !u.is_empty())) {
+        (Delivery::Gateway, Some(url)) => alert::Delivery::GatewayButUrl { url },
+        (Delivery::Http, None) => alert::Delivery::HttpNoUrl { path: PATH },
+        (Delivery::Http, Some(url)) if !url.trim_end_matches('/').ends_with(PATH) => {
+            alert::Delivery::WrongPath { url, path: PATH }
+        }
+        (Delivery::Gateway, None) | (Delivery::Http, Some(_)) => return None,
+    };
+    Some((alert::messages(locale).discord_delivery)(found))
 }
 
 #[cfg(test)]
@@ -614,10 +603,13 @@ mod tests {
     #[test]
     fn the_mode_is_checked_against_the_url() {
         let url = "https://judge.example.com/discord/interactions";
-        assert_eq!(mismatch(Delivery::Gateway, None), None);
-        assert_eq!(mismatch(Delivery::Gateway, Some("  ")), None);
-        assert_eq!(mismatch(Delivery::Http, Some(url)), None);
-        assert_eq!(mismatch(Delivery::Http, Some(&format!("{url}/"))), None);
+        assert_eq!(mismatch(Locale::En, Delivery::Gateway, None), None);
+        assert_eq!(mismatch(Locale::En, Delivery::Gateway, Some("  ")), None);
+        assert_eq!(mismatch(Locale::En, Delivery::Http, Some(url)), None);
+        assert_eq!(
+            mismatch(Locale::En, Delivery::Http, Some(&format!("{url}/"))),
+            None
+        );
         let wrong = [
             (Delivery::Gateway, Some(url), "DISCORD_INTERACTIONS=http"),
             (Delivery::Http, None, "no Interactions Endpoint URL"),
@@ -628,7 +620,7 @@ mod tests {
             ),
         ];
         for (mode, url, says) in wrong {
-            let problem = mismatch(mode, url);
+            let problem = mismatch(Locale::En, mode, url);
             assert!(
                 problem.as_ref().is_some_and(|p| p.contains(says)),
                 "{problem:?}"

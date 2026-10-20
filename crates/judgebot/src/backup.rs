@@ -53,21 +53,9 @@ pub enum Launch {
     Run(Command),
 }
 
-/// The usage `judgebot backup --help` prints.
-pub const USAGE: &str = "\
-usage: judgebot backup <run | list | fetch <name> [file] | serve>
-
-  run          dump the database, upload it, prune old backups (scripts/backup-db.sh)
-  list         the objects under the prefix, oldest first
-  fetch        download one backup to <file>, or to standard output (not a terminal):
-               docker compose run --rm --no-deps -T backup fetch <name> > <name>
-  serve        the backup service: a backup whenever the newest in the bucket is
-               BACKUP_EVERY_DAYS old (default 7), checked hourly
-
-Settings come from .env.deploy (R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID,
-R2_SECRET_ACCESS_KEY, BACKUP_PREFIX, BACKUP_KEEP_DAYS, BACKUP_MIN_BYTES,
-BACKUP_KEEP_LOCAL, BACKUP_EVERY_DAYS, JUDGE_ALERT_WEBHOOK) and, for run and
-serve, DATABASE_URL. See .env.deploy.example.";
+/// The usage an error quotes: English, as every error is (`--help` prints
+/// the catalog's, in the reader's language).
+pub const USAGE: &str = crate::catalog::EN.backup_usage;
 
 /// Parse the arguments after `backup`.
 ///
@@ -147,7 +135,7 @@ pub async fn run(cmd: Command) -> Result<()> {
                 Attempt::Done { .. } => Ok(()),
                 Attempt::Failed { stage, name } => anyhow::bail!(
                     "the backup failed while {}{}; the log above has the error",
-                    stage.clause(),
+                    stage.clause(judge_core::Locale::En),
                     name.map(|n| format!(" (after {n} was uploaded)"))
                         .unwrap_or_default()
                 ),

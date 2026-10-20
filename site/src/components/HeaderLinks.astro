@@ -6,13 +6,15 @@
 // header's right-hand group, which Starlight already hides on narrow viewports,
 // where the sidebar's menu button does this job instead.
 import SocialIcons from "@astrojs/starlight/components/SocialIcons.astro";
+import { localePath, messages, siteLocale } from "../i18n";
 
-// This renders on pages at every depth, so the hrefs cannot be relative the way
-// the ones in the Markdown are; BASE_URL is where SITE_BASE ends up.
-const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+// The label is the page's language's (src/i18n.ts), and so is the page it opens.
 // "Docs", not "Documentation": at 108px the longer label clipped the site title
 // on a 320px phone, where this link is the only navigation in the header.
-const links = [{ label: "Docs", href: `${base}/start-here/what-it-is/` }];
+const locale = siteLocale(Astro.locals.starlightRoute.locale);
+const links = [
+  { label: messages(locale).docs, href: localePath(locale, "/start-here/what-it-is/") },
+];
 const here = Astro.url.pathname.replace(/\/$/, "");
 ---
 

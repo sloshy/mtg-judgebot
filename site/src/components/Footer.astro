@@ -4,26 +4,30 @@
 // splash pages too, so this puts the statement on every page of the site. The
 // web app's footer (web/src/App.tsx) says the same; keep the two in step.
 import Default from "@astrojs/starlight/components/Footer.astro";
+import { type LinkTo, localePath, messages, siteLocale } from "../i18n";
 
-// This renders on pages at every depth, so the href cannot be relative the way
-// the ones in the Markdown are; BASE_URL is where SITE_BASE ends up.
-const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+// The text is the page's language's (src/i18n.ts); the URLs are here.
+const locale = siteLocale(Astro.locals.starlightRoute.locale);
+const m = messages(locale);
+const hrefs: Record<LinkTo, string> = {
+  policy: "https://company.wizards.com/en/legal/fancontentpolicy",
+  scryfall: "https://scryfall.com",
+  yawgatog: "https://yawgatog.com/resources/magic-rules/",
+  attribution: localePath(locale, "/reference/attribution/"),
+};
 ---
 
 <Default />
 <div class="legal">
-  <p>
-    MTG Judgebot is unofficial Fan Content permitted under the{" "}
-    <a href="https://company.wizards.com/en/legal/fancontentpolicy">Fan Content Policy</a>. Not
-    approved or endorsed by Wizards of the Coast. Portions of the materials used are property of
-    Wizards of the Coast. ©Wizards of the Coast LLC.
-  </p>
-  <p>
-    The Comprehensive Rules come from Wizards of the Coast. Card data, rulings and card symbols
-    come from <a href="https://scryfall.com">Scryfall</a>, which is not affiliated with this
-    project. Rule links go to the <a href="https://yawgatog.com/resources/magic-rules/">Yawgatog</a>{" "}
-    mirror. <a href={`${base}/reference/attribution/`}>License and attribution</a>.
-  </p>
+  {
+    [m.fanContent, m.dataSources].map((parts) => (
+      <p>
+        {parts.map((part) =>
+          typeof part === "string" ? part : <a href={hrefs[part.link]}>{part.label}</a>,
+        )}
+      </p>
+    ))
+  }
 </div>
 
 <style>

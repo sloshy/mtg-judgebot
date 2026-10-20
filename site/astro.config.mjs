@@ -2,6 +2,7 @@
 
 import starlight from "@astrojs/starlight";
 import { defineConfig, passthroughImageService } from "astro/config";
+import { locales } from "./src/locales.mjs";
 
 // The site is served at the root of its own domain (GitHub Pages with a custom
 // domain). A build for somewhere else sets SITE_URL, and SITE_BASE when it is
@@ -40,6 +41,10 @@ export default defineConfig({
         baseUrl: "https://github.com/sloshy/mtg-judgebot/edit/main/site/",
       },
       customCss: ["./src/styles/custom.css"],
+      // English at the root, so its URLs carry no prefix; src/locales.mjs is the
+      // list. With one locale Starlight shows no language picker.
+      defaultLocale: "root",
+      locales,
       // Starlight has no top navigation, so a header link into the docs goes in
       // through the one header component that is overridable (see the file).
       // The footer adds the Fan Content Policy statement and the data sources to

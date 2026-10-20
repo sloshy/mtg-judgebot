@@ -15,6 +15,16 @@
 //! This module holds core's catalog ([`Messages`]): the source offer, the
 //! operator contact and the data freshness lines, which several surfaces
 //! show.
+//!
+//! **The stub locale.** Every catalog also has a value for [`STUB_ID`], a
+//! pseudo-locale whose every message is its own name in `⟦…⟧` with its
+//! values, and each surface picks its catalog through [`Catalogs::new`],
+//! which takes every locale's value. So a message added without its stub
+//! value, or a surface that forgets a locale, does not compile, whichever
+//! locales ship. The stub is a [`Locale`] variant only with this crate's
+//! `stub-locale` feature, which only dev-dependencies turn on: the tests
+//! negotiate it and render every message in it, and no build that ships can
+//! choose it (D35).
 
 use std::fmt;
 
@@ -25,6 +35,20 @@ use serde::{Deserialize, Serialize};
 /// [`Locale::ALL`].
 pub const LOCALE_ENV: &str = "JUDGE_LOCALE";
 
+/// The variables a terminal's message language is read from, in POSIX's
+/// order of precedence ([`Locale::for_terminal`]).
+pub const TERMINAL_ENV: [&str; 3] = ["LC_ALL", "LC_MESSAGES", "LANG"];
+
+/// A POSIX locale value without its codeset and modifier:
+/// `en_US.UTF-8@euro` is `en_US`.
+fn terminal_language(value: &str) -> &str {
+    value.trim().split(['.', '@']).next().unwrap_or_default()
+}
+
+/// The stub locale's id: `qps`, from ISO 639's private-use range, as the
+/// pseudo-locales `qps-ploc` and the like are.
+pub const STUB_ID: &str = "qps";
+
 /// A language every surface has a catalog for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -32,11 +56,19 @@ pub enum Locale {
     /// English.
     #[default]
     En,
+    /// The stub locale ([`STUB_ID`]): tests only (the module docs).
+    #[cfg(feature = "stub-locale")]
+    #[serde(rename = "qps")]
+    Stub,
 }
 
 impl Locale {
     /// Every locale, in declaration order.
+    #[cfg(not(feature = "stub-locale"))]
     pub const ALL: [Self; 1] = [Self::En];
+    /// Every locale, in declaration order.
+    #[cfg(feature = "stub-locale")]
+    pub const ALL: [Self; 2] = [Self::En, Self::Stub];
 
     /// The id stored and sent (`calls.locale`, `JUDGE_LOCALE`, the web app's
     /// catalogs): the language subtag.
@@ -44,6 +76,8 @@ impl Locale {
     pub const fn id(self) -> &'static str {
         match self {
             Self::En => "en",
+            #[cfg(feature = "stub-locale")]
+            Self::Stub => STUB_ID,
         }
     }
 
@@ -70,6 +104,34 @@ impl Locale {
             .unwrap_or(fallback)
     }
 
+    /// The language a command line speaks: the terminal's message locale
+    /// ([`TERMINAL_ENV`], the first one set decides, as POSIX says), when it
+    /// names a locale, else `instance` (`JUDGE_LOCALE`). A value is read
+    /// without its codeset and modifier (`en_US.UTF-8`, `en@quot`). `C` and
+    /// `POSIX` (`C.UTF-8` too) name no language, so a variable holding one
+    /// counts as unset and the next one is read: a container's `LC_ALL=C.UTF-8`
+    /// says nothing about the person at the terminal.
+    #[must_use]
+    pub fn for_terminal(env: impl Fn(&str) -> Option<String>, instance: Self) -> Self {
+        let tag = TERMINAL_ENV.into_iter().find_map(|var| {
+            env(var)
+                .map(|v| terminal_language(&v).to_owned())
+                .filter(|l| !l.is_empty() && l != "C" && l != "POSIX")
+        });
+        Self::negotiate(tag.as_deref(), instance)
+    }
+
+    /// The language a command line speaks, from `env`:
+    /// [`Self::for_terminal`] over `JUDGE_LOCALE`. A `JUDGE_LOCALE` with no
+    /// catalog counts as unset here; the configuration refuses it when it
+    /// loads. `judge-cli` and `judgebot` print their usage before `.env` is
+    /// read, so this is the process environment's.
+    #[must_use]
+    pub fn for_command_line(env: impl Fn(&str) -> Option<String>) -> Self {
+        let instance = Self::parse_setting(env(LOCALE_ENV).as_deref()).unwrap_or_default();
+        Self::for_terminal(env, instance)
+    }
+
     /// Parse `JUDGE_LOCALE`: blank is the default, English.
     ///
     /// # Errors
@@ -90,11 +152,47 @@ impl Locale {
     /// Core's messages in this locale.
     #[must_use]
     pub const fn messages(self) -> &'static Messages {
-        match self {
-            Self::En => &EN,
+        CATALOGS.get(self)
+    }
+}
+
+/// One surface's catalogs, a value per locale. [`Self::new`] takes every
+/// locale's, the stub's included whether or not it can be chosen, so a new
+/// [`Locale`] variant makes every surface's call stop compiling until it
+/// names its catalog, and each catalog's struct literal lists the messages
+/// it misses.
+#[derive(Debug)]
+pub struct Catalogs<T: ?Sized + 'static> {
+    en: &'static T,
+    #[cfg(feature = "stub-locale")]
+    stub: &'static T,
+}
+
+impl<T: ?Sized + 'static> Catalogs<T> {
+    /// Every locale's catalog: English, then the stub's.
+    #[must_use]
+    pub const fn new(en: &'static T, stub: &'static T) -> Self {
+        #[cfg(not(feature = "stub-locale"))]
+        let _ = stub;
+        Self {
+            en,
+            #[cfg(feature = "stub-locale")]
+            stub,
+        }
+    }
+
+    /// The catalog for `locale`.
+    #[must_use]
+    pub const fn get(&self, locale: Locale) -> &'static T {
+        match locale {
+            Locale::En => self.en,
+            #[cfg(feature = "stub-locale")]
+            Locale::Stub => self.stub,
         }
     }
 }
+
+const CATALOGS: Catalogs<Messages> = Catalogs::new(&EN, &STUB);
 
 impl fmt::Display for Locale {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -224,6 +322,37 @@ pub const EN: Messages = Messages {
     ago: en_ago,
 };
 
+/// The stub locale's: each message its name in `⟦…⟧`, with its values.
+pub const STUB: Messages = Messages {
+    revision: |r| match r {
+        Revision::Known { short, dirty } => format!("⟦revision {short} {dirty}⟧"),
+        Revision::Unknown => "⟦revision⟧".to_owned(),
+    },
+    notice: |o| {
+        format!(
+            "⟦notice {} {} {} {} {} {} {}⟧",
+            o.program,
+            o.copyright,
+            o.license_name,
+            o.license_spdx,
+            o.license_url,
+            o.repository,
+            o.revision
+        )
+    },
+    contact: |c| match c {
+        Contact::Both { email, discord } => format!("⟦contact {email} {discord}⟧"),
+        Contact::Email(email) => format!("⟦contact {email}⟧"),
+        Contact::Discord(discord) => format!("⟦contact {discord}⟧"),
+    },
+    rules_line: |date| format!("⟦rules_line {}⟧", date.unwrap_or_default()),
+    refreshed_line: |secs, failed| {
+        format!("⟦refreshed_line {} {failed}⟧", secs.unwrap_or_default())
+    },
+    refresh_failed: "⟦refresh_failed⟧",
+    ago: |secs| format!("⟦ago {secs}⟧"),
+};
+
 /// An age as English words: `under a minute ago`, `1 minute ago`, `5 hours
 /// ago`, `3 days ago`. Minutes below an hour, hours below two days, days
 /// after.
@@ -291,6 +420,141 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn a_terminal_speaks_its_message_locale_else_the_instances() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(name, _)| *name == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        assert_eq!(Locale::for_terminal(env(&[]), Locale::En), Locale::En);
+        assert_eq!(
+            Locale::for_terminal(env(&[("LANG", "en_US.UTF-8")]), Locale::En),
+            Locale::En
+        );
+        for c in ["C", "C.UTF-8", "POSIX", "fr_FR.UTF-8"] {
+            let pairs: &'static [(&str, &str)] = match c {
+                "C" => &[("LANG", "C")],
+                "C.UTF-8" => &[("LC_ALL", "C.UTF-8")],
+                "POSIX" => &[("LC_MESSAGES", "POSIX")],
+                _ => &[("LANG", "fr_FR.UTF-8")],
+            };
+            assert_eq!(
+                Locale::for_terminal(env(pairs), Locale::En),
+                Locale::En,
+                "{c}"
+            );
+        }
+        assert_eq!(terminal_language(" en_US.UTF-8@euro "), "en_US");
+        assert_eq!(terminal_language("en@quot"), "en");
+        assert_eq!(terminal_language("C.UTF-8"), "C");
+    }
+
+    /// The stub locale is negotiated like any other: by the language
+    /// subtag of an asker's tag, and as `JUDGE_LOCALE`.
+    #[cfg(feature = "stub-locale")]
+    #[test]
+    fn the_stub_locale_is_negotiated_like_a_shipped_one() {
+        assert_eq!(Locale::from_tag("qps-ploc"), Some(Locale::Stub));
+        assert_eq!(
+            Locale::negotiate(["fr", "qps", "en-US"], Locale::En),
+            Locale::Stub
+        );
+        assert_eq!(Locale::negotiate(["fr"], Locale::Stub), Locale::Stub);
+        assert_eq!(Locale::parse_setting(Some("qps")), Ok(Locale::Stub));
+        assert_eq!(Locale::Stub.id(), STUB_ID);
+        assert!(Locale::supported().contains(STUB_ID));
+        assert_eq!((Locale::Stub.messages().ago)(5), "⟦ago 5⟧");
+        let terminal = |pairs: [(&'static str, &'static str); 2]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(name, _)| *name == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        // The first variable set decides, a blank one is unset, and a
+        // language with no catalog falls back to the instance's.
+        assert_eq!(
+            Locale::for_terminal(terminal([("LC_ALL", " "), ("LANG", "qps")]), Locale::En),
+            Locale::Stub
+        );
+        assert_eq!(
+            Locale::for_terminal(
+                terminal([("LC_MESSAGES", "en_GB"), ("LANG", "qps")]),
+                Locale::Stub
+            ),
+            Locale::En
+        );
+        assert_eq!(
+            Locale::for_terminal(
+                terminal([("LC_ALL", "fr_FR"), ("LANG", "en")]),
+                Locale::Stub
+            ),
+            Locale::Stub
+        );
+        // A modifier is not part of the language; C and POSIX are no
+        // language, so the next variable is read.
+        assert_eq!(
+            Locale::for_terminal(terminal([("LANG", "qps@quot"), ("LC_ALL", "")]), Locale::En),
+            Locale::Stub
+        );
+        assert_eq!(
+            Locale::for_terminal(
+                terminal([("LC_MESSAGES", "en@quot"), ("LANG", "qps")]),
+                Locale::Stub
+            ),
+            Locale::En
+        );
+        assert_eq!(
+            Locale::for_terminal(
+                terminal([("LC_ALL", "C.UTF-8"), ("LANG", "qps")]),
+                Locale::En
+            ),
+            Locale::Stub
+        );
+        assert_eq!(
+            Locale::for_terminal(
+                terminal([("LC_ALL", "POSIX"), ("LC_MESSAGES", "C")]),
+                Locale::Stub
+            ),
+            Locale::Stub
+        );
+        // A command line: the terminal's, then JUDGE_LOCALE (a bad one
+        // counts as unset).
+        assert_eq!(
+            Locale::for_command_line(terminal([("JUDGE_LOCALE", "qps"), ("LANG", "C.UTF-8")])),
+            Locale::Stub
+        );
+        assert_eq!(
+            Locale::for_command_line(terminal([("JUDGE_LOCALE", "qps"), ("LANG", "en_US")])),
+            Locale::En
+        );
+        assert_eq!(
+            Locale::for_command_line(terminal([("JUDGE_LOCALE", "nope"), ("LANG", "qps")])),
+            Locale::Stub
+        );
+        assert_eq!(
+            Locale::for_command_line(terminal([("JUDGE_LOCALE", "nope"), ("LANG", "C")])),
+            Locale::En
+        );
+    }
+
+    /// The stub's catalog renders every message (it compiles in every
+    /// build; the variant is what the feature adds).
+    #[test]
+    fn the_stub_catalog_renders_every_message() {
+        assert_eq!((STUB.revision)(Revision::Unknown), "⟦revision⟧");
+        assert_eq!(
+            (STUB.rules_line)(Some("2026-08-19")),
+            "⟦rules_line 2026-08-19⟧"
+        );
+        assert_eq!(STUB.refresh_failed, "⟦refresh_failed⟧");
     }
 
     #[test]

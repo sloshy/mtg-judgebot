@@ -6,10 +6,17 @@
 // A manifest entry copies one file, or one range of its numbered `## N.`
 // sections, and may strip the first H1 (Starlight renders `title`). Nothing
 // else is rewritten: the docs refer to files in backticks, not links.
+//
+// An entry is English (the root locale) unless it names a `locale`, a key of
+// src/locales.mjs other than `root`: its `dest` is then under that locale's
+// directory (`locale: "es"`, `dest: "how-it-works/architecture.md"` writes
+// es/how-it-works/architecture.md, served at /es/how-it-works/architecture/),
+// and its `src` is the translated file. Only English entries exist today.
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { locales } from "../src/locales.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..", "..");
@@ -17,7 +24,7 @@ const out = resolve(here, "..", "src", "content", "docs");
 // Copies point their edit link at the canonical file, not at themselves.
 const editBase = "https://github.com/sloshy/mtg-judgebot/edit/main/";
 
-/** @type {Array<{src: string, dest: string, title: string, description?: string, order: number, sections?: [number, number], badge?: string, lead?: string}>} */
+/** @type {Array<{src: string, dest: string, title: string, description?: string, order: number, sections?: [number, number], between?: [string, string], badge?: string, lead?: string, locale?: string}>} */
 const manifest = [
   // How it works
   {
@@ -167,6 +174,18 @@ function frontmatter(e) {
   return `---\n${fm.join("\n")}\n---\n\n`;
 }
 
+// Where an entry is written, relative to the content tree: under its locale's
+// directory unless it is the root locale's.
+function outPath(e) {
+  if (e.locale === undefined) return e.dest;
+  if (e.locale === "root" || !Object.hasOwn(locales, e.locale)) {
+    throw new Error(
+      `${e.dest}: locale ${JSON.stringify(e.locale)} is not a non-root key of src/locales.mjs`,
+    );
+  }
+  return join(e.locale, e.dest);
+}
+
 // Copies whose manifest entry is gone would otherwise stay in the tree (and be
 // built) forever. A copy is recognisable by the frontmatter this script writes —
 // an `editUrl` pointing at a repository file — so sweep those, never an authored
@@ -174,7 +193,8 @@ function frontmatter(e) {
 // rewrites it before this runs.)
 // JSON.stringify closes the quote; drop it so the marker is a prefix of every copy's editUrl.
 const marker = `editUrl: ${JSON.stringify(editBase).slice(0, -1)}`;
-const inManifest = new Set(manifest.map((e) => e.dest));
+// Every locale's copies are swept: the walk is recursive and keys are full paths.
+const inManifest = new Set(manifest.map(outPath));
 for (const file of readdirSync(out, { recursive: true, withFileTypes: true })) {
   if (!file.isFile() || !file.name.endsWith(".md")) continue;
   const rel = join(file.parentPath ?? file.path, file.name).slice(out.length + 1);
@@ -192,10 +212,11 @@ for (const e of manifest) {
       ? between(raw, e.between)
       : stripH1(raw);
   if (e.lead) body = `*${e.lead}*\n\n${body}`;
-  const dest = join(out, e.dest);
+  const rel = outPath(e);
+  const dest = join(out, rel);
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, `${frontmatter(e) + body.trimEnd()}\n`);
-  written.push(e.dest);
+  written.push(rel);
 }
 // Synced copies are build output.
 writeFileSync(

@@ -13,6 +13,12 @@
 //! every reply is scrubbed of it, as of every secret already in the file,
 //! and the `.env` diff names it without a value.
 //!
+//! Every reply's own text is in the page's language: the page sends
+//! `navigator.languages` in [`LANGUAGES_HEADER`], else the edited `.env`'s
+//! `JUDGE_LOCALE` decides (`catalog`). A request refused for its host or its
+//! token is answered in the page's language or English: the `.env` is read
+//! only for a request that passed both.
+//!
 //! The calls need the token printed at startup, in a header a page from
 //! another origin cannot set without a CORS preflight this server never
 //! answers; the `Host` must be a loopback name (or one passed with
@@ -41,7 +47,10 @@ use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
+use judge_core::{Locale, locale::LOCALE_ENV};
+
 use crate::{
+    catalog::{self, Messages},
     check,
     env::{self, DotEnv, Kind, Setting, Shown, VARS},
     toml_doc,
@@ -49,6 +58,10 @@ use crate::{
 
 /// The header carrying the token.
 pub const TOKEN_HEADER: &str = "x-judge-config-token";
+
+/// The header carrying the page's languages (`navigator.languages`, most
+/// preferred first, comma-separated).
+pub const LANGUAGES_HEADER: &str = "x-judge-config-languages";
 
 /// What the server edits and who may ask.
 #[derive(Debug)]
@@ -86,6 +99,10 @@ pub fn router(editor: Arc<Editor>) -> Router {
             get(|| async { page("text/javascript; charset=utf-8", APP_JS) }),
         )
         .route(
+            "/messages.js",
+            get(|| async { page("text/javascript; charset=utf-8", MESSAGES_JS) }),
+        )
+        .route(
             "/app.css",
             get(|| async { page("text/css; charset=utf-8", APP_CSS) }),
         )
@@ -96,6 +113,7 @@ pub fn router(editor: Arc<Editor>) -> Router {
 
 const INDEX: &str = include_str!("../ui/index.html");
 const APP_JS: &str = include_str!("../ui/app.js");
+const MESSAGES_JS: &str = include_str!("../ui/messages.js");
 const APP_CSS: &str = include_str!("../ui/app.css");
 
 fn page(content_type: &'static str, body: &'static str) -> Response {
@@ -129,15 +147,53 @@ fn is_allowed_host(editor: &Editor, headers: &HeaderMap) -> bool {
             .any(|h| h.eq_ignore_ascii_case(name))
 }
 
+/// The instance's language: the edited `.env`'s `JUDGE_LOCALE` as it is on
+/// disk (the process's environment does not have it: `scripts/config.sh`
+/// runs judge-config before there is a `.env` to load), English when it is
+/// unset, unreadable or names no catalog (the Models check says so).
+#[must_use]
+pub fn instance_locale(env_text: Option<&str>) -> Locale {
+    env_text
+        .and_then(|t| DotEnv::parse(t).ok())
+        .and_then(|d| d.lookup()(LOCALE_ENV))
+        .and_then(|v| Locale::parse_setting(Some(&v)).ok())
+        .unwrap_or_default()
+}
+
+/// The language to answer in: the page's, then the instance's.
+#[must_use]
+pub fn request_locale(headers: &HeaderMap, instance: Locale) -> Locale {
+    let languages = headers
+        .get(LANGUAGES_HEADER)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default();
+    Locale::negotiate(languages.split(','), instance)
+}
+
+/// The text for a request to `editor` that passed the host check and the
+/// token: the page's language, then the edited `.env`'s.
+fn messages_for(editor: &Editor, headers: &HeaderMap) -> &'static Messages {
+    let env_text = fs::read_to_string(&editor.env_path).ok();
+    catalog::messages(request_locale(
+        headers,
+        instance_locale(env_text.as_deref()),
+    ))
+}
+
+/// The text for a request the host check or the token refused: the page's
+/// language, else English. The `.env` is read only once a request has
+/// passed both, so a caller without the token learns nothing from the reply's
+/// language, and cannot make the editor read the file.
+fn refusal_messages(headers: &HeaderMap) -> &'static Messages {
+    catalog::messages(request_locale(headers, Locale::default()))
+}
+
 async fn host_check(State(editor): State<Arc<Editor>>, req: Request, next: Next) -> Response {
     if is_allowed_host(&editor, req.headers()) {
         next.run(req).await
     } else {
-        (
-            StatusCode::MISDIRECTED_REQUEST,
-            "judge-config answers on localhost only (pass --allow-host NAME to add one)",
-        )
-            .into_response()
+        let m = refusal_messages(req.headers());
+        (StatusCode::MISDIRECTED_REQUEST, m.wrong_host).into_response()
     }
 }
 
@@ -154,11 +210,8 @@ async fn guard(State(editor): State<Arc<Editor>>, req: Request, next: Next) -> R
     if same {
         next.run(req).await
     } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            "missing or wrong token: open the URL judge-config printed",
-        )
-            .into_response()
+        let m = refusal_messages(req.headers());
+        (StatusCode::UNAUTHORIZED, m.wrong_token).into_response()
     }
 }
 
@@ -204,13 +257,19 @@ fn digest(text: Option<&str>) -> String {
     })
 }
 
-async fn state(State(editor): State<Arc<Editor>>) -> Result<Body<Json>, Failure> {
+async fn state(
+    State(editor): State<Arc<Editor>>,
+    headers: HeaderMap,
+) -> Result<Body<Json>, Failure> {
     let toml_text = read(&editor.toml_path)?;
     let env_text = read(&editor.env_path)?;
+    let instance = instance_locale(env_text.as_deref());
+    let locale = request_locale(&headers, instance);
+    let m = catalog::messages(locale);
     let help = env::help(env::EXAMPLE);
     let (dotenv, env_error) = match env_text.as_deref().map(DotEnv::parse) {
         Some(Ok(d)) => (Some(d), None),
-        Some(Err(e)) => (None, Some(e.to_string())),
+        Some(Err(e)) => (None, Some((m.bad_env)(&e))),
         None => (DotEnv::parse(env::EXAMPLE).ok(), None),
     };
     let is_set = |name: &str| dotenv.as_ref().is_some_and(|d| d.is_set(name));
@@ -221,7 +280,11 @@ async fn state(State(editor): State<Arc<Editor>>) -> Result<Body<Json>, Failure>
             let mut entry = serde_json::Map::new();
             entry.insert("name".to_owned(), json!(v.name));
             entry.insert("group".to_owned(), json!(v.group));
-            entry.insert("help".to_owned(), json!(help.get(v.name)));
+            let english = help.get(v.name).map(String::as_str);
+            entry.insert(
+                "help".to_owned(),
+                json!(catalog::env_help(locale, v.name, english)),
+            );
             entry.insert("set".to_owned(), json!(set));
             if let (Kind::Setting(widget), Some(setting)) = (v.kind, Setting::named(v.name)) {
                 entry.insert("kind".to_owned(), json!("setting"));
@@ -257,6 +320,8 @@ async fn state(State(editor): State<Arc<Editor>>) -> Result<Body<Json>, Failure>
         .map(str::to_owned)
         .collect();
     let mut out = json!({
+        "locale": instance.id(),
+        "locales": Locale::ALL.map(Locale::id),
         "toml": {
             "path": editor.toml_path.display().to_string(),
             "exists": toml_text.is_some(),
@@ -278,7 +343,9 @@ async fn state(State(editor): State<Arc<Editor>>) -> Result<Body<Json>, Failure>
     });
     redact(&mut out, &secrets);
     if let Some(root) = out.as_object_mut() {
-        root.insert("schema".to_owned(), judge_bot::config::file_schema());
+        let mut schema = judge_bot::config::file_schema();
+        catalog::localize_schema(locale, &mut schema);
+        root.insert("schema".to_owned(), schema);
     }
     Ok(Body(out))
 }
@@ -356,54 +423,47 @@ struct Rendered {
     replaced: Vec<String>,
 }
 
-fn render(editor: &Editor, draft: &Draft) -> Result<Rendered, Failure> {
+fn render(editor: &Editor, draft: &Draft, m: &Messages) -> Result<Rendered, Failure> {
     let toml_old = read(&editor.toml_path)?;
     let toml_new = match (&draft.toml, &toml_old) {
         (TomlDraft::None, None) => None,
         (TomlDraft::None, Some(_)) => {
-            return Err(bad(&format!(
-                "{} exists; this editor never deletes it (remove it yourself for the zero-config setup)",
-                editor.toml_path.display()
+            return Err(bad(&(m.never_deletes)(
+                &editor.toml_path.display().to_string(),
             )));
         }
         (TomlDraft::Text { value }, _) => Some(value.clone()),
         (TomlDraft::Form { value }, Some(old)) => {
-            let mut doc = toml_doc::parse(old).map_err(|e| {
-                bad(&format!(
-                    "the file on disk is not TOML ({e}); edit it as text"
-                ))
-            })?;
-            toml_doc::apply(&mut doc, value).map_err(|e| bad(&e))?;
+            let mut doc =
+                toml_doc::parse(old).map_err(|e| bad(&(m.not_toml_on_disk)(&e.to_string())))?;
+            toml_doc::apply(&mut doc, value).map_err(|e| bad(&(m.bad_draft)(&e)))?;
             Some(doc.to_string())
         }
         (TomlDraft::Form { value }, None) => {
-            Some(toml_doc::render_new(value).map_err(|e| bad(&e))?)
+            Some(toml_doc::render_new(value).map_err(|e| bad(&(m.bad_draft)(&e)))?)
         }
     };
+    let bad_env = |e: env::BadEnv| bad(&(m.bad_env)(&e));
+    let bad_value = |e: env::BadValue| bad(&(m.bad_value)(&e));
     let env_old = read(&editor.env_path)?;
-    let mut env = DotEnv::parse(env_old.as_deref().unwrap_or(env::EXAMPLE)).map_err(|e| bad(&e))?;
+    let mut env = DotEnv::parse(env_old.as_deref().unwrap_or(env::EXAMPLE)).map_err(bad_env)?;
     let mut secrets: Vec<String> = env.sensitive().into_iter().map(str::to_owned).collect();
     for (name, value) in &draft.env {
-        let setting = Setting::named(name)
-            .ok_or_else(|| bad(&format!("{name} is not a setting this editor writes")))?;
-        let value = env::Value::new(setting, value).map_err(|e| bad(&e))?;
-        env.set(setting, &value).map_err(|e| bad(&e))?;
+        let setting = Setting::named(name).ok_or_else(|| bad(&(m.not_a_setting)(name)))?;
+        let value = env::Value::new(setting, value).map_err(bad_value)?;
+        env.set(setting, &value).map_err(bad_value)?;
     }
     let mut replaced = vec![];
     for (name, raw) in &draft.replace {
-        let var = env::Name::new(name).ok_or_else(|| {
-            bad(&format!(
-                "{name:?} is not a variable name (letters, digits, _)"
-            ))
-        })?;
+        let var = env::Name::new(name).ok_or_else(|| bad(&(m.not_a_name)(name)))?;
         // A shown setting is changed from the value the page displayed.
         if let Some(s) = Setting::named(name)
             && env.setting(s) != Shown::Hidden
         {
-            return Err(bad(&format!("{name} is shown: change it in its field")));
+            return Err(bad(&(m.shown_setting)(name)));
         }
-        let value = env::Value::replacement(&var, raw).map_err(|e| bad(&e))?;
-        env.replace(&var, &value).map_err(|e| bad(&e))?;
+        let value = env::Value::replacement(&var, raw).map_err(bad_value)?;
+        env.replace(&var, &value).map_err(bad_value)?;
         // As `DotEnv::sensitive`: a value under four characters is not worth
         // garbling every message over.
         if value.as_str().len() >= 4 {
@@ -413,7 +473,7 @@ fn render(editor: &Editor, draft: &Draft) -> Result<Rendered, Failure> {
     }
     let env_new = env.render();
     // Read back as the binaries will: a `${NAME}` elsewhere sees the edit.
-    let env = DotEnv::parse(&env_new).map_err(|e| bad(&e))?;
+    let env = DotEnv::parse(&env_new).map_err(bad_env)?;
     secrets.extend(env.sensitive().into_iter().map(str::to_owned));
     // Longest first, so a secret containing another is masked whole.
     secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
@@ -430,22 +490,21 @@ fn render(editor: &Editor, draft: &Draft) -> Result<Rendered, Failure> {
 }
 
 /// Warnings about the files together, which no single loader sees.
-fn warnings(editor: &Editor, r: &Rendered) -> Vec<String> {
+fn warnings(editor: &Editor, r: &Rendered, m: &Messages) -> Vec<String> {
     let mut out = vec![];
     let lookup = r.env.lookup();
     let judge_config = lookup(judge_bot::config::CONFIG_ENV).unwrap_or_default();
     let judge_config = judge_config.trim();
     let same_path = |a: &str, b: &str| a.trim_start_matches("./") == b.trim_start_matches("./");
     if r.toml_new.is_some() && judge_config.is_empty() {
-        out.push(format!(
-            "JUDGE_CONFIG is blank, so the containers will not read {} (cargo run will). Set JUDGE_CONFIG={} for Docker.",
-            editor.toml_path.display(),
-            editor.toml_as_judge_config
+        out.push((m.judge_config_blank)(
+            &editor.toml_path.display().to_string(),
+            &editor.toml_as_judge_config,
         ));
     } else if !judge_config.is_empty() && !same_path(judge_config, &editor.toml_as_judge_config) {
-        out.push(format!(
-            "JUDGE_CONFIG={judge_config} names another file than the one edited here ({}).",
-            editor.toml_as_judge_config
+        out.push((m.judge_config_other)(
+            judge_config,
+            &editor.toml_as_judge_config,
         ));
     }
     // `cargo run` on this machine reaches Postgres through DATABASE_URL,
@@ -457,22 +516,20 @@ fn warnings(editor: &Editor, r: &Rendered) -> Vec<String> {
         && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
         && url.port().unwrap_or(5432).to_string() != published
     {
-        out.push(format!(
-            "DB_PORT publishes Postgres on {published}, but DATABASE_URL points at port {}: change the port in DATABASE_URL too (this editor does not write it).",
-            url.port().unwrap_or(5432)
-        ));
+        out.push((m.db_port_mismatch)(&published, url.port().unwrap_or(5432)));
     }
     out
 }
 
-fn report(editor: &Editor, r: &Rendered) -> Json {
-    let checks = check::run(r.toml_new.as_deref(), &r.env.lookup());
+fn report(editor: &Editor, r: &Rendered, locale: Locale) -> Json {
+    let m = catalog::messages(locale);
+    let checks = check::run(locale, r.toml_new.as_deref(), &r.env.lookup());
     let mut out = json!({
         "toml": { "old": r.toml_old, "new": r.toml_new },
         "env": { "changed": r.env_old.as_deref() != Some(r.env_new.as_str()) },
-        "env_diff": env_diff(r.env_old.as_deref(), &r.env_new, &r.replaced),
+        "env_diff": env_diff(r.env_old.as_deref(), &r.env_new, &r.replaced, m),
         "checks": checks,
-        "warnings": warnings(editor, r),
+        "warnings": warnings(editor, r, m),
     });
     redact(&mut out, &r.secrets);
     out
@@ -481,7 +538,7 @@ fn report(editor: &Editor, r: &Rendered) -> Json {
 /// The `.env` lines that change. A shown setting's line is shown; a
 /// replaced variable is named with `~` and no value; any other line is
 /// never shown, whatever it holds.
-fn env_diff(old: Option<&str>, new: &str, replaced: &[String]) -> Vec<Json> {
+fn env_diff(old: Option<&str>, new: &str, replaced: &[String], m: &Messages) -> Vec<Json> {
     let old_lines: Vec<&str> = old.map(|o| o.lines().collect()).unwrap_or_default();
     let shown = |line: &str| {
         env::assignment(line).is_some_and(|(name, _)| {
@@ -501,17 +558,25 @@ fn env_diff(old: Option<&str>, new: &str, replaced: &[String]) -> Vec<Json> {
         }
     }
     for name in replaced {
-        out.push(json!({ "op": "~", "line": format!("{name}: new value (not shown)") }));
+        out.push(json!({ "op": "~", "line": (m.replaced_line)(name) }));
     }
     out
 }
 
+/// The language a reply about `r` is in: the page's, then the instance's
+/// as the `.env` on disk says.
+fn draft_locale(headers: &HeaderMap, r: &Rendered) -> Locale {
+    request_locale(headers, instance_locale(r.env_old.as_deref()))
+}
+
 async fn check_draft(
     State(editor): State<Arc<Editor>>,
+    headers: HeaderMap,
     Body(draft): Body<Draft>,
 ) -> Result<Body<Json>, Failure> {
-    let r = render(&editor, &draft)?;
-    Ok(Body(report(&editor, &r)))
+    let m = messages_for(&editor, &headers);
+    let r = render(&editor, &draft, m)?;
+    Ok(Body(report(&editor, &r, draft_locale(&headers, &r))))
 }
 
 #[derive(Debug, Deserialize)]
@@ -524,17 +589,16 @@ struct Save {
 
 async fn save(
     State(editor): State<Arc<Editor>>,
+    headers: HeaderMap,
     Body(save): Body<Save>,
 ) -> Result<Body<Json>, Failure> {
     let _held = editor.lock.lock().await;
-    let r = render(&editor, &save.draft)?;
+    let m = messages_for(&editor, &headers);
+    let r = render(&editor, &save.draft, m)?;
     if digest(r.toml_old.as_deref()) != save.toml_hash
         || digest(r.env_old.as_deref()) != save.env_hash
     {
-        return Err(Failure(
-            StatusCode::CONFLICT,
-            "a file changed on disk since this page read it; reload to see it".to_owned(),
-        ));
+        return Err(Failure(StatusCode::CONFLICT, m.changed_on_disk.to_owned()));
     }
     // Both files are staged before either is replaced, so a failure to
     // write one leaves both as they were.
@@ -563,7 +627,7 @@ async fn save(
             let saved = if done.is_empty() {
                 String::new()
             } else {
-                format!(" ({} was saved)", done.join(", "))
+                (m.saved_before)(&done.join(", "))
             };
             return Err(Failure(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -572,7 +636,7 @@ async fn save(
         }
         done.push(s.target.display().to_string());
     }
-    Ok(Body(report(&editor, &r)))
+    Ok(Body(report(&editor, &r, draft_locale(&headers, &r))))
 }
 
 /// A file written beside its target, waiting to be renamed over it.
@@ -655,6 +719,7 @@ fn readable() -> Option<fs::Permissions> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
 
     type R = Result<(), Box<dyn std::error::Error>>;
 
@@ -700,8 +765,8 @@ mod tests {
             env: BTreeMap::from([("JUDGE_ROLE".to_owned(), "Judges".to_owned())]),
             replace: BTreeMap::new(),
         };
-        let r = render(&editor, &draft)?;
-        let out = report(&editor, &r).to_string();
+        let r = render(&editor, &draft, &catalog::EN)?;
+        let out = report(&editor, &r, Locale::En).to_string();
         for secret in [
             "SECRETDISCORD",
             "SECRETCFG",
@@ -728,7 +793,7 @@ mod tests {
             )]),
             replace: BTreeMap::new(),
         };
-        assert!(render(&editor, &through_field).is_err());
+        assert!(render(&editor, &through_field, &catalog::EN).is_err());
         Ok(())
     }
 
@@ -750,8 +815,8 @@ mod tests {
             ("ANTHROPIC_BASE_URL", "https://NEWPROXYHOST.example"),
             ("LITELLM_KEY", "NEWLITELLMKEY"),
         ]);
-        let r = render(&editor, &d)?;
-        let out = report(&editor, &r).to_string();
+        let r = render(&editor, &d, &catalog::EN)?;
+        let out = report(&editor, &r, Locale::En).to_string();
         for secret in [
             "NEWSECRETTOKEN",
             "NEWPROXYHOST",
@@ -768,17 +833,172 @@ mod tests {
         let (_q, quoted) =
             self::editor("CFG_TEST_TOKEN='old\"qzx\\ord'\nJUDGE_SOURCE_URL=${CFG_TEST_TOKEN}\n")?;
         let fresh = draft(&[("CFG_TEST_TOKEN", "new\"qzxord\\secret")]);
-        let out = report(&quoted, &render(&quoted, &fresh)?).to_string();
+        let out = report(&quoted, &render(&quoted, &fresh, &catalog::EN)?, Locale::En).to_string();
         assert!(!out.contains("qzx"), "{out}");
-        let untouched = report(&quoted, &render(&quoted, &draft(&[]))?).to_string();
+        let untouched = report(
+            &quoted,
+            &render(&quoted, &draft(&[]), &catalog::EN)?,
+            Locale::En,
+        )
+        .to_string();
         assert!(!untouched.contains("qzx"), "{untouched}");
         assert!(r.env_new.contains("DISCORD_TOKEN=NEWSECRETTOKEN\n"));
         assert!(r.env_new.ends_with("LITELLM_KEY=NEWLITELLMKEY\n"));
         // A shown setting goes through its field; a bad name is refused.
-        assert!(render(&editor, &draft(&[("JUDGE_ROLE", "x")])).is_err());
-        assert!(render(&editor, &draft(&[("BAD NAME", "x")])).is_err());
-        assert!(render(&editor, &draft(&[("DISCORD_TOKEN", " ")])).is_err());
+        assert!(render(&editor, &draft(&[("JUDGE_ROLE", "x")]), &catalog::EN).is_err());
+        assert!(render(&editor, &draft(&[("BAD NAME", "x")]), &catalog::EN).is_err());
+        assert!(render(&editor, &draft(&[("DISCORD_TOKEN", " ")]), &catalog::EN).is_err());
         Ok(())
+    }
+
+    /// A reply is in the page's language (`navigator.languages`), else the
+    /// `.env`'s `JUDGE_LOCALE`, with the stub locale standing in for a
+    /// second one: the help, a refused value, the review's lines.
+    #[tokio::test]
+    async fn a_reply_is_in_the_pages_language_then_the_instances() -> R {
+        let headers = |languages: Option<&str>| {
+            let mut h = HeaderMap::new();
+            if let Some(l) = languages {
+                h.insert(
+                    LANGUAGES_HEADER,
+                    l.parse().unwrap_or(HeaderValue::from_static("")),
+                );
+            }
+            h
+        };
+        assert_eq!(instance_locale(None), Locale::En);
+        assert_eq!(instance_locale(Some("JUDGE_LOCALE=qps\n")), Locale::Stub);
+        assert_eq!(instance_locale(Some("JUDGE_LOCALE=klingon\n")), Locale::En);
+        for (languages, instance, want) in [
+            (None, Locale::En, Locale::En),
+            (Some("fr-FR,qps-ploc,en"), Locale::En, Locale::Stub),
+            (Some("fr-FR"), Locale::Stub, Locale::Stub),
+            (Some("en-GB,qps"), Locale::Stub, Locale::En),
+        ] {
+            assert_eq!(
+                request_locale(&headers(languages), instance),
+                want,
+                "{languages:?} {instance}"
+            );
+        }
+
+        let (_dir, editor) = editor("JUDGE_LOCALE=qps\nJUDGE_ROLE=Judge\n")?;
+        let editor = Arc::new(editor);
+        let Body(state) = state(State(Arc::clone(&editor)), headers(None)).await?;
+        assert_eq!(state.get("locale"), Some(&json!("qps")));
+        let help = |state: &Json, name: &str| {
+            state
+                .pointer("/env/vars")
+                .and_then(Json::as_array)
+                .and_then(|vars| vars.iter().find(|v| v.get("name") == Some(&json!(name))))
+                .and_then(|v| v.get("help"))
+                .cloned()
+        };
+        assert_eq!(
+            help(&state, "JUDGE_LOCALE"),
+            Some(json!("⟦env_help JUDGE_LOCALE⟧"))
+        );
+        assert!(
+            help(&state, "JUDGE_ROLE").is_some_and(|h| !h.to_string().contains('⟦')),
+            "an entry the locale leaves out stays English"
+        );
+        assert_eq!(
+            state.pointer("/schema/properties/providers/description"),
+            Some(&json!("⟦schema_help providers⟧"))
+        );
+        let Body(english) = state_in(&editor, Some("en")).await?;
+        assert!(help(&english, "JUDGE_LOCALE").is_some_and(|h| !h.to_string().contains('⟦')));
+
+        let replace = Draft {
+            toml: TomlDraft::None,
+            env: BTreeMap::new(),
+            replace: BTreeMap::from([("DISCORD_TOKEN".to_owned(), "a\nSECRET".to_owned())]),
+        };
+        let refused = check_draft(State(Arc::clone(&editor)), headers(None), Body(replace))
+            .await
+            .err()
+            .ok_or("a multi-line value is refused")?;
+        assert_eq!(refused.1, "⟦bad_value multiline DISCORD_TOKEN⟧");
+        let replace = Draft {
+            toml: TomlDraft::None,
+            env: BTreeMap::new(),
+            replace: BTreeMap::from([("DISCORD_TOKEN".to_owned(), "NEWSECRET".to_owned())]),
+        };
+        let Body(report) = check_draft(State(editor), headers(None), Body(replace)).await?;
+        let out = report.to_string();
+        assert!(out.contains("⟦replaced_line DISCORD_TOKEN⟧"), "{out}");
+        assert!(out.contains("⟦roles_from"), "{out}");
+        assert!(!out.contains("NEWSECRET"), "{out}");
+        Ok(())
+    }
+
+    /// A request refused for its host or its token is answered in the
+    /// page's language or English, never the `.env`'s: the file is read only
+    /// once a request has passed both.
+    #[tokio::test]
+    async fn a_refusal_does_not_read_the_env() -> R {
+        let (_dir, editor) = editor("JUDGE_LOCALE=qps\n")?;
+        let app = router(Arc::new(editor));
+        let send = |host: &'static str,
+                    token: Option<&'static str>,
+                    languages: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let mut req = axum::http::Request::get("/api/state").header(header::HOST, host);
+                if let Some(t) = token {
+                    req = req.header(TOKEN_HEADER, t);
+                }
+                if let Some(l) = languages {
+                    req = req.header(LANGUAGES_HEADER, l);
+                }
+                let res =
+                    tower::ServiceExt::oneshot(app, req.body(axum::body::Body::empty())?).await?;
+                let status = res.status();
+                let bytes = axum::body::to_bytes(res.into_body(), 1 << 16).await?;
+                Ok::<_, Box<dyn std::error::Error>>((status, String::from_utf8(bytes.to_vec())?))
+            }
+        };
+        let (status, body) = send("localhost", Some("nope"), None).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body, catalog::EN.wrong_token);
+        let (status, body) = send("evil.example", Some("t"), None).await?;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+        assert_eq!(body, catalog::EN.wrong_host);
+        let (_, body) = send("localhost", None, Some("qps")).await?;
+        assert_eq!(body, catalog::STUB.wrong_token, "the page's own language");
+        let (status, _) = send("localhost", Some("t"), None).await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    async fn state_in(
+        editor: &Arc<Editor>,
+        languages: Option<&str>,
+    ) -> Result<Body<Json>, Failure> {
+        let mut h = HeaderMap::new();
+        if let Some(l) = languages.and_then(|l| l.parse().ok()) {
+            h.insert(LANGUAGES_HEADER, l);
+        }
+        state(State(Arc::clone(editor)), h).await
+    }
+
+    /// No locale's text for a refused value quotes the value.
+    #[test]
+    fn no_refused_value_is_quoted_in_any_locale() {
+        let secret = "SECRET'\"$`";
+        for locale in Locale::ALL {
+            let m = catalog::messages(locale);
+            for raw in [format!("a\n{secret}"), secret.to_owned(), " ".to_owned()] {
+                let Some(name) = env::Name::new("DISCORD_TOKEN") else {
+                    continue;
+                };
+                if let Err(e) = env::Value::replacement(&name, &raw) {
+                    let text = (m.bad_value)(&e);
+                    assert!(!text.contains("SECRET"), "{locale}: {text}");
+                    assert!(text.contains("DISCORD_TOKEN"), "{locale}: {text}");
+                }
+            }
+        }
     }
 
     #[test]

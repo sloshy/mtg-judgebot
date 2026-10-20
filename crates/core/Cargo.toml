@@ -29,6 +29,12 @@ thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+[features]
+# The stub locale (`locale::STUB_ID`) as a `Locale` variant, so tests can
+# negotiate it and render every catalog in it. Only `[dev-dependencies]` turn it
+# on: no build that ships can choose it (D35, `scripts/check.sh lint` checks).
+stub-locale = []
+
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"

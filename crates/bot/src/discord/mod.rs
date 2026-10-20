@@ -549,7 +549,7 @@ impl Data {
     /// Discord defaults it to `en-US`, so it would hide `JUDGE_LOCALE`, the
     /// community's own choice (one judgebot per community, D16).
     fn locale_of(&self, user: &str) -> Locale {
-        Locale::negotiate([user], self.locale)
+        answer_locale(user, self.locale)
     }
 
     /// A rating button: what the rater's earlier rating of the call says
@@ -1955,7 +1955,8 @@ async fn report_delivery(
     url: Option<&str>,
     alert: Option<&crate::alert::AlertWebhook>,
 ) {
-    let Some(problem) = endpoint::mismatch(mode, url) else {
+    // Logs stay English; the webhook hears its own language.
+    let Some(problem) = endpoint::mismatch(Locale::En, mode, url) else {
         tracing::info!(
             ?mode,
             url,
@@ -1965,11 +1966,12 @@ async fn report_delivery(
     };
     tracing::error!("{problem}");
     if let Some(hook) = alert {
+        let told = endpoint::mismatch(hook.locale(), mode, url).unwrap_or(problem);
         crate::alert::post(
             &crate::alert::client(),
             hook,
             "Discord delivery alert",
-            &problem,
+            &told,
         )
         .await;
     }
@@ -2037,6 +2039,12 @@ impl serenity::all::EventHandler for Handler {
         )
         .await;
     }
+}
+
+/// The language to answer a user whose Discord client reports `user` in,
+/// on an instance whose `JUDGE_LOCALE` is `instance` ([`Data::locale_of`]).
+fn answer_locale(user: &str, instance: Locale) -> Locale {
+    Locale::negotiate([user], instance)
 }
 
 /// [`Data::dispatch`] on a task of its own, so a panic in a handler is
@@ -2319,6 +2327,23 @@ mod tests {
             custom_ids(retry_row(retry)),
             vec![ButtonAction::Retry(retry)]
         );
+    }
+
+    /// The user's Discord locale first, then `JUDGE_LOCALE`, with the stub
+    /// locale standing in for a second language.
+    #[test]
+    fn an_interaction_is_answered_in_its_users_language_then_the_instances() -> anyhow::Result<()> {
+        assert_eq!(answer_locale("qps", Locale::En), Locale::Stub);
+        assert_eq!(answer_locale("en-GB", Locale::Stub), Locale::En);
+        assert_eq!(answer_locale("pt-BR", Locale::Stub), Locale::Stub);
+        assert_eq!(answer_locale("pt-BR", Locale::En), Locale::En);
+        let cfg = crate::config::instance_locale(vars(&[("JUDGE_LOCALE", "qps")]))?;
+        assert_eq!(cfg, Locale::Stub);
+        assert_eq!(
+            catalog::messages(answer_locale("pt-BR", cfg)).busy,
+            catalog::STUB.busy
+        );
+        Ok(())
     }
 
     #[test]

@@ -186,6 +186,45 @@ likely to bump into.
   `<redacted>`. A user's question text does not go to logs above `debug`. The card
   names extracted from it do.
 
+## Translations
+
+Every user-facing string lives in a catalog, one value per language
+(`docs/DECISIONS.md` D35). A new message is a field on its surface's `Messages`, with a
+value in every catalog of that surface, the stub's (`STUB`: its own name in `⟦…⟧` with
+its values) included, and a line in that surface's `every_locale_renders_every_message`
+test. Diagnostics (logs, the command lines' errors, health checks), JSON output, the
+model prompts and the agent tools' text stay English; the replies an interface sends a
+person, errors included, are catalog text.
+
+Adding a language:
+
+1. **The locale.** In `crates/core/src/locale.rs`, add the `Locale` variant, its `id()`
+   (the language subtag, e.g. `es`), its place in `ALL`, and its parameter and arm in
+   `Catalogs::new` and `Catalogs::get`. Every surface's `Catalogs::new` call then
+   stops compiling until it names the new catalog.
+2. **The Rust catalogs.** Write one `Messages` value per surface; the compiler lists
+   every missing message:
+   - `judge_core::locale` (the source offer, the contact, the freshness lines);
+   - `judge_bot::discord::catalog`, and the language's Discord locale tags in
+     `TAGS` (its command descriptions register under them);
+   - `judge_bot::alert::catalog` (the alert webhook);
+   - `judge_api::catalog` (the HTTP API's messages and citation labels);
+   - `judge_agent::catalog` and `crates/judgebot/src/catalog.rs` (the usages);
+   - `judge_configure::catalog`, and the schema and `.env` help overrides beside it.
+3. **The pages.** Add the language to `LOCALES` and a catalog to `CATALOGS` in
+   `web/src/messages.ts` and `web/src/admin/messages.ts` (`tsc` lists what is
+   missing), an object to judge-config's page catalog, `crates/configure/ui/messages.js`, in the
+   format its header describes (`cargo test -p judge-configure` holds its keys to
+   English's), and to the docs site:
+   the locale in `site/src/locales.mjs`, its strings in `site/src/i18n.ts`, sidebar
+   label `translations` in `site/astro.config.mjs`, and its pages under
+   `site/src/content/docs/<locale>/` (authored, or manifest entries with `locale`).
+4. **Limits.** `scripts/check.sh` runs the tests that hold every locale to Discord's
+   limits (100-character command descriptions, the rating form's 45 and 100) and the
+   `const` assertion that `/judge`'s question still fits a "did you mean?" prompt
+   (`render::PICK_QUESTION_LIMIT`, the least over every catalog): a wordier lead
+   shortens the question a prompt can hold, and the build says so.
+
 ## Debugging a wrong answer
 
 The cheapest way to reproduce a bad ruling is the agent session. It runs the bot's

@@ -34,6 +34,7 @@
 //! others.
 
 pub mod admin;
+pub mod catalog;
 mod gated;
 pub mod mcp;
 pub mod ops;

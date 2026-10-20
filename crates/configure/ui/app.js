@@ -2,8 +2,27 @@
 // sends: the judge.toml schema (from the loader's own types) and the .env
 // registry (help from .env.example's comments). Nothing about the config's
 // rules is restated; each draft goes to /api/check, which runs the loaders.
+// Its text is messages.js, in the browser's language, else the instance's
+// (JUDGE_LOCALE); the server's replies come in the language the browser asks
+// for (x-judge-config-languages).
+
+import { MESSAGES, pickLocale } from "./messages.js";
 
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+
+// The browser's language first; the instance's once /api/state says it.
+let m = MESSAGES[pickLocale(navigator.languages, "en")];
+
+function chooseLocale(instance) {
+  const locale = pickLocale(navigator.languages, instance);
+  m = MESSAGES[locale];
+  document.documentElement.lang = locale;
+  for (const node of document.querySelectorAll("[data-msg]")) {
+    const text = m[node.dataset.msg];
+    if (node.tagName === "LI") spans(node, String(text).split("`"), true);
+    else node.textContent = text;
+  }
+}
 
 let state = null; // GET /api/state
 let tomlMode = "none"; // "none" | "form" | "text"
@@ -30,6 +49,7 @@ async function call(path, body) {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "x-judge-config-token": token,
+      "x-judge-config-languages": (navigator.languages || []).join(","),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -88,7 +108,8 @@ function points(items, cls = "points") {
   );
 }
 
-function spans(p, parts) {
+function spans(p, parts, replace = false) {
+  if (replace) p.replaceChildren();
   parts.forEach((part, i) => {
     p.append(i % 2 ? el("code", { text: part }) : document.createTextNode(part));
   });
@@ -211,15 +232,6 @@ async function runCheck() {
 
 // ---------- the checks panel ----------
 
-const SURFACES = {
-  database: "Database",
-  models: "Models",
-  roles: "Roles",
-  discord: "Discord bot",
-  http: "HTTP API",
-  admin: "Admin interface",
-};
-
 function renderChecks(error) {
   const list = document.getElementById("check-list");
   const warnings = document.getElementById("warnings");
@@ -234,11 +246,11 @@ function renderChecks(error) {
     const li = el(
       "li",
       { class: `check ${c.outcome}` },
-      el("span", { class: "name", text: SURFACES[c.surface] || c.surface }),
+      el("span", { class: "name", text: m.surfaces[c.surface] || c.surface }),
       " ",
       el("span", {
         class: "state",
-        text: { ok: "✓ starts", error: "✗ refuses", skipped: "– not checked" }[c.outcome],
+        text: m.outcome[c.outcome],
       }),
     );
     const msg = c.outcome === "ok" ? c.summary : c.outcome === "error" ? c.message : c.reason;
@@ -260,9 +272,9 @@ function renderChecks(error) {
 }
 
 function describe(loc) {
-  if (loc.in === "toml") return `judge.toml: ${loc.path}`;
-  if (loc.in === "env") return `.env: ${loc.var}`;
-  if (loc.in === "text") return "judge.toml text";
+  if (loc.in === "toml") return m.whereToml(loc.path);
+  if (loc.in === "env") return m.whereEnv(loc.var);
+  if (loc.in === "text") return m.whereText;
   return null;
 }
 
@@ -360,15 +372,12 @@ function input(s, value, put, opts = {}) {
   if (opts2) {
     const sel = el("select", {});
     if (!opts.required) {
-      const d = r.default !== undefined ? `(default: ${r.default})` : "(default)";
+      const d = r.default !== undefined ? m.defaultIs(r.default) : m.defaultPlain;
       sel.append(el("option", { value: "", text: d }));
     }
     for (const o of opts2) {
-      const unbuilt =
-        opts.endpoints && !state.schema["x-built-endpoints"].includes(o.value)
-          ? " (not built)"
-          : "";
-      sel.append(el("option", { value: o.value, text: `${o.value}${unbuilt}` }));
+      const unbuilt = opts.endpoints && !state.schema["x-built-endpoints"].includes(o.value);
+      sel.append(el("option", { value: o.value, text: unbuilt ? m.notBuilt(o.value) : o.value }));
     }
     sel.value = value ?? "";
     sel.addEventListener("change", () => put(sel.value === "" ? undefined : sel.value));
@@ -384,7 +393,7 @@ function input(s, value, put, opts = {}) {
   }
   if (t.includes("boolean")) {
     const sel = el("select", {});
-    const d = r.default !== undefined ? `(default: ${r.default})` : "(default)";
+    const d = r.default !== undefined ? m.defaultIs(r.default) : m.defaultPlain;
     sel.append(el("option", { value: "", text: d }));
     sel.append(el("option", { value: "true", text: "true" }));
     sel.append(el("option", { value: "false", text: "false" }));
@@ -398,7 +407,7 @@ function input(s, value, put, opts = {}) {
       step: t.includes("integer") ? "1" : "any",
       min: r.minimum,
       max: r.maximum,
-      placeholder: opts.required ? "required" : "default",
+      placeholder: opts.required ? m.placeholderRequired : m.placeholderDefault,
     });
     box.value = value ?? "";
     box.addEventListener("input", () => {
@@ -413,7 +422,7 @@ function input(s, value, put, opts = {}) {
     type: "text",
     spellcheck: "false",
     autocomplete: "off",
-    placeholder: opts.required ? "required" : "default",
+    placeholder: opts.required ? m.placeholderRequired : m.placeholderDefault,
   });
   box.value = value ?? "";
   box.addEventListener("input", () => {
@@ -428,7 +437,7 @@ function input(s, value, put, opts = {}) {
     status.hidden = !name;
     const set = envIsSet(name);
     status.className = `badge ${set ? "ok" : "bad"}`;
-    status.textContent = set ? "set in .env" : "not set in .env";
+    status.textContent = set ? m.setInEnv : m.notSetInEnv;
   };
   badge();
   return el("div", { class: "row" }, box, status);
@@ -442,7 +451,7 @@ function fieldRow(label, path, help, control, required) {
       "label",
       {},
       el("code", { text: label }),
-      required ? el("span", { class: "req", text: "required" }) : null,
+      required ? el("span", { class: "req", text: m.required }) : null,
     ),
     control,
     help ? doc(help) : null,
@@ -483,7 +492,7 @@ function fields(schema, obj, path, opts = {}) {
     );
     let help = prop.description || r.description;
     if (endpoints && opts.endpoint && endpoints[opts.endpoint] === "no") {
-      help = `Does not apply to endpoint = "${opts.endpoint}": remove it. ${help || ""}`;
+      help = m.doesNotApply(opts.endpoint, help);
     }
     out.push(fieldRow(key, here, help, control, req));
   }
@@ -537,14 +546,14 @@ async function setTomlMode(mode) {
         replace: replaceDraft,
       });
     } catch (e) {
-      fatal(`Cannot show the text: ${e.message}`);
+      fatal(m.cannotShowText(e.message));
       return;
     }
     tomlText = rendered.toml.new ?? "";
     textEdited = false;
   }
   if (mode === "form" && tomlMode === "text") {
-    if (textEdited && !confirm("Discard the text edits and return to the form?")) return;
+    if (textEdited && !confirm(m.confirmDiscardText)) return;
   }
   tomlMode = mode;
   renderModels();
@@ -560,24 +569,17 @@ function renderModels() {
       el(
         "div",
         { class: "card" },
-        el("h3", { text: "No judge.toml: the zero-config setup" }),
-        prose(`No file at ${state.toml.path}, so every binary runs:`, "desc"),
-        points([
-          "Anthropic's API directly, keyed by `ANTHROPIC_API_KEY`",
-          "`claude-opus-5-5` for both stages",
-          "Voyage embeddings, when `VOYAGE_API_KEY` is set",
-        ]),
-        prose(
-          "Its knobs (`ANTHROPIC_BASE_URL`, `VOYAGE_MODEL`, `VOYAGE_DIMENSIONS`) are in Settings. To choose providers and models per stage:",
-          "desc",
-        ),
+        el("h3", { text: m.zeroConfigTitle }),
+        prose(m.zeroConfigLead(state.toml.path), "desc"),
+        points(m.zeroConfigPoints),
+        prose(m.zeroConfigKnobs, "desc"),
         el(
           "div",
           { class: "row" },
           el("button", {
             class: "btn primary",
             type: "button",
-            text: "Create judge.toml",
+            text: m.createToml,
             onclick: () => {
               form = structuredClone(MINIMAL);
               formBase = "";
@@ -589,7 +591,7 @@ function renderModels() {
           el("button", {
             class: "btn",
             type: "button",
-            text: "Start from judge.example.toml as text",
+            text: m.startFromExample,
             onclick: () => {
               tomlText = state.toml.example;
               textEdited = true;
@@ -609,14 +611,14 @@ function renderModels() {
       el("button", {
         class: `btn${tomlMode === "form" ? " primary" : ""}`,
         type: "button",
-        text: "Form",
+        text: m.modeForm,
         onclick: () => setTomlMode("form"),
         disabled: form === null,
       }),
       el("button", {
         class: `btn${tomlMode === "text" ? " primary" : ""}`,
         type: "button",
-        text: "Text",
+        text: m.modeText,
         onclick: () => setTomlMode("text"),
       }),
     );
@@ -624,12 +626,7 @@ function renderModels() {
   modeRow.append(el("span", { class: "muted small", text: state.toml.path }));
   root.append(modeRow);
   if (state.toml.error) {
-    root.append(
-      prose(
-        `The file on disk is not valid TOML, so it opens as text: ${state.toml.error}`,
-        "notice",
-      ),
-    );
+    root.append(prose(m.notValidToml(state.toml.error), "notice"));
   }
   if (tomlMode === "text") {
     const ta = el("textarea", { class: "code", spellcheck: "false" });
@@ -651,7 +648,7 @@ function renderModels() {
 function renderProviders() {
   form.providers ??= {};
   const providers = form.providers;
-  const section = el("div", {}, el("h2", { class: "section", text: "Providers" }));
+  const section = el("div", {}, el("h2", { class: "section", text: m.providers }));
   section.append(doc(state.schema.properties.providers.description, "muted"));
   for (const [name, entry] of Object.entries(providers)) {
     const variant = variantFor(entry.kind);
@@ -669,7 +666,7 @@ function renderProviders() {
         el("button", {
           class: "btn danger",
           type: "button",
-          text: "Remove",
+          text: m.remove,
           onclick: () => {
             delete providers[name];
             scheduleCheck();
@@ -704,7 +701,7 @@ function renderProviders() {
   }
   const newName = el("input", {
     type: "text",
-    placeholder: "name, e.g. litellm",
+    placeholder: m.providerNamePlaceholder,
     spellcheck: "false",
   });
   const newKind = el("select", {});
@@ -718,7 +715,7 @@ function renderProviders() {
       el("button", {
         class: "btn",
         type: "button",
-        text: "Add provider",
+        text: m.addProvider,
         onclick: () => {
           const n = newName.value.trim();
           if (!n || Object.hasOwn(providers, n)) {
@@ -743,7 +740,7 @@ function renameProvider(from, to, box) {
   }
   if (Object.hasOwn(providers, to)) {
     box.value = from;
-    alert(`There is already a provider named ${to}.`);
+    alert(m.providerExists(to));
     return;
   }
   // Keep the order, and follow the stages that named it.
@@ -761,7 +758,7 @@ function renderStages() {
   form.models ??= {};
   const models = form.models;
   const modelsSchema = def("#/$defs/ModelsEntry");
-  const section = el("div", {}, el("h2", { class: "section", text: "Models" }));
+  const section = el("div", {}, el("h2", { class: "section", text: m.models }));
   section.append(doc(state.schema.properties.models.description, "muted"));
   const required = new Set(modelsSchema.required || []);
   for (const [stage, prop] of Object.entries(modelsSchema.properties)) {
@@ -777,7 +774,7 @@ function renderStages() {
         scheduleCheck();
         renderModels();
       });
-      head.append(el("label", { class: "small muted" }, toggle, " use"));
+      head.append(el("label", { class: "small muted" }, toggle, ` ${m.useStage}`));
     } else {
       models[stage] ??= {};
     }
@@ -798,41 +795,26 @@ function providerPicker(stage, r, entry) {
   const kinds = prop["x-provider-kinds"] || resolve(prop)["x-provider-kinds"] || [];
   const required = (r.required || []).includes("provider");
   const sel = el("select", {});
-  if (!required) sel.append(el("option", { value: "", text: "(default: voyage)" }));
+  if (!required) sel.append(el("option", { value: "", text: m.defaultVoyage }));
   const names = Object.entries(form.providers || {})
     .filter(([, p]) => kinds.includes(p.kind))
     .map(([n]) => n);
   for (const n of names) sel.append(el("option", { value: n, text: n }));
   if (entry.provider && !names.includes(entry.provider)) {
-    sel.append(
-      el("option", { value: entry.provider, text: `${entry.provider} (no such provider)` }),
-    );
+    sel.append(el("option", { value: entry.provider, text: m.noSuchProvider(entry.provider) }));
   }
-  if (required && !entry.provider) sel.append(el("option", { value: "", text: "choose…" }));
+  if (required && !entry.provider) sel.append(el("option", { value: "", text: m.choose }));
   sel.value = entry.provider ?? "";
   sel.addEventListener("change", () => {
     if (sel.value === "") delete entry.provider;
     else entry.provider = sel.value;
     scheduleCheck();
   });
-  const help = `${prop.description || ""} Kinds: ${kinds.join(", ")}.`;
+  const help = m.kinds(prop.description || "", kinds);
   return fieldRow("provider", `models.${stage}.provider`, help, sel, required);
 }
 
 // ---------- the settings tab ----------
-
-const GROUPS = {
-  instance: "This instance",
-  roles: "Roles",
-  models: "Models without a judge.toml",
-  pipeline: "Spend and pipeline",
-  discord: "Discord bot",
-  http: "HTTP API and web app",
-  mcp: "MCP over HTTP",
-  admin: "Admin interface",
-  database: "Database",
-  deployment: "Deployment",
-};
 
 function renderSettings() {
   const root = document.getElementById("tab-settings");
@@ -840,21 +822,17 @@ function renderSettings() {
   root.append(
     points(
       [
-        state.env.exists
-          ? `Editing ${state.env.path}`
-          : `${state.env.path} does not exist yet: saving creates it from \`.env.example\``,
-        "Secrets (API keys, tokens, `DATABASE_URL`, the alert webhook) are never shown",
-        "Replace… writes a new value you type or paste; Cancel drops it before saving",
-        "Blank means the default",
+        state.env.exists ? m.settingsEditing(state.env.path) : m.settingsCreates(state.env.path),
+        ...m.settingsPoints,
       ],
       "points notice",
     ),
   );
   if (state.env.error) {
-    root.append(prose(`This .env cannot be edited as it stands: ${state.env.error}`, "notice"));
+    root.append(prose(m.envUneditable(state.env.error), "notice"));
     return;
   }
-  for (const [group, title] of Object.entries(GROUPS)) {
+  for (const [group, title] of Object.entries(m.groups)) {
     const vars = state.env.vars.filter((v) => v.group === group);
     if (!vars.length) continue;
     const card = el("div", { class: "card" }, el("h3", { text: title }));
@@ -875,14 +853,8 @@ function renderSettings() {
   const card = el(
     "div",
     { class: "card" },
-    el("h3", { text: "Other variables in .env" }),
-    points(
-      [
-        "Provider keys and other variables this editor does not know",
-        "Never shown: replace one, or add a variable a `judge.toml` provider names",
-      ],
-      "points muted",
-    ),
+    el("h3", { text: m.otherVariables }),
+    points(m.otherPoints, "points muted"),
   );
   for (const o of others) {
     card.append(
@@ -890,24 +862,22 @@ function renderSettings() {
         "div",
         { class: "field", dataset: { env: o.name } },
         el("label", {}, el("code", { text: o.name })),
-        replacer(o.name, o.set, o.wanted ? "not in .env yet" : null),
+        replacer(o.name, o.set, o.wanted ? m.notInEnvYet : null),
       ),
     );
   }
   const newName = el("input", {
     type: "text",
-    placeholder: "NAME, e.g. LITELLM_KEY",
+    placeholder: m.newVariablePlaceholder,
     spellcheck: "false",
     autocapitalize: "characters",
-    "aria-label": "New variable name",
+    "aria-label": m.newVariableLabel,
   });
   const add = () => {
     const n = newName.value.trim();
     const known = state.env.vars.some((v) => v.name === n);
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n) || known) {
-      newName.setCustomValidity(
-        known ? `${n} has its own field above` : "Letters, digits and _ only",
-      );
+      newName.setCustomValidity(known ? m.hasOwnField(n) : m.nameCharacters);
       newName.reportValidity();
       return;
     }
@@ -925,7 +895,7 @@ function renderSettings() {
       "div",
       { class: "row" },
       newName,
-      el("button", { class: "btn", type: "button", text: "Add variable", onclick: add }),
+      el("button", { class: "btn", type: "button", text: m.addVariable, onclick: add }),
     ),
   );
   root.append(card);
@@ -939,7 +909,7 @@ function replacer(name, set, why) {
   const pending = Object.hasOwn(replaceDraft, name);
   const status = el("span", {
     class: `badge ${pending ? "chg" : set ? "ok" : ""}`,
-    text: pending ? (set ? "will be replaced" : "will be set") : set ? "set" : "not set",
+    text: replacerStatus(pending, set),
   });
   const head = el(
     "div",
@@ -953,7 +923,7 @@ function replacer(name, set, why) {
       el("button", {
         class: "btn",
         type: "button",
-        text: set ? "Replace…" : "Set…",
+        text: set ? m.replaceButton : m.setButton,
         onclick: () => {
           replaceOpen.add(name);
           renderSettings();
@@ -973,8 +943,8 @@ function replacer(name, set, why) {
     "data-form-type": "other",
     spellcheck: "false",
     autocapitalize: "off",
-    placeholder: set ? "new value" : "value",
-    "aria-label": `New value for ${name}`,
+    placeholder: set ? m.newValuePlaceholder : m.valuePlaceholder,
+    "aria-label": m.newValueFor(name),
   });
   box.value = Object.hasOwn(replaceDraft, name) ? replaceDraft[name] : "";
   box.addEventListener("input", () => {
@@ -982,25 +952,25 @@ function replacer(name, set, why) {
     else replaceDraft[name] = box.value;
     const now = Object.hasOwn(replaceDraft, name);
     status.className = `badge ${now ? "chg" : set ? "ok" : ""}`;
-    status.textContent = now ? (set ? "will be replaced" : "will be set") : set ? "set" : "not set";
+    status.textContent = replacerStatus(now, set);
     scheduleCheck();
   });
   const show = el("button", {
     class: "btn",
     type: "button",
-    text: "Show",
+    text: m.show,
     "aria-pressed": "false",
     onclick: () => {
       const visible = box.type === "password";
       box.type = visible ? "text" : "password";
-      show.textContent = visible ? "Hide" : "Show";
+      show.textContent = visible ? m.hide : m.show;
       show.setAttribute("aria-pressed", String(visible));
     },
   });
   const cancel = el("button", {
     class: "btn",
     type: "button",
-    text: "Cancel",
+    text: m.cancel,
     onclick: () => {
       delete replaceDraft[name];
       replaceOpen.delete(name);
@@ -1010,6 +980,12 @@ function replacer(name, set, why) {
   });
   wrap.append(el("div", { class: "row" }, box, show, cancel));
   return wrap;
+}
+
+/// A write-only variable's status: a replacement pending, or whether it is set.
+function replacerStatus(pending, set) {
+  if (pending) return set ? m.willReplace : m.willSet;
+  return set ? m.isSet : m.notSet;
 }
 
 /// Variables the `judge.toml` draft names as `api_key_env` that `.env` does
@@ -1028,9 +1004,9 @@ function wantedKeys() {
 
 function settingRow(v, help) {
   const label = el("label", {}, el("code", { text: v.name }));
-  const helpNode = help ? el("details", {}, el("summary", { text: "about" }), prose(help)) : null;
+  const helpNode = help ? el("details", {}, el("summary", { text: m.about }), prose(help)) : null;
   if (v.kind === "secret" || v.hidden) {
-    const why = v.hidden ? "not shown: it expands $ or carries credentials" : null;
+    const why = v.hidden ? m.hiddenWhy : null;
     return el(
       "div",
       { class: "field", dataset: { env: v.name } },
@@ -1050,7 +1026,7 @@ function settingRow(v, help) {
   if (w.widget === "choice" || w.widget === "toggle") {
     const values = w.widget === "toggle" ? ["true", "false"] : w.values;
     control = el("select", {});
-    control.append(el("option", { value: "", text: "(default)" }));
+    control.append(el("option", { value: "", text: m.defaultPlain }));
     for (const x of values) control.append(el("option", { value: x, text: x }));
     if (current && !values.includes(current))
       control.append(el("option", { value: current, text: current }));
@@ -1063,7 +1039,7 @@ function settingRow(v, help) {
       min: w.widget === "integer" ? w.min : undefined,
       spellcheck: "false",
       autocomplete: "off",
-      placeholder: "default",
+      placeholder: m.placeholderDefault,
     });
     control.value = current;
     control.addEventListener("input", () => {
@@ -1124,7 +1100,7 @@ function renderReview() {
   const root = document.getElementById("tab-review");
   root.replaceChildren();
   if (!report) {
-    root.append(prose("Checking…", "muted"));
+    root.append(prose(m.checking, "muted"));
     return;
   }
   const tomlOld = report.toml.old ?? "";
@@ -1132,7 +1108,7 @@ function renderReview() {
   const tomlDiffers = tomlNew !== null && tomlNew !== tomlOld;
   const envDiffers = report.env.changed;
   root.append(el("h2", { class: "section", text: state.toml.path }));
-  root.append(tomlDiffers ? diffLines(tomlOld, tomlNew) : prose("No change.", "muted"));
+  root.append(tomlDiffers ? diffLines(tomlOld, tomlNew) : prose(m.noChange, "muted"));
   root.append(el("h2", { class: "section", text: state.env.path }));
   if (envDiffers) {
     const pre = el("pre", { class: "diff" });
@@ -1140,17 +1116,16 @@ function renderReview() {
       const cls = { "+": "add", "-": "del", "~": "chg" }[d.op];
       pre.append(el("span", { class: cls, text: `${d.op} ${d.line}` }));
     }
-    if (!state.env.exists)
-      pre.append(el("span", { class: "gap", text: "  (created from .env.example)" }));
+    if (!state.env.exists) pre.append(el("span", { class: "gap", text: m.createdFromExample }));
     root.append(pre);
   } else {
-    root.append(prose("No change.", "muted"));
+    root.append(prose(m.noChange, "muted"));
   }
   const errors = report.checks.filter((c) => c.outcome === "error");
   const save = el("button", {
     class: "btn primary",
     type: "button",
-    text: "Save",
+    text: m.save,
     disabled: !(tomlDiffers || envDiffers),
     onclick: () => doSave(errors.length),
   });
@@ -1162,29 +1137,27 @@ function renderReview() {
       el("button", {
         class: "btn",
         type: "button",
-        text: "Discard changes",
+        text: m.discard,
         disabled: pendingCount() === 0,
         onclick: () => {
-          if (confirm("Discard every unsaved change?")) load();
+          if (confirm(m.confirmDiscardAll)) load();
         },
       }),
       errors.length
         ? el("span", {
             class: "small",
-            text: `${errors.length} part(s) would refuse to start. Saving is still allowed.`,
+            text: m.refusals(errors.length),
           })
         : null,
     ),
   );
   if (savedNote) {
-    root.append(
-      el("div", { class: "notice" }, prose("Saved. To apply it:", ""), points(savedNote)),
-    );
+    root.append(el("div", { class: "notice" }, prose(m.savedApply, ""), points(savedNote)));
   }
 }
 
 async function doSave(errors) {
-  if (errors && !confirm("Some parts would refuse to start with these files. Save anyway?")) return;
+  if (errors && !confirm(m.confirmSaveErrors)) return;
   const tomlDiffers = tomlChanged();
   const envDiffers = Object.keys(envDraft).length + Object.keys(replaceDraft).length > 0;
   try {
@@ -1196,18 +1169,12 @@ async function doSave(errors) {
       env_hash: state.env.hash,
     });
   } catch (e) {
-    fatal(e.status === 409 ? `${e.message}` : `Not saved: ${e.message}`);
+    fatal(e.status === 409 ? `${e.message}` : m.notSaved(e.message));
     return;
   }
   await load();
   switchTab("review");
-  savedNote = [
-    envDiffers &&
-      "Docker, `.env` changed: `docker compose up -d` (recreates the containers whose environment changed)",
-    tomlDiffers &&
-      "Docker, `judge.toml` changed: `docker compose restart judgebot` (`up -d` does not see a mounted file's edit)",
-    "`cargo run`: restart the binaries; they read both files at startup",
-  ];
+  savedNote = [envDiffers && m.savedEnv, tomlDiffers && m.savedToml, m.savedCargo];
   renderReview();
 }
 
@@ -1215,7 +1182,7 @@ async function doSave(errors) {
 
 async function load() {
   if (!token) {
-    fatal("No token: open the URL judge-config printed (it ends in #token=…).");
+    fatal(m.noToken);
     return;
   }
   try {
@@ -1225,6 +1192,7 @@ async function load() {
     return;
   }
   fatal("");
+  chooseLocale(state.locale);
   envDraft = Object.create(null);
   replaceDraft = Object.create(null);
   replaceOpen.clear();
@@ -1244,13 +1212,16 @@ async function load() {
     form = null;
     formBase = "";
   }
-  document.getElementById("paths").textContent = `Editing ${state.env.path} and ${state.toml.path}`;
+  document.getElementById("paths").textContent = m.paths(state.env.path, state.toml.path);
   renderModels();
   renderSettings();
   scheduleCheck();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  // A heading cannot be empty in the markup; its text is the catalog's.
+  document.getElementById("checks").prepend(el("h2", { dataset: { msg: "checksTitle" } }));
+  chooseLocale("en");
   for (const b of document.querySelectorAll(".tabs button")) {
     b.addEventListener("click", () => switchTab(b.dataset.tab));
   }

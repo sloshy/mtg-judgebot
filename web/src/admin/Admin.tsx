@@ -7,13 +7,22 @@
 // own file.
 
 import "@fontsource-variable/figtree";
-import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  onCleanup,
+  Show,
+  Switch,
+} from "solid-js";
 import { BotAvatar, BotMessage, Notice } from "../Chat";
 import { ThemeSelect } from "../Controls";
-import { type Messages, messages, pickLocale } from "../messages";
+import { isLocale, type Locale, type Messages, messages, pickLocale } from "../messages";
 import { type AdminView, follow, href, route } from "../router";
 import "./admin.css";
-import { forgetToken, type Read, takeToken } from "./api";
+import { fetchInstanceLocale, forgetToken, type Read, takeToken } from "./api";
 import { CallPage } from "./Call";
 import { CallsPage } from "./Calls";
 import { FailuresPage } from "./Failures";
@@ -48,13 +57,26 @@ const TABS: readonly {
 ];
 
 export default function Admin() {
-  const locale = pickLocale(navigator.languages, "en" as const);
-  const m = adminMessages(locale);
-  const pub = messages(locale);
+  // The browser's language, else the instance's (`JUDGE_LOCALE`, read once
+  // a token is held), else English: the order the server's replies follow.
+  const browserLocale = pickLocale(navigator.languages, undefined);
+  const [instance, setInstance] = createSignal<Locale>();
+  const locale = createMemo<Locale>(() => browserLocale ?? instance() ?? "en");
+  const m = createMemo(() => adminMessages(locale()));
+  const pub = createMemo(() => messages(locale()));
   const [token, setToken] = createSignal(takeToken());
   const [refused, setRefused] = createSignal(false);
-  document.documentElement.lang = locale;
-  document.title = `${m.title} · ${pub.title}`;
+  createEffect(() => {
+    const t = token();
+    if (browserLocale !== undefined || t === null) return;
+    void fetchInstanceLocale(t).then((l) => {
+      if (isLocale(l)) setInstance(l);
+    });
+  });
+  createEffect(() => {
+    document.documentElement.lang = locale();
+    document.title = `${m().title} · ${pub().title}`;
+  });
   // The pages are private: never offered to a search engine, whatever the
   // listener's address.
   const robots = document.createElement("meta");
@@ -76,8 +98,12 @@ export default function Admin() {
   });
   const ctx = (t: string): AdminContext => ({
     token: t,
-    m,
-    pub,
+    get m() {
+      return m();
+    },
+    get pub() {
+      return pub();
+    },
     refused: () => {
       forgetToken();
       setToken(null);
@@ -88,37 +114,37 @@ export default function Admin() {
   return (
     <div class="app admin">
       <a class="skip-link" href="#main">
-        {pub.skipToContent}
+        {pub().skipToContent}
       </a>
       <header class="topbar">
         <div class="topbar-inner">
           <h1 class="brand">
             <a href={href({ page: "admin", view: { view: "calls", filter: {} } })}>
               <BotAvatar />
-              <span class="brand-name">{m.title}</span>
+              <span class="brand-name">{m().title}</span>
             </a>
           </h1>
           <div class="topbar-end">
             <Show when={token()}>
-              <nav class="tabs" aria-label={m.navLabel}>
+              <nav class="tabs" aria-label={m().navLabel}>
                 <For each={TABS}>
                   {(tab) => (
                     <a
                       href={href({ page: "admin", view: tab.view })}
                       aria-current={tab.on.includes(view().view) ? "page" : undefined}
                     >
-                      {tab.label(m)}
+                      {tab.label(m())}
                     </a>
                   )}
                 </For>
               </nav>
             </Show>
-            <ThemeSelect m={pub} />
+            <ThemeSelect m={pub()} />
           </div>
         </div>
       </header>
       <main class="main" id="main" tabIndex={-1}>
-        <Show when={token()} fallback={<NoToken m={m} pub={pub} refused={refused()} />}>
+        <Show when={token()} fallback={<NoToken m={m()} pub={pub()} refused={refused()} />}>
           {(t) => (
             <Switch>
               <Match
@@ -166,9 +192,9 @@ export default function Admin() {
               </Match>
               <Match when={view().view === "missing"}>
                 <section class="page">
-                  <BotMessage m={pub}>
-                    <Notice tone="note" title={m.missingTitle}>
-                      <p>{m.pageMissing}</p>
+                  <BotMessage m={pub()}>
+                    <Notice tone="note" title={m().missingTitle}>
+                      <p>{m().pageMissing}</p>
                     </Notice>
                   </BotMessage>
                 </section>

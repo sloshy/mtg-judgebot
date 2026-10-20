@@ -18,6 +18,10 @@
 
 use std::time::Duration;
 
+use judge_core::Locale;
+
+use crate::alert::catalog::{self as alert, BackupFailure, BackupStage, LastGood};
+
 use super::{
     name::{BackupName, Stamp},
     settings::Days,
@@ -145,27 +149,24 @@ impl Stage {
         matches!(self, Self::Prune | Self::KeepLocal)
     }
 
-    /// What was being done, as a clause after "failed while": the text an
-    /// alert and the command line name it by.
+    /// What was being done, as a clause after "failed while", in
+    /// `locale`: the text an alert and the command line name it by.
     #[must_use]
-    pub fn clause(&self) -> String {
-        match self {
-            Self::List => "listing the bucket".to_owned(),
-            Self::Dump => "dumping the database".to_owned(),
-            Self::Version { server, client } => format!(
-                "dumping the database: pg_dump {client} is older than the server ({server}) and \
-                 refuses to dump it, so the image needs a newer PostgreSQL client. Retrying will \
-                 not help"
-            ),
-            Self::TooSmall { bytes, min } => format!(
-                "checking the dump: it was {bytes} bytes, under BACKUP_MIN_BYTES ({min}), so it \
-                 was not uploaded"
-            ),
-            Self::Upload => "uploading the dump".to_owned(),
-            Self::Prune => "pruning old backups".to_owned(),
-            Self::KeepLocal => "copying it to BACKUP_KEEP_LOCAL".to_owned(),
-            Self::Crashed => "running the check (it crashed)".to_owned(),
-        }
+    pub fn clause(&self, locale: Locale) -> String {
+        let stage = match self {
+            Self::List => BackupStage::List,
+            Self::Dump => BackupStage::Dump,
+            Self::Version { server, client } => BackupStage::Version { server, client },
+            Self::TooSmall { bytes, min } => BackupStage::TooSmall {
+                bytes: *bytes,
+                min: *min,
+            },
+            Self::Upload => BackupStage::Upload,
+            Self::Prune => BackupStage::Prune,
+            Self::KeepLocal => BackupStage::KeepLocal,
+            Self::Crashed => BackupStage::Crashed,
+        };
+        (alert::messages(locale).backup_stage)(stage)
     }
 }
 
@@ -278,18 +279,21 @@ pub struct Streak {
 }
 
 impl Streak {
-    /// The streak after a scheduled `attempt`, and what the webhook is told.
+    /// The streak after a scheduled `attempt`, and what the webhook is
+    /// told, in `locale`.
     #[must_use]
-    pub fn attempted(self, attempt: &Attempt, before: Before, now: i64) -> (Self, Option<String>) {
+    pub fn attempted(
+        self,
+        locale: Locale,
+        attempt: &Attempt,
+        before: Before,
+        now: i64,
+    ) -> (Self, Option<String>) {
         match attempt {
             Attempt::Done { name, bytes } => (
                 Self::default(),
                 (self.failures > 0).then(|| {
-                    format!(
-                        "judgebot backup: a database backup succeeded ({name}, {} MB). The \
-                         attempt before it had failed.",
-                        bytes / 1_000_000
-                    )
+                    (alert::messages(locale).backup_recovered)(&name.to_string(), bytes / 1_000_000)
                 }),
             ),
             Attempt::Failed { stage, name } => {
@@ -301,7 +305,9 @@ impl Streak {
                 let news = self.stage != Some(kind);
                 (
                     next,
-                    news.then(|| failure_text(Trigger::Schedule, stage, *name, before, now)),
+                    news.then(|| {
+                        failure_text(locale, Trigger::Schedule, stage, *name, before, now)
+                    }),
                 )
             }
         }
@@ -310,17 +316,14 @@ impl Streak {
     /// The streak after a check that listed the bucket and found nothing
     /// due. That ends a streak of listing failures (the bucket is readable
     /// again, and the newest backup is recent), with a word to the webhook;
-    /// any other streak waits for a backup to succeed.
+    /// any other streak waits for a backup to succeed. The word is in
+    /// `locale`.
     #[must_use]
-    pub fn listed(self) -> (Self, Option<String>) {
+    pub fn listed(self, locale: Locale) -> (Self, Option<String>) {
         if self.stage == Some(StageKind::List) {
             (
                 Self::default(),
-                Some(
-                    "judgebot backup: the bucket can be listed again. Its newest backup is \
-                     recent, so none is due yet."
-                        .to_owned(),
-                ),
+                Some(alert::messages(locale).backup_listed.to_owned()),
             )
         } else {
             (self, None)
@@ -331,58 +334,52 @@ impl Streak {
 /// What the webhook is told after a manual run (`judgebot backup run`,
 /// perhaps from cron): every failure, as the script does, and no recovery,
 /// because a manual run has no streak to read. The scheduled service goes
-/// through [`Streak::attempted`].
+/// through [`Streak::attempted`]. In `locale`.
 #[must_use]
-pub fn manual_alert(attempt: &Attempt, before: Before, now: i64) -> Option<String> {
+pub fn manual_alert(locale: Locale, attempt: &Attempt, before: Before, now: i64) -> Option<String> {
     match attempt {
         Attempt::Done { .. } => None,
-        Attempt::Failed { stage, name } => {
-            Some(failure_text(Trigger::Manual, stage, *name, before, now))
-        }
+        Attempt::Failed { stage, name } => Some(failure_text(
+            locale,
+            Trigger::Manual,
+            stage,
+            *name,
+            before,
+            now,
+        )),
     }
 }
 
-/// A failure, for the webhook. It names the step and sizes, never an error
-/// message: those can carry hosts and keys, and the log has them.
+/// A failure, for the webhook, in `locale`. It names the step and sizes,
+/// never an error message: those can carry hosts and keys, and the log has
+/// them.
 fn failure_text(
+    locale: Locale,
     trigger: Trigger,
     stage: &Stage,
     name: Option<BackupName>,
     before: Before,
     now: i64,
 ) -> String {
-    let last_good = match before {
-        Before::Newest(s) => format!(
-            " The newest backup in the bucket is from {} ({} days ago).",
-            s.human(),
-            now.saturating_sub(s.unix()).max(0) / 86_400
-        ),
-        Before::Empty => " There is no earlier backup in the bucket.".to_owned(),
-        Before::Unknown => String::new(),
+    let when = match before {
+        Before::Newest(s) => Some((s.human(), now.saturating_sub(s.unix()).max(0) / 86_400)),
+        Before::Empty | Before::Unknown => None,
     };
-    let what = match trigger {
-        Trigger::Schedule => "the scheduled database backup",
-        Trigger::Manual => "a database backup (`judgebot backup run`)",
+    let before = match (before, &when) {
+        (Before::Newest(_), Some((when, days))) => LastGood::Newest {
+            when: when.as_str(),
+            days: *days,
+        },
+        (Before::Empty, _) => LastGood::Empty,
+        (Before::Newest(_) | Before::Unknown, _) => LastGood::Unknown,
     };
-    let head = match name {
-        Some(name) if stage.uploaded() => format!(
-            "judgebot backup: {name} was uploaded, but {what} failed while {}.",
-            stage.clause()
-        ),
-        _ => format!(
-            "judgebot backup: {what} failed while {}.{last_good}",
-            stage.clause()
-        ),
-    };
-    let tail = match trigger {
-        Trigger::Schedule => {
-            " It is retried after an hour, then less often while it keeps failing; \
-             `docker compose logs backup` has the error. You will be told again when a backup \
-             succeeds or fails at another step, not on each retry."
-        }
-        Trigger::Manual => " The log has the error.",
-    };
-    format!("{head}{tail}")
+    let uploaded = name.filter(|_| stage.uploaded()).map(|n| n.to_string());
+    (alert::messages(locale).backup_failed)(&BackupFailure {
+        scheduled: trigger == Trigger::Schedule,
+        stage: &stage.clause(locale),
+        uploaded: uploaded.as_deref(),
+        before,
+    })
 }
 
 #[cfg(test)]
@@ -488,7 +485,7 @@ mod tests {
     fn the_schedule_tells_the_first_failure_and_the_recovery() -> Result<(), &'static str> {
         let upload = failed(Stage::Upload);
         let before = Before::of(Some(at(NOW - 8 * DAY)));
-        let (streak, first) = Streak::default().attempted(&upload, before, NOW);
+        let (streak, first) = Streak::default().attempted(Locale::En, &upload, before, NOW);
         let first = first.ok_or("first failure")?;
         assert!(
             first.contains("uploading")
@@ -497,15 +494,15 @@ mod tests {
             "{first}"
         );
         assert_eq!(streak.failures, 1);
-        let (streak, again) = streak.attempted(&upload, Before::Empty, NOW);
+        let (streak, again) = streak.attempted(Locale::En, &upload, Before::Empty, NOW);
         assert_eq!((streak.failures, again), (2, None), "a retry is not news");
         let done = Attempt::Done {
             name: at(NOW),
             bytes: 31_000_000,
         };
-        let (fresh, quiet) = Streak::default().attempted(&done, Before::Empty, NOW);
+        let (fresh, quiet) = Streak::default().attempted(Locale::En, &done, Before::Empty, NOW);
         assert_eq!((fresh, quiet), (Streak::default(), None));
-        let (after, back) = streak.attempted(&done, Before::Unknown, NOW);
+        let (after, back) = streak.attempted(Locale::En, &done, Before::Unknown, NOW);
         let back = back.ok_or("recovery")?;
         assert!(
             back.contains("succeeded") && back.contains("31 MB"),
@@ -518,24 +515,24 @@ mod tests {
     #[test]
     fn a_listing_that_works_again_ends_a_listing_streak_only() -> Result<(), &'static str> {
         let (listing, told) =
-            Streak::default().attempted(&failed(Stage::List), Before::Unknown, NOW);
+            Streak::default().attempted(Locale::En, &failed(Stage::List), Before::Unknown, NOW);
         assert!(told.is_some());
-        let (cleared, note) = listing.listed();
+        let (cleared, note) = listing.listed(Locale::En);
         assert_eq!(cleared, Streak::default());
         assert!(
             note.ok_or("a word that it is readable")?
                 .contains("listed again")
         );
         // So the next listing failure is news again.
-        let (_, again) = cleared.attempted(&failed(Stage::List), Before::Unknown, NOW);
+        let (_, again) = cleared.attempted(Locale::En, &failed(Stage::List), Before::Unknown, NOW);
         assert!(again.is_some());
         // A failure after an upload is not ended by a listing.
         let prune = Attempt::Failed {
             stage: Stage::Prune,
             name: Some(at(NOW)),
         };
-        let (pruning, _) = Streak::default().attempted(&prune, Before::Unknown, NOW);
-        assert_eq!(pruning.listed(), (pruning, None));
+        let (pruning, _) = Streak::default().attempted(Locale::En, &prune, Before::Unknown, NOW);
+        assert_eq!(pruning.listed(Locale::En), (pruning, None));
         Ok(())
     }
 
@@ -545,9 +542,10 @@ mod tests {
             stage: Stage::Prune,
             name: Some(at(NOW - 7 * DAY)),
         };
-        let (streak, _) = Streak::default().attempted(&prune, Before::Unknown, NOW);
+        let (streak, _) = Streak::default().attempted(Locale::En, &prune, Before::Unknown, NOW);
         // A week of pruning failures, then the dump starts failing: news.
-        let (streak, told) = streak.attempted(&failed(Stage::Dump), Before::Unknown, NOW);
+        let (streak, told) =
+            streak.attempted(Locale::En, &failed(Stage::Dump), Before::Unknown, NOW);
         assert!(told.is_some_and(|t| t.contains("dumping")));
         assert_eq!(streak.failures, 2);
         // And a version refusal after dump failures is news too.
@@ -555,14 +553,14 @@ mod tests {
             server: "17.2".to_owned(),
             client: "16.15".to_owned(),
         });
-        let (_, told) = streak.attempted(&version, Before::Unknown, NOW);
+        let (_, told) = streak.attempted(Locale::En, &version, Before::Unknown, NOW);
         assert!(told.is_some_and(|t| t.contains("17.2") && t.contains("newer PostgreSQL client")));
     }
 
     #[test]
     fn a_manual_run_tells_every_failure_and_no_recovery() {
         assert!(
-            manual_alert(&failed(Stage::Dump), Before::Empty, NOW).is_some_and(|t| t
+            manual_alert(Locale::En, &failed(Stage::Dump), Before::Empty, NOW).is_some_and(|t| t
                 .contains("judgebot backup run")
                 && t.contains("no earlier backup"))
         );
@@ -570,7 +568,7 @@ mod tests {
             name: at(NOW),
             bytes: 1,
         };
-        assert_eq!(manual_alert(&done, Before::Empty, NOW), None);
+        assert_eq!(manual_alert(Locale::En, &done, Before::Empty, NOW), None);
     }
 
     #[test]
@@ -580,7 +578,7 @@ mod tests {
             stage: Stage::Prune,
             name: Some(name),
         };
-        let (_, t) = Streak::default().attempted(&prune, Before::Unknown, NOW);
+        let (_, t) = Streak::default().attempted(Locale::En, &prune, Before::Unknown, NOW);
         assert!(
             t.as_ref().is_some_and(
                 |t| t.contains(&format!("{name} was uploaded")) && t.contains("pruning")

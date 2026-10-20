@@ -50,12 +50,13 @@
 
 use std::{sync::Arc, time::Duration};
 
+use judge_core::Locale;
 use judge_llm::SpendMeter;
 use nonempty::NonEmpty;
 use nutype::nutype;
 use sqlx::PgPool;
 
-use crate::alert::{self, AlertWebhook};
+use crate::alert::{self, AlertWebhook, catalog::Spend};
 
 /// `JUDGE_BUDGET_PERIOD`.
 pub const PERIOD_ENV: &str = "JUDGE_BUDGET_PERIOD";
@@ -455,43 +456,35 @@ pub async fn claim_warning(
     Ok(claimed)
 }
 
-/// What the cap covers, as the alerts say it.
-fn scope(period: Period) -> &'static str {
-    match period {
-        Period::Process => "this process (a restart counts from zero)",
-        Period::Day => "today (UTC), across every process",
-        Period::Month => "this month (UTC), across every process",
+/// What a spend alert reports about `meter`.
+fn spend<'a>(process: &'a str, period: Period, meter: &SpendMeter) -> Spend<'a> {
+    Spend {
+        process,
+        counted_usd: meter.counted_usd(),
+        max_usd: meter.max_spend_usd(),
+        period,
     }
 }
 
-/// The text a spend warning sends.
+/// The text a spend warning sends, in `locale`.
 #[must_use]
-pub fn warn_text(process: &str, period: Period, meter: &SpendMeter, reached: Percent) -> String {
-    format!(
-        "judgebot `{process}` has used {reached}% of its spend cap: ${:.2} of ${:.2} for {}, \
-counting calls in flight at their worst case. Questions are refused once what is left is less \
-than one call's worst case. The thresholds are {WARN_AT_ENV}.",
-        meter.counted_usd(),
-        meter.max_spend_usd(),
-        scope(period),
+pub fn warn_text(
+    locale: Locale,
+    process: &str,
+    period: Period,
+    meter: &SpendMeter,
+    reached: Percent,
+) -> String {
+    (alert::catalog::messages(locale).spend_warning)(
+        &spend(process, period, meter),
+        reached.into_inner(),
     )
 }
 
-/// The text sent to the webhook.
+/// The text sent to the webhook when the cap trips, in `locale`.
 #[must_use]
-pub fn alert_text(process: &str, period: Period, meter: &SpendMeter) -> String {
-    let scope = scope(period);
-    format!(
-        "judgebot `{process}` is refusing questions at its spend cap: ${:.2} of ${:.2} spent for \
-{scope}, and what is left is less than one call's worst case. Raise JUDGE_MAX_USD and restart to \
-resume{}.",
-        meter.counted_usd(),
-        meter.max_spend_usd(),
-        match period {
-            Period::Process => "",
-            Period::Day | Period::Month => ", or wait for the next period",
-        }
-    )
+pub fn alert_text(locale: Locale, process: &str, period: Period, meter: &SpendMeter) -> String {
+    (alert::catalog::messages(locale).spend_cap)(&spend(process, period, meter))
 }
 
 /// A process's ledger as [`start`] leaves it running: the handle a
@@ -596,7 +589,7 @@ pub async fn start(
                     "spend cap reached; questions are being refused"
                 );
                 if let Some(hook) = &budget.alert {
-                    let text = alert_text(process, period, &meter);
+                    let text = alert_text(hook.locale(), process, period, &meter);
                     alert::post(&client, hook, "spend cap alert", &text).await;
                 }
             }
@@ -648,7 +641,7 @@ async fn warn(
             "spend warning: a threshold of the cap is reached"
         );
         if let Some(hook) = &budget.alert {
-            let text = warn_text(process, period, meter, p);
+            let text = warn_text(hook.locale(), process, period, meter, p);
             alert::post(client, hook, "spend warning", &text).await;
         }
     }
@@ -888,7 +881,7 @@ mod tests {
         let meter = SpendMeter::new().with_max_spend_usd(5.0)?;
         meter.set_adjustment_micro(4_100_000);
         let p = Percent::try_new(80)?;
-        let text = warn_text("judgebot", Period::Month, &meter, p);
+        let text = warn_text(Locale::En, "judgebot", Period::Month, &meter, p);
         assert!(
             text.contains("`judgebot`")
                 && text.contains("80% of its spend cap")
@@ -938,13 +931,13 @@ mod tests {
     {
         let meter = SpendMeter::new().with_max_spend_usd(5.0)?;
         meter.set_adjustment_micro(4_900_000);
-        let text = alert_text("bot", Period::Month, &meter);
+        let text = alert_text(Locale::En, "bot", Period::Month, &meter);
         assert!(
             text.contains("`bot`") && text.contains("$4.90 of $5.00 spent"),
             "{text}"
         );
         assert!(text.contains("next period"));
-        assert!(!alert_text("api", Period::Process, &meter).contains("next period"));
+        assert!(!alert_text(Locale::En, "api", Period::Process, &meter).contains("next period"));
         Ok(())
     }
 

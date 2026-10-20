@@ -9,7 +9,7 @@
 use std::fmt;
 
 use judge_bot::discord::catalog as discord;
-use judge_core::{FeedbackCategory, Locale, Score};
+use judge_core::{FeedbackCategory, Locale, Score, locale::Catalogs};
 
 /// One locale's API text.
 #[derive(Clone, Copy)]
@@ -20,6 +20,10 @@ pub struct Messages {
     pub rate_limited: &'static str,
     /// The instance is migrating for a major upgrade; nothing was asked.
     pub maintenance: &'static str,
+    /// A request whose body or query could not be read (not JSON, an
+    /// unknown field, a wrong type), given the parser's own account of it,
+    /// which is English.
+    pub unreadable: fn(&str) -> String,
     /// A request with a blank question.
     pub question_empty: &'static str,
     /// A question over the limit, given it.
@@ -126,12 +130,12 @@ impl fmt::Debug for Messages {
     }
 }
 
+const CATALOGS: Catalogs<Messages> = Catalogs::new(&EN, &STUB);
+
 /// The API text in `locale`.
 #[must_use]
 pub const fn messages(locale: Locale) -> &'static Messages {
-    match locale {
-        Locale::En => &EN,
-    }
+    CATALOGS.get(locale)
 }
 
 /// English.
@@ -140,6 +144,7 @@ pub const EN: Messages = Messages {
     rate_limited: "You've asked several questions in a short time. Please wait a few minutes and ask again.",
     maintenance: "Judgebot is being upgraded and will be back in a minute or two. \
 Your question was not answered; please try again shortly.",
+    unreadable: str::to_owned,
     question_empty: "question must not be empty",
     question_too_long: |n| format!("question must be at most {n} characters"),
     too_many_pins: |n| format!("at most {n} pins are accepted"),
@@ -206,6 +211,67 @@ answer, and it is shown on this answer's public page, without your name."
     feedback_failed: "Sorry, your rating couldn't be recorded just now. Please try again.",
 };
 
+/// The stub locale's (`judge_core::locale`, tests only): each message its
+/// name in `⟦…⟧`, with its values; the pipeline's replies are the Discord
+/// stub's, as English's are Discord's English.
+pub const STUB: Messages = Messages {
+    busy: discord::STUB.busy,
+    rate_limited: "⟦rate_limited⟧",
+    maintenance: "⟦maintenance⟧",
+    unreadable: |detail| format!("⟦unreadable {detail}⟧"),
+    question_empty: "⟦question_empty⟧",
+    question_too_long: |n| format!("⟦question_too_long {n}⟧"),
+    too_many_pins: |n| format!("⟦too_many_pins {n}⟧"),
+    pin_empty: "⟦pin_empty⟧",
+    pin_too_long: |n| format!("⟦pin_too_long {n}⟧"),
+    ruling_label: discord::STUB.ruling_label,
+    oracle_label: discord::STUB.oracle_label,
+    prior_call_label: "⟦prior_call_label⟧",
+    not_routed: "⟦not_routed⟧",
+    bad_cursor: "⟦bad_cursor⟧",
+    bad_interface: |all| format!("⟦bad_interface {all}⟧"),
+    bad_user: "⟦bad_user⟧",
+    bad_search: |n| format!("⟦bad_search {n}⟧"),
+    call_not_found: "⟦call_not_found⟧",
+    feed_failed: "⟦feed_failed⟧",
+    bad_date: |name| format!("⟦bad_date {name}⟧"),
+    bad_range: |n| format!("⟦bad_range {n}⟧"),
+    model_not_public: "⟦model_not_public⟧",
+    stats_failed: "⟦stats_failed⟧",
+    stats_busy: "⟦stats_busy⟧",
+    stats_too_slow: "⟦stats_too_slow⟧",
+    before_window: |n| format!("⟦before_window {n}⟧"),
+    admin_unauthorized: "⟦admin_unauthorized⟧",
+    bad_private: "⟦bad_private⟧",
+    bad_filter: |name, n| format!("⟦bad_filter {name} {n}⟧"),
+    admin_call_not_found: "⟦admin_call_not_found⟧",
+    admin_failed: "⟦admin_failed⟧",
+    bad_choice: |name, all| format!("⟦bad_choice {name} {all}⟧"),
+    admin_item_not_found: "⟦admin_item_not_found⟧",
+    bad_note: |n| format!("⟦bad_note {n}⟧"),
+    bad_fixed_by: |n| format!("⟦bad_fixed_by {n}⟧"),
+    bad_body: "⟦bad_body⟧",
+
+    rating_label: discord::STUB.rating_label,
+    category_label: discord::STUB.category_label,
+    rated: |label, category| format!("⟦rated {label} {}⟧", category.unwrap_or_default()),
+    rated_public: |label, category| {
+        format!("⟦rated_public {label} {}⟧", category.unwrap_or_default())
+    },
+    already_rated: "⟦already_rated⟧",
+    confirm_replace: |earlier, category, new| {
+        format!(
+            "⟦confirm_replace {earlier} {} {new}⟧",
+            category.unwrap_or_default()
+        )
+    },
+    feedback_rate_limited: "⟦feedback_rate_limited⟧",
+    correct_takes_no_reason: "⟦correct_takes_no_reason⟧",
+    category_required: "⟦category_required⟧",
+    bad_feedback_text: |field, n| format!("⟦bad_feedback_text {field} {n}⟧"),
+    feedback_failed: "⟦feedback_failed⟧",
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +284,7 @@ mod tests {
                 m.busy.to_owned(),
                 m.rate_limited.to_owned(),
                 m.maintenance.to_owned(),
+                (m.unreadable)("Failed to parse the request body as JSON"),
                 m.question_empty.to_owned(),
                 (m.question_too_long)(10),
                 (m.too_many_pins)(8),

@@ -35,5 +35,11 @@ axum = "0.8"
 url.workspace = true
 toml_edit = "0.25.15"
 
+[dev-dependencies]
+# The stub locale, so the tests render and negotiate a second catalog (D35).
+judge-core = { workspace = true, features = ["stub-locale"] }
+# Drives the router in tests (`oneshot`).
+tower = { version = "0.5", features = ["util"] }
+
 [lints]
 workspace = true

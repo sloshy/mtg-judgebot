@@ -16,7 +16,7 @@
 
 use std::{fmt, time::Duration};
 
-use judge_core::{Confidence, Fault, FeedbackCategory, Forgotten, Locale, Score};
+use judge_core::{Confidence, Fault, FeedbackCategory, Forgotten, Locale, Score, locale::Catalogs};
 
 /// One locale's Discord text.
 #[derive(Clone, Copy)]
@@ -161,6 +161,10 @@ pub struct Messages {
     pub oracle_label: fn(Option<usize>, Option<&str>) -> String,
     /// A prior call citation's label.
     pub prior_call_label: &'static str,
+    /// Opens a citation's quote, after its label.
+    pub quote_open: &'static str,
+    /// Closes a citation's quote.
+    pub quote_close: &'static str,
 
     // ---- commands ----
     /// A command this build does not have.
@@ -279,22 +283,24 @@ impl fmt::Debug for Messages {
     }
 }
 
+const CATALOGS: Catalogs<Messages> = Catalogs::new(&EN, &STUB);
+
 /// The Discord text in `locale`.
 #[must_use]
 pub const fn messages(locale: Locale) -> &'static Messages {
-    match locale {
-        Locale::En => &EN,
-    }
+    CATALOGS.get(locale)
 }
+
+/// Each locale's Discord tags (below).
+const TAGS: Catalogs<[&str]> = Catalogs::new(&[], &[]);
 
 /// The Discord locale tags a locale's text is registered under for command
 /// descriptions (`description_localizations`). Empty for the default
-/// locale, whose text is the base description.
+/// locale, whose text is the base description, and for the stub, which is
+/// no language Discord knows.
 #[must_use]
 pub const fn discord_tags(locale: Locale) -> &'static [&'static str] {
-    match locale {
-        Locale::En => &[],
-    }
+    TAGS.get(locale)
 }
 
 /// English.
@@ -450,6 +456,8 @@ Press **Retry** to ask this again.",
         }
     },
     prior_call_label: "prior call",
+    quote_open: "“",
+    quote_close: "”",
 
     unknown_command: "I don't recognise that command in this version. Please try again in a minute.",
     server_only: "`/judge` works in a server only, not in direct messages.",
@@ -541,6 +549,176 @@ the same licence. The source code of this instance is at <{}> ({}).",
         help: "What the bot does, how to ask, what it stores, and where its source is.",
         license: "Where this bot's source code is, at which commit, and under which licence.",
         forget: "Delete your ratings and anonymize your failed calls; nothing else is stored about you.",
+    },
+};
+
+/// The stub locale's (`judge_core::locale`, tests only): each message its
+/// name in `⟦…⟧`, with its values. The pieces a prompt is parsed back from
+/// keep English's shape (a space each side of `asked`, the span in bold),
+/// so the stub's prompts parse like English ones.
+pub const STUB: Messages = Messages {
+    busy: "⟦busy⟧",
+    out_of_scope: "⟦out_of_scope⟧",
+    failed: "⟦failed⟧",
+    spend_cap: "⟦spend_cap⟧",
+    cards_not_found: |listed| format!("⟦cards_not_found {listed}⟧"),
+    or: " ⟦or⟧ ",
+    did_you_mean_head: |span| format!("⟦did_you_mean_head **{span}**⟧"),
+    did_you_mean_more: |n| format!("⟦did_you_mean_more {n}⟧"),
+    did_you_mean_tail: "⟦did_you_mean_tail⟧",
+    maintenance: "⟦maintenance⟧",
+
+    asked: " ⟦asked⟧ ",
+    pick_head: "⟦pick_head⟧ **",
+    pick_ask: "** ⟦pick_ask⟧",
+    pick_more: "⟦pick_more⟧",
+    pick_later_one: "⟦pick_later_one⟧",
+    pick_later_head: "⟦pick_later_head⟧ ",
+    pick_later_tail: " ⟦pick_later_tail⟧",
+
+    expired: "⟦expired⟧",
+    already_picked: "⟦already_picked⟧",
+    pick_failed: "⟦pick_failed⟧",
+    not_yours: "⟦not_yours⟧",
+    not_your_retry: "⟦not_your_retry⟧",
+    already_retried: "⟦already_retried⟧",
+    retrying: "⟦retrying⟧",
+    working: |card| format!("⟦working **{card}**⟧"),
+    unknown_button: "⟦unknown_button⟧",
+    rating_label: |score| match score {
+        Score::Incorrect => "⟦rating_label incorrect⟧",
+        Score::Partial => "⟦rating_label partial⟧",
+        Score::Correct => "⟦rating_label correct⟧",
+    },
+    rated: |label, category, as_judge| {
+        format!(
+            "⟦rated {label} {} {as_judge}⟧",
+            category.unwrap_or_default()
+        )
+    },
+    rated_public: |label, category, as_judge| {
+        format!(
+            "⟦rated_public {label} {} {as_judge}⟧",
+            category.unwrap_or_default()
+        )
+    },
+    report_wrong: |username| format!("⟦report_wrong {username}⟧"),
+    report_link: |url| format!(" ⟦report_link <{url}>⟧"),
+    rate_failed: "⟦rate_failed⟧",
+    call_gone: "⟦call_gone⟧",
+    already_rated: "⟦already_rated⟧",
+    replace_prompt: |earlier, category, new| {
+        format!(
+            "⟦replace_prompt {earlier} {} {new}⟧",
+            category.unwrap_or_default()
+        )
+    },
+    replace_label: "⟦replace_label⟧",
+    keep_label: "⟦keep_label⟧",
+    on_record: |label, category| format!("⟦on_record {label} {}⟧", category.unwrap_or_default()),
+    no_rating: "⟦no_rating⟧",
+    category_label: |category| match category {
+        FeedbackCategory::WrongConclusion => "⟦category_label wrong_conclusion⟧",
+        FeedbackCategory::MissedPart => "⟦category_label missed_part⟧",
+        FeedbackCategory::BadCitation => "⟦category_label bad_citation⟧",
+        FeedbackCategory::WrongCard => "⟦category_label wrong_card⟧",
+        FeedbackCategory::MisreadQuestion => "⟦category_label misread_question⟧",
+        FeedbackCategory::WrongRefusal => "⟦category_label wrong_refusal⟧",
+        FeedbackCategory::Outdated => "⟦category_label outdated⟧",
+        FeedbackCategory::Other => "⟦category_label other⟧",
+    },
+    form_title: |fault| match fault {
+        Fault::Incorrect => "⟦form_title incorrect⟧",
+        Fault::Partial => "⟦form_title partial⟧",
+    },
+    form_category: "⟦form_category⟧",
+    form_category_placeholder: "⟦form_category_placeholder⟧",
+    form_wrong: "⟦form_wrong⟧",
+    form_wrong_hint: "⟦form_wrong_hint⟧",
+    form_wrong_hint_public: "⟦form_wrong_hint_public⟧",
+    form_right: "⟦form_right⟧",
+    form_right_hint: "⟦form_right_hint⟧",
+    form_right_hint_public: "⟦form_right_hint_public⟧",
+    category_prompt: |label| format!("⟦category_prompt {label}⟧"),
+    form_incomplete: "⟦form_incomplete⟧",
+    form_bad_text: "⟦form_bad_text⟧",
+    form_too_long: |limit| format!("⟦form_too_long {limit}⟧"),
+    retry_body: "⟦retry_body⟧",
+    retry_label: "⟦retry_label⟧",
+    still_upgrading: "⟦still_upgrading⟧",
+    edit_failed: "⟦edit_failed⟧",
+
+    footer_meta: |confidence, cr| format!("⟦footer_meta {confidence:?} {cr}⟧"),
+    cards_line: |names| format!("⟦cards_line {names}⟧"),
+    ruling_label: |date, name| format!("⟦ruling_label{date} {}⟧", name.unwrap_or_default()),
+    oracle_label: |face, name| {
+        format!(
+            "⟦oracle_label {} {}⟧",
+            face.unwrap_or_default(),
+            name.unwrap_or_default()
+        )
+    },
+    prior_call_label: "⟦prior_call_label⟧",
+    quote_open: "⟦quote_open⟧",
+    quote_close: "⟦quote_close⟧",
+
+    unknown_command: "⟦unknown_command⟧",
+    server_only: "⟦server_only⟧",
+    cooling_down: |max, window, wait| {
+        format!(
+            "⟦cooling_down {max} {} {}⟧",
+            window.as_secs(),
+            wait.as_secs()
+        )
+    },
+    help_body: "⟦help_body⟧",
+    help_stored: "⟦help_stored⟧",
+    help_feed: "⟦help_feed⟧",
+    help_disclaimer: "⟦help_disclaimer⟧",
+    data_heading: "⟦data_heading⟧",
+    data_unknown: "⟦data_unknown⟧",
+    contact: |username, email| format!("⟦contact {username} {}⟧", email.unwrap_or_default()),
+    license_heading: "⟦license_heading⟧",
+    license: |l| {
+        format!(
+            "⟦license {} {} {} <{}> <{}> {}⟧",
+            l.program, l.copyright, l.license_name, l.license_url, l.repository, l.revision
+        )
+    },
+    forgotten: |f| {
+        format!(
+            "⟦forgotten {} {} {} {}⟧",
+            f.ratings, f.feedback, f.calls, f.failures
+        )
+    },
+    forget_failed: "⟦forget_failed⟧",
+    lookup_bad_name: "⟦lookup_bad_name⟧",
+    lookup_bad_rule: "⟦lookup_bad_rule⟧",
+    lookup_failed: "⟦lookup_failed⟧",
+    no_rulings: "⟦no_rulings⟧",
+    rulings_heading: |n| format!("⟦rulings_heading {n}⟧"),
+    card_ambiguous_head: |name| format!("⟦card_ambiguous_head {name}⟧"),
+    card_ambiguous_tail: "⟦card_ambiguous_tail⟧",
+    card_not_found: |name| format!("⟦card_not_found {name}⟧"),
+    rule_title: |asked, heading| format!("⟦rule_title {asked} {}⟧", heading.unwrap_or_default()),
+    cr_label: |date| format!("⟦cr_label {date}⟧"),
+    long_rule_note: "\n\n⟦long_rule_note⟧",
+    rule_not_found: |id| format!("⟦rule_not_found {id}⟧"),
+    more_lines: |n| format!("⟦more_lines {n}⟧"),
+
+    commands: Commands {
+        judge: "⟦commands.judge⟧",
+        judge_question: "⟦commands.judge_question⟧",
+        judge_private: "⟦commands.judge_private⟧",
+        card: "⟦commands.card⟧",
+        card_name: "⟦commands.card_name⟧",
+        card_private: "⟦commands.card_private⟧",
+        rule: "⟦commands.rule⟧",
+        rule_id: "⟦commands.rule_id⟧",
+        rule_private: "⟦commands.rule_private⟧",
+        help: "⟦commands.help⟧",
+        license: "⟦commands.license⟧",
+        forget: "⟦commands.forget⟧",
     },
 };
 
@@ -671,6 +849,8 @@ mod tests {
                 (m.ruling_label)("", None),
                 (m.oracle_label)(Some(2), None),
                 m.prior_call_label.to_owned(),
+                m.quote_open.to_owned(),
+                m.quote_close.to_owned(),
                 m.unknown_command.to_owned(),
                 m.server_only.to_owned(),
                 (m.cooling_down)(6, Duration::from_mins(10), Duration::from_secs(1)),

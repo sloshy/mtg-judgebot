@@ -18,11 +18,15 @@ use std::path::Path;
 use judge_api::{ApiConfig, Interface, admin::AdminConfig};
 use judge_bot::admin::{ADMIN_ADDR_ENV, ADMIN_PORT_ENV, COMPOSE_ADDR};
 use judge_bot::config::{Config, ConfigError, Location};
+use judge_core::Locale;
 use judgebot::roles::{API_INTERFACES_ENV, ROLES_ENV, Role, Roles, compose_roles};
 use nonempty::NonEmpty;
 use serde::Serialize;
 
-use crate::env::VARS;
+use crate::{
+    catalog::{self, Absent, Messages},
+    env::VARS,
+};
 
 /// A part of the deployment that reads the files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -78,9 +82,11 @@ pub struct Check {
 
 /// Check a draft: `toml` is the file's text (`None` for no file, the
 /// zero-config setup) and `env` the variables as the binaries would see
-/// them.
+/// them. The checks' own lines are in `locale`; the loaders' refusals are
+/// quoted as they come, in English (`catalog`).
 #[must_use]
-pub fn run(toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Check> {
+pub fn run(locale: Locale, toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Check> {
+    let m = catalog::messages(locale);
     let config = match toml {
         Some(text) => Config::from_toml(text, Path::new("judge.toml"), env),
         None => Config::from_vars(env),
@@ -97,7 +103,7 @@ pub fn run(toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Chec
         env(API_INTERFACES_ENV).as_deref(),
     ) {
         Ok((r, origin)) => {
-            let summary = format!("{} (from {origin})", r.flags());
+            let summary = (m.roles_from)(&r.flags(), origin);
             (
                 Some(r),
                 Outcome::Ok {
@@ -114,7 +120,7 @@ pub fn run(toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Chec
     vec![
         Check {
             surface: Surface::Database,
-            outcome: database(env),
+            outcome: database(m, env),
         },
         Check {
             surface: Surface::Models,
@@ -126,15 +132,15 @@ pub fn run(toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Chec
         },
         Check {
             surface: Surface::Discord,
-            outcome: discord(roles.as_ref(), config.as_ref(), env),
+            outcome: discord(m, roles.as_ref(), config.as_ref(), env),
         },
         Check {
             surface: Surface::Http,
-            outcome: http(roles.as_ref(), config.as_ref(), env),
+            outcome: http(m, roles.as_ref(), config.as_ref(), env),
         },
         Check {
             surface: Surface::Admin,
-            outcome: admin(roles.as_ref(), env),
+            outcome: admin(m, roles.as_ref(), env),
         },
     ]
 }
@@ -145,7 +151,7 @@ pub fn run(toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Chec
 /// listens on. The page it serves is the serving machine's business, as
 /// `--web`'s is. `ADMIN_PORT` is checked whatever the roles: the proxy
 /// publishes it either way, and a bad one stops `docker compose up`.
-fn admin(roles: Option<&Roles>, env: &dyn Fn(&str) -> Option<String>) -> Outcome {
+fn admin(m: &Messages, roles: Option<&Roles>, env: &dyn Fn(&str) -> Option<String>) -> Outcome {
     let as_composed = |k: &str| {
         if k == ADMIN_ADDR_ENV {
             Some(COMPOSE_ADDR.to_owned())
@@ -157,7 +163,7 @@ fn admin(roles: Option<&Roles>, env: &dyn Fn(&str) -> Option<String>) -> Outcome
     if !roles.is_some_and(|r| r.iter().any(|r| r == Role::Admin)) {
         return match cfg {
             Err(e) if format!("{e:#}").contains(ADMIN_PORT_ENV) => anyhow_error(&e),
-            _ => not_run(roles, "--admin is not"),
+            _ => not_run(m, roles, Absent::Admin),
         };
     }
     match cfg {
@@ -166,34 +172,35 @@ fn admin(roles: Option<&Roles>, env: &dyn Fn(&str) -> Option<String>) -> Outcome
             anyhow_error(&anyhow::anyhow!("{}", judge_api::admin::AdminUnmet::Token))
         }
         Ok(cfg) => Outcome::Ok {
-            summary: Some(format!(
-                "the container listens on {COMPOSE_ADDR}; the proxy publishes it on {}",
-                cfg.settings.browser_addr()
+            summary: Some((m.admin_listens)(
+                COMPOSE_ADDR,
+                &cfg.settings.browser_addr().to_string(),
             )),
         },
     }
 }
 
 /// Why a role's surface is not checked: the roles do not parse, or they
-/// leave it out (`what` says which, ending in "is" or "is not").
-fn not_run(roles: Option<&Roles>, what: &str) -> Outcome {
+/// leave it out (`absent` says which).
+fn not_run(m: &Messages, roles: Option<&Roles>, absent: Absent) -> Outcome {
     Outcome::Skipped {
         reason: match roles {
-            None => "the roles do not parse".to_owned(),
-            Some(r) => format!("{what} among the roles ({})", r.flags()),
+            None => m.roles_unparsed.to_owned(),
+            Some(r) => (m.not_among_roles)(absent, &r.flags()),
         },
     }
 }
 
 /// What a surface says once its own settings passed, given the models.
 fn with_models(
+    m: &Messages,
     config: Option<&Config>,
     operator: impl FnOnce(&Config) -> Result<(), ConfigError>,
     summary: Option<String>,
 ) -> Outcome {
     match config {
         None => Outcome::Skipped {
-            reason: "its own settings pass; the model configuration does not load".to_owned(),
+            reason: m.models_fail.to_owned(),
         },
         Some(c) => match operator(c) {
             Ok(()) => Outcome::Ok { summary },
@@ -233,7 +240,7 @@ fn names(message: &str, var: &str) -> Option<usize> {
     })
 }
 
-fn database(env: &dyn Fn(&str) -> Option<String>) -> Outcome {
+fn database(m: &Messages, env: &dyn Fn(&str) -> Option<String>) -> Outcome {
     let set = |k: &str| {
         env(k)
             .map(|v| v.trim().to_owned())
@@ -243,7 +250,7 @@ fn database(env: &dyn Fn(&str) -> Option<String>) -> Outcome {
         && !port.parse::<u16>().is_ok_and(|p| p > 0)
     {
         return Outcome::Error {
-            message: format!("DB_PORT must be a port number 1..=65535, got {port:?}"),
+            message: (m.bad_db_port)(&port),
             location: Location::Env {
                 var: "DB_PORT".to_owned(),
             },
@@ -263,12 +270,13 @@ fn database(env: &dyn Fn(&str) -> Option<String>) -> Outcome {
 }
 
 fn discord(
+    m: &Messages,
     roles: Option<&Roles>,
     config: Option<&Config>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Outcome {
     if !roles.is_some_and(|r| r.iter().any(|r| r == Role::Discord)) {
-        return not_run(roles, "--discord is not");
+        return not_run(m, roles, Absent::Discord);
     }
     let cfg = match judge_bot::discord::Config::from_vars(env) {
         Ok(cfg) => cfg,
@@ -283,10 +291,11 @@ fn discord(
     {
         return anyhow_error(&e);
     }
-    with_models(config, |c| c.discord_operator().map(|_| ()), None)
+    with_models(m, config, |c| c.discord_operator().map(|_| ()), None)
 }
 
 fn http(
+    m: &Messages,
     roles: Option<&Roles>,
     config: Option<&Config>,
     env: &dyn Fn(&str) -> Option<String>,
@@ -297,7 +306,7 @@ fn http(
         .filter_map(Role::interface)
         .collect();
     let Some(interfaces) = NonEmpty::from_vec(interfaces) else {
-        return not_run(roles, "none of --api, --web and --mcp is");
+        return not_run(m, roles, Absent::Network);
     };
     let interfaces = judge_api::Interfaces::of(&interfaces);
     let flags = interfaces
@@ -321,9 +330,10 @@ fn http(
         return anyhow_error(&anyhow::Error::from(e));
     }
     with_models(
+        m,
         config,
         |c| c.network_operator().map(|_| ()),
-        Some(format!("serving {flags}")),
+        Some((m.serving)(&flags)),
     )
 }
 
@@ -338,7 +348,7 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect();
-        run(toml, &|k| vars.get(k).cloned())
+        run(Locale::En, toml, &|k| vars.get(k).cloned())
             .into_iter()
             .map(|c| (c.surface, c.outcome))
             .collect()
@@ -577,6 +587,43 @@ mod tests {
             Some(Location::Toml {
                 path: "providers.p.base_url".to_owned()
             })
+        );
+    }
+
+    /// The checks' own lines are in the page's language; a loader's refusal
+    /// is quoted as it comes.
+    #[test]
+    fn the_checks_own_lines_are_in_the_requested_locale() {
+        let mut vars: HashMap<String, String> = OK
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        vars.insert("JUDGE_ROLES".to_owned(), "--discord --jobs".to_owned());
+        vars.insert("DB_PORT".to_owned(), "x".to_owned());
+        vars.remove("DISCORD_TOKEN");
+        let c: HashMap<Surface, Outcome> = run(Locale::Stub, None, &|k| vars.get(k).cloned())
+            .into_iter()
+            .map(|c| (c.surface, c.outcome))
+            .collect();
+        assert!(
+            matches!(c.get(&Surface::Roles), Some(Outcome::Ok { summary: Some(s) })
+                if s == "⟦roles_from --discord --jobs Roles⟧"),
+            "{c:?}"
+        );
+        assert!(
+            matches!(c.get(&Surface::Http), Some(Outcome::Skipped { reason })
+                if reason == "⟦not_among_roles Network --discord --jobs⟧"),
+            "{c:?}"
+        );
+        assert!(
+            matches!(c.get(&Surface::Database), Some(Outcome::Error { message, .. })
+                if message == "⟦bad_db_port x⟧"),
+            "{c:?}"
+        );
+        assert!(
+            matches!(c.get(&Surface::Discord), Some(Outcome::Error { message, .. })
+                if message.contains("DISCORD_TOKEN") && !message.contains('⟦')),
+            "{c:?}"
         );
     }
 

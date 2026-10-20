@@ -448,7 +448,7 @@ mod tests {
         assert_eq!(bare.operator_email, None);
         assert_eq!(
             (bare.locale, bare.locales.as_slice()),
-            (crate::Locale::En, &[crate::Locale::En][..])
+            (crate::Locale::En, &crate::Locale::ALL[..])
         );
         // The fields a client reads: the earlier ones stay, `freshness` is
         // added beside them, null when it was not read, then the instance's

@@ -4,6 +4,7 @@
 //! loader's types (`judge_bot::config::file_schema`) and the help text from
 //! the files' own comments, so neither is restated here.
 
+pub mod catalog;
 pub mod check;
 pub mod env;
 pub mod server;

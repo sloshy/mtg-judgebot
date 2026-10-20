@@ -34,7 +34,7 @@ curl -s http://localhost:8787/api/judge \
 | `question` | string, required | Not blank, at most 1000 characters. `[[Full Card Name]]` matches that exact card. |
 | `session_id` | UUID, optional | Questions sharing one share history, so a follow-up works. Generate it on the client. Without one the question stands alone. |
 | `pins` | array, optional | Resolved ambiguities, at most 8: `{"span": "<as the ambiguous reply gave it>", "name": "<the full name chosen>"}`, each string at most 200 characters. |
-| `locale` | string, optional | The language for the reply's `message`s and citation `label`s, as a language tag such as `en-GB`. When it names no language the instance speaks, the `Accept-Language` header decides, then `JUDGE_LOCALE`. `kind` codes are never translated. The answer itself is English. |
+| `locale` | string, optional | The language for the reply's `message`s and citation `label`s, as a language tag such as `en-GB`. When it names no language the instance speaks, the `Accept-Language` header decides, then `JUDGE_LOCALE`. `kind` codes are never translated. The answer itself is English. A body that does not read is answered in `Accept-Language`'s language, then `JUDGE_LOCALE`, since its `locale` was not read. |
 
 An answer takes twenty to forty-five seconds. Every reply to a `POST` is JSON tagged by
 `kind`, including a request that cannot be read, which gets an `error` with a 4xx status
@@ -278,6 +278,7 @@ it; replies carry `Cache-Control: no-store`, and an error is the same
 
 | Route | Returns |
 | --- | --- |
+| `GET /admin/api/about` | `{locale, locales}`: the instance's language (`JUDGE_LOCALE`), which the admin pages speak when the browser's languages have none of `locales`, as these routes' messages do (`Accept-Language`, then `JUDGE_LOCALE`). |
 | `GET /admin/api/calls?cursor&interface&asker&model&private&q` | `{calls, next, models}`: every stored call, private ones included, newest first, 50 a page. `asker` is a Discord username or user id, `private` is `true` or `false`, `models` lists every chat model a run has billed. |
 | `GET /admin/api/calls/{id}` | One call whole, its citations labelled as an answer's are, with `ratings` (rater, kind, score, judge, and a fault's `category`, `wrong`, `right`) and `runs` (outcome, retry, tool round, `charges`). `404` for an id with no call. |
 | `GET /admin/api/queue?cursor&status&category&interface&rater` | `{items, next}`: the feedback queue, every rating given a reason, newest first (by when each was opened or reopened), 50 a page. `status` is `open`, `resolved` or `dismissed`; `category` a feedback category id; `rater` `discord` or `web`. |

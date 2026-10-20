@@ -286,8 +286,9 @@ pub fn citation_line(
     let m = catalog::messages(locale);
     let quote = fit(&collapse_whitespace(c.quote()), QUOTE_LIMIT);
     let card_name = |id: CardId| ctx.and_then(|x| x.card(id)).map(|card| card.name.clone());
+    let open = m.quote_open;
     let prefix = match c {
-        Citation::Rule { id, .. } => format!("[{id}]({}) “", rule_url(id)),
+        Citation::Rule { id, .. } => format!("[{id}]({}) {open}", rule_url(id)),
         Citation::ScryfallRuling { card, ruling, .. } => {
             // The date tells two rulings of one card apart; both link to the
             // same Scryfall page.
@@ -296,31 +297,28 @@ pub fn citation_line(
                 .map(|r| format!(" ({})", r.published_at))
                 .unwrap_or_default();
             let label = (m.ruling_label)(&date, card_name(*card).as_deref());
-            format!("[{label}]({}) “", scryfall_url(*card))
+            format!("[{label}]({}) {open}", scryfall_url(*card))
         }
-        Citation::PriorCall { .. } => format!("[{}] “", m.prior_call_label),
+        Citation::PriorCall { .. } => format!("[{}] {open}", m.prior_call_label),
         Citation::OracleText { card, face, .. } => {
             let face = match face {
                 0 => None,
                 n => Some(usize::try_from(*n).map_or(usize::MAX, |n| n.saturating_add(1))),
             };
             let label = (m.oracle_label)(face, card_name(*card).as_deref());
-            format!("[{label}]({}) “", scryfall_url(*card))
+            format!("[{label}]({}) {open}", scryfall_url(*card))
         }
     };
     // The label and the URL are counted too, so CITATION_LINE_LIMIT bounds the
     // whole line rather than just the quote inside it.
     let room = CITATION_LINE_LIMIT
         .saturating_sub(prefix.chars().count())
-        .saturating_sub(CLOSING_QUOTE.chars().count());
+        .saturating_sub(m.quote_close.chars().count());
     let mut line = Rendered::plain(prefix);
     line.append(Rendered::substitute(&quote, symbols).truncate(room));
-    line.push_str(CLOSING_QUOTE);
+    line.push_str(m.quote_close);
     line
 }
-
-/// Closes every citation's quoted span.
-const CLOSING_QUOTE: &str = "”";
 
 /// The "did you mean…?" for the *first* ambiguous span when no buttons can
 /// be offered ([`PickPrompt::new`] refused the question): the choices as a
@@ -1710,17 +1708,23 @@ mod tests {
             max_ascii.as_str(),
             max_wide.as_str(),
         ];
-        for spans in &span_sets {
-            for q in questions {
-                let p = prompt_for(q, spans);
-                assert!(p.is_some(), "{q:?} must fit");
-                let Some(p) = p else { continue };
-                let content = p.render();
-                assert!(content.chars().count() <= CONTENT_LIMIT, "{q:?}");
-                let back = PickPrompt::parse(Locale::En, &content);
-                assert_eq!(back.as_ref(), Some(&p), "{q:?}");
-                assert_eq!(back.as_ref().map(PickPrompt::question), Some(q));
-                assert_eq!(back.as_ref().map(PickPrompt::asker), Some(ASKER));
+        for locale in Locale::ALL {
+            for spans in &span_sets {
+                for q in questions {
+                    let p = PickPrompt::new(locale, ASKER, q, spans);
+                    assert!(p.is_some(), "{locale}: {q:?} must fit");
+                    let Some(p) = p else { continue };
+                    let content = p.render();
+                    assert!(content.chars().count() <= CONTENT_LIMIT, "{locale}: {q:?}");
+                    let back = PickPrompt::parse(locale, &content);
+                    assert_eq!(back.as_ref(), Some(&p), "{locale}: {q:?}");
+                    assert_eq!(back.as_ref().map(PickPrompt::question), Some(q));
+                    assert_eq!(back.as_ref().map(PickPrompt::asker), Some(ASKER));
+                    // Read back in another locale's template, it is no prompt.
+                    for other in Locale::ALL.into_iter().filter(|o| *o != locale) {
+                        assert_eq!(PickPrompt::parse(other, &content), None, "{other}: {q:?}");
+                    }
+                }
             }
         }
     }
@@ -1735,23 +1739,20 @@ mod tests {
             ambiguous(&span, &seven),
             vec![ambiguous("x", &["C", "D"]); 3],
         ));
-        let mut p = PickPrompt::new(
-            Locale::En,
-            u64::MAX,
-            &"q".repeat(PICK_QUESTION_LIMIT),
-            &spans,
-        );
-        if let Some(p) = p.as_mut() {
-            p.later = usize::MAX;
+        for locale in Locale::ALL {
+            let mut p = PickPrompt::new(locale, u64::MAX, &"q".repeat(PICK_QUESTION_LIMIT), &spans);
+            if let Some(p) = p.as_mut() {
+                p.later = usize::MAX;
+            }
+            let content = p.as_ref().map(PickPrompt::render);
+            assert!(
+                content
+                    .as_ref()
+                    .is_some_and(|c| c.chars().count() <= CONTENT_LIMIT),
+                "{locale}: {:?}",
+                content.map(|c| c.chars().count())
+            );
         }
-        let content = p.as_ref().map(PickPrompt::render);
-        assert!(
-            content
-                .as_ref()
-                .is_some_and(|c| c.chars().count() <= CONTENT_LIMIT),
-            "{:?}",
-            content.map(|c| c.chars().count())
-        );
         // Characters outside the BMP count twice in UTF-16: refused, not cut.
         let cards = "🃏".repeat(PICK_QUESTION_LIMIT);
         assert_eq!(PickPrompt::new(Locale::En, ASKER, &cards, &spans), None);
@@ -2413,15 +2414,22 @@ mod retry_tests {
 
     #[test]
     fn a_retry_prompt_reads_back_exactly_what_it_wrote() {
-        for q in [
-            "does bob  die?",
-            "two\n\nparagraphs\n\nhere",
-            "{W}{U} and [[Bolt]]",
-        ] {
-            let p = RetryPrompt::new(Locale::En, 42, q).map(|p| p.render());
-            let back = p.as_deref().and_then(|c| RetryPrompt::parse(Locale::En, c));
-            assert_eq!(back.as_ref().map(RetryPrompt::question), Some(q), "{q:?}");
-            assert_eq!(back.map(|b| b.asker()), Some(42));
+        for locale in Locale::ALL {
+            for q in [
+                "does bob  die?",
+                "two\n\nparagraphs\n\nhere",
+                "{W}{U} and [[Bolt]]",
+            ] {
+                let p = RetryPrompt::new(locale, 42, q).map(|p| p.render());
+                let back = p.as_deref().and_then(|c| RetryPrompt::parse(locale, c));
+                assert_eq!(back.as_ref().map(RetryPrompt::question), Some(q), "{q:?}");
+                assert_eq!(back.map(|b| b.asker()), Some(42));
+            }
+            let longest = "é".repeat(RETRY_QUESTION_LIMIT);
+            assert!(
+                RetryPrompt::new(locale, u64::MAX, &longest).is_some(),
+                "{locale}"
+            );
         }
         let longest = "é".repeat(RETRY_QUESTION_LIMIT);
         assert!(RetryPrompt::new(Locale::En, u64::MAX, &longest).is_some());

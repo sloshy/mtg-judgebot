@@ -236,15 +236,17 @@ pub fn rating(m: &Messages, req: &FeedbackRequest) -> Result<(Rating, Option<Web
     ))
 }
 
-/// The body, read as JSON with axum's own status and message when it cannot
-/// be (not JSON, an unknown field, too large), as an [`ApiReply::Error`].
+/// The body, read as JSON with axum's own status when it cannot be (not
+/// JSON, an unknown field, too large), as an [`ApiReply::Error`] whose
+/// message is the catalog's `unreadable`.
 pub(crate) struct FeedbackBody(FeedbackRequest);
 
-impl<S: Send + Sync> FromRequest<S> for FeedbackBody {
+impl FromRequest<Arc<App>> for FeedbackBody {
     type Rejection = (StatusCode, Json<ApiReply>);
 
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        match Json::<FeedbackRequest>::from_request(req, state).await {
+    async fn from_request(req: Request, app: &Arc<App>) -> Result<Self, Self::Rejection> {
+        let locale = crate::http::header_locale(req.headers(), app.locale());
+        match Json::<FeedbackRequest>::from_request(req, app).await {
             Ok(Json(body)) => Ok(Self(body)),
             Err(e) => {
                 // A body that is JSON but not this one (an unknown field, a
@@ -257,7 +259,7 @@ impl<S: Send + Sync> FromRequest<S> for FeedbackBody {
                 Err((
                     status,
                     Json(ApiReply::Error {
-                        message: e.body_text(),
+                        message: (catalog::messages(locale).unreadable)(&e.body_text()),
                     }),
                 ))
             }

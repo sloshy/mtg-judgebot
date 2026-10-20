@@ -577,6 +577,33 @@ mod tests {
         );
     }
 
+    /// Every locale but English writes its id last, and every locale's
+    /// longest pick and retry ids fit.
+    #[test]
+    fn every_locale_round_trips_in_a_button() -> Result<(), ParseError> {
+        for locale in Locale::ALL {
+            let p = pick(u64::MAX, Audience::Private, Some(65_535..65_535))
+                .map(|p| ButtonAction::Pick(Pick { locale, ..p }));
+            let r = ButtonAction::Retry(Retry {
+                asker: NonZeroU64::MAX,
+                audience: Audience::Private,
+                digest: Digest::of("x"),
+                locale,
+            });
+            for a in p.into_iter().chain([r]) {
+                let id = a.to_custom_id();
+                assert!(id.chars().count() <= CUSTOM_ID_LIMIT, "{id}");
+                assert_eq!(
+                    id.ends_with(&format!(":{locale}")),
+                    locale != Locale::En,
+                    "{id}"
+                );
+                assert_eq!(ButtonAction::parse(&id)?, a);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn an_old_pick_button_parses_as_legacy() {
         let nil = "00000000-0000-0000-0000-000000000000";

@@ -38,6 +38,8 @@ sqlx = { version = "0.9", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+# The stub locale, so the tests render and negotiate a second catalog (D35).
+judge-core = { workspace = true, features = ["stub-locale"] }
 http-body-util = "0.1"
 # `#[sqlx::test]`: the dashboard endpoint end to end over a migrated database.
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate"] }

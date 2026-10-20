@@ -31,6 +31,7 @@
 //! `ADMIN_TOKEN` and `WEB_DIST` under `--admin`; `RUST_LOG`.
 
 mod backup;
+mod catalog;
 mod cli;
 mod ingest;
 
@@ -58,15 +59,21 @@ use judgebot::roles::{self, Adapters, Plan, ROLES_ENV, Roles, Serve};
 async fn main() -> Result<()> {
     // The command line before anything else: `--help` and a typo'd flag must
     // not need a database, a key or a working directory to answer.
+    // Help is read before `.env` is: the process environment's language.
+    let text = || {
+        catalog::messages(judge_core::Locale::for_command_line(|k| {
+            std::env::var(k).ok()
+        }))
+    };
     match cli::parse(std::env::args_os().skip(1))? {
-        Invocation::Help(usage) => {
-            println!("{usage}");
+        Invocation::Help => {
+            println!("{}", text().usage);
             Ok(())
         }
         Invocation::Ingest { args } => {
             let cmd = match ingest::parse(args)? {
                 ingest::Launch::Help => {
-                    println!("{}", ingest::USAGE);
+                    println!("{}", text().ingest_usage);
                     return Ok(());
                 }
                 ingest::Launch::Run(cmd) => cmd,
@@ -76,7 +83,7 @@ async fn main() -> Result<()> {
         }
         Invocation::Backup { args } => match backup::parse(args)? {
             backup::Launch::Help => {
-                println!("{}", backup::USAGE);
+                println!("{}", text().backup_usage);
                 Ok(())
             }
             backup::Launch::Run(cmd) => {

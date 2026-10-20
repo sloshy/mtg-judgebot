@@ -10,16 +10,23 @@
 use serde_json::{Map, Number, Value as Json};
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value};
 
-/// Why the form's JSON cannot be written as TOML.
-#[derive(Debug, thiserror::Error)]
+/// Why the form's JSON cannot be written as TOML. Its text is the
+/// catalog's (`catalog::Messages::bad_draft`); `Display` is English.
+#[derive(Debug)]
 pub enum BadDraft {
     /// The top level is not an object.
-    #[error("the draft must be a JSON object")]
     NotATable,
     /// A number TOML cannot hold.
-    #[error("{0}: not a TOML number")]
     Number(String),
 }
+
+impl std::fmt::Display for BadDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&(crate::catalog::EN.bad_draft)(self))
+    }
+}
+
+impl std::error::Error for BadDraft {}
 
 /// The file's text as a document.
 ///

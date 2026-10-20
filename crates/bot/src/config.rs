@@ -1664,7 +1664,8 @@ pub struct Config {
 /// [`ConfigError::BadBudget`] for a period that is not `process`, `day` or
 /// `month`, a webhook that is not an `https` URL, or warning thresholds that
 /// are not percentages from 1 to 99. The webhook's value is
-/// not echoed: it is a credential.
+/// not echoed: it is a credential. [`ConfigError::BadLocale`] for a
+/// `JUDGE_LOCALE`, the language of the webhook's alerts, with no catalog.
 pub fn budget(env: impl Fn(&str) -> Option<String>) -> Result<Budget, ConfigError> {
     let period = Period::parse(env(budget::PERIOD_ENV).as_deref()).map_err(|value| {
         ConfigError::BadBudget {
@@ -1673,15 +1674,18 @@ pub fn budget(env: impl Fn(&str) -> Option<String>) -> Result<Budget, ConfigErro
             expected: "process, day or month",
         }
     })?;
+    let locale = instance_locale(&env)?;
     let alert = env(ALERT_WEBHOOK_ENV)
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
         .map(|v| {
-            AlertWebhook::parse(&v).map_err(|_| ConfigError::BadBudget {
-                var: ALERT_WEBHOOK_ENV,
-                value: "<redacted>".to_owned(),
-                expected: "an https:// webhook URL",
-            })
+            AlertWebhook::parse(&v)
+                .map(|hook| hook.in_locale(locale))
+                .map_err(|_| ConfigError::BadBudget {
+                    var: ALERT_WEBHOOK_ENV,
+                    value: "<redacted>".to_owned(),
+                    expected: "an https:// webhook URL",
+                })
         })
         .transpose()?;
     let warn_at = Thresholds::parse(env(budget::WARN_AT_ENV).as_deref()).map_err(|value| {
@@ -3261,7 +3265,20 @@ model = "qwen3:8b"
             _ => None,
         })?;
         assert_eq!(set.budget().period, Period::Month);
-        assert!(set.budget().alert.is_some());
+        assert_eq!(
+            set.budget().alert.as_ref().map(AlertWebhook::locale),
+            Some(Locale::En)
+        );
+        let stub = Config::from_vars(|k| match k {
+            ALERT_WEBHOOK_ENV => Some("https://discord.com/api/webhooks/1/tok".to_owned()),
+            LOCALE_ENV => Some("qps".to_owned()),
+            _ => None,
+        })?;
+        assert_eq!(
+            stub.budget().alert.as_ref().map(AlertWebhook::locale),
+            Some(Locale::Stub),
+            "alerts are written in JUDGE_LOCALE"
+        );
         assert_eq!(set.budget().warn_at, None);
         let warned = Config::from_vars(|k| (k == budget::WARN_AT_ENV).then(|| "80,50".to_owned()))?;
         assert_eq!(

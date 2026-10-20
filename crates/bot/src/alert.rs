@@ -6,30 +6,59 @@
 //! An alert is best effort: a webhook that refuses, times out or cannot be
 //! reached is logged and never stops the caller. The URL is a credential, so
 //! it is never logged or printed: only its host is.
+//!
+//! The webhook carries the language its alerts are written in
+//! (`JUDGE_LOCALE`, [`AlertWebhook::locale`]); their text is in
+//! [`catalog`].
 
 use std::time::Duration;
+
+use judge_core::Locale;
+
+pub mod catalog;
 
 /// `JUDGE_ALERT_WEBHOOK`.
 pub const ALERT_WEBHOOK_ENV: &str = "JUDGE_ALERT_WEBHOOK";
 /// How long the alert webhook gets to answer.
 pub const ALERT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Where the operator is told: an `https` webhook that takes a JSON body.
-/// Redacted in `Debug`, because a webhook URL is a credential: anyone holding
-/// it can post to the channel.
+/// Where the operator is told: an `https` webhook that takes a JSON body,
+/// and the language its alerts are written in. Redacted in `Debug`, because
+/// a webhook URL is a credential: anyone holding it can post to the channel.
 #[derive(Clone, PartialEq, Eq)]
-pub struct AlertWebhook(url::Url);
+pub struct AlertWebhook(url::Url, Locale);
 
 impl AlertWebhook {
-    /// Parse the variable's value.
+    /// Parse the variable's value. Its alerts are English until
+    /// [`Self::in_locale`] says otherwise.
     ///
     /// # Errors
     /// Anything that is not an absolute `https` URL with a host.
     pub fn parse(raw: &str) -> Result<Self, String> {
         match url::Url::parse(raw.trim()) {
-            Ok(u) if u.scheme() == "https" && u.host_str().is_some() => Ok(Self(u)),
+            Ok(u) if u.scheme() == "https" && u.host_str().is_some() => {
+                Ok(Self(u, Locale::default()))
+            }
             _ => Err("an https:// webhook URL".to_owned()),
         }
+    }
+
+    /// The webhook, its alerts written in `locale` (`JUDGE_LOCALE`).
+    #[must_use]
+    pub fn in_locale(self, locale: Locale) -> Self {
+        Self(self.0, locale)
+    }
+
+    /// The language its alerts are written in.
+    #[must_use]
+    pub const fn locale(&self) -> Locale {
+        self.1
+    }
+
+    /// The alert text in [`Self::locale`].
+    #[must_use]
+    pub const fn messages(&self) -> &'static catalog::Messages {
+        catalog::messages(self.1)
     }
 
     /// The host, which is safe to log.

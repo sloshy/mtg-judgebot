@@ -19,25 +19,17 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
-use judge_configure::{env::DotEnv, server};
+use judge_configure::{
+    catalog::{self, Messages},
+    env::DotEnv,
+    server,
+};
+use judge_core::Locale;
 use tokio::sync::Mutex;
 
 /// Where a container publishes the port, set by the compose service: the
 /// address to print, and whether to warn about a non-loopback listener.
 const PUBLISHED_ENV: &str = "JUDGE_CONFIG_PUBLISHED";
-
-const USAGE: &str = "\
-usage: judge-config [--env FILE] [--config FILE] [--listen ADDR] [--allow-host NAME]...
-
-A page on localhost for editing judge.toml and .env, each draft checked by
-the binaries' own loaders. Secrets in .env are never shown: the page says
-whether each is set, and can replace one with a value you type.
-
-  --env FILE         the .env to edit (default ./.env)
-  --config FILE      the judge.toml to edit (default: JUDGE_CONFIG from the
-                     .env, else judge.toml beside it)
-  --listen ADDR      where to listen (default 127.0.0.1:8790)
-  --allow-host NAME  accept this Host header too (loopback names always are)";
 
 #[derive(Debug)]
 struct Args {
@@ -47,7 +39,7 @@ struct Args {
     allow_hosts: Vec<String>,
 }
 
-fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>> {
+fn parse(args: impl IntoIterator<Item = String>, m: &Messages) -> Result<Option<Args>> {
     let mut out = Args {
         env: PathBuf::from(".env"),
         config: None,
@@ -58,19 +50,17 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>> {
     while let Some(arg) = args.next() {
         let mut value = || {
             args.next()
-                .with_context(|| format!("{arg} needs a value\n\n{USAGE}"))
+                .with_context(|| format!("{}\n\n{}", (m.needs_value)(&arg), m.usage))
         };
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
             "--env" => out.env = PathBuf::from(value()?),
             "--config" => out.config = Some(PathBuf::from(value()?)),
             "--listen" => {
-                out.listen = value()?
-                    .parse()
-                    .context("--listen must be an address such as 127.0.0.1:8790")?;
+                out.listen = value()?.parse().context(m.bad_listen)?;
             }
             "--allow-host" => out.allow_hosts.push(value()?),
-            other => anyhow::bail!("unknown argument {other:?}\n\n{USAGE}"),
+            other => anyhow::bail!("{}\n\n{}", (m.unknown_argument)(other), m.usage),
         }
     }
     Ok(Some(out))
@@ -142,11 +132,24 @@ async fn main() -> ExitCode {
     }
 }
 
+/// The terminal's language ([`Locale::for_terminal`]), else the instance's
+/// as the `.env` at `env` says.
+fn terminal_locale(env: &Path) -> Locale {
+    let text = std::fs::read_to_string(env).ok();
+    Locale::for_terminal(
+        |k| std::env::var(k).ok(),
+        server::instance_locale(text.as_deref()),
+    )
+}
+
 async fn run() -> Result<()> {
-    let Some(args) = parse(std::env::args().skip(1))? else {
-        println!("{USAGE}");
+    // The `.env` named on the command line is not known until it is parsed.
+    let m = catalog::messages(terminal_locale(Path::new(".env")));
+    let Some(args) = parse(std::env::args().skip(1), m)? else {
+        println!("{}", m.usage);
         return Ok(());
     };
+    let m = catalog::messages(terminal_locale(&args.env));
     let (toml_path, spelled) = toml_path(&args.env, args.config);
     let editor = Arc::new(server::Editor {
         env_path: absolute(&args.env),
@@ -167,11 +170,7 @@ async fn run() -> Result<()> {
         .and_then(|v| v.trim().parse::<SocketAddr>().ok());
     let reachable = published.unwrap_or(addr);
     if !reachable.ip().is_loopback() {
-        eprintln!(
-            "judge-config: listening on {addr}, not loopback. Publish the port on 127.0.0.1 only \
-             (docker run -p 127.0.0.1:{0}:{0}) or anyone who can reach it and learns the token can edit your settings.",
-            addr.port()
-        );
+        eprintln!("{}", (m.not_loopback)(&addr.to_string(), addr.port()));
     }
     let shown = if reachable.ip().is_unspecified() {
         SocketAddr::from(([127, 0, 0, 1], reachable.port()))
@@ -179,12 +178,17 @@ async fn run() -> Result<()> {
         reachable
     };
     println!(
-        "editing {} and {}",
-        editor.env_path.display(),
-        editor.toml_path.display()
+        "{}",
+        (m.editing)(
+            &editor.env_path.display().to_string(),
+            &editor.toml_path.display().to_string()
+        )
     );
-    println!("open http://{shown}/#token={}", editor.token);
-    println!("Ctrl-C to stop.");
+    println!(
+        "{}",
+        (m.open)(&format!("http://{shown}/#token={}", editor.token))
+    );
+    println!("{}", m.stop);
     axum::serve(listener, server::router(editor))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -201,6 +205,7 @@ mod tests {
 
     #[test]
     fn arguments() -> R {
+        let m = &catalog::EN;
         let a = parse(
             [
                 "--env",
@@ -211,14 +216,19 @@ mod tests {
                 "box",
             ]
             .map(String::from),
+            m,
         )?
         .ok_or("help")?;
         assert_eq!(a.env, PathBuf::from("x/.env"));
         assert_eq!(a.listen.port(), 9000);
         assert_eq!(a.allow_hosts, ["box"]);
-        assert!(parse(["--help".to_owned()])?.is_none());
-        assert!(parse(["--env".to_owned()]).is_err());
-        assert!(parse(["--nope".to_owned()]).is_err());
+        assert!(parse(["--help".to_owned()], m)?.is_none());
+        assert!(parse(["--env".to_owned()], m).is_err());
+        assert!(parse(["--nope".to_owned()], m).is_err());
+        // An argument error is in the terminal's language, with the usage.
+        let stub = catalog::messages(Locale::Stub);
+        let e = parse(["--nope".to_owned()], stub).err().ok_or("refused")?;
+        assert_eq!(format!("{e:#}"), "⟦unknown_argument --nope⟧\n\n⟦usage⟧");
         Ok(())
     }
 

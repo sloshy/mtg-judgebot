@@ -10,6 +10,7 @@
 
 use std::{fmt, num::NonZeroU16, path::PathBuf};
 
+use judge_core::{Locale, locale::LOCALE_ENV};
 use judge_llm::ApiKey;
 use nonempty::NonEmpty;
 
@@ -466,7 +467,8 @@ pub struct Settings {
     pub store: Store,
     /// What a run does besides storing the dump.
     pub policy: Policy,
-    /// `JUDGE_ALERT_WEBHOOK`, where a failure and a recovery are reported.
+    /// `JUDGE_ALERT_WEBHOOK`, where a failure and a recovery are reported,
+    /// in `JUDGE_LOCALE`.
     pub alert: Option<AlertWebhook>,
     /// `DATABASE_URL`.
     pub database: Database,
@@ -587,12 +589,18 @@ impl Settings {
                 })
                 .transpose(),
         );
+        let locale = c.take(
+            LOCALE_ENV,
+            Locale::parse_setting(get(&env, LOCALE_ENV).as_deref())
+                .map_err(|_| format!("one of: {}", Locale::supported())),
+        );
         let alert = c.take(
             ALERT_WEBHOOK_ENV,
             get(&env, ALERT_WEBHOOK_ENV)
                 .map(|v| AlertWebhook::parse(&v))
                 .transpose(),
         );
+        let alert = alert.map(|hook| hook.map(|h| h.in_locale(locale.unwrap_or_default())));
         let database = c.take(
             DATABASE_URL_ENV,
             required(&env, DATABASE_URL_ENV).and_then(|v| Database::parse(&v)),
@@ -674,8 +682,14 @@ mod tests {
             (EVERY_DAYS_ENV, "1"),
             (KEEP_LOCAL_ENV, "/var/backups/judgebot"),
             (ALERT_WEBHOOK_ENV, "https://discord.com/api/webhooks/1/tok"),
+            (LOCALE_ENV, "qps"),
         ]);
         let s = Settings::from_env(env(&vars))?;
+        assert_eq!(
+            s.alert.as_ref().map(AlertWebhook::locale),
+            Some(Locale::Stub),
+            "alerts are written in JUDGE_LOCALE"
+        );
         assert_eq!(s.store.prefix.as_str(), "backups/judgebot");
         assert_eq!(
             s.store.prefix.key("x.dump.gz"),

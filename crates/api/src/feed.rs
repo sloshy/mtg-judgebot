@@ -303,7 +303,7 @@ pub(crate) async fn feed_route(
     let m = catalog::messages(locale);
     let q = match q {
         Ok(q) => q,
-        Err(e) => return error(e.status(), e.body_text()),
+        Err(e) => return error(e.status(), (m.unreadable)(&e.body_text())),
     };
     let (filter, after) = match parse_query(m, &q) {
         Ok(ok) => ok,

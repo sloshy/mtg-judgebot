@@ -92,6 +92,8 @@ time = "0.3"
 percent-encoding = "2"
 
 [dev-dependencies]
+# The stub locale, so the tests render and negotiate a second catalog (D35).
+judge-core = { workspace = true, features = ["stub-locale"] }
 wiremock.workspace = true
 # `discord::endpoint`'s tests sign requests as Discord does.
 ed25519-dalek = "3"

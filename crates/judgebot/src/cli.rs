@@ -13,11 +13,14 @@ use anyhow::Result;
 
 use judgebot::roles::{self, Origin, ROLES_ENV, Roles};
 
+use crate::catalog;
+
 /// What the command line asked for.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Invocation {
-    /// Print this and exit successfully.
-    Help(String),
+    /// Print the usage (the catalog's, in the reader's language) and exit
+    /// successfully.
+    Help,
     /// The ingest command line, over these arguments.
     Ingest {
         /// The arguments after `ingest`.
@@ -35,27 +38,9 @@ pub enum Invocation {
     },
 }
 
-/// The usage `judgebot --help` prints.
-pub const USAGE: &str = "\
-usage: judgebot <role>...
-       judgebot ingest <command> [args]   (judgebot ingest --help)
-       judgebot backup <command> [args]   (judgebot backup --help)
-
-Roles: at least one, named on the command line or, with none there, in
-JUDGE_ROLES (the same flags separated by spaces).
-
-  --discord  the Discord bot (requires DISCORD_TOKEN and JUDGE_OPERATOR_DISCORD)
-  --api      POST /api/judge, the anonymous question route
-  --web      the built web app, from WEB_DIST (requires its index.html)
-  --mcp      the MCP transport at /mcp (requires MCP_TOKEN)
-  --admin    the operator's pages and reads on ADMIN_ADDR (default
-             127.0.0.1:8789; requires ADMIN_TOKEN and the built web app)
-  --jobs     the scheduled data refresh (JUDGE_REFRESH_HOURS; 0 turns it off)
-
---api, --web and --mcp require JUDGE_OPERATOR_EMAIL and listen on API_ADDR,
-where GET /api/health and GET /api/about are served whichever of them is on.
-`judge-cli admin-url` prints the admin page's address with its token.
-Everything else is configured through the environment; see .env.example.";
+/// The usage an error quotes: English, as every error is (`--help` prints
+/// the catalog's, in the reader's language).
+pub const USAGE: &str = catalog::EN.usage;
 
 /// Parse the arguments after the program name.
 ///
@@ -79,7 +64,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Invocation> {
         });
     }
     if args.iter().any(help) {
-        return Ok(Invocation::Help(USAGE.to_owned()));
+        return Ok(Invocation::Help);
     }
     let flags = args.iter().map(|a| a.to_string_lossy());
     Ok(Invocation::Serve {
@@ -132,10 +117,7 @@ mod tests {
         );
         assert!(matches!(run(&[]), Ok(Invocation::Serve { roles: None })));
         for args in [&["--help"][..], &["-h"], &["--api", "--help"]] {
-            assert!(
-                matches!(run(args), Ok(Invocation::Help(u)) if u == USAGE),
-                "{args:?}"
-            );
+            assert!(matches!(run(args), Ok(Invocation::Help)), "{args:?}");
         }
         for args in [
             &["--bot"][..],
@@ -211,11 +193,14 @@ mod tests {
         );
     }
 
-    /// The usage names every role.
+    /// The usage names every role, in every locale.
     #[test]
     fn the_usage_lists_every_role() {
-        for r in Role::ALL {
-            assert!(USAGE.contains(r.flag()), "{r:?}");
+        for l in judge_core::Locale::ALL {
+            for r in Role::ALL {
+                let usage = crate::catalog::messages(l).usage;
+                assert!(usage.contains(r.flag()), "{l}: {r:?}");
+            }
         }
     }
 }

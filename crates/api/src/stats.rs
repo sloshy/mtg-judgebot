@@ -274,7 +274,7 @@ pub(crate) async fn stats_route(
     }
     let q = match q {
         Ok(q) => q,
-        Err(e) => return error(e.status(), e.body_text()),
+        Err(e) => return error(e.status(), (m.unreadable)(&e.body_text())),
     };
     let query = match parse_query(m, &q, reads.disclosure()) {
         Ok(q) => q,

@@ -97,6 +97,24 @@ function object(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
 
+/** GET /admin/api/about: the instance's language (`JUDGE_LOCALE`), which
+ * the pages speak when the browser's languages have no catalog. `undefined`
+ * when it could not be read: the pages stay in the browser's language or
+ * English, and a refused token is found by the first real read. */
+export async function fetchInstanceLocale(token: string): Promise<string | undefined> {
+  try {
+    const res = await fetch("/admin/api/about", {
+      headers: { authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return undefined;
+    const body: unknown = await res.json();
+    return object(body) && typeof body.locale === "string" ? body.locale : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** One stored call in the list (`judge_bot::admin::CallRow`). */
 export interface CallRow {
   id: string;

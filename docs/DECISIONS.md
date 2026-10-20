@@ -1391,7 +1391,8 @@ are data rather than messages and stay as they come: a card symbol's `alt` text
   `Accept-Language`. A language with no catalog falls through. The guild's preferred
   locale is not consulted: Discord defaults it to `en-US`, so it would almost always
   hide `JUDGE_LOCALE`, the community's own choice (D16). The agent tools speak
-  English until the CLIs' output is translated (`judge_agent::ops::AGENT_LOCALE`).
+  English whatever `JUDGE_LOCALE` says, for good: models read them
+  (`judge_agent::ops::AGENT_LOCALE`).
 - **Parsed-back messages carry their language.** A "did you mean?" or Retry message is
   read back by re-rendering its template, so the button's id carries the locale it was
   written in (`:<locale>`; English writes none, the shape every earlier build reads, so a
@@ -1401,6 +1402,64 @@ are data rather than messages and stay as they come: a card symbol's `alt` text
   templates, computed at compile time.
 - **Command descriptions** register the default locale's text as the base and every
   other locale's as `description_localizations`, under that locale's Discord tags.
+  Command and option *names* stay English (no `name_localizations`): `/judge` is what
+  the docs, `/help` and a community's conversation call it, in every language.
+
+*Amended 2026-10-20* (#25's second half): every remaining surface, and a stub locale
+that proves the structure.
+
+- **A stub second locale, in tests only.** `judge-core`'s `stub-locale` feature adds
+  `Locale::Stub` (`qps`, ISO 639's private-use range, as pseudo-locales use), and only
+  `[dev-dependencies]` turn it on (`scripts/check.sh lint` refuses it anywhere else),
+  so the tests negotiate it from a Discord user, a body's `locale`, `Accept-Language`,
+  a terminal and `JUDGE_LOCALE`, round-trip "did you mean?" and Retry prompts in it, and
+  render every message of every catalog in it, while no build that ships can choose it.
+  Every catalog has a `STUB` value (each message its own name in `⟦…⟧`, with its
+  values) whatever the feature, and each surface picks its catalog through
+  `locale::Catalogs::new`, which takes every locale's: a new `Locale` variant makes
+  every surface's call stop compiling until it names its catalog, and that catalog's
+  struct literal lists the messages it misses. Rejected: a `#[cfg(test)]` variant,
+  which exists only inside `judge-core`'s own tests; a variant that always exists but
+  is never negotiated, which ships; and a test-only catalog type, which proves
+  nothing about negotiation.
+- **The web app, the admin pages and the docs site** are TypeScript: one object per
+  locale in a `Record<Locale, …>` (`web/src/messages.ts`, `web/src/admin/messages.ts`,
+  `site/src/i18n.ts`), so `tsc` and `astro check` list a missing catalog or message.
+  They carry no stub: it would ship. The admin pages fall back to `JUDGE_LOCALE` as the
+  public page does, read from `GET /admin/api/about`. The site's locales are
+  Starlight's, English at the root, one list in `site/src/locales.mjs`; a
+  `sync-docs.mjs` manifest entry may name a locale.
+- **Command lines** speak the terminal's language (`LC_ALL`, `LC_MESSAGES`, `LANG`, the
+  first one set deciding, as POSIX has it, except that `C` and `POSIX` name no language
+  and pass to the next: a container's `LC_ALL=C.UTF-8` says nothing about the person),
+  else `JUDGE_LOCALE`
+  (`Locale::for_command_line`): their usage is catalog text (`judge_agent::catalog`,
+  `judgebot`'s `catalog`). What else they print is JSON for agents and scripts, a line
+  a script parses (`ingest upgrade`'s `upgrade: <kind>`), or a diagnostic (errors,
+  `ingest migrate`'s progress lines), and stays as it is. `judge-eval` is a developer
+  tool and stays English. The agent tools stay English, as above.
+- **Alerts** are written in `JUDGE_LOCALE`: the webhook carries it
+  (`AlertWebhook::locale`) and `judge_bot::alert::catalog` writes them. A check that
+  logs what it alerts logs the English text. The operator's shell scripts
+  (`deploy.sh`, `backup-db.sh`, `refresh-data.sh`) stay English, alerts included: their
+  console output is a diagnostic, and a shell catalog would have no compiler to check
+  it.
+- **judge-config** has its own catalog (`judge_configure::catalog`: the checks'
+  findings, `BadValue`, its replies and terminal output) and its page one JS object
+  per locale (`crates/configure/ui/messages.js`). Both follow the browser's languages
+  (sent in a header), then the edited `.env`'s `JUDGE_LOCALE`, the file the instance's
+  language lives in (`scripts/config.sh` runs it without loading `.env`); its terminal
+  output, the terminal's language first. The page is plain JS with no compiler (D23),
+  so a test reads its catalog's source and holds every locale to English's keys. The schema's and `.env.example`'s help are English sources;
+  a locale supplies its own per field path or variable through an override map, falling
+  back to English per entry, and a test holds every key to a real field or variable.
+  The loaders' refusals it shows (`ConfigError`, a role's `Problem`) are the binaries'
+  startup diagnostics and stay English.
+- **Diagnostics stay English** beside logs: errors, `/api/health`'s failure text,
+  `/mcp`'s 401 body, and a parser's account of an unreadable request, which the API's
+  `unreadable` message carries as it comes.
+  `calls.locale` stays `en`: it records the answer's language, and answers are English.
+  So do judge-config's parser and I/O errors and the schema's enum values.
 
 ## D36. Public feed of answered calls
 

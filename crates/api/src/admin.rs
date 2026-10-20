@@ -355,6 +355,7 @@ pub fn router(
     });
     let token = Token(token.expose().as_bytes().into());
     let api = Router::new()
+        .route("/admin/api/about", get(about_route))
         .route("/admin/api/calls", get(calls_route))
         .route("/admin/api/calls/{id}", get(call_route))
         .route("/admin/api/failures", get(failures_route))
@@ -459,6 +460,25 @@ fn failed(m: &Messages, what: &str, e: &JudgeError) -> Response {
     error(StatusCode::INTERNAL_SERVER_ERROR, m.admin_failed)
 }
 
+/// `GET /admin/api/about`: the instance's language (`JUDGE_LOCALE`), which
+/// the pages speak when the browser's languages have no catalog, as the
+/// server's replies do, and every language there is.
+#[derive(Debug, Serialize)]
+pub struct AdminAbout {
+    /// `JUDGE_LOCALE`.
+    pub locale: Locale,
+    /// Every language the replies can be in.
+    pub locales: Vec<Locale>,
+}
+
+async fn about_route(State(state): State<Arc<AdminState>>) -> Response {
+    Json(AdminAbout {
+        locale: state.locale,
+        locales: Locale::ALL.to_vec(),
+    })
+    .into_response()
+}
+
 async fn not_routed(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Response {
     error(StatusCode::NOT_FOUND, messages(&state, &headers).not_routed)
 }
@@ -546,7 +566,7 @@ async fn calls_route(
     }
     let q = match query {
         Ok(Query(q)) => q,
-        Err(e) => return error(e.status(), e.body_text()),
+        Err(e) => return error(e.status(), (m.unreadable)(&e.body_text())),
     };
     let (filter, after) = match parse_calls_query(m, &q) {
         Ok(ok) => ok,
@@ -679,7 +699,7 @@ async fn failures_route(
     }
     let limit = match query {
         Ok(Query(q)) => q.limit.unwrap_or(50),
-        Err(e) => return error(e.status(), e.body_text()),
+        Err(e) => return error(e.status(), (m.unreadable)(&e.body_text())),
     };
     match state.reads.failures(limit).await {
         Ok(failures) => Json(FailuresView { failures }).into_response(),
@@ -754,7 +774,7 @@ async fn usage_route(
             Ok(q) => q,
             Err(message) => return error(StatusCode::BAD_REQUEST, message),
         },
-        Err(e) => return error(e.status(), e.body_text()),
+        Err(e) => return error(e.status(), (m.unreadable)(&e.body_text())),
     };
     match state.reads.usage(&query).await {
         Ok(usage) => Json(usage).into_response(),
@@ -847,7 +867,7 @@ async fn queue_route(
     }
     let q = match query {
         Ok(Query(q)) => q,
-        Err(e) => return error(e.status(), e.body_text()),
+        Err(e) => return error(e.status(), (m.unreadable)(&e.body_text())),
     };
     let (filter, after) = match parse_queue_query(m, &q) {
         Ok(ok) => ok,
@@ -1295,6 +1315,38 @@ mod tests {
         Ok(dist)
     }
 
+    /// The pages learn the instance's language behind the token, and an
+    /// error is in `Accept-Language`'s, else the instance's.
+    #[tokio::test]
+    async fn about_names_the_instance_language() -> Result<(), Box<dyn std::error::Error>> {
+        let dist = dist()?;
+        let token = admin_token().ok_or("token")?;
+        let app = router(
+            Arc::new(StubReads),
+            &token,
+            &dist,
+            Availability::open(),
+            Locale::Stub,
+        );
+        let bearer = format!("Bearer {TOKEN}");
+        let (status, _, body) = send(&app, "/admin/api/about", Some(&bearer)).await?;
+        assert_eq!(status, StatusCode::OK);
+        let j: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(j.get("locale"), Some(&serde_json::json!("qps")));
+        assert_eq!(
+            j.get("locales"),
+            Some(&serde_json::json!(Locale::ALL.map(Locale::id)))
+        );
+        let (status, _, body) = send(&app, "/admin/api/nothing", Some(&bearer)).await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let j: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(
+            j.get("message").and_then(serde_json::Value::as_str),
+            Some(catalog::STUB.not_routed)
+        );
+        Ok(())
+    }
+
     /// Every API path is 401 without the token or with another one, and the
     /// token opens them, uncached.
     #[tokio::test]
@@ -1303,6 +1355,7 @@ mod tests {
         let app = app(&dist, Availability::open()).ok_or("app")?;
         let bearer = format!("Bearer {TOKEN}");
         for path in [
+            "/admin/api/about",
             "/admin/api/calls",
             "/admin/api/calls/00000000-0000-0000-0000-000000000001",
             "/admin/api/failures",

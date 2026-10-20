@@ -112,13 +112,19 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `kind` (`rule`, `ruling`, `oracle_text`, `prior_call`), so a client can tell them apart
   without reading the label, which may be translated.
 
-- **Translation groundwork.** Every message the Discord bot, the web app and the HTTP
-  API show now comes from a per-language catalog, and each request picks its language:
-  the Discord user's; the browser's on the web (sent as the new
-  optional `locale` field of `POST /api/judge`, else `Accept-Language`). `JUDGE_LOCALE`
-  sets the fallback. Only English ships, so nothing reads differently yet.
-  `GET /api/about` gains `locale` and `locales`. A "did you mean?" or Retry button in
-  another language will carry it in its id; English ones keep their shape.
+- **Translation groundwork.** Every message the Discord bot, the web app, the admin
+  pages, the HTTP API, the alert webhook, `judge-config`, the command lines' usage and
+  the docs site's header and footer show now comes from a per-language catalog, and
+  each request picks its language: the Discord user's; the browser's on the web (sent as
+  the new optional `locale` field of `POST /api/judge`, else `Accept-Language`) and in
+  `judge-config`; the terminal's (`LC_ALL`, `LC_MESSAGES`, `LANG`) for `judge-cli`,
+  `judgebot` and `judge-config`. `JUDGE_LOCALE` sets the fallback, and the language of
+  the alert webhook's messages. Only English ships, so nothing reads differently yet.
+  `GET /api/about` gains `locale` and `locales`, and the admin listener gains
+  `GET /admin/api/about`. A "did you mean?" or Retry button in another language will
+  carry it in its id; English ones keep their shape. The answers, the rules material,
+  JSON output, the agent tools' text and diagnostics (logs, the command lines' errors,
+  health checks) stay English.
 
 - **Call retention.** `JUDGE_CALL_RETENTION_DAYS` (unset or `0`: keep every call, as
   before) deletes answered calls older than that many days, with their ratings, at each
@@ -481,6 +487,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   call not asked private, including those asked before this release, with the asker's
   username where one was stored. To keep them unlisted, set `JUDGE_FEED=false` (or a short
   `JUDGE_FEED_DAYS`) in `.env` before upgrading.
+- **A bad `JUDGE_LOCALE` stops more.** A value that names no language the instance
+  speaks already stopped `judgebot`; it now also stops the `backup` service (which
+  reads `.env`'s through Compose, for its alerts) and the `judgebot ingest` commands that
+  write data (they keep the spend ledger, whose alerts it sets the language of).
+  Blank or `en` is English.
 - **The `judgebot` container has no fixed name.** Compose names it after the
   checkout's directory (`mtg-judgebot-judgebot-1`). Use the service name with Compose
   (`docker compose logs judgebot`, `docker compose exec judgebot …`) instead of

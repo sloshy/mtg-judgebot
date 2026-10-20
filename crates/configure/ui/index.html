@@ -6,7 +6,7 @@
     <meta name="referrer" content="no-referrer" />
     <title>judge-config</title>
     <link rel="stylesheet" href="app.css" />
-    <script src="app.js" defer></script>
+    <script type="module" src="app.js"></script>
   </head>
   <body>
     <header class="top">
@@ -14,9 +14,9 @@
       <p id="paths" class="muted"></p>
     </header>
     <div class="tabs" role="tablist">
-      <button type="button" role="tab" data-tab="models" aria-selected="true">Models · judge.toml</button>
-      <button type="button" role="tab" data-tab="settings" aria-selected="false">Settings · .env</button>
-      <button type="button" role="tab" data-tab="review" aria-selected="false">Review &amp; save <span id="pending" class="count"></span></button>
+      <button type="button" role="tab" data-tab="models" aria-selected="true" data-msg="tabModels"></button>
+      <button type="button" role="tab" data-tab="settings" aria-selected="false" data-msg="tabSettings"></button>
+      <button type="button" role="tab" data-tab="review" aria-selected="false"><span data-msg="tabReview"></span> <span id="pending" class="count"></span></button>
     </div>
     <div class="layout">
       <main>
@@ -25,12 +25,11 @@
         <section id="tab-review" class="tab" hidden></section>
       </main>
       <aside id="checks" aria-live="polite">
-        <h2>Would it start?</h2>
         <ul id="check-list"></ul>
         <ul id="warnings"></ul>
         <ul class="points muted small">
-          <li>Checked by the binaries' own loaders</li>
-          <li>Left to startup on the serving machine: cloud credentials, <code>--web</code>'s directory</li>
+          <li data-msg="checkedBy"></li>
+          <li data-msg="leftToStartup"></li>
         </ul>
       </aside>
     </div>

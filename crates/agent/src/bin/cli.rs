@@ -66,17 +66,9 @@ use judge_bot::{
 use judge_core::{CallId, CardId, FeedbackCategory, QueueStatus, RaterKind, RuleId};
 use serde::Serialize;
 
-const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span=Name]... [--private] \
-| begin <question> [--thread T] [--private] | prompt <session> | status <session> \
-| extract <session> <file|-> | rules <session> <id>... | verdict <session> <file|-> [--persist] \
-| persist <session> | card <name> | card-info <uuid> | get-rules <id>... | search <query> [--limit N] \
-| glossary <term> | config | about \
-| stats [--days N | --from YYYY-MM-DD] [--to YYYY-MM-DD] [--interface I] [--asker A] [--model M] \
-| failures [--limit N] \
-| calls [--interface I] [--asker A] [--model M] [--private | --public] [--search Q] [--cursor C] \
-| call <id> | queue [--status S] [--category C] [--interface I] [--rater R] [--cursor C] \
-| queue-show <item> | queue-resolve <item> --note N [--fixed-by F] | queue-dismiss <item> --note N \
-| admin-url>";
+/// The usage an error quotes: English, as every error is (the catalog's
+/// for `--help`, which a person reads, is in their language).
+const USAGE: &str = judge_agent::catalog::EN.usage;
 
 #[derive(Debug)]
 enum Command {
@@ -775,7 +767,8 @@ async fn main() -> ExitCode {
         .is_some_and(|a| ["--help", "-h", "help"].contains(&a.as_str()))
     {
         // Plain text on purpose: a person asked; every other output is JSON.
-        println!("{USAGE}");
+        let locale = judge_core::Locale::for_command_line(|k| std::env::var(k).ok());
+        println!("{}", judge_agent::catalog::messages(locale).usage);
         return ExitCode::SUCCESS;
     }
     let outcome = match parse_args(args) {

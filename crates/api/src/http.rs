@@ -633,24 +633,39 @@ impl<S: Send + Sync> FromRequestParts<S> for PeerAddr {
 
 /// The `POST /api/judge` body. A body axum's `Json` cannot read (not JSON,
 /// the wrong `Content-Type`, the wrong shape, too large) keeps axum's status
-/// and message but is answered as an [`ApiReply::Error`], so every reply from
-/// the route is JSON tagged by `kind`.
+/// but is answered as an [`ApiReply::Error`], so every reply from the route
+/// is JSON tagged by `kind`. Its message is the catalog's `unreadable`, in
+/// the language `Accept-Language` and `JUDGE_LOCALE` choose (the body's
+/// `locale` could not be read).
 struct JudgeBody(JudgeRequest);
 
-impl<S: Send + Sync> FromRequest<S> for JudgeBody {
+impl FromRequest<Arc<App>> for JudgeBody {
     type Rejection = (StatusCode, Json<ApiReply>);
 
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        match Json::<JudgeRequest>::from_request(req, state).await {
+    async fn from_request(req: Request, app: &Arc<App>) -> Result<Self, Self::Rejection> {
+        let locale = header_locale(req.headers(), app.locale);
+        match Json::<JudgeRequest>::from_request(req, app).await {
             Ok(Json(body)) => Ok(Self(body)),
             Err(e) => Err((
                 e.status(),
                 Json(ApiReply::Error {
-                    message: e.body_text(),
+                    message: (catalog::messages(locale).unreadable)(&e.body_text()),
                 }),
             )),
         }
     }
+}
+
+/// The language of a reply to a request whose body could not be read:
+/// `Accept-Language`, then `instance` (`JUDGE_LOCALE`).
+pub(crate) fn header_locale(headers: &HeaderMap, instance: Locale) -> Locale {
+    shape::request_locale(
+        None,
+        headers
+            .get(axum::http::header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+        instance,
+    )
 }
 
 async fn judge_route(
@@ -1060,6 +1075,63 @@ mod tests {
             .persisted
             .lock()
             .map_or_else(|e| e.into_inner().clone(), |p| p.clone())
+    }
+
+    /// A reply is in the asker's language (the body's `locale`, then
+    /// `Accept-Language`), then the instance's (`JUDGE_LOCALE`), with the
+    /// stub locale standing in for a second one.
+    #[tokio::test]
+    async fn a_reply_is_in_the_askers_language_then_the_instances() -> Res {
+        let blank = |locale: Option<&str>| match locale {
+            Some(l) => format!(r#"{{"question":" ","locale":"{l}"}}"#),
+            None => r#"{"question":" "}"#.to_owned(),
+        };
+        let message = |j: &serde_json::Value| {
+            j.get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let english = catalog::EN.question_empty.to_owned();
+        let stub = catalog::STUB.question_empty.to_owned();
+        for (instance, body, accept, want) in [
+            (Locale::En, None, None, &english),
+            (Locale::En, Some("qps"), None, &stub),
+            (Locale::En, Some("fr"), Some("de, qps-ploc;q=0.5"), &stub),
+            (Locale::En, None, Some("qps;q=0, fr"), &english),
+            (Locale::Stub, None, None, &stub),
+            (Locale::Stub, Some("en-GB"), None, &english),
+            (Locale::Stub, None, Some("en"), &english),
+        ] {
+            let store = Arc::new(StubStore::default());
+            let cfg = test_cfg(10, Path::new("does-not-exist"));
+            let app = App::new(
+                stub_deps(),
+                store as Arc<dyn CallStore>,
+                &cfg,
+                SourceOffer::upstream(judge_core::Commit::Unknown),
+                test_operator(),
+            )
+            .with_locale(instance);
+            let router = router(
+                Arc::new(app),
+                &Interfaces::of(&nonempty![Interface::Api]),
+                &cfg.web_dist,
+            );
+            let mut req = Request::post("/api/judge").header("content-type", "application/json");
+            if let Some(accept) = accept {
+                req = req.header("accept-language", accept);
+            }
+            let res = router.oneshot(req.body(Body::from(blank(body)))?).await?;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+            let bytes = res.into_body().collect().await?.to_bytes();
+            let j: serde_json::Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(
+                message(&j).as_ref(),
+                Some(want),
+                "{instance} {body:?} {accept:?}"
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]

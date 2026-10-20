@@ -19,14 +19,16 @@
 # keeps its own node_modules, and gets .env.example as its .env, as CI does.
 #
 # Groups:
-#   rust   cargo fmt --check, clippy on every target with warnings denied
+#   rust   cargo fmt --check, clippy on every target with warnings denied,
+#          then on the libraries and binaries alone (the features that ship)
 #   sqlx   migrations applied, then the committed .sqlx data matches the SQL
 #   test   cargo test --workspace
 #   web    Biome (web/ and judge-config's page), then tsc + vite build
 #   site   Biome, astro check, the build, lychee over its internal links
 #   lint   cargo deny, cargo machete, taplo, typos, shellcheck, actionlint,
 #          hadolint, the icon's copies, pg_dump's major vs the db image's,
-#          web/ and site/'s versions vs the crates', docker compose config
+#          web/ and site/'s versions vs the crates', the stub locale only in
+#          dev-dependencies, docker compose config
 # sqlx and test need Postgres (DATABASE_URL, else the one in .env), and take
 # turns with any other sqlx or test run on the same server (one_run_per_cluster).
 #
@@ -249,6 +251,10 @@ group_rust() {
   # `-D warnings` as a clippy argument rather than RUSTFLAGS, which would
   # change every crate's fingerprint and rebuild the world for `cargo build`.
   step "cargo clippy" env SQLX_OFFLINE=true cargo clippy --workspace --all-targets --quiet -- -D warnings
+  # The test targets' dev-dependencies turn on judge-core's stub locale for the
+  # whole build, so the clippy above never sees the code without it: this one
+  # checks the libraries and binaries as a release builds them (D35).
+  step "cargo clippy (shipped features)" env SQLX_OFFLINE=true cargo clippy --workspace --quiet -- -D warnings
 }
 
 group_sqlx() {
@@ -358,6 +364,31 @@ check_pg_major() {
   fi
 }
 
+# judge-core's `stub-locale` feature makes the test-only stub locale a Locale
+# variant (D35). Only a [dev-dependencies] table may turn it on, so the
+# workspace's graph without dev-dependencies, as a release build resolves it,
+# must not have it: that catches a [dependencies] table, another crate's
+# [features] and a `default` in judge-core's own. Nor may the image's build or a
+# workflow ask for it, by name or with --all-features.
+check_stub_locale() {
+  local tree found
+  tree="$(cargo tree --workspace --quiet -e features,no-dev -i judge-core)" || {
+    echo "cargo tree could not resolve the workspace's features" >&2
+    return 1
+  }
+  if grep -q stub-locale <<< "$tree"; then
+    echo "a build without dev-dependencies turns on judge-core/stub-locale:" >&2
+    grep stub-locale <<< "$tree" >&2
+    return 1
+  fi
+  found="$(grep -nE -e '--all-features|stub-locale' Dockerfile .github/workflows/*.yml || true)"
+  if [ -n "$found" ]; then
+    echo "a release build or a workflow asks for judge-core/stub-locale:" >&2
+    echo "$found" >&2
+    return 1
+  fi
+}
+
 check_icons() {
   local ok=0 set size files first f
   for set in \
@@ -401,6 +432,7 @@ group_lint() {
   step "actionlint" actionlint
   step "hadolint" hadolint Dockerfile
   step "icons" check_icons
+  step "stub locale" check_stub_locale
   step "pg_dump major" check_pg_major
   step "versions" scripts/release-version.sh
   # docker-compose.yml names .env as an env_file, and the tunnel and backup

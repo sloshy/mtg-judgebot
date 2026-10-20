@@ -325,9 +325,15 @@ Three interfaces share this pipeline through the same composition root
     which earlier calls of the thread a question reads.
   - Every user-facing string comes from a per-language catalog (D35): core's
     (`judge_core::locale`: the source offer, the contact, the freshness lines),
-    Discord's (`discord::catalog`), the API's (`judge_api::catalog`) and the web app's
-    (`web/src/messages.ts`). A request's `Locale` is the asker's language (Discord user,
-    then guild; the browser's), else `JUDGE_LOCALE`. Pick and Retry ids carry the
+    Discord's (`discord::catalog`), the alerts' (`judge_bot::alert::catalog`), the API's
+    (`judge_api::catalog`), the command lines' (`judge_agent::catalog`, `judgebot`'s
+    `catalog`), judge-config's (`judge_configure::catalog` and its page's), the web
+    app's (`web/src/messages.ts`, `web/src/admin/messages.ts`) and the docs site's
+    (`site/src/i18n.ts`). Each surface picks its value through
+    `judge_core::locale::Catalogs::new`, which takes every locale's, the test-only stub
+    locale's included. A request's `Locale` is the asker's language (the Discord user's;
+    the browser's; a terminal's `LC_ALL`/`LC_MESSAGES`/`LANG`), else `JUDGE_LOCALE`; an
+    alert is in `JUDGE_LOCALE` (`AlertWebhook::locale`). Pick and Retry ids carry the
     locale their message was written in.
   - Every interface runs a question through `judge_bot::run::run` (D33): judge, store
     the call or the failed call, and record the run in `judge_runs` with its charges.
@@ -449,7 +455,8 @@ Three interfaces share this pipeline through the same composition root
     and the proxy publishes it on the host's loopback only, on `ADMIN_PORT`). Reserved
     at startup, listening once the instance is open, drained on shutdown. `roles::plan`
     refuses an `ADMIN_ADDR` on `API_ADDR`'s port.
-  - `/admin/api/*` behind `ADMIN_TOKEN` (constant-time bearer, `no-store`): `calls`
+  - `/admin/api/*` behind `ADMIN_TOKEN` (constant-time bearer, `no-store`): `about`
+    (`JUDGE_LOCALE`, the pages' language when the browser's has no catalog), `calls`
     (every call, private ones included, filtered by interface, asker, model, visibility
     and text; keyset pages), `calls/{id}` (origin, ratings with raters and reasons, runs
     with charges), `failures`, `usage` (the operator's dashboard, D39:
