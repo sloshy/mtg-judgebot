@@ -1510,7 +1510,9 @@ their own; an agent uses the same operations through MCP or the CLI.
   network roles' listener answers those paths 404. In compose the container binds
   `0.0.0.0:8789` (its loopback is unreachable from the proxy), the proxy's second site
   forwards to `judgebot:8789`, and compose publishes it on the host's `127.0.0.1:8789`
-  only (`ADMIN_PORT` moves the host port). From another machine: an SSH port forward.
+  only (`ADMIN_PORT` moves the host port). From another machine: an SSH port forward, or
+  on a trusted network a compose override that publishes it on the LAN address as well
+  (plain HTTP, so the token crosses that network unencrypted).
   `ADMIN_ADDR` may not share `API_ADDR`'s port: `roles::plan` refuses it, since both
   listeners would reserve the port and the second fail once the first serves. The listener is reserved at startup
   and listens once the instance is open, and it drains on shutdown like the main one,

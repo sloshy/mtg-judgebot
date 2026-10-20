@@ -89,7 +89,7 @@ failed calls, and the dashboard with usage and spend
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `ADMIN_ADDR` | `127.0.0.1:8789` | Where `--admin` listens, outside compose. The compose service sets `0.0.0.0:8789` inside the container whatever `.env` says, and the `proxy` service publishes it on the host's loopback only. The tunnel never points at it; from another machine, forward the port over SSH. It may not share `API_ADDR`'s port. |
+| `ADMIN_ADDR` | `127.0.0.1:8789` | Where `--admin` listens, outside compose. The compose service sets `0.0.0.0:8789` inside the container whatever `.env` says, and the `proxy` service publishes it on the host's loopback only. The tunnel never points at it; from another machine, forward the port over SSH, or on a trusted network publish it on the LAN address with a compose override ([Deployment](../deployment/)). It may not share `API_ADDR`'s port. |
 | `ADMIN_PORT` | `8789` | The host port compose publishes the admin interface on (`127.0.0.1` only). The proxy publishes it whether `--admin` runs or not, so set a free port when something else has 8789, or the proxy cannot start. `judge-cli admin-url` in the container prints it. |
 | `ADMIN_TOKEN` | (required by `--admin`) | The admin pages' bearer token: 24+ printable ASCII bytes (`openssl rand -base64 32`), different from `MCP_TOKEN` and `MCP_ADMIN_TOKEN`. `judge-cli admin-url` prints the page's address with it in the `#token=` fragment. |
 

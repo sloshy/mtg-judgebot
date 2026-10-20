@@ -135,7 +135,8 @@ The operator's view of the instance is part of the same build, served by the `--
 role on a port of its own (`ADMIN_ADDR`, default `127.0.0.1:8789`), never by the public
 listener. It needs `ADMIN_TOKEN`; `judge-cli admin-url` prints the page's address with
 the token in its `#token=` part. The page keeps the token for the tab and removes it
-from the address bar. From another machine, forward the port over SSH
+from the address bar. From another machine, forward the port over SSH, or on a trusted
+network publish it on the host's LAN address with a compose override
 ([Deployment](../../self-hosting/deployment/)).
 
 - **Calls**: every stored call, private ones included, newest first. Filters for the

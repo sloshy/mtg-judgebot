@@ -383,6 +383,33 @@ open. With `ADMIN_PORT` set, forward that port instead of 8789. The host's sshd 
 allow local forwarding: a refusal shows as `open failed: administratively prohibited`
 (see Troubleshooting).
 
+**On a trusted network** the proxy can publish the port on the host's LAN address as
+well, through a `docker-compose.override.yml` beside `docker-compose.yml`. The file is
+gitignored, and compose and `scripts/deploy.sh` merge it in by themselves:
+
+```yaml
+services:
+  proxy:
+    ports:
+      - "192.168.1.50:8789:8789" # the host's LAN address : the port to open : 8789
+```
+
+`docker compose up -d proxy` applies it. The proxy is recreated, so `127.0.0.1:8787` is
+down for a few seconds. Open the address `judge-cli admin-url` prints, with the host's
+LAN address in place of `127.0.0.1`.
+
+- The page is plain HTTP. The token crosses the network unencrypted and is the only
+  guard, so anyone who can read the network's traffic can take it. The SSH forward has
+  neither problem.
+- Name the LAN address, not `0.0.0.0`. The override adds to the loopback mapping rather
+  than replacing it, a wildcard can clash with it, and it would listen on every
+  interface, a public one included.
+- Docker writes its own firewall rules for published ports, ahead of ufw and firewalld,
+  so a host firewall rule does not close this one. The address it binds is what limits
+  who can reach it.
+- The container side stays 8789 whatever `ADMIN_PORT` says; the host side is any free
+  port.
+
 The proxy publishes this port whether `--admin` runs or not. When something else on
 the host already has 8789, set `ADMIN_PORT` to a free port before `docker compose up`,
 or the proxy cannot bind it and `127.0.0.1:8787` goes down with it.
@@ -1510,6 +1537,7 @@ own if the connector restarts.
 | `127.0.0.1:8789` answers 502 | `--admin` is not in `JUDGE_ROLES`, or `judgebot` is restarting |
 | The `proxy` will not start: `port is already allocated` for 8789 | something else on the host has 8789; set `ADMIN_PORT` in `.env` to a free port |
 | `judgebot` exits saying `ADMIN_ADDR` and `API_ADDR` name the same port | the two listeners need ports of their own |
+| The admin page does not load from another machine through the override | the mapping names `0.0.0.0` or the wrong address (`docker compose ps proxy` lists what is published), or `docker compose up -d proxy` was not run after adding it |
 | `ssh -L` prints `channel N: open failed: administratively prohibited` | the host's sshd forbids forwarding (`AllowTcpForwarding no`, `DisableForwarding yes`, or `restrict` / `no-port-forwarding` on the key in `authorized_keys`). Check with `sudo sshd -T \| grep -i forwarding`, then allow it, e.g. `AllowTcpForwarding local` and `PermitOpen 127.0.0.1:8789` (add `127.0.0.1:8790` for the config editor) in `/etc/ssh/sshd_config.d/`, and reload sshd |
 | The admin page says "Token refused" | `ADMIN_TOKEN` changed since the address was printed; print it again with `judge-cli admin-url` |
 | The admin tools are missing from `/mcp` | the client sends `MCP_TOKEN`; the admin tools need `MCP_ADMIN_TOKEN` |
