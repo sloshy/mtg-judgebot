@@ -123,7 +123,7 @@ docker compose pull                # the image, which also carries the config ed
 scripts/config.sh                  # app config (.env) in the config editor: API keys, DISCORD_TOKEN,
                                    # GUILD_ID, JUDGE_OPERATOR_DISCORD and JUDGE_OPERATOR_EMAIL (both
                                    # required here), and judge.toml. Over SSH, forward the port first:
-                                   # ssh -L 8790:127.0.0.1:8790 <host>
+                                   # ssh -N -L 8790:127.0.0.1:8790 <host>
 cp .env.deploy.example .env.deploy # deploy credentials: TUNNEL_TOKEN, R2_*
 ```
 
@@ -377,6 +377,11 @@ there:
 ```sh
 ssh -N -L 8789:127.0.0.1:8789 deploy-host
 ```
+
+`-N` forwards the port without opening a shell; leave it running while the page is
+open. With `ADMIN_PORT` set, forward that port instead of 8789. The host's sshd must
+allow local forwarding: a refusal shows as `open failed: administratively prohibited`
+(see Troubleshooting).
 
 The proxy publishes this port whether `--admin` runs or not. When something else on
 the host already has 8789, set `ADMIN_PORT` to a free port before `docker compose up`,
@@ -1505,6 +1510,7 @@ own if the connector restarts.
 | `127.0.0.1:8789` answers 502 | `--admin` is not in `JUDGE_ROLES`, or `judgebot` is restarting |
 | The `proxy` will not start: `port is already allocated` for 8789 | something else on the host has 8789; set `ADMIN_PORT` in `.env` to a free port |
 | `judgebot` exits saying `ADMIN_ADDR` and `API_ADDR` name the same port | the two listeners need ports of their own |
+| `ssh -L` prints `channel N: open failed: administratively prohibited` | the host's sshd forbids forwarding (`AllowTcpForwarding no`, `DisableForwarding yes`, or `restrict` / `no-port-forwarding` on the key in `authorized_keys`). Check with `sudo sshd -T \| grep -i forwarding`, then allow it, e.g. `AllowTcpForwarding local` and `PermitOpen 127.0.0.1:8789` (add `127.0.0.1:8790` for the config editor) in `/etc/ssh/sshd_config.d/`, and reload sshd |
 | The admin page says "Token refused" | `ADMIN_TOKEN` changed since the address was printed; print it again with `judge-cli admin-url` |
 | The admin tools are missing from `/mcp` | the client sends `MCP_TOKEN`; the admin tools need `MCP_ADMIN_TOKEN` |
 | `judgebot` exits naming `--web` and `index.html` | `--web` with no built page at `WEB_DIST`; drop `--web` or rebuild the image |

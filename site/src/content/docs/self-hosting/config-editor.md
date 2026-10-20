@@ -53,7 +53,7 @@ scripts/config.sh
 - Ctrl-C stops it.
 - It runs as your user, so the files it saves keep their owner.
 - From another machine, forward the port over SSH first
-  (`ssh -L 8790:127.0.0.1:8790 <host>`) and open the printed URL there.
+  (`ssh -N -L 8790:127.0.0.1:8790 <host>`) and open the printed URL there.
 - Under rootless Docker or Podman, `--user` maps to another id, and under SELinux the
   bind mount needs relabelling, so saving fails. Run it from source there.
 

@@ -2,7 +2,7 @@
 # judge-config, the config editor, from the image: no Rust toolchain needed.
 # Run it from the checkout. It prints a http://127.0.0.1:8790/#token=... URL to
 # open; Ctrl-C stops it. Arguments go to judge-config (--config FILE,
-# --allow-host NAME). From another machine: ssh -L 8790:127.0.0.1:8790 <host>.
+# --allow-host NAME). From another machine: ssh -N -L 8790:127.0.0.1:8790 <host>.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 status=0
