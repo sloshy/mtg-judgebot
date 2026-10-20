@@ -7,7 +7,8 @@ Report security problems privately, not in a public issue. Use GitHub's
 vulnerability reporting). If that is unavailable, contact the maintainer at the address
 on the project's commits. You should hear back within a week.
 
-In scope: the bot, the HTTP API and web app, the MCP transport, the ingest tooling,
+In scope: the bot, the HTTP API and web app, the MCP transport, the admin interface, the
+ingest tooling,
 and the deployment files in this repository. Out of scope: the third-party services the
 bot talks to (Discord, Scryfall, model providers, Cloudflare).
 
@@ -31,12 +32,28 @@ Operators should know these properties. The reasoning behind each is in
   compared in constant time. Its own `judge` quota (`MCP_JUDGE_LIMIT`) bounds what a
   leaked token can spend. `MCP_ALLOWED_HOSTS` must name the public hostname. To rotate
   the token, change the variable and recreate `judgebot` (`docker compose up -d`).
+- **The operator's reads have their own credentials and their own listener.** Private
+  calls, askers' Discord ids, raters and failed questions are readable only by the
+  operator (D37):
+  - The admin pages (`--admin`) listen on `ADMIN_ADDR` (loopback; in compose,
+    `127.0.0.1:${ADMIN_PORT:-8789}` on the host through the proxy) behind `ADMIN_TOKEN`. The public
+    listener answers their paths 404, and the tunnel never points at them. cloudflared
+    shares the compose network and could reach the port, so the token is the guard
+    there.
+  - `/mcp` offers the admin tools only to `MCP_ADMIN_TOKEN` (off unless set). `MCP_TOKEN`
+    reaches a handler whose type has no admin tools. Which handler a request reaches is
+    one constant-time comparison of its bearer token against each, covered by a test.
+  - Each token is at least 24 bytes and compared in constant time, and no two of
+    `MCP_TOKEN`, `MCP_ADMIN_TOKEN` and `ADMIN_TOKEN` may be equal.
+  - Stdio `judge-mcp` and `judge-cli` hold the admin reads too: whoever runs them already
+    holds `DATABASE_URL`. So does any program built on `judge_agent::Toolbox::from_env`,
+    which connects with it.
 - **Secrets never live in tracked files.** `judge.toml` names environment variables.
   `.env` holds the keys `judgebot` reads. `.env.deploy` holds the tunnel and backup
   credentials that only `cloudflared`, the `backup` service and the backup script read;
   the `backup` service reads nothing of `.env`. Every credential type
   in the code redacts itself in `Debug`.
-- **Postgres and the API bind to loopback** in `docker-compose.yml`. The compose
+- **Postgres, the API and the admin interface bind to loopback** in `docker-compose.yml`. The compose
   database uses a default password (`judgebot`), which is fine only while that binding
   holds. Change it if you publish the port.
 - **The image runs as `nobody`** and is rebuilt by CI from the committed lockfiles.

@@ -11,12 +11,90 @@ export type Route =
   | { page: "feed"; interface?: Interface; user?: string; q?: string }
   | { page: "call"; id: string }
   | { page: "user"; name: string }
+  | { page: "admin"; view: AdminView }
   | { page: "missing" };
+
+/** Which stored calls the admin list shows (GET /admin/api/calls). */
+export interface AdminCallFilter {
+  interface?: Interface;
+  /** A Discord username or user id. */
+  asker?: string;
+  model?: string;
+  /** true: only private calls; false: only public ones. */
+  private?: boolean;
+  q?: string;
+}
+
+/** The admin pages, under /admin (served by the --admin listener only).
+ * The feedback queue (#27) is one more view here and one more tab in
+ * admin/Admin.tsx. */
+export type AdminView =
+  | { view: "calls"; filter: AdminCallFilter }
+  | { view: "call"; id: string }
+  | { view: "failures" }
+  | { view: "usage"; days?: number }
+  | { view: "missing" };
 
 const INTERFACES: readonly Interface[] = ["discord", "web", "mcp", "cli", "agent_session", "agent"];
 
 function isInterface(v: string | null): v is Interface {
   return INTERFACES.some((i) => i === v);
+}
+
+/** The admin view `parts` (the path after /admin) and `params` name. */
+function parseAdmin(parts: (string | undefined)[], params: URLSearchParams): AdminView {
+  const [first, second] = parts;
+  if (first === undefined) {
+    const asked = params.get("interface");
+    const visibility = params.get("private");
+    return {
+      view: "calls",
+      filter: {
+        interface: isInterface(asked) ? asked : undefined,
+        asker: params.get("asker") || undefined,
+        model: params.get("model") || undefined,
+        private: visibility === "true" ? true : visibility === "false" ? false : undefined,
+        q: params.get("q") || undefined,
+      },
+    };
+  }
+  if (parts.length === 2 && first === "calls" && second) return { view: "call", id: second };
+  if (parts.length === 1 && first === "failures") return { view: "failures" };
+  if (parts.length === 1 && first === "usage") {
+    const days = Number.parseInt(params.get("days") ?? "", 10);
+    return { view: "usage", days: Number.isFinite(days) && days > 0 ? days : undefined };
+  }
+  return { view: "missing" };
+}
+
+/** The address of the admin view `v`. */
+function adminHref(v: AdminView): string {
+  switch (v.view) {
+    case "calls": {
+      const q = new URLSearchParams();
+      if (v.filter.interface) q.set("interface", v.filter.interface);
+      if (v.filter.asker) q.set("asker", v.filter.asker);
+      if (v.filter.model) q.set("model", v.filter.model);
+      if (v.filter.private !== undefined) q.set("private", String(v.filter.private));
+      if (v.filter.q) q.set("q", v.filter.q);
+      const s = q.toString();
+      return s === "" ? "/admin" : `/admin?${s}`;
+    }
+    case "call":
+      return `/admin/calls/${encodeURIComponent(v.id)}`;
+    case "failures":
+      return "/admin/failures";
+    case "usage":
+      return v.days === undefined ? "/admin/usage" : `/admin/usage?days=${v.days}`;
+    case "missing":
+      return "/admin";
+  }
+}
+
+/** Whether `pathname` is the admin pages' own: exactly `/admin`, or under
+ * `/admin/`. The server serves them there on the --admin listener only. */
+export function isAdminPath(pathname: string): boolean {
+  return pathname === "/admin" || pathname.startsWith("/admin/");
 }
 
 /** The route `url` names. */
@@ -34,6 +112,17 @@ export function parseRoute(url: URL): Route {
   const [first] = parts;
   if (first === undefined) return { page: "ask" };
   const second = segment(1);
+  // The admin pages only at exactly /admin or under /admin/: no variant
+  // spelling (`//admin`, which the split above would fold) routes there.
+  if (isAdminPath(url.pathname)) {
+    return {
+      page: "admin",
+      view: parseAdmin(
+        parts.slice(1).map((_, i) => segment(i + 1)),
+        url.searchParams,
+      ),
+    };
+  }
   if (parts.length === 1 && first === "feed") {
     const asked = url.searchParams.get("interface");
     return {
@@ -65,6 +154,8 @@ export function href(route: Route): string {
       return `/calls/${encodeURIComponent(route.id)}`;
     case "user":
       return `/users/${encodeURIComponent(route.name)}`;
+    case "admin":
+      return adminHref(route.view);
     case "missing":
       return "/";
   }
@@ -114,7 +205,12 @@ export function follow(e: MouseEvent): void {
   const a = (e.target as Element | null)?.closest("a");
   if (!a || a.target || a.hasAttribute("download")) return;
   const url = new URL(a.href, window.location.href);
-  if (url.origin !== window.location.origin || url.pathname.startsWith("/api/")) return;
+  if (
+    url.origin !== window.location.origin ||
+    url.pathname.startsWith("/api/") ||
+    url.pathname.startsWith("/admin/api/")
+  )
+    return;
   // A fragment on this same page (the skip link) is the browser's to scroll to.
   if (
     url.hash !== "" &&

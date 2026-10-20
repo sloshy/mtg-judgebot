@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 
 use judge_bot::{
+    admin::{ADMIN_ADDR_ENV, ADMIN_PORT_ENV, ADMIN_TOKEN_ENV, MCP_ADMIN_TOKEN_ENV, MCP_TOKEN_ENV},
     alert::ALERT_WEBHOOK_ENV,
     budget::{PERIOD_ENV, WARN_AT_ENV},
     config::{ANTHROPIC_KEY_ENV, CONFIG_ENV, MAX_SPEND_ENV, VOYAGE_KEY_ENV},
@@ -60,6 +61,8 @@ pub enum Group {
     Http,
     /// `/mcp`.
     Mcp,
+    /// The `--admin` listener.
+    Admin,
     /// Who runs the instance and where its source is.
     Instance,
     /// Compose and the image.
@@ -187,10 +190,15 @@ pub const VARS: &[Var] = &[
     ),
     setting(FEED_ENV, Group::Http, Widget::Toggle),
     setting(FEED_DAYS_ENV, Group::Http, int(0)),
-    secret("MCP_TOKEN", Group::Mcp),
+    secret(MCP_TOKEN_ENV, Group::Mcp),
     setting("MCP_ALLOWED_HOSTS", Group::Mcp, TEXT),
     setting("MCP_JUDGE_LIMIT", Group::Mcp, int(1)),
     setting("MCP_JUDGE_WINDOW_SECS", Group::Mcp, int(1)),
+    // Reads every stored call, private ones included.
+    secret(MCP_ADMIN_TOKEN_ENV, Group::Mcp),
+    setting(ADMIN_ADDR_ENV, Group::Admin, TEXT),
+    setting(ADMIN_PORT_ENV, Group::Admin, int(1)),
+    secret(ADMIN_TOKEN_ENV, Group::Admin),
     setting(SOURCE_URL_ENV, Group::Instance, TEXT),
     setting(OPERATOR_DISCORD_ENV, Group::Instance, TEXT),
     setting(OPERATOR_EMAIL_ENV, Group::Instance, TEXT),
@@ -666,6 +674,8 @@ mod tests {
             "DISCORD_TOKEN",
             "DATABASE_URL",
             "MCP_TOKEN",
+            "MCP_ADMIN_TOKEN",
+            "ADMIN_TOKEN",
             "JUDGE_ALERT_WEBHOOK",
             "LITELLM_KEY",
         ] {

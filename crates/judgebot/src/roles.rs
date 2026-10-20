@@ -12,7 +12,10 @@
 use std::fmt;
 
 use anyhow::Result;
-use judge_api::{ApiConfig, Interface, Interfaces, Network, Refused};
+use judge_api::{
+    ApiConfig, Interface, Interfaces, Network, Refused,
+    admin::{Admin, AdminConfig},
+};
 use judge_bot::{
     Models,
     config::Config as JudgeConfig,
@@ -36,13 +39,23 @@ pub enum Role {
     Web,
     /// The MCP transport at `/mcp`, behind `MCP_TOKEN`.
     Mcp,
+    /// The operator's pages and reads on a listener of their own
+    /// (`ADMIN_ADDR`), behind `ADMIN_TOKEN` (D37).
+    Admin,
     /// The scheduled data refresh (`JUDGE_REFRESH_HOURS`).
     Jobs,
 }
 
 impl Role {
     /// Every role, in the order the usage text and the logs list them.
-    pub const ALL: [Self; 5] = [Self::Discord, Self::Api, Self::Web, Self::Mcp, Self::Jobs];
+    pub const ALL: [Self; 6] = [
+        Self::Discord,
+        Self::Api,
+        Self::Web,
+        Self::Mcp,
+        Self::Admin,
+        Self::Jobs,
+    ];
 
     /// The flag that names it.
     #[must_use]
@@ -52,6 +65,7 @@ impl Role {
             Self::Api => "--api",
             Self::Web => "--web",
             Self::Mcp => "--mcp",
+            Self::Admin => "--admin",
             Self::Jobs => "--jobs",
         }
     }
@@ -64,16 +78,18 @@ impl Role {
             Self::Api => "api",
             Self::Web => "web",
             Self::Mcp => "mcp",
+            Self::Admin => "admin",
             Self::Jobs => "jobs",
         }
     }
 
-    /// Does it serve anything (and so call a model)?
+    /// Does it answer questions (and so call a model)? The admin listener
+    /// serves the operator's reads, which call none.
     #[must_use]
     pub const fn serves(self) -> bool {
         match self {
             Self::Discord | Self::Api | Self::Web | Self::Mcp => true,
-            Self::Jobs => false,
+            Self::Admin | Self::Jobs => false,
         }
     }
 
@@ -84,7 +100,7 @@ impl Role {
             Self::Api => Some(Interface::Api),
             Self::Web => Some(Interface::Web),
             Self::Mcp => Some(Interface::Mcp),
-            Self::Discord | Self::Jobs => None,
+            Self::Discord | Self::Admin | Self::Jobs => None,
         }
     }
 
@@ -182,8 +198,8 @@ pub const API_INTERFACES_ENV: &str = "API_INTERFACES";
 /// The `command:` of `docker-compose.yml`'s `judgebot` service, verbatim
 /// (`roles_match_the_compose_file` holds the file to it). Compose
 /// interpolates it before the binary starts: [`ROLES_ENV`] when it is set and
-/// not empty, else every role but `--mcp`. [`compose_roles`] is the same rule
-/// in Rust.
+/// not empty, else every role but `--mcp` and `--admin`, which each need a
+/// token of their own. [`compose_roles`] is the same rule in Rust.
 pub const COMPOSE_COMMAND: &str = "${JUDGE_ROLES:---discord --api --web --jobs}";
 
 /// What decided the roles [`compose_roles`] returns.
@@ -191,7 +207,7 @@ pub const COMPOSE_COMMAND: &str = "${JUDGE_ROLES:---discord --api --web --jobs}"
 pub enum ComposeOrigin {
     /// [`ROLES_ENV`].
     Roles,
-    /// It is unset: every role but `--mcp`.
+    /// It is unset: every role but `--mcp` and `--admin`.
     Default,
 }
 
@@ -218,10 +234,10 @@ pub fn compose_roles(
     api_interfaces: Option<&str>,
 ) -> Result<(Roles, ComposeOrigin)> {
     refuse_api_interfaces(api_interfaces, judge_roles, false)?;
-    let usage = "the roles are --discord --api --web --mcp --jobs";
+    let usage = "the roles are --discord --api --web --mcp --admin --jobs";
     let Some(flags) = judge_roles.filter(|v| !v.is_empty()) else {
-        let all_but_mcp = nonempty::nonempty![Role::Discord, Role::Api, Role::Web, Role::Jobs];
-        return Ok((Roles::of(&all_but_mcp), ComposeOrigin::Default));
+        let default = nonempty::nonempty![Role::Discord, Role::Api, Role::Web, Role::Jobs];
+        return Ok((Roles::of(&default), ComposeOrigin::Default));
     };
     parse(flags.split_whitespace(), ROLES_ENV, usage)?
         .map(|r| (r, ComposeOrigin::Roles))
@@ -327,20 +343,24 @@ pub struct Serve {
 pub struct Plan {
     /// The serving roles, if any.
     pub serve: Option<Serve>,
+    /// The admin listener, if `--admin` was given.
+    pub admin: Option<Admin>,
     /// The scheduled jobs, if `--jobs` was given.
     pub jobs: Option<Jobs>,
 }
 
 impl Plan {
     /// Connections for the process's shared pool: what the bot and the API
-    /// each had, summed. The scheduler opens its own.
+    /// each had, summed, and two for the admin reads. The scheduler opens
+    /// its own.
     #[must_use]
     pub fn pool_size(&self) -> u32 {
-        match self.serve.as_ref().map(|s| &s.adapters) {
+        let serving = match self.serve.as_ref().map(|s| &s.adapters) {
             None => 2,
             Some(Adapters::Discord(_) | Adapters::Network(_)) => 5,
             Some(Adapters::Both(..)) => 10,
-        }
+        };
+        serving + if self.admin.is_some() { 2 } else { 0 }
     }
 }
 
@@ -387,6 +407,9 @@ impl std::error::Error for Unstartable {}
 /// * `--discord`: `DISCORD_TOKEN` and `JUDGE_OPERATOR_DISCORD`.
 /// * `--api`, `--web`, `--mcp`: `JUDGE_OPERATOR_EMAIL`; `--web` a built page
 ///   in `WEB_DIST`, `--mcp` an `MCP_TOKEN` ([`ApiConfig::check`]).
+/// * `--admin`: an `ADMIN_TOKEN` (at least 24 characters, equal to neither
+///   `MCP_TOKEN` nor `MCP_ADMIN_TOKEN`), a well-formed `ADMIN_ADDR` and a
+///   built page in `WEB_DIST` ([`Admin::new`]).
 /// * Any of those (the serving roles): models that build ([`JudgeConfig::models`]).
 /// * `--jobs`: a schedule that is on, when it is the only role. With the
 ///   schedule off a jobs-only process would have nothing to do.
@@ -408,6 +431,7 @@ pub fn plan(
     };
     let mut discord = None;
     let mut interfaces: Vec<Interface> = vec![];
+    let mut admin = None;
     let mut jobs = None;
     for role in roles.iter() {
         match role {
@@ -418,6 +442,10 @@ pub fn plan(
             Role::Api => interfaces.push(Interface::Api),
             Role::Web => interfaces.push(Interface::Web),
             Role::Mcp => interfaces.push(Interface::Mcp),
+            Role::Admin => match admin_role(vars) {
+                Ok(a) => admin = Some(a),
+                Err(causes) => fail(Role::Admin.flag(), causes),
+            },
             Role::Jobs => jobs = Some(judge.jobs()),
         }
     }
@@ -456,6 +484,27 @@ pub fn plan(
             Err(e) => fail(Role::Discord.flag(), vec![format!("{e:#}")]),
         }
     }
+    // Two listeners on one port would both reserve it (SO_REUSEADDR) and
+    // the second would fail to listen after the first is serving.
+    if let Some(a) = &admin {
+        let http = network.as_ref().map(Network::addr).or_else(|| {
+            discord
+                .as_ref()
+                .and_then(|d| d.listen.as_ref().map(|c| c.addr))
+        });
+        if let Some(http) = http
+            && one_port(a.addr(), http)
+        {
+            fail(
+                Role::Admin.flag(),
+                vec![format!(
+                    "ADMIN_ADDR ({}) and API_ADDR ({http}) name the same port: the admin \
+                     listener needs one of its own (default 127.0.0.1:8789)",
+                    a.addr()
+                )],
+            );
+        }
+    }
     // The models are pure configuration (a chat model named, a price for
     // it), so a mistake there is reported here with the rest, before the
     // database is touched. Only the serving roles call a model.
@@ -470,7 +519,8 @@ pub fn plan(
             }
         }
     };
-    if serving.is_empty() && jobs.as_ref().is_some_and(|j| j.refresh == Schedule::Off) {
+    let jobs_alone = roles.iter().all(|r| r == Role::Jobs);
+    if jobs_alone && jobs.as_ref().is_some_and(|j| j.refresh == Schedule::Off) {
         fail(
             Role::Jobs.flag(),
             vec![
@@ -496,7 +546,24 @@ pub fn plan(
     let serve = adapters
         .zip(models)
         .map(|(adapters, models)| Serve { adapters, models });
-    Ok(Plan { serve, jobs })
+    Ok(Plan { serve, admin, jobs })
+}
+
+/// Whether two listen addresses take the same port: the same address, or
+/// one port with a wildcard host on either side (port 0 is the kernel's
+/// pick, a different port each time).
+fn one_port(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
+    a.port() != 0
+        && a.port() == b.port()
+        && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
+}
+
+/// `--admin`'s requirements: its settings ([`AdminConfig::from_vars`]: the
+/// address, and a token checked against the other two), then a token and a
+/// built page ([`Admin::new`]), every one reported.
+fn admin_role(vars: &dyn Fn(&str) -> Option<String>) -> Result<Admin, Vec<String>> {
+    let cfg = AdminConfig::from_vars(vars).map_err(|e| vec![format!("{e:#}")])?;
+    Admin::new(cfg).map_err(|unmet| unmet.iter().map(ToString::to_string).collect())
 }
 
 /// `--discord`'s requirements: the token (with the adapter's other
@@ -639,7 +706,10 @@ mod tests {
             r.as_ref().map(Roles::flags),
             Some("--discord --api --jobs".to_owned())
         );
-        assert_eq!(r.as_ref().map(Roles::off), Some("web, mcp".to_owned()));
+        assert_eq!(
+            r.as_ref().map(Roles::off),
+            Some("web, mcp, admin".to_owned())
+        );
         assert_eq!(r, roles("--discord --api --jobs"));
     }
 
@@ -684,8 +754,9 @@ mod tests {
             })
             .collect();
         assert_eq!(interfaces, Interface::ALL, "every interface is a role");
-        assert!(Role::Discord.serves() && !Role::Jobs.serves());
+        assert!(Role::Discord.serves() && !Role::Jobs.serves() && !Role::Admin.serves());
         assert_eq!(Role::Discord.interface(), None);
+        assert_eq!(Role::Admin.interface(), None);
         assert_eq!(Role::Jobs.interface(), None);
     }
 
@@ -762,7 +833,8 @@ mod tests {
                         adapters: Adapters::Discord(_),
                         ..
                     }),
-                    jobs: None
+                    jobs: None,
+                    ..
                 })
             ),
             "{ok:?}"
@@ -784,7 +856,8 @@ mod tests {
                         adapters: Adapters::Network(_),
                         ..
                     }),
-                    jobs: None
+                    jobs: None,
+                    ..
                 })
             ),
             "{ok:?}"
@@ -847,7 +920,8 @@ mod tests {
                 &ok,
                 Ok(Plan {
                     serve: None,
-                    jobs: Some(_)
+                    jobs: Some(_),
+                    ..
                 })
             ),
             "{ok:?}"
@@ -862,7 +936,8 @@ mod tests {
                 &ok,
                 Ok(Plan {
                     serve: None,
-                    jobs: Some(_)
+                    jobs: Some(_),
+                    ..
                 })
             ),
             "{ok:?}"
@@ -1015,11 +1090,162 @@ mod tests {
                         adapters: Adapters::Both(..),
                         ..
                     }),
-                    jobs: Some(_)
+                    jobs: Some(_),
+                    ..
                 })
             ),
             "{ok:?}"
         );
         assert_eq!(ok.as_ref().map(Plan::pool_size).ok(), Some(10));
+    }
+
+    const ADMIN: (&str, &str) = ("ADMIN_TOKEN", "fedcba9876543210fedcba9876543210");
+
+    /// A built page for `--admin` (and `--web`) to find; removed on drop.
+    struct Dist(std::path::PathBuf);
+
+    impl Dist {
+        fn new() -> Option<Self> {
+            let dir = std::env::temp_dir().join(format!(
+                "judgebot-roles-{}-{}",
+                std::process::id(),
+                uuid_like()
+            ));
+            std::fs::create_dir_all(&dir).ok()?;
+            std::fs::write(dir.join("index.html"), "<!doctype html>").ok()?;
+            Some(Self(dir))
+        }
+
+        fn path(&self) -> String {
+            self.0.to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for Dist {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn uuid_like() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    }
+
+    /// `--admin` needs its token (well formed, its own) and a page, every
+    /// problem reported under its flag; it needs no model and no operator.
+    #[test]
+    fn admin_needs_its_own_token_and_a_page() -> anyhow::Result<()> {
+        let dist = Dist::new().ok_or_else(|| anyhow::anyhow!("stage a page"))?;
+        let web = ("WEB_DIST", dist.path());
+        let web = (web.0, web.1.as_str());
+        for (pairs, needle) in [
+            (
+                vec![web],
+                "--admin: --admin was given but ADMIN_TOKEN is not set",
+            ),
+            (
+                vec![web, ("ADMIN_TOKEN", "short")],
+                "--admin: ADMIN_TOKEN must be at least 24",
+            ),
+            (
+                vec![web, ADMIN, ("MCP_TOKEN", ADMIN.1)],
+                "--admin: ADMIN_TOKEN must differ from MCP_TOKEN",
+            ),
+            (
+                vec![web, ADMIN, ("MCP_ADMIN_TOKEN", ADMIN.1)],
+                "--admin: ADMIN_TOKEN must differ from MCP_ADMIN_TOKEN",
+            ),
+            (
+                vec![ADMIN, ("WEB_DIST", "no-such-directory")],
+                "--admin: --admin was given but no-such-directory/index.html",
+            ),
+            (
+                vec![web, ADMIN, ("ADMIN_ADDR", "nowhere")],
+                "--admin: ADMIN_ADDR must be a socket address",
+            ),
+        ] {
+            let text = error(plan_bare("--admin", &pairs));
+            assert!(text.contains(needle), "{pairs:?}: {text}");
+            assert!(!text.contains(ADMIN.1), "a token was quoted: {text}");
+        }
+        let ok = plan_bare("--admin", &[web, ADMIN])?;
+        assert!(ok.serve.is_none() && ok.jobs.is_none());
+        assert_eq!(
+            ok.admin.as_ref().map(|a| a.addr().to_string()),
+            Some(judge_bot::admin::DEFAULT_ADDR.to_owned())
+        );
+        assert_eq!(ok.pool_size(), 4);
+        // Beside the jobs, with the schedule off, it is not "the jobs alone".
+        let ok = plan_bare(
+            "--admin --jobs",
+            &[web, ADMIN, ("JUDGE_REFRESH_HOURS", "0")],
+        )?;
+        assert!(ok.admin.is_some() && ok.jobs.is_some());
+        let ok = plan_with(
+            "--discord --api --admin",
+            &[TOKEN, DISCORD_OP, EMAIL, web, ADMIN],
+        )?;
+        assert_eq!(ok.pool_size(), 12);
+        Ok(())
+    }
+
+    /// The admin listener and the network roles' (or Discord's own) must not
+    /// share a port: both would reserve it, and the second fail to listen
+    /// once the first serves.
+    #[test]
+    fn admin_needs_a_port_of_its_own() -> anyhow::Result<()> {
+        let dist = Dist::new().ok_or_else(|| anyhow::anyhow!("stage a page"))?;
+        let path = dist.path();
+        let web = ("WEB_DIST", path.as_str());
+        for (api, admin) in [
+            ("127.0.0.1:9000", "127.0.0.1:9000"),
+            ("0.0.0.0:9000", "127.0.0.1:9000"),
+            ("127.0.0.1:9000", "0.0.0.0:9000"),
+            ("[::]:9000", "127.0.0.1:9000"),
+        ] {
+            let pairs = [EMAIL, web, ADMIN, ("API_ADDR", api), ("ADMIN_ADDR", admin)];
+            let text = error(plan_with("--api --admin", &pairs));
+            assert!(
+                text.contains("--admin: ADMIN_ADDR") && text.contains("same port"),
+                "{api} {admin}: {text}"
+            );
+            // Discord alone over HTTP listens on API_ADDR too.
+            let alone = [
+                TOKEN,
+                DISCORD_OP,
+                ("DISCORD_INTERACTIONS", "http"),
+                web,
+                ADMIN,
+                ("API_ADDR", api),
+                ("ADMIN_ADDR", admin),
+            ];
+            let text = error(plan_with("--discord --admin", &alone));
+            assert!(text.contains("same port"), "{api} {admin}: {text}");
+        }
+        for (api, admin) in [
+            ("0.0.0.0:8787", "127.0.0.1:8789"),
+            ("127.0.0.1:9000", "127.0.0.2:9000"),
+            ("127.0.0.1:0", "127.0.0.1:0"),
+        ] {
+            let pairs = [EMAIL, web, ADMIN, ("API_ADDR", api), ("ADMIN_ADDR", admin)];
+            let ok = plan_with("--api --admin", &pairs);
+            assert!(ok.is_ok(), "{api} {admin}: {ok:?}");
+        }
+        // Over the gateway, Discord alone listens nowhere.
+        let ok = plan_with(
+            "--discord --admin",
+            &[
+                TOKEN,
+                DISCORD_OP,
+                web,
+                ADMIN,
+                ("API_ADDR", "127.0.0.1:8789"),
+                ("ADMIN_ADDR", "127.0.0.1:8789"),
+            ],
+        );
+        assert!(ok.is_ok(), "{ok:?}");
+        Ok(())
     }
 }

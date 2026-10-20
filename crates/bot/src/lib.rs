@@ -9,6 +9,7 @@
 //! process at a time, and [`backup`], the database backup `judgebot backup`
 //! takes.
 
+pub mod admin;
 pub mod alert;
 pub mod backup;
 pub mod budget;

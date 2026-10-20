@@ -3,18 +3,20 @@
 //! restates a rule; a rule the loaders gain is checked here with no edit.
 //!
 //! The roles are the ones the compose `judgebot` service would run
-//! ([`compose_roles`]: `JUDGE_ROLES`, else every role but `--mcp`; a set
-//! `API_INTERFACES`, retired, fails), and a role it would not run is not checked:
+//! ([`compose_roles`]: `JUDGE_ROLES`, else every role but `--mcp` and
+//! `--admin`; a set `API_INTERFACES`, retired, fails), and a role it would
+//! not run is not checked:
 //! a deployment without Discord needs no `DISCORD_TOKEN`.
 //!
 //! Two things are left to startup, because they depend on the machine that
 //! serves rather than on the files: a cloud endpoint's credential chain
-//! (`Config::probe_auth`, which may touch the network) and `--web`'s
-//! `WEB_DIST` directory (the image sets its own).
+//! (`Config::probe_auth`, which may touch the network) and the `WEB_DIST`
+//! directory `--web` and `--admin` serve (the image sets its own).
 
 use std::path::Path;
 
-use judge_api::{ApiConfig, Interface};
+use judge_api::{ApiConfig, Interface, admin::AdminConfig};
+use judge_bot::admin::{ADMIN_ADDR_ENV, ADMIN_PORT_ENV, COMPOSE_ADDR};
 use judge_bot::config::{Config, ConfigError, Location};
 use judgebot::roles::{API_INTERFACES_ENV, ROLES_ENV, Role, Roles, compose_roles};
 use nonempty::NonEmpty;
@@ -35,6 +37,8 @@ pub enum Surface {
     Discord,
     /// The network roles (`--api`, `--web`, `--mcp`).
     Http,
+    /// The `--admin` role.
+    Admin,
     /// The database settings.
     Database,
 }
@@ -128,7 +132,46 @@ pub fn run(toml: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Vec<Chec
             surface: Surface::Http,
             outcome: http(roles.as_ref(), config.as_ref(), env),
         },
+        Check {
+            surface: Surface::Admin,
+            outcome: admin(roles.as_ref(), env),
+        },
     ]
+}
+
+/// `--admin`: its token (well formed, its own) and the host port compose
+/// publishes it on. The address is the one the compose service sets
+/// (`COMPOSE_ADDR`), whatever `.env` says, since that is what the container
+/// listens on. The page it serves is the serving machine's business, as
+/// `--web`'s is. `ADMIN_PORT` is checked whatever the roles: the proxy
+/// publishes it either way, and a bad one stops `docker compose up`.
+fn admin(roles: Option<&Roles>, env: &dyn Fn(&str) -> Option<String>) -> Outcome {
+    let as_composed = |k: &str| {
+        if k == ADMIN_ADDR_ENV {
+            Some(COMPOSE_ADDR.to_owned())
+        } else {
+            env(k)
+        }
+    };
+    let cfg = AdminConfig::from_vars(as_composed);
+    if !roles.is_some_and(|r| r.iter().any(|r| r == Role::Admin)) {
+        return match cfg {
+            Err(e) if format!("{e:#}").contains(ADMIN_PORT_ENV) => anyhow_error(&e),
+            _ => not_run(roles, "--admin is not"),
+        };
+    }
+    match cfg {
+        Err(e) => anyhow_error(&e),
+        Ok(cfg) if cfg.settings.token.is_none() => {
+            anyhow_error(&anyhow::anyhow!("{}", judge_api::admin::AdminUnmet::Token))
+        }
+        Ok(cfg) => Outcome::Ok {
+            summary: Some(format!(
+                "the container listens on {COMPOSE_ADDR}; the proxy publishes it on {}",
+                cfg.settings.browser_addr()
+            )),
+        },
+    }
 }
 
 /// Why a role's surface is not checked: the roles do not parse, or they
@@ -325,9 +368,75 @@ mod tests {
     fn a_complete_zero_config_setup_passes_everywhere() {
         let c = checks(None, OK);
         for (s, o) in &c {
-            assert!(matches!(o, Outcome::Ok { .. }), "{s:?}: {o:?}");
+            if *s == Surface::Admin {
+                assert!(skipped(Some(o)), "--admin is opt-in: {o:?}");
+            } else {
+                assert!(matches!(o, Outcome::Ok { .. }), "{s:?}: {o:?}");
+            }
         }
-        assert_eq!(c.len(), 5);
+        assert_eq!(c.len(), 6);
+    }
+
+    /// `--admin` is checked when the roles run it: its own token, distinct
+    /// from the MCP ones.
+    #[test]
+    fn the_admin_role_needs_its_own_token() {
+        let mut with = OK.to_vec();
+        with.push(("JUDGE_ROLES", "--discord --api --web --admin --jobs"));
+        let c = checks(None, &with);
+        assert_eq!(error_at(c.get(&Surface::Admin)), Some(env("ADMIN_TOKEN")));
+        let token = "0123456789abcdef0123456789abcdef";
+        with.push(("ADMIN_TOKEN", token));
+        let c = checks(None, &with);
+        assert!(
+            matches!(c.get(&Surface::Admin), Some(Outcome::Ok { summary: Some(s) })
+                if s.ends_with("publishes it on 127.0.0.1:8789")),
+            "{c:?}"
+        );
+        // The address compose sets wins over one in .env; ADMIN_PORT moves
+        // the published port.
+        with.push(("ADMIN_ADDR", "10.0.0.1:1234"));
+        with.push(("ADMIN_PORT", "9789"));
+        let c = checks(None, &with);
+        assert!(
+            matches!(c.get(&Surface::Admin), Some(Outcome::Ok { summary: Some(s) })
+                if s.contains("0.0.0.0:8789") && s.ends_with("127.0.0.1:9789")),
+            "{c:?}"
+        );
+        with.retain(|(k, _)| *k != "ADMIN_PORT" && *k != "JUDGE_ROLES");
+        with.push(("ADMIN_PORT", "0"));
+        let c = checks(None, &with);
+        assert_eq!(
+            error_at(c.get(&Surface::Admin)),
+            Some(env("ADMIN_PORT")),
+            "checked without --admin too"
+        );
+        with.retain(|(k, _)| *k != "ADMIN_PORT");
+        with.push(("JUDGE_ROLES", "--discord --api --web --admin --jobs"));
+        with.push(("MCP_TOKEN", token));
+        let c = checks(None, &with);
+        assert_eq!(error_at(c.get(&Surface::Admin)), Some(env("ADMIN_TOKEN")));
+        assert_eq!(error_at(c.get(&Surface::Http)), Some(env("MCP_TOKEN")));
+    }
+
+    /// The compose file sets `ADMIN_ADDR` to what the check assumes, and
+    /// publishes `ADMIN_PORT` on loopback only.
+    #[test]
+    fn the_compose_file_sets_the_admin_address_the_check_assumes() {
+        let compose = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docker-compose.yml"),
+        )
+        .unwrap_or_default();
+        assert!(
+            compose
+                .lines()
+                .any(|l| l.trim() == format!("ADMIN_ADDR: {COMPOSE_ADDR}")),
+            "docker-compose.yml no longer sets ADMIN_ADDR: {COMPOSE_ADDR}"
+        );
+        assert!(
+            compose.contains("- \"127.0.0.1:${ADMIN_PORT:-8789}:8789\""),
+            "the proxy's admin port mapping changed"
+        );
     }
 
     fn skipped(o: Option<&Outcome>) -> bool {

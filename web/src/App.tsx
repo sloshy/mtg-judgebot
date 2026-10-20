@@ -213,7 +213,11 @@ export default function App() {
       <main class="main" id="main" tabIndex={-1}>
         <Switch>
           <Match when={route().page === "ask"}>{null}</Match>
-          <Match when={!about.loading && !feed() && route().page !== "missing"}>
+          <Match
+            when={
+              !about.loading && !feed() && route().page !== "missing" && route().page !== "admin"
+            }
+          >
             <Missing m={m()} />
           </Match>
           <Match when={about.loading}>
@@ -262,7 +266,9 @@ export default function App() {
           >
             {(r) => <CallPage m={m()} locale={browserLocale} id={r().id} />}
           </Match>
-          <Match when={route().page === "missing"}>
+          {/* The admin pages are not this app's: whatever reaches here as
+              one (served by the public listener) is a missing page. */}
+          <Match when={route().page === "missing" || route().page === "admin"}>
             <Missing m={m()} />
           </Match>
         </Switch>

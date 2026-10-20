@@ -19,6 +19,22 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Admin interface.** A new role, `--admin`, serves the operator's pages on a port of
+  its own (`ADMIN_ADDR`, default `127.0.0.1:8789`) behind a new `ADMIN_TOKEN`: every
+  stored call, private ones included, filterable by interface, asker, model, visibility
+  and text; one call with its asker, its ratings and their raters, and its run's models,
+  tokens and cost; the failed calls; and usage and spend over a window, with spend per
+  day as a chart. `judge-cli admin-url` prints the page's address with the token. In
+  compose the `proxy` service publishes it on the host's `127.0.0.1:8789` only; from
+  another machine, forward the port over SSH; `ADMIN_PORT` moves the host port. The
+  public listener answers `/admin` paths 404. Off unless `JUDGE_ROLES` names it.
+- **Admin reads for agents.** `judge-cli calls` and `call <id>`, and the MCP tools
+  `admin_calls`, `admin_call`, `admin_failures` and `admin_usage`, on stdio `judge-mcp`
+  (and so over SSH) and on `/mcp` for a new `MCP_ADMIN_TOKEN` only, never `MCP_TOKEN`.
+  Every admin call over `/mcp` is logged with its tool's name. `judge-cli stats` gains
+  the runs in the window by model and by outcome (`runs`, `run_usd`, `by_model`,
+  `outcomes`), and `failures` gives each row's `id` and now prints `{"failures": [...]}`.
+
 - **Public feed.** The web app lists answered questions from every interface at `/feed`,
   newest first, with where each was asked and the Discord asker's username (anonymous
   otherwise), filterable by interface and searchable (`q`: the question, the answer or
@@ -381,6 +397,12 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
+- **The proxy publishes a second port.** The first deploy of this release recreates the
+  `proxy` service to publish `127.0.0.1:8789` (the admin interface), which interrupts
+  `127.0.0.1:8787` and the tunnel for a few seconds. If something on the host already
+  listens on 8789, set `ADMIN_PORT` in `.env` to a free port first, or the proxy cannot
+  start and takes 8787 down with it. `MCP_TOKEN`, `MCP_ADMIN_TOKEN` and
+  `ADMIN_TOKEN` must all differ: a process that reads two equal ones refuses to start.
 - **The feed lists every earlier public call.** Turning it on (the default) lists every
   call not asked private, including those asked before this release, with the asker's
   username where one was stored. To keep them unlisted, set `JUDGE_FEED=false` (or a short

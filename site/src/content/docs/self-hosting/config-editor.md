@@ -17,13 +17,14 @@ sidebar:
   any change to it.
 - **Each draft is checked by the binaries' own code.** On every change, the draft runs
   through the same loaders the binaries use at startup. The side panel says whether the
-  database settings, the model configuration and the roles would start (the Discord bot
-  and the HTTP API, each when `JUDGE_ROLES` runs it), and which key or variable to fix
+  database settings, the model configuration and the roles would start (the Discord bot,
+  the HTTP API and the admin interface, each when `JUDGE_ROLES` runs it), and which key or variable to fix
   if not.
 - **Only the lines you change are written.** Comments, blank lines, key order and the
   spelling of every unchanged value survive. The Review tab shows the diff of both
   files before anything is written.
-- **Secrets are write-only.** API keys, `DISCORD_TOKEN`, `MCP_TOKEN`,
+- **Secrets are write-only.** API keys, `DISCORD_TOKEN`, `MCP_TOKEN`, `MCP_ADMIN_TOKEN`,
+  `ADMIN_TOKEN`,
   `JUDGE_ALERT_WEBHOOK`, `DATABASE_URL` and any variable the editor does not know are
   never shown. The page says whether each is set.
   - **Replace…** (**Set…** when unset) opens a masked input for typing or pasting a new
@@ -79,15 +80,16 @@ cargo run --release -p judge-configure
 | --- | --- | --- |
 | Database | `DATABASE_URL` present, `DB_PORT`, `JUDGE_AUTO_MIGRATE` | an unset `DATABASE_URL`, `JUDGE_AUTO_MIGRATE=maybe` |
 | Models | the `judge.toml` loader (or the zero-config setup), the spend settings, the source offer | a misplaced key, an unpriced model on an `openai` provider, an unset `api_key_env` variable |
-| Roles | the roles the compose service would run: `JUDGE_ROLES`, else every role but `--mcp` | an unknown flag, a role named twice, a set `API_INTERFACES` (retired) |
+| Roles | the roles the compose service would run: `JUDGE_ROLES`, else every role but `--mcp` and `--admin` | an unknown flag, a role named twice, a set `API_INTERFACES` (retired) |
 | Discord bot | under `--discord`: the bot's own settings, then its operator contact | an unset `DISCORD_TOKEN`, a bad `GUILD_ID`, no `JUDGE_OPERATOR_DISCORD` |
-| HTTP API | under `--api`, `--web` or `--mcp`: the API's settings and those roles, then its operator contact | `--mcp` with no `MCP_TOKEN`, a bad `API_ADDR`, no `JUDGE_OPERATOR_EMAIL` |
+| HTTP API | under `--api`, `--web` or `--mcp`: the API's settings and those roles, then its operator contact | `--mcp` with no `MCP_TOKEN`, a bad `API_ADDR`, `MCP_ADMIN_TOKEN` equal to `MCP_TOKEN`, no `JUDGE_OPERATOR_EMAIL` |
+| Admin interface | under `--admin`: `ADMIN_TOKEN`, with the address the compose service sets (`0.0.0.0:8789`, whatever `.env` says); `ADMIN_PORT` always | no `ADMIN_TOKEN`, one under 24 characters or equal to `MCP_TOKEN`, an `ADMIN_PORT` that is not a port |
 
 Two checks depend on the machine that serves rather than on the files, so the editor
 leaves them to startup:
 
 - a cloud endpoint's credential chain (`claude-platform-on-aws`, `bedrock`, `vertex`)
-- `--web`'s `WEB_DIST` directory (the image sets its own)
+- the `WEB_DIST` directory `--web` and `--admin` serve (the image sets its own)
 
 A part that would refuse to start does not block saving. A role the service would not
 run is shown as not checked, so a deployment with `JUDGE_ROLES='--api --web --jobs'`

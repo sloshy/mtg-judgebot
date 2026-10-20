@@ -1,7 +1,8 @@
 //! `judgebot` — the one long-running binary. What a process does is chosen at
 //! launch as a set of roles ([`roles::Role`]): `--discord` (the bot),
-//! `--api`, `--web` and `--mcp` (the HTTP interfaces, on one listener) and
-//! `--jobs` (the scheduled data refresh). `judgebot ingest <cmd>` is the data
+//! `--api`, `--web` and `--mcp` (the HTTP interfaces, on one listener),
+//! `--admin` (the operator's pages and reads, on a loopback listener of its
+//! own) and `--jobs` (the scheduled data refresh). `judgebot ingest <cmd>` is the data
 //! command line ([`ingest`]), `judgebot backup <cmd>` the database backup
 //! ([`backup`], the `backup` compose service); [`cli`] parses the command
 //! line.
@@ -26,7 +27,8 @@
 //! `JUDGE_BUDGET_PERIOD`, `JUDGE_ALERT_WEBHOOK`; `JUDGE_REFRESH_HOURS` and
 //! `INGEST_CACHE_DIR` under `--jobs`; `DISCORD_TOKEN`, `GUILD_ID`,
 //! `JUDGE_ROLE`, `JUDGE_CONCURRENCY` and `JUDGE_USER_*` under `--discord`;
-//! `API_*`, `WEB_DIST` and `MCP_*` under the network roles; `RUST_LOG`.
+//! `API_*`, `WEB_DIST` and `MCP_*` under the network roles; `ADMIN_ADDR`,
+//! `ADMIN_TOKEN` and `WEB_DIST` under `--admin`; `RUST_LOG`.
 
 mod backup;
 mod cli;
@@ -38,6 +40,7 @@ use std::sync::{
 };
 
 use anyhow::{Context as _, Result};
+use judge_api::admin::AdminListening;
 use judge_bot::{
     config::Config as JudgeConfig,
     db::migrate::Upgrade,
@@ -154,7 +157,7 @@ async fn serve(roles: &Roles) -> Result<()> {
     } else {
         Upgrade::InPlace
     };
-    let Plan { serve, jobs } = plan;
+    let Plan { serve, admin, jobs } = plan;
     let (availability, mut schema) = match &upgrade {
         Upgrade::InPlace => {
             // The hold first: a process of an older release that starts while
@@ -181,7 +184,20 @@ async fn serve(roles: &Roles) -> Result<()> {
     if schema.is_none() && serve.is_none() {
         started.store(true, Ordering::Release);
         schema = Some(major(&pool, process, &AtomicBool::new(false)).await?);
+        availability.set_open();
     }
+    // The admin listener's address, reserved before anything else starts,
+    // so a taken ADMIN_ADDR fails first, as API_ADDR does. It listens once
+    // the instance is open.
+    let admin = match admin {
+        Some(a) => Some(a.reserve(
+            &pool,
+            availability.clone(),
+            shutdown.clone(),
+            judge.locale(),
+        )?),
+        None => None,
+    };
     // The serving roles' shared composition, which also loads the period's
     // spend before any of them can take a question.
     let serving = match serve {
@@ -246,7 +262,7 @@ async fn serve(roles: &Roles) -> Result<()> {
         // A refresh in progress at a shutdown ends with the process; its
         // run record is left open, as after a crash.
         Some((serving, adapters)) => {
-            let roles = Box::pin(run(&serving, adapters));
+            let roles = Box::pin(beside_admin(&shutdown, run(&serving, adapters), admin));
             tokio::pin!(roles);
             // The schema hold is kept beside the roles: one lost for good ends
             // the process ([`SchemaHold::keep`]).
@@ -295,6 +311,41 @@ async fn serve(roles: &Roles) -> Result<()> {
             };
             if shutdown.is_requested() {
                 serving.flush().await;
+            }
+            ran
+        }
+        // The admin listener is the only role that serves: it runs as the
+        // serving roles do, and a scheduler beside it is dropped as beside
+        // them (its thread logs an ERROR if it dies).
+        None if admin.is_some() => {
+            drop(scheduler);
+            let keep = async {
+                match schema.take() {
+                    Some(hold) => hold.keep(&pool, process).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let listener = async {
+                match admin {
+                    Some(a) => {
+                        let ran = a.serve().await;
+                        if shutdown.is_requested() {
+                            ran
+                        } else {
+                            stopped("the admin listener", ran)
+                        }
+                    }
+                    None => Ok(()),
+                }
+            };
+            let ran = tokio::select! {
+                ran = listener => ran,
+                lost = keep => Err(lost),
+            };
+            if shutdown.is_requested()
+                && let Some(ledger) = &jobs_ledger
+            {
+                judge_bot::serving::flush(ledger).await;
             }
             ran
         }
@@ -399,6 +450,26 @@ fn listen(shutdown: &Shutdown, started: &Arc<AtomicBool>) -> Result<()> {
     Ok(())
 }
 
+/// `roles` beside the admin listener, when there is one: the first to stop
+/// ends the process, unless the stop was requested (then both drain).
+async fn beside_admin(
+    shutdown: &judge_bot::shutdown::Shutdown,
+    roles: impl Future<Output = Result<()>>,
+    admin: Option<AdminListening>,
+) -> Result<()> {
+    match admin {
+        None => roles.await,
+        Some(admin) => {
+            together(
+                shutdown,
+                ("the serving roles", roles),
+                ("the admin listener", admin.serve()),
+            )
+            .await
+        }
+    }
+}
+
 /// The contacts the roles will name, and the network roles' warnings.
 fn log_plan(plan: &Plan) {
     let (discord, network) = match plan.serve.as_ref().map(|s| &s.adapters) {
@@ -415,6 +486,9 @@ fn log_plan(plan: &Plan) {
         for w in n.warnings() {
             tracing::warn!("{w}");
         }
+    }
+    if let Some(a) = &plan.admin {
+        tracing::info!(addr = %a.addr(), "admin listener: `judge-cli admin-url` prints its address");
     }
 }
 
@@ -435,7 +509,12 @@ async fn run(serving: &Serving, adapters: Adapters) -> Result<()> {
                 let listening =
                     judge_api::Listening::interactions_only(&cfg, serving, &interactions)?;
                 let discord = judge_bot::discord::serve(serving, d.cfg, d.operator, &interactions);
-                together(serving, discord, listening.serve()).await
+                together(
+                    serving.shutdown(),
+                    ("the Discord role", discord),
+                    ("the HTTP roles", listening.serve()),
+                )
+                .await
             }
         },
         Adapters::Network(n) => n.bind(serving, None).await?.serve().await,
@@ -443,39 +522,44 @@ async fn run(serving: &Serving, adapters: Adapters) -> Result<()> {
             let endpoint = over_http(&d).then_some(&interactions);
             let listening = n.bind(serving, endpoint).await?;
             let discord = judge_bot::discord::serve(serving, d.cfg, d.operator, &interactions);
-            together(serving, discord, listening.serve()).await
+            together(
+                serving.shutdown(),
+                ("the Discord role", discord),
+                ("the HTTP roles", listening.serve()),
+            )
+            .await
         }
     }
 }
 
-/// The Discord role and the HTTP listener side by side. The first to stop
-/// ends the process: a bot whose gateway is gone must not hide behind a
-/// page that still answers. A stop the process asked for is the exception:
-/// each is draining, so both are waited for.
+/// Two roles side by side: the Discord role and the HTTP listener, or the
+/// serving roles and the admin listener. The first to stop ends the
+/// process: a bot whose gateway is gone must not hide behind a page that
+/// still answers. A stop the process asked for is the exception: each is
+/// draining, so both are waited for.
 async fn together(
-    serving: &Serving,
-    discord: impl Future<Output = Result<()>>,
-    http: impl Future<Output = Result<()>>,
+    shutdown: &judge_bot::shutdown::Shutdown,
+    (first_name, first): (&str, impl Future<Output = Result<()>>),
+    (second_name, second): (&str, impl Future<Output = Result<()>>),
 ) -> Result<()> {
-    let shutdown = serving.shutdown();
-    let mut discord = std::pin::pin!(discord);
-    let mut http = std::pin::pin!(http);
+    let mut first = std::pin::pin!(first);
+    let mut second = std::pin::pin!(second);
     tokio::select! {
-        r = &mut discord => {
+        r = &mut first => {
             if !shutdown.is_requested() {
-                return stopped("the Discord role", r);
+                return stopped(first_name, r);
             }
-            let other = http.await;
-            r.context("the Discord role failed while shutting down")?;
-            other.context("the HTTP roles failed while shutting down")
+            let other = second.await;
+            r.with_context(|| format!("{first_name} failed while shutting down"))?;
+            other.with_context(|| format!("{second_name} failed while shutting down"))
         }
-        r = &mut http => {
+        r = &mut second => {
             if !shutdown.is_requested() {
-                return stopped("the HTTP roles", r);
+                return stopped(second_name, r);
             }
-            let other = discord.await;
-            r.context("the HTTP roles failed while shutting down")?;
-            other.context("the Discord role failed while shutting down")
+            let other = first.await;
+            r.with_context(|| format!("{second_name} failed while shutting down"))?;
+            other.with_context(|| format!("{first_name} failed while shutting down"))
         }
     }
 }

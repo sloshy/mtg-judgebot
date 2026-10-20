@@ -75,6 +75,25 @@ example, is a deployment with no public page.
 While the instance migrates its database for a major release, a question gets a short
 notice and a **Try again** button that sends the same question once the upgrade is done.
 
+## Admin pages
+
+The operator's view of the instance is part of the same build, served by the `--admin`
+role on a port of its own (`ADMIN_ADDR`, default `127.0.0.1:8789`), never by the public
+listener. It needs `ADMIN_TOKEN`; `judge-cli admin-url` prints the page's address with
+the token in its `#token=` part. The page keeps the token for the tab and removes it
+from the address bar. From another machine, forward the port over SSH
+([Deployment](../../self-hosting/deployment/)).
+
+- **Calls**: every stored call, private ones included, newest first. Filters for the
+  interface, the asker (Discord username or id), the model, private or public, and text.
+- **A call**: the exchange as the feed shows it, then what is stored with it: who asked
+  and where, the thread, every rating with its rater, and the run that answered it with
+  each billed request's model, tokens and cost.
+- **Failures**: the failed calls, each opening onto the error and what the model sent.
+- **Usage**: questions and spend over 7, 30, 90 days or a year, spend per day as a
+  chart, the runs by model and outcome, ratings, the lowest-rated calls and the latest
+  data refreshes.
+
 ## Limits
 
 Anonymous traffic is rate limited per address (`API_RATE_LIMIT` questions per
@@ -90,4 +109,5 @@ rate-limiting rule in front of all of it.
 cargo run --release -p judgebot -- --api --web    # API + the built page on localhost:8787
 npm --prefix web ci
 npm --prefix web run dev             # Vite dev server with /api proxied to :8787
+                                     # and /admin/api to an --admin listener on :8789
 ```

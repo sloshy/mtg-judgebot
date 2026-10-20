@@ -1,0 +1,154 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.id,\n               (extract(epoch FROM c.created_at) * 1000000)::bigint AS \"at_micros!\",\n               to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"asked_at!\",\n               c.interface, c.asker_id, c.asker_name, c.private, c.question, c.confidence,\n               c.retired_reason,\n               coalesce(run.models, '{}') AS \"models!\",\n               run.micro_usd, coalesce(run.estimated, false) AS \"estimated!\"\n        FROM calls c\n        LEFT JOIN LATERAL (\n            SELECT array_agg(DISTINCT ch.model ORDER BY ch.model)\n                       FILTER (WHERE ch.stage <> 'embedding') AS models,\n                   sum(ch.micro_usd)::bigint AS micro_usd,\n                   bool_or(ch.cost_estimated) AS estimated\n            FROM judge_runs r JOIN judge_run_charges ch ON ch.run_id = r.id\n            WHERE r.call_id = c.id\n        ) run ON true\n        WHERE ($1::text IS NULL OR c.interface = $1)\n          AND ($2::text IS NULL OR c.asker_name = $2 OR c.asker_id = $2)\n          AND ($3::boolean IS NULL OR c.private = $3)\n          AND ($4::text IS NULL OR EXISTS (\n                SELECT 1 FROM judge_runs r JOIN judge_run_charges ch ON ch.run_id = r.id\n                WHERE r.call_id = c.id AND ch.model = $4))\n          AND ($5::text IS NULL\n               OR c.question ILIKE $5 OR c.answer ILIKE $5 OR c.asker_name ILIKE $5)\n          AND ($6::bigint IS NULL\n               OR (c.created_at, c.id) < ('epoch'::timestamptz + $6 * interval '1 microsecond', $7))\n        ORDER BY c.created_at DESC, c.id DESC\n        LIMIT $8\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "at_micros!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "asked_at!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "interface",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "interface"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "asker_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "asker_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "asker_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "asker_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "private",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "private"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "question",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "question"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "confidence",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "confidence"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "retired_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "retired_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "models!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "micro_usd",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "estimated!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bool",
+        "Text",
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "a91734e6e7cfad5bb7cceac132ae0276c93c4a4ae79fa216ee07cc0507257c46"
+}

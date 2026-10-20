@@ -70,6 +70,12 @@ impl Network {
         &self.interfaces
     }
 
+    /// Where it listens (`API_ADDR`).
+    #[must_use]
+    pub const fn addr(&self) -> std::net::SocketAddr {
+        self.cfg.addr
+    }
+
     /// The contact every interface names.
     #[must_use]
     pub fn operator(&self) -> &NetworkOperator {
@@ -86,6 +92,12 @@ impl Network {
         if self.cfg.mcp_token.is_some() && !self.interfaces.mcp() {
             out.push(
                 "MCP_TOKEN is set but --mcp was not given, so /mcp is not served; \
+                 add --mcp to the roles (JUDGE_ROLES) or unset the token",
+            );
+        }
+        if self.cfg.mcp_admin_token.is_some() && !self.interfaces.mcp() {
+            out.push(
+                "MCP_ADMIN_TOKEN is set but --mcp was not given, so /mcp is not served; \
                  add --mcp to the roles (JUDGE_ROLES) or unset the token",
             );
         }
@@ -182,7 +194,8 @@ impl Listening {
             path = judge_bot::discord::endpoint::PATH,
             "starting HTTP adapter for Discord's interactions endpoint alone"
         );
-        let socket = Socket::Reserved(http::reserve(cfg)?);
+        let socket = Socket::Reserved(http::reserve(cfg.addr)?);
+        tracing::info!(addr = %cfg.addr, "HTTP adapter bound; it listens once Discord's interactions endpoint opens");
         Ok(Self {
             socket,
             routes,
@@ -226,9 +239,12 @@ impl Network {
             discord_interactions = discord.map(|_| judge_bot::discord::endpoint::PATH),
             "starting HTTP adapter"
         );
-        let socket = match discord {
-            None => Socket::Listening(bind(&cfg).await?),
-            Some(_) => Socket::Reserved(http::reserve(&cfg)?),
+        let socket = if discord.is_some() {
+            let socket = http::reserve(cfg.addr)?;
+            tracing::info!(addr = %cfg.addr, "HTTP adapter bound; it listens once Discord's interactions endpoint opens");
+            Socket::Reserved(socket)
+        } else {
+            Socket::Listening(bind(&cfg).await?)
         };
         Ok(Listening {
             socket,
@@ -312,7 +328,7 @@ fn routes(
             pool.clone(),
             Options {
                 transport: Transport::Mcp,
-                client: Client::Instance(serving.availability().clone()),
+                client: Client::instance(serving.availability().clone()),
                 models: Some(serving.models().clone()),
                 deps_config: judge.deps_config(),
                 vectors: serving.vectors().cloned(),
@@ -326,8 +342,15 @@ fn routes(
                 operator: operator.operator().clone(),
             },
         );
-        let service = judge_agent::mcp::http_service(Arc::new(toolbox), cfg.mcp_hosts.clone());
-        routes = routes.merge(crate::mcp::router(service, token));
+        let toolbox = Arc::new(toolbox);
+        let service = judge_agent::mcp::http_service(Arc::clone(&toolbox), cfg.mcp_hosts.clone());
+        // `MCP_ADMIN_TOKEN` opens a second handler over the same toolbox
+        // (one quota, one set of slots) that has the admin tools too.
+        let admin = cfg.mcp_admin_token.clone().map(|t| {
+            tracing::info!("/mcp serves the admin tools to MCP_ADMIN_TOKEN");
+            judge_agent::mcp::admin_http_service(toolbox, cfg.mcp_hosts.clone(), t)
+        });
+        routes = routes.merge(crate::mcp::router(service, token, admin.as_ref()));
     }
     if let Some(i) = discord {
         routes = routes.merge(crate::discord::router(i.clone()));
@@ -366,7 +389,7 @@ mod tests {
     #[tokio::test]
     async fn a_reserved_address_refuses_until_it_listens() -> anyhow::Result<()> {
         let cfg = ApiConfig::from_vars(|k| (k == "API_ADDR").then(|| "127.0.0.1:0".to_owned()))?;
-        let socket = http::reserve(&cfg)?;
+        let socket = http::reserve(cfg.addr)?;
         let addr = socket.local_addr()?;
         assert!(tokio::net::TcpStream::connect(addr).await.is_err());
         let listener = http::listen(socket)?;

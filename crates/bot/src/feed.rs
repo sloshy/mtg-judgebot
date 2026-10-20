@@ -19,6 +19,7 @@ use judge_core::{
     CallId, CardId, CardRef, Citation, Confidence, Interface, JudgeError, RulingKey, Score, Source,
 };
 use regex::Regex;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -97,7 +98,7 @@ impl Feed {
 
 /// The interface a call came in through, as the feed labels it: the
 /// [`Interface`]s, and the one value stored before 2.0.0 told them apart.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Asked {
     /// `/judge` on Discord.
@@ -194,6 +195,23 @@ const MAX_CURSOR_MICROS: i64 = 1 << 53;
 pub struct Cursor {
     at_micros: i64,
     id: Uuid,
+}
+
+impl Cursor {
+    /// The cursor after the row asked at `at_micros` with id `id`.
+    pub(crate) const fn new(at_micros: i64, id: Uuid) -> Self {
+        Self { at_micros, id }
+    }
+
+    /// Its time, in microseconds since the epoch.
+    pub(crate) const fn at_micros(self) -> i64 {
+        self.at_micros
+    }
+
+    /// Its call's id.
+    pub(crate) const fn id(self) -> Uuid {
+        self.id
+    }
 }
 
 impl std::fmt::Display for Cursor {
@@ -514,7 +532,10 @@ pub async fn call(
 }
 
 /// A unit-variant enum from its stored serde name.
-fn stored<T: serde::de::DeserializeOwned>(value: &str, what: &str) -> Result<T, JudgeError> {
+pub(crate) fn stored<T: serde::de::DeserializeOwned>(
+    value: &str,
+    what: &str,
+) -> Result<T, JudgeError> {
     serde_json::from_value(serde_json::Value::String(value.to_owned()))
         .map_err(|e| bad_row_from(e, format!("calls.{what} {value:?}")))
 }
@@ -577,23 +598,35 @@ fn entry(r: Row) -> Result<Entry, JudgeError> {
 
 /// Read the card names and ruling dates `entries` need.
 async fn names(pool: &PgPool, entries: &[Entry]) -> Result<Names, JudgeError> {
-    let mut cards = BTreeSet::new();
+    let cards: Vec<CardId> = entries
+        .iter()
+        .flat_map(|e| e.cards.iter().map(|c| c.id))
+        .collect();
+    let citations: Vec<&Citation> = entries.iter().flat_map(|e| e.citations.iter()).collect();
+    names_for(pool, &cards, &citations).await
+}
+
+/// Read the names of `cards` and of the cards and rulings `citations` name.
+pub(crate) async fn names_for(
+    pool: &PgPool,
+    cards: &[CardId],
+    citations: &[&Citation],
+) -> Result<Names, JudgeError> {
+    let mut wanted: BTreeSet<Uuid> = cards.iter().map(|c| c.into_inner()).collect();
     let mut rulings = BTreeSet::new();
-    for e in entries {
-        cards.extend(e.cards.iter().map(|c| c.id.into_inner()));
-        for c in &e.citations {
-            match c {
-                Citation::ScryfallRuling { card, ruling, .. } => {
-                    cards.insert(card.into_inner());
-                    rulings.insert((card.into_inner(), ruling.to_string()));
-                }
-                Citation::OracleText { card, .. } => {
-                    cards.insert(card.into_inner());
-                }
-                Citation::Rule { .. } | Citation::PriorCall { .. } => {}
+    for c in citations {
+        match *c {
+            Citation::ScryfallRuling { card, ruling, .. } => {
+                wanted.insert(card.into_inner());
+                rulings.insert((card.into_inner(), ruling.to_string()));
             }
+            Citation::OracleText { card, .. } => {
+                wanted.insert(card.into_inner());
+            }
+            Citation::Rule { .. } | Citation::PriorCall { .. } => {}
         }
     }
+    let cards = wanted;
     let mut out = Names::default();
     if cards.is_empty() {
         return Ok(out);

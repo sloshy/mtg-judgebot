@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT model FROM judge_run_charges WHERE stage <> 'embedding' ORDER BY model",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "judge_run_charges",
+            "name": "model"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "18db1cdb2cd36a7bc80626f1a6a95dd90fcb0b09da540f430fb5747db074fcb5"
+}

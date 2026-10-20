@@ -20,6 +20,11 @@
 //!   validated with the same citation check. No API call is made; the
 //!   calling agent *is* the model.
 //!
+//! The operator's reads (every call, private ones included, the failed calls,
+//! the usage) are operations too, each taking an [`admin::Admin`] capability
+//! that only [`Toolbox::from_env`] (a standalone toolbox) or the
+//! `MCP_ADMIN_TOKEN` handler hands out.
+//!
 //! [`Toolbox`] holds the ports both need. Its spend cap, judge slots and
 //! `judge` quota are per process: inside `judgebot --mcp` they are the ones the
 //! web page uses, so the two interfaces share one budget; a `judge-cli`
@@ -28,6 +33,7 @@
 //! is why the remote transport is `/mcp` and not a stdio server exposed to
 //! others.
 
+pub mod admin;
 mod gated;
 pub mod mcp;
 pub mod ops;
@@ -99,9 +105,15 @@ impl Transport {
     }
 }
 
-/// Where a toolbox runs relative to the instance.
+/// Where a toolbox runs relative to the instance. Outside this crate only
+/// [`Client::instance`] makes one: a standalone toolbox comes from
+/// [`Toolbox::from_env`] alone, which is what hands out the admin
+/// capability ([`Local`]).
 #[derive(Clone, Debug)]
-pub enum Client {
+pub struct Client(ClientKind);
+
+#[derive(Clone, Debug)]
+enum ClientKind {
     /// A tool built on its own (`judge-cli`, a stdio `judge-mcp`): its
     /// release is checked against the database's ([`release`]).
     Standalone,
@@ -109,6 +121,31 @@ pub enum Client {
     /// it answers while the instance is open, and with the maintenance
     /// message while a major upgrade migrates.
     Instance(Availability),
+}
+
+impl Client {
+    /// Part of the instance (`judgebot --mcp`), open or migrating as
+    /// `availability` says.
+    #[must_use]
+    pub const fn instance(availability: Availability) -> Self {
+        Self(ClientKind::Instance(availability))
+    }
+
+    /// A tool of its own, its release checked.
+    pub(crate) const fn standalone() -> Self {
+        Self(ClientKind::Standalone)
+    }
+}
+
+/// A standalone toolbox ([`Toolbox::from_env`]) and the admin capability
+/// that comes with it: whoever runs it holds `DATABASE_URL`, which reads
+/// everything the admin operations do.
+#[derive(Debug)]
+pub struct Local {
+    /// The toolbox.
+    pub toolbox: Toolbox,
+    /// The operator's reads.
+    pub admin: admin::Admin,
 }
 
 /// The built-in pipeline, present when models are configured.
@@ -179,7 +216,8 @@ pub struct Options {
     /// The interface served: what `judge` calls are stored as, and how the
     /// session prompts are worded.
     pub transport: Transport,
-    /// Whether this is a separate tool, whose release is checked.
+    /// Whether this is a separate tool, whose release is checked. Only
+    /// [`Client::instance`] outside this crate.
     pub client: Client,
     /// The metered models for the built-in pipeline; `None` disables `judge`.
     pub models: Option<Models>,
@@ -239,12 +277,12 @@ impl Toolbox {
                 retriever,
                 calls,
                 pipeline,
-                guard: match opts.client {
-                    Client::Standalone => gated::Guard::Release(release::ReleaseCheck::new(
+                guard: match opts.client.0 {
+                    ClientKind::Standalone => gated::Guard::Release(release::ReleaseCheck::new(
                         pool_for_release,
                         opts.transport.tool(),
                     )),
-                    Client::Instance(availability) => gated::Guard::Instance(availability),
+                    ClientKind::Instance(availability) => gated::Guard::Instance(availability),
                 },
             }),
             transport: opts.transport,
@@ -291,10 +329,14 @@ impl Toolbox {
     /// `JUDGE_MAX_USD` as for the other binaries. A `.env` in the working
     /// directory is loaded first.
     ///
+    /// The toolbox is standalone, so it comes with the admin capability
+    /// ([`Local`]): the one way to hold one outside the `MCP_ADMIN_TOKEN`
+    /// handler.
+    ///
     /// # Errors
     /// A missing `DATABASE_URL`, a malformed `.env`, a bad model
     /// configuration, or a failed connection.
-    pub async fn from_env(transport: Transport) -> anyhow::Result<Self> {
+    pub async fn from_env(transport: Transport) -> anyhow::Result<Local> {
         match dotenvy::dotenv() {
             Ok(_) | Err(dotenvy::Error::Io(_)) => {}
             Err(e) => return Err(anyhow::Error::from(e).context("load .env")),
@@ -332,11 +374,11 @@ impl Toolbox {
                 .max(1),
             None => DEFAULT_CONCURRENCY,
         };
-        Ok(Self::new(
+        let toolbox = Self::new(
             pool,
             Options {
                 transport,
-                client: Client::Standalone,
+                client: Client::standalone(),
                 models,
                 deps_config: config.deps_config(),
                 vectors,
@@ -346,7 +388,11 @@ impl Toolbox {
                 offer: config.source_offer().clone(),
                 operator: config.operator().clone(),
             },
-        ))
+        );
+        Ok(Local {
+            toolbox,
+            admin: admin::Admin::grant(),
+        })
     }
 
     /// What this tool says about the instance's release, read again once

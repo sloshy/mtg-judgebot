@@ -26,10 +26,12 @@ stand by and take over when it goes.
 | `--api` | `POST /api/judge`, the anonymous question route | `JUDGE_OPERATOR_EMAIL` |
 | `--web` | The built web app, from `WEB_DIST` | `JUDGE_OPERATOR_EMAIL`, a built `index.html` |
 | `--mcp` | The MCP transport at `/mcp` | `JUDGE_OPERATOR_EMAIL`, `MCP_TOKEN` |
+| `--admin` | The operator's pages and reads on `ADMIN_ADDR` (default `127.0.0.1:8789`) | `ADMIN_TOKEN` (its own), a built `index.html` |
 | `--jobs` | The scheduled data refresh, every `JUDGE_REFRESH_HOURS` (`0` turns it off) | a schedule that is on, when it is the only role |
 
 The network roles (`--api`, `--web`, `--mcp`) share one listener on `API_ADDR`, which
-also serves `GET /api/health` and `GET /api/about`. The roles of one process share one
+also serves `GET /api/health` and `GET /api/about`. `--admin` listens on a port of its
+own and needs no model. The roles of one process share one
 spend meter, so `JUDGE_MAX_USD` caps them together. `--jobs` against a development
 database refreshes it for real: leave it off there, or set `JUDGE_REFRESH_HOURS=0`.
 
@@ -39,7 +41,7 @@ own. If that thread ends beside serving roles, it is logged as an error and the 
 keeps answering. In a process whose only role is `--jobs`, the process exits non-zero.
 
 The compose service `judgebot` runs `JUDGE_ROLES` when it is set in `.env`, else every
-role but `--mcp` (`--discord --api --web --jobs`). A process started with
+role but `--mcp` and `--admin` (`--discord --api --web --jobs`). A process started with
 `API_INTERFACES` set, the variable the 1.x `api` service read, refuses to start and names
 the `JUDGE_ROLES` line that replaces it.
 
@@ -102,7 +104,9 @@ malformed one is an error naming each. Logs go to standard error.
 ## `judge-cli`
 
 `cargo build --release -p judge-agent`, then `target/release/judge-cli <command>`.
-JSON goes to stdout and logs to stderr.
+JSON goes to stdout and logs to stderr. The admin reads (`stats`, `failures`, `calls`,
+`call`) return private material: `judge-cli` holds them because whoever runs it holds
+`DATABASE_URL` (D37).
 
 | Command | What it does |
 | --- | --- |
@@ -115,8 +119,11 @@ JSON goes to stdout and logs to stderr.
 | `persist <session>` | Persist an admitted verdict (idempotent). |
 | `card <name>` / `card-info <uuid>` | Resolve a name / a card by id. |
 | `get-rules <id>...` / `search <query> [--limit N]` / `glossary <term>` | Rules text, full-text search, glossary. |
-| `failures [--limit N]` | The newest failed calls (default 10, at most 100), newest first: when, thread, interface, the Discord asker's username, whether it was asked privately, the question, the error, why the first attempt was rejected and the answer text of each attempt. Read from `failed_calls`. CLI only. |
-| `stats [--days N]` | The operator's view, over the last N UTC days (default 30): stored questions per day by interface (Discord, web, MCP, CLI, agent session, and `agent` for an MCP or CLI call from before 2.0.0) and how many were private, estimated model spend and model calls per day (from the `spend_days` ledger every serving process keeps), ratings by score, retired calls, the ten worst-rated calls, and the last five data refresh runs (started, trigger, process, outcome `ok`/`failed`/`stopped`/`running`/`abandoned`, CR version before and after, failed steps; on a schema without the run table, none and a `refresh_runs_note`). A Discord question asked with `private: True` is in the spend and not in the questions. CLI only. |
+| `failures [--limit N]` | The newest failed calls (default 10, at most 100), newest first: when, thread, interface, the Discord asker's username, whether it was asked privately, the question, the error, why the first attempt was rejected and the answer text of each attempt. Read from `failed_calls`. An admin read. |
+| `stats [--days N]` | The operator's view, over the last N UTC days (default 30): stored questions per day by interface (Discord, web, MCP, CLI, agent session, and `agent` for an MCP or CLI call from before 2.0.0) and how many were private, estimated model spend and model calls per day (from the `spend_days` ledger every serving process keeps), ratings by score, retired calls, the ten worst-rated calls, and the last five data refresh runs (started, trigger, process, outcome `ok`/`failed`/`stopped`/`running`/`abandoned`, CR version before and after, failed steps; on a schema without the run table, none and a `refresh_runs_note`). Also the runs of the pipeline in the window (`runs`, `run_usd`), their charges by model (`by_model`: requests, tokens, cost) and their outcomes. An admin read. |
+| `calls [--interface I] [--asker A] [--model M] [--private \| --public] [--search Q] [--cursor C]` | Every stored call, private ones included, newest first, 50 a page (`next` is the next page's `--cursor`). `--asker` takes a Discord username or user id, `--model` a model a run billed (the page lists them under `models`), `--search` text in the question, answer or asker's username. Each row has the asker, whether it is private, its run's models and cost. An admin read. |
+| `call <id>` | One stored call whole: who asked and where, the question and answer, citations, every rating with its rater, and the run that answered it with each billed request. An admin read. |
+| `admin-url` | The admin page's address with `ADMIN_TOKEN` in its `#token=` fragment, from `ADMIN_ADDR` (an unspecified host prints as `127.0.0.1`). Needs no database. |
 | `config` | The resolved provider setup, secrets redacted. |
 | `about` | The source offer: the repository holding this instance's source, the commit it was built from, the licence and copyright, and the data's `freshness` (the Comprehensive Rules release loaded and the last refresh). Without a database `freshness` is `null` and the rest still prints. |
 

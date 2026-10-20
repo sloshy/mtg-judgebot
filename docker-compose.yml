@@ -68,15 +68,21 @@ services:
     # SIGKILL comes only after this, ten seconds past the drain.
     stop_grace_period: 130s
     # The roles: JUDGE_ROLES in .env when it is set, for example
-    # `--api --web --jobs` without Discord or `--discord --jobs` without a
-    # public page. Unset, every role but --mcp. GET /api/health is served
-    # while any of --api, --web and --mcp is on, so the healthcheck below
-    # holds for any of them.
+    # `--api --web --jobs` without Discord, `--discord --jobs` without a
+    # public page, or `--discord --api --web --admin --jobs` with the admin
+    # interface. Unset, every role but --mcp and --admin, which each need a
+    # token of their own. GET /api/health is served while any of --api, --web
+    # and --mcp is on, so the healthcheck below holds for any of them.
     command: ${JUDGE_ROLES:---discord --api --web --jobs}
     env_file: .env
     environment:
       DATABASE_URL: postgres://judgebot:judgebot@db:5432/judgebot
       WEB_DIST: /srv/web
+      # The --admin listener, on every address of the container so the proxy
+      # can reach it (a container's loopback is its own). The proxy publishes
+      # it on the host's loopback only (docs/DECISIONS.md D37).
+      # An ADMIN_ADDR in .env is for a process outside compose; this wins.
+      ADMIN_ADDR: 0.0.0.0:8789
       INGEST_CACHE_DIR: /var/cache/judgebot
       RUST_LOG: info,sqlx=warn,serenity=warn
       # JUDGE_CONFIG in .env is a *host* path (./judge.toml, as `cargo run`
@@ -142,7 +148,8 @@ services:
   # The entrance to judgebot's HTTP listener: 127.0.0.1:8787 on the host, for
   # a browser on this machine and for a reverse proxy that runs on the host
   # (docs/DEPLOYMENT.md §4), and proxy:8787 on the compose network, for the
-  # tunnel. It forwards to judgebot:8787, whichever container of that service
+  # tunnel. Also the entrance to the --admin listener, 127.0.0.1:8789 on the
+  # host only, which the tunnel never points at. It forwards to judgebot:8787, whichever container of that service
   # is listening, on a new connection per request (proxy/Caddyfile says why),
   # and a deploy never restarts it, so the address stays up while judgebot is
   # replaced. The Host header and the client's CF-Connecting-IP pass through
@@ -172,6 +179,13 @@ services:
     # trustworthy while Cloudflare is the sole route to the origin.
     ports:
       - "127.0.0.1:8787:8787"
+      # The admin interface (--admin): loopback on the host, ADMIN_PORT in
+      # .env (default 8789; set another when 8789 is taken, or this service
+      # fails to start and takes 8787 with it), reached from another machine
+      # over an SSH port forward. cloudflared shares the compose network and
+      # could dial judgebot:8789 itself; ADMIN_TOKEN is the guard there, and
+      # the tunnel's hostname points at 8787 only.
+      - "127.0.0.1:${ADMIN_PORT:-8789}:8789"
     # Started after judgebot, so on the upgrade from a judgebot that
     # published 8787 itself, compose has replaced that container (and freed
     # the port) before this one binds it.

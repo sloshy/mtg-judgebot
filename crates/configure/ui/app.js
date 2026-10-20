@@ -217,6 +217,7 @@ const SURFACES = {
   roles: "Roles",
   discord: "Discord bot",
   http: "HTTP API",
+  admin: "Admin interface",
 };
 
 function renderChecks(error) {
@@ -828,6 +829,7 @@ const GROUPS = {
   discord: "Discord bot",
   http: "HTTP API and web app",
   mcp: "MCP over HTTP",
+  admin: "Admin interface",
   database: "Database",
   deployment: "Deployment",
 };

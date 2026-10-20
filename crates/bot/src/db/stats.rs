@@ -1,8 +1,8 @@
 //! What an operator asks of a running instance: how much is it used, what
 //! does it cost, which answers did people think were wrong, and how did the
 //! last data refreshes go. Read-only, over `calls`, `ratings`, the
-//! `spend_days` ledger (`crate::budget`) and `refresh_runs`
-//! (`crate::ingest::runs`).
+//! `spend_days` ledger (`crate::budget`), the run record (`judge_runs`,
+//! `judge_run_charges`) and `refresh_runs` (`crate::ingest::runs`).
 //!
 //! Counts are of *stored* calls: answered ones, private ones included
 //! (`private` says how many). A question that was not answered (a "did you
@@ -30,6 +30,8 @@ pub const MAX_FAILURES: u32 = 100;
 /// A call that failed, as `failed_calls` kept it (already cut to size).
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct FailedRow {
+    /// Its row id (`judge_runs.failed_call_id` names it).
+    pub id: i64,
     /// When it failed, RFC 3339 UTC.
     pub at: String,
     /// The thread it was asked in.
@@ -58,7 +60,7 @@ pub struct FailedRow {
 pub async fn failures(pool: &PgPool, limit: u32) -> Result<Vec<FailedRow>, JudgeError> {
     let rows = sqlx::query!(
         r#"
-        SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "at!",
+        SELECT id, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "at!",
                thread_id, interface, asker_name, private, question, error, first_rejection, attempts
         FROM failed_calls ORDER BY id DESC LIMIT $1
         "#,
@@ -70,6 +72,7 @@ pub async fn failures(pool: &PgPool, limit: u32) -> Result<Vec<FailedRow>, Judge
     Ok(rows
         .into_iter()
         .map(|r| FailedRow {
+            id: r.id,
             at: r.at,
             thread: r.thread_id,
             interface: r.interface,
@@ -125,6 +128,38 @@ pub struct RatedCall {
     pub retired: bool,
 }
 
+/// What one model was billed for by the runs in the window.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct ModelUse {
+    /// The provider table the requests went to.
+    pub provider: String,
+    /// The model each response named.
+    pub model: String,
+    /// Billed requests.
+    pub requests: i64,
+    /// Tokens in, over the requests that reported usage.
+    pub input_tokens: i64,
+    /// Tokens out.
+    pub output_tokens: i64,
+    /// Cached tokens read.
+    pub cache_read_tokens: i64,
+    /// Cached tokens written.
+    pub cache_write_tokens: i64,
+    /// Their cost in USD.
+    pub usd: f64,
+    /// Requests that reported no usage, charged at the worst case.
+    pub estimated: i64,
+}
+
+/// How many runs in the window ended one way.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct OutcomeCount {
+    /// `answered`, `ambiguous`, …: `judge_core::Outcome`'s ids.
+    pub outcome: String,
+    /// Runs.
+    pub runs: i64,
+}
+
 /// `judge-cli stats`.
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct Usage {
@@ -136,6 +171,17 @@ pub struct Usage {
     pub questions: i64,
     /// Estimated spend in the window, in USD.
     pub usd: f64,
+    /// Runs of the built-in pipeline that finished in the window, whatever
+    /// their outcome (`judge_runs`).
+    pub runs: i64,
+    /// What those runs cost, in USD: their charges summed. Less than `usd`,
+    /// which also counts what no run made (the refresh's embeddings, a
+    /// search's).
+    pub run_usd: f64,
+    /// Those runs' charges by model, dearest first.
+    pub by_model: Vec<ModelUse>,
+    /// Those runs by outcome, commonest first.
+    pub outcomes: Vec<OutcomeCount>,
     /// Ratings recorded in the window: incorrect, partially correct, correct.
     pub ratings: [i64; 3],
     /// Calls in the whole table the retirement pass has retired.
@@ -253,6 +299,60 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
     })
     .collect();
 
+    let by_model: Vec<ModelUse> = sqlx::query!(
+        r#"
+        SELECT ch.provider, ch.model,
+               count(*) AS "requests!",
+               coalesce(sum(ch.input_tokens), 0)::bigint AS "input_tokens!",
+               coalesce(sum(ch.output_tokens), 0)::bigint AS "output_tokens!",
+               coalesce(sum(ch.cache_read_tokens), 0)::bigint AS "cache_read_tokens!",
+               coalesce(sum(ch.cache_write_tokens), 0)::bigint AS "cache_write_tokens!",
+               coalesce(sum(ch.micro_usd), 0)::bigint AS "micro_usd!",
+               count(*) FILTER (WHERE ch.cost_estimated) AS "estimated!"
+        FROM judge_run_charges ch JOIN judge_runs r ON r.id = ch.run_id
+        WHERE (r.finished_at AT TIME ZONE 'utc')::date >= (now() AT TIME ZONE 'utc')::date - $1::int
+        GROUP BY ch.provider, ch.model
+        ORDER BY 8 DESC, 1, 2
+        "#,
+        back
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(upstream("usage by model"))?
+    .into_iter()
+    .map(|r| ModelUse {
+        provider: r.provider,
+        model: r.model,
+        requests: r.requests,
+        input_tokens: r.input_tokens,
+        output_tokens: r.output_tokens,
+        cache_read_tokens: r.cache_read_tokens,
+        cache_write_tokens: r.cache_write_tokens,
+        usd: usd(r.micro_usd),
+        estimated: r.estimated,
+    })
+    .collect();
+
+    let outcomes: Vec<OutcomeCount> = sqlx::query!(
+        r#"
+        SELECT outcome, count(*) AS "runs!"
+        FROM judge_runs
+        WHERE (finished_at AT TIME ZONE 'utc')::date >= (now() AT TIME ZONE 'utc')::date - $1::int
+        GROUP BY outcome
+        ORDER BY 2 DESC, 1
+        "#,
+        back
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(upstream("usage by outcome"))?
+    .into_iter()
+    .map(|r| OutcomeCount {
+        outcome: r.outcome,
+        runs: r.runs,
+    })
+    .collect();
+
     // A schema behind this binary (`JUDGE_AUTO_MIGRATE=false` with
     // migrations pending) has no run table; the rest of the view stands.
     let (refresh_runs, refresh_runs_note) = match runs::recent(pool, RECENT_RUNS).await {
@@ -274,6 +374,10 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
             .map(|d| d.discord + d.web + d.mcp + d.cli + d.agent_session + d.agent)
             .sum(),
         usd: by_day.iter().map(|d| d.usd).sum(),
+        runs: outcomes.iter().map(|o| o.runs).sum(),
+        run_usd: by_model.iter().map(|m| m.usd).sum(),
+        by_model,
+        outcomes,
         by_day,
         ratings: [ratings.incorrect, ratings.partial, ratings.correct],
         retired_calls,

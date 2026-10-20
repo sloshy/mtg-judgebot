@@ -12,7 +12,8 @@ spend cap. A complete instance is two containers from one compose file:
 - `judgebot`: the Discord bot, the web app and HTTP API, and the daily data refresh.
 
 What `judgebot` runs is a set of roles, `JUDGE_ROLES` in `.env`: `--discord`, `--api`,
-`--web`, `--mcp` and `--jobs` (the refresh). Unset, it runs every role but `--mcp`. A
+`--web`, `--mcp`, `--admin` (the operator's pages) and `--jobs` (the refresh). Unset, it
+runs every role but `--mcp` and `--admin`, which each need a token of their own. A
 third service, `refresh`, runs the data loads on demand. An optional `cloudflared`
 publishes the API without opening a port. You can stop at the web app and never touch
 Discord. The bot is the last thing to add.

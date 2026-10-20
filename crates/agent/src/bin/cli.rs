@@ -16,10 +16,17 @@
 //! judge-cli search <query> [--limit N]
 //! judge-cli glossary <term>
 //! judge-cli config                             # the resolved model configuration, secrets redacted
-//! judge-cli stats [--days N]                   # usage, spend, worst-rated calls, recent refreshes
-//! judge-cli failures [--limit N]               # the newest failed calls: question, error, what the model sent
 //! judge-cli about                              # the source offer: repository, commit, licence,
 //!                                              #  and the data's freshness
+//!
+//! # The operator's reads: private calls and askers included (D37)
+//! judge-cli stats [--days N]                   # usage, spend, runs by model and outcome, worst-rated
+//!                                              #  calls, recent refreshes
+//! judge-cli failures [--limit N]               # the newest failed calls: question, error, what the model sent
+//! judge-cli calls [--interface I] [--asker A] [--model M] [--private | --public] [--search Q] [--cursor C]
+//!                                              # every stored call, newest first, 50 a page
+//! judge-cli call <id>                          # one call: origin, answer, ratings with raters, run, charges
+//! judge-cli admin-url                          # the admin page's address with its #token= (ADMIN_TOKEN)
 //! ```
 //!
 //! Flags may appear anywhere after the subcommand; `--` ends them so a
@@ -36,23 +43,28 @@ use anyhow::{Context as _, Result};
 use judge_agent::{
     Toolbox, Transport,
     ops::{
-        BeginInput, CardInput, ExtractionInput, FailuresInput, IdsInput, JudgeInput, LookupInput,
-        NameInput, Pin, SearchInput, SessionInput, StatsInput, TermInput, VerdictInput,
+        BeginInput, CallInput, CallsInput, CardInput, ExtractionInput, FailuresInput, IdsInput,
+        JudgeInput, LookupInput, NameInput, Pin, SearchInput, SessionInput, StatsInput, TermInput,
+        VerdictInput,
     },
     release::Notice,
 };
 use judge_bot::{
+    admin::AdminSettings,
+    feed::Asked,
     ingest::runs,
     session::{AgentThread, SessionId},
 };
-use judge_core::{CardId, RuleId};
+use judge_core::{CallId, CardId, RuleId};
 use serde::Serialize;
 
 const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span=Name]... [--private] \
 | begin <question> [--thread T] [--private] | prompt <session> | status <session> \
 | extract <session> <file|-> | rules <session> <id>... | verdict <session> <file|-> [--persist] \
 | persist <session> | card <name> | card-info <uuid> | get-rules <id>... | search <query> [--limit N] \
-| glossary <term> | stats [--days N] | failures [--limit N] | config | about>";
+| glossary <term> | config | about | stats [--days N] | failures [--limit N] \
+| calls [--interface I] [--asker A] [--model M] [--private | --public] [--search Q] [--cursor C] \
+| call <id> | admin-url>";
 
 #[derive(Debug)]
 enum Command {
@@ -88,6 +100,12 @@ enum Command {
     /// Usage, spend and the worst-rated calls.
     Stats(StatsInput),
     Failures(FailuresInput),
+    /// Every stored call, private ones included.
+    Calls(CallsInput),
+    /// One stored call, whole.
+    Call(CallInput),
+    /// The admin page's address with its token; needs no database.
+    AdminUrl,
     /// The resolved `judge.toml` (or environment) setup; needs no database.
     Config,
     /// The source offer; needs no database.
@@ -104,6 +122,12 @@ const FLAGS: &[(&str, bool)] = &[
     ("--pin", true),
     ("--persist", false),
     ("--private", false),
+    ("--public", false),
+    ("--interface", true),
+    ("--asker", true),
+    ("--model", true),
+    ("--search", true),
+    ("--cursor", true),
 ];
 
 /// The arguments after the subcommand, split into positionals and flags.
@@ -116,6 +140,12 @@ struct Args {
     pins: Vec<String>,
     persist: bool,
     private: bool,
+    public: bool,
+    interface: Option<String>,
+    asker: Option<String>,
+    model: Option<String>,
+    search: Option<String>,
+    cursor: Option<String>,
 }
 
 /// One pass over the tokens: a known flag consumes its value, `--` ends flag
@@ -151,6 +181,12 @@ fn split_args(tokens: Vec<String>) -> Result<Args> {
             ("--pin", Some(v)) => out.pins.push(v),
             ("--persist", None) => out.persist = true,
             ("--private", None) => out.private = true,
+            ("--public", None) => out.public = true,
+            ("--interface", Some(v)) => out.interface = Some(v),
+            ("--asker", Some(v)) => out.asker = Some(v),
+            ("--model", Some(v)) => out.model = Some(v),
+            ("--search", Some(v)) => out.search = Some(v),
+            ("--cursor", Some(v)) => out.cursor = Some(v),
             _ => anyhow::bail!("{USAGE}"),
         }
     }
@@ -222,10 +258,27 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
         };
     match cmd.as_str() {
         "judge" => uses(true, false, true, false, true)?,
-        "begin" => uses(true, false, false, false, true)?,
+        "begin" | "calls" => uses(cmd == "begin", false, false, false, true)?,
         "verdict" => uses(false, false, false, true, false)?,
         "search" | "failures" => uses(false, true, false, false, false)?,
         _ => uses(false, false, false, false, false)?,
+    }
+    anyhow::ensure!(
+        cmd == "stats" || a.days.is_none(),
+        "{cmd} does not take --days; {USAGE}"
+    );
+    // The call list's own flags, on it alone.
+    if cmd != "calls" {
+        for (given, flag) in [
+            (a.public, "--public"),
+            (a.interface.is_some(), "--interface"),
+            (a.asker.is_some(), "--asker"),
+            (a.model.is_some(), "--model"),
+            (a.search.is_some(), "--search"),
+            (a.cursor.is_some(), "--cursor"),
+        ] {
+            anyhow::ensure!(!given, "{cmd} does not take {flag}; {USAGE}");
+        }
     }
     Ok(match cmd.as_str() {
         "judge" => {
@@ -357,6 +410,49 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
             no_extra(0)?;
             Command::About
         }
+        "calls" => {
+            no_extra(0)?;
+            anyhow::ensure!(
+                !(a.private && a.public),
+                "--private and --public together name no call; {USAGE}"
+            );
+            let interface = a
+                .interface
+                .as_deref()
+                .map(|i| {
+                    Asked::parse(i).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "--interface must be one of: {}",
+                            Asked::ALL.map(Asked::id).join(", ")
+                        )
+                    })
+                })
+                .transpose()?;
+            Command::Calls(CallsInput {
+                cursor: a.cursor.clone(),
+                interface,
+                asker: a.asker.clone(),
+                model: a.model.clone(),
+                private: if a.private {
+                    Some(true)
+                } else if a.public {
+                    Some(false)
+                } else {
+                    None
+                },
+                q: a.search.clone(),
+            })
+        }
+        "call" => {
+            no_extra(1)?;
+            Command::Call(CallInput {
+                call: CallId::new(positional(0)?.parse().context("call id must be a uuid")?),
+            })
+        }
+        "admin-url" => {
+            no_extra(0)?;
+            Command::AdminUrl
+        }
         other => anyhow::bail!("{USAGE} (got {other:?})"),
     })
 }
@@ -399,6 +495,13 @@ async fn run(cmd: Command) -> Result<()> {
         },
         other => other,
     };
+    if matches!(cmd, Command::AdminUrl) {
+        match dotenvy::dotenv() {
+            Ok(_) | Err(dotenvy::Error::Io(_)) => {}
+            Err(e) => return Err(anyhow::Error::from(e).context("load .env")),
+        }
+        return admin_url();
+    }
     if matches!(cmd, Command::Config | Command::About) {
         // No toolbox (models, pool) needed: load .env as the toolbox would,
         // then resolve. `about` reads the data's freshness on a connection of
@@ -420,7 +523,8 @@ async fn run(cmd: Command) -> Result<()> {
             _ => print(&config.report()),
         };
     }
-    let toolbox = Toolbox::from_env(Transport::Cli).await?;
+    // This process holds DATABASE_URL, so it holds the operator's reads too.
+    let judge_agent::Local { toolbox, admin } = Toolbox::from_env(Transport::Cli).await?;
     // A newer release of the instance is a note on stderr; an incompatible
     // one is each operation's error.
     if let Some(Notice::Info(note)) = toolbox.release_notice().await {
@@ -465,10 +569,35 @@ async fn run(cmd: Command) -> Result<()> {
         Command::GetRules(i) => print(&toolbox.get_rules(i).await?),
         Command::Search(i) => print(&toolbox.search_rules(i).await?),
         Command::Glossary(i) => print(&toolbox.glossary(i).await?),
-        Command::Stats(i) => print(&toolbox.stats(i).await?),
-        Command::Failures(i) => print(&toolbox.failures(i).await?),
-        Command::Config | Command::About => anyhow::bail!("unreachable: handled above"),
+        Command::Stats(i) => print(&toolbox.stats(&admin, i).await?),
+        Command::Failures(i) => print(&toolbox.failures(&admin, i).await?),
+        Command::Calls(i) => print(&toolbox.admin_calls(&admin, i).await?),
+        Command::Call(i) => print(&toolbox.admin_call(&admin, i).await?),
+        Command::Config | Command::About | Command::AdminUrl => {
+            anyhow::bail!("unreachable: handled above")
+        }
     }
+}
+
+/// The admin page's address with `ADMIN_TOKEN` in its fragment, as
+/// `{"url": …}`, for a browser on this machine (an SSH port forward makes
+/// that any machine). The token is checked as `judgebot --admin` checks it.
+fn admin_url() -> Result<()> {
+    #[derive(Serialize)]
+    struct Url {
+        url: String,
+    }
+    let settings = AdminSettings::from_vars(|k| std::env::var(k).ok())?;
+    let token = settings.token.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "ADMIN_TOKEN is not set: set it in .env (`openssl rand -base64 32`, at least {} \
+             characters, not MCP_TOKEN) and add --admin to the roles",
+            judge_bot::admin::MIN_TOKEN_BYTES
+        )
+    })?;
+    print(&Url {
+        url: settings.page_url(token),
+    })
 }
 
 /// The data's freshness for `about`, read on a connection of its own:
@@ -618,6 +747,8 @@ mod tests {
         ));
         assert!(parse(&["failures", "--limit", "x"]).is_err());
         assert!(parse(&["about", "extra"]).is_err());
+        assert!(matches!(parse(&["admin-url"])?, Command::AdminUrl));
+        assert!(parse(&["admin-url", "--days", "3"]).is_err());
         assert!(parse(&["config", "extra"]).is_err());
         assert!(parse(&["config", "--thread", "agent:x"]).is_err());
         Ok(())
@@ -654,6 +785,49 @@ mod tests {
         ] {
             assert!(parse(&bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_call_list_takes_its_filters_and_nothing_else_does() -> Result<()> {
+        let Command::Calls(c) = parse(&[
+            "calls",
+            "--interface",
+            "discord",
+            "--asker",
+            "alice",
+            "--model",
+            "claude-opus-5-5",
+            "--private",
+            "--search",
+            "trample",
+        ])?
+        else {
+            anyhow::bail!("calls")
+        };
+        assert_eq!(c.interface, Some(Asked::Discord));
+        assert_eq!(c.asker.as_deref(), Some("alice"));
+        assert_eq!(c.private, Some(true));
+        assert_eq!(c.q.as_deref(), Some("trample"));
+        let Command::Calls(c) = parse(&["calls", "--public"])? else {
+            anyhow::bail!("calls")
+        };
+        assert_eq!(c.private, Some(false));
+        let id = "0b6a0f4e-1c5b-4a2e-9d3e-7f4c1b2a3d4e";
+        assert!(matches!(parse(&["call", id])?, Command::Call(_)));
+        for bad in [
+            vec!["calls", "--private", "--public"],
+            vec!["calls", "--interface", "telegram"],
+            vec!["calls", "--thread", "agent:x"],
+            vec!["calls", "extra"],
+            vec!["call", "not-a-uuid"],
+            vec!["call"],
+            vec!["stats", "--asker", "alice"],
+            vec!["judge", "q", "--public"],
+            vec!["search", "q", "--model", "m"],
+        ] {
+            assert!(parse(&bad).is_err(), "{bad:?}");
+        }
+        Ok(())
     }
 
     #[test]

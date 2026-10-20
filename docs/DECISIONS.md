@@ -920,7 +920,9 @@ and the answer text of each attempt. It is written for the operator failures of
   with the id; `/forget` again clears it (a late rating behaves the same). Rejected:
   deleting the rows, which would also drop the failure counts; and
   storing no id, which would leave a question the asker cannot take back.
-- **Read on the CLI only** (`judge-cli failures`), like `stats`, and not an MCP tool.
+- **Read by the operator only**, like `stats`: `judge-cli failures`, stdio `judge-mcp`'s
+  `admin_failures`, the admin pages, and `/mcp` with `MCP_ADMIN_TOKEN` (D37). Never with
+  `MCP_TOKEN`, which is handed out for judging.
 
 ## D28. Model-graded eval score
 
@@ -1422,3 +1424,73 @@ channel. `JUDGE_FEED=false` turns it off.
 - **No back-dating cut-off.** Earlier public calls are listed too; the upgrade notes say
   how to keep them unlisted.
 
+## D37. Admin role behind its own tokens
+
+*Decided 2026-10-20.*
+
+The operator can read everything the instance stores (private calls with their askers,
+failed calls, every rating with its rater, each run's models and cost) without any of it
+being reachable from the public interfaces (#24). A person uses pages on a listener of
+their own; an agent uses the same operations through MCP or the CLI.
+
+- **A role with its own listener.** `--admin` (`Role::Admin`) serves `/admin` and
+  `/admin/api/*` on `ADMIN_ADDR`, default `127.0.0.1:8789`, behind `ADMIN_TOKEN`
+  (bearer, compared in constant time; `Cache-Control: no-store` on every reply). The
+  network roles' listener answers those paths 404. In compose the container binds
+  `0.0.0.0:8789` (its loopback is unreachable from the proxy), the proxy's second site
+  forwards to `judgebot:8789`, and compose publishes it on the host's `127.0.0.1:8789`
+  only (`ADMIN_PORT` moves the host port). From another machine: an SSH port forward.
+  `ADMIN_ADDR` may not share `API_ADDR`'s port: `roles::plan` refuses it, since both
+  listeners would reserve the port and the second fail once the first serves. The listener is reserved at startup
+  and listens once the instance is open, and it drains on shutdown like the main one,
+  so a blue-green deploy hands it over the same way (D29). Rejected: admin routes on the
+  public listener behind a token, which would put the private material one leaked
+  token away from the internet.
+- **The tunnel is not kept off the network; the token is the guard there.** cloudflared
+  shares the compose network and could dial `judgebot:8789`. A second network does not
+  separate them: judgebot binds every address of its container, so a container on the
+  default network reaches the port whatever other network it joins. The tunnel's public
+  hostname points at `proxy:8787` only, and a request reaching 8789 any other way still
+  needs `ADMIN_TOKEN`. Rejected: binding the admin listener to one network's address,
+  which compose does not give a container before it starts.
+- **Loopback and a token, not accounts.** One judgebot is one community's (D16) and has
+  one operator; D17 keeps logins out of the web app. The page is opened with a
+  `#token=` address (`judge-cli admin-url`), as judge-config's is (D23): the fragment
+  never reaches a server log, the page moves it to `sessionStorage` and out of the
+  address bar, and sends it only as a header.
+- **`MCP_TOKEN` is not reused.** It is handed to MCP clients for judging, and its worst
+  case is spend, bounded by `MCP_JUDGE_LIMIT`. The admin reads expose other people's
+  questions and Discord ids, a different kind of loss, so they take their own
+  credentials: `ADMIN_TOKEN` for the pages and `MCP_ADMIN_TOKEN` (off unless set) for
+  `/mcp`. Each is at least 24 characters, and no two of the three may be equal: a reader
+  of any one refuses the launch.
+- **One list of operations.** `admin_calls`, `admin_call`, `admin_failures` and
+  `admin_usage` are in `judge_agent::ops` beside the rest, so `judge-cli` (`calls`,
+  `call`, `failures`, `stats`), stdio `judge-mcp` and `/mcp` share them. Their queries
+  (`judge_bot::admin`, `db::stats`) are also what the admin pages read.
+- **The capability is a type.** Every admin operation takes a `judge_agent::admin::Admin`,
+  which only that crate constructs, in two places:
+  - `Toolbox::from_env`, the only way another crate gets a standalone toolbox, returns
+    one beside it (`Local`). Whoever calls it has connected with `DATABASE_URL`, which
+    reads everything the admin operations do. `judge-cli` and stdio `judge-mcp` are
+    built on it. A toolbox inside the instance is made with `Client::instance` through
+    `Toolbox::new`, which hands out no capability, and `Client`'s standalone kind is
+    private to the crate.
+  - `mcp::admin_http_service` takes a `McpAdminToken`, which only `from_vars` makes,
+    after checking it against `MCP_TOKEN` and `ADMIN_TOKEN`. It returns the handler
+    paired with that token.
+
+  The handler `MCP_TOKEN` reaches is `JudgeMcp<Public>`, a type with no admin tools; the
+  admin tools exist only on `JudgeMcp<Privileged>`. `judge_api::mcp::router` takes the
+  public service as `JudgeMcp<Public>`'s and the admin one as an `AdminService`, and
+  sends a request to the admin service only when it bears that service's own token. What
+  the compiler does not check is that comparison itself, a line in `mcp::Gate::grant`
+  covered by a test over the real services. Every admin call over MCP is logged at INFO
+  with its tool's name. Rejected: one handler that checks a flag per call, where a
+  missed check is a leak.
+- **Remote agents go through SSH first.** Running stdio `judge-mcp` over SSH (`docker
+  compose exec -T judgebot judge-mcp`) reaches the admin tools with no token at all.
+  `MCP_ADMIN_TOKEN` is for agents that cannot run a command (a cloud agent, a hosted
+  connector).
+- **Opt-in.** The compose service's default roles stay `--discord --api --web --jobs`:
+  `--admin` needs a token nobody has set yet.

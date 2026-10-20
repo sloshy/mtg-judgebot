@@ -67,10 +67,10 @@ async fn seed(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn options(quota: Option<Quota>) -> Options {
+pub(crate) fn options(quota: Option<Quota>) -> Options {
     Options {
         transport: Transport::Mcp,
-        client: Client::Standalone,
+        client: Client::standalone(),
         models: None,
         deps_config: judge_bot::DepsConfig::default(),
         vectors: None,
@@ -423,7 +423,7 @@ async fn a_tool_of_another_major_stops_with_what_to_update(pool: PgPool) -> anyh
     let inside = Toolbox::new(
         pool,
         Options {
-            client: Client::Instance(availability.clone()),
+            client: Client::instance(availability.clone()),
             ..options(None)
         },
     );
@@ -445,4 +445,70 @@ async fn lookup(t: &Toolbox) -> anyhow::Result<Resolution> {
         name: "[[Lightning Bolt]]".into(),
     })
     .await
+}
+
+/// The admin operations over a standalone toolbox: the reads see private
+/// calls and failed ones.
+#[sqlx::test(migrations = "../bot/migrations")]
+async fn the_admin_operations_read_everything(pool: PgPool) -> anyhow::Result<()> {
+    use crate::ops::{CallInput, CallsInput, FailuresInput, StatsInput};
+    let private: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO calls (thread_id, interface, asker_id, asker_name, private, question, answer, \
+         category, source, confidence, cr_version) VALUES ('t', 'discord', '42', 'alice', true, \
+         'a private question', 'No.', 'combat', 'cr', 'high', '20260819') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO failed_calls (thread_id, private, interface, question, error) \
+         VALUES ('t', true, 'mcp', 'failed?', 'boom')",
+    )
+    .execute(&pool)
+    .await?;
+    // A standalone toolbox's capability, as `Toolbox::from_env` hands it out.
+    let t = toolbox(pool, None);
+    let admin = crate::admin::Admin::grant();
+    let page = t.admin_calls(&admin, CallsInput::default()).await?;
+    assert_eq!(
+        page.calls.iter().map(|c| c.id).collect::<Vec<_>>(),
+        [private]
+    );
+    let only_public = t
+        .admin_calls(
+            &admin,
+            CallsInput {
+                private: Some(false),
+                ..CallsInput::default()
+            },
+        )
+        .await?;
+    assert!(only_public.calls.is_empty());
+    let one = t
+        .admin_call(
+            &admin,
+            CallInput {
+                call: judge_core::CallId::new(private),
+            },
+        )
+        .await?;
+    assert_eq!(
+        one.call.map(|c| (c.asker_id, c.question)),
+        Some((Some("42".to_owned()), "a private question".to_owned()))
+    );
+    let failures = t.failures(&admin, FailuresInput { limit: None }).await?;
+    assert_eq!(failures.failures.len(), 1);
+    let usage = t.stats(&admin, StatsInput { days: Some(7) }).await?;
+    assert_eq!(usage.questions, 1);
+    assert!(
+        t.admin_calls(
+            &admin,
+            CallsInput {
+                cursor: Some("nope".into()),
+                ..CallsInput::default()
+            }
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
 }

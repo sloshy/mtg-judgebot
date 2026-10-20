@@ -1,6 +1,6 @@
 ---
 name: judge
-description: "Answer a Magic: The Gathering (MTG) rules question with the judgebot pipeline. Either call its built-in model (costs API budget) or do the model's work yourself through a session whose citations are validated against the Comprehensive Rules (CR), Oracle text and Scryfall rulings. Also for looking up cards, CR rules text, rulings and glossary terms. Use when asked a rules question, to check a ruling or an interaction, or to consult the judgebot database."
+description: "Answer a Magic: The Gathering (MTG) rules question with the judgebot pipeline. Either call its built-in model (costs API budget) or do the model's work yourself through a session whose citations are validated against the Comprehensive Rules (CR), Oracle text and Scryfall rulings. Also for looking up cards, CR rules text, rulings and glossary terms, and for the operator's reads of the instance (stored calls, private ones included, failed calls, usage and spend). Use when asked a rules question, to check a ruling or an interaction, to consult the judgebot database, or to troubleshoot what the instance answered."
 ---
 
 # Judge
@@ -133,6 +133,30 @@ the JSON only. Do it promptly, because the session clock is running.
   (plus vector similarity when configured), at most 25 chunks. Rules vocabulary works best.
 - `glossary {term}` / `judge-cli glossary <term>`.
 
+## Operator reads
+
+What the instance stored, private material included: other people's questions and
+Discord ids. Keep it to the operator's own conversation. These are on `judge-cli` and
+stdio `judge-mcp` (whoever runs them holds the database), and on `/mcp` only with
+`MCP_ADMIN_TOKEN`, never `MCP_TOKEN`.
+
+- `admin_calls {cursor?, interface?, asker?, model?, private?, q?}` / `judge-cli calls
+  [--interface I] [--asker A] [--model M] [--private | --public] [--search Q] [--cursor
+  C]`: every stored call, newest first, 50 a page (`next` is the next `cursor`). `asker`
+  is a Discord username or user id, `models` lists every model a run billed. Each row
+  has the asker, `private`, its run's `models` and `usd`.
+- `admin_call {call}` / `judge-cli call <id>`: one call whole: origin, thread, question
+  and answer verbatim, citations, every rating with its rater, and the run with each
+  billed request (stage, model, tokens, cost). `call` is null for an unknown id.
+- `admin_failures {limit?}` / `judge-cli failures [--limit N]`: failed calls with the
+  question, the error, the first rejection and each attempt's text.
+- `admin_usage {days?}` / `judge-cli stats [--days N]`: questions and spend per day, runs
+  by model and outcome, ratings, the lowest-rated calls, recent data refreshes.
+
+To look into a reported bad answer: find it with `admin_calls` (`q` with words from it,
+or `asker`), read it with `admin_call`, then reproduce it with a session above.
+`judge-cli admin-url` prints the admin web page's address for a person.
+
 ## Running the CLI
 
 Build once with `cargo build --release -p judge-agent`, then run
@@ -155,5 +179,7 @@ starts it, so build first or the server shows as failed. It uses the same enviro
 is also its own process with its own cap.
 
 Remote database: connect the MCP server over HTTP (`claude mcp add --transport http judge
-https://<host>/mcp --header "Authorization: Bearer <MCP_TOKEN>"`), or run the same
-commands on the deploy host (`docker compose run --rm --entrypoint judge-cli judgebot ...`).
+https://<host>/mcp --header "Authorization: Bearer <MCP_TOKEN>"`; `MCP_ADMIN_TOKEN` adds
+the operator reads), run stdio `judge-mcp` over SSH (`ssh <host> docker compose exec -T
+judgebot judge-mcp`, operator reads included), or run the same commands on the deploy
+host (`docker compose run --rm --entrypoint judge-cli judgebot ...`).

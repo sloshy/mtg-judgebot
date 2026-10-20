@@ -336,8 +336,14 @@ pub fn router(app: Arc<App>, interfaces: &Interfaces, web_dist: &Path) -> Router
                 .route("/api/calls/{id}", get(feed::call_route));
         }
         // An endpoint that is not served is a JSON 404, not the page: the
-        // page's fallback below would answer it with `index.html`.
-        router = router.route("/api/{*rest}", any(api_not_found));
+        // page's fallback below would answer it with `index.html`. The
+        // admin pages and their API exist on the admin listener only
+        // (`--admin`, D37), so here they are a 404 too, never the page.
+        router = router
+            .route("/api/{*rest}", any(api_not_found))
+            .route("/admin", any(api_not_found))
+            .route("/admin/", any(api_not_found))
+            .route("/admin/{*rest}", any(api_not_found));
         // `fallback`, not `not_found_service`: the page's own routes
         // (`/feed`, `/calls/<id>`) are pages, served 200, so a link to one
         // unfurls and is crawled as a page rather than a missing one.
@@ -361,14 +367,14 @@ pub async fn bind(cfg: &ApiConfig) -> anyhow::Result<tokio::net::TcpListener> {
     Ok(listener)
 }
 
-/// Reserve `cfg.addr` without listening on it: a connection to it is refused
+/// Reserve `addr` without listening on it: a connection to it is refused
 /// until [`listen`], but an address another process listens on fails here,
 /// as it does in [`bind`].
 ///
 /// # Errors
 /// Binding the address.
-pub fn reserve(cfg: &ApiConfig) -> anyhow::Result<tokio::net::TcpSocket> {
-    let socket = if cfg.addr.is_ipv4() {
+pub fn reserve(addr: SocketAddr) -> anyhow::Result<tokio::net::TcpSocket> {
+    let socket = if addr.is_ipv4() {
         tokio::net::TcpSocket::new_v4()
     } else {
         tokio::net::TcpSocket::new_v6()
@@ -376,10 +382,7 @@ pub fn reserve(cfg: &ApiConfig) -> anyhow::Result<tokio::net::TcpSocket> {
     .context("open a socket")?;
     // As `TcpListener::bind` does on Unix, so a restart can rebind at once.
     socket.set_reuseaddr(true).context("set SO_REUSEADDR")?;
-    socket
-        .bind(cfg.addr)
-        .with_context(|| format!("bind {}", cfg.addr))?;
-    tracing::info!(addr = %cfg.addr, "HTTP adapter bound; it listens once Discord's interactions endpoint opens");
+    socket.bind(addr).with_context(|| format!("bind {addr}"))?;
     Ok(socket)
 }
 
@@ -887,6 +890,7 @@ mod tests {
             rate_window: Duration::from_mins(5),
             client_ip: ClientIpSource::PeerAddr,
             mcp_token: None,
+            mcp_admin_token: None,
             mcp_hosts: vec![],
             mcp_judge_limit: ApiConfig::DEFAULT_MCP_JUDGE_LIMIT,
             mcp_judge_window: ApiConfig::DEFAULT_MCP_JUDGE_WINDOW,
@@ -1108,7 +1112,7 @@ mod tests {
         )?;
         let (web, _) = test_app_with_dist(10, &dist);
         let (bare_web, _) = test_app_with_dist(10, &dist);
-        let router = web.merge(crate::mcp::router(crate::mcp::tests::Echo, TOKEN));
+        let router = web.merge(crate::mcp::gated(crate::mcp::tests::Echo, TOKEN, None));
         let send = |router: Router, method: Method, path: &str, auth: Option<&str>| {
             let mut req = Request::builder().method(method).uri(path);
             if let Some(a) = auth {
@@ -1202,6 +1206,46 @@ mod tests {
             "POST /api/judge must not be answered without --api"
         );
         assert!(persisted(&store).is_empty());
+        std::fs::remove_dir_all(&dist)?;
+        Ok(())
+    }
+
+    /// The admin pages and their API exist on the admin listener only: the
+    /// network roles' listener answers them 404 (JSON, never the page),
+    /// whatever token a request carries and whatever interfaces are on.
+    #[tokio::test]
+    async fn the_admin_routes_are_not_on_the_main_listener() -> Res {
+        let dist = std::env::temp_dir().join(format!("judge-api-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dist)?;
+        std::fs::write(
+            dist.join("index.html"),
+            "<!doctype html><title>judge</title>",
+        )?;
+        for set in [
+            nonempty![Interface::Api, Interface::Web],
+            nonempty![Interface::Api],
+            nonempty![Interface::Web, Interface::Mcp],
+        ] {
+            let (router, _) = test_app_serving(10, &dist, &Interfaces::of(&set));
+            for path in [
+                "/admin",
+                "/admin/",
+                "/admin/calls/x",
+                "/admin/api/calls",
+                "/admin/api/usage",
+            ] {
+                let req = Request::get(path)
+                    .header("authorization", "Bearer 0123456789abcdef0123456789abcdef")
+                    .body(Body::empty())?;
+                let res = router.clone().oneshot(req).await?;
+                assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path} on {set:?}");
+                let bytes = res.into_body().collect().await?.to_bytes();
+                assert!(
+                    !String::from_utf8_lossy(&bytes).contains("<title>"),
+                    "{path} served the page"
+                );
+            }
+        }
         std::fs::remove_dir_all(&dist)?;
         Ok(())
     }

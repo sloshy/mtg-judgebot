@@ -145,6 +145,30 @@ impl PgLibrary {
         super::stats::failures(&self.pool, limit).await
     }
 
+    /// A page of every stored call, private ones included
+    /// ([`crate::admin::calls`]).
+    ///
+    /// # Errors
+    /// `Upstream` from sqlx.
+    pub async fn admin_calls(
+        &self,
+        filter: &crate::admin::CallFilter,
+        after: Option<crate::feed::Cursor>,
+    ) -> Result<crate::admin::CallsPage, JudgeError> {
+        crate::admin::calls(&self.pool, filter, after).await
+    }
+
+    /// Everything stored about one call ([`crate::admin::call`]).
+    ///
+    /// # Errors
+    /// `Upstream` from sqlx.
+    pub async fn admin_call(
+        &self,
+        id: judge_core::CallId,
+    ) -> Result<Option<crate::admin::CallDetail>, JudgeError> {
+        Ok(crate::admin::call(&self.pool, id).await?.map(|(c, _)| c))
+    }
+
     /// The nightmare-card notes for a card.
     ///
     /// # Errors

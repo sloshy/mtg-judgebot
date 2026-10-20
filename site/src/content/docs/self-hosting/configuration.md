@@ -24,7 +24,7 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `JUDGE_ROLES` | compose: `--discord --api --web --jobs` | What `judgebot` runs: `--discord` (the bot), `--api` (`POST /api/judge`), `--web` (the web app), `--mcp` (the MCP transport), `--jobs` (the scheduled refresh), at least one, separated by spaces and quoted. The compose service passes it as its command; `judgebot` itself reads it when its command line names no role. `'--api --web --jobs'` runs without Discord. |
+| `JUDGE_ROLES` | compose: `--discord --api --web --jobs` | What `judgebot` runs: `--discord` (the bot), `--api` (`POST /api/judge`), `--web` (the web app), `--mcp` (the MCP transport), `--admin` (the [admin interface](#admin-interface)), `--jobs` (the scheduled refresh), at least one, separated by spaces and quoted. The compose service passes it as its command; `judgebot` itself reads it when its command line names no role. `'--api --web --jobs'` runs without Discord. |
 
 ## Database and models
 
@@ -75,6 +75,18 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 | `MCP_TOKEN` | | The bearer token for `/mcp` (24+ printable ASCII bytes). The endpoint also needs `--mcp`. `--mcp` without a token fails at startup. A token without `--mcp` serves nothing and logs a warning. |
 | `MCP_ALLOWED_HOSTS` | loopback only | Comma-separated `Host` values the MCP transport accepts: the public hostname, plus `localhost` if you curl on the host. |
 | `MCP_JUDGE_LIMIT`, `MCP_JUDGE_WINDOW_SECS` | `20`, `3600` | `judge` runs per window through `/mcp`. This limits the damage a leaked token can do. |
+| `MCP_ADMIN_TOKEN` | | A second `/mcp` token that also reaches the admin tools (`admin_calls`, `admin_call`, `admin_failures`, `admin_usage`), which read every stored call with its asker. Unset: `/mcp` has no admin tools, and `MCP_TOKEN` never does. 24+ printable ASCII bytes, different from `MCP_TOKEN` and `ADMIN_TOKEN`, or no process that reads it starts. For agents that cannot run a command; one that can runs stdio `judge-mcp` over SSH instead ([Agents](../../using/agents/#admin-tools)). |
+
+## Admin interface
+
+The operator's pages: every stored call, private ones included, the failed calls, and
+the usage and spend ([Web app](../../using/web/#admin-pages)). Read only under `--admin`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ADMIN_ADDR` | `127.0.0.1:8789` | Where `--admin` listens, outside compose. The compose service sets `0.0.0.0:8789` inside the container whatever `.env` says, and the `proxy` service publishes it on the host's loopback only. The tunnel never points at it; from another machine, forward the port over SSH. It may not share `API_ADDR`'s port. |
+| `ADMIN_PORT` | `8789` | The host port compose publishes the admin interface on (`127.0.0.1` only). The proxy publishes it whether `--admin` runs or not, so set a free port when something else has 8789, or the proxy cannot start. `judge-cli admin-url` in the container prints it. |
+| `ADMIN_TOKEN` | (required by `--admin`) | The admin pages' bearer token: 24+ printable ASCII bytes (`openssl rand -base64 32`), different from `MCP_TOKEN` and `MCP_ADMIN_TOKEN`. `judge-cli admin-url` prints the page's address with it in the `#token=` fragment. |
 
 ## Ingest and deployment
 

@@ -5,6 +5,7 @@
 use std::{fmt, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::Context as _;
+use judge_bot::admin::{ADMIN_TOKEN_ENV, MCP_TOKEN_ENV, McpAdminToken, bearer_token, distinct};
 use judge_llm::ApiKey;
 use nonempty::NonEmpty;
 
@@ -32,6 +33,10 @@ pub struct ApiConfig {
     /// endpoint also needs [`Interface::Mcp`]; the token is the credential,
     /// not the switch. Redacted in `Debug`.
     pub mcp_token: Option<ApiKey>,
+    /// The second `/mcp` token (`MCP_ADMIN_TOKEN`), which also reaches the
+    /// admin tools; checked to differ from `MCP_TOKEN` and `ADMIN_TOKEN`.
+    /// Off unless set.
+    pub mcp_admin_token: Option<McpAdminToken>,
     /// Hostnames the MCP transport accepts in `Host` (`MCP_ALLOWED_HOSTS`,
     /// comma-separated); empty keeps rmcp's loopback-only default.
     pub mcp_hosts: Vec<String>,
@@ -75,7 +80,7 @@ impl ApiConfig {
     pub const DEFAULT_RATE_WINDOW: Duration = Duration::from_mins(5);
     /// Shortest `MCP_TOKEN` accepted, in bytes: the endpoint reaches paid
     /// tools, and a guessable token is worse than none.
-    pub const MIN_MCP_TOKEN_BYTES: usize = 24;
+    pub const MIN_MCP_TOKEN_BYTES: usize = judge_bot::admin::MIN_TOKEN_BYTES;
     /// `MCP_JUDGE_LIMIT` default: `judge` runs per window through `/mcp`.
     /// The token is one identity, so this is the most a leak can cost, in
     /// pipeline runs (about $0.10 each), on top of `JUDGE_MAX_USD`.
@@ -88,7 +93,9 @@ impl ApiConfig {
     ///
     /// # Errors
     /// A malformed `API_ADDR`, `JUDGE_CONCURRENCY`, `API_RATE_LIMIT`,
-    /// `API_RATE_WINDOW_SECS` or `API_CLIENT_IP`, or a short `MCP_TOKEN`.
+    /// `API_RATE_WINDOW_SECS` or `API_CLIENT_IP`, a short `MCP_TOKEN` or
+    /// `MCP_ADMIN_TOKEN`, or two of `MCP_TOKEN`, `MCP_ADMIN_TOKEN` and
+    /// `ADMIN_TOKEN` equal.
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let var = |k: &str| {
             get(k)
@@ -112,21 +119,22 @@ impl ApiConfig {
             Some("cloudflare") => ClientIpSource::CloudflareConnectingIp,
             Some(v) => anyhow::bail!("API_CLIENT_IP must be peer or cloudflare, got {v:?}"),
         };
-        let mcp_token = var("MCP_TOKEN");
-        if let Some(t) = &mcp_token {
-            anyhow::ensure!(
-                t.len() >= Self::MIN_MCP_TOKEN_BYTES,
-                "MCP_TOKEN must be at least {} bytes (try `openssl rand -base64 32`)",
-                Self::MIN_MCP_TOKEN_BYTES
-            );
-            // It travels in an HTTP header: anything a client cannot send
-            // would mount an endpoint that is 401 forever.
-            anyhow::ensure!(
-                t.bytes().all(|b| b.is_ascii_graphic()),
-                "MCP_TOKEN must be printable ASCII without spaces (try `openssl rand -base64 32`)"
-            );
-        }
-        let mcp_token = mcp_token.map(ApiKey::from);
+        // Each token travels in an HTTP header: anything a client cannot
+        // send would mount an endpoint that is 401 forever.
+        let mcp_token = match var(MCP_TOKEN_ENV) {
+            None => None,
+            Some(t) => {
+                let key = bearer_token(MCP_TOKEN_ENV, &t)?;
+                distinct(
+                    MCP_TOKEN_ENV,
+                    &t,
+                    ADMIN_TOKEN_ENV,
+                    var(ADMIN_TOKEN_ENV).as_deref(),
+                )?;
+                Some(key)
+            }
+        };
+        let mcp_admin_token = McpAdminToken::from_vars(&get)?;
         let mcp_judge_limit = parse_min(var("MCP_JUDGE_LIMIT"), "MCP_JUDGE_LIMIT", 1u32)?
             .unwrap_or(Self::DEFAULT_MCP_JUDGE_LIMIT);
         let mcp_judge_window =
@@ -150,6 +158,7 @@ impl ApiConfig {
             rate_window,
             client_ip,
             mcp_token,
+            mcp_admin_token,
             mcp_hosts,
             mcp_judge_limit,
             mcp_judge_window,
@@ -357,6 +366,43 @@ mod tests {
                 .is_err_and(|e| format!("{e:#}").contains("MCP_JUDGE_LIMIT")),
             "{r:?}"
         );
+    }
+
+    /// `MCP_ADMIN_TOKEN` is checked as `MCP_TOKEN` is, and no two of the
+    /// three tokens may be equal.
+    #[test]
+    fn the_admin_token_is_checked_and_every_token_is_its_own() {
+        let other = "fedcba9876543210fedcba9876543210";
+        let cfg = cfg_with(&[("MCP_TOKEN", A_TOKEN), ("MCP_ADMIN_TOKEN", other)]);
+        assert_eq!(
+            cfg.as_ref()
+                .and_then(|c| c.mcp_admin_token.as_ref().map(|t| t.expose().to_owned())),
+            Some(other.to_owned())
+        );
+        for (pairs, needle) in [
+            (
+                vec![("MCP_TOKEN", A_TOKEN), ("MCP_ADMIN_TOKEN", A_TOKEN)],
+                "MCP_ADMIN_TOKEN must differ from MCP_TOKEN",
+            ),
+            (
+                vec![("MCP_TOKEN", A_TOKEN), ("ADMIN_TOKEN", A_TOKEN)],
+                "MCP_TOKEN must differ from ADMIN_TOKEN",
+            ),
+            (
+                vec![("MCP_ADMIN_TOKEN", A_TOKEN), ("ADMIN_TOKEN", A_TOKEN)],
+                "MCP_ADMIN_TOKEN must differ from ADMIN_TOKEN",
+            ),
+            (
+                vec![("MCP_ADMIN_TOKEN", "short")],
+                "MCP_ADMIN_TOKEN must be at least",
+            ),
+        ] {
+            let r = ApiConfig::from_vars(vars(&pairs));
+            assert!(
+                r.as_ref().is_err_and(|e| format!("{e:#}").contains(needle)),
+                "{pairs:?}: {r:?}"
+            );
+        }
     }
 
     #[test]

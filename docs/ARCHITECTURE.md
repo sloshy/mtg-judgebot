@@ -194,15 +194,16 @@ before touching a column. Two models' vectors are therefore never mixed, and swi
 one explicit, transactional `ingest reembed`. Nothing in `crates/core` knows any of this exists.
 
 One binary, `judgebot` (`crates/judgebot`), runs the long-lived interfaces. What a
-process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, `--mcp`
-and `--jobs`, on the command line or else in `JUDGE_ROLES`.
+process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, `--mcp`,
+`--admin` and `--jobs`, on the command line or else in `JUDGE_ROLES`.
 
 - `Role` is exhaustive and the set is a `NonEmpty`, so a process that does nothing is
   unrepresentable.
 - `roles::plan` checks every role's requirements before the pool connects or anything
   binds, and reports every unmet one at once: `--discord` needs `DISCORD_TOKEN` and
   `JUDGE_OPERATOR_DISCORD`, the network roles `JUDGE_OPERATOR_EMAIL`, `--web` a built
-  page and `--mcp` an `MCP_TOKEN`. The serving roles' models are built there too, so a
+  page, `--mcp` an `MCP_TOKEN`, and `--admin` an `ADMIN_TOKEN` of its own (equal to
+  neither MCP token) and a built page. The serving roles' models are built there too, so a
   missing or unpriced chat model is reported before the database is touched. What it
   returns is the types the roles run on, so a role cannot start unchecked. `--jobs` on
   its own with the schedule off is refused, since it would have nothing to do.
@@ -405,6 +406,24 @@ Three interfaces share this pipeline through the same composition root
     with the same `pin_card` used by the Discord buttons.
   - Follow-up history comes from a client-generated session UUID, stored as
     thread id `web:<uuid>`.
+- **Admin interface** (`--admin`, `judge_api::admin`, `web/src/admin/`, D37): the
+  operator's view of everything stored, on a listener of its own.
+  - `ADMIN_ADDR` (default `127.0.0.1:8789`; the compose container binds `0.0.0.0:8789`
+    and the proxy publishes it on the host's loopback only, on `ADMIN_PORT`). Reserved
+    at startup, listening once the instance is open, drained on shutdown. `roles::plan`
+    refuses an `ADMIN_ADDR` on `API_ADDR`'s port.
+  - `/admin/api/*` behind `ADMIN_TOKEN` (constant-time bearer, `no-store`): `calls`
+    (every call, private ones included, filtered by interface, asker, model, visibility
+    and text; keyset pages), `calls/{id}` (origin, ratings with raters, runs with
+    charges), `failures` and `usage`. The queries are `judge_bot::admin` and
+    `db::stats`. The network roles' listener answers `/admin` paths 404.
+  - `/admin` and below serve the web app, whose admin pages are a chunk of their own.
+    The page takes the token from the address's `#token=` (`judge-cli admin-url`), keeps
+    it in `sessionStorage` and sends it only as a header.
+  - The same reads are agent operations (`admin_calls`, `admin_call`,
+    `admin_failures`, `admin_usage`), each taking a `judge_agent::admin::Admin` that
+    only `Toolbox::from_env` (a standalone toolbox) and the `MCP_ADMIN_TOKEN` handler
+    hand out.
 - **Config editor** (`crates/configure`, binary `judge-config`): a page on
   `127.0.0.1` for `judge.toml` and the settings in `.env` (D23).
   - The `judge.toml` form is `judge_bot::config::file_schema()`: JSON Schema
@@ -428,6 +447,16 @@ Three interfaces share this pipeline through the same composition root
     `judgebot --mcp` mounts the same handler at `/mcp` behind `MCP_TOKEN`. The
     flag without a token is refused at startup. The token without the flag
     serves nothing and warns.
+  - The operator's reads are operations too (D37): `admin_calls`, `admin_call`,
+    `admin_failures`, `admin_usage` (`judge-cli calls`, `call`, `failures`,
+    `stats`). Each takes an `admin::Admin`, which `judge_agent` constructs only beside a
+    standalone toolbox (`Toolbox::from_env` returns `Local`) and in
+    `mcp::admin_http_service`; an instance toolbox (`Client::instance`) gets none.
+    What a connection may call is its handler's type: `JudgeMcp<Public>` (what
+    `MCP_TOKEN` reaches) has no admin tools, `JudgeMcp<Privileged>` (stdio
+    `judge-mcp`, and `/mcp` with `MCP_ADMIN_TOKEN`) adds them, and each admin call is
+    logged at INFO with its tool's name. `judge_api::mcp::router` takes the public
+    service by that type; the bearer scheme is matched case-insensitively.
   - `judge-cli` has one subcommand per operation with JSON out, for a shell
     agent (the repo's `.claude/skills/judge` skill).
   - It offers the pipeline two ways:

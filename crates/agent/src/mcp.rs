@@ -1,6 +1,13 @@
 //! The MCP server: every [`crate::ops`] operation as a tool, over stdio
 //! ([`serve_stdio`]) or as a tower service for `judgebot --mcp` to mount
-//! ([`http_service`]).
+//! ([`http_service`], and [`admin_http_service`] for `MCP_ADMIN_TOKEN`).
+//!
+//! What a connection may call is its handler's type: [`JudgeMcp<Public>`]
+//! has the judge, session and lookup tools and nothing else, and
+//! [`JudgeMcp<Privileged>`] adds the admin tools, which exist only on that
+//! type and need the [`Admin`] capability it holds. `MCP_TOKEN` reaches the
+//! first; the second is built only by [`serve_stdio`] (the operator's own
+//! process over the database) and [`admin_http_service`].
 //!
 //! The server keeps no per-connection state. A judging session is identified
 //! by the id its tools take as an ordinary argument and lives in Postgres,
@@ -9,6 +16,7 @@
 
 use std::sync::Arc;
 
+use judge_bot::admin::McpAdminToken;
 use judge_core::{Operator, SourceOffer};
 use rmcp::{
     Json, RoleServer, ServerHandler, ServiceExt as _,
@@ -24,9 +32,11 @@ use rmcp::{
 
 use crate::{
     Toolbox,
+    admin::Admin,
     ops::{
-        BeginInput, CardInput, ExtractionInput, IdsInput, JudgeInput, LookupInput, NameInput,
-        SearchInput, SessionInput, TermInput, VerdictInput,
+        BeginInput, CallInput, CallsInput, CardInput, ExtractionInput, FailuresInput, IdsInput,
+        JudgeInput, LookupInput, NameInput, SearchInput, SessionInput, StatsInput, TermInput,
+        VerdictInput,
     },
 };
 
@@ -63,6 +73,17 @@ rulings, notes by oracle id), `get_rules` (by id, at most 10), `search_rules` (f
 `about` returns the notice below as data, with the Comprehensive Rules version loaded and when the data \
 was last refreshed.";
 
+/// What a connection holding the admin capability is told besides
+/// [`INSTRUCTIONS`].
+pub const ADMIN_INSTRUCTIONS: &str = "\
+Admin tools (this connection holds the operator's credential): `admin_calls` (every stored call, \
+private ones included, newest first, filterable by interface, asker, model, private flag and text), \
+`admin_call` (one call with its origin, ratings and their raters, runs and charges), \
+`admin_failures` (failed calls: the question, the error, what the model sent) and `admin_usage` \
+(questions, spend, runs by model and outcome, ratings, the lowest-rated calls, recent data \
+refreshes). They return people's questions and Discord ids: keep them to the operator's own \
+conversation.";
+
 /// [`INSTRUCTIONS`] with the source offer and the operator's contact
 /// appended: the notice reaches every MCP client at initialization, whatever
 /// tools it goes on to call.
@@ -74,17 +95,52 @@ pub fn instructions(offer: &SourceOffer, operator: &Operator) -> String {
     )
 }
 
-/// The MCP handler.
+/// What a connection may call. Sealed: [`Public`] and [`Privileged`] are the
+/// only two.
+pub trait Access: Clone + Send + Sync + 'static + sealed::Sealed {
+    /// Whether the admin section is added to the instructions.
+    fn is_privileged(&self) -> bool;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Public {}
+    impl Sealed for super::Privileged {}
+}
+
+/// The judge, session and lookup tools: what `MCP_TOKEN` reaches.
+#[derive(Clone, Copy, Debug)]
+pub struct Public;
+
+impl Access for Public {
+    fn is_privileged(&self) -> bool {
+        false
+    }
+}
+
+/// Those and the admin tools, with the capability they take.
+#[derive(Clone, Debug)]
+pub struct Privileged(Admin);
+
+impl Access for Privileged {
+    fn is_privileged(&self) -> bool {
+        true
+    }
+}
+
+/// The MCP handler for a connection with access `A`.
 #[derive(Clone)]
-pub struct JudgeMcp {
+pub struct JudgeMcp<A: Access> {
     toolbox: Arc<Toolbox>,
+    access: A,
     tool_router: ToolRouter<Self>,
 }
 
-impl std::fmt::Debug for JudgeMcp {
+impl<A: Access> std::fmt::Debug for JudgeMcp<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JudgeMcp")
             .field("toolbox", &self.toolbox)
+            .field("operator", &self.access.is_privileged())
             .finish_non_exhaustive()
     }
 }
@@ -94,22 +150,43 @@ fn msg(e: &anyhow::Error) -> String {
     format!("{e:#}")
 }
 
-#[tool_router(router = tool_router)]
-impl JudgeMcp {
-    /// Over a shared toolbox.
+impl JudgeMcp<Public> {
+    /// The public tools over a shared toolbox.
     #[must_use]
     pub fn new(toolbox: Arc<Toolbox>) -> Self {
         Self {
             toolbox,
+            access: Public,
             tool_router: Self::tool_router(),
         }
     }
+}
 
+impl JudgeMcp<Privileged> {
+    /// The public and the admin tools over a shared toolbox.
+    #[must_use]
+    pub fn privileged(toolbox: Arc<Toolbox>, admin: Admin) -> Self {
+        Self {
+            toolbox,
+            access: Privileged(admin),
+            tool_router: Self::tool_router() + Self::admin_router(),
+        }
+    }
+}
+
+#[tool_router(router = tool_router)]
+impl<A: Access> JudgeMcp<A> {
     /// [`instructions`], led by what this server says about the instance's
     /// release when it has something to say (a standalone `judge-mcp` of
-    /// another release; `release_notice` warms it before serving).
+    /// another release; `release_notice` warms it before serving), and
+    /// followed by the admin section on an operator's connection.
     fn instructions(&self) -> String {
         let base = instructions(self.toolbox.offer(), self.toolbox.operator());
+        let base = if self.access.is_privileged() {
+            format!("{base}\n\n{ADMIN_INSTRUCTIONS}")
+        } else {
+            base
+        };
         match self.toolbox.release_notice_cached() {
             Some(crate::release::Notice::Stop(why)) => format!(
                 "THIS SERVER CANNOT ANSWER: {why} Every tool but `about` returns this error until it is updated. \
@@ -328,12 +405,79 @@ impl JudgeMcp {
     }
 }
 
+#[tool_router(router = admin_router)]
+impl JudgeMcp<Privileged> {
+    #[tool(
+        name = "admin_calls",
+        description = "Admin: every stored call, private ones included, newest first, 50 a page (pass `next` back as `cursor`). Filter by `interface` (discord, web, mcp, cli, agent_session, agent), `asker` (a Discord username or user id), `model` (one of the `models` listed), `private` (true: only private; false: only public) and `q` (text in the question, answer or asker's username). Each row has the asker, the private flag, the models its run billed and its cost."
+    )]
+    async fn admin_calls(
+        &self,
+        Parameters(input): Parameters<CallsInput>,
+    ) -> Result<Json<judge_bot::admin::CallsPage>, String> {
+        tracing::info!(tool = "admin_calls", "admin tool called");
+        self.toolbox
+            .admin_calls(&self.access.0, input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
+    }
+
+    #[tool(
+        name = "admin_call",
+        description = "Admin: everything stored about one call by id: who asked and where (Discord username and id, private flag, thread), the question and answer verbatim, citations, cards, every rating with its rater, and the run that answered it with each billed request's model, tokens and cost. `call` is null for an id with no call."
+    )]
+    async fn admin_call(
+        &self,
+        Parameters(input): Parameters<CallInput>,
+    ) -> Result<Json<crate::ops::CallReply>, String> {
+        tracing::info!(tool = "admin_call", "admin tool called");
+        self.toolbox
+            .admin_call(&self.access.0, input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
+    }
+
+    #[tool(
+        name = "admin_failures",
+        description = "Admin: the newest failed calls (default 10, at most 100), kept 30 days: the question, the error, the first rejection and what the model sent on each attempt."
+    )]
+    async fn admin_failures(
+        &self,
+        Parameters(input): Parameters<FailuresInput>,
+    ) -> Result<Json<crate::ops::Failures>, String> {
+        tracing::info!(tool = "admin_failures", "admin tool called");
+        self.toolbox
+            .failures(&self.access.0, input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
+    }
+
+    #[tool(
+        name = "admin_usage",
+        description = "Admin: usage over the last `days` UTC days (default 30, at most 366): stored calls per day and interface, spend per day, the runs by model (tokens, cost) and by outcome, ratings, the lowest-rated calls and the latest data refreshes."
+    )]
+    async fn admin_usage(
+        &self,
+        Parameters(input): Parameters<StatsInput>,
+    ) -> Result<Json<judge_bot::db::stats::Usage>, String> {
+        tracing::info!(tool = "admin_usage", "admin tool called");
+        self.toolbox
+            .stats(&self.access.0, input)
+            .await
+            .map(Json)
+            .map_err(|e| msg(&e))
+    }
+}
+
 #[expect(
     clippy::unused_async_trait_impl,
     reason = "rmcp's #[tool_handler] expands to async fns that forward without awaiting"
 )]
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for JudgeMcp {
+impl<A: Access> ServerHandler for JudgeMcp<A> {
     fn get_info(&self) -> ServerConfig {
         // The version carries the commit as build metadata (`1.0.0+a37d495`)
         // so a client's server listing already identifies the build.
@@ -348,42 +492,152 @@ impl ServerHandler for JudgeMcp {
 }
 
 /// Serve on stdin/stdout until the client hangs up. Logging must go to
-/// stderr: stdout is the protocol.
+/// stderr: stdout is the protocol. A standalone toolbox (its own process
+/// over the database, [`crate::Local`]) serves the admin tools too: whoever
+/// runs it holds `DATABASE_URL`.
 ///
 /// # Errors
 /// Transport failures.
-pub async fn serve_stdio(toolbox: Arc<Toolbox>) -> anyhow::Result<()> {
+pub async fn serve_stdio(local: crate::Local) -> anyhow::Result<()> {
+    let crate::Local { toolbox, admin } = local;
     if let Some(notice) = toolbox.release_notice().await {
         tracing::warn!("{}", notice.text());
     }
-    let running = JudgeMcp::new(toolbox).serve(stdio()).await?;
+    let running = JudgeMcp::privileged(Arc::new(toolbox), admin)
+        .serve(stdio())
+        .await?;
     running.waiting().await?;
     Ok(())
 }
 
-/// The Streamable HTTP transport as a tower service, to be mounted at a path
-/// (`judgebot --mcp` puts it at `/mcp`). `allowed_hosts` is what the `Host`
-/// header must match — rmcp defaults to loopback only, against DNS
-/// rebinding, so a public hostname must be listed.
-///
-/// Served statelessly for every protocol version: the handler keeps nothing
-/// per connection, and a legacy-mode session per `initialize` would live
-/// until the client sent `DELETE`, which a token holder need never do.
-#[must_use]
-pub fn http_service(
-    toolbox: Arc<Toolbox>,
-    allowed_hosts: Vec<String>,
-) -> StreamableHttpService<JudgeMcp, LocalSessionManager> {
+/// The Streamable HTTP config for `judgebot --mcp`: stateless for every
+/// protocol version, JSON replies, and `allowed_hosts` as what the `Host`
+/// header must match (rmcp defaults to loopback only, against DNS
+/// rebinding, so a public hostname must be listed).
+fn http_config(allowed_hosts: Vec<String>) -> StreamableHttpServerConfig {
     let mut config = StreamableHttpServerConfig::default();
     config.legacy_session_mode = false;
     config.json_response = true;
     if !allowed_hosts.is_empty() {
         config.allowed_hosts = allowed_hosts;
     }
+    config
+}
+
+/// The Streamable HTTP transport as a tower service with the public tools,
+/// to be mounted at a path (`judgebot --mcp` puts it at `/mcp`, behind
+/// `MCP_TOKEN`).
+///
+/// Served statelessly for every protocol version: the handler keeps nothing
+/// per connection, and a legacy-mode session per `initialize` would live
+/// until the client sent `DELETE`, which a token holder need never do.
+#[must_use]
+pub fn http_service(toolbox: Arc<Toolbox>, allowed_hosts: Vec<String>) -> PublicHttp {
     let handler = JudgeMcp::new(toolbox);
     StreamableHttpService::new(
         move || Ok(handler.clone()),
         Arc::new(LocalSessionManager::default()),
-        config,
+        http_config(allowed_hosts),
     )
+}
+
+/// The Streamable HTTP service whose handler has the public tools only.
+pub type PublicHttp = StreamableHttpService<JudgeMcp<Public>, LocalSessionManager>;
+
+/// The Streamable HTTP service whose handler has the admin tools.
+pub type AdminHttp = StreamableHttpService<JudgeMcp<Privileged>, LocalSessionManager>;
+
+/// The `/mcp` service with the admin tools, and the token it must be gated
+/// behind. Made only by [`admin_http_service`].
+pub struct AdminService {
+    token: McpAdminToken,
+    service: AdminHttp,
+}
+
+impl std::fmt::Debug for AdminService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminService").finish_non_exhaustive()
+    }
+}
+
+impl AdminService {
+    /// The bearer token a request must carry to reach [`Self::service`]:
+    /// `MCP_ADMIN_TOKEN`, never `MCP_TOKEN` (they are checked to differ).
+    #[must_use]
+    pub fn token(&self) -> &str {
+        self.token.expose()
+    }
+
+    /// The service.
+    #[must_use]
+    pub fn service(&self) -> AdminHttp {
+        self.service.clone()
+    }
+}
+
+/// [`http_service`] with the admin tools as well, for the requests that
+/// carry `MCP_ADMIN_TOKEN`: the one place a remote connection gets the
+/// [`Admin`] capability, and only from a checked [`McpAdminToken`].
+#[must_use]
+pub fn admin_http_service(
+    toolbox: Arc<Toolbox>,
+    allowed_hosts: Vec<String>,
+    token: McpAdminToken,
+) -> AdminService {
+    let handler = JudgeMcp::privileged(toolbox, Admin::grant());
+    AdminService {
+        token,
+        service: StreamableHttpService::new(
+            move || Ok(handler.clone()),
+            Arc::new(LocalSessionManager::default()),
+            http_config(allowed_hosts),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names<A: Access>(h: &JudgeMcp<A>) -> Vec<String> {
+        h.tool_router
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect()
+    }
+
+    const ADMIN_TOOLS: [&str; 4] = ["admin_calls", "admin_call", "admin_failures", "admin_usage"];
+
+    /// The public handler has no admin tool, and the operator's has every
+    /// public tool and the admin ones.
+    #[tokio::test]
+    async fn only_the_operator_handler_lists_the_admin_tools() -> anyhow::Result<()> {
+        let pool = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://nowhere/none")?;
+        let toolbox = Arc::new(Toolbox::new(pool, crate::tests::options(None)));
+        let public = names(&JudgeMcp::new(Arc::clone(&toolbox)));
+        let operator = names(&JudgeMcp::privileged(Arc::clone(&toolbox), Admin::grant()));
+        for t in ADMIN_TOOLS {
+            assert!(!public.contains(&t.to_owned()), "{t} on the public handler");
+            assert!(
+                operator.contains(&t.to_owned()),
+                "{t} missing for the operator"
+            );
+        }
+        for t in &public {
+            assert!(operator.contains(t), "{t} missing for the operator");
+        }
+        assert!(public.contains(&"judge".to_owned()));
+        assert!(
+            !JudgeMcp::new(Arc::clone(&toolbox))
+                .instructions()
+                .contains("admin_calls")
+        );
+        assert!(
+            JudgeMcp::privileged(toolbox, Admin::grant())
+                .instructions()
+                .contains("admin_calls")
+        );
+        Ok(())
+    }
 }

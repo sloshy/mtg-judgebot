@@ -157,6 +157,23 @@ Both routes answer `429` `rate_limited` past 120 reads a minute per address (a w
 their own, apart from the questions') and `503` `maintenance` while a major upgrade
 migrates.
 
+## Admin API
+
+The operator's reads are served by the `--admin` listener only (`ADMIN_ADDR`, loopback),
+never on this one, which answers `/admin` paths `404`. Every route takes
+`Authorization: Bearer <ADMIN_TOKEN>` and answers `401` without it; replies carry
+`Cache-Control: no-store`, and an error is the same `{"kind": "error", "message"}`.
+
+| Route | Returns |
+| --- | --- |
+| `GET /admin/api/calls?cursor&interface&asker&model&private&q` | `{calls, next, models}`: every stored call, private ones included, newest first, 50 a page. `asker` is a Discord username or user id, `private` is `true` or `false`, `models` lists every chat model a run has billed. |
+| `GET /admin/api/calls/{id}` | One call whole, its citations labelled as an answer's are, with `ratings` (rater, score, judge) and `runs` (outcome, retry, tool round, `charges`). `404` for an id with no call. |
+| `GET /admin/api/failures?limit` | `{failures}`: the newest failed calls (default 50, at most 100). |
+| `GET /admin/api/usage?days` | The usage report `judge-cli stats` prints, over the last `days` (default 30). |
+
+They answer `503` `maintenance` while a major upgrade migrates. The pages that read them
+are the [web app's admin pages](../../using/web/#admin-pages).
+
 ## MCP
 
 `/mcp` is a separate interface with its own credential. See [Agents](../../using/agents/).

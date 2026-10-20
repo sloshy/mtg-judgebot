@@ -1,0 +1,222 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.id,\n               to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"asked_at!\",\n               c.interface, c.asker_id, c.asker_name, c.private, c.thread_id, c.locale,\n               c.session_id, c.question, c.answer, c.confidence, c.source, c.category,\n               c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS \"cards!\",\n               c.retired_reason\n        FROM calls c WHERE c.id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "asked_at!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "interface",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "interface"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "asker_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "asker_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "asker_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "asker_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "private",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "private"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "thread_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "thread_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "locale",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "locale"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "question",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "question"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "answer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "answer"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "confidence",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "confidence"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "category",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "cr_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "cr_version"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "citations",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "citations"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "cards!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "retired_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "retired_reason"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      true
+    ]
+  },
+  "hash": "630540ee1c2493cc012e72e7b54c3c41c275b10190692137b480816b0ef2c3e4"
+}

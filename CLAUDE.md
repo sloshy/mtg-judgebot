@@ -68,7 +68,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D36),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D37),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -354,7 +354,7 @@ to anything provider-shaped: wire format, schema dialect, pricing, auth.
 
 Binary names: `judgebot`, `judge-eval`, `judge-cli`, `judge-mcp` and `judge-config` are
 what `target/release/` holds. `judgebot` is the one long-running binary: its roles
-(`--discord --api --web --mcp --jobs`, else `JUDGE_ROLES`) are launch options, and
+(`--discord --api --web --mcp --admin --jobs`, else `JUDGE_ROLES`) are launch options, and
 `judgebot ingest <cmd>` is the data command line (`crates/judgebot`). `judgebot` is the
 image's entrypoint. Locally run `cargo run -p judgebot -- <roles>`.
 
@@ -437,13 +437,14 @@ cargo run -r -p judgebot -- ingest refresh              # cards + rules latest +
 scripts/refresh-data.sh              # a refresh now (or an operator's own cron with JUDGE_REFRESH_HOURS=0):
                                      # `docker compose run --rm refresh`; judgebot --jobs runs it on a schedule
 
-cargo run -r -p judgebot -- --api --web                 # roles: --discord --api --web --mcp --jobs, at least
+cargo run -r -p judgebot -- --api --web                 # roles: --discord --api --web --mcp --admin --jobs, at least
                                                         # one (none: JUDGE_ROLES). Requirements are checked
                                                         # before anything binds: --discord DISCORD_TOKEN +
                                                         # JUDGE_OPERATOR_DISCORD, the network roles
                                                         # JUDGE_OPERATOR_EMAIL, --web a built web/dist, --mcp
-                                                        # MCP_TOKEN; a token with no --mcp only warns. The
-                                                        # network roles share API_ADDR (:8787) and GET
+                                                        # MCP_TOKEN, --admin ADMIN_TOKEN + a built page; a
+                                                        # token with no --mcp only warns. The network
+                                                        # roles share API_ADDR (:8787) and GET
                                                         # /api/health. --jobs refreshes the database it is
                                                         # pointed at: JUDGE_REFRESH_HOURS=0 in a dev .env
 npm --prefix web run build           # build the SolidJS page into web/dist (served by judgebot --web)
@@ -570,7 +571,7 @@ intended prompt/schema change. Review the diff.
 What a `judgebot` process does is a launch option, not a consequence of starting it
 (`crates/judgebot/src/roles.rs`):
 
-- `Role::{Discord, Api, Web, Mcp, Jobs}` is exhaustive, held in a `NonEmpty` set so
+- `Role::{Discord, Api, Web, Mcp, Admin, Jobs}` is exhaustive, held in a `NonEmpty` set so
   "doing nothing" is unrepresentable. Flags on the command line win; with none,
   `JUDGE_ROLES` (the same flags).
 - `roles::plan` matches every role and checks its requirements, all reported at once
@@ -892,6 +893,12 @@ For the HTTP API it also holds:
   hostname behind the tunnel.
 - `MCP_JUDGE_LIMIT`/`MCP_JUDGE_WINDOW_SECS`: `judge` runs per window through `/mcp`. This
   is the most a leaked token can spend.
+- `MCP_ADMIN_TOKEN`: off unless set. The second `/mcp` credential, the only one that
+  lists and runs the admin tools (D37); `MCP_TOKEN` stays judge-only.
+- `ADMIN_ADDR` (default `127.0.0.1:8789`; compose sets `0.0.0.0:8789` in the container)
+  and `ADMIN_TOKEN`: the `--admin` role's own listener and bearer token
+  (`/admin/api/*`, the `/admin` pages; `judge-cli admin-url`). The three tokens are
+  ≥24 chars and must differ.
 
 The `judgebot` and `refresh` containers override `DATABASE_URL` to `db:5432` inside the
 compose network. The image builds the web app and sets `WEB_DIST=/srv/web`. The
@@ -907,7 +914,8 @@ is `docker rm -f judgebot-bot judgebot-api`.
 
 Deployment is self-hosted behind a Cloudflare Tunnel. `docs/DEPLOYMENT.md` is the
 runbook. `db` and `proxy` publish on `127.0.0.1` only: `proxy` (Caddy) holds
-`127.0.0.1:8787` and forwards to `judgebot:8787`, because `judgebot` has no
+`127.0.0.1:8787` and forwards to `judgebot:8787` (and `127.0.0.1:8789` to
+`judgebot:8789`, the admin listener, which the tunnel never points at), because `judgebot` has no
 `container_name` and no port so a deploy can run two (D29). A release's migrations keep
 the previous release working (expand, contract later; `CONTRIBUTING.md`). `proxy/Caddyfile`
 dials `judgebot:8787` afresh for every request (`keepalive off`, retrying a refused dial

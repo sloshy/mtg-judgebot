@@ -12,7 +12,7 @@ available three ways:
 - **`judge-cli`**: one subcommand per operation, printing JSON.
 - **`judgebot --mcp`**: the same MCP tools over HTTP at `/mcp`, for agents that are not
   on the host. It needs an `MCP_TOKEN`, and the flag without a token is refused at
-  startup.
+  startup. The [admin tools](#admin-tools) are there only for `MCP_ADMIN_TOKEN`.
 
 ## Pipeline and sessions
 
@@ -95,6 +95,37 @@ when the data was last refreshed (`null` without a database). Over MCP the same 
 the tail of the server's initialization instructions and the `about` tool, so a client
 sees it before calling anything. The tool also returns `freshness`, which the
 instructions, fixed at startup, do not carry.
+
+## Admin tools
+
+The operator's reads are operations too (D37). They return private material: other
+people's questions, Discord user ids and usernames, raters and failed questions.
+
+| MCP tool | `judge-cli` | What it returns |
+| --- | --- | --- |
+| `admin_calls` | `calls` | Every stored call, private ones included, newest first, 50 a page. Filters: `interface`, `asker` (username or Discord id), `model`, `private` (true / false), `q` (text). |
+| `admin_call` | `call <id>` | One call whole: origin, question, answer, citations, ratings with raters, the run with each billed request. |
+| `admin_failures` | `failures` | The newest failed calls: question, error, first rejection, each attempt's text. |
+| `admin_usage` | `stats` | Questions and spend per day, runs by model and outcome, ratings, the lowest-rated calls, the latest data refreshes. |
+
+Who gets them:
+
+- **`judge-cli` and stdio `judge-mcp`**: always. Whoever runs them holds `DATABASE_URL`,
+  which reads all of this anyway.
+- **`/mcp` with `MCP_ADMIN_TOKEN`**: the admin tools beside the others. Off unless the
+  variable is set; it must differ from `MCP_TOKEN` and `ADMIN_TOKEN`. Every admin call is
+  logged at INFO with its tool's name.
+- **`/mcp` with `MCP_TOKEN`**: never. That handler has no admin tools to list or call.
+
+For an agent on another machine, run stdio `judge-mcp` over SSH, which needs no token
+and no open port:
+
+```json
+{ "command": "ssh", "args": ["deploy-host", "docker", "compose", "--project-directory", "/path/to/mtg-judgebot", "exec", "-T", "judgebot", "judge-mcp"] }
+```
+
+`MCP_ADMIN_TOKEN` is for an agent that cannot run a command (a cloud agent, a hosted
+connector).
 
 ## Connecting an MCP client
 

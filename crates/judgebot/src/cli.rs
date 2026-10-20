@@ -48,10 +48,13 @@ JUDGE_ROLES (the same flags separated by spaces).
   --api      POST /api/judge, the anonymous question route
   --web      the built web app, from WEB_DIST (requires its index.html)
   --mcp      the MCP transport at /mcp (requires MCP_TOKEN)
+  --admin    the operator's pages and reads on ADMIN_ADDR (default
+             127.0.0.1:8789; requires ADMIN_TOKEN and the built web app)
   --jobs     the scheduled data refresh (JUDGE_REFRESH_HOURS; 0 turns it off)
 
 --api, --web and --mcp require JUDGE_OPERATOR_EMAIL and listen on API_ADDR,
 where GET /api/health and GET /api/about are served whichever of them is on.
+`judge-cli admin-url` prints the admin page's address with its token.
 Everything else is configured through the environment; see .env.example.";
 
 /// Parse the arguments after the program name.

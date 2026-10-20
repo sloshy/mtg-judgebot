@@ -9,6 +9,7 @@ Browser ──https──> Cloudflare edge        [TLS, WAF, rate limiting, chal
                         ↕ outbound tunnel — no inbound port on the host
                    cloudflared ──http──> proxy:8787 ──> judgebot:8787 ──> db:5432
                                                         judgebot ──outbound WS──> Discord
+Operator (loopback or SSH) ──> 127.0.0.1:8789 ──> proxy:8789 ──> judgebot:8789   [--admin]
 ```
 
 This keeps two properties that a serverless split would lose:
@@ -338,6 +339,64 @@ the outside agent's, and only its citations were validated.
 A shell on the host can use the same tools without the network:
 `docker compose run --rm --entrypoint judge-cli judgebot card "Blood Moon"`. The
 `judgebot` service's entrypoint is `judgebot`, so `run` needs `--entrypoint`.
+
+### Admin interface
+
+This step is optional. The `--admin` role serves the operator's pages: every stored
+call, private ones included, with who asked, its ratings and their raters, its run's
+models and cost; the failed calls; and the usage and spend (D37). It listens on a port
+of its own that the public never reaches:
+
+- inside the container on `0.0.0.0:8789` (`ADMIN_ADDR`, set by compose);
+- on the host at `127.0.0.1:8789`, published by the `proxy` service, loopback only
+  (`ADMIN_PORT` in `.env` moves the host port; an `ADMIN_ADDR` there is overridden by
+  compose);
+- never through the tunnel, whose hostname points at `proxy:8787`.
+
+It needs its own token and refuses to start without it. The token must differ from
+`MCP_TOKEN` and `MCP_ADMIN_TOKEN`:
+
+```ini
+JUDGE_ROLES='--discord --api --web --admin --jobs'   # the default roles plus --admin
+ADMIN_TOKEN=<openssl rand -base64 32>                 # at least 24 characters
+```
+
+Then `docker compose up -d`, and print the page's address with the token in it:
+
+```sh
+docker compose exec judgebot judge-cli admin-url
+# {"url": "http://127.0.0.1:8789/admin#token=…"}
+```
+
+The token is in the address's fragment, which a browser never sends. The page keeps it
+for the tab and removes it from the address bar. Open the address in a browser on the
+host. From another machine, forward the port over SSH first and open the same address
+there:
+
+```sh
+ssh -N -L 8789:127.0.0.1:8789 deploy-host
+```
+
+The proxy publishes this port whether `--admin` runs or not. When something else on
+the host already has 8789, set `ADMIN_PORT` to a free port before `docker compose up`,
+or the proxy cannot bind it and `127.0.0.1:8787` goes down with it.
+
+cloudflared shares the compose network and could reach `judgebot:8789` directly. The
+token is the guard on that path, which is one reason it must be long and its own.
+
+**Agents.** The same reads are MCP tools (`admin_calls`, `admin_call`, `admin_failures`,
+`admin_usage`) and `judge-cli` subcommands (`calls`, `call`, `failures`, `stats`). The
+recommended route for an agent on another machine is stdio `judge-mcp` over SSH. It
+needs no token and no open port, because whoever can run it already holds the database:
+
+```json
+{ "command": "ssh", "args": ["deploy-host", "docker", "compose", "--project-directory", "/path/to/mtg-judgebot", "exec", "-T", "judgebot", "judge-mcp"] }
+```
+
+For an agent that cannot run a command (a cloud agent, a hosted connector), set
+`MCP_ADMIN_TOKEN` beside `MCP_TOKEN` under `--mcp`. A request bearing it reaches the
+admin tools at `/mcp` as well as the others; `MCP_TOKEN` never does. Every admin call
+over `/mcp` is logged at INFO with its tool's name. Unset, `/mcp` has no admin tools.
 
 ### Card-symbol emoji
 
@@ -1394,6 +1453,12 @@ own if the connector restarts.
 | `/mcp` answers 405 (a browser GET shows the web app) | `--mcp` is not in `JUDGE_ROLES`, so `/mcp` is just another page path |
 | `judgebot` exits naming `--mcp` and `MCP_TOKEN` | `--mcp` with no token to gate it; set `MCP_TOKEN` or drop the flag |
 | `/mcp` 404s and the log warns about `MCP_TOKEN` | the token is set but `--mcp` is not in `JUDGE_ROLES` |
+| `judgebot` exits naming `--admin` and `ADMIN_TOKEN` | `--admin` with no token, a short one, or one equal to `MCP_TOKEN` or `MCP_ADMIN_TOKEN` |
+| `127.0.0.1:8789` answers 502 | `--admin` is not in `JUDGE_ROLES`, or `judgebot` is restarting |
+| The `proxy` will not start: `port is already allocated` for 8789 | something else on the host has 8789; set `ADMIN_PORT` in `.env` to a free port |
+| `judgebot` exits saying `ADMIN_ADDR` and `API_ADDR` name the same port | the two listeners need ports of their own |
+| The admin page says "Token refused" | `ADMIN_TOKEN` changed since the address was printed; print it again with `judge-cli admin-url` |
+| The admin tools are missing from `/mcp` | the client sends `MCP_TOKEN`; the admin tools need `MCP_ADMIN_TOKEN` |
 | `judgebot` exits naming `--web` and `index.html` | `--web` with no built page at `WEB_DIST`; drop `--web` or rebuild the image |
 | The page 404s but `/api/health` is fine | `--web` is not in `JUDGE_ROLES`; the `judgebot roles` startup line lists what is on and what is off |
 | `judgebot` restarts with `DISCORD_TOKEN is not set` on a deployment without Discord (often right after the upgrade to one service) | the default roles include `--discord`; add `JUDGE_ROLES='--api --web --jobs'` to `.env` and `docker compose up -d` |

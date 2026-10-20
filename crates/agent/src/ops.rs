@@ -6,9 +6,12 @@
 //! verdict and a closed session are all *replies* the agent can act on, and
 //! only a broken adapter is an error.
 
-use crate::gated::Checked;
+use crate::{admin::Admin, gated::Checked};
 use judge_bot::{
+    admin::{CallDetail, CallFilter, CallsPage, FilterText},
+    db::stats::{FailedRow, Usage},
     discord::{catalog, question::pin_card, render},
+    feed::{Asked, Cursor, Search},
     session::{
         AgentThread, Begun, Extracted, Prompt, SessionError, SessionId, Stage, SynthesisPrompt,
     },
@@ -361,6 +364,7 @@ pub struct SearchInput {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StatsInput {
     /// UTC days, ending today. Default 30, at most 366.
+    #[serde(default)]
     pub days: Option<u32>,
 }
 
@@ -368,7 +372,55 @@ pub struct StatsInput {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FailuresInput {
     /// The newest this many. Default 10, at most 100.
+    #[serde(default)]
     pub limit: Option<u32>,
+}
+
+/// Reply of `failures`.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct Failures {
+    /// Newest first: the question, the error and what the model sent.
+    pub failures: Vec<FailedRow>,
+}
+
+/// Which stored calls `admin_calls` lists. Every field narrows; private
+/// calls are included unless `private` is `false`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CallsInput {
+    /// The `next` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Only calls asked through this interface.
+    #[serde(default)]
+    pub interface: Option<Asked>,
+    /// Only calls whose asker has this Discord username or user id.
+    #[serde(default)]
+    pub asker: Option<String>,
+    /// Only calls whose run billed this model (as `models` lists them).
+    #[serde(default)]
+    pub model: Option<String>,
+    /// `true`: only private calls; `false`: only public ones.
+    #[serde(default)]
+    pub private: Option<bool>,
+    /// Only calls whose question, answer or asker's username contains this
+    /// text (case-insensitive).
+    #[serde(default)]
+    pub q: Option<String>,
+}
+
+/// A stored call by id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CallInput {
+    /// The call's id.
+    pub call: CallId,
+}
+
+/// Reply of `admin_call`.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct CallReply {
+    /// The call with its runs, charges and raters; `None` when there is no
+    /// call with that id (never stored, or deleted by the retention).
+    pub call: Option<CallDetail>,
 }
 
 /// A glossary term.
@@ -726,29 +778,59 @@ impl Toolbox {
         self.offer().about(self.operator(), freshness, AGENT_LOCALE)
     }
 
-    /// Usage, spend and the worst-rated calls: the operator's view. On the
-    /// CLI only. It is the one operation about the instance rather than about
-    /// Magic, and an MCP client has no use for it.
+    /// Usage, spend, the runs by model and outcome, and the worst-rated
+    /// calls: the operator's view. An admin operation.
     ///
     /// # Errors
     /// The store.
-    pub async fn stats(&self, input: StatsInput) -> Result<judge_bot::db::stats::Usage, OpError> {
+    pub async fn stats(&self, _admin: &Admin, input: StatsInput) -> Result<Usage, OpError> {
         let db = self.db.check().await?;
         Ok(db.library().usage(input.days.unwrap_or(30)).await?)
     }
 
-    /// The newest failed calls with the question and what the model sent. On
-    /// the CLI only, like `stats`: the questions are the asker's text, kept
-    /// for troubleshooting (`failed_calls`).
+    /// The newest failed calls with the question and what the model sent.
+    /// An admin operation: the questions are the askers' text, private ones
+    /// included, kept for troubleshooting (`failed_calls`).
     ///
     /// # Errors
     /// The store.
     pub async fn failures(
         &self,
+        _admin: &Admin,
         input: FailuresInput,
-    ) -> Result<Vec<judge_bot::db::stats::FailedRow>, OpError> {
+    ) -> Result<Failures, OpError> {
         let db = self.db.check().await?;
-        Ok(db.library().failures(input.limit.unwrap_or(10)).await?)
+        Ok(Failures {
+            failures: db.library().failures(input.limit.unwrap_or(10)).await?,
+        })
+    }
+
+    /// A page of every stored call, private ones included, newest first. An
+    /// admin operation.
+    ///
+    /// # Errors
+    /// A filter or cursor that does not read, or the store.
+    pub async fn admin_calls(
+        &self,
+        _admin: &Admin,
+        input: CallsInput,
+    ) -> Result<CallsPage, OpError> {
+        let db = self.db.check().await?;
+        let (filter, after) = calls_filter(&input)?;
+        Ok(db.library().admin_calls(&filter, after).await?)
+    }
+
+    /// Everything stored about one call: origin, question, answer,
+    /// citations, ratings with their raters, runs with their charges. An
+    /// admin operation.
+    ///
+    /// # Errors
+    /// The store.
+    pub async fn admin_call(&self, _admin: &Admin, input: CallInput) -> Result<CallReply, OpError> {
+        let db = self.db.check().await?;
+        Ok(CallReply {
+            call: db.library().admin_call(input.call).await?,
+        })
     }
 
     /// Glossary lookup.
@@ -785,6 +867,57 @@ async fn history(
             vec![]
         }
     }
+}
+
+/// The filter and cursor `input` names; a blank field is no filter.
+///
+/// # Errors
+/// A cursor `admin_calls` did not write, or a filter that is too long.
+pub fn calls_filter(input: &CallsInput) -> Result<(CallFilter, Option<Cursor>), OpError> {
+    let blank = |v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    let after = blank(&input.cursor)
+        .map(|c| {
+            c.parse::<Cursor>()
+                .map_err(|()| anyhow::anyhow!("cursor must be the `next` of an earlier page"))
+        })
+        .transpose()?;
+    let text = |v: &Option<String>, what: &str| {
+        blank(v)
+            .map(|t| {
+                FilterText::parse(&t).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{what} must be at most {} characters",
+                        judge_bot::admin::MAX_FILTER_CHARS
+                    )
+                })
+            })
+            .transpose()
+    };
+    let search = blank(&input.q)
+        .map(|t| {
+            Search::parse(&t).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "q must be at most {} characters",
+                    judge_bot::feed::MAX_SEARCH_CHARS
+                )
+            })
+        })
+        .transpose()?;
+    Ok((
+        CallFilter {
+            asked: input.interface,
+            asker: text(&input.asker, "asker")?,
+            model: text(&input.model, "model")?,
+            private: input.private,
+            search,
+        },
+        after,
+    ))
 }
 
 fn check_question(q: &str) -> Result<(), OpError> {
@@ -1039,6 +1172,36 @@ mod tests {
             quote: judge_core::Quote::try_new("x")?,
         };
         assert_eq!(citation_view(&r, None).label, "702.15b");
+        Ok(())
+    }
+
+    #[test]
+    fn a_calls_filter_reads_blank_as_none_and_refuses_the_rest() -> anyhow::Result<()> {
+        let (f, after) = calls_filter(&CallsInput {
+            cursor: Some(" ".into()),
+            asker: Some(" alice ".into()),
+            private: Some(true),
+            ..CallsInput::default()
+        })?;
+        assert!(after.is_none());
+        assert_eq!(f.asker.as_ref().map(FilterText::as_str), Some("alice"));
+        assert_eq!(f.private, Some(true));
+        for bad in [
+            CallsInput {
+                cursor: Some("nope".into()),
+                ..CallsInput::default()
+            },
+            CallsInput {
+                model: Some("m".repeat(judge_bot::admin::MAX_FILTER_CHARS + 1)),
+                ..CallsInput::default()
+            },
+            CallsInput {
+                q: Some("q".repeat(judge_bot::feed::MAX_SEARCH_CHARS + 1)),
+                ..CallsInput::default()
+            },
+        ] {
+            assert!(calls_filter(&bad).is_err(), "{bad:?}");
+        }
         Ok(())
     }
 

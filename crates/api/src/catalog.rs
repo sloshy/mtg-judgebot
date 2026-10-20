@@ -52,6 +52,16 @@ pub struct Messages {
     pub call_not_found: &'static str,
     /// The feed could not be read.
     pub feed_failed: &'static str,
+    /// An admin request without the admin token, or with another.
+    pub admin_unauthorized: &'static str,
+    /// An admin `private` filter that is not `true` or `false`.
+    pub bad_private: &'static str,
+    /// An admin filter over its limit, given its name and the limit.
+    pub bad_filter: fn(&str, usize) -> String,
+    /// No stored call has that id.
+    pub admin_call_not_found: &'static str,
+    /// An admin read failed.
+    pub admin_failed: &'static str,
 }
 
 impl fmt::Debug for Messages {
@@ -89,6 +99,11 @@ Your question was not answered; please try again shortly.",
     bad_search: |n| format!("q must be at most {n} characters"),
     call_not_found: "There is no public call with that id.",
     feed_failed: "Sorry, the feed couldn't be read just now. Please try again.",
+    admin_unauthorized: "This needs the admin token: open the address `judge-cli admin-url` prints.",
+    bad_private: "private must be true or false",
+    bad_filter: |name, n| format!("{name} must be at most {n} characters"),
+    admin_call_not_found: "There is no call with that id.",
+    admin_failed: "The database could not be read just now. Please try again.",
 };
 
 #[cfg(test)]
@@ -118,6 +133,11 @@ mod tests {
                 (m.bad_search)(100),
                 m.call_not_found.to_owned(),
                 m.feed_failed.to_owned(),
+                m.admin_unauthorized.to_owned(),
+                m.bad_private.to_owned(),
+                (m.bad_filter)("asker", 100),
+                m.admin_call_not_found.to_owned(),
+                m.admin_failed.to_owned(),
             ] {
                 assert!(!t.trim().is_empty(), "{l}");
             }
