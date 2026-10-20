@@ -4,6 +4,7 @@
 
 import { createResource, For, Match, Show, Switch } from "solid-js";
 import Answer from "../Answer";
+import { failed, succeeded } from "../api";
 import { BotMessage, Message, Notice, PersonAvatar, Typing } from "../Chat";
 import { href } from "../router";
 import Symbols from "../Symbols";
@@ -26,26 +27,19 @@ export function CallPage(props: { ctx: AdminContext; id: string }) {
         </a>
       </p>
       <Switch fallback={<Typing m={props.ctx.pub} loading={true} />}>
-        <Match when={call()?.ok === true && call()}>
-          {(r) => {
-            const read = r();
-            return read.ok ? <CallDetailView ctx={props.ctx} call={read.value} /> : null;
-          }}
+        <Match when={succeeded(call())}>
+          {(detail) => <CallDetailView ctx={props.ctx} call={detail()} />}
         </Match>
-        <Match when={call()?.ok === false && call()}>
-          {(r) => {
-            const read = r();
-            if (read.ok) return null;
-            return read.status === 404 ? (
+        <Match when={failed(call())}>
+          {(f) => (
+            <Show when={f().status === 404} fallback={<ReadFailure ctx={props.ctx} read={f()} />}>
               <BotMessage m={props.ctx.pub}>
                 <Notice tone="note" title={m().callMissingTitle}>
-                  <p>{read.message}</p>
+                  <p>{f().message}</p>
                 </Notice>
               </BotMessage>
-            ) : (
-              <ReadFailure ctx={props.ctx} read={read} />
-            );
-          }}
+            </Show>
+          )}
         </Match>
       </Switch>
     </section>

@@ -1,6 +1,14 @@
 import { createMemo, createResource, createSignal, For, Match, Show, Switch } from "solid-js";
 import Answer from "./Answer";
-import { type FeedEntry, type FeedQuery, fetchCall, fetchFeed, type Interface } from "./api";
+import {
+  type FeedEntry,
+  type FeedQuery,
+  failed,
+  fetchCall,
+  fetchFeed,
+  type Interface,
+  succeeded,
+} from "./api";
 import { BotMessage, Message, Notice, PersonAvatar, Typing } from "./Chat";
 import { feedView, type View, ViewSwitch } from "./Controls";
 import type { Locale, Messages } from "./messages";
@@ -443,37 +451,32 @@ export function CallPage(props: { m: Messages; locale: Locale | undefined; id: s
         </a>
       </p>
       <Switch fallback={<Typing m={props.m} loading={true} />}>
-        <Match when={call()?.ok === true && call()}>
-          {(r) => {
-            const read = r();
-            return read.ok ? (
-              <>
-                <DayDivider m={props.m} iso={read.value.asked_at} />
-                <Entry m={props.m} entry={read.value} />
-              </>
-            ) : null;
-          }}
+        {/* Keyed: another call is another entry, so its rating state starts afresh. */}
+        <Match when={succeeded(call())} keyed>
+          {(entry) => (
+            <>
+              <DayDivider m={props.m} iso={entry.asked_at} />
+              <Entry m={props.m} entry={entry} />
+            </>
+          )}
         </Match>
-        <Match when={call()?.ok === false && call()}>
-          {(r) => {
-            const read = r();
-            return read.ok ? null : (
-              <BotMessage m={props.m}>
-                <Show
-                  when={read.status === 404}
-                  fallback={
-                    <Notice tone="danger" title={props.m.replyTitle.error} role="alert">
-                      <p>{read.message}</p>
-                    </Notice>
-                  }
-                >
-                  <Notice tone="note" title={props.m.callMissingTitle}>
-                    <p>{read.message}</p>
+        <Match when={failed(call())}>
+          {(f) => (
+            <BotMessage m={props.m}>
+              <Show
+                when={f().status === 404}
+                fallback={
+                  <Notice tone="danger" title={props.m.replyTitle.error} role="alert">
+                    <p>{f().message}</p>
                   </Notice>
-                </Show>
-              </BotMessage>
-            );
-          }}
+                }
+              >
+                <Notice tone="note" title={props.m.callMissingTitle}>
+                  <p>{f().message}</p>
+                </Notice>
+              </Show>
+            </BotMessage>
+          )}
         </Match>
       </Switch>
     </section>

@@ -17,6 +17,7 @@ import {
   Show,
   Switch,
 } from "solid-js";
+import { failed } from "../api";
 import { BotAvatar, BotMessage, Notice } from "../Chat";
 import { ThemeSelect } from "../Controls";
 import { isLocale, type Locale, type Messages, messages, pickLocale } from "../messages";
@@ -233,21 +234,23 @@ export function ReadFailure(props: { ctx: AdminContext; read: Read<unknown> }) {
     if (!props.read.ok && props.read.status === 401) props.ctx.refused();
   });
   return (
-    <Show when={!props.read.ok && props.read.status !== 401 && props.read}>
-      {(r) => {
-        const failure = r() as Extract<Read<unknown>, { ok: false }>;
-        return (
-          <BotMessage m={props.ctx.pub}>
-            <Notice
-              tone={failure.status === 503 ? "note" : "danger"}
-              title={failure.status === 503 ? props.ctx.m.maintenanceTitle : props.ctx.m.errorTitle}
-              role="alert"
-            >
-              <p>{failure.message}</p>
-            </Notice>
-          </BotMessage>
-        );
-      }}
+    <Show
+      when={(() => {
+        const f = failed(props.read);
+        return f !== undefined && f.status !== 401 ? f : undefined;
+      })()}
+    >
+      {(f) => (
+        <BotMessage m={props.ctx.pub}>
+          <Notice
+            tone={f().status === 503 ? "note" : "danger"}
+            title={f().status === 503 ? props.ctx.m.maintenanceTitle : props.ctx.m.errorTitle}
+            role="alert"
+          >
+            <p>{f().message}</p>
+          </Notice>
+        </BotMessage>
+      )}
     </Show>
   );
 }

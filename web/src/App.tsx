@@ -642,13 +642,14 @@ function Reply(props: {
           }
         >
           {(r) => {
-            const failed = r() as Extract<ApiReply, { kind: "error" | "busy" | "rate_limited" }>;
+            const failure = () =>
+              r() as Extract<ApiReply, { kind: "error" | "busy" | "rate_limited" }>;
             return (
               <Notice
-                tone={failed.kind === "error" ? "danger" : "caution"}
-                title={props.m.replyTitle[failed.kind]}
+                tone={failure().kind === "error" ? "danger" : "caution"}
+                title={props.m.replyTitle[failure().kind]}
               >
-                <p>{failed.message}</p>
+                <p>{failure().message}</p>
               </Notice>
             );
           }}

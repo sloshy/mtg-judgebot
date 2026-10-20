@@ -7,8 +7,8 @@
 // queue and the latest data refreshes. `judge-cli stats` prints the same
 // report.
 
-import { createResource, For, Match, Show, Switch } from "solid-js";
-import type { Interface } from "../api";
+import { createEffect, createResource, createSignal, For, Match, Show, Switch } from "solid-js";
+import { failed, type Interface, succeeded } from "../api";
 import { Typing } from "../Chat";
 import { type AdminUsageFilter, href, navigate } from "../router";
 import { BarList, DashboardSections, type StatsLinks, StatsSection, StatTiles } from "../Stats";
@@ -35,6 +35,19 @@ export function UsagePage(props: { ctx: AdminContext; filter: AdminUsageFilter }
   );
   const days = () =>
     props.filter.from === undefined ? (props.filter.days ?? DEFAULT_DAYS) : undefined;
+  // The models offered: those of the last report read with no model chosen,
+  // for the same range and filters (a report with a model chosen names only
+  // that one), as the public dashboard's chips.
+  const scope = () => JSON.stringify({ ...props.filter, model: undefined });
+  const [offered, setOffered] = createSignal<{ scope: string; names: string[] }>({
+    scope: "",
+    names: [],
+  });
+  createEffect(() => {
+    const u = succeeded(read());
+    if (u !== undefined && !read.loading && props.filter.model === undefined)
+      setOffered({ scope: scope(), names: (u.models ?? []).map((x) => x.model) });
+  });
   const at = (change: Partial<AdminUsageFilter>) =>
     href({ page: "admin", view: { view: "usage", filter: { ...props.filter, ...change } } });
   return (
@@ -65,21 +78,13 @@ export function UsagePage(props: { ctx: AdminContext; filter: AdminUsageFilter }
       <Filters
         ctx={props.ctx}
         filter={props.filter}
-        models={(() => {
-          const r = read();
-          return r?.ok ? (r.value.models ?? []).map((x) => x.model) : [];
-        })()}
+        models={offered().scope === scope() ? offered().names : []}
       />
       <Switch fallback={<Typing m={props.ctx.pub} loading={true} />}>
-        <Match when={read()?.ok === true && read()}>
-          {(r) => {
-            const got = r();
-            return got.ok ? <Report ctx={props.ctx} usage={got.value} /> : null;
-          }}
+        <Match when={succeeded(read())}>
+          {(usage) => <Report ctx={props.ctx} usage={usage()} />}
         </Match>
-        <Match when={read()?.ok === false && read()}>
-          {(r) => <ReadFailure ctx={props.ctx} read={r()} />}
-        </Match>
+        <Match when={failed(read())}>{(f) => <ReadFailure ctx={props.ctx} read={f()} />}</Match>
       </Switch>
     </section>
   );

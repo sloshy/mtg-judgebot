@@ -3,8 +3,8 @@
 // address, so a view is a link like any other; one user's figures link to
 // their answers, and the figures link into the feed.
 
-import { createResource, For, Match, Show, Switch } from "solid-js";
-import { type Dashboard, fetchStats, type Interface } from "./api";
+import { createEffect, createResource, createSignal, For, Match, Show, Switch } from "solid-js";
+import { type Dashboard, failed, fetchStats, type Interface, succeeded } from "./api";
 import { BotMessage, Notice, PersonAvatar, Typing } from "./Chat";
 import type { Locale, Messages } from "./messages";
 import { href, type Route, visit } from "./router";
@@ -50,6 +50,26 @@ export function DashboardPage(props: {
         m(),
       ),
   );
+  const report = () => succeeded(read());
+  const failure = () => failed(read());
+  // The model chips: the models of the last report read with no model chosen,
+  // for the same range and filters. A report with a model chosen names only
+  // that model, so choosing one would otherwise hide the rest.
+  const scope = () => JSON.stringify({ ...props.route, model: undefined });
+  const [offered, setOffered] = createSignal<{ scope: string; names: string[] }>({
+    scope: "",
+    names: [],
+  });
+  createEffect(() => {
+    const d = report();
+    if (d !== undefined && !read.loading && props.route.model === undefined)
+      setOffered({ scope: scope(), names: (d.models ?? []).map((x) => x.model) });
+  });
+  const modelNames = () => {
+    const kept = offered().scope === scope() ? offered().names : [];
+    const chosen = props.route.model;
+    return chosen && !kept.includes(chosen) ? [...kept, chosen] : kept;
+  };
   const at = (change: Partial<DashboardRoute>): string => href({ ...props.route, ...change });
   const days = () =>
     props.route.from === undefined ? (props.route.days ?? DEFAULT_DAYS) : undefined;
@@ -110,70 +130,50 @@ export function DashboardPage(props: {
             )}
           </For>
         </nav>
-        <Show when={props.models && read()?.ok === true && read()}>
-          {(r) => {
-            const got = r();
-            const names = () => {
-              const listed = got.ok ? (got.value.models ?? []).map((x) => x.model) : [];
-              const chosen = props.route.model;
-              return chosen && !listed.includes(chosen) ? [...listed, chosen] : listed;
-            };
-            return (
-              <Show when={names().length > 0}>
-                <nav class="filters" aria-label={m().modelFilterLabel}>
-                  <a
-                    class="chip"
-                    href={at({ model: undefined })}
-                    aria-current={props.route.model === undefined ? "page" : undefined}
-                  >
-                    {m().allModels}
-                  </a>
-                  <For each={names()}>
-                    {(name) => (
-                      <a
-                        class="chip chip-mono"
-                        href={at({ model: name })}
-                        aria-current={props.route.model === name ? "page" : undefined}
-                      >
-                        {name}
-                      </a>
-                    )}
-                  </For>
-                </nav>
-              </Show>
-            );
-          }}
+        <Show when={props.models && modelNames().length > 0}>
+          <nav class="filters" aria-label={m().modelFilterLabel}>
+            <a
+              class="chip"
+              href={at({ model: undefined })}
+              aria-current={props.route.model === undefined ? "page" : undefined}
+            >
+              {m().allModels}
+            </a>
+            <For each={modelNames()}>
+              {(name) => (
+                <a
+                  class="chip chip-mono"
+                  href={at({ model: name })}
+                  aria-current={props.route.model === name ? "page" : undefined}
+                >
+                  {name}
+                </a>
+              )}
+            </For>
+          </nav>
         </Show>
       </div>
 
       <Switch fallback={<Typing m={m()} loading={true} />}>
-        <Match when={read()?.ok === true && read()}>
-          {(r) => {
-            const got = r();
-            return got.ok ? <Report m={m()} d={got.value} /> : null;
-          }}
-        </Match>
-        <Match when={read()?.ok === false && read()}>
-          {(r) => {
-            const failed = r();
-            return failed.ok ? null : (
-              <BotMessage m={m()}>
-                <Notice
-                  tone={failed.status === 503 ? "note" : "danger"}
-                  title={
-                    failed.status === 503
-                      ? m().replyTitle.maintenance
-                      : failed.status === 429
-                        ? m().replyTitle.rate_limited
-                        : m().replyTitle.error
-                  }
-                  role="alert"
-                >
-                  <p>{failed.message}</p>
-                </Notice>
-              </BotMessage>
-            );
-          }}
+        <Match when={report()}>{(d) => <Report m={m()} d={d()} />}</Match>
+        <Match when={failure()}>
+          {(f) => (
+            <BotMessage m={m()}>
+              <Notice
+                tone={f().status === 503 ? "note" : "danger"}
+                title={
+                  f().status === 503
+                    ? m().replyTitle.maintenance
+                    : f().status === 429
+                      ? m().replyTitle.rate_limited
+                      : m().replyTitle.error
+                }
+                role="alert"
+              >
+                <p>{f().message}</p>
+              </Notice>
+            </BotMessage>
+          )}
         </Match>
       </Switch>
     </section>

@@ -238,6 +238,24 @@ export interface FeedPage {
  * sent none). */
 export type Read<T> = { ok: true; value: T } | { ok: false; status: number; message: string };
 
+/** A read's value, else `undefined` (loading or failed).
+ *
+ * Use it as the `when` of a `<Show>`/`<Match>` and read the children's
+ * accessor where the value is used. The condition stays true from one value to
+ * the next (a dashboard filter, another call), so the children are not
+ * rebuilt. A value copied out of the accessor once would stay on screen. */
+export function succeeded<T extends object>(r: Read<T> | undefined): T | undefined {
+  return r?.ok ? r.value : undefined;
+}
+
+/** A read's failure, else `undefined`; read it as `succeeded` says. Generic
+ * over the read's type, so the admin pages' `Read` keeps its own fields. */
+export function failed<R extends { ok: boolean }>(
+  r: R | undefined,
+): Extract<R, { ok: false }> | undefined {
+  return r !== undefined && !r.ok ? (r as Extract<R, { ok: false }>) : undefined;
+}
+
 /** Which calls a feed page holds. */
 export interface FeedQuery {
   cursor?: string;

@@ -4,7 +4,7 @@
 // beside the call's full material, and the form that closes it.
 
 import { createResource, createSignal, For, Match, Show, Switch } from "solid-js";
-import type { Interface } from "../api";
+import { failed, type Interface, succeeded } from "../api";
 import { BotMessage, Message, Notice, PersonAvatar, Typing } from "../Chat";
 import {
   type AdminQueueFilter,
@@ -205,9 +205,11 @@ export function ItemPage(props: { ctx: AdminContext; id: string }) {
     () => props.id,
     (id) => fetchItem(id, props.ctx.token, m()),
   );
+  // Only onto the item it closed: a reply that lands once the page shows
+  // another item is not that item's.
   const closed = (item: QueueItem) => {
     const r = read();
-    if (r?.ok) mutate({ ok: true, value: { ...r.value, item } });
+    if (r?.ok && r.value.item.id === item.id) mutate({ ok: true, value: { ...r.value, item } });
   };
   return (
     <section class="page">
@@ -218,26 +220,26 @@ export function ItemPage(props: { ctx: AdminContext; id: string }) {
         </a>
       </p>
       <Switch fallback={<Typing m={props.ctx.pub} loading={true} />}>
-        <Match when={read()?.ok === true && read()}>
-          {(r) => {
-            const got = r();
-            return got.ok ? <Item ctx={props.ctx} view={got.value} closed={closed} /> : null;
-          }}
+        {/* Keyed on the item's id, not the value: closing the item replaces
+            the value and its close form keeps its confirmation, while another
+            item (a jump through history) starts with a fresh form. */}
+        <Match when={succeeded(read())}>
+          {(view) => (
+            <Show when={view().item.id} keyed>
+              {(_id) => <Item ctx={props.ctx} view={view()} closed={closed} />}
+            </Show>
+          )}
         </Match>
-        <Match when={read()?.ok === false && read()}>
-          {(r) => {
-            const got = r();
-            if (got.ok) return null;
-            return got.status === 404 ? (
+        <Match when={failed(read())}>
+          {(f) => (
+            <Show when={f().status === 404} fallback={<ReadFailure ctx={props.ctx} read={f()} />}>
               <BotMessage m={props.ctx.pub}>
                 <Notice tone="note" title={m().itemMissingTitle}>
-                  <p>{got.message}</p>
+                  <p>{f().message}</p>
                 </Notice>
               </BotMessage>
-            ) : (
-              <ReadFailure ctx={props.ctx} read={got} />
-            );
-          }}
+            </Show>
+          )}
         </Match>
       </Switch>
     </section>

@@ -2,6 +2,7 @@
 // line that opens onto the error and what the model sent.
 
 import { createResource, For, Match, Show, Switch } from "solid-js";
+import { failed, succeeded } from "../api";
 import { PersonAvatar, Typing } from "../Chat";
 import { type AdminContext, ReadFailure } from "./Admin";
 import { type Failure, fetchFailures } from "./api";
@@ -19,17 +20,16 @@ export function FailuresPage(props: { ctx: AdminContext }) {
         </div>
       </header>
       <Switch fallback={<Typing m={props.ctx.pub} loading={true} />}>
-        <Match when={read()?.ok === true && read()}>
-          {(r) => {
-            const got = r();
-            const failures = got.ok ? got.value.failures : [];
+        <Match when={succeeded(read())}>
+          {(got) => {
+            const failures = () => got().failures;
             return (
               <Show
-                when={failures.length > 0}
+                when={failures().length > 0}
                 fallback={<p class="admin-empty">{m().failuresEmpty}</p>}
               >
                 <ul class="rows">
-                  <For each={failures}>
+                  <For each={failures()}>
                     {(f) => (
                       <li>
                         <FailureRow ctx={props.ctx} failure={f} />
@@ -41,9 +41,7 @@ export function FailuresPage(props: { ctx: AdminContext }) {
             );
           }}
         </Match>
-        <Match when={read()?.ok === false && read()}>
-          {(r) => <ReadFailure ctx={props.ctx} read={r()} />}
-        </Match>
+        <Match when={failed(read())}>{(f) => <ReadFailure ctx={props.ctx} read={f()} />}</Match>
       </Switch>
     </section>
   );
