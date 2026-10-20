@@ -1416,7 +1416,8 @@ channel. `JUDGE_FEED=false` turns it off.
   something different per server. `private: True` (or an agent call's `private`) is the
   one way to keep a call off it, and `/help` says so.
 - **What is public is decided in SQL.** `judge_bot::feed` holds every public read, each
-  with `NOT c.private` and the `JUDGE_FEED_DAYS` window in its `WHERE`, and selects the
+  with `publicly_visible` (not private, within the `JUDGE_FEED_DAYS` window; a SQL
+  function the dashboard's counts use too, D39) in its `WHERE`, and selects the
   username only, never the asker id. A missing, private or too-old call is the same
   `None`, so a 404 says nothing about which. Failed calls live in another table.
 - **Names are the username snapshotted at asking time** (D31), anonymous otherwise, and
@@ -1594,3 +1595,64 @@ It never reaches the model (D10).
   (`judge-cli queue …`, stdio `judge-mcp`, `/mcp` with `MCP_ADMIN_TOKEN`), and the admin
   listener serves them as `/admin/api/queue*` and the Feedback page. Closing is the one
   write there: a POST behind the same bearer, which a browser never sends on its own.
+
+## D39. Public dashboard
+
+*Decided 2026-10-20.*
+
+The web app's `/dashboard` shows what the instance has been asked and how it went: questions
+per day by interface, the outcomes, the rating mix, the most-asked categories, cards and
+askers, by range, interface, user and model (#28). The admin page shows the same report over
+every call, with the spend and the private detail. Both, `judge-cli stats` and the MCP tool
+`admin_usage` read one query module, `judge_bot::db::stats`, so no two of them can disagree.
+
+- **Public by default, with the feed.** The dashboard counts what the feed already shows
+  (D36), so it is served where the feed is: under `--web`, unless `JUDGE_FEED=false`, when
+  `GET /api/stats` is not routed (the JSON 404 of any unserved `/api/` path) and the page
+  has no tab. `/api/about` carries `stats: {cost, models}`, or null. Rejected: a setting of
+  its own, a second switch for the same exposure.
+- **Private is never counted.** Not in a total, an outcome, a rating, a category, a card, a
+  user's figures, a cost or a model. Every public count reads calls and runs through
+  `publicly_visible`, the predicate the feed reads through, defined once as a SQL function
+  the planner inlines. The query keeps the public and operator scopes as two branches
+  of a `UNION ALL`, each switched on or off as a whole, so the public branch states the
+  predicate unconditionally and even a generic plan proves `NOT private` and reads the
+  partial indexes (the feed's, and `judge_runs_public_finished_at`); a test holds a
+  generic plan of the real queries to that. Rejected: `NOT $public OR …`, which no
+  generic plan can match to a partial index. A run carries its
+  call's `private`, so the outcome counts take only public runs, and runs older than
+  `JUDGE_FEED_DAYS` are left out like calls. Rejected: counting private runs in the
+  outcomes as anonymous totals, which would let a narrow filter (one interface, one day)
+  reveal that someone asked privately and how it went.
+- **Runs record no asker.** Under a user filter the run figures (outcomes, and on the
+  admin side run cost and latency) are `null` rather than estimated from the runs that left
+  a call. A user filter takes a Discord username on the public side, and a username or id
+  on the admin side.
+- **Cost and models are opt-in, by type.** `JUDGE_PUBLIC_COST=true` adds what the public
+  calls cost (their runs' charges, and per question); `JUDGE_PUBLIC_MODELS=true` adds which
+  models read and answered them, and the `model` filter. Both are validated at `Config`
+  load. The figures exist only through a `CostAccess` / `ModelAccess`, and the public
+  scope gets one only from `stats::Disclosure`, so a forgotten check leaves the field
+  empty. A `model` filter while models are hidden is a 400, not ignored: an ignored
+  filter would show every model's figures under the name of one.
+- **Web ratings are sent, and hidden by the page.** The rating mix counts Discord's and
+  the web's apart (D38); the page shows the web's only when its reader asks.
+- **Bounded reads.** A report covers 1 to 366 UTC days, by the database's clock. A
+  public range that ends before the `JUDGE_FEED_DAYS` window is a `400` naming the
+  window, not a report of some other days; one that starts before it starts at it. The
+  public endpoint has its own per-address limit (30 a minute) and two slots per process
+  whoever asks, so many addresses cannot pile aggregate queries on the database. Each
+  query reads its range through the time indexes, and a run's charges by their key.
+  A report runs in one read-only transaction with a statement timeout (5 s public, a
+  minute for the operator); past it the public page answers `503` busy, saying to ask
+  for less.
+- **The budget is the instance's.** Every process that keeps the spend ledger records
+  its `JUDGE_BUDGET_PERIOD` and `JUDGE_MAX_USD` beside it (`budget_setting`), and the
+  operator's report reads that, so `judge-cli stats` on another machine or with another
+  `.env` reports the server's cap, not its own. Nothing recorded is "unknown" (`null`).
+- **The operator's report adds what the public never sees:** private calls (counted, and
+  counted apart), failed calls, the `spend_days` ledger by day and month (chat and
+  embeddings, ingest included), the budget (period, cap, what is left), the runs by model,
+  interface and stage, cost per answer, latency, the dearest runs and refusals at the cap,
+  the lowest-rated calls, the feedback queue's counts and the latest refreshes. The
+  ledger is not narrowed by a filter: it records spend per day, not per call.

@@ -1383,6 +1383,10 @@ docker compose run --rm refresh migrate   # prints what it applies; refuses a ch
 docker compose up -d
 ```
 
+Until the migrations are applied, a `judgebot` whose code reads a new table or function
+fails the requests that read it with a `500` (2.0.0's `publicly_visible`: the feed, web
+rating, the dashboard and the admin dashboard), while the rest of it answers.
+
 ### Private package pulls
 
 The upstream package is public and needs no login. A fork's package has the

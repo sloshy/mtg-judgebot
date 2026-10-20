@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) AS \"n!\" FROM failed_calls f\n        WHERE f.created_at >= $1::text::date::timestamp AT TIME ZONE 'utc'\n          AND f.created_at < ($2::text::date + 1)::timestamp AT TIME ZONE 'utc'\n          AND ($3::text IS NULL OR f.interface = $3)\n          AND ($4::text IS NULL OR f.asker_name = $4 OR f.asker_id = $4)\n          AND ($5::text IS NULL OR EXISTS (\n                SELECT 1 FROM judge_runs r JOIN judge_run_charges ch ON ch.run_id = r.id\n                WHERE r.failed_call_id = f.id AND ch.model = $5 AND ch.stage <> 'embedding'))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "75f743ab44bfa668582340ccdfcad566d023805a8eeee9893bba187ae16e08f4"
+}

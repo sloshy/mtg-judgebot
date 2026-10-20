@@ -497,8 +497,34 @@ async fn the_admin_operations_read_everything(pool: PgPool) -> anyhow::Result<()
     );
     let failures = t.failures(&admin, FailuresInput { limit: None }).await?;
     assert_eq!(failures.failures.len(), 1);
-    let usage = t.stats(&admin, StatsInput { days: Some(7) }).await?;
-    assert_eq!(usage.questions, 1);
+    let usage = t
+        .stats(
+            &admin,
+            StatsInput {
+                days: Some(7),
+                ..StatsInput::default()
+            },
+        )
+        .await?;
+    assert_eq!(usage.dashboard.questions, 1);
+    assert_eq!(
+        usage.private, 1,
+        "the operator's report counts private calls"
+    );
+    assert_eq!(usage.failed_calls, 1);
+    assert!(
+        t.stats(
+            &admin,
+            StatsInput {
+                from: Some("2026-10-02".into()),
+                to: Some("2026-10-01".into()),
+                ..StatsInput::default()
+            }
+        )
+        .await
+        .is_err(),
+        "a reversed range"
+    );
     assert!(
         t.admin_calls(
             &admin,

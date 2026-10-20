@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH rv AS MATERIALIZED (\n            SELECT r.id, r.started_at, r.finished_at, r.interface, r.outcome, r.call_id,\n                   r.failed_call_id\n            FROM judge_runs r\n            WHERE r.finished_at >= $1::text::date::timestamp AT TIME ZONE 'utc'\n              AND r.finished_at < ($2::text::date + 1)::timestamp AT TIME ZONE 'utc'\n              AND ($3::text IS NULL OR r.interface = $3)\n              AND ($4::text IS NULL OR EXISTS (\n                    SELECT 1 FROM judge_run_charges ch\n                    WHERE ch.run_id = r.id AND ch.model = $4 AND ch.stage <> 'embedding'))\n        ), ch AS MATERIALIZED (\n            -- Each run's charges by their key (OFFSET 0 keeps the planner\n            -- from flattening it into a scan of every charge), so the work\n            -- grows with the range, not with the table.\n            SELECT rv.id AS run_id, c.stage, c.provider, c.model, c.input_tokens, c.output_tokens,\n                   c.cache_read_tokens, c.cache_write_tokens, c.micro_usd, c.cost_estimated\n            FROM rv CROSS JOIN LATERAL (\n                SELECT * FROM judge_run_charges x WHERE x.run_id = rv.id OFFSET 0) c\n        ), cost AS (\n            SELECT run_id, sum(micro_usd)::bigint AS micro_usd,\n                   bool_or(cost_estimated) AS estimated\n            FROM ch GROUP BY run_id\n        )\n        SELECT\n            (SELECT count(*) FROM rv) AS \"runs!\",\n            (SELECT coalesce(sum(micro_usd), 0)::bigint FROM ch) AS \"micro_usd!\",\n            (SELECT count(*) FILTER (WHERE cost_estimated) FROM ch) AS \"estimated!\",\n            (SELECT coalesce(jsonb_agg(to_jsonb(m) ORDER BY m.micro_usd DESC, m.provider, m.model), '[]'::jsonb)\n             FROM (SELECT provider, model, count(*) AS requests,\n                          coalesce(sum(input_tokens), 0)::bigint AS input_tokens,\n                          coalesce(sum(output_tokens), 0)::bigint AS output_tokens,\n                          coalesce(sum(cache_read_tokens), 0)::bigint AS cache_read_tokens,\n                          coalesce(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,\n                          coalesce(sum(micro_usd), 0)::bigint AS micro_usd,\n                          count(*) FILTER (WHERE cost_estimated) AS estimated\n                   FROM ch GROUP BY provider, model) m\n            ) AS \"by_model!\",\n            (SELECT coalesce(jsonb_agg(to_jsonb(i) ORDER BY i.micro_usd DESC, i.interface), '[]'::jsonb)\n             FROM (SELECT rv.interface, count(*) AS runs,\n                          coalesce(sum(cost.micro_usd), 0)::bigint AS micro_usd\n                   FROM rv LEFT JOIN cost ON cost.run_id = rv.id GROUP BY rv.interface) i\n            ) AS \"by_interface!\",\n            (SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.micro_usd DESC, s.stage), '[]'::jsonb)\n             FROM (SELECT stage, count(*) AS requests,\n                          coalesce(sum(micro_usd), 0)::bigint AS micro_usd\n                   FROM ch GROUP BY stage) s\n            ) AS \"by_stage!\",\n            (SELECT avg(cost.micro_usd)::float8 FROM rv JOIN cost ON cost.run_id = rv.id\n             WHERE rv.outcome = 'answered') AS per_answer_micro,\n            (SELECT jsonb_build_object(\n                 'runs', count(*),\n                 'p50_ms', percentile_cont(0.5) WITHIN GROUP (ORDER BY ms),\n                 'p90_ms', percentile_cont(0.9) WITHIN GROUP (ORDER BY ms),\n                 'max_ms', max(ms),\n                 'mean_ms', avg(ms))\n             FROM (SELECT (extract(epoch FROM finished_at - started_at) * 1000)::float8 AS ms\n                   FROM rv WHERE outcome = 'answered') t\n            ) AS \"latency!\",\n            (SELECT coalesce(jsonb_agg(to_jsonb(e) ORDER BY e.micro_usd DESC, e.at DESC), '[]'::jsonb)\n             FROM (SELECT t.run, t.call, coalesce(ca.question, f.question) AS question,\n                          t.interface, t.outcome,\n                          to_char(t.finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS at,\n                          t.micro_usd, t.estimated\n                   -- The dearest first, then their questions: ten lookups.\n                   FROM (SELECT rv.id AS run, rv.call_id AS call, rv.failed_call_id,\n                                rv.interface, rv.outcome, rv.finished_at, cost.micro_usd,\n                                coalesce(cost.estimated, false) AS estimated\n                         FROM rv JOIN cost ON cost.run_id = rv.id\n                         ORDER BY cost.micro_usd DESC, rv.finished_at DESC\n                         LIMIT $5) t\n                   LEFT JOIN calls ca ON ca.id = t.call\n                   LEFT JOIN failed_calls f ON f.id = t.failed_call_id) e\n            ) AS \"most_expensive!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "runs!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "micro_usd!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "estimated!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "by_model!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "by_interface!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "by_stage!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "per_answer_micro",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "latency!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "most_expensive!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "d7e406c31ecb63fd66aef9b56f31ea50a9bdd825fc76f826c72a37976d61f2d1"
+}

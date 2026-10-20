@@ -9,7 +9,10 @@
 //!   - `GET /admin/api/calls/{id}`: one call with its runs, charges and
 //!     raters.
 //!   - `GET /admin/api/failures?limit`: the failed calls.
-//!   - `GET /admin/api/usage?days`: usage and spend.
+//!   - `GET /admin/api/usage?days&from&to&interface&asker&model`: the
+//!     operator's dashboard (`judge_bot::db::stats::usage`): every call
+//!     counted, private ones included, with the spend, the budget, the runs'
+//!     cost and latency, the failed calls, the queue and the refreshes.
 //!   - `GET /admin/api/queue?cursor&status&category&interface&rater`: the
 //!     feedback queue (#27, D38), newest first.
 //!   - `GET /admin/api/queue/{id}`: one item with its call, whole.
@@ -45,7 +48,7 @@ use axum::{
 };
 use judge_bot::{
     admin::{AdminSettings, AdminToken, CallDetail, CallFilter, CallsPage, FilterText, RunRow},
-    db::stats::{self, FailedRow, Usage},
+    db::stats::{self, FailedRow, OperatorQuery, StatsError, Usage},
     feed::{self, Asked, Cursor, Names},
     feedback::{QueueDetail, QueueFilter, QueueItem, QueuePage},
     maintenance::{self, Availability},
@@ -186,7 +189,7 @@ impl Admin {
         shutdown: Shutdown,
         locale: Locale,
     ) -> Result<AdminListening> {
-        let reads = Arc::new(PgAdminReads(pool.clone()));
+        let reads = Arc::new(PgAdminReads::new(pool.clone()));
         let routes = router(
             reads,
             &self.token,
@@ -259,8 +262,8 @@ pub trait AdminReads: Send + Sync {
     async fn call(&self, id: CallId) -> Result<Option<(CallDetail, Names)>, JudgeError>;
     /// The newest failed calls.
     async fn failures(&self, limit: u32) -> Result<Vec<FailedRow>, JudgeError>;
-    /// Usage over the last `days`.
-    async fn usage(&self, days: u32) -> Result<Usage, JudgeError>;
+    /// The operator's report for `query`.
+    async fn usage(&self, query: &OperatorQuery) -> Result<Usage, StatsError>;
     /// A page of the feedback queue.
     async fn queue(
         &self,
@@ -275,7 +278,17 @@ pub trait AdminReads: Send + Sync {
 
 /// [`AdminReads`] over the database.
 #[derive(Clone, Debug)]
-pub struct PgAdminReads(pub PgPool);
+pub struct PgAdminReads {
+    pool: PgPool,
+}
+
+impl PgAdminReads {
+    /// Reads over `pool`.
+    #[must_use]
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
 
 #[async_trait::async_trait]
 impl AdminReads for PgAdminReads {
@@ -284,19 +297,19 @@ impl AdminReads for PgAdminReads {
         filter: &CallFilter,
         after: Option<Cursor>,
     ) -> Result<CallsPage, JudgeError> {
-        judge_bot::admin::calls(&self.0, filter, after).await
+        judge_bot::admin::calls(&self.pool, filter, after).await
     }
 
     async fn call(&self, id: CallId) -> Result<Option<(CallDetail, Names)>, JudgeError> {
-        judge_bot::admin::call(&self.0, id).await
+        judge_bot::admin::call(&self.pool, id).await
     }
 
     async fn failures(&self, limit: u32) -> Result<Vec<FailedRow>, JudgeError> {
-        stats::failures(&self.0, limit).await
+        stats::failures(&self.pool, limit).await
     }
 
-    async fn usage(&self, days: u32) -> Result<Usage, JudgeError> {
-        stats::usage(&self.0, days).await
+    async fn usage(&self, query: &OperatorQuery) -> Result<Usage, StatsError> {
+        stats::usage(&self.pool, query).await
     }
 
     async fn queue(
@@ -304,15 +317,15 @@ impl AdminReads for PgAdminReads {
         filter: QueueFilter,
         after: Option<Cursor>,
     ) -> Result<QueuePage, JudgeError> {
-        judge_bot::feedback::list(&self.0, filter, after).await
+        judge_bot::feedback::list(&self.pool, filter, after).await
     }
 
     async fn item(&self, id: Uuid) -> Result<Option<(QueueDetail, Names)>, JudgeError> {
-        judge_bot::feedback::show(&self.0, id).await
+        judge_bot::feedback::show(&self.pool, id).await
     }
 
     async fn close(&self, id: Uuid, close: &Close) -> Result<Option<QueueItem>, JudgeError> {
-        judge_bot::feedback::close(&self.0, id, close).await
+        judge_bot::feedback::close(&self.pool, id, close).await
     }
 }
 
@@ -675,10 +688,56 @@ async fn failures_route(
 }
 
 /// `GET /admin/api/usage`'s query.
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct UsageQuery {
-    /// UTC days ending today (default 30, at most `stats::MAX_DAYS`).
-    pub days: Option<u32>,
+    /// UTC days ending on `to` (default 30, at most `stats::MAX_DAYS`),
+    /// when there is no `from`.
+    pub days: Option<String>,
+    /// The first day, `YYYY-MM-DD`.
+    pub from: Option<String>,
+    /// The last day (default today).
+    pub to: Option<String>,
+    /// Only calls and runs through this interface.
+    pub interface: Option<String>,
+    /// Only calls whose asker has this Discord username or user id.
+    pub asker: Option<String>,
+    /// Only calls and runs that billed this model.
+    pub model: Option<String>,
+}
+
+/// The report a usage query names.
+///
+/// # Errors
+/// The message for a 400.
+pub fn parse_usage_query(m: &Messages, q: &UsageQuery) -> Result<OperatorQuery, String> {
+    let text = |name: &str, v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                FilterText::parse(v)
+                    .ok_or_else(|| (m.bad_filter)(name, judge_bot::admin::MAX_FILTER_CHARS))
+            })
+            .transpose()
+    };
+    let asked = match q
+        .interface
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        None => None,
+        Some(i) => Some(
+            Asked::parse(i)
+                .ok_or_else(|| (m.bad_interface)(&Asked::ALL.map(Asked::id).join(", ")))?,
+        ),
+    };
+    Ok(OperatorQuery {
+        span: crate::stats::parse_span(m, q.from.as_deref(), q.to.as_deref(), q.days.as_deref())?,
+        asked,
+        asker: text("asker", &q.asker)?,
+        model: text("model", &q.model)?,
+    })
 }
 
 async fn usage_route(
@@ -690,13 +749,18 @@ async fn usage_route(
     if let Some(reply) = closed(&state, m) {
         return reply;
     }
-    let days = match query {
-        Ok(Query(q)) => q.days.unwrap_or(30),
+    let query = match query {
+        Ok(Query(q)) => match parse_usage_query(m, &q) {
+            Ok(q) => q,
+            Err(message) => return error(StatusCode::BAD_REQUEST, message),
+        },
         Err(e) => return error(e.status(), e.body_text()),
     };
-    match state.reads.usage(days).await {
+    match state.reads.usage(&query).await {
         Ok(usage) => Json(usage).into_response(),
-        Err(e) => failed(m, "GET /admin/api/usage", &e),
+        Err(StatsError::Range(_)) => error(StatusCode::BAD_REQUEST, (m.bad_range)(stats::MAX_DAYS)),
+        Err(StatsError::TimedOut) => error(StatusCode::SERVICE_UNAVAILABLE, m.stats_too_slow),
+        Err(StatsError::Store(e)) => failed(m, "GET /admin/api/usage", &e),
     }
 }
 
@@ -986,10 +1050,10 @@ mod tests {
         async fn failures(&self, _limit: u32) -> Result<Vec<FailedRow>, JudgeError> {
             Ok(vec![])
         }
-        async fn usage(&self, _days: u32) -> Result<Usage, JudgeError> {
-            Err(JudgeError::Upstream(anyhow::anyhow!(
+        async fn usage(&self, _query: &OperatorQuery) -> Result<Usage, StatsError> {
+            Err(StatsError::Store(JudgeError::Upstream(anyhow::anyhow!(
                 "no usage in the stub"
-            )))
+            ))))
         }
         async fn queue(
             &self,
@@ -1300,6 +1364,16 @@ mod tests {
             ("/admin/api/calls?cursor=nope", StatusCode::BAD_REQUEST),
             ("/admin/api/failures", StatusCode::OK),
             ("/admin/api/usage", StatusCode::INTERNAL_SERVER_ERROR),
+            (
+                "/admin/api/usage?days=7&interface=discord&asker=42&model=m",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            ("/admin/api/usage?days=0", StatusCode::BAD_REQUEST),
+            ("/admin/api/usage?from=2026-02-30", StatusCode::BAD_REQUEST),
+            (
+                "/admin/api/usage?interface=telegram",
+                StatusCode::BAD_REQUEST,
+            ),
             ("/admin/api/nothing", StatusCode::NOT_FOUND),
         ] {
             let (status, _, body) = send(&app, path, Some(&bearer)).await?;

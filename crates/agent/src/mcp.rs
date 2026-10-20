@@ -80,8 +80,9 @@ Admin tools (this connection holds the operator's credential): `admin_calls` (ev
 private ones included, newest first, filterable by interface, asker, model, private flag and text), \
 `admin_call` (one call with its origin, ratings and their raters, runs and charges), \
 `admin_failures` (failed calls: the question, the error, what the model sent), `admin_usage` \
-(questions, spend, runs by model and outcome, ratings, the lowest-rated calls, the feedback queue's \
-counts, recent data refreshes), and the feedback queue: `queue_list` (every rating given a reason, \
+(the dashboard: questions by day, interface, outcome, rating, category, card, asker and model, \
+spend by day, month, interface, stage and model, the budget, latency, the dearest runs, the \
+lowest-rated calls, the feedback queue's counts, recent data refreshes), and the feedback queue: `queue_list` (every rating given a reason, \
 newest first, filterable by status, category, interface and rater kind), `queue_show` (one item with \
 its call's question, answer, citations, cards, models and every rating) and `queue_resolve` / \
 `queue_dismiss` (close an item with a note and, for a fix, what fixed it). To work an item, read it \
@@ -526,7 +527,7 @@ impl JudgeMcp<Privileged> {
 
     #[tool(
         name = "admin_usage",
-        description = "Admin: usage over the last `days` UTC days (default 30, at most 366): stored calls per day and interface, spend per day, the runs by model (tokens, cost) and by outcome, ratings, the lowest-rated calls and the latest data refreshes."
+        description = "Admin: the operator's dashboard over a range of UTC days (`days` ending today, default 30, or `from`/`to`, at most 366), filterable by interface, asker (username or id) and model: stored calls per day and interface (private ones counted and counted apart), outcomes, ratings (Discord and web apart), the most-asked categories, cards and askers, cost and models; spend per day and month from the ledger, the budget and what is left of it; the runs by model, interface and stage, cost per answer, latency, the dearest runs and refusals at the cap; failed calls; the lowest-rated calls, the feedback queue's counts and the latest data refreshes."
     )]
     async fn admin_usage(
         &self,

@@ -169,7 +169,7 @@ one seam (`docs/PROVIDERS.md`).
     the cap a shared budget that survives restarts (D19). It also tells
     `JUDGE_ALERT_WEBHOOK` when the cap trips, and when spending reaches a
     `JUDGE_SPEND_WARN_AT` threshold (claimed in `spend_warnings`, so one process
-    sends each). `judge-cli stats` reads the same ledger.
+    sends each). `judge-cli stats` and the admin dashboard read the same ledger.
 - `crates/anthropic` and `crates/openai` are backends of it. Each owns its wire types and
   its schema-subset transform.
 - The model's own previous turn is replayed as an opaque blob that only the backend that
@@ -392,6 +392,19 @@ Three interfaces share this pipeline through the same composition root
     call, nothing older than `JUDGE_FEED_DAYS`). They have their own per-address read
     limit. The page routes `/feed`, `/calls/<id>` and `/users/<name>` client-side
     (`web/src/router.ts`); an unrouted `/api/` path is a JSON 404.
+    `publicly_visible(private, at, window_days)`, a SQL function the migrations define
+    once and the planner inlines, is the "not private, within the window" predicate of
+    every public read, so the feed's partial indexes still serve them.
+  - The public dashboard (D39): `GET /api/stats?from&to&days&interface&user&model`,
+    mounted with the feed, over `judge_bot::db::stats::public`. It counts public calls
+    and runs alone, through `publicly_visible`: questions per day by interface, outcomes
+    (`judge_core::OutcomeGroup`), the rating mix (Discord and web apart), the most-asked
+    categories, cards and askers. Cost (`CostAccess`) and models (`ModelAccess`) exist
+    only through `stats::Disclosure`, true only when `JUDGE_PUBLIC_COST` /
+    `JUDGE_PUBLIC_MODELS` is; a `model` filter without models is a 400. A range is
+    1 to 366 UTC days, in a read-only transaction with a 5 s statement timeout; a range
+    ending before the window is a 400. The reads have their own per-address limit (30 a
+    minute) and two slots per process. The page is `/dashboard`.
   - `/api/about` is the source offer (`judge_core::source`): repository, built
     commit, licence and copyright. The AGPL requires every remote interface to
     offer it. The web app's footer reads it from there. Discord gives the same in
@@ -439,7 +452,12 @@ Three interfaces share this pipeline through the same composition root
   - `/admin/api/*` behind `ADMIN_TOKEN` (constant-time bearer, `no-store`): `calls`
     (every call, private ones included, filtered by interface, asker, model, visibility
     and text; keyset pages), `calls/{id}` (origin, ratings with raters and reasons, runs
-    with charges), `failures`, `usage`, and the feedback queue (D38): `queue` (filtered
+    with charges), `failures`, `usage` (the operator's dashboard, D39:
+    `stats::usage`, every call counted, with the spend ledger by day and month, the
+    budget (the period and cap the ledger-keeping processes record in `budget_setting`
+    on each sync), the runs by model, interface and stage, cost per answer, latency, the dearest
+    runs and the failed calls; the same range and filters as the public one, the asker
+    by name or id), and the feedback queue (D38): `queue` (filtered
     by status, category, interface and rater kind; keyset pages), `queue/{id}` (the item
     with its call whole) and the one write, `POST queue/{id}/resolve` and `…/dismiss`
     with `{note, fixed_by}`. The queries are `judge_bot::admin`, `judge_bot::feedback`

@@ -13,7 +13,7 @@
 // text as it comes.
 
 import type { JSX } from "solid-js";
-import type { FeedEntry, Interface, RatingCounts, Score } from "./api";
+import type { FeedEntry, Interface, Outcomes, RatingCounts, Score } from "./api";
 import type { FeedbackCategory } from "./router";
 
 /** The locales the page has a catalog for. */
@@ -205,6 +205,71 @@ export type Messages = {
   retiredBadge: string;
   /** An answer's confidence, as the compact feed tags it. */
   confidenceTag: (confidence: string) => string;
+
+  // ---- the dashboard (`/dashboard`, and the admin page's head) ----
+  navDashboard: string;
+  dashboardTitle: string;
+  dashboardIntro: string;
+  /** The heading when one Discord user's questions are shown. */
+  dashboardUserTitle: (name: string) => string;
+  /** The range's choices, and their accessible name. */
+  rangeLabel: string;
+  lastDays: (days: number) => string;
+  /** The model filter's accessible name and its "every model" choice. */
+  modelFilterLabel: string;
+  allModels: string;
+  /** Links from one user's figures: their answers, and everyone's figures. */
+  userAnswers: (name: string) => string;
+  everyone: string;
+  /** From a user's page: their figures on the dashboard. */
+  userStatsLink: string;
+  /** The range the figures cover, from two `YYYY-MM-DD` days. */
+  rangeLine: (from: string, to: string) => string;
+  /** The public window, when the operator hides older questions. */
+  windowNote: (days: number) => string;
+  /** A whole number, and a share as a percentage. */
+  count: (n: number) => string;
+  percent: (part: number, whole: number) => string;
+  /** A cost in US dollars, and whether it includes a worst-case estimate. */
+  usd: (usd: number, estimated: boolean) => string;
+  /** The headline figures. */
+  statQuestions: string;
+  statAskers: string;
+  statAnswered: string;
+  /** The questions-over-time chart: its title, accessible summary, the
+   * table that is its text alternative, and a bar's hover text. */
+  chartTitle: string;
+  chartSummary: (from: string, to: string, total: number, peak: number) => string;
+  chartTable: string;
+  chartDay: string;
+  chartWeekOf: (day: string) => string;
+  chartTotal: string;
+  chartPeak: (n: number) => string;
+  /** A day (`YYYY-MM-DD`) as a short date. */
+  shortDay: (day: string) => string;
+  /** The interfaces' totals, each a link into the feed. */
+  interfacesTitle: string;
+  outcomesTitle: string;
+  outcomeName: Record<keyof Outcomes, string>;
+  /** Under a user filter: runs do not record who asked. */
+  outcomesPerUser: string;
+  ratingsTitle: string;
+  /** The rating mix's web toggle. */
+  includeWebToggle: (n: number) => string;
+  /** No ratings in the range. */
+  noRatings: string;
+  categoriesTitle: string;
+  cardsTitle: string;
+  askersTitle: string;
+  costTitle: string;
+  costTotal: string;
+  costPerQuestion: string;
+  modelsTitle: string;
+  /** Beside a model's answers: how many questions it read (extraction). */
+  modelRead: (extracted: number) => string;
+  /** No questions in the range, and nothing in a list. */
+  dashboardEmpty: string;
+  nothingYet: string;
 };
 
 /** `20260819` → `2026-08-19` (matching the Discord footer). */
@@ -225,6 +290,21 @@ function enAgo(secs: number): string {
         ? [Math.floor(secs / hour), "hour"]
         : [Math.floor(secs / day), "day"];
   return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+}
+
+const enCount = new Intl.NumberFormat("en");
+
+/** `YYYY-MM-DD` (a UTC day) as `Sep 4` or, with the year, `Sep 4, 2026`. */
+function enShortDay(day: string, year: boolean): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  return Number.isNaN(d.getTime())
+    ? day
+    : new Intl.DateTimeFormat("en", {
+        month: "short",
+        day: "numeric",
+        year: year ? "numeric" : undefined,
+        timeZone: "UTC",
+      }).format(d);
 }
 
 export const en = {
@@ -443,6 +523,67 @@ export const en = {
   viewExpanded: "Expanded",
   retiredBadge: "Retired",
   confidenceTag: (confidence) => `${confidence} confidence`,
+
+  navDashboard: "Dashboard",
+  dashboardTitle: "Dashboard",
+  dashboardIntro:
+    "What the judge has been asked and how it went: every question not asked privately, by day, interface, outcome, rating, category and card.",
+  dashboardUserTitle: (name) => `Questions asked by @${name}`,
+  rangeLabel: "Range",
+  lastDays: (days) => (days >= 365 ? "A year" : `${days} days`),
+  modelFilterLabel: "Model",
+  allModels: "Every model",
+  userAnswers: (name) => `@${name}'s answers`,
+  everyone: "Everyone",
+  userStatsLink: "Dashboard",
+  rangeLine: (from, to) => {
+    const f = enShortDay(from, true);
+    const t = enShortDay(to, true);
+    return from === to ? f : `${f} to ${t}`;
+  },
+  windowNote: (days) =>
+    `Questions older than ${days} ${days === 1 ? "day" : "days"} are not shown or counted here.`,
+  count: (n) => enCount.format(n),
+  percent: (part, whole) => (whole === 0 ? "–" : `${Math.round((100 * part) / whole)}%`),
+  usd: (usd, estimated) =>
+    `$${usd < 1 ? usd.toFixed(4) : usd.toFixed(2)}${estimated ? " (at most)" : ""}`,
+  statQuestions: "Questions",
+  statAskers: "Discord askers",
+  statAnswered: "Answered",
+  chartTitle: "Questions per day",
+  chartSummary: (from, to, total, peak) =>
+    `Questions per day by interface, ${from} to ${to}: ${enCount.format(total)} in all, at most ${enCount.format(peak)} in one bar.`,
+  chartTable: "Show as a table",
+  chartDay: "Day",
+  chartWeekOf: (day) => `Week of ${enShortDay(day, false)}`,
+  chartTotal: "Total",
+  chartPeak: (n) => `highest: ${enCount.format(n)}`,
+  shortDay: (day) => enShortDay(day, false),
+  interfacesTitle: "By interface",
+  outcomesTitle: "How it went",
+  outcomeName: {
+    answered: "Answered",
+    ambiguous: "Asked which card",
+    not_found: "Card not found",
+    out_of_scope: "Out of scope",
+    refused: "Declined",
+    failed: "Failed",
+  },
+  outcomesPerUser:
+    "Outcomes are not counted per user: a question that was not answered records no asker.",
+  ratingsTitle: "Ratings",
+  includeWebToggle: (n) => `Include ${enCount.format(n)} from the web`,
+  noRatings: "No ratings in this range.",
+  categoriesTitle: "Most-asked topics",
+  cardsTitle: "Most-asked cards",
+  askersTitle: "Most active askers",
+  costTitle: "Cost",
+  costTotal: "Model cost of these answers",
+  costPerQuestion: "Per question",
+  modelsTitle: "Models",
+  modelRead: (extracted) => `read ${enCount.format(extracted)}`,
+  dashboardEmpty: "No questions in this range.",
+  nothingYet: "Nothing yet.",
 } satisfies Messages;
 
 const CATALOGS: Record<Locale, Messages> = { en };

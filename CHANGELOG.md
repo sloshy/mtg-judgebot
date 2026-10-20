@@ -19,6 +19,28 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Dashboard.** The web app's new `/dashboard` page (a tab beside the feed) shows what
+  the instance has been asked and how it went: questions per day by interface as a chart
+  (with a table of the same figures), how they went (answered, a "which card?" question,
+  card not found, out of scope, declined, failed), the rating mix (the web's on request),
+  and the most-asked topics, cards and askers, over 7, 30 or 90 days or a year, by
+  interface, and per Discord user (`?user=`, linked from their page). It counts only
+  questions not asked private, within `JUDGE_FEED_DAYS`, and is served wherever the feed
+  is. New endpoint `GET /api/stats?from&to&days&interface&user&model` (30 reads a minute
+  per address), and `/api/about` gains `stats`. `JUDGE_PUBLIC_COST=true` adds what the
+  answers cost, `JUDGE_PUBLIC_MODELS=true` which models answered them and a model filter;
+  both are off by default.
+- **The admin Dashboard.** The admin page's Usage tab is now the Dashboard: the same
+  report over every call, private ones included and counted apart, by range, interface,
+  asker and model, with the failed calls, spend per day and month, the budget period,
+  the cap and what is left, the runs by model, interface and stage, cost per answer,
+  latency, the dearest runs and the runs the cap refused. `judge-cli stats` and the MCP
+  tool `admin_usage` return the same report and take the same range and filters
+  (`--from`, `--to`, `--interface`, `--asker`, `--model`). The budget is the instance's:
+  every process that keeps the spend ledger records its period and cap beside it, so
+  `judge-cli stats` no longer reports its own. A report's queries are cut off past 5
+  seconds on the public page and a minute for the operator.
+
 - **Ratings with reasons.** On Discord, *Partially correct* and *Incorrect* now ask why:
   a form with the kind of problem (wrong conclusion, missed part of the question, a
   citation doesn't support it, wrong card, misread the question, shouldn't have
@@ -283,6 +305,17 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **`judge-cli stats` (and `admin_usage`, `/admin/api/usage`) has a new shape.** It is
+  the dashboard's report: `by_day` lists every day of the range with the calls per
+  interface and `private`; the ledger's spend and model calls per day moved to
+  `spend_by_day` (with `spend_by_month` beside it); `ratings` is
+  `{"discord": {"correct", "partial", "incorrect"}, "web": {...}}` and counts the ratings
+  of the calls in the range, where `ratings` and `web_ratings` were arrays of the ratings
+  given in it; `runs`, `run_usd`, `by_model` and the outcomes by id are under
+  `run_stats` (`runs`, `usd`, `by_model`, `outcomes`), and `outcomes` is now grouped.
+  `days`, `questions`, `usd`, `retired_calls`, `lowest_rated`, `feedback`,
+  `refresh_runs` and `refresh_runs_note` are unchanged.
+
 - **A chat response with no usage counts its worst case against the spend cap.** An
   OpenAI-compatible server that leaves `usage` out of a paid model's response, fills
   it with zeros, or sends a 2xx body that cannot be read was counted at $0. It now
@@ -430,6 +463,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Upgrading
 
+- **With `JUDGE_AUTO_MIGRATE=false`, migrate before serving the web app.** The feed,
+  web rating, the dashboard and the admin dashboard read a SQL function this release's
+  migrations add (`publicly_visible`), so until `judgebot ingest migrate` has run they
+  answer `500`. The admin dashboard's budget reads the period and cap the serving
+  processes record (`budget_setting`), and says unknown until one has run.
 - **Earlier ratings keep their scores and have no reasons.** A *Partially correct* or
   *Incorrect* rating given before this release opens no feedback-queue item; it still
   counts toward the examples and in `judge-cli stats`' lowest-rated list.

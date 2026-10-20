@@ -366,6 +366,12 @@ pub async fn sync(
     }
     // Only now is the write part of the ledger (see `Ledger::plan`).
     *ledger = next;
+    // The settings beside the ledger, for the operator's report. Its own
+    // failure (a schema that predates the table, during a major upgrade's
+    // migration) costs the report its budget figures, never the cap.
+    if let Err(e) = record_setting(pool, period, meter.max_spend_micro()).await {
+        tracing::debug!(error = %e, "spend ledger: the budget settings were not recorded");
+    }
     let Some(field) = period.trunc() else {
         return Ok(None);
     };
@@ -381,6 +387,32 @@ pub async fn sync(
     .await?;
     meter.set_adjustment_micro(ledger.adjustment(total));
     Ok(Some(total))
+}
+
+/// Record `period` and `cap` (micro-dollars) as the instance's budget
+/// settings (`budget_setting`), which the operator's report reads
+/// (`crate::db::stats::usage`), so `judge-cli stats` shows the instance's
+/// cap rather than its own. Rewritten when they change, and every five
+/// minutes so the row says it is current.
+///
+/// # Errors
+/// sqlx.
+pub async fn record_setting(pool: &PgPool, period: Period, cap: u64) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        INSERT INTO budget_setting (id, period, cap_micro) VALUES (true, $1, $2)
+        ON CONFLICT (id) DO UPDATE
+           SET period = EXCLUDED.period, cap_micro = EXCLUDED.cap_micro, written_at = now()
+         WHERE budget_setting.period <> EXCLUDED.period
+            OR budget_setting.cap_micro <> EXCLUDED.cap_micro
+            OR budget_setting.written_at < now() - interval '5 minutes'
+        "#,
+        period.as_str(),
+        i64::try_from(cap).unwrap_or(i64::MAX),
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Claim the warning at `p` percent of `cap` micro-dollars for the period

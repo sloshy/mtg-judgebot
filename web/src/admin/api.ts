@@ -7,10 +7,11 @@
 // history and any copied link), and kept in this tab's sessionStorage. It
 // travels only as an `Authorization: Bearer` header, never in a query.
 
-import type { CitationView, Interface } from "../api";
+import { type CitationView, type Dashboard, type Interface, isDashboard } from "../api";
 import type {
   AdminCallFilter,
   AdminQueueFilter,
+  AdminUsageFilter,
   FeedbackCategory,
   QueueStatus,
   RaterKind,
@@ -254,20 +255,6 @@ function isFailures(v: unknown): v is { failures: Failure[] } {
   return object(v) && Array.isArray(v.failures);
 }
 
-/** One day of usage (`judge_bot::db::stats::Day`). */
-export interface Day {
-  day: string;
-  discord: number;
-  web: number;
-  mcp: number;
-  cli: number;
-  agent_session: number;
-  agent: number;
-  private: number;
-  usd: number;
-  llm_calls: number;
-}
-
 /** What a model was billed for (`judge_bot::db::stats::ModelUse`). */
 export interface ModelUse {
   provider: string;
@@ -292,20 +279,51 @@ export interface RefreshRun {
   failed_steps: string[];
 }
 
-/** Usage over a window (`judge_bot::db::stats::Usage`). */
-export interface Usage {
-  days: number;
-  by_day: Day[];
-  questions: number;
-  usd: number;
+/** The runs in the range (`judge_bot::db::stats::RunStats`). */
+export interface RunStats {
   runs: number;
-  run_usd: number;
-  by_model: ModelUse[];
+  usd: number;
+  estimated: number;
   outcomes: { outcome: string; runs: number }[];
-  /** Discord's, then the web's (anonymous; apart so they cannot skew
-   * Discord's). */
-  ratings: [number, number, number];
-  web_ratings?: [number, number, number];
+  refused_at_cap: number;
+  by_model: ModelUse[];
+  by_interface: { interface: string; runs: number; usd: number }[];
+  by_stage: { stage: string; requests: number; usd: number }[];
+  usd_per_answer: number | null;
+  latency: { runs: number; p50_ms: number; p90_ms: number; max_ms: number; mean_ms: number } | null;
+  most_expensive: {
+    run: string;
+    call: string | null;
+    question: string | null;
+    interface: string;
+    outcome: string;
+    at: string;
+    usd: number;
+    estimated: boolean;
+  }[];
+}
+
+/** The operator's report (`judge_bot::db::stats::Usage`): the dashboard
+ * over every call, private ones counted, then the spend and the rest. */
+export interface Usage extends Dashboard {
+  days: number;
+  private: number;
+  failed_calls: number;
+  usd: number;
+  spend_by_day: { day: string; usd: number; llm_calls: number }[];
+  spend_by_month: { month: string; usd: number; llm_calls: number }[];
+  /** The instance's period and cap, as its serving processes recorded
+   * them; null until one has. */
+  budget: {
+    period: "process" | "day" | "month" | null;
+    cap_usd: number | null;
+    recorded_at: string | null;
+    period_start: string | null;
+    spent_usd: number | null;
+    left_usd: number | null;
+  };
+  /** Null under an asker filter: runs record no asker. */
+  run_stats: RunStats | null;
   retired_calls: number;
   lowest_rated: {
     call: string;
@@ -330,17 +348,28 @@ export interface QueueCount {
 }
 
 /** GET /admin/api/usage. */
-export function fetchUsage(days: number, token: string, m: AdminMessages): Promise<Read<Usage>> {
-  return read(`/admin/api/usage?days=${days}`, token, m, isUsage);
+export function fetchUsage(
+  filter: AdminUsageFilter,
+  token: string,
+  m: AdminMessages,
+): Promise<Read<Usage>> {
+  const q = new URLSearchParams();
+  if (filter.from) q.set("from", filter.from);
+  else q.set("days", String(filter.days ?? 30));
+  if (filter.to) q.set("to", filter.to);
+  if (filter.interface) q.set("interface", filter.interface);
+  if (filter.asker) q.set("asker", filter.asker);
+  if (filter.model) q.set("model", filter.model);
+  return read(`/admin/api/usage?${q.toString()}`, token, m, isUsage);
 }
 
 function isUsage(v: unknown): v is Usage {
   return (
+    isDashboard(v) &&
     object(v) &&
-    Array.isArray(v.by_day) &&
-    Array.isArray(v.by_model) &&
-    Array.isArray(v.outcomes) &&
-    Array.isArray(v.ratings) &&
+    Array.isArray(v.spend_by_day) &&
+    Array.isArray(v.spend_by_month) &&
+    object(v.budget) &&
     Array.isArray(v.lowest_rated) &&
     Array.isArray(v.refresh_runs)
   );

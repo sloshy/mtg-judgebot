@@ -92,6 +92,31 @@ citations and cards, how it was rated, and a note when its citations no longer h
 Turning the feed on lists every earlier public call too, including those asked before it
 existed.
 
+## The dashboard
+
+`/dashboard` counts what the feed lists: every question not asked private, within
+`JUDGE_FEED_DAYS` when that is set. Private questions are never counted, in any figure.
+
+- The number of questions, of Discord askers, and the share answered.
+- Questions per day by interface, as a chart (weeks above three months). **Show as a
+  table** lists the same figures as text.
+- How the questions went: answered, a "which card?" question, a card not found, out of
+  scope, declined by the model, or failed.
+- The ratings: correct, partially correct, incorrect. Discord's are counted; **Include N
+  from the web** adds the web's, the same choice as on the feed.
+- The most-asked topics, cards and Discord askers. A card opens a feed search for it, an
+  asker their page, and an interface its part of the feed.
+- The range: 7, 30 or 90 days, or a year (`/dashboard?days=90`, or `?from=YYYY-MM-DD&to=…`
+  for any range up to 366 days). The interface chips narrow every figure to one.
+- `/dashboard?user=name` is one Discord user's figures, linked from their page
+  (`/users/name`). Outcomes are not counted per user: a question that was not answered
+  records no asker.
+- With `JUDGE_PUBLIC_COST=true` it also shows what the answers cost, in all and per
+  question. With `JUDGE_PUBLIC_MODELS=true` it shows which models read and answered the
+  questions, and narrows to one model. Both are off by default.
+
+The dashboard is there wherever the feed is, and `JUDGE_FEED=false` removes both.
+
 ## Enabling
 
 The web app is the `--web` role of `judgebot`. `--api` serves `POST /api/judge`, the route
@@ -124,16 +149,22 @@ from the address bar. From another machine, forward the port over SSH
   state, the call whole, and a form that resolves it (with a note and what fixed it) or
   dismisses it (with a note). A rater who replaces their reason reopens it.
 - **Failures**: the failed calls, each opening onto the error and what the model sent.
-- **Usage**: questions and spend over 7, 30, 90 days or a year, spend per day as a
-  chart, the runs by model and outcome, ratings, the lowest-rated calls, the feedback
-  queue's counts by kind of problem and the latest data refreshes.
+- **Dashboard** (`/admin/usage`): the public dashboard over every call, private ones
+  included and counted apart, narrowed by range, interface, asker (Discord username or
+  id) and model; then the failed calls, the spend per day and month (chat and embeddings,
+  `judgebot ingest` included), the budget period, the cap and what is left (as the
+  instance's processes recorded them), the runs by
+  outcome, model, interface and stage, the cost per answer, latency, the dearest runs,
+  the runs the spend cap refused, the lowest-rated calls, the feedback queue's counts by
+  kind of problem and the latest data refreshes. `judge-cli stats` prints the same
+  report.
 
 ## Limits
 
 Anonymous traffic is rate limited per address (`API_RATE_LIMIT` questions per
 `API_RATE_WINDOW_SECS`, default 4 per 5 minutes), ahead of the `JUDGE_CONCURRENCY` slots
 and the spend cap. The feed's reads have a window of their own, 120 a minute per address,
-so browsing does not use up questions. The [HTTP API](../../using/api/) page has the request and reply
+so browsing does not use up questions, and the dashboard's another, 30 a minute. The [HTTP API](../../using/api/) page has the request and reply
 shapes, and the [deployment runbook](../../self-hosting/deployment/) puts a Cloudflare
 rate-limiting rule in front of all of it.
 

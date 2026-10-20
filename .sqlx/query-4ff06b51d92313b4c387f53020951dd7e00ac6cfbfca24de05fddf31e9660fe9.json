@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT day::text AS \"day!\", micro_usd, calls\n        FROM spend_days\n        WHERE day BETWEEN $1::text::date AND $2::text::date\n        ORDER BY day\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "micro_usd",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "spend_days",
+            "name": "micro_usd"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "calls",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "spend_days",
+            "name": "calls"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "4ff06b51d92313b4c387f53020951dd7e00ac6cfbfca24de05fddf31e9660fe9"
+}

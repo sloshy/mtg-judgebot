@@ -11,6 +11,15 @@ export type Route =
   | { page: "feed"; interface?: Interface; user?: string; q?: string }
   | { page: "call"; id: string }
   | { page: "user"; name: string }
+  | {
+      page: "dashboard";
+      days?: number;
+      from?: string;
+      to?: string;
+      interface?: Interface;
+      user?: string;
+      model?: string;
+    }
   | { page: "admin"; view: AdminView }
   | { page: "missing" };
 
@@ -23,6 +32,17 @@ export interface AdminCallFilter {
   /** true: only private calls; false: only public ones. */
   private?: boolean;
   q?: string;
+}
+
+/** Which report the admin dashboard shows (GET /admin/api/usage). */
+export interface AdminUsageFilter {
+  days?: number;
+  from?: string;
+  to?: string;
+  interface?: Interface;
+  /** A Discord username or user id. */
+  asker?: string;
+  model?: string;
 }
 
 /** A feedback item's state (`judge_core::QueueStatus`). */
@@ -68,7 +88,7 @@ export type AdminView =
   | { view: "feedback"; filter: AdminQueueFilter }
   | { view: "item"; id: string }
   | { view: "failures" }
-  | { view: "usage"; days?: number }
+  | { view: "usage"; filter: AdminUsageFilter }
   | { view: "missing" };
 
 const INTERFACES: readonly Interface[] = ["discord", "web", "mcp", "cli", "agent_session", "agent"];
@@ -113,8 +133,18 @@ function parseAdmin(parts: (string | undefined)[], params: URLSearchParams): Adm
   if (parts.length === 2 && first === "feedback" && second) return { view: "item", id: second };
   if (parts.length === 1 && first === "failures") return { view: "failures" };
   if (parts.length === 1 && first === "usage") {
-    const days = Number.parseInt(params.get("days") ?? "", 10);
-    return { view: "usage", days: Number.isFinite(days) && days > 0 ? days : undefined };
+    const asked = params.get("interface");
+    return {
+      view: "usage",
+      filter: {
+        days: positive(params.get("days")),
+        from: day(params.get("from")),
+        to: day(params.get("to")),
+        interface: isInterface(asked) ? asked : undefined,
+        asker: params.get("asker") || undefined,
+        model: params.get("model") || undefined,
+      },
+    };
   }
   return { view: "missing" };
 }
@@ -147,8 +177,18 @@ function adminHref(v: AdminView): string {
       return `/admin/feedback/${encodeURIComponent(v.id)}`;
     case "failures":
       return "/admin/failures";
-    case "usage":
-      return v.days === undefined ? "/admin/usage" : `/admin/usage?days=${v.days}`;
+    case "usage": {
+      const q = new URLSearchParams();
+      const f = v.filter;
+      if (f.days !== undefined) q.set("days", String(f.days));
+      if (f.from) q.set("from", f.from);
+      if (f.to) q.set("to", f.to);
+      if (f.interface) q.set("interface", f.interface);
+      if (f.asker) q.set("asker", f.asker);
+      if (f.model) q.set("model", f.model);
+      const s = q.toString();
+      return s === "" ? "/admin/usage" : `/admin/usage?${s}`;
+    }
     case "missing":
       return "/admin";
   }
@@ -197,7 +237,31 @@ export function parseRoute(url: URL): Route {
   }
   if (parts.length === 2 && first === "calls" && second) return { page: "call", id: second };
   if (parts.length === 2 && first === "users" && second) return { page: "user", name: second };
+  if (parts.length === 1 && first === "dashboard") {
+    const p = url.searchParams;
+    const asked = p.get("interface");
+    return {
+      page: "dashboard",
+      days: positive(p.get("days")),
+      from: day(p.get("from")),
+      to: day(p.get("to")),
+      interface: isInterface(asked) ? asked : undefined,
+      user: p.get("user") || undefined,
+      model: p.get("model") || undefined,
+    };
+  }
   return { page: "missing" };
+}
+
+/** A whole number of days from 1, or undefined. */
+function positive(v: string | null): number | undefined {
+  const n = Number.parseInt(v ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** A `YYYY-MM-DD` day, or undefined. */
+function day(v: string | null): string | undefined {
+  return v !== null && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : undefined;
 }
 
 /** The address of `route`. */
@@ -217,6 +281,17 @@ export function href(route: Route): string {
       return `/calls/${encodeURIComponent(route.id)}`;
     case "user":
       return `/users/${encodeURIComponent(route.name)}`;
+    case "dashboard": {
+      const q = new URLSearchParams();
+      if (route.days !== undefined) q.set("days", String(route.days));
+      if (route.from) q.set("from", route.from);
+      if (route.to) q.set("to", route.to);
+      if (route.interface) q.set("interface", route.interface);
+      if (route.user) q.set("user", route.user);
+      if (route.model) q.set("model", route.model);
+      const s = q.toString();
+      return s === "" ? "/dashboard" : `/dashboard?${s}`;
+    }
     case "admin":
       return adminHref(route.view);
     case "missing":

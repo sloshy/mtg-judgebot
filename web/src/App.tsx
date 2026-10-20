@@ -23,6 +23,7 @@ import {
 } from "./api";
 import { BotAvatar, BotMessage, Notice, Typing } from "./Chat";
 import { ThemeSelect } from "./Controls";
+import { DashboardPage } from "./Dashboard";
 import { CallPage, FeedPage } from "./Feed";
 import { DOCS_URL } from "./links";
 import { isLocale, type Locale, type Messages, messages, pickLocale } from "./messages";
@@ -165,6 +166,8 @@ export default function App() {
 
   // The feed's pages exist only where the server serves the feed.
   const feed = () => about()?.feed === true;
+  // The dashboard's, likewise (it follows the feed on the server).
+  const stats = () => about()?.stats ?? null;
 
   return (
     <div class="app">
@@ -198,6 +201,14 @@ export default function App() {
                 >
                   {m().navFeed}
                 </a>
+                <Show when={stats()}>
+                  <a
+                    href={href({ page: "dashboard" })}
+                    aria-current={route().page === "dashboard" ? "page" : undefined}
+                  >
+                    {m().navDashboard}
+                  </a>
+                </Show>
               </nav>
             </Show>
             <a class="docs-link" href={DOCS_URL}>
@@ -210,7 +221,7 @@ export default function App() {
                   stroke-linejoin="round"
                 />
               </svg>
-              {m().navDocs}
+              <span class="docs-label">{m().navDocs}</span>
             </a>
             <ThemeSelect m={m()} />
           </div>
@@ -222,7 +233,9 @@ export default function App() {
           <Match when={route().page === "ask"}>{null}</Match>
           <Match
             when={
-              !about.loading && !feed() && route().page !== "missing" && route().page !== "admin"
+              !about.loading &&
+              ((!feed() && route().page !== "missing" && route().page !== "admin") ||
+                (route().page === "dashboard" && stats() === null))
             }
           >
             <Missing m={m()} />
@@ -262,6 +275,22 @@ export default function App() {
                 title={m().userTitle(r().name)}
                 filters={false}
                 user={r().name}
+                dashboard={stats() !== null}
+              />
+            )}
+          </Match>
+          <Match
+            when={(() => {
+              const r = route();
+              return r.page === "dashboard" ? r : false;
+            })()}
+          >
+            {(r) => (
+              <DashboardPage
+                m={m()}
+                locale={browserLocale}
+                route={r()}
+                models={stats()?.models === true}
               />
             )}
           </Match>

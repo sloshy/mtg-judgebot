@@ -263,8 +263,8 @@ pub fn parse_query(m: &Messages, q: &FeedQuery) -> Result<(Filter, Option<Cursor
     let user = match blank(&q.user) {
         None => None,
         Some(u) => Some(
-            DiscordUsername::try_new(u.trim_start_matches('@').to_owned())
-                .map_err(|_| m.bad_user.to_owned())?,
+            // The type drops one leading `@` itself.
+            DiscordUsername::try_new(u).map_err(|_| m.bad_user.to_owned())?,
         ),
     };
     let search = match blank(&q.q) {

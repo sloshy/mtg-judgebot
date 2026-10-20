@@ -156,25 +156,56 @@ export type AdminMessages = {
   failureAttempt: (n: number) => string;
 
   usageTitle: string;
+  usageIntro: string;
   /** The window's choices, and their accessible name. */
   windowLabel: string;
   lastDays: (days: number) => string;
   statQuestions: string;
+  statPrivate: string;
+  statFailed: string;
   statSpend: string;
   statRuns: string;
   statRunSpend: string;
+  statPerAnswer: string;
+  /** The budget: its heading, each fact's name, each period's name, and
+   * the note for a per-process cap. */
+  budgetTitle: string;
+  budgetPeriod: string;
+  budgetCap: string;
+  budgetStart: string;
+  budgetSpent: string;
+  budgetLeft: string;
+  periodName: Record<"process" | "day" | "month", string>;
+  budgetProcess: string;
+  /** No serving process has recorded its period and cap yet. */
+  budgetUnknown: string;
   /** The spend chart: its title and a bar's hover text. */
   chartTitle: string;
-  chartBar: (day: string, usd: string) => string;
+  chartBar: (day: string, usd: string, calls: number) => string;
   /** Under the chart: what its tallest bar stands for. */
   chartMax: (usd: string) => string;
-  byDayTitle: string;
-  dayLine: (questions: number, privateCount: number, usd: string, calls: number) => string;
+  /** The ledger's months, each line's figures. */
+  byMonthTitle: string;
+  month: (month: string) => string;
+  monthLine: (usd: string, calls: number) => string;
+  /** The runs: the heading, the note under an asker filter, the refusals. */
+  usageRunsTitle: string;
+  runsPerAsker: string;
+  refusedAtCap: (n: number) => string;
   byModelTitle: string;
   modelLine: (requests: number, tokens: string, estimated: number) => string;
   outcomesTitle: string;
-  ratingsSummary: (r: [number, number, number]) => string;
-  webRatingsSummary: (r: [number, number, number]) => string;
+  byInterfaceTitle: string;
+  byStageTitle: string;
+  /** A count of runs or requests and what they cost. */
+  spendLine: (n: number, unit: "runs" | "requests", usd: string) => string;
+  latencyTitle: string;
+  latencyLine: (l: { runs: number; p50_ms: number; p90_ms: number; max_ms: number }) => string;
+  expensiveTitle: string;
+  /** A dear run's line: where, how it ended, when. */
+  expensiveLine: (iface: string, outcome: string, when: string) => string;
+  /** A run that left no question to show. */
+  noQuestion: string;
   retiredCalls: (n: number) => string;
   lowestTitle: string;
   lowestLine: (score: number, ratings: number) => string;
@@ -197,7 +228,7 @@ export const en = {
   navCalls: "Calls",
   navFeedback: "Feedback",
   navFailures: "Failures",
-  navUsage: "Usage",
+  navUsage: "Dashboard",
 
   noTokenTitle: "Token needed",
   noToken:
@@ -362,27 +393,64 @@ export const en = {
   failureRejection: "First attempt rejected",
   failureAttempt: (n) => `Attempt ${n}`,
 
-  usageTitle: "Usage",
+  usageTitle: "Dashboard",
+  usageIntro:
+    "Every question counted, private ones included, with what it cost: the public dashboard's figures and the operator's.",
   windowLabel: "Window",
-  lastDays: (days) => (days === 366 ? "A year" : `${days} days`),
+  lastDays: (days) => (days >= 365 ? "A year" : `${days} days`),
   statQuestions: "Questions",
+  statPrivate: "Private",
+  statFailed: "Failed calls",
   statSpend: "Spend",
   statRuns: "Runs",
   statRunSpend: "Spend on runs",
+  statPerAnswer: "Per answer",
+  budgetTitle: "Budget",
+  budgetPeriod: "Period",
+  budgetCap: "Cap",
+  budgetStart: "Since",
+  budgetSpent: "Spent",
+  budgetLeft: "Left",
+  periodName: { process: "Each process", day: "The UTC day", month: "The UTC month" },
+  budgetProcess:
+    "Each process counts its own spend against the cap from its start, so there is no shared figure to show.",
+  budgetUnknown:
+    "No serving process has recorded its budget settings yet: they appear once judgebot has run with this release.",
   chartTitle: "Spend per day (USD)",
-  chartBar: (day, usd) => `${day}: ${usd}`,
+  chartBar: (day, usd, calls) =>
+    `${day}: ${usd} · ${calls} model ${calls === 1 ? "call" : "calls"}`,
   chartMax: (usd) => `highest: ${usd}`,
-  byDayTitle: "By day",
-  dayLine: (questions, privateCount, usd, calls) =>
-    `${questions} ${questions === 1 ? "question" : "questions"}${privateCount > 0 ? ` (${privateCount} private)` : ""} · ${usd} · ${calls} model ${calls === 1 ? "call" : "calls"}`,
-  byModelTitle: "Runs by model",
+  byMonthTitle: "Spend per month",
+  month: (month) => {
+    const d = new Date(`${month}-01T00:00:00Z`);
+    return Number.isNaN(d.getTime())
+      ? month
+      : new Intl.DateTimeFormat("en", { month: "long", year: "numeric", timeZone: "UTC" }).format(
+          d,
+        );
+  },
+  monthLine: (usd, calls) =>
+    `${usd} · ${count.format(calls)} model ${calls === 1 ? "call" : "calls"}`,
+  usageRunsTitle: "Runs",
+  runsPerAsker:
+    "Runs are not counted per asker: a question that was not answered records no asker. Clear the asker to see them.",
+  refusedAtCap: (n) =>
+    n === 0
+      ? "The spend cap refused no run."
+      : `The spend cap refused ${count.format(n)} ${n === 1 ? "run" : "runs"}.`,
+  byModelTitle: "By model",
   modelLine: (requests, tokens, estimated) =>
     `${requests} ${requests === 1 ? "request" : "requests"} · ${tokens}${estimated > 0 ? ` · ${estimated} at the worst case` : ""}`,
-  outcomesTitle: "Runs by outcome",
-  ratingsSummary: ([incorrect, partial, correct]) =>
-    `Discord ratings: ${correct} correct, ${partial} partially correct, ${incorrect} incorrect.`,
-  webRatingsSummary: ([incorrect, partial, correct]) =>
-    `Web ratings (anonymous, never counted toward the examples): ${correct} correct, ${partial} partially correct, ${incorrect} incorrect.`,
+  outcomesTitle: "By outcome",
+  byInterfaceTitle: "By interface",
+  byStageTitle: "By stage",
+  spendLine: (n, unit, usd) => `${count.format(n)} ${n === 1 ? unit.slice(0, -1) : unit} · ${usd}`,
+  latencyTitle: "Time to answer",
+  latencyLine: (l) =>
+    `median ${(l.p50_ms / 1000).toFixed(1)} s · 90th percentile ${(l.p90_ms / 1000).toFixed(1)} s · slowest ${(l.max_ms / 1000).toFixed(1)} s · ${count.format(l.runs)} answered`,
+  expensiveTitle: "Dearest runs",
+  expensiveLine: (iface, outcome, when) => `${iface} · ${outcome.replaceAll("_", " ")} · ${when}`,
+  noQuestion: "No question kept",
   retiredCalls: (n) => `${n} ${n === 1 ? "call is" : "calls are"} retired.`,
   lowestTitle: "Lowest rated",
   lowestLine: (score, ratings) =>

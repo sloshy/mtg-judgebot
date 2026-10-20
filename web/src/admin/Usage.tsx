@@ -1,43 +1,75 @@
-// /admin/usage: questions and spend over a window. Four headline numbers,
-// the spend per day as a bar chart (the day list under it is the same data
-// as text), then the runs by model and outcome, the ratings, the
-// lowest-rated calls and the latest data refreshes.
+// /admin/usage: the operator's dashboard (#28). The public dashboard's
+// figures over every call, private ones included (the same sections, from
+// ../Stats), then what only the operator sees: the budget, the spend per
+// day (a bar chart; the hover text and the month list carry the numbers)
+// and per month, the runs by outcome, model, interface and stage with their
+// latency and the dearest of them, the lowest-rated calls, the feedback
+// queue and the latest data refreshes. `judge-cli stats` prints the same
+// report.
 
 import { createResource, For, Match, Show, Switch } from "solid-js";
+import type { Interface } from "../api";
 import { Typing } from "../Chat";
-import { href } from "../router";
+import { type AdminUsageFilter, href, navigate } from "../router";
+import { BarList, DashboardSections, type StatsLinks, StatsSection, StatTiles } from "../Stats";
 import { type AdminContext, ReadFailure } from "./Admin";
-import { type Day, fetchUsage, type Usage } from "./api";
+import { fetchUsage, type RunStats, type Usage } from "./api";
 
 /** The windows offered, in days. */
 const WINDOWS = [7, 30, 90, 366] as const;
+const DEFAULT_DAYS = 30;
+const INTERFACES: readonly Interface[] = ["discord", "web", "mcp", "cli", "agent_session", "agent"];
 
-export function UsagePage(props: { ctx: AdminContext; days: number }) {
+/** Where the admin figures link: the admin list of calls. */
+const LINKS: StatsLinks = {
+  interface: (i) => href({ page: "admin", view: { view: "calls", filter: { interface: i } } }),
+  user: (name) => href({ page: "admin", view: { view: "calls", filter: { asker: name } } }),
+  card: (name) => href({ page: "admin", view: { view: "calls", filter: { q: name } } }),
+};
+
+export function UsagePage(props: { ctx: AdminContext; filter: AdminUsageFilter }) {
   const m = () => props.ctx.m;
   const [read] = createResource(
-    () => props.days,
-    (days) => fetchUsage(days, props.ctx.token, m()),
+    () => ({ ...props.filter }),
+    (f) => fetchUsage(f, props.ctx.token, m()),
   );
+  const days = () =>
+    props.filter.from === undefined ? (props.filter.days ?? DEFAULT_DAYS) : undefined;
+  const at = (change: Partial<AdminUsageFilter>) =>
+    href({ page: "admin", view: { view: "usage", filter: { ...props.filter, ...change } } });
   return (
     <section class="page">
       <header class="page-head">
         <div>
           <h2>{m().usageTitle}</h2>
+          <p class="page-intro">{m().usageIntro}</p>
         </div>
       </header>
       <nav class="filters" aria-label={m().windowLabel}>
         <For each={WINDOWS}>
-          {(days) => (
+          {(n) => (
             <a
               class="chip"
-              href={href({ page: "admin", view: { view: "usage", days } })}
-              aria-current={props.days === days ? "page" : undefined}
+              href={at({
+                days: n === DEFAULT_DAYS ? undefined : n,
+                from: undefined,
+                to: undefined,
+              })}
+              aria-current={days() === n ? "page" : undefined}
             >
-              {m().lastDays(days)}
+              {m().lastDays(n)}
             </a>
           )}
         </For>
       </nav>
+      <Filters
+        ctx={props.ctx}
+        filter={props.filter}
+        models={(() => {
+          const r = read();
+          return r?.ok ? (r.value.models ?? []).map((x) => x.model) : [];
+        })()}
+      />
       <Switch fallback={<Typing m={props.ctx.pub} loading={true} />}>
         <Match when={read()?.ok === true && read()}>
           {(r) => {
@@ -53,106 +85,188 @@ export function UsagePage(props: { ctx: AdminContext; days: number }) {
   );
 }
 
-function questions(d: Day): number {
-  return d.discord + d.web + d.mcp + d.cli + d.agent_session + d.agent;
+/** Interface, asker and model, as a form whose submission is a new
+ * address; the range stays as chosen. */
+function Filters(props: { ctx: AdminContext; filter: AdminUsageFilter; models: string[] }) {
+  const m = () => props.ctx.m;
+  let form: HTMLFormElement | undefined;
+  const value = (name: string) => {
+    const v = form?.elements.namedItem(name);
+    return v instanceof HTMLInputElement || v instanceof HTMLSelectElement ? v.value.trim() : "";
+  };
+  const models = () => {
+    const chosen = props.filter.model;
+    return chosen && !props.models.includes(chosen) ? [...props.models, chosen] : props.models;
+  };
+  return (
+    <form
+      ref={form}
+      class="admin-filters"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const asked = value("interface");
+        navigate(
+          href({
+            page: "admin",
+            view: {
+              view: "usage",
+              filter: {
+                days: props.filter.days,
+                from: props.filter.from,
+                to: props.filter.to,
+                interface: INTERFACES.find((i) => i === asked),
+                asker: value("asker") || undefined,
+                model: value("model") || undefined,
+              },
+            },
+          }),
+        );
+      }}
+    >
+      <label class="admin-field">
+        <span>{m().filterInterface}</span>
+        <select name="interface" value={props.filter.interface ?? ""}>
+          <option value="">{m().any}</option>
+          <For each={INTERFACES}>{(i) => <option value={i}>{m().interfaceName[i]}</option>}</For>
+        </select>
+      </label>
+      <label class="admin-field">
+        <span>{m().filterAsker}</span>
+        <input
+          name="asker"
+          type="text"
+          value={props.filter.asker ?? ""}
+          placeholder={m().filterAskerPlaceholder}
+          maxLength={100}
+          autocomplete="off"
+        />
+      </label>
+      <label class="admin-field">
+        <span>{m().filterModel}</span>
+        <select name="model" value={props.filter.model ?? ""}>
+          <option value="">{m().any}</option>
+          <For each={models()}>{(name) => <option value={name}>{name}</option>}</For>
+        </select>
+      </label>
+      <p class="admin-actions">
+        <button type="submit" class="chip chip-action">
+          {m().applyFilters}
+        </button>
+        <a
+          class="chip"
+          href={href({
+            page: "admin",
+            view: {
+              view: "usage",
+              filter: { days: props.filter.days, from: props.filter.from, to: props.filter.to },
+            },
+          })}
+        >
+          {m().clearFilters}
+        </a>
+      </p>
+    </form>
+  );
 }
 
 function Report(props: { ctx: AdminContext; usage: Usage }) {
   const m = () => props.ctx.m;
+  const pub = () => props.ctx.pub;
   const u = () => props.usage;
-  const tokens = (n: number) => new Intl.NumberFormat("en").format(n);
   return (
     <>
-      <ul class="admin-stats">
-        <li class="admin-stat">
-          <span>{m().statQuestions}</span>
-          <strong>{u().questions}</strong>
-        </li>
-        <li class="admin-stat">
-          <span>{m().statSpend}</span>
-          <strong>{m().usd(u().usd, false)}</strong>
-        </li>
-        <li class="admin-stat">
-          <span>{m().statRuns}</span>
-          <strong>{u().runs}</strong>
-        </li>
-        <li class="admin-stat">
-          <span>{m().statRunSpend}</span>
-          <strong>{m().usd(u().run_usd, false)}</strong>
-        </li>
-      </ul>
+      <p class="stats-range">{pub().rangeLine(u().from, u().to)}</p>
+      <StatTiles
+        items={[
+          { label: m().statQuestions, value: pub().count(u().questions) },
+          { label: m().statPrivate, value: pub().count(u().private) },
+          {
+            label: m().statFailed,
+            value: (
+              <a href={href({ page: "admin", view: { view: "failures" } })}>
+                {pub().count(u().failed_calls)}
+              </a>
+            ),
+          },
+          { label: m().statSpend, value: m().usd(u().usd, false) },
+          ...(u().run_stats
+            ? [
+                { label: m().statRuns, value: pub().count(u().run_stats?.runs ?? 0) },
+                {
+                  label: m().statPerAnswer,
+                  value:
+                    u().run_stats?.usd_per_answer == null
+                      ? "–"
+                      : m().usd(u().run_stats?.usd_per_answer ?? 0, false),
+                },
+              ]
+            : []),
+        ]}
+      />
 
-      <section class="admin-section" aria-labelledby="chart-title">
-        <h3 id="chart-title">{m().chartTitle}</h3>
+      <StatsSection id="budget-title" title={m().budgetTitle}>
+        <Show when={u().budget.period === null}>
+          <p class="admin-note">{m().budgetUnknown}</p>
+        </Show>
+        <dl class="admin-facts">
+          <Show when={u().budget.period}>
+            {(period) => (
+              <>
+                <dt>{m().budgetPeriod}</dt>
+                <dd>{m().periodName[period()]}</dd>
+              </>
+            )}
+          </Show>
+          <Show when={u().budget.cap_usd !== null}>
+            <dt>{m().budgetCap}</dt>
+            <dd>{m().usd(u().budget.cap_usd ?? 0, false)}</dd>
+          </Show>
+          <Show when={u().budget.period_start}>
+            {(start) => (
+              <>
+                <dt>{m().budgetStart}</dt>
+                <dd>{m().day(start())}</dd>
+              </>
+            )}
+          </Show>
+          <Show when={u().budget.spent_usd !== null}>
+            <dt>{m().budgetSpent}</dt>
+            <dd>{m().usd(u().budget.spent_usd ?? 0, false)}</dd>
+            <dt>{m().budgetLeft}</dt>
+            <dd>{m().usd(u().budget.left_usd ?? 0, false)}</dd>
+          </Show>
+        </dl>
+        <Show when={u().budget.period === "process"}>
+          <p class="admin-note">{m().budgetProcess}</p>
+        </Show>
+      </StatsSection>
+
+      <StatsSection id="spend-title" title={m().chartTitle}>
         <SpendChart ctx={props.ctx} usage={u()} />
-      </section>
-
-      <section class="admin-section" aria-labelledby="by-day-title">
-        <h3 id="by-day-title">{m().byDayTitle}</h3>
-        <Show when={u().by_day.length > 0} fallback={<p class="admin-empty">{m().nothingYet}</p>}>
+        <Show when={u().spend_by_month.length > 0}>
+          <h4 class="stats-subhead">{m().byMonthTitle}</h4>
           <ul class="admin-list">
-            <For each={u().by_day}>
-              {(d) => (
+            <For each={u().spend_by_month}>
+              {(mo) => (
                 <li>
-                  <strong>{m().day(d.day)}</strong>
-                  <span>
-                    {m().dayLine(questions(d), d.private, m().usd(d.usd, false), d.llm_calls)}
-                  </span>
+                  <strong>{m().month(mo.month)}</strong>
+                  <span>{m().monthLine(m().usd(mo.usd, false), mo.llm_calls)}</span>
                 </li>
               )}
             </For>
           </ul>
         </Show>
-      </section>
+      </StatsSection>
 
-      <section class="admin-section" aria-labelledby="by-model-title">
-        <h3 id="by-model-title">{m().byModelTitle}</h3>
-        <Show when={u().by_model.length > 0} fallback={<p class="admin-empty">{m().nothingYet}</p>}>
-          <ul class="admin-list">
-            <For each={u().by_model}>
-              {(model) => (
-                <li>
-                  <span>
-                    <strong>{model.model}</strong> · {model.provider}
-                  </span>
-                  <span>
-                    {m().modelLine(
-                      model.requests,
-                      m().tokens(model.input_tokens, model.output_tokens),
-                      model.estimated,
-                    )}{" "}
-                    · <strong>{m().usd(model.usd, model.estimated > 0)}</strong>
-                  </span>
-                </li>
-              )}
-            </For>
-          </ul>
-        </Show>
-      </section>
+      <DashboardSections m={pub()} d={u()} links={LINKS} />
 
-      <section class="admin-section" aria-labelledby="outcomes-title">
-        <h3 id="outcomes-title">{m().outcomesTitle}</h3>
-        <Show when={u().outcomes.length > 0} fallback={<p class="admin-empty">{m().nothingYet}</p>}>
-          <ul class="admin-list">
-            <For each={u().outcomes}>
-              {(o) => (
-                <li>
-                  <span>{o.outcome.replaceAll("_", " ")}</span>
-                  <strong>{tokens(o.runs)}</strong>
-                </li>
-              )}
-            </For>
-          </ul>
+      <StatsSection id="runs-title" title={m().usageRunsTitle}>
+        <Show when={u().run_stats} fallback={<p class="admin-note">{m().runsPerAsker}</p>}>
+          {(runs) => <Runs ctx={props.ctx} runs={runs()} />}
         </Show>
-        <p class="admin-note">{m().ratingsSummary(u().ratings)}</p>
-        <Show when={u().web_ratings}>
-          {(web) => <p class="admin-note">{m().webRatingsSummary(web())}</p>}
-        </Show>
-        <p class="admin-note">{m().retiredCalls(u().retired_calls)}</p>
-      </section>
+      </StatsSection>
 
-      <section class="admin-section" aria-labelledby="lowest-title">
-        <h3 id="lowest-title">{m().lowestTitle}</h3>
+      <StatsSection id="lowest-title" title={m().lowestTitle}>
         <Show
           when={u().lowest_rated.length > 0}
           fallback={<p class="admin-empty">{m().nothingYet}</p>}
@@ -176,10 +290,10 @@ function Report(props: { ctx: AdminContext; usage: Usage }) {
             </For>
           </ul>
         </Show>
-      </section>
+        <p class="admin-note">{m().retiredCalls(u().retired_calls)}</p>
+      </StatsSection>
 
-      <section class="admin-section" aria-labelledby="queue-title">
-        <h3 id="queue-title">{m().queueCountsTitle}</h3>
+      <StatsSection id="queue-title" title={m().queueCountsTitle}>
         <Show
           when={(u().feedback ?? []).some((c) => c.open + c.resolved + c.dismissed > 0)}
           fallback={<p class="admin-empty">{m().nothingYet}</p>}
@@ -206,10 +320,9 @@ function Report(props: { ctx: AdminContext; usage: Usage }) {
             </For>
           </ul>
         </Show>
-      </section>
+      </StatsSection>
 
-      <section class="admin-section" aria-labelledby="refresh-title">
-        <h3 id="refresh-title">{m().refreshTitle}</h3>
+      <StatsSection id="refresh-title" title={m().refreshTitle}>
         <Show when={u().refresh_runs_note}>{(note) => <p class="admin-note">{note()}</p>}</Show>
         <Show
           when={u().refresh_runs.length > 0}
@@ -232,7 +345,127 @@ function Report(props: { ctx: AdminContext; usage: Usage }) {
             </For>
           </ul>
         </Show>
-      </section>
+      </StatsSection>
+    </>
+  );
+}
+
+/** The runs: by outcome, model, interface and stage, how long the answered
+ * ones took, and the dearest. */
+function Runs(props: { ctx: AdminContext; runs: RunStats }) {
+  const m = () => props.ctx.m;
+  const pub = () => props.ctx.pub;
+  const r = () => props.runs;
+  const stageName = (stage: string) => {
+    const names = m().stageName;
+    return stage in names ? names[stage as keyof typeof names] : stage;
+  };
+  return (
+    <>
+      <StatTiles
+        items={[
+          { label: m().statRuns, value: pub().count(r().runs) },
+          { label: m().statRunSpend, value: m().usd(r().usd, r().estimated > 0) },
+        ]}
+      />
+      <p class="admin-note">{m().refusedAtCap(r().refused_at_cap)}</p>
+      <Show when={r().latency}>
+        {(l) => <p class="admin-note">{`${m().latencyTitle}: ${m().latencyLine(l())}`}</p>}
+      </Show>
+
+      <h4 class="stats-subhead">{m().outcomesTitle}</h4>
+      <BarList
+        m={pub()}
+        items={r().outcomes.map((o) => ({
+          key: o.outcome,
+          label: o.outcome.replaceAll("_", " "),
+          n: o.runs,
+        }))}
+      />
+
+      <h4 class="stats-subhead">{m().byModelTitle}</h4>
+      <Show when={r().by_model.length > 0} fallback={<p class="admin-empty">{m().nothingYet}</p>}>
+        <ul class="admin-list">
+          <For each={r().by_model}>
+            {(model) => (
+              <li>
+                <span>
+                  <strong>{model.model}</strong> · {model.provider}
+                </span>
+                <span>
+                  {m().modelLine(
+                    model.requests,
+                    m().tokens(model.input_tokens, model.output_tokens),
+                    model.estimated,
+                  )}{" "}
+                  · <strong>{m().usd(model.usd, model.estimated > 0)}</strong>
+                </span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+
+      <h4 class="stats-subhead">{m().byInterfaceTitle}</h4>
+      <Show
+        when={r().by_interface.length > 0}
+        fallback={<p class="admin-empty">{m().nothingYet}</p>}
+      >
+        <ul class="admin-list">
+          <For each={r().by_interface}>
+            {(i) => (
+              <li>
+                <strong>{m().interfaceName[i.interface as Interface] ?? i.interface}</strong>
+                <span>{m().spendLine(i.runs, "runs", m().usd(i.usd, false))}</span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+
+      <h4 class="stats-subhead">{m().byStageTitle}</h4>
+      <Show when={r().by_stage.length > 0} fallback={<p class="admin-empty">{m().nothingYet}</p>}>
+        <ul class="admin-list">
+          <For each={r().by_stage}>
+            {(s) => (
+              <li>
+                <strong>{stageName(s.stage)}</strong>
+                <span>{m().spendLine(s.requests, "requests", m().usd(s.usd, false))}</span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+
+      <h4 class="stats-subhead">{m().expensiveTitle}</h4>
+      <Show
+        when={r().most_expensive.length > 0}
+        fallback={<p class="admin-empty">{m().nothingYet}</p>}
+      >
+        <ul class="admin-list">
+          <For each={r().most_expensive}>
+            {(e) => (
+              <li>
+                <Show when={e.call} fallback={<span>{e.question ?? m().noQuestion}</span>}>
+                  {(call) => (
+                    <a href={href({ page: "admin", view: { view: "call", id: call() } })}>
+                      {e.question ?? m().noQuestion}
+                    </a>
+                  )}
+                </Show>
+                <span>
+                  {m().expensiveLine(
+                    m().interfaceName[e.interface as Interface] ?? e.interface,
+                    e.outcome,
+                    m().when(e.at),
+                  )}{" "}
+                  · <strong>{m().usd(e.usd, e.estimated)}</strong>
+                </span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
     </>
   );
 }
@@ -243,21 +476,19 @@ const HEIGHT = 160;
 const AXIS = 20;
 
 /** Spend per day as bars, oldest on the left: one series, so no legend (the
- * section's heading names it). Each bar's hover text gives the day and the
- * amount, and the day list under the chart is the same data as text. */
+ * section's heading names it). Each bar's hover text gives the day, the
+ * amount and the model calls, and the month list under it the totals. */
 function SpendChart(props: { ctx: AdminContext; usage: Usage }) {
   const m = () => props.ctx.m;
-  /** Every day of the window, oldest first, a day with nothing as 0. */
+  /** Every day of the range, oldest first, a day with nothing as 0. */
   const days = () => {
-    const spent = new Map(props.usage.by_day.map((d) => [d.day, d.usd]));
-    const out: { day: string; usd: number }[] = [];
-    const today = new Date();
-    for (let i = props.usage.days - 1; i >= 0; i--) {
-      const d = new Date(
-        Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i),
-      );
-      const key = d.toISOString().slice(0, 10);
-      out.push({ day: key, usd: spent.get(key) ?? 0 });
+    const spent = new Map(props.usage.spend_by_day.map((d) => [d.day, d]));
+    const out: { day: string; usd: number; calls: number }[] = [];
+    const first = new Date(`${props.usage.from}T00:00:00Z`);
+    for (let i = 0; i < props.usage.days; i++) {
+      const key = new Date(first.getTime() + i * 86_400_000).toISOString().slice(0, 10);
+      const d = spent.get(key);
+      out.push({ day: key, usd: d?.usd ?? 0, calls: d?.llm_calls ?? 0 });
     }
     return out;
   };
@@ -276,7 +507,7 @@ function SpendChart(props: { ctx: AdminContext; usage: Usage }) {
                 class="admin-chart-bar"
                 d={barPath(i() * step() + 1, HEIGHT - AXIS, bar(), Math.max(height(d.usd), 2))}
               >
-                <title>{m().chartBar(m().day(d.day), m().usd(d.usd, false))}</title>
+                <title>{m().chartBar(m().day(d.day), m().usd(d.usd, false), d.calls)}</title>
               </path>
             </Show>
           )}

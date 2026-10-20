@@ -371,7 +371,7 @@ mod gate_tests {
             reached
                 .pointer("/result/content/0/text")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|t| t.contains("usage by day")),
+                .is_some_and(|t| t.contains("begin a report")),
             "{reached}"
         );
 

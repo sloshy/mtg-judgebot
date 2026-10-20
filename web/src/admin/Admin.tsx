@@ -44,7 +44,7 @@ const TABS: readonly {
     on: ["feedback", "item"],
   },
   { view: { view: "failures" }, label: (m) => m.navFailures, on: ["failures"] },
-  { view: { view: "usage" }, label: (m) => m.navUsage, on: ["usage"] },
+  { view: { view: "usage", filter: {} }, label: (m) => m.navUsage, on: ["usage"] },
 ];
 
 export default function Admin() {
@@ -162,7 +162,7 @@ export default function Admin() {
                   return v.view === "usage" ? v : false;
                 })()}
               >
-                {(v) => <UsagePage ctx={ctx(t())} days={v().days ?? 30} />}
+                {(v) => <UsagePage ctx={ctx(t())} filter={v().filter} />}
               </Match>
               <Match when={view().view === "missing"}>
                 <section class="page">

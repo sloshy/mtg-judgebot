@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT date_trunc($1, now() AT TIME ZONE 'utc')::date::text AS \"start!\",\n                       (SELECT coalesce(sum(micro_usd), 0)::bigint FROM spend_days\n                        WHERE day >= date_trunc($1, now() AT TIME ZONE 'utc')::date) AS \"spent!\"\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "start!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "spent!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "66a8645a74fd3dd5d7ef02296418b6d970d811557c0c3bf43a66e5fc4150f867"
+}

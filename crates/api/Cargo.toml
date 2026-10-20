@@ -39,6 +39,8 @@ sqlx = { version = "0.9", default-features = false, features = [
 
 [dev-dependencies]
 http-body-util = "0.1"
+# `#[sqlx::test]`: the dashboard endpoint end to end over a migrated database.
+sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate"] }
 # `io-util`: the shutdown test speaks HTTP over a raw socket.
 tokio = { workspace = true, features = ["io-util"] }
 

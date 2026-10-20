@@ -37,6 +37,7 @@ use crate::{
     limit::RateLimiter,
     rating::{self, Rateable},
     shape::{self, ApiReply, JudgeRequest},
+    stats::{self, PublicStats, StatsAbout},
 };
 
 /// How long a request waits for a free judge slot before replying "busy".
@@ -132,6 +133,13 @@ pub struct App {
     public_calls: Option<Arc<dyn PublicCalls>>,
     /// The feed reads' own per-address window ([`feed::READ_LIMIT`]).
     reads: RateLimiter,
+    /// The public dashboard, when it is served (beside the feed).
+    public_stats: Option<Arc<dyn PublicStats>>,
+    /// The dashboard's own per-address window ([`stats::READ_LIMIT`]).
+    stats_reads: RateLimiter,
+    /// The dashboard reads running at once, across every address
+    /// ([`stats::CONCURRENCY`]).
+    stats_slots: Arc<Semaphore>,
     /// Which calls the web may rate, when `POST /api/calls/{id}/feedback`
     /// is served.
     rateable: Option<Arc<dyn Rateable>>,
@@ -176,6 +184,9 @@ impl App {
             locale: Locale::default(),
             public_calls: None,
             reads: RateLimiter::new(feed::READ_LIMIT, feed::READ_WINDOW),
+            public_stats: None,
+            stats_reads: RateLimiter::new(stats::READ_LIMIT, stats::READ_WINDOW),
+            stats_slots: Arc::new(Semaphore::new(stats::CONCURRENCY)),
             rateable: None,
             ratings: RateLimiter::new(rating::LIMIT, rating::WINDOW),
             public_feedback: false,
@@ -224,6 +235,36 @@ impl App {
     pub fn with_public_calls(mut self, calls: Arc<dyn PublicCalls>) -> Self {
         self.public_calls = Some(calls);
         self
+    }
+
+    /// Serve the public dashboard (`GET /api/stats`) from `reads`, where
+    /// the web page is served.
+    #[must_use]
+    pub fn with_public_stats(mut self, reads: Arc<dyn PublicStats>) -> Self {
+        self.public_stats = Some(reads);
+        self
+    }
+
+    /// The dashboard, when it is served.
+    pub(crate) fn public_stats(&self) -> Option<Arc<dyn PublicStats>> {
+        self.public_stats.clone()
+    }
+
+    /// Count a dashboard read from `ip`; `false` when its window is used up.
+    pub(crate) fn allow_stats(&self, ip: IpAddr) -> bool {
+        self.stats_reads.allow(ip)
+    }
+
+    /// A dashboard slot, waiting up to [`stats::SLOT_WAIT`]; `None` when
+    /// every slot stayed taken.
+    pub(crate) async fn stats_slot(&self) -> Option<OwnedSemaphorePermit> {
+        tokio::time::timeout(
+            stats::SLOT_WAIT,
+            Arc::clone(&self.stats_slots).acquire_owned(),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
     }
 
     /// The instance's language.
@@ -389,6 +430,9 @@ pub fn router(app: Arc<App>, interfaces: &Interfaces, web_dist: &Path) -> Router
                 .route("/api/feed", get(feed::feed_route))
                 .route("/api/calls/{id}", get(feed::call_route));
         }
+        if app.public_stats.is_some() {
+            router = router.route("/api/stats", get(stats::stats_route));
+        }
         // An endpoint that is not served is a JSON 404, not the page: the
         // page's fallback below would answer it with `index.html`. The
         // admin pages and their API exist on the admin listener only
@@ -521,6 +565,9 @@ struct AboutReply {
     /// Whether raters' reasons are shown on the public pages
     /// (`JUDGE_PUBLIC_FEEDBACK`), so the form can say so.
     public_feedback: bool,
+    /// The public dashboard (`/dashboard`, `GET /api/stats`) and what it
+    /// shows beyond the counts; `null` when it is not served here.
+    stats: Option<StatsAbout>,
 }
 
 /// The source offer as JSON (`judge_core::About`): repository, commit,
@@ -539,6 +586,10 @@ async fn about(State(app): State<Arc<App>>) -> Json<AboutReply> {
         feed: app.public_calls.is_some(),
         ratings: app.rateable.is_some(),
         public_feedback: app.public_feedback,
+        stats: app
+            .public_stats
+            .as_ref()
+            .map(|s| StatsAbout::of(s.disclosure())),
     })
 }
 
@@ -1549,6 +1600,7 @@ mod tests {
             "cursor=nope",
             "interface=telegram",
             "user=not%20a%20name",
+            "user=@@alice",
             "cursor=1.2.3",
             long.as_str(),
         ] {
@@ -1600,6 +1652,281 @@ mod tests {
         let (status, j) = get_json(&app, "/api/calls/00000000-0000-0000-0000-000000000001").await?;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(kind(&j), Some("rate_limited"));
+        Ok(())
+    }
+
+    /// A dashboard that resolves its span against a fixed today and
+    /// remembers the last query, showing cost and models as told.
+    struct StubStats {
+        disclosure: judge_bot::db::stats::Disclosure,
+        last: Mutex<Option<judge_bot::db::stats::PublicQuery>>,
+    }
+
+    #[async_trait]
+    impl PublicStats for StubStats {
+        fn disclosure(&self) -> judge_bot::db::stats::Disclosure {
+            self.disclosure
+        }
+
+        async fn dashboard(
+            &self,
+            q: &judge_bot::db::stats::PublicQuery,
+        ) -> Result<judge_bot::db::stats::Dashboard, judge_bot::db::stats::StatsError> {
+            use judge_bot::db::stats::{Dashboard, Date, RatingMix};
+            let today = Date::parse("2026-10-20").ok_or_else(|| {
+                judge_bot::db::stats::StatsError::Store(JudgeError::Upstream(anyhow::anyhow!(
+                    "today"
+                )))
+            })?;
+            let range = q.span.resolve(today)?;
+            *self
+                .last
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(q.clone());
+            Ok(Dashboard {
+                from: range.from().to_string(),
+                to: range.to().to_string(),
+                window_days: None,
+                questions: 0,
+                askers: 0,
+                interfaces: vec![],
+                by_day: vec![],
+                outcomes: None,
+                ratings: RatingMix::default(),
+                categories: vec![],
+                cards: vec![],
+                top_askers: vec![],
+                cost: None,
+                models: None,
+            })
+        }
+    }
+
+    /// The web page with the dashboard served from a [`StubStats`] showing
+    /// what `disclosure` says (or not served), open or closed.
+    fn stats_app(
+        disclosure: Option<judge_bot::db::stats::Disclosure>,
+        availability: Availability,
+    ) -> (Router, Option<Arc<StubStats>>) {
+        let store = Arc::new(StubStore::default());
+        let cfg = test_cfg(10, Path::new("does-not-exist"));
+        let app = App::new(
+            stub_deps(),
+            store as Arc<dyn CallStore>,
+            &cfg,
+            SourceOffer::upstream(judge_core::Commit::Unknown),
+            test_operator(),
+        )
+        .with_availability(availability)
+        .with_public_calls(Arc::new(StubFeed));
+        let stub = disclosure.map(|disclosure| {
+            Arc::new(StubStats {
+                disclosure,
+                last: Mutex::new(None),
+            })
+        });
+        let app = match &stub {
+            Some(s) => app.with_public_stats(Arc::clone(s) as Arc<dyn PublicStats>),
+            None => app,
+        };
+        (
+            router(
+                Arc::new(app),
+                &Interfaces::of(&nonempty![Interface::Web]),
+                Path::new("does-not-exist"),
+            ),
+            stub,
+        )
+    }
+
+    fn disclosure(cost: bool, models: bool) -> judge_bot::db::stats::Disclosure {
+        judge_bot::db::stats::Disclosure::parse(
+            Some(if cost { "true" } else { "false" }),
+            Some(if models { "true" } else { "false" }),
+        )
+        .unwrap_or_default()
+    }
+
+    /// `/api/about` says whether the dashboard is served and what it shows;
+    /// unserved, `/api/stats` is the JSON 404.
+    #[tokio::test]
+    async fn about_says_which_public_stats_exist() -> Res {
+        for (served, expect) in [
+            (None, serde_json::Value::Null),
+            (
+                Some(disclosure(false, false)),
+                serde_json::json!({"cost": false, "models": false}),
+            ),
+            (
+                Some(disclosure(true, false)),
+                serde_json::json!({"cost": true, "models": false}),
+            ),
+            (
+                Some(disclosure(false, true)),
+                serde_json::json!({"cost": false, "models": true}),
+            ),
+        ] {
+            let (app, _) = stats_app(served, Availability::open());
+            let (_, about) = get_json(&app, "/api/about").await?;
+            assert_eq!(about.get("stats"), Some(&expect));
+            let (status, j) = get_json(&app, "/api/stats").await?;
+            if served.is_some() {
+                assert_eq!(status, StatusCode::OK, "{j}");
+                assert_eq!(j.get("to"), Some(&serde_json::json!("2026-10-20")));
+                assert_eq!(j.get("from"), Some(&serde_json::json!("2026-09-21")));
+            } else {
+                assert_eq!(status, StatusCode::NOT_FOUND);
+                assert_eq!(kind(&j), Some("error"));
+            }
+        }
+        Ok(())
+    }
+
+    /// A model filter where models are not shown is refused, not ignored;
+    /// shown, it reaches the report. Every other parameter is checked.
+    #[tokio::test]
+    async fn the_model_filter_needs_public_models_and_bad_queries_are_400s() -> Res {
+        let (hidden, _) = stats_app(Some(disclosure(true, false)), Availability::open());
+        let (status, j) = get_json(&hidden, "/api/stats?model=claude-opus-5-5").await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{j}");
+        assert_eq!(kind(&j), Some("error"));
+
+        let (shown, stub) = stats_app(Some(disclosure(false, true)), Availability::open());
+        let (status, j) = get_json(
+            &shown,
+            "/api/stats?model=claude-opus-5-5&interface=discord&user=@alice&from=2026-10-01&to=2026-10-10",
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{j}");
+        let last = stub
+            .as_ref()
+            .and_then(|s| s.last.lock().ok().and_then(|l| l.clone()))
+            .ok_or("a query reached the report")?;
+        assert!(last.model.is_some());
+        assert_eq!(last.asked, Some(judge_bot::feed::Asked::Discord));
+        assert_eq!(last.user.as_ref().map(AsRef::<str>::as_ref), Some("alice"));
+        assert_eq!(j.get("from"), Some(&serde_json::json!("2026-10-01")));
+
+        for q in [
+            "from=2026-02-30",
+            "to=yesterday",
+            "days=0",
+            "days=367",
+            "days=many",
+            "from=2026-10-10&to=2026-10-01",
+            "from=2025-01-01&to=2026-10-01",
+            "interface=telegram",
+            "user=not%20a%20name",
+            "user=@@alice",
+        ] {
+            let (status, j) = get_json(&shown, &format!("/api/stats?{q}")).await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{q}: {j}");
+            assert_eq!(kind(&j), Some("error"), "{q}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stats_reads_wait_out_an_upgrade_and_have_their_own_limit() -> Res {
+        let (closed, _) = stats_app(Some(disclosure(false, false)), Availability::upgrading());
+        let (status, j) = get_json(&closed, "/api/stats").await?;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(kind(&j), Some("maintenance"));
+
+        let (app, _) = stats_app(Some(disclosure(false, false)), Availability::open());
+        for _ in 0..crate::stats::READ_LIMIT {
+            assert_eq!(get_json(&app, "/api/stats").await?.0, StatusCode::OK);
+        }
+        let (status, j) = get_json(&app, "/api/stats").await?;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(kind(&j), Some("rate_limited"));
+        // The feed's reads are counted apart.
+        assert_eq!(get_json(&app, "/api/feed").await?.0, StatusCode::OK);
+        Ok(())
+    }
+
+    /// End to end over a database: one public call and one private, each
+    /// with a run. Cost and model fields are absent unless their setting is
+    /// on, and never count the private call.
+    #[sqlx::test(migrator = "judge_bot::MIGRATOR")]
+    async fn the_endpoint_sends_cost_and_models_only_when_set(pool: sqlx::PgPool) -> Res {
+        for private in [false, true] {
+            let call: Uuid = sqlx::query_scalar(
+                "INSERT INTO calls (thread_id, interface, private, question, answer, category, \
+                 source, confidence, cr_version) VALUES ('t', 'mcp', $1, 'q', 'a', 'combat', 'cr', \
+                 'high', '20260819') RETURNING id",
+            )
+            .bind(private)
+            .fetch_one(&pool)
+            .await?;
+            let run: Uuid = sqlx::query_scalar(
+                "INSERT INTO judge_runs (started_at, interface, private, outcome, retried, \
+                 tool_round, call_id) VALUES (now(), 'mcp', $1, 'answered', false, false, $2) \
+                 RETURNING id",
+            )
+            .bind(private)
+            .bind(call)
+            .fetch_one(&pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO judge_run_charges (run_id, seq, stage, provider, model, input_tokens, \
+                 output_tokens, cache_read_tokens, cache_write_tokens, micro_usd, cost_estimated) \
+                 VALUES ($1, 0, 'synthesis', 'anthropic', $2, 1, 1, 0, 0, $3, false)",
+            )
+            .bind(run)
+            .bind(if private {
+                "secret-model"
+            } else {
+                "claude-opus-5-5"
+            })
+            .bind(if private { 9_000_000_i64 } else { 20_000 })
+            .execute(&pool)
+            .await?;
+        }
+        for (cost, models) in [(false, false), (true, false), (false, true), (true, true)] {
+            let shown = disclosure(cost, models);
+            let store = Arc::new(StubStore::default());
+            let cfg = test_cfg(10, Path::new("does-not-exist"));
+            let app = App::new(
+                stub_deps(),
+                store as Arc<dyn CallStore>,
+                &cfg,
+                SourceOffer::upstream(judge_core::Commit::Unknown),
+                test_operator(),
+            )
+            .with_public_stats(Arc::new(crate::stats::PgPublicStats::new(
+                pool.clone(),
+                None,
+                shown,
+            )));
+            let app = router(
+                Arc::new(app),
+                &Interfaces::of(&nonempty![Interface::Web]),
+                Path::new("does-not-exist"),
+            );
+            let (status, j) = get_json(&app, "/api/stats?days=7").await?;
+            assert_eq!(status, StatusCode::OK, "{j}");
+            assert_eq!(j.get("questions"), Some(&serde_json::json!(1)), "{j}");
+            assert_eq!(j.get("cost").is_some(), cost, "{j}");
+            assert_eq!(j.get("models").is_some(), models, "{j}");
+            assert!(!j.to_string().contains("secret-model"), "{j}");
+            if cost {
+                assert_eq!(
+                    j.pointer("/cost/usd"),
+                    Some(&serde_json::json!(0.02)),
+                    "{j}"
+                );
+            }
+            let (status, _) = get_json(&app, "/api/stats?model=secret-model").await?;
+            assert_eq!(
+                status,
+                if models {
+                    StatusCode::OK
+                } else {
+                    StatusCode::BAD_REQUEST
+                }
+            );
+        }
         Ok(())
     }
 

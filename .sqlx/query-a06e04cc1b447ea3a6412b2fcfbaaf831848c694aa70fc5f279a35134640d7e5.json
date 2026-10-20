@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT period, cap_micro,\n               to_char(written_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"recorded_at!\"\n        FROM budget_setting\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "period",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "budget_setting",
+            "name": "period"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "cap_micro",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "budget_setting",
+            "name": "cap_micro"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "recorded_at!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "a06e04cc1b447ea3a6412b2fcfbaaf831848c694aa70fc5f279a35134640d7e5"
+}

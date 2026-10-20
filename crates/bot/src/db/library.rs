@@ -129,12 +129,16 @@ impl PgLibrary {
         retrieve::load_rulings(&self.pool, &[card.into_inner()]).await
     }
 
-    /// How much the instance is used and what it costs (`judge-cli stats`).
+    /// The operator's report: the dashboard over every call, the spend, the
+    /// budget and the runs (`judge-cli stats`, [`super::stats::usage`]).
     ///
     /// # Errors
-    /// `Upstream` from sqlx.
-    pub async fn usage(&self, days: u32) -> Result<super::stats::Usage, JudgeError> {
-        super::stats::usage(&self.pool, days).await
+    /// A span that names no report, or the store.
+    pub async fn usage(
+        &self,
+        query: &super::stats::OperatorQuery,
+    ) -> Result<super::stats::Usage, super::stats::StatsError> {
+        super::stats::usage(&self.pool, query).await
     }
 
     /// The newest failed calls (`failed_calls`), newest first.

@@ -4,10 +4,11 @@
 //! the reads.
 //!
 //! What a public read may return is decided here, in SQL, and nowhere else:
-//! a private call is never read (`NOT c.private` is in every query's
-//! `WHERE`, and a test asks each read for one), a failed call is in another
-//! table, and a call older than the feed window
-//! (`JUDGE_FEED_DAYS`) is not read either. A missing call, a private one and
+//! a private call is never read and a call older than the feed window
+//! (`JUDGE_FEED_DAYS`) is not read either (`publicly_visible`, a SQL function
+//! the migrations define once and the public dashboard's counts use too, is
+//! in every query's `WHERE`, and a test asks each read for one), and a
+//! failed call is in another table. A missing call, a private one and
 //! one outside the window are the same `None`. The asker's Discord id is
 //! never selected; only the username snapshotted at asking time is, and
 //! `/forget` has already cleared it on the forgotten user's calls.
@@ -510,7 +511,7 @@ struct Row {
 }
 
 /// The window as the queries take it: days, or `NULL` for none.
-fn window_days(window: Option<Days>) -> Option<i32> {
+pub(crate) fn window_days(window: Option<Days>) -> Option<i32> {
     window.map(|d| i32::from(d.get()))
 }
 
@@ -565,8 +566,7 @@ pub async fn page(
             LEFT JOIN feedback_queue q ON q.call_id = r.call_id AND q.user_id = r.user_id
             WHERE r.call_id = c.id
         ) rt
-        WHERE NOT c.private
-          AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))
+        WHERE publicly_visible(c.private, c.created_at, $1)
           AND ($2::text IS NULL OR c.interface = $2)
           AND ($3::text IS NULL OR c.asker_name = $3)
           -- The text exactly as the feed shows it (`without_mentions`: each
@@ -659,8 +659,7 @@ pub async fn call(
             LEFT JOIN feedback_queue q ON q.call_id = r.call_id AND q.user_id = r.user_id
             WHERE r.call_id = c.id
         ) rt
-        WHERE NOT c.private
-          AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))
+        WHERE publicly_visible(c.private, c.created_at, $1)
           AND c.id = $2
         "#,
         window_days(window),
@@ -687,8 +686,7 @@ pub async fn rateable(pool: &PgPool, window: Option<Days>, id: CallId) -> Result
         r#"
         SELECT EXISTS (
             SELECT 1 FROM calls c
-            WHERE c.id = $2 AND NOT c.private
-              AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))
+            WHERE c.id = $2 AND publicly_visible(c.private, c.created_at, $1)
         ) AS "rateable!"
         "#,
         window_days(window),

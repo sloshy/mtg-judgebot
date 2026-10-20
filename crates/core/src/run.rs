@@ -105,6 +105,55 @@ impl Outcome {
     }
 }
 
+impl Outcome {
+    /// The outcome whose stored id is `id`.
+    #[must_use]
+    pub fn parse(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|o| o.id() == id)
+    }
+
+    /// The kind of ending the dashboard counts it as (#28); `None` for a run
+    /// whose caller went away, which says nothing about the judge.
+    #[must_use]
+    pub const fn group(self) -> Option<OutcomeGroup> {
+        match self {
+            Self::Answered => Some(OutcomeGroup::Answered),
+            Self::Ambiguous => Some(OutcomeGroup::Ambiguous),
+            Self::NotFound => Some(OutcomeGroup::NotFound),
+            Self::OutOfScope => Some(OutcomeGroup::OutOfScope),
+            Self::Refused => Some(OutcomeGroup::Refused),
+            Self::BadCitation
+            | Self::MalformedCitation
+            | Self::EmptyVerdict
+            | Self::UncitedRules
+            | Self::ToolMisuse
+            | Self::AtCap
+            | Self::Upstream => Some(OutcomeGroup::Failed),
+            Self::Abandoned => None,
+        }
+    }
+}
+
+/// How a run ended, as the dashboard counts it: the six kinds a reader can
+/// tell apart, every failure of the pipeline (a citation that never
+/// validated, the spend cap, an upstream error) one `Failed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutcomeGroup {
+    /// A validated verdict.
+    Answered,
+    /// A "did you mean?".
+    Ambiguous,
+    /// A card that matched nothing.
+    NotFound,
+    /// Tournament policy or not a rules question.
+    OutOfScope,
+    /// The model declined.
+    Refused,
+    /// Every other ending but an abandoned run.
+    Failed,
+}
+
 impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.id())
@@ -167,6 +216,16 @@ impl RunRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_outcome_parses_back_and_only_an_abandoned_run_has_no_group() {
+        for o in Outcome::ALL {
+            assert_eq!(Outcome::parse(o.id()), Some(o));
+            assert_eq!(o.group().is_none(), o == Outcome::Abandoned, "{o}");
+        }
+        assert_eq!(Outcome::parse("agent"), None);
+        assert_eq!(Outcome::AtCap.group(), Some(OutcomeGroup::Failed));
+    }
 
     #[test]
     fn outcome_ids_are_the_serde_names() -> Result<(), serde_json::Error> {

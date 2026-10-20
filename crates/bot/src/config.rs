@@ -1066,6 +1066,14 @@ pub enum ConfigError {
         /// The value as set.
         value: String,
     },
+    /// `JUDGE_PUBLIC_COST` or `JUDGE_PUBLIC_MODELS` is not a boolean.
+    #[error("{var}={value:?}: not true or false")]
+    BadPublicStats {
+        /// The variable.
+        var: &'static str,
+        /// The value as set.
+        value: String,
+    },
     /// `FEEDBACK_IP_DAYS` is not a whole number of days in range.
     #[error(
         "{}={value:?}: not a whole number of days from 1 to {} (unset keeps web raters' addresses {} days)",
@@ -1232,7 +1240,9 @@ impl ConfigError {
             Self::BedrockModelId { stage, .. } => toml(format!("models.{stage}.model")),
             Self::Credentials { provider, .. } => toml(format!("providers.{provider}")),
             Self::BadSourceUrl { .. } => env(SOURCE_URL_ENV),
-            Self::BadContact { var, .. } | Self::BadBudget { var, .. } => env(var),
+            Self::BadContact { var, .. }
+            | Self::BadBudget { var, .. }
+            | Self::BadPublicStats { var, .. } => env(var),
             Self::BadSchedule { .. } => env(jobs::REFRESH_HOURS_ENV),
             Self::BadRetention { .. } => env(prune::RETENTION_ENV),
             Self::BadFeedbackIpDays { .. } => env(crate::feedback::IP_DAYS_ENV),
@@ -1643,6 +1653,9 @@ pub struct Config {
     /// Whether the public reads carry raters' reasons
     /// (`JUDGE_PUBLIC_FEEDBACK`).
     public_feedback: feed::Reasons,
+    /// What the public dashboard shows beyond the counts
+    /// (`JUDGE_PUBLIC_COST`, `JUDGE_PUBLIC_MODELS`).
+    public_stats: crate::db::stats::Disclosure,
 }
 
 /// The budget settings from `env`, blank meaning unset.
@@ -1715,6 +1728,25 @@ pub fn call_retention(env: impl Fn(&str) -> Option<String>) -> Result<Retention,
 pub fn public_feedback(env: impl Fn(&str) -> Option<String>) -> Result<feed::Reasons, ConfigError> {
     feed::Reasons::parse(env(feed::PUBLIC_FEEDBACK_ENV).as_deref())
         .map_err(|value| ConfigError::BadPublicFeedback { value })
+}
+
+/// What the public dashboard shows beyond the counts, from `env`
+/// (`JUDGE_PUBLIC_COST`, `JUDGE_PUBLIC_MODELS`), blank meaning hidden.
+///
+/// # Errors
+/// [`ConfigError::BadPublicStats`] for anything but a boolean.
+pub fn public_stats(
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<crate::db::stats::Disclosure, ConfigError> {
+    use crate::db::stats::{Disclosure, PUBLIC_COST_ENV, PUBLIC_MODELS_ENV};
+    Disclosure::parse(
+        env(PUBLIC_COST_ENV).as_deref(),
+        env(PUBLIC_MODELS_ENV).as_deref(),
+    )
+    .map_err(|b| ConfigError::BadPublicStats {
+        var: b.var,
+        value: b.value,
+    })
 }
 
 /// How long a web rating keeps its address and user agent, from `env`
@@ -1904,6 +1936,7 @@ impl Config {
             locale: instance_locale(&env)?,
             feed: feed_settings(&env)?,
             public_feedback: public_feedback(&env)?,
+            public_stats: public_stats(&env)?,
         })
     }
 
@@ -2012,6 +2045,7 @@ impl Config {
             locale: instance_locale(&env)?,
             feed: feed_settings(&env)?,
             public_feedback: public_feedback(&env)?,
+            public_stats: public_stats(&env)?,
         })
     }
 
@@ -2051,6 +2085,13 @@ impl Config {
     #[must_use]
     pub const fn public_feedback(&self) -> feed::Reasons {
         self.public_feedback
+    }
+
+    /// What the public dashboard shows beyond the counts
+    /// (`JUDGE_PUBLIC_COST`, `JUDGE_PUBLIC_MODELS`).
+    #[must_use]
+    pub const fn public_stats(&self) -> crate::db::stats::Disclosure {
+        self.public_stats
     }
 
     /// What the long-running processes run beside their requests, and where
@@ -3280,6 +3321,23 @@ model = "qwen3:8b"
             matches!(err, ConfigError::BadPublicFeedback { .. }),
             "{err}"
         );
+        // The dashboard's cost and models: off unless set, a typo refused.
+        let (cost_env, models_env) = (
+            crate::db::stats::PUBLIC_COST_ENV,
+            crate::db::stats::PUBLIC_MODELS_ENV,
+        );
+        let off = Config::from_vars(|_| None)?.public_stats();
+        assert_eq!((off.cost(), off.models()), (None, None));
+        assert!(with(cost_env, "true")?.public_stats().cost().is_some());
+        assert!(with(cost_env, "true")?.public_stats().models().is_none());
+        assert!(with(models_env, "on")?.public_stats().models().is_some());
+        for var in [cost_env, models_env] {
+            let err = with(var, "sometimes").err().ok_or("refused")?;
+            assert!(
+                matches!(err, ConfigError::BadPublicStats { var: v, .. } if v == var),
+                "{err}"
+            );
+        }
         Ok(())
     }
 

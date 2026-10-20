@@ -40,7 +40,7 @@ pub use origin::{Asker, HistoryScope, Interface, Origin, Visibility};
 pub use ports::{
     CallStore, Embedder, Extractor, InputKind, Rated, RatedNew, Resolver, Retriever, Synthesizer,
 };
-pub use run::{FailedCallId, Left, Outcome, RunRecord};
+pub use run::{FailedCallId, Left, Outcome, OutcomeGroup, RunRecord};
 pub use source::{About, Commit, CommitHash, RepositoryUrl, SourceOffer};
 pub use usage::{Bill, Charge, Cost, Stage, Tally, Tokens};
 pub use verdict::{

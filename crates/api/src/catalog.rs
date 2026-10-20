@@ -52,6 +52,22 @@ pub struct Messages {
     pub call_not_found: &'static str,
     /// The feed could not be read.
     pub feed_failed: &'static str,
+    /// A dashboard `from` or `to` that is not a `YYYY-MM-DD` day, given the
+    /// parameter's name.
+    pub bad_date: fn(&str) -> String,
+    /// A dashboard range that is reversed or too long, given the most days.
+    pub bad_range: fn(u32) -> String,
+    /// A public dashboard's `model` filter where models are not shown.
+    pub model_not_public: &'static str,
+    /// The dashboard could not be read.
+    pub stats_failed: &'static str,
+    /// Every dashboard slot stayed taken.
+    pub stats_busy: &'static str,
+    /// A dashboard query ran past its statement timeout.
+    pub stats_too_slow: &'static str,
+    /// A public dashboard range that ends before the window, given the
+    /// window's days (`JUDGE_FEED_DAYS`).
+    pub before_window: fn(u16) -> String,
     /// An admin request without the admin token, or with another.
     pub admin_unauthorized: &'static str,
     /// An admin `private` filter that is not `true` or `false`.
@@ -139,6 +155,15 @@ Your question was not answered; please try again shortly.",
     bad_search: |n| format!("q must be at most {n} characters"),
     call_not_found: "There is no public call with that id.",
     feed_failed: "Sorry, the feed couldn't be read just now. Please try again.",
+    bad_date: |name| format!("{name} must be a day written YYYY-MM-DD, from 2000 on"),
+    bad_range: |n| format!("from must not be after to, and a range covers 1 to {n} days"),
+    model_not_public: "This instance does not show which models answered, so it cannot filter by model.",
+    stats_failed: "Sorry, the dashboard couldn't be read just now. Please try again.",
+    stats_busy: "The dashboard is busy just now. Please try again in a few seconds.",
+    stats_too_slow: "That report took too long to count. Try a shorter range or a filter.",
+    before_window: |n| {
+        format!("This instance shows only the last {n} days: the range must end within them.")
+    },
     admin_unauthorized: "This needs the admin token: open the address `judge-cli admin-url` prints.",
     bad_private: "private must be true or false",
     bad_filter: |name, n| format!("{name} must be at most {n} characters"),
@@ -208,6 +233,13 @@ mod tests {
                 (m.bad_search)(100),
                 m.call_not_found.to_owned(),
                 m.feed_failed.to_owned(),
+                (m.bad_date)("from"),
+                (m.bad_range)(366),
+                m.model_not_public.to_owned(),
+                m.stats_failed.to_owned(),
+                m.stats_busy.to_owned(),
+                m.stats_too_slow.to_owned(),
+                (m.before_window)(90),
                 m.admin_unauthorized.to_owned(),
                 m.bad_private.to_owned(),
                 (m.bad_filter)("asker", 100),

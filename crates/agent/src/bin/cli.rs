@@ -20,8 +20,11 @@
 //!                                              #  and the data's freshness
 //!
 //! # The operator's reads: private calls and askers included (D37)
-//! judge-cli stats [--days N]                   # usage, spend, runs by model and outcome, worst-rated
-//!                                              #  calls, the feedback queue by category, recent refreshes
+//! judge-cli stats [--days N | --from D] [--to D] [--interface I] [--asker A] [--model M]
+//!                                              # the dashboard as the admin page shows it: questions by
+//!                                              #  day, interface, outcome, rating, category, card, model;
+//!                                              #  spend by day, month, interface, stage, model; budget,
+//!                                              #  latency, dearest runs, the queue, recent refreshes
 //! judge-cli failures [--limit N]               # the newest failed calls: question, error, what the model sent
 //! judge-cli calls [--interface I] [--asker A] [--model M] [--private | --public] [--search Q] [--cursor C]
 //!                                              # every stored call, newest first, 50 a page
@@ -67,7 +70,9 @@ const USAGE: &str = "usage: judge-cli <judge <question> [--thread T] [--pin span
 | begin <question> [--thread T] [--private] | prompt <session> | status <session> \
 | extract <session> <file|-> | rules <session> <id>... | verdict <session> <file|-> [--persist] \
 | persist <session> | card <name> | card-info <uuid> | get-rules <id>... | search <query> [--limit N] \
-| glossary <term> | config | about | stats [--days N] | failures [--limit N] \
+| glossary <term> | config | about \
+| stats [--days N | --from YYYY-MM-DD] [--to YYYY-MM-DD] [--interface I] [--asker A] [--model M] \
+| failures [--limit N] \
 | calls [--interface I] [--asker A] [--model M] [--private | --public] [--search Q] [--cursor C] \
 | call <id> | queue [--status S] [--category C] [--interface I] [--rater R] [--cursor C] \
 | queue-show <item> | queue-resolve <item> --note N [--fixed-by F] | queue-dismiss <item> --note N \
@@ -134,6 +139,8 @@ const FLAGS: &[(&str, bool)] = &[
     ("--thread", true),
     ("--limit", true),
     ("--days", true),
+    ("--from", true),
+    ("--to", true),
     ("--pin", true),
     ("--persist", false),
     ("--private", false),
@@ -157,6 +164,8 @@ struct Args {
     thread: Option<String>,
     limit: Option<String>,
     days: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
     pins: Vec<String>,
     persist: bool,
     private: bool,
@@ -203,6 +212,8 @@ fn split_args(tokens: Vec<String>) -> Result<Args> {
             ("--thread", Some(v)) => out.thread = Some(v),
             ("--limit", Some(v)) => out.limit = Some(v),
             ("--days", Some(v)) => out.days = Some(v),
+            ("--from", Some(v)) => out.from = Some(v),
+            ("--to", Some(v)) => out.to = Some(v),
             ("--pin", Some(v)) => out.pins.push(v),
             ("--persist", None) => out.persist = true,
             ("--private", None) => out.private = true,
@@ -293,19 +304,23 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
         "search" | "failures" => uses(false, true, false, false, false)?,
         _ => uses(false, false, false, false, false)?,
     }
-    anyhow::ensure!(
-        cmd == "stats" || a.days.is_none(),
-        "{cmd} does not take --days; {USAGE}"
-    );
     // The lists' own flags, on them alone.
+    let stats = cmd == "stats";
     let calls = cmd == "calls";
     let queue = cmd == "queue";
     let closing = cmd == "queue-resolve" || cmd == "queue-dismiss";
     for (given, flag, takes) in [
+        (a.days.is_some(), "--days", stats),
+        (a.from.is_some(), "--from", stats),
+        (a.to.is_some(), "--to", stats),
         (a.public, "--public", calls),
-        (a.interface.is_some(), "--interface", calls || queue),
-        (a.asker.is_some(), "--asker", calls),
-        (a.model.is_some(), "--model", calls),
+        (
+            a.interface.is_some(),
+            "--interface",
+            calls || queue || stats,
+        ),
+        (a.asker.is_some(), "--asker", calls || stats),
+        (a.model.is_some(), "--model", calls || stats),
         (a.search.is_some(), "--search", calls),
         (a.cursor.is_some(), "--cursor", calls || queue),
         (a.status.is_some(), "--status", queue),
@@ -453,12 +468,21 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command> {
         }
         "stats" => {
             no_extra(0)?;
+            anyhow::ensure!(
+                a.days.is_none() || a.from.is_none(),
+                "--days counts back from --to; with --from, give --to instead; {USAGE}"
+            );
             Command::Stats(StatsInput {
                 days: a
                     .days
                     .as_deref()
                     .map(|d| d.parse::<u32>().context("--days must be an integer"))
                     .transpose()?,
+                from: a.from.clone(),
+                to: a.to.clone(),
+                interface: interface()?,
+                asker: a.asker.clone(),
+                model: a.model.clone(),
             })
         }
         "failures" => {
@@ -836,11 +860,11 @@ mod tests {
         assert!(matches!(parse(&["about"])?, Command::About));
         assert!(matches!(
             parse(&["stats", "--days", "7"])?,
-            Command::Stats(StatsInput { days: Some(7) })
+            Command::Stats(StatsInput { days: Some(7), .. })
         ));
         assert!(matches!(
             parse(&["stats"])?,
-            Command::Stats(StatsInput { days: None })
+            Command::Stats(StatsInput { days: None, .. })
         ));
         assert!(parse(&["stats", "--days", "week"]).is_err());
         assert!(matches!(
@@ -923,12 +947,69 @@ mod tests {
             vec!["calls", "extra"],
             vec!["call", "not-a-uuid"],
             vec!["call"],
-            vec!["stats", "--asker", "alice"],
+            vec!["stats", "--private"],
+            vec!["stats", "--search", "x"],
+            vec!["calls", "--from", "2026-10-01"],
             vec!["judge", "q", "--public"],
             vec!["search", "q", "--model", "m"],
         ] {
             assert!(parse(&bad).is_err(), "{bad:?}");
         }
+        Ok(())
+    }
+
+    /// `stats` takes the dashboard's range and filters, the same as the admin
+    /// page's, and refuses a first day beside a count of days.
+    #[test]
+    fn stats_takes_a_range_and_the_dashboard_filters() -> Result<()> {
+        let Command::Stats(s) = parse(&[
+            "stats",
+            "--from",
+            "2026-09-01",
+            "--to",
+            "2026-09-30",
+            "--interface",
+            "discord",
+            "--asker",
+            "alice",
+            "--model",
+            "claude-opus-5-5",
+        ])?
+        else {
+            anyhow::bail!("stats")
+        };
+        assert_eq!(
+            s,
+            StatsInput {
+                days: None,
+                from: Some("2026-09-01".into()),
+                to: Some("2026-09-30".into()),
+                interface: Some(Asked::Discord),
+                asker: Some("alice".into()),
+                model: Some("claude-opus-5-5".into()),
+            }
+        );
+        for bad in [
+            vec!["stats", "--days", "7", "--from", "2026-09-01"],
+            vec!["stats", "--interface", "telegram"],
+            vec!["stats", "--from"],
+            vec!["stats", "extra"],
+            vec!["failures", "--days", "3"],
+            vec!["queue", "--from", "2026-09-01"],
+        ] {
+            assert!(parse(&bad).is_err(), "{bad:?}");
+        }
+        // The days themselves are checked by the operation, as for MCP.
+        let input = StatsInput {
+            from: Some("2026-02-30".into()),
+            ..StatsInput::default()
+        };
+        assert!(judge_agent::ops::stats_query(&input).is_err());
+        let input = StatsInput {
+            days: Some(400),
+            ..StatsInput::default()
+        };
+        assert!(judge_agent::ops::stats_query(&input).is_err());
         Ok(())
     }
 

@@ -1904,3 +1904,372 @@ code {
   flex: none;
   min-height: 44px;
 }
+
+/* ---------- Dashboard ---------- */
+
+/* The interfaces' colours in the questions chart: a validated categorical
+   order (fixed per interface, never by rank), stepped for each surface. */
+:root {
+  --series-discord: #2a78d6;
+  --series-web: #eb6834;
+  --series-mcp: #1baf7a;
+  --series-cli: #eda100;
+  --series-agent_session: #e87ba4;
+  --series-agent: #008300;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --series-discord: #3987e5;
+    --series-web: #d95926;
+    --series-mcp: #199e70;
+    --series-cli: #c98500;
+    --series-agent_session: #d55181;
+    --series-agent: #008300;
+  }
+}
+
+:root[data-theme="dark"] {
+  --series-discord: #3987e5;
+  --series-web: #d95926;
+  --series-mcp: #199e70;
+  --series-cli: #c98500;
+  --series-agent_session: #d55181;
+  --series-agent: #008300;
+}
+
+.series-discord {
+  fill: var(--series-discord);
+  background: var(--series-discord);
+}
+
+.series-web {
+  fill: var(--series-web);
+  background: var(--series-web);
+}
+
+.series-mcp {
+  fill: var(--series-mcp);
+  background: var(--series-mcp);
+}
+
+.series-cli {
+  fill: var(--series-cli);
+  background: var(--series-cli);
+}
+
+.series-agent_session {
+  fill: var(--series-agent_session);
+  background: var(--series-agent_session);
+}
+
+.series-agent {
+  fill: var(--series-agent);
+  background: var(--series-agent);
+}
+
+.stats-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: -8px;
+}
+
+.stats-filters .filters {
+  margin-top: 0;
+}
+
+.chip-mono {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.quick-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-weight: 600;
+}
+
+.stats-range {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.stat-tiles {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 8px;
+}
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.stat-tile span {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.stat-tile strong {
+  font-size: 1.375rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.stats-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stats-section h3 {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 700;
+}
+
+.stats-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.stats-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: 0.9375rem;
+  cursor: pointer;
+}
+
+.stats-toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* A count as a labelled bar: the label and the number on one line, the
+   bar under them, against the largest in the list. */
+.bar-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.bar-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  padding: 8px 0;
+}
+
+.bar-list li + li {
+  border-top: 1px solid var(--line);
+}
+
+.bar-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.bar-label code {
+  font-family: var(--mono);
+  font-size: 0.875rem;
+}
+
+.bar-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.bar-note {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.bar-track {
+  grid-column: 1 / -1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.bar-fill {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.chart {
+  margin: 0;
+  padding: 14px 16px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  min-width: 0;
+}
+
+/* Stretched to the box rather than scaled with it, so a phone's chart is
+   as tall as it needs to be read; the axis keeps its width. */
+.chart svg {
+  display: block;
+  width: 100%;
+  height: clamp(140px, 28vw, 200px);
+}
+
+.chart-axis {
+  stroke: var(--line-strong);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-hit {
+  fill: transparent;
+}
+
+.chart-bar:hover .chart-hit {
+  fill: var(--surface-2);
+}
+
+.chart-range {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-legend {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+
+.chart-legend a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--ink);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.chart-legend a:hover {
+  text-decoration: underline;
+}
+
+.chart-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.chart-legend-n {
+  color: var(--muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-table {
+  margin-top: 8px;
+  font-size: 0.875rem;
+}
+
+.chart-summary {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.table-scroll {
+  max-height: 22rem;
+  overflow: auto;
+}
+
+.chart-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-table th,
+.chart-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.chart-table th:first-child {
+  text-align: left;
+}
+
+.chart-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.stats-subhead {
+  margin: 6px 0 0;
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+
+/* Three pages, the docs link and the theme on a phone: the tabs tighten
+   and the docs link keeps its icon (its name stays for screen readers). */
+@media (max-width: 480px) {
+  .tabs a {
+    padding: 0 10px;
+    font-size: 0.875rem;
+  }
+
+  .docs-link {
+    width: 42px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .docs-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}

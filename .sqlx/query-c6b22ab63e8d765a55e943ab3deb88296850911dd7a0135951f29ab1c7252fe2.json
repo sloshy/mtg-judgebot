@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO budget_setting (id, period, cap_micro) VALUES (true, $1, $2)\n        ON CONFLICT (id) DO UPDATE\n           SET period = EXCLUDED.period, cap_micro = EXCLUDED.cap_micro, written_at = now()\n         WHERE budget_setting.period <> EXCLUDED.period\n            OR budget_setting.cap_micro <> EXCLUDED.cap_micro\n            OR budget_setting.written_at < now() - interval '5 minutes'\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c6b22ab63e8d765a55e943ab3deb88296850911dd7a0135951f29ab1c7252fe2"
+}

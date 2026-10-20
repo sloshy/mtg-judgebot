@@ -1917,15 +1917,20 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
     .execute(&pool)
     .await?;
 
-    let u = crate::db::stats::usage(&pool, 30).await?;
+    let u = crate::db::stats::usage(&pool, &crate::db::stats::OperatorQuery::default()).await?;
     assert_eq!(u.days, 30);
+    assert_eq!(u.dashboard.by_day.len(), 30, "every day of the window");
     assert_eq!(
-        u.by_day.len(),
+        u.spend_by_day.len(),
         1,
         "the row 400 days back is outside the window"
     );
-    let day = u.by_day.first().ok_or_else(|| anyhow::anyhow!("no day"))?;
-    assert_eq!(day.day, yesterday);
+    let day = u
+        .dashboard
+        .by_day
+        .iter()
+        .find(|d| d.day == yesterday)
+        .ok_or_else(|| anyhow::anyhow!("no day"))?;
     assert_eq!(
         (
             day.discord,
@@ -1937,11 +1942,24 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
         ),
         (2, 1, 1, 0, 0, 1)
     );
-    assert_eq!(day.private, 2);
-    assert_eq!(day.llm_calls, 9);
+    assert_eq!(day.private, Some(2));
+    assert_eq!(u.private, 2);
+    let spent = u
+        .spend_by_day
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("no spend"))?;
+    assert_eq!(
+        (spent.day.as_str(), spent.llm_calls),
+        (yesterday.as_str(), 9)
+    );
     assert!((u.usd - 1.25).abs() < 1e-9);
-    assert_eq!(u.questions, 5);
-    assert_eq!(u.ratings, [2, 0, 0]);
+    assert_eq!(u.dashboard.questions, 5);
+    assert_eq!(u.dashboard.ratings.discord.incorrect, 2);
+    assert_eq!(
+        (u.budget.period, u.budget.cap_usd),
+        (None, None),
+        "no process has recorded its settings: unknown, not this one's"
+    );
     assert_eq!(u.retired_calls, 0);
     assert_eq!(u.lowest_rated.len(), 1, "unrated calls are not listed");
     let worst = u
@@ -1963,7 +1981,14 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
         .execute(&pool)
         .await?;
     }
-    let u = crate::db::stats::usage(&pool, 1).await?;
+    let one = crate::db::stats::OperatorQuery {
+        span: crate::db::stats::Span {
+            days: Some(1),
+            ..crate::db::stats::Span::default()
+        },
+        ..crate::db::stats::OperatorQuery::default()
+    };
+    let u = crate::db::stats::usage(&pool, &one).await?;
     assert_eq!(
         u.refresh_runs.len(),
         usize::try_from(crate::ingest::runs::RECENT_RUNS)?
@@ -1974,7 +1999,7 @@ async fn usage_counts_calls_by_interface_joins_the_ledger_and_lists_the_worst_ra
     sqlx::query("DROP TABLE refresh_runs")
         .execute(&pool)
         .await?;
-    let u = crate::db::stats::usage(&pool, 1).await?;
+    let u = crate::db::stats::usage(&pool, &one).await?;
     assert!(u.refresh_runs.is_empty());
     assert!(
         u.refresh_runs_note

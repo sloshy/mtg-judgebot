@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT r.outcome AS \"outcome!\", count(*) AS \"runs!\"\n        FROM (\n            -- One branch per scope, as the dashboard's calls: the public one\n            -- reads `judge_runs_public_finished_at` even in a generic plan.\n            SELECT r.outcome FROM judge_runs r\n            WHERE $1::boolean\n              AND publicly_visible(r.private, r.finished_at, $2::int)\n              AND r.finished_at >= $3::text::date::timestamp AT TIME ZONE 'utc'\n              AND r.finished_at < ($4::text::date + 1)::timestamp AT TIME ZONE 'utc'\n              AND ($5::text IS NULL OR r.interface = $5)\n              AND ($6::text IS NULL OR EXISTS (\n                    SELECT 1 FROM judge_run_charges ch\n                    WHERE ch.run_id = r.id AND ch.model = $6 AND ch.stage <> 'embedding'))\n            UNION ALL\n            SELECT r.outcome FROM judge_runs r\n            WHERE NOT $1::boolean\n              AND r.finished_at >= $3::text::date::timestamp AT TIME ZONE 'utc'\n              AND r.finished_at < ($4::text::date + 1)::timestamp AT TIME ZONE 'utc'\n              AND ($5::text IS NULL OR r.interface = $5)\n              AND ($6::text IS NULL OR EXISTS (\n                    SELECT 1 FROM judge_run_charges ch\n                    WHERE ch.run_id = r.id AND ch.model = $6 AND ch.stage <> 'embedding'))\n        ) r\n        GROUP BY r.outcome\n        ORDER BY 2 DESC, 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outcome!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "runs!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "536086fad0ba4d2f385be3e39f0e7e192b05b585e0f221633e22f6e02fbf241b"
+}

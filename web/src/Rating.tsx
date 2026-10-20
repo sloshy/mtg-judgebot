@@ -54,7 +54,12 @@ function storedShowWeb(): boolean {
 
 const [showWeb, setShowWeb] = createSignal(storedShowWeb());
 
-function toggleWeb(): void {
+/** Whether the reader includes the web's ratings: remembered in this
+ * browser, shared by every page that shows ratings. */
+export const webRatingsShown = showWeb;
+
+/** Include the web's ratings, or hide them again. */
+export function toggleWeb(): void {
   const next = !showWeb();
   setShowWeb(next);
   try {

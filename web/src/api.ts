@@ -114,6 +114,10 @@ export interface About {
   /** Whether raters' reasons are shown on the public pages
    * (`JUDGE_PUBLIC_FEEDBACK`), which the rating form says. */
   public_feedback?: boolean;
+  /** The public dashboard (`/dashboard`, GET /api/stats) and what it shows
+   * beyond the counts; null when it is not served here. Absent from an
+   * older server. */
+  stats?: { cost: boolean; models: boolean } | null;
 }
 
 /** The Comprehensive Rules release loaded and the last refresh. */
@@ -392,4 +396,87 @@ function isRateReply(v: unknown): v is RateReply {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
   return typeof o.kind === "string" && RATE_KINDS.includes(o.kind) && typeof o.message === "string";
+}
+
+/** Calls asked one UTC day, by interface (crates/bot/src/db/stats.rs
+ * `DayCount`). */
+export type DayCount = { day: string; private?: number } & Record<Interface, number>;
+
+/** How the runs in a range ended, grouped (`Outcomes`). */
+export interface Outcomes {
+  answered: number;
+  ambiguous: number;
+  not_found: number;
+  out_of_scope: number;
+  refused: number;
+  failed: number;
+}
+
+/** The dashboard (crates/bot/src/db/stats.rs `Dashboard`): the public
+ * report, and the head of the operator's. */
+export interface Dashboard {
+  /** `YYYY-MM-DD`, UTC. */
+  from: string;
+  to: string;
+  /** The public window in days, when one hides older calls. */
+  window_days?: number;
+  questions: number;
+  askers: number;
+  interfaces: { interface: Interface; questions: number }[];
+  /** Every day of the range, oldest first. */
+  by_day: DayCount[];
+  /** Null under a user filter: runs record no asker. */
+  outcomes: Outcomes | null;
+  ratings: { discord: RatingCounts; web: RatingCounts };
+  categories: { category: string; label: string; questions: number }[];
+  cards: { id: string; name: string; questions: number }[];
+  top_askers: { name: string; questions: number }[];
+  /** Only where the operator shows cost. */
+  cost?: { usd: number; questions: number; per_question_usd: number | null; estimated: boolean };
+  /** Only where the operator shows models. */
+  models?: { model: string; answered: number; extracted: number }[];
+}
+
+/** Which report the dashboard shows. */
+export interface StatsQuery {
+  days?: number;
+  from?: string;
+  to?: string;
+  interface?: Interface;
+  user?: string;
+  model?: string;
+}
+
+/** GET /api/stats. */
+export function fetchStats(
+  q: StatsQuery,
+  locale: Locale | undefined,
+  m: Messages,
+): Promise<Read<Dashboard>> {
+  const params = new URLSearchParams();
+  if (q.days !== undefined) params.set("days", String(q.days));
+  if (q.from) params.set("from", q.from);
+  if (q.to) params.set("to", q.to);
+  if (q.interface) params.set("interface", q.interface);
+  if (q.user) params.set("user", q.user);
+  if (q.model) params.set("model", q.model);
+  return read(`/api/stats${withLocale(params, locale)}`, m, isDashboard);
+}
+
+/** Whether `v` reads as a dashboard. */
+export function isDashboard(v: unknown): v is Dashboard {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.from === "string" &&
+    typeof o.to === "string" &&
+    typeof o.questions === "number" &&
+    Array.isArray(o.by_day) &&
+    Array.isArray(o.interfaces) &&
+    Array.isArray(o.categories) &&
+    Array.isArray(o.cards) &&
+    Array.isArray(o.top_askers) &&
+    typeof o.ratings === "object" &&
+    o.ratings !== null
+  );
 }

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use judge_agent::{Client, Options, Quota, Toolbox, Transport};
 use judge_bot::{
+    db::stats::Disclosure,
     discord::endpoint::Interactions,
     feed::{Feed, Reasons},
     ingest::runs::FreshnessReader,
@@ -24,6 +25,7 @@ use crate::{
     http::{self, Maintenance, Probe},
     rating::{PgRateable, Rateable},
     router, serve_on,
+    stats::{PgPublicStats, PublicStats},
 };
 
 /// The longest a listener that serves Discord's interactions endpoint waits
@@ -275,6 +277,24 @@ fn feed_reads(
     }
 }
 
+/// The public dashboard: served beside the feed (`--web`, unless
+/// `JUDGE_FEED=false`), counting what the feed shows.
+fn stats_reads(
+    feed: Feed,
+    disclosure: Disclosure,
+    interfaces: &Interfaces,
+    pool: &sqlx::PgPool,
+) -> Option<Arc<dyn PublicStats>> {
+    match feed {
+        Feed::On { window } if interfaces.web() => Some(Arc::new(PgPublicStats::new(
+            pool.clone(),
+            window,
+            disclosure,
+        ))),
+        Feed::On { .. } | Feed::Off => None,
+    }
+}
+
 /// Which calls the web may rate: public ones within the feed's window.
 /// With the feed off there is no window, and a call is rated by the id its
 /// asker got back from `POST /api/judge`.
@@ -298,6 +318,7 @@ fn routes(
     let judge = serving.judge();
     let pool = serving.pool();
     let feed = feed_reads(judge.feed(), judge.public_feedback(), interfaces, pool);
+    let dashboard = stats_reads(judge.feed(), judge.public_stats(), interfaces, pool);
     // /api/health answers 503 when Postgres does not: the compose healthcheck
     // and the tunnel's readiness key off it. MCP's `judge` bills to the same
     // meter as the page (the process's one), so it is under the same budget.
@@ -332,8 +353,12 @@ fn routes(
     } else {
         app
     };
-    let app = Arc::new(match feed {
+    let app = match feed {
         Some(reads) => app.with_public_calls(reads),
+        None => app,
+    };
+    let app = Arc::new(match dashboard {
+        Some(reads) => app.with_public_stats(reads),
         None => app,
     });
     let mut routes = router(Arc::clone(&app), interfaces, &cfg.web_dist);

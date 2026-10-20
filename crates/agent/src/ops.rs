@@ -9,7 +9,7 @@
 use crate::{admin::Admin, gated::Checked};
 use judge_bot::{
     admin::{CallDetail, CallFilter, CallsPage, FilterText},
-    db::stats::{FailedRow, Usage},
+    db::stats::{self, Date, FailedRow, OperatorQuery, Span, Usage},
     discord::{catalog, question::pin_card, render},
     feed::{Asked, Cursor, Search},
     feedback::{QueueDetail, QueueFilter, QueueItem, QueuePage},
@@ -363,12 +363,29 @@ pub struct SearchInput {
     pub limit: Option<usize>,
 }
 
-/// How far back `stats` looks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Which days and calls `stats` reports on. Every filter narrows.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StatsInput {
-    /// UTC days, ending today. Default 30, at most 366.
+    /// UTC days ending on `to` (default 30, at most 366), when there is no
+    /// `from`.
     #[serde(default)]
     pub days: Option<u32>,
+    /// The first day, `YYYY-MM-DD` (UTC).
+    #[serde(default)]
+    pub from: Option<String>,
+    /// The last day, `YYYY-MM-DD` (default today).
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Only calls and runs through this interface.
+    #[serde(default)]
+    pub interface: Option<Asked>,
+    /// Only calls whose asker has this Discord username or user id (the run
+    /// figures are then left out: runs record no asker).
+    #[serde(default)]
+    pub asker: Option<String>,
+    /// Only calls and runs that billed this model.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// How many failed calls `failures` lists.
@@ -836,14 +853,19 @@ impl Toolbox {
         self.offer().about(self.operator(), freshness, AGENT_LOCALE)
     }
 
-    /// Usage, spend, the runs by model and outcome, and the worst-rated
-    /// calls: the operator's view. An admin operation.
+    /// The operator's dashboard: every call counted, private ones included,
+    /// by interface, outcome, rating, category, card, user and model, with
+    /// the spend, the budget, the runs' cost and latency, the failed calls,
+    /// the feedback queue and the data refreshes. The admin page reads the
+    /// same report. An admin operation.
     ///
     /// # Errors
-    /// The store.
+    /// A day that does not read, a range that is reversed or too long, a
+    /// filter that is too long, or the store.
     pub async fn stats(&self, _admin: &Admin, input: StatsInput) -> Result<Usage, OpError> {
+        let query = stats_query(&input)?;
         let db = self.db.check().await?;
-        Ok(db.library().usage(input.days.unwrap_or(30)).await?)
+        Ok(db.library().usage(&query).await?)
     }
 
     /// The newest failed calls with the question and what the model sent.
@@ -992,6 +1014,57 @@ async fn history(
             vec![]
         }
     }
+}
+
+/// The operator's report `input` names.
+///
+/// # Errors
+/// A day that is not `YYYY-MM-DD`, `days` out of range, or a filter that is
+/// too long. A reversed or too long range is the report's own error.
+pub fn stats_query(input: &StatsInput) -> Result<OperatorQuery, OpError> {
+    let blank = |v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    let day = |v: &Option<String>, what: &str| {
+        blank(v)
+            .map(|d| {
+                Date::parse(&d)
+                    .ok_or_else(|| anyhow::anyhow!("{what} must be a day written YYYY-MM-DD"))
+            })
+            .transpose()
+    };
+    let text = |v: &Option<String>, what: &str| {
+        blank(v)
+            .map(|t| {
+                FilterText::parse(&t).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{what} must be at most {} characters",
+                        judge_bot::admin::MAX_FILTER_CHARS
+                    )
+                })
+            })
+            .transpose()
+    };
+    if let Some(d) = input.days {
+        anyhow::ensure!(
+            (1..=stats::MAX_DAYS).contains(&d),
+            "days must be 1 to {}",
+            stats::MAX_DAYS
+        );
+    }
+    Ok(OperatorQuery {
+        span: Span {
+            from: day(&input.from, "from")?,
+            to: day(&input.to, "to")?,
+            days: input.days,
+        },
+        asked: input.interface,
+        asker: text(&input.asker, "asker")?,
+        model: text(&input.model, "model")?,
+    })
 }
 
 /// The filter and cursor `input` names; a blank field is no filter.

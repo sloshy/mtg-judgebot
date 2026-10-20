@@ -1,6 +1,6 @@
 ---
 title: The HTTP API
-description: POST /api/judge with a curl example, every reply shape, the status codes, and the two GET routes.
+description: POST /api/judge with a curl example, every reply shape and status code, the public feed and dashboard reads, and the admin API.
 sidebar:
   order: 3
 ---
@@ -11,8 +11,8 @@ The HTTP interfaces serve three routes on `API_ADDR`:
   `JUDGE_ROLES` leaves it out).
 - `GET /api/health` and `GET /api/about`, served whenever any of `--api`, `--web` and
   `--mcp` is on.
-- `GET /api/feed` and `GET /api/calls/{id}`, the public feed, on with `--web` unless
-  `JUDGE_FEED=false`.
+- `GET /api/feed` and `GET /api/calls/{id}`, the public feed, and `GET /api/stats`, the
+  public dashboard, on with `--web` unless `JUDGE_FEED=false`.
 
 With `--web`, any other path under `/api/` is a `404` with a JSON `error` body rather than
 the web app's page.
@@ -93,7 +93,9 @@ The source offer and the operator contact as JSON: `program`, `repository`, `com
 `operator_email`, `operator_discord` and a ready-to-show `notice`. The web app's footer is
 built from it. `locale` is the instance's language (`JUDGE_LOCALE`), which `notice` is
 written in, and `locales` every language its replies can be in. `feed` says whether this
-listener serves the feed.
+listener serves the feed. `stats` is `null` where the dashboard is not served, and
+otherwise says what it shows beyond the counts: `{"cost": false, "models": false}`
+(`JUDGE_PUBLIC_COST`, `JUDGE_PUBLIC_MODELS`).
 
 `freshness` says what the instance's data is:
 
@@ -168,6 +170,61 @@ Both routes answer `429` `rate_limited` past 120 reads a minute per address (a w
 their own, apart from the questions') and `503` `maintenance` while a major upgrade
 migrates.
 
+## `GET /api/stats`
+
+The public dashboard: counts of the calls and runs not asked private, within
+`JUDGE_FEED_DAYS`, over a range of UTC days.
+
+```sh
+curl 'http://localhost:8787/api/stats?days=90&interface=discord'
+```
+
+```json
+{"from": "2026-07-23", "to": "2026-10-20", "questions": 41, "askers": 12,
+ "interfaces": [{"interface": "discord", "questions": 41}],
+ "by_day": [{"day": "2026-07-23", "discord": 0, "web": 0, "mcp": 0, "cli": 0,
+             "agent_session": 0, "agent": 0}, …],
+ "outcomes": {"answered": 41, "ambiguous": 6, "not_found": 2, "out_of_scope": 1,
+              "refused": 0, "failed": 1},
+ "ratings": {"discord": {"correct": 9, "partial": 2, "incorrect": 1},
+             "web": {"correct": 3, "partial": 0, "incorrect": 4}},
+ "categories": [{"category": "combat", "label": "Combat: attacking, blocking, damage assignment", "questions": 9}, …],
+ "cards": [{"id": "…", "name": "Blood Moon", "questions": 4}, …],
+ "top_askers": [{"name": "alice", "questions": 7}, …]}
+```
+
+The query parameters are all optional:
+
+- `from`, `to`: the first and last day, `YYYY-MM-DD` (UTC). `to` defaults to today.
+- `days`: without `from`, the number of days ending on `to`, 1 to 366 (default 30). A
+  range covers at most 366 days.
+- `interface`: as the feed's.
+- `user`: a Discord username, with or without `@`.
+- `model`: only calls whose run billed this model. Only where models are shown; anywhere
+  else it is a `400`, never ignored.
+- `locale`: the language of the messages, ahead of `Accept-Language`.
+
+`by_day` lists every day of the range, oldest first. `from` starts no earlier than the
+window when `JUDGE_FEED_DAYS` is set, and `window_days` then gives it. `outcomes` counts
+the runs that finished in the range: `failed` is every failure of the pipeline (a citation
+that never validated, the spend cap, an upstream error), and a run whose caller went away
+is in none. Runs record no asker, so with `user` it is `null`. `ratings` are the ratings
+of these calls, Discord's and the web's apart. `categories`, `cards` and `top_askers` list
+ten each, commonest first.
+
+With `JUDGE_PUBLIC_COST=true` the reply also has `cost`: `{"usd", "questions",
+"per_question_usd", "estimated"}`, what these calls' runs cost (`questions` counts the
+ones with a recorded run; `estimated` when any charge is a worst case). With
+`JUDGE_PUBLIC_MODELS=true` it has `models`: `[{"model", "answered", "extracted"}]`, the
+calls each model answered and read. Without the setting the field is absent.
+
+The route answers `429` `rate_limited` past 30 reads a minute per address (its own
+window), `503` `busy` when two reports are already being read and a third has waited five
+seconds or when a report takes longer than five seconds to count (ask for a shorter range
+or a filter), and `503` `maintenance` while a major upgrade migrates. A query that does
+not parse, a reversed range, one longer than 366 days or one that ends before the
+`JUDGE_FEED_DAYS` window is a `400` `error`.
+
 ## `POST /api/calls/{id}/feedback`
 
 Rate a call, anonymously, as a browser session. Served wherever `POST /api/judge` is
@@ -228,7 +285,7 @@ it; replies carry `Cache-Control: no-store`, and an error is the same
 | `POST /admin/api/queue/{id}/resolve` | Body `{"note": "…", "fixed_by": "…"}` (`note` 1 to 2000 characters, `fixed_by` optional, up to 200): the item closed as fixed, as it now stands. `400` for a bad body, `404` for no item. |
 | `POST /admin/api/queue/{id}/dismiss` | The same body: the item closed with nothing to fix. |
 | `GET /admin/api/failures?limit` | `{failures}`: the newest failed calls (default 50, at most 100). |
-| `GET /admin/api/usage?days` | The usage report `judge-cli stats` prints, over the last `days` (default 30). |
+| `GET /admin/api/usage?days&from&to&interface&asker&model` | The report `judge-cli stats` prints: the dashboard's fields over every call, private ones included, with `by_day[].private`, `cost` and `models` always present; then `days`, `private`, `failed_calls`, `usd`, `spend_by_day`, `spend_by_month` (the ledger: every process, chat and embeddings, unfiltered), `budget` (`period`, `cap_usd`, `recorded_at`, `period_start`, `spent_usd`, `left_usd`: the period and cap the instance's ledger-keeping processes last recorded, all `null` when none has; the last three `null` for a `process` cap), `run_stats` (`runs`, `usd`, `outcomes` by id, `refused_at_cap`, `by_model`, `by_interface`, `by_stage`, `usd_per_answer`, `latency`, `most_expensive`; `null` with `asker`), `retired_calls`, `lowest_rated`, `feedback`, `refresh_runs`. The range and filters are the public route's, `asker` a Discord username or user id. A report that runs past a minute is a `503` `error`. |
 
 They answer `503` `maintenance` while a major upgrade migrates. The pages that read them
 are the [web app's admin pages](../../using/web/#admin-pages).

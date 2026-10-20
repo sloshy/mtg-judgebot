@@ -68,7 +68,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D38),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D39),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -612,7 +612,8 @@ What a `judgebot` process does is a launch option, not a consequence of starting
 Also true of `api`:
 
 - **The public feed** (D36, #26): `judge_bot::feed` is every public read of `calls`
-  (`page`, `call`), each with `NOT c.private` and the `JUDGE_FEED_DAYS` window in SQL,
+  (`page`, `call`, `rateable`), each through `publicly_visible(private, at, window_days)`
+  (one SQL function, migration `20261020000002`, inlined by the planner),
   username only (never `asker_id`); missing, private and too old are one `None`.
   `judge_api::feed` serves `GET /api/feed` (cursor `<µs>.<id>`, 20 a page) and
   `GET /api/calls/{id}` under `--web` unless `JUDGE_FEED=false` (`Config::feed`),
@@ -624,6 +625,14 @@ Also true of `api`:
   (`feed::Reasons`), never the rater's identity. `/api/about` also carries `ratings`
   and `public_feedback`; a dismissed queue item's reason is left out of `reasons`, and
   `@everyone`/`@here` are broken (`feed::public_text`).
+- **The dashboard** (D39, #28): `judge_bot::db::stats` is the one query module.
+  `public` serves `GET /api/stats` (`judge_api::stats`, mounted with the feed,
+  `READ_LIMIT` 30/min, 2 slots); `usage` serves `/admin/api/usage`, `admin_usage` and
+  `judge-cli stats`. Public counts go through `publicly_visible`. Cost and model figures
+  exist only via `CostAccess` / `ModelAccess` from `stats::Disclosure`
+  (`JUDGE_PUBLIC_COST`, `JUDGE_PUBLIC_MODELS`); a `model` filter without models is a
+  400. Run figures are null under a user filter. `/api/about` carries `stats`. Web:
+  `/dashboard`, and the admin Dashboard at `/admin/usage`.
 - `mcp::router` gates with `route_layer`, not `layer`. `layer` wraps a router's fallback
   too, and merging that into a router with no web fallback made the 401 the catch-all for
   every unrouted path.
@@ -904,6 +913,8 @@ Key cross-file facts that aren't obvious from any one file:
   load; D34): the refresh's `prune` step (`ingest::prune`) and `judgebot ingest prune`
   delete older calls with their ratings. `judge_runs` stay (`call_id` SET NULL), and
   the retirement pass treats a cited prior call that no longer exists as supported.
+- `JUDGE_PUBLIC_COST`, `JUDGE_PUBLIC_MODELS` (default false, validated at `Config` load;
+  D39): cost and model figures on the public dashboard.
 - `JUDGE_PUBLIC_FEEDBACK` (default false, validated at `Config` load; D38): the feed
   shows raters' reasons without identity (raters are told: `rated_public`,
   `form_*_hint_public`, `rateFormNotePublic`); dismissing an item hides its reason.

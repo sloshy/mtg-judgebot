@@ -288,6 +288,9 @@ export function FeedPage(props: {
   filters: boolean;
   /** The asker whose page this is, for the heading's avatar. */
   user?: string;
+  /** Whether the dashboard is served, so a user's page links to their
+   * figures there. */
+  dashboard?: boolean;
 }) {
   const [entries, setEntries] = createSignal<FeedEntry[]>([]);
   const [next, setNext] = createSignal<string | null>(null);
@@ -333,6 +336,11 @@ export function FeedPage(props: {
           <h2>{props.title}</h2>
           <Show when={props.filters}>
             <p class="page-intro">{props.m.feedIntro}</p>
+          </Show>
+          <Show when={props.user !== undefined && props.dashboard}>
+            <p class="page-intro quick-links">
+              <a href={href({ page: "dashboard", user: props.user })}>{props.m.userStatsLink}</a>
+            </p>
           </Show>
         </div>
       </header>

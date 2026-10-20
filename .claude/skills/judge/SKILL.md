@@ -150,9 +150,13 @@ stdio `judge-mcp` (whoever runs them holds the database), and on `/mcp` only wit
   billed request (stage, model, tokens, cost). `call` is null for an unknown id.
 - `admin_failures {limit?}` / `judge-cli failures [--limit N]`: failed calls with the
   question, the error, the first rejection and each attempt's text.
-- `admin_usage {days?}` / `judge-cli stats [--days N]`: questions and spend per day, runs
-  by model and outcome, ratings, the lowest-rated calls, the feedback queue's counts by
-  category, recent data refreshes.
+- `admin_usage {days?, from?, to?, interface?, asker?, model?}` / `judge-cli stats
+  [--days N | --from YYYY-MM-DD] [--to YYYY-MM-DD] [--interface I] [--asker A] [--model M]`:
+  the admin dashboard (the same report as the admin web page). Questions per day by
+  interface (private counted apart), outcomes, ratings, top categories, cards and askers,
+  cost and models; spend per day and month, the budget and what is left, runs by model,
+  interface and stage, cost per answer, latency, the dearest runs (`run_stats`, null with
+  `asker`), failed calls, the lowest-rated calls, the queue's counts, recent refreshes.
 
 To look into a reported bad answer: find it with `admin_calls` (`q` with words from it,
 or `asker`), read it with `admin_call`, then reproduce it with a session above.

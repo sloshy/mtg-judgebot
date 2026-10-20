@@ -38,6 +38,7 @@ pub mod mcp;
 pub mod network;
 pub mod rating;
 pub mod shape;
+pub mod stats;
 
 pub use config::{ApiConfig, Refused, Unmet};
 pub use http::{App, DataStatus, bind, router, serve_on};
