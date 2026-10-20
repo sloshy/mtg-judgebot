@@ -48,6 +48,26 @@
 //! [`STATEMENT_TIMEOUT`] and [`LOCK_TIMEOUT`]: such a statement, or a wait for
 //! a lock, ends there at the latest, and with it any lock it held.
 //!
+//! **Shutdown** (D40). [`start`] takes the process's [`Shutdown`]. Once it
+//! is requested the scheduler starts no check, and a run in progress
+//! ([`ingest::refresh`], [`Caller::Schedule`]) cuts its step off at once, as
+//! the run timeout does: the step's future is dropped, so its transaction
+//! rolls back. The rest are skipped ([`Skip::Shutdown`]), and the row is
+//! closed as stopped (`ok` null): no alert, no backoff, and not an attempt,
+//! so the next process's first check finds the refresh due and runs it. The
+//! lease is released and the thread ends ([`Ended::Shutdown`]), shutting its
+//! runtime down, which closes every connection it opened. A statement the
+//! cut step had sent may still be running on the server (sqlx sends no
+//! cancel): the connections carry [`CLIENT_CHECK_INTERVAL`], so the server
+//! finds its client gone within seconds and ends the statement, its
+//! transaction and any lock it held, `CALLS_REWRITE_LOCK` included, which
+//! the answers still draining may be waiting on. `main` waits for the thread
+//! within the drain ([`Scheduler::stopped`]). Every other wait is raced
+//! against the request too (reads and checks dropped at once, the writes
+//! that record the run bounded from it), so everything after the request is
+//! bounded by [`STOP_LIMIT`]. A run that finished before the request still
+//! posts its alerts.
+//!
 //! **Alerts** go to `JUDGE_ALERT_WEBHOOK` ([`alerts`]): the first failure of
 //! a streak (a time-out says so), the recovery after one, a run that left rows
 //! unembedded because there were more than it may pay for unattended
@@ -55,12 +75,12 @@
 //! the first panicking check until a run succeeds. A retry that fails again is
 //! not news, so it is only logged.
 
-use std::{num::NonZeroU16, panic::AssertUnwindSafe, time::Duration};
+use std::{num::NonZeroU16, panic::AssertUnwindSafe, rc::Rc, time::Duration};
 
 use judge_core::Locale;
 use judge_llm::SpendMeter;
 use sqlx::{
-    PgPool,
+    PgConnection, PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 use tokio::time::Instant;
@@ -70,9 +90,10 @@ use crate::{
     clock::{Clock, Tokio},
     db::migrate,
     ingest::{
-        self, RefreshLease,
+        self, Caller, RefreshLease, STOP_WRITES,
         runs::{self, Outcome, RunHistory, RunOutcome, RunReport, Skip, StepReport, Trigger},
     },
+    shutdown::{DRAIN_LIMIT, Shutdown},
 };
 
 /// `JUDGE_REFRESH_HOURS`.
@@ -105,6 +126,34 @@ pub const LOCK_TIMEOUT: &str = "15min";
 /// after a run the scheduler dropped: its connection may be what hung. Past
 /// it the lease is dropped, which closes its session and frees the lock.
 const AFTER_DROP: Duration = Duration::from_secs(30);
+/// `client_connection_check_interval` on the scheduler's connections
+/// (Postgres 14 on): while a statement runs, the server checks this often
+/// that the client is still connected, and ends the statement, its
+/// transaction and the locks they hold once it is not. A step a shutdown cut
+/// off may have left a statement running (sqlx sends no cancel); the
+/// scheduler's connections close with its thread, so this ends the
+/// statement within seconds rather than at [`STATEMENT_TIMEOUT`], and
+/// frees `CALLS_REWRITE_LOCK` for the answers still draining.
+pub const CLIENT_CHECK_INTERVAL: &str = "2s";
+/// The most texts one check posts to the webhook: that the run before never
+/// finished, this run's failure or recovery, and an embedding skipped at the
+/// ceiling ([`alerts`]; a panicking check posts one).
+const MOST_ALERTS: u32 = 3;
+/// How long the scheduler's runtime waits for a blocking task (a DNS lookup)
+/// as the thread ends.
+const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(1);
+/// The longest the scheduler takes to end after a shutdown request: every
+/// read and check outside a step is dropped at once, the step in progress is
+/// cut off at its next await point, the writes that record the run and the
+/// lease's release share [`STOP_WRITES`] from the request, a run that had
+/// finished posts its alerts (each [`alert::ALERT_TIMEOUT`]), and the runtime
+/// shuts down. `main` waits for the thread at most until the drain's limit,
+/// which this fits inside, so the run is closed before the process exits.
+pub const STOP_LIMIT: Duration = STOP_WRITES
+    .saturating_add(alert::ALERT_TIMEOUT.saturating_mul(MOST_ALERTS))
+    .saturating_add(RUNTIME_SHUTDOWN);
+
+const _: () = assert!(STOP_LIMIT.as_nanos() < DRAIN_LIMIT.as_nanos());
 /// The scheduler's own pool. The lease's connection is detached from it once
 /// won and does not count, so a run uses at most this many plus one.
 pub const POOL_SIZE: u32 = 3;
@@ -268,8 +317,9 @@ pub fn with_unrecorded(mut history: RunHistory, since: Option<Duration>) -> RunH
 ///   does not say whose);
 /// * a skipped embedding only when the previous run did not skip it too.
 ///
-/// A run that stopped because the schema is not its binary's (a deploy in
-/// progress) is news to nobody: it alerts nothing. The texts name steps and
+/// A run that stopped (the schema is not its binary's, or its process shut
+/// down) is news to nobody: it alerts nothing, not even about the record
+/// before it, which the next run with a verdict tells. The texts name steps and
 /// counts, never an error message: those can carry URLs, and the log has them.
 #[must_use]
 pub fn alerts(
@@ -280,6 +330,10 @@ pub fn alerts(
 ) -> Vec<String> {
     let m = alert::catalog::messages(locale);
     let mut out = Vec::new();
+    if report.outcome() == RunOutcome::Stopped {
+        // The next run with a verdict tells what this one would have.
+        return out;
+    }
     if let Some(started) = &previous.abandoned_started_at
         && previous.failed_streak == 1
     {
@@ -368,6 +422,8 @@ enum Ticked {
     Uninitialised,
     /// The ledger or the record could not be read.
     Unreadable,
+    /// The process is shutting down: no run starts.
+    ShuttingDown,
     /// A run happened.
     Ran {
         /// The record as it stood before the run, under the lease.
@@ -381,7 +437,12 @@ enum Ticked {
 
 /// One check; see the module docs. `run` is the refresh itself, handed the
 /// lease, so a test can count runs without downloading anything; `limit` is
-/// how long it may take ([`runs::ABANDONED_AFTER`]), on `clock`.
+/// how long it may take ([`runs::ABANDONED_AFTER`]), on `clock`. A requested
+/// `shutdown` starts no run (`run` itself stops at it, [`ingest::refresh`]).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the check's inputs, each from a different owner"
+)]
 async fn tick<F>(
     clock: &impl Clock,
     pool: &PgPool,
@@ -389,12 +450,18 @@ async fn tick<F>(
     process: &'static str,
     memory: &mut Memory,
     limit: Duration,
+    shutdown: &Shutdown,
     run: F,
 ) -> Ticked
 where
     F: AsyncFnOnce(&mut RefreshLease) -> RunReport,
 {
-    match migrate::skew(pool).await {
+    // Each wait before the run is dropped at a shutdown request: a database
+    // that does not answer must not hold the scheduler past its stop.
+    let Some(skew) = ingest::unless_stopped(Some(shutdown), migrate::skew(pool)).await else {
+        return Ticked::ShuttingDown;
+    };
+    match skew {
         Ok(s) => {
             if let Some(problem) = s.problem() {
                 let why = if s.ahead.is_empty() {
@@ -413,8 +480,10 @@ where
             return Ticked::Unreadable;
         }
     }
-    let Some(history) = read_history(pool, memory).await else {
-        return Ticked::Unreadable;
+    let history = match ingest::unless_stopped(Some(shutdown), read_history(pool, memory)).await {
+        None => return Ticked::ShuttingDown,
+        Some(None) => return Ticked::Unreadable,
+        Some(Some(history)) => history,
     };
     if history.stored_cr_version.is_none() {
         if memory.pause(Pause::Uninitialised) {
@@ -433,7 +502,10 @@ where
         tracing::debug!(in_secs, "scheduled refresh not due");
         return Ticked::NotDue;
     }
-    run_due(clock, pool, every, process, memory, since, limit, run).await
+    run_due(
+        clock, pool, every, process, memory, since, limit, shutdown, run,
+    )
+    .await
 }
 
 /// The rest of a [`tick`] that found a run due: take the lease, read the
@@ -451,12 +523,19 @@ async fn run_due<F>(
     memory: &mut Memory,
     since: Option<Duration>,
     limit: Duration,
+    shutdown: &Shutdown,
     run: F,
 ) -> Ticked
 where
     F: AsyncFnOnce(&mut RefreshLease) -> RunReport,
 {
-    let mut lease = match ingest::try_lease(pool, process).await {
+    // A lease won as the shutdown came is dropped with its connection.
+    let Some(tried) =
+        ingest::unless_stopped(Some(shutdown), ingest::try_lease(pool, process)).await
+    else {
+        return Ticked::ShuttingDown;
+    };
+    let mut lease = match tried {
         Ok(Some(lease)) => lease,
         Ok(None) => {
             tracing::debug!("scheduled refresh due, but another run holds the refresh lease");
@@ -468,18 +547,26 @@ where
         }
     };
     // The run that held the lease before this one may have been the one due.
-    let previous = match read_history(pool, memory).await {
-        Some(h) if due(every, &with_unrecorded(h.clone(), since)) == Due::Now => h,
-        Some(_) => {
-            lease.release().await;
+    let previous = match ingest::unless_stopped(Some(shutdown), read_history(pool, memory)).await {
+        Some(Some(h)) if due(every, &with_unrecorded(h.clone(), since)) == Due::Now => h,
+        Some(Some(_)) => {
+            let_go(lease, shutdown).await;
             tracing::debug!("scheduled refresh: another run has just done it");
             return Ticked::NotDue;
         }
-        None => {
-            lease.release().await;
+        Some(None) => {
+            let_go(lease, shutdown).await;
             return Ticked::Unreadable;
         }
+        None => {
+            let_go(lease, shutdown).await;
+            return Ticked::ShuttingDown;
+        }
     };
+    if shutdown.is_requested() {
+        let_go(lease, shutdown).await;
+        return Ticked::ShuttingDown;
+    }
     tracing::info!(
         trigger = Trigger::Schedule.as_str(),
         process,
@@ -488,23 +575,35 @@ where
     );
     let started = clock.now();
     // The database's clock at the start, so a dropped run's row can be found.
-    let since = runs::db_now(pool).await.ok();
+    let Some(since) = ingest::unless_stopped(Some(shutdown), runs::db_now(pool)).await else {
+        let_go(lease, shutdown).await;
+        return Ticked::ShuttingDown;
+    };
+    let since = since.ok();
     let report = if let Ok(report) = clock.timeout(limit, run(&mut lease)).await {
-        lease.release().await;
+        let_go(lease, shutdown).await;
         report
     } else {
         // Dropped mid-step: its transaction rolls back unless it was
         // committing. Under the lease still, the row it began is closed as
         // failed, so the record does not read as a process that died; then
         // the lease goes, bounded, because its connection may be what hung.
+        let shut = Some(shutdown);
         let closed = match &since {
             Some(since) => clock
-                .timeout(AFTER_DROP, runs::close_dropped(pool, since))
+                .timeout(
+                    AFTER_DROP,
+                    ingest::until_stopped(shut, runs::close_dropped(pool, since)),
+                )
                 .await
-                .is_ok_and(|r| r.unwrap_or(false)),
+                .is_ok_and(|r| r.is_some_and(|r| r.unwrap_or(false))),
             None => false,
         };
-        if clock.timeout(AFTER_DROP, lease.release()).await.is_err() {
+        if clock
+            .timeout(AFTER_DROP, ingest::until_stopped(shut, lease.release()))
+            .await
+            .is_err()
+        {
             tracing::warn!("releasing the lease after a dropped run timed out; dropping it");
         }
         timed_out(closed)
@@ -516,6 +615,20 @@ where
         previous,
         report,
         secs: clock.now().saturating_duration_since(started).as_secs(),
+    }
+}
+
+/// Release `lease`; after a shutdown request, only until [`STOP_WRITES`]
+/// from it, then the lease is dropped, which closes its session and frees
+/// the lock.
+async fn let_go(lease: RefreshLease, shutdown: &Shutdown) {
+    if ingest::until_stopped(Some(shutdown), lease.release())
+        .await
+        .is_none()
+    {
+        tracing::warn!(
+            "releasing the refresh lease got no answer before the shutdown's deadline; dropping it"
+        );
     }
 }
 
@@ -560,21 +673,24 @@ fn ago(secs: Option<i64>) -> String {
     }
 }
 
-/// A random part of [`JITTER`]. A v4 UUID is the randomness the crate already
-/// has; this needs no more than that.
-fn jitter() -> Duration {
-    let max = JITTER.as_millis().max(1);
+/// A random part of `max` ([`JITTER`]). A v4 UUID is the randomness the
+/// crate already has; this needs no more than that.
+fn jitter(max: Duration) -> Duration {
+    let max = max.as_millis().max(1);
     let ms = uuid::Uuid::new_v4().as_u128() % max;
     Duration::from_millis(u64::try_from(ms).unwrap_or_default())
 }
 
-/// How the scheduler thread ended. It never ends on its own: each of these
-/// is a failure.
+/// How the scheduler thread ended. It ends on its own only at the process's
+/// shutdown: each of the others is a failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ended {
+    /// The process is shutting down: the thread closed the run in progress
+    /// (if any) as stopped, released the lease and closed its connections.
+    Shutdown,
     /// The thread could not be started at all.
     NotStarted,
-    /// Its runtime could not be built, or its loop returned.
+    /// Its runtime could not be built.
     Stopped,
     /// It panicked outside a check (a check's own panic is caught and the
     /// loop goes on).
@@ -584,6 +700,7 @@ pub enum Ended {
 impl std::fmt::Display for Ended {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Shutdown => "stopped for the shutdown",
             Self::NotStarted => "could not be started",
             Self::Stopped => "stopped",
             Self::Panicked => "panicked",
@@ -604,6 +721,49 @@ impl Scheduler {
         // A sender dropped without a word is a thread that unwound past it.
         self.0.await.unwrap_or(Ended::Panicked)
     }
+
+    /// Wait for the thread to end. It ends by itself once `shutdown` is
+    /// requested, after closing its run ([`Ended::Shutdown`], within
+    /// [`STOP_LIMIT`] of the request); the wait then lasts at most until the
+    /// drain's limit ([`Shutdown::limit_passed`]), and the caller exits,
+    /// the process's exit closing whatever is left. `None` when the limit
+    /// came first. The thread's writes are on its own runtime and pool, so
+    /// this wait cannot hold up, or be held up by, the serving roles' drain.
+    pub async fn stopped(self, shutdown: &Shutdown) -> Option<Ended> {
+        let ended = tokio::select! {
+            biased;
+            ended = self.ended() => Some(ended),
+            () = shutdown.limit_passed() => None,
+        };
+        match ended {
+            Some(Ended::Shutdown) => tracing::info!("the scheduled refresh stopped"),
+            Some(other) => {
+                tracing::debug!(ended = %other, "the scheduler thread had ended before the shutdown");
+            }
+            None => tracing::warn!(
+                "the scheduled refresh did not stop within the drain; exiting under it \
+                 (a run it had begun stays open, and counts as failed once it is old)"
+            ),
+        }
+        ended
+    }
+}
+
+/// When the scheduler checks: the first check `first` after start, then
+/// `every`, each plus up to `jitter`.
+#[derive(Clone, Copy, Debug)]
+struct Timing {
+    first: Duration,
+    every: Duration,
+    jitter: Duration,
+}
+
+impl Timing {
+    const PRODUCTION: Self = Self {
+        first: FIRST_CHECK,
+        every: CHECK_EVERY,
+        jitter: JITTER,
+    };
 }
 
 /// Start the jobs `jobs` asks for on a thread of their own; see the module
@@ -616,11 +776,17 @@ impl Scheduler {
 /// scheduler's own runtime and pool. The refresh's embedding step bills to
 /// `meter`, the process's one, so `JUDGE_MAX_USD` caps it with the questions
 /// and the spend ledger records it.
+///
+/// `shutdown` is the process's: once it is requested the scheduler starts no
+/// check, cuts the run in progress off ([`ingest::refresh`]), closes its row
+/// as stopped, releases the lease and ends its thread ([`Ended::Shutdown`]),
+/// which [`Scheduler::stopped`] waits for.
 pub async fn start(
     pool: &PgPool,
     jobs: Jobs,
     meter: SpendMeter,
     process: &'static str,
+    shutdown: Shutdown,
 ) -> Option<Scheduler> {
     let Schedule::Every(every) = jobs.refresh else {
         tracing::info!(
@@ -646,7 +812,39 @@ pub async fn start(
     let options = (*pool.connect_options())
         .clone()
         .application_name(&format!("judgebot jobs ({process})"));
-    let alert = jobs.alert;
+    let dir = ingest::cache_dir();
+    let refresh = {
+        let shutdown = shutdown.clone();
+        async move |lease: &mut RefreshLease| {
+            ingest::refresh(lease, &dir, Caller::Schedule(&shutdown), &meter).await
+        }
+    };
+    Some(spawn(
+        options,
+        every,
+        jobs.alert,
+        process,
+        shutdown,
+        Timing::PRODUCTION,
+        refresh,
+    ))
+}
+
+/// [`start`]'s thread, with its timing and its refresh as parameters, so a
+/// test can run the thread itself without downloading anything or waiting
+/// for the first check.
+fn spawn<R>(
+    options: PgConnectOptions,
+    every: Hours,
+    alert: Option<AlertWebhook>,
+    process: &'static str,
+    shutdown: Shutdown,
+    timing: Timing,
+    refresh: R,
+) -> Scheduler
+where
+    R: AsyncFn(&mut RefreshLease) -> RunReport + Send + 'static,
+{
     let (tx, rx) = tokio::sync::oneshot::channel();
     // The sender goes back if the thread cannot be spawned, so the caller
     // still hears about it.
@@ -655,14 +853,14 @@ pub async fn start(
     let spawned = std::thread::Builder::new()
         .name(THREAD_NAME.to_owned())
         .spawn(move || {
-            let ended = run_thread(options, every, alert, &meter, process);
+            let ended = run_thread(options, every, alert, process, &shutdown, timing, refresh);
             tell(&thread_tx, ended);
         });
     if let Err(e) = spawned {
         tracing::error!(error = %e, "could not start the scheduler thread; no scheduled refresh in this process");
         tell(&tx, Ended::NotStarted);
     }
-    Some(Scheduler(rx))
+    Scheduler(rx)
 }
 
 /// Report how the thread ended, once. Nobody listening is fine.
@@ -679,14 +877,21 @@ fn tell(tx: &std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Ended>>>, ende
 }
 
 /// The scheduler thread's body: a current-thread runtime running
-/// [`schedule_loop`], which never returns, so getting past it is a failure.
-fn run_thread(
+/// [`schedule_loop`], which returns only at the shutdown, so any other way
+/// out is a failure. The runtime is shut down before this returns, so every
+/// connection the thread opened is closed by the time its caller hears.
+fn run_thread<R>(
     options: PgConnectOptions,
     every: Hours,
     alert: Option<AlertWebhook>,
-    meter: &SpendMeter,
     process: &'static str,
-) -> Ended {
+    shutdown: &Shutdown,
+    timing: Timing,
+    refresh: R,
+) -> Ended
+where
+    R: AsyncFn(&mut RefreshLease) -> RunReport + 'static,
+{
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -695,24 +900,28 @@ fn run_thread(
             Ok(rt) => rt,
             Err(e) => {
                 tracing::error!(error = %e, "building the scheduler's runtime");
-                return;
+                return Ended::Stopped;
             }
         };
         let local = tokio::task::LocalSet::new();
         local.block_on(
             &runtime,
-            schedule_loop(options, every, alert, meter, process),
+            schedule_loop(options, every, alert, process, shutdown, timing, refresh),
         );
+        // The tasks go first (a connection the cut-off step left, still
+        // waiting for its statement, is one), then the runtime, without
+        // waiting on a blocking task (a DNS lookup) past a moment.
+        drop(local);
+        runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
+        Ended::Shutdown
     }));
-    let ended = if outcome.is_err() {
-        Ended::Panicked
-    } else {
-        Ended::Stopped
-    };
-    tracing::error!(
-        "the scheduler thread {ended}: no scheduled refresh until this process restarts \
-         (serving roles keep answering; `judgebot ingest refresh` still works)"
-    );
+    let ended = outcome.unwrap_or(Ended::Panicked);
+    if ended != Ended::Shutdown {
+        tracing::error!(
+            "the scheduler thread {ended}: no scheduled refresh until this process restarts \
+             (serving roles keep answering; `judgebot ingest refresh` still works)"
+        );
+    }
     ended
 }
 
@@ -725,38 +934,112 @@ fn bounded(options: PgConnectOptions) -> PgConnectOptions {
     ])
 }
 
-/// Check, sleep, repeat. Each check is its own task, so a panic in one is
-/// logged and the loop goes on.
-async fn schedule_loop(
-    options: PgConnectOptions,
-    every: Hours,
-    alert: Option<AlertWebhook>,
-    meter: &SpendMeter,
-    process: &'static str,
-) {
-    let pool = PgPoolOptions::new()
+/// The scheduler's own pool on `options`: [`bounded`], and each connection
+/// given [`CLIENT_CHECK_INTERVAL`] as it opens. Lazy: it connects at the
+/// first check.
+fn scheduler_pool(options: PgConnectOptions) -> PgPool {
+    PgPoolOptions::new()
         .max_connections(POOL_SIZE)
         .min_connections(0)
         .idle_timeout(POOL_IDLE)
-        .connect_lazy_with(bounded(options));
+        .after_connect(|conn, _| {
+            Box::pin(async move {
+                check_connection(conn).await;
+                Ok(())
+            })
+        })
+        .connect_lazy_with(bounded(options))
+}
+
+/// Postgres's SQLSTATE for an unrecognized configuration parameter.
+const UNDEFINED_OBJECT: &str = "42704";
+/// Postgres's SQLSTATE for a value a parameter does not take (a nonzero
+/// check interval on a platform that cannot check).
+const INVALID_PARAMETER_VALUE: &str = "22023";
+
+/// Set [`CLIENT_CHECK_INTERVAL`] on a new scheduler connection. Set after
+/// connecting rather than at startup, where an older server would refuse the
+/// connection over it: a server without it (before Postgres 14, or a
+/// platform that cannot check) keeps only [`STATEMENT_TIMEOUT`], said once
+/// per connection at DEBUG.
+async fn check_connection(conn: &mut PgConnection) {
+    let set = sqlx::query_scalar!(
+        r#"SELECT set_config($1, $2, false) AS "set!""#,
+        "client_connection_check_interval",
+        CLIENT_CHECK_INTERVAL
+    )
+    .fetch_one(conn)
+    .await;
+    match set {
+        Ok(_) => {}
+        Err(sqlx::Error::Database(e))
+            if matches!(
+                e.code().as_deref(),
+                Some(UNDEFINED_OBJECT | INVALID_PARAMETER_VALUE)
+            ) =>
+        {
+            tracing::debug!(
+                error = %e,
+                "the server cannot check for a closed client; a statement a shutdown left \
+                 running ends at statement_timeout"
+            );
+        }
+        Err(e) => tracing::warn!(error = %e, "setting client_connection_check_interval"),
+    }
+}
+
+/// Wait `period`; `true` (at once) when the shutdown is requested first.
+async fn pause(period: Duration, shutdown: &Shutdown) -> bool {
+    tokio::select! {
+        biased;
+        () = shutdown.requested() => true,
+        () = tokio::time::sleep(period) => false,
+    }
+}
+
+/// Check, sleep, repeat, until the shutdown. Each check is its own task, so a
+/// panic in one is logged and the loop goes on; a check in progress at the
+/// shutdown is waited for, because the run in it closes its own row
+/// ([`ingest::refresh`]).
+async fn schedule_loop<R>(
+    options: PgConnectOptions,
+    every: Hours,
+    alert: Option<AlertWebhook>,
+    process: &'static str,
+    shutdown: &Shutdown,
+    timing: Timing,
+    refresh: R,
+) where
+    R: AsyncFn(&mut RefreshLease) -> RunReport + 'static,
+{
+    let pool = scheduler_pool(options);
     let client = alert::client();
     let locale = alert
         .as_ref()
         .map_or_else(Locale::default, AlertWebhook::locale);
-    let cache_dir = ingest::cache_dir();
+    let refresh = Rc::new(refresh);
     let mut memory = Memory::default();
     // Outside the task, so a panic cannot lose it.
     let mut panic_told = false;
-    tokio::time::sleep(FIRST_CHECK + jitter()).await;
+    if pause(timing.first + jitter(timing.jitter), shutdown).await {
+        return;
+    }
     loop {
         let check = tokio::task::spawn_local({
-            let (pool, dir, meter) = (pool.clone(), cache_dir.clone(), meter.clone());
+            let (pool, refresh, shutdown) = (pool.clone(), Rc::clone(&refresh), shutdown.clone());
             async move {
-                let refresh = async move |lease: &mut RefreshLease| {
-                    ingest::refresh(lease, &dir, Trigger::Schedule, &meter).await
-                };
                 let limit = runs::ABANDONED_AFTER;
-                let ticked = tick(&Tokio, &pool, every, process, &mut memory, limit, refresh).await;
+                let ticked = tick(
+                    &Tokio,
+                    &pool,
+                    every,
+                    process,
+                    &mut memory,
+                    limit,
+                    &shutdown,
+                    &*refresh,
+                )
+                .await;
                 (ticked, memory)
             }
         });
@@ -771,7 +1054,11 @@ async fn schedule_loop(
                 {
                     panic_told &= !report.ok();
                     finished(every, &previous, &report, secs, process);
-                    let told = alerts(locale, process, &previous, &report);
+                    // Told even at a shutdown, so a run that finished just
+                    // before it is not lost for the streak; a run the
+                    // shutdown stopped tells nothing ([`alerts`]).
+                    let mut told = alerts(locale, process, &previous, &report);
+                    told.truncate(usize::try_from(MOST_ALERTS).unwrap_or(usize::MAX));
                     send(alert.as_ref(), &client, told).await;
                 }
             }
@@ -785,7 +1072,9 @@ async fn schedule_loop(
                 }
             }
         }
-        tokio::time::sleep(CHECK_EVERY + jitter()).await;
+        if pause(timing.every + jitter(timing.jitter), shutdown).await {
+            return;
+        }
     }
 }
 
@@ -801,12 +1090,14 @@ fn finished(
     let cr = report.cr_after.as_deref().unwrap_or("none");
     match report.outcome() {
         RunOutcome::Ok => tracing::info!(trigger, process, secs, cr, "refresh finished"),
-        RunOutcome::Stopped => tracing::info!(
-            trigger,
-            process,
-            secs,
-            "refresh stopped before writing: the schema is not this binary's"
-        ),
+        RunOutcome::Stopped => {
+            let why = report
+                .steps
+                .iter()
+                .find_map(|s| s.skipped().filter(|k| k.stops()))
+                .map_or_else(String::new, |k| k.to_string());
+            tracing::info!(trigger, process, secs, %why, "refresh stopped");
+        }
         RunOutcome::Failed => {
             let failed: Vec<&str> = report.failed().iter().map(|s| s.name()).collect();
             // This failure extends the streak the record showed before it.
@@ -869,6 +1160,11 @@ mod tests {
     }
 
     const DAY: Hours = Hours::DEFAULT;
+
+    /// A shutdown nobody requests.
+    fn idle() -> Shutdown {
+        Shutdown::new(DRAIN_LIMIT)
+    }
     const HOUR: u64 = 3600;
     const LIMIT: Duration = Duration::from_hours(4);
 
@@ -1094,17 +1390,373 @@ mod tests {
     }
 
     #[test]
-    fn a_run_stopped_by_a_schema_change_tells_nobody() {
-        let stopped = RunReport::of(
-            Step::ALL
-                .iter()
-                .map(|s| s.skipped(Skip::SchemaAhead))
-                .collect(),
-        );
-        assert_eq!(stopped.outcome(), RunOutcome::Stopped);
-        for previous in [RunHistory::default(), h(None, Some(hours(2)), Some(false))] {
-            assert!(alerts(Locale::En, "bot", &previous, &stopped).is_empty());
+    fn a_run_stopped_by_a_schema_change_or_a_shutdown_tells_nobody() {
+        for reason in [Skip::SchemaAhead, Skip::Shutdown] {
+            let mut steps: Vec<StepReport> = vec![Step::Cards.failed("boom".into())];
+            steps.extend(Step::ALL.iter().skip(1).map(|s| s.skipped(reason)));
+            let stopped = RunReport::of(steps);
+            let expected = if reason == Skip::Shutdown {
+                RunOutcome::Stopped
+            } else {
+                RunOutcome::Failed
+            };
+            assert_eq!(stopped.outcome(), expected, "{reason:?}");
+            let stopped = RunReport::of(Step::ALL.iter().map(|s| s.skipped(reason)).collect());
+            assert_eq!(stopped.outcome(), RunOutcome::Stopped);
+            let died = RunHistory {
+                abandoned_started_at: Some("2026-10-09 05:00Z".into()),
+                ..h(Some(hours(30)), Some(hours(4)), Some(false))
+            };
+            for previous in [
+                RunHistory::default(),
+                h(None, Some(hours(2)), Some(false)),
+                died,
+            ] {
+                assert!(alerts(Locale::En, "bot", &previous, &stopped).is_empty());
+            }
         }
+    }
+
+    /// A run a shutdown stopped is no attempt: the next check finds the
+    /// refresh due at once, with no backoff for it, whatever came before.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_stopped_run_leaves_the_refresh_due(pool: PgPool) -> Result<()> {
+        seed(&pool).await?;
+        let row = async |started: &str, finished: Option<&str>, ok: Option<bool>| {
+            sqlx::query(
+                "INSERT INTO refresh_runs (started_at, finished_at, trigger, process, ok)
+                 VALUES (now() - $1::interval, now() - $2::interval, 'schedule', 'bot', $3)",
+            )
+            .bind(started)
+            .bind(finished)
+            .bind(ok)
+            .execute(&pool)
+            .await
+        };
+        row("30 hours", Some("30 hours"), Some(true)).await?;
+        row("2 minutes", Some("1 minute"), None).await?;
+        assert_eq!(due(DAY, &runs::history(&pool).await?), Due::Now);
+        // A failure three hours ago has waited out its hour; the stopped
+        // run after it adds none.
+        row("3 hours", Some("3 hours"), Some(false)).await?;
+        let h = runs::history(&pool).await?;
+        assert_eq!((h.failed_streak, h.last_finished_ok), (1, Some(false)));
+        assert_eq!(due(DAY, &h), Due::Now);
+        // A run in progress is still an attempt: no second run beside it.
+        row("1 minute", None, None).await?;
+        assert!(matches!(
+            due(DAY, &runs::history(&pool).await?),
+            Due::NotYet { .. }
+        ));
+        Ok(())
+    }
+
+    /// A requested shutdown starts no run: not at the check, and not after
+    /// the lease was taken, which goes back.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_requested_shutdown_starts_no_run(pool: PgPool) -> Result<()> {
+        seed(&pool).await?;
+        let shutdown = idle();
+        shutdown.request("test");
+        let ran = AtomicUsize::new(0);
+        let t = tick(
+            &Tokio,
+            &pool,
+            DAY,
+            "bot",
+            &mut Memory::default(),
+            LIMIT,
+            &shutdown,
+            async |_: &mut RefreshLease| fake(&pool, &ran).await,
+        )
+        .await;
+        assert!(matches!(t, Ticked::ShuttingDown), "{t:?}");
+        let t = run_due(
+            &Tokio,
+            &pool,
+            DAY,
+            "bot",
+            &mut Memory::default(),
+            None,
+            LIMIT,
+            &shutdown,
+            async |_: &mut RefreshLease| fake(&pool, &ran).await,
+        )
+        .await;
+        assert!(matches!(t, Ticked::ShuttingDown), "{t:?}");
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        assert!(
+            ingest::try_lease(&pool, "after").await?.is_some(),
+            "the lease was released"
+        );
+        Ok(())
+    }
+
+    /// A check waiting on a database that does not answer (here, a table
+    /// locked by another session) is dropped at the shutdown request, not
+    /// waited for.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_shutdown_ends_a_check_waiting_on_the_database(pool: PgPool) -> Result<()> {
+        seed(&pool).await?;
+        let mut locker = pool.begin().await?;
+        sqlx::query("LOCK TABLE refresh_runs IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *locker)
+            .await?;
+        let shutdown = idle();
+        let ran = AtomicUsize::new(0);
+        let mut memory = Memory::default();
+        let check = tick(
+            &Tokio,
+            &pool,
+            DAY,
+            "bot",
+            &mut memory,
+            LIMIT,
+            &shutdown,
+            async |_: &mut RefreshLease| fake(&pool, &ran).await,
+        );
+        let request = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            shutdown.request("test");
+        };
+        let (t, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(check, request)
+        })
+        .await
+        .context("the check ending at the request")?;
+        assert!(matches!(t, Ticked::ShuttingDown), "{t:?}");
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        locker.rollback().await?;
+        Ok(())
+    }
+
+    /// A run that ended failed as the shutdown came is still told: the
+    /// streak's only alert must not be lost. A run the shutdown stopped is
+    /// told nothing.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_failure_finished_at_the_shutdown_is_still_told(pool: PgPool) -> Result<()> {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        seed(&pool).await?;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let hook = AlertWebhook::mock(&server.uri()).map_err(anyhow::Error::msg)?;
+        for (stopped, posts) in [(false, 1), (true, 0)] {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(204))
+                .mount(&server)
+                .await;
+            let shutdown = idle();
+            let stop = shutdown.clone();
+            let scheduler = spawn(
+                (*pool.connect_options()).clone(),
+                DAY,
+                Some(hook.clone()),
+                "alert-test",
+                shutdown.clone(),
+                AT_ONCE,
+                async move |_: &mut RefreshLease| {
+                    // The request lands as the run ends, during its writes.
+                    stop.request("test");
+                    if stopped {
+                        RunReport::of(
+                            Step::ALL
+                                .iter()
+                                .map(|s| s.skipped(Skip::Shutdown))
+                                .collect(),
+                        )
+                    } else {
+                        failed(&[Step::Cards])
+                    }
+                },
+            );
+            let ended = tokio::time::timeout(HANG, scheduler.stopped(&shutdown)).await?;
+            assert_eq!(ended, Some(Ended::Shutdown));
+            let got = server.received_requests().await.unwrap_or_default();
+            assert_eq!(got.len(), posts, "stopped: {stopped}");
+            if let Some(body) = got
+                .first()
+                .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+            {
+                assert!(body.contains("(step cards)"), "{body}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Timing for a thread under test: the first check at once, the next
+    /// one never within the test.
+    const AT_ONCE: Timing = Timing {
+        first: Duration::ZERO,
+        every: Duration::from_hours(1),
+        jitter: Duration::ZERO,
+    };
+
+    /// A shutdown while the scheduler waits for its next check ends the
+    /// thread at once, with nothing run.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_shutdown_between_checks_ends_the_thread(pool: PgPool) -> Result<()> {
+        let shutdown = idle();
+        let ran = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&ran);
+        let scheduler = spawn(
+            (*pool.connect_options()).clone(),
+            DAY,
+            None,
+            "idle-test",
+            shutdown.clone(),
+            Timing {
+                first: Duration::from_hours(1),
+                ..AT_ONCE
+            },
+            async move |_: &mut RefreshLease| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                fine()
+            },
+        );
+        shutdown.request("test");
+        let ended = tokio::time::timeout(HANG, scheduler.stopped(&shutdown)).await?;
+        assert_eq!(ended, Some(Ended::Shutdown));
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    /// The whole stop, on the scheduler's own thread: a step holding
+    /// `CALLS_REWRITE_LOCK` with a statement running on the server is cut
+    /// off at the shutdown, the run is closed as stopped and the lease
+    /// released, the thread ends, and the server ends the abandoned
+    /// statement (its client gone, `client_connection_check_interval`), so
+    /// the lock the draining answers wait on is free within seconds, not at
+    /// `statement_timeout`.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_shutdown_stops_the_run_and_frees_the_calls_lock(pool: PgPool) -> Result<()> {
+        seed(&pool).await?;
+        let shutdown = idle();
+        let (began, beginning) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let began = std::sync::Mutex::new(Some(began));
+        let stop = shutdown.clone();
+        let refresh = async move |lease: &mut RefreshLease| {
+            let step = async |lease: &mut RefreshLease, step: Step| {
+                if step != Step::Cards {
+                    return step.skipped(Skip::NoEmbedder);
+                }
+                let held = async {
+                    let mut tx = lease.pool().begin().await?;
+                    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                        .bind(crate::db::CALLS_REWRITE_LOCK)
+                        .execute(&mut *tx)
+                        .await?;
+                    let tell = began
+                        .lock()
+                        .map_or_else(|p| p.into_inner().take(), |mut g| g.take());
+                    if let Some(tell) = tell {
+                        drop(tell.send(Ok(())));
+                    }
+                    // Holds the lock for ten minutes unless something ends it.
+                    sqlx::query("SELECT pg_sleep(600)")
+                        .execute(&mut *tx)
+                        .await?;
+                    tx.commit().await
+                }
+                .await;
+                match held {
+                    Ok(()) => StepReport::Cards(Outcome::Ok { summary: () }),
+                    Err(e) => step.failed(e.to_string()),
+                }
+            };
+            ingest::refresh_with(
+                &Tokio,
+                lease,
+                Caller::Schedule(&stop),
+                ingest::RUN_TIMEOUT,
+                step,
+            )
+            .await
+        };
+        let options = (*pool.connect_options())
+            .clone()
+            .application_name("judgebot jobs (stop-test)");
+        let scheduler = spawn(
+            options,
+            DAY,
+            None,
+            "stop-test",
+            shutdown.clone(),
+            AT_ONCE,
+            refresh,
+        );
+        tokio::time::timeout(HANG, beginning)
+            .await
+            .context("the step taking the lock in time")?
+            .context("the step began")?
+            .map_err(anyhow::Error::msg)?;
+        let held: bool = sqlx::query_scalar("SELECT NOT pg_try_advisory_lock($1)")
+            .bind(crate::db::CALLS_REWRITE_LOCK)
+            .fetch_one(&pool)
+            .await?;
+        assert!(held, "the step holds the calls lock");
+
+        let asked = std::time::Instant::now();
+        shutdown.request("test");
+        let ended = tokio::time::timeout(HANG, scheduler.stopped(&shutdown)).await?;
+        assert_eq!(ended, Some(Ended::Shutdown));
+        assert!(asked.elapsed() < STOP_LIMIT, "{:?}", asked.elapsed());
+
+        // The record: closed, as stopped, the step cut off and the rest
+        // not started.
+        let (ok, finished, steps): (Option<bool>, bool, serde_json::Value) = sqlx::query_as(
+            "SELECT ok, finished_at IS NOT NULL, steps FROM refresh_runs WHERE process = 'stop-test'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!((ok, finished), (None, true));
+        let back: Vec<StepReport> = serde_json::from_value(steps)?;
+        assert_eq!(
+            back.first().and_then(StepReport::skipped),
+            Some(Skip::Interrupted)
+        );
+        assert!(
+            back.iter()
+                .skip(1)
+                .all(|s| s.skipped() == Some(Skip::Shutdown))
+        );
+        assert!(
+            ingest::try_lease(&pool, "after").await?.is_some(),
+            "the lease was released"
+        );
+
+        // The server ends the abandoned statement once it finds its client
+        // gone, and the calls lock with it.
+        let freed = async {
+            loop {
+                let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+                    .bind(crate::db::CALLS_REWRITE_LOCK)
+                    .fetch_one(&pool)
+                    .await?;
+                if free {
+                    sqlx::query("SELECT pg_advisory_unlock($1)")
+                        .bind(crate::db::CALLS_REWRITE_LOCK)
+                        .execute(&pool)
+                        .await?;
+                    return anyhow::Ok(asked.elapsed());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        };
+        let after = tokio::time::timeout(Duration::from_secs(20), freed)
+            .await
+            .context("the calls lock freed in time")??;
+        assert!(after < Duration::from_secs(10), "freed after {after:?}");
+        let left: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'judgebot jobs (stop-test)'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(left, 0, "every scheduler connection is closed");
+        Ok(())
     }
 
     #[test]
@@ -1131,14 +1783,18 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn the_schedulers_connections_carry_the_server_side_bounds(pool: PgPool) -> Result<()> {
-        let options = bounded((*pool.connect_options()).clone());
-        let mut conn = <sqlx::PgConnection as sqlx::Connection>::connect_with(&options).await?;
-        let (statement, lock): (String, String) = sqlx::query_as(
-            "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')",
+        let jobs = scheduler_pool((*pool.connect_options()).clone());
+        let (statement, lock, check): (String, String, String) = sqlx::query_as(
+            "SELECT current_setting('statement_timeout'), current_setting('lock_timeout'),
+                    current_setting('client_connection_check_interval')",
         )
-        .fetch_one(&mut conn)
+        .fetch_one(&jobs)
         .await?;
-        assert_eq!((statement.as_str(), lock.as_str()), ("30min", "15min"));
+        assert_eq!(
+            (statement.as_str(), lock.as_str(), check.as_str()),
+            ("30min", "15min", CLIENT_CHECK_INTERVAL)
+        );
+        jobs.close().await;
         Ok(())
     }
 
@@ -1196,6 +1852,7 @@ mod tests {
         seed(&pool).await?;
         let ran = AtomicUsize::new(0);
         let (mut a, mut b) = (Memory::default(), Memory::default());
+        let idle = idle();
         let (x, y) = tokio::join!(
             tick(
                 &Tokio,
@@ -1204,6 +1861,7 @@ mod tests {
                 "a",
                 &mut a,
                 LIMIT,
+                &idle,
                 async |_: &mut RefreshLease| { fake(&pool, &ran).await }
             ),
             tick(
@@ -1213,6 +1871,7 @@ mod tests {
                 "b",
                 &mut b,
                 LIMIT,
+                &idle,
                 async |_: &mut RefreshLease| { fake(&pool, &ran).await }
             ),
         );
@@ -1243,6 +1902,7 @@ mod tests {
             "bot",
             &mut Memory::default(),
             LIMIT,
+            &idle(),
             async |_: &mut RefreshLease| fake(&pool, &ran).await,
         )
         .await;
@@ -1268,6 +1928,7 @@ mod tests {
             "bot",
             &mut Memory::default(),
             LIMIT,
+            &idle(),
             async |_: &mut RefreshLease| fake(&pool, &ran).await,
         )
         .await;
@@ -1287,6 +1948,7 @@ mod tests {
             "bot",
             &mut memory,
             LIMIT,
+            &idle(),
             async |_: &mut RefreshLease| fake(&pool, &ran).await,
         )
         .await;
@@ -1304,6 +1966,7 @@ mod tests {
             "bot",
             &mut memory,
             LIMIT,
+            &idle(),
             async |_: &mut RefreshLease| fake(&pool, &ran).await,
         )
         .await;
@@ -1333,6 +1996,7 @@ mod tests {
                 "bot",
                 &mut memory,
                 LIMIT,
+                &idle(),
                 async |_: &mut RefreshLease| fake(&pool, &ran).await,
             )
             .await;
@@ -1361,6 +2025,7 @@ mod tests {
                 "bot",
                 &mut memory,
                 LIMIT,
+                &idle(),
                 async |_: &mut RefreshLease| fake(&pool, &ran).await,
             )
             .await;
@@ -1377,6 +2042,7 @@ mod tests {
             "bot",
             &mut memory,
             LIMIT,
+            &idle(),
             async |_: &mut RefreshLease| fake(&pool, &ran).await,
         )
         .await;
@@ -1405,6 +2071,7 @@ mod tests {
             "bot",
             &mut Memory::default(),
             LIMIT,
+            &idle(),
             async |_: &mut RefreshLease| fake(&pool, &ran).await,
         )
         .await;
@@ -1446,6 +2113,7 @@ mod tests {
             &mut Memory::default(),
             None,
             LIMIT,
+            &idle(),
             async |_: &mut RefreshLease| fake(&pool, &ran).await,
         )
         .await;
@@ -1471,7 +2139,8 @@ mod tests {
         F: AsyncFnOnce(&mut RefreshLease) -> RunReport,
     {
         let limit = clock.elapsed() + LIMIT;
-        let mut ticked = std::pin::pin!(tick(clock, pool, DAY, "bot", memory, LIMIT, run));
+        let idle = idle();
+        let mut ticked = std::pin::pin!(tick(clock, pool, DAY, "bot", memory, LIMIT, &idle, run));
         let drive = async {
             tokio::time::timeout(HANG, begun)
                 .await
@@ -1543,6 +2212,7 @@ mod tests {
             "bot",
             &mut memory,
             LIMIT,
+            &idle(),
             async |_: &mut RefreshLease| fake(&pool, &ran).await,
         )
         .await;

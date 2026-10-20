@@ -28,6 +28,16 @@ pub const ALERT_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Clone, PartialEq, Eq)]
 pub struct AlertWebhook(url::Url, Locale);
 
+#[cfg(test)]
+impl AlertWebhook {
+    /// A webhook at any URL, `http` included: a test's mock server.
+    pub(crate) fn mock(raw: &str) -> Result<Self, String> {
+        url::Url::parse(raw)
+            .map(|u| Self(u, Locale::default()))
+            .map_err(|e| e.to_string())
+    }
+}
+
 impl AlertWebhook {
     /// Parse the variable's value. Its alerts are English until
     /// [`Self::in_locale`] says otherwise.

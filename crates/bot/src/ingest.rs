@@ -73,6 +73,7 @@ use sqlx::PgPool;
 use crate::{
     clock::{Clock, Tokio},
     db::RetireSummary,
+    shutdown::Shutdown,
 };
 use runs::{Outcome, RunReport, Skip, Step, StepReport, Trigger};
 
@@ -464,6 +465,19 @@ fn has_discord_token() -> bool {
 ///   keeps running on the server until it ends: a scheduled run's
 ///   connections carry `statement_timeout` and `lock_timeout`
 ///   ([`crate::jobs`]) to bound that.
+/// * its process is shutting down ([`Caller::Schedule`], the process's
+///   [`Shutdown`] requested): the step in progress is abandoned the same way,
+///   at once, and recorded as [`Skip::Interrupted`], the rest as
+///   [`Skip::Shutdown`], and the run is [`runs::RunOutcome::Stopped`]: no
+///   alert, no backoff, and the next process runs it again. Every step is
+///   safe to cut off at any await point (D40). The scheduler's connections
+///   close with its thread and carry `client_connection_check_interval`
+///   ([`crate::jobs`]), so a statement left running notices the closed
+///   connection within seconds and its transaction, with any lock it held
+///   (`CALLS_REWRITE_LOCK`), ends with it. Every other wait of the run is
+///   raced against the shutdown too: its reads and checks are dropped at
+///   once, and the writes that record it share one deadline, [`STOP_WRITES`]
+///   after the request, so the run closes inside the drain.
 ///
 /// The run is recorded in `refresh_runs` ([`runs`]) as started by `trigger`
 /// in the lease's process. Recording never stops a step: a record that
@@ -485,59 +499,215 @@ fn has_discord_token() -> bool {
 pub async fn refresh(
     lease: &mut RefreshLease,
     cache_dir: &Path,
-    trigger: Trigger,
+    caller: Caller<'_>,
     meter: &SpendMeter,
 ) -> RunReport {
+    let trigger = caller.trigger();
     let step = async |lease: &mut RefreshLease, step: Step| {
         refresh_step(lease, step, cache_dir, trigger, meter).await
     };
-    refresh_with(&Tokio, lease, trigger, RUN_TIMEOUT, step).await
+    refresh_with(&Tokio, lease, caller, RUN_TIMEOUT, step).await
+}
+
+/// What started a [`refresh`], and so what may stop it.
+#[derive(Clone, Copy, Debug)]
+pub enum Caller<'a> {
+    /// The process's own schedule ([`crate::jobs`]): the process's shutdown
+    /// stops the run ([`Trigger::Schedule`]).
+    Schedule(&'a Shutdown),
+    /// A command, `judgebot ingest refresh` by hand or from cron: it runs
+    /// until it is done, or until whoever started it stops it
+    /// ([`Trigger::Manual`]).
+    Manual,
+}
+
+impl<'a> Caller<'a> {
+    /// The trigger the run is recorded with.
+    #[must_use]
+    pub const fn trigger(self) -> Trigger {
+        match self {
+            Self::Schedule(_) => Trigger::Schedule,
+            Self::Manual => Trigger::Manual,
+        }
+    }
+
+    /// The shutdown that stops the run, if any.
+    const fn shutdown(self) -> Option<&'a Shutdown> {
+        match self {
+            Self::Schedule(shutdown) => Some(shutdown),
+            Self::Manual => None,
+        }
+    }
+}
+
+/// How long after a shutdown request the scheduler's last writes may go on:
+/// the run's row (begun, read back, finished) and the lease's release
+/// ([`until_stopped`]). They share this one deadline, so a database that
+/// stops answering holds the stop no longer than this, inside the drain
+/// ([`crate::shutdown::DRAIN_LIMIT`]): three times the ledger flush's bound.
+pub const STOP_WRITES: Duration = crate::shutdown::FLUSH_LIMIT.saturating_mul(3);
+
+/// `work`, with a shutdown (if any) bounding it: once one is requested it may
+/// go on until [`STOP_WRITES`] after the request, then it is dropped
+/// (`None`). For the writes that close a run, which are worth finishing.
+pub(crate) async fn until_stopped<F: Future>(
+    shutdown: Option<&Shutdown>,
+    work: F,
+) -> Option<F::Output> {
+    let Some(shutdown) = shutdown else {
+        return Some(work.await);
+    };
+    let mut work = std::pin::pin!(work);
+    tokio::select! {
+        biased;
+        out = &mut work => return Some(out),
+        () = shutdown.requested() => {}
+    }
+    let deadline = shutdown
+        .requested_at()
+        .map_or_else(tokio::time::Instant::now, |at| at + STOP_WRITES);
+    tokio::time::timeout_at(deadline, work).await.ok()
+}
+
+/// `work`, dropped at once (`None`) when a shutdown (if any) is requested
+/// first. For the reads and checks before a step, which a stopping run does
+/// not need.
+pub(crate) async fn unless_stopped<F: Future>(
+    shutdown: Option<&Shutdown>,
+    work: F,
+) -> Option<F::Output> {
+    tokio::select! {
+        biased;
+        () = stopping(shutdown) => None,
+        out = work => Some(out),
+    }
+}
+
+/// Resolves once `shutdown` (if any) has been requested; never without one.
+async fn stopping(shutdown: Option<&Shutdown>) {
+    match shutdown {
+        Some(s) => s.requested().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// [`refresh`] with its clock, its time limit and its steps as parameters, so
 /// a test can run it without downloading anything or waiting for the limit.
-async fn refresh_with<F>(
+pub(crate) async fn refresh_with<F>(
     clock: &impl Clock,
     lease: &mut RefreshLease,
-    trigger: Trigger,
+    caller: Caller<'_>,
     limit: Duration,
     mut run_step: F,
 ) -> RunReport
 where
     F: AsyncFnMut(&mut RefreshLease, Step) -> StepReport,
 {
+    let shutdown = caller.shutdown();
+    let requested = || shutdown.is_some_and(Shutdown::is_requested);
     let deadline = clock.now() + limit;
     let pool = lease.pool().clone();
-    let cr_before = runs::stored_cr(&pool).await;
-    let record = runs::begin(&pool, trigger, lease.process(), cr_before.as_deref()).await;
+    // Every wait outside a step is raced against the shutdown too: the reads
+    // and checks are dropped at once, the writes that record the run are
+    // bounded by `STOP_WRITES` from the request.
+    let cr_before = unless_stopped(shutdown, runs::stored_cr(&pool))
+        .await
+        .flatten();
+    // Asked to stop before anything began: nothing to record.
+    if requested() {
+        tracing::info!("shutting down: the refresh starts no step");
+        return RunReport {
+            recorded: false,
+            ..RunReport::of(
+                Step::ALL
+                    .iter()
+                    .map(|s| s.skipped(Skip::Shutdown))
+                    .collect(),
+            )
+        };
+    }
+    // A row the insert wrote is always closed (below); one it was still
+    // writing at the deadline is abandoned with its connection, which the
+    // server ends (`client_connection_check_interval`, `crate::jobs`).
+    let record = until_stopped(
+        shutdown,
+        runs::begin(
+            &pool,
+            caller.trigger(),
+            lease.process(),
+            cr_before.as_deref(),
+        ),
+    )
+    .await
+    .unwrap_or_else(|| {
+        tracing::warn!("recording the refresh start got no answer before the shutdown's deadline");
+        None
+    });
     let mut steps = Vec::with_capacity(Step::ALL.len());
     let mut halted: Option<Halt> = None;
     let mut timed_out = false;
     for step in Step::ALL {
+        // Before the checks (no query at a shutdown) and after them (a request
+        // that came during them starts no step, rather than cutting one off
+        // before it began).
+        if halted.is_none() && requested() {
+            halted = Some(Halt::Skip(Skip::Shutdown));
+        }
         if halted.is_none() {
-            halted = may_write(lease).await.err();
+            halted = unless_stopped(shutdown, may_write(lease))
+                .await
+                .unwrap_or(Err(Halt::Skip(Skip::Shutdown)))
+                .err();
+        }
+        if halted.is_none() && requested() {
+            halted = Some(Halt::Skip(Skip::Shutdown));
         }
         let report = match &halted {
             Some(Halt::Lost(error)) => step.failed(error.clone()),
             Some(Halt::Skip(reason)) => step.skipped(*reason),
             None => {
-                if let Ok(report) = clock.timeout_at(deadline, run_step(lease, step)).await {
-                    report
-                } else {
-                    timed_out = true;
-                    halted = Some(Halt::Skip(Skip::RunTimedOut));
-                    step.failed(format!(
-                        "timed out: the run passed its {} min limit, and the rest of it was abandoned",
-                        limit.as_secs() / 60
-                    ))
+                // Biased: a shutdown requested while the step's own work is
+                // ready too still cuts it off at this await point.
+                let ran = tokio::select! {
+                    biased;
+                    () = stopping(shutdown) => None,
+                    ran = clock.timeout_at(deadline, run_step(lease, step)) => Some(ran),
+                };
+                match ran {
+                    Some(Ok(report)) => report,
+                    Some(Err(_)) => {
+                        timed_out = true;
+                        halted = Some(Halt::Skip(Skip::RunTimedOut));
+                        step.failed(format!(
+                            "timed out: the run passed its {} min limit, and the rest of it was abandoned",
+                            limit.as_secs() / 60
+                        ))
+                    }
+                    None => {
+                        tracing::info!(
+                            step = step.name(),
+                            "shutting down: the refresh step in progress is cut off, and the next run does it again"
+                        );
+                        halted = Some(Halt::Skip(Skip::Shutdown));
+                        step.skipped(Skip::Interrupted)
+                    }
                 }
             }
         };
         report.log();
         steps.push(report);
     }
-
-    let cr_after = runs::stored_cr(&pool).await;
+    // At a shutdown, whenever it came, the record's last writes share the
+    // stop's deadline, so the run is closed inside the drain (a step left
+    // blocked on the database must not hold them past it).
+    let cr_after = until_stopped(shutdown, runs::stored_cr(&pool))
+        .await
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "reading the stored CR version got no answer before the shutdown's deadline"
+            );
+            None
+        });
     let loaded = steps.iter().any(|s| {
         matches!(
             s,
@@ -561,7 +731,16 @@ where
         timed_out,
         aborted: false,
     };
-    runs::finish(&pool, record, &report).await;
+    if until_stopped(shutdown, runs::finish(&pool, record, &report))
+        .await
+        .is_none()
+    {
+        tracing::warn!(
+            limit_secs = STOP_WRITES.as_secs(),
+            "closing the refresh's row got no answer before the shutdown's deadline; it is left \
+             open, and counts as failed once it is old"
+        );
+    }
     report
 }
 
@@ -618,6 +797,16 @@ pub async fn ensure_writable(lease: &mut RefreshLease) -> Result<()> {
 }
 
 /// One step of [`refresh`].
+///
+/// Each may be dropped at any await point, by the run timeout or a shutdown,
+/// and run again (D40 has the table): `cards` downloads to a `.part` file
+/// renamed whole and upserts in per-batch transactions, deleting retired rows
+/// only after the last batch; `rules` is one transaction (under
+/// `CALLS_REWRITE_LOCK`), as are each list of `lists` and `retire`; `prune`
+/// (a batch at a time) and `sweep` write in idempotent single statements;
+/// `embed` writes each batch in
+/// a transaction after its request (one batch may be paid twice); `emoji`
+/// skips the emoji the application already has.
 async fn refresh_step(
     lease: &mut RefreshLease,
     step: Step,
@@ -832,7 +1021,7 @@ mod tests {
             ran.set(ran.get() + 1);
             step.failed("ran".into())
         };
-        let report = refresh_with(&Tokio, &mut held, Trigger::Manual, RUN_TIMEOUT, count).await;
+        let report = refresh_with(&Tokio, &mut held, Caller::Manual, RUN_TIMEOUT, count).await;
         assert_eq!((ran.get(), report.failed()), (0, Vec::new()));
         assert_eq!(report.outcome(), runs::RunOutcome::Stopped);
         assert!(
@@ -858,7 +1047,7 @@ mod tests {
         sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 20261008000001")
             .execute(&pool)
             .await?;
-        let report = refresh_with(&Tokio, &mut held, Trigger::Manual, RUN_TIMEOUT, count).await;
+        let report = refresh_with(&Tokio, &mut held, Caller::Manual, RUN_TIMEOUT, count).await;
         assert_eq!(ran.get(), 0);
         let err = report.ensure_ok().err().map(|e| e.to_string());
         assert!(
@@ -893,10 +1082,11 @@ mod tests {
         // The run's clock reaches its limit once the step hangs, and only then.
         let clock = Manual::new();
         let report = {
+            let shutdown = Shutdown::new(crate::shutdown::DRAIN_LIMIT);
             let mut run = std::pin::pin!(refresh_with(
                 &clock,
                 &mut held,
-                Trigger::Schedule,
+                Caller::Schedule(&shutdown),
                 RUN_TIMEOUT,
                 hang
             ));
@@ -939,6 +1129,132 @@ mod tests {
         Ok(())
     }
 
+    /// A shutdown cuts the step in progress off at once (its future dropped)
+    /// and starts none after it: the run closes its row as stopped (`ok`
+    /// null), so it neither alerts nor backs off, and leaves no open row.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_shutdown_cuts_the_run_off_and_closes_it_as_stopped(pool: PgPool) -> Result<()> {
+        /// Sets its flag when dropped: the hung step's future was.
+        struct OnDrop<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for OnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let mut held = lease(&pool, "shutdown-test").await?;
+        let shutdown = Shutdown::new(crate::shutdown::DRAIN_LIMIT);
+        let started = std::cell::Cell::new(Vec::new());
+        let dropped = std::cell::Cell::new(false);
+        let step = async |_: &mut RefreshLease, step: Step| {
+            let mut seen = started.take();
+            seen.push(step);
+            started.set(seen);
+            if step == Step::Rules {
+                let _guard = OnDrop(&dropped);
+                shutdown.request("test");
+                std::future::pending::<()>().await;
+            }
+            StepReport::Cards(Outcome::Ok { summary: () })
+        };
+        let report = tokio::time::timeout(
+            HANG,
+            refresh_with(
+                &Tokio,
+                &mut held,
+                Caller::Schedule(&shutdown),
+                RUN_TIMEOUT,
+                step,
+            ),
+        )
+        .await
+        .context("the run ending at the shutdown")?;
+        assert!(dropped.get(), "the step in progress was dropped");
+        assert_eq!(started.take(), vec![Step::Cards, Step::Rules]);
+        assert_eq!(report.outcome(), runs::RunOutcome::Stopped);
+        assert!(!report.timed_out && report.recorded && report.failed().is_empty());
+        assert_eq!(
+            report.steps.get(1).and_then(StepReport::skipped),
+            Some(Skip::Interrupted)
+        );
+        assert!(
+            report
+                .steps
+                .iter()
+                .skip(2)
+                .all(|s| s.skipped() == Some(Skip::Shutdown)),
+            "{:?}",
+            report.steps
+        );
+        let (ok, finished): (Option<bool>, bool) =
+            sqlx::query_as("SELECT ok, finished_at IS NOT NULL FROM refresh_runs")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!((ok, finished), (None, true));
+        let h = runs::history(&pool).await?;
+        assert_eq!(
+            (h.last_attempt_age_secs, h.failed_streak, h.last_finished_ok),
+            (None, 0, None),
+            "no attempt, no verdict"
+        );
+
+        // Requested before the run: nothing starts, and the row closes the same.
+        let ran = std::cell::Cell::new(0);
+        let count = async |_: &mut RefreshLease, step: Step| {
+            ran.set(ran.get() + 1);
+            step.failed("ran".into())
+        };
+        let report = refresh_with(
+            &Tokio,
+            &mut held,
+            Caller::Schedule(&shutdown),
+            RUN_TIMEOUT,
+            count,
+        )
+        .await;
+        assert_eq!(ran.get(), 0);
+        assert!(
+            report
+                .steps
+                .iter()
+                .all(|s| s.skipped() == Some(Skip::Shutdown))
+        );
+        assert_eq!(report.outcome(), runs::RunOutcome::Stopped);
+        // A manual run has no shutdown to obey.
+        let report = refresh_with(&Tokio, &mut held, Caller::Manual, RUN_TIMEOUT, count).await;
+        assert_eq!(ran.get(), Step::ALL.len());
+        assert_eq!(report.outcome(), runs::RunOutcome::Failed);
+        held.release().await;
+        Ok(())
+    }
+
+    /// Outside a step, a stopping run drops its reads at the request and
+    /// gives its writes until [`STOP_WRITES`] after it; a manual run waits.
+    #[tokio::test(start_paused = true)]
+    async fn the_waits_outside_a_step_end_at_the_shutdown() {
+        let shutdown = Shutdown::new(crate::shutdown::DRAIN_LIMIT);
+        let start = tokio::time::Instant::now();
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            s.request("test");
+        });
+        let read = unless_stopped(Some(&shutdown), std::future::pending::<()>()).await;
+        assert_eq!((read, start.elapsed()), (None, Duration::from_secs(2)));
+        let write = until_stopped(Some(&shutdown), std::future::pending::<()>()).await;
+        assert_eq!(
+            (write, start.elapsed()),
+            (None, Duration::from_secs(2) + STOP_WRITES),
+            "from the request, not from the call"
+        );
+        assert_eq!(until_stopped(Some(&shutdown), async { 7 }).await, Some(7));
+        let manual = tokio::time::timeout(
+            Duration::from_hours(1),
+            until_stopped(None, std::future::pending::<()>()),
+        )
+        .await;
+        assert!(manual.is_err(), "no shutdown, no bound");
+    }
+
     /// A run whose lease is gone runs nothing (no download, no write) and
     /// records every step as failed with the reason.
     #[sqlx::test(migrations = "../bot/migrations")]
@@ -957,7 +1273,7 @@ mod tests {
         let report = refresh(
             &mut held,
             Path::new("/nonexistent"),
-            Trigger::Manual,
+            Caller::Manual,
             &SpendMeter::new(),
         )
         .await;

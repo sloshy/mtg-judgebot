@@ -17,6 +17,10 @@
 //!   for as long as its handler runs ([`crate::discord`]), and the HTTP
 //!   listener waits for the requests it has accepted. An answer already
 //!   deferred to Discord is sent over the REST API, which needs no gateway.
+//! - **The scheduled refresh stops.** The scheduler ([`crate::jobs`]) cuts
+//!   the step in progress off, closes its run as stopped, releases the
+//!   refresh lease and ends its thread; the process waits for it within the
+//!   same limit, before the last spend ledger write.
 //! - **The wait is bounded.** Everything must be done within the
 //!   [limit](Shutdown::limit) of the request ([`DRAIN_LIMIT`] in production);
 //!   what is still running then is cut off. Compose's `stop_grace_period`
@@ -119,6 +123,15 @@ impl Shutdown {
     #[must_use]
     pub fn is_requested(&self) -> bool {
         self.0.requested.is_cancelled()
+    }
+
+    /// When the shutdown was requested, if it has been.
+    #[must_use]
+    pub fn requested_at(&self) -> Option<Instant> {
+        self.0
+            .deadline
+            .get()
+            .map(|deadline| deadline.checked_sub(self.0.limit).unwrap_or(*deadline))
     }
 
     /// Resolves once a shutdown has been requested (at once, after that).

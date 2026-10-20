@@ -69,7 +69,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D39),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D40),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -266,7 +266,9 @@ deletes the caller's ratings with their reasons and feedback-queue items (`feedb
   interaction serenity dispatches, and `serve` returns after `Shutdown::drained`. `serve_on` is
   axum's graceful shutdown, bounded. All of it is within `DRAIN_LIMIT` (120 s) of the
   request. `main::run` waits for both roles on a requested stop (otherwise the first to
-  stop still ends the process), then `Serving::flush` writes the ledger, exit 0.
+  stop still ends the process), waits for the scheduler to stop its run and end
+  (`Scheduler::stopped`, within the drain deadline), then `Serving::flush` writes the
+  ledger, exit 0.
   Compose's `stop_grace_period` is `DRAIN_LIMIT + EXIT_MARGIN` (a test).
 
 **The source offer** (`judge_core::source`, AGPL §13). Every remote interface names the
@@ -610,8 +612,9 @@ What a `judgebot` process does is a launch option, not a consequence of starting
   run under `tokio::select!`: the first to stop ends the process non-zero. Each keeps its
   own `JUDGE_CONCURRENCY` slots.
 - `jobs::start` returns a `Scheduler`, whose `ended()` completes when the thread ends.
-  A jobs-only process awaits it and exits non-zero. Beside serving roles it is dropped:
-  the thread logs ERROR and the process keeps answering.
+  A jobs-only process awaits it and exits non-zero. Beside serving roles it is kept: if
+  the thread ends on its own it logs ERROR and the process keeps answering; on a
+  requested stop `main` waits for it (`Scheduler::stopped`, `Ended::Shutdown`).
 - `roles` is the `judgebot` crate's library (`src/lib.rs`), so `judge-config`'s
   `check.rs` resolves the compose service's roles with `roles::compose_roles` and checks
   only the surfaces those roles run (no `DISCORD_TOKEN` needed without `--discord`).
@@ -1031,18 +1034,23 @@ origin except Cloudflare.
   the interval and last attempt older than `jobs::backoff` (1 h × 2^(failed_streak−1),
   capped at the interval; a run that left no row is remembered in memory). Due:
   `try_lease` (held: skip), re-read under the lease, run
-  `ingest::refresh(…, Trigger::Schedule)` under a timeout.
-- `ingest::refresh` (every trigger) checks the lease and `migrate::skew` before each
+  `ingest::refresh(…, Caller::Schedule(&shutdown))` under a timeout.
+- `ingest::refresh` (every caller) checks the lease and `migrate::skew` before each
   step, and abandons the run at `ingest::RUN_TIMEOUT` (3 h). A skew skips the remaining
   steps (`Skip::SchemaAhead|SchemaBehind`), and the run is `RunOutcome::Stopped`
-  (stored `ok` null): no alert, no backoff. Single-step `judgebot ingest` commands call
+  (stored `ok` null): no alert, no backoff. A scheduled run also stops on the process's
+  shutdown (D40): the step in progress is cut off (`Skip::Interrupted`), the rest are
+  `Skip::Shutdown`, and the run is `Stopped` whatever ran before. A stopped run is not an
+  attempt in `runs::history`, so the next process's first check runs it. Single-step `judgebot ingest` commands call
   `ingest::ensure_writable` once.
 - `runs::history` counts an unfinished row older than `runs::ABANDONED_AFTER`
   (3 h 10 min) as a failed run (`abandoned_started_at`, alerted once per streak). The
   scheduler drops a run at that same limit, closes its row as failed
   (`runs::close_dropped`) and releases the lease with a bound. Its pool carries
   `statement_timeout` 30 min and `lock_timeout` 15 min (`jobs::bounded`), because sqlx
-  sends no cancel for an abandoned statement.
+  sends no cancel for an abandoned statement, and `client_connection_check_interval` 2 s
+  (`scheduler_pool`), so a cut step's server-side statement ends, and its locks
+  (`CALLS_REWRITE_LOCK`) free, once the thread's runtime closes the connection.
 - `Trigger::Schedule` skips `embed` above `embed::UNATTENDED_CEILING` (800 rows) with
   `Skip::EmbedCeiling`. Manual runs have no ceiling.
 - `jobs::alerts` posts the first failure of a streak (saying when it timed out), the

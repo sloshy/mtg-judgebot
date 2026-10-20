@@ -311,6 +311,17 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **A deploy stops the scheduled refresh in progress.** A container asked to stop (every
+  `scripts/deploy.sh`, `docker stop`) cuts the step in progress off, records the run as
+  stopped, releases the refresh lock and exits within the drain. The new container's
+  first check runs the refresh again. Before, the refresh died with the process: its
+  run stayed open, counted as failed three hours later (an alert, and the next run
+  backed off an hour), and answers still finishing could wait on the CR load's lock. A
+  stopped run, by a shutdown or a schema change, no longer delays the next one. In
+  `refresh_runs.steps` the step cut off is `"reason": "interrupted"` and the ones after
+  it `"reason": "shutdown"`. The schedule's database connections set
+  `client_connection_check_interval` (2 s, Postgres 14 on).
+
 - **`judge-cli stats` (and `admin_usage`, `/admin/api/usage`) has a new shape.** It is
   the dashboard's report: `by_day` lists every day of the range with the calls per
   interface and `private`; the ledger's spend and model calls per day moved to

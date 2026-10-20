@@ -589,6 +589,19 @@ async fn insert_rulings(pool: &PgPool, rows: &[RulingRow]) -> Result<()> {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Lines a parse loop reads between two yields to the runtime.
+const YIELD_EVERY: usize = 2000;
+
+/// Yield to the runtime every [`YIELD_EVERY`]th line (`n`) of a parse loop.
+/// The loops read a bulk file for tens of seconds on a slow machine without
+/// otherwise awaiting, and a run's time limit or its process's shutdown
+/// ([`super::refresh`]) can cut the step off only at an await point.
+async fn breathe(n: usize) {
+    if n.is_multiple_of(YIELD_EVERY) {
+        tokio::task::yield_now().await;
+    }
+}
+
 /// Sync all Scryfall-derived tables.
 ///
 /// # Errors
@@ -611,7 +624,8 @@ pub async fn run(lease: &mut RefreshLease, cache_dir: &Path) -> Result<()> {
     // ~1000 old cards that printing is MTGO-only; without this pass they would
     // be dropped by the digital-only rule.
     let mut paper: HashSet<Uuid> = HashSet::new();
-    for card in jsonl::<ScryfallCard>(&default_path)? {
+    for (i, card) in jsonl::<ScryfallCard>(&default_path)?.enumerate() {
+        breathe(i).await;
         let card = card?;
         if let Some(oracle_id) = card.effective_oracle_id()
             && !card.is_skipped_shape()
@@ -628,6 +642,7 @@ pub async fn run(lease: &mut RefreshLease, cache_dir: &Path) -> Result<()> {
     let mut cards: Vec<CardRow> = Vec::with_capacity(BATCH);
     let mut faces: Vec<FaceRow> = Vec::new();
     for card in jsonl::<ScryfallCard>(&oracle_path)? {
+        breathe(seen).await;
         let card = card?;
         seen += 1;
         let has_paper = card
@@ -656,6 +671,7 @@ pub async fn run(lease: &mut RefreshLease, cache_dir: &Path) -> Result<()> {
     let mut batch: Vec<(String, Uuid)> = Vec::with_capacity(BATCH);
     let mut printings = 0usize;
     for card in jsonl::<ScryfallCard>(&default_path)? {
+        breathe(printings).await;
         let card = card?;
         printings += 1;
         let Some(oracle_id) = card.effective_oracle_id() else {
@@ -683,6 +699,7 @@ pub async fn run(lease: &mut RefreshLease, cache_dir: &Path) -> Result<()> {
     let (mut total, mut orphaned) = (0usize, 0usize);
     let mut ruled: HashSet<Uuid> = HashSet::new();
     for r in jsonl::<ScryfallRuling>(&rulings_path)? {
+        breathe(total).await;
         let r = r?;
         total += 1;
         ruled.insert(r.oracle_id);

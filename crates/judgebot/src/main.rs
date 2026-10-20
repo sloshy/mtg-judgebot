@@ -17,8 +17,10 @@
 //! SIGTERM (`docker stop`, a deploy) or Ctrl-C requests a graceful shutdown
 //! ([`judge_bot::shutdown`]): the roles take no new work, the Discord role
 //! releases the gateway lease, the answers in flight are finished within
-//! [`DRAIN_LIMIT`], the spend ledger is written, and the process exits 0. A
-//! signal before the roles start, or a second one, exits at once.
+//! [`DRAIN_LIMIT`], the scheduled refresh in progress is cut off and its run
+//! closed as stopped (`judge_bot::jobs`, waited for within the same limit),
+//! the spend ledger is written, and the process exits 0. A signal before the
+//! roles start, or a second one, exits at once.
 //!
 //! Environment (a `.env` in the working directory is loaded first; the
 //! process environment wins): `JUDGE_ROLES` when the command line names no
@@ -230,7 +232,8 @@ async fn serve(roles: &Roles) -> Result<()> {
     let start_jobs = |jobs| {
         let pool = pool.clone();
         let meter = judge.meter().clone();
-        async move { judge_bot::jobs::start(&pool, jobs, meter, process).await }
+        let shutdown = shutdown.clone();
+        async move { judge_bot::jobs::start(&pool, jobs, meter, process, shutdown).await }
     };
     let (scheduler, later_jobs) = match jobs {
         Some(jobs) if schema.is_some() => {
@@ -265,10 +268,15 @@ async fn serve(roles: &Roles) -> Result<()> {
         // Beside serving roles a dead scheduler thread is logged at ERROR by
         // the thread itself and the process goes on answering: questions
         // are worth more than a refresh, which `judgebot ingest refresh`
-        // or the next restart provides. The handle is dropped.
-        // A refresh in progress at a shutdown ends with the process; its
-        // run record is left open, as after a crash.
+        // or the next restart provides. The handle is kept only for the
+        // shutdown: the thread stops by itself on the request (a run in
+        // progress cut off and closed as stopped), and the process waits for
+        // it within the drain's limit before the last ledger write, so the
+        // run's spend is in it.
         Some((serving, adapters)) => {
+            // A major upgrade starts the scheduler once the schema is
+            // migrated, inside the roles' select below.
+            let late_scheduler = std::cell::Cell::new(None);
             let roles = Box::pin(beside_admin(&shutdown, run(&serving, adapters), admin));
             tokio::pin!(roles);
             // The schema hold is kept beside the roles: one lost for good ends
@@ -289,8 +297,7 @@ async fn serve(roles: &Roles) -> Result<()> {
                     if let Some(jobs) = later_jobs
                         && !shutdown.is_requested()
                     {
-                        // Beside serving roles a scheduler is dropped, as above.
-                        drop(start_jobs(jobs).await);
+                        late_scheduler.set(start_jobs(jobs).await);
                     }
                     anyhow::Ok(hold)
                 };
@@ -317,15 +324,16 @@ async fn serve(roles: &Roles) -> Result<()> {
                 }
             };
             if shutdown.is_requested() {
+                stop_jobs(&shutdown, scheduler.or(late_scheduler.take())).await;
                 serving.flush().await;
             }
             ran
         }
         // The admin listener is the only role that serves: it runs as the
-        // serving roles do, and a scheduler beside it is dropped as beside
-        // them (its thread logs an ERROR if it dies).
+        // serving roles do, and a scheduler beside it is treated as beside
+        // them: its thread logs an ERROR if it dies, and it is waited for at
+        // a shutdown.
         None if admin.is_some() => {
-            drop(scheduler);
             let keep = async {
                 match schema.take() {
                     Some(hold) => hold.keep(&pool, process).await,
@@ -349,10 +357,11 @@ async fn serve(roles: &Roles) -> Result<()> {
                 ran = listener => ran,
                 lost = keep => Err(lost),
             };
-            if shutdown.is_requested()
-                && let Some(ledger) = &jobs_ledger
-            {
-                judge_bot::serving::flush(ledger).await;
+            if shutdown.is_requested() {
+                stop_jobs(&shutdown, scheduler).await;
+                if let Some(ledger) = &jobs_ledger {
+                    judge_bot::serving::flush(ledger).await;
+                }
             }
             ran
         }
@@ -367,16 +376,20 @@ async fn serve(roles: &Roles) -> Result<()> {
                         None => std::future::pending().await,
                     }
                 };
+                // The thread ends by itself on a requested shutdown, once it
+                // has closed the run in progress; `stopped` bounds the wait
+                // by the drain's limit.
                 let ended = tokio::select! {
                     lost = keep => return Err(lost),
-                    ended = scheduler.ended() => ended,
-                    () = shutdown.requested() => {
-                        if let Some(ledger) = &jobs_ledger {
-                            judge_bot::serving::flush(ledger).await;
-                        }
-                        return Ok(());
-                    }
+                    ended = scheduler.stopped(&shutdown) => ended,
                 };
+                if shutdown.is_requested() {
+                    if let Some(ledger) = &jobs_ledger {
+                        judge_bot::serving::flush(ledger).await;
+                    }
+                    return Ok(());
+                }
+                let ended = ended.map_or_else(|| "ended".to_owned(), |e| e.to_string());
                 anyhow::bail!(
                     "the scheduler thread {ended}, and it is this process's only role; \
                      exiting so the process restarts"
@@ -419,6 +432,16 @@ async fn major(
             .await
             .context("checking the migrated schema")?;
         SchemaHold::shared(pool, process).await
+    }
+}
+
+/// After a requested shutdown, wait for the scheduler (if this process runs
+/// one) to close its run and end, at most until the drain's limit
+/// ([`judge_bot::jobs::Scheduler::stopped`]). The thread has been stopping
+/// since the request, beside the drain, so this rarely waits at all.
+async fn stop_jobs(shutdown: &Shutdown, scheduler: Option<judge_bot::jobs::Scheduler>) {
+    if let Some(scheduler) = scheduler {
+        scheduler.stopped(shutdown).await;
     }
 }
 

@@ -817,6 +817,16 @@ job all agree on it:
 - If a run is still going 3 hours 10 minutes after it started, the scheduler drops it,
   marks its row failed and releases the lease. Only a run stuck outside its steps gets
   that far.
+- A container asked to stop (`docker stop`, every `scripts/deploy.sh`) stops its
+  refresh too. The step in progress is cut off (its transaction rolls back), the rest
+  are skipped, the run is recorded as stopped, neither a success nor a failure (no
+  alert, no backoff), and the lease is released. The new container's first check, 1.5 to
+  3.5 minutes after it starts, finds the refresh still due and runs it from the start.
+  A statement the cut step had sent is ended by Postgres within seconds of the old
+  container's connections closing (`client_connection_check_interval`, Postgres 14 on),
+  so the answers still draining do not wait on its lock. The log says `shutting down:
+  the refresh step in progress is cut off` and `the scheduled refresh stopped`. A
+  container that is killed rather than stopped leaves its run open, as a crash does.
 - A process whose binary does not match the schema never writes. A container left
   running on an older image after a newer release migrated the database logs
   `scheduled refresh paused: a newer release migrated the database`, and one whose
@@ -911,7 +921,9 @@ Each run is recorded in `refresh_runs`: when it started and finished, what start
 (`schedule` or `manual`; `init` records itself as a manual run of the steps it shares
 with a refresh) and in which process, the CR version before and after, and each
 step's outcome. A row with no `finished_at` is a run in progress or one that died. A
-run that loads a new CR also logs `CR <old> → <new>`.
+row with `ok` null is a run that stopped: the schema was not its binary's, or its
+container was stopping (its step in progress recorded as `interrupted`, the rest as
+`shutdown`). A run that loads a new CR also logs `CR <old> → <new>`.
 
 `judge-cli stats` lists the last five runs (`refresh_runs` in its JSON): outcome, CR
 before and after, and the steps that failed. On a schema without the table (migrations
@@ -1333,11 +1345,12 @@ them.
 
 The refresh job's CR load, retirement pass and embedding writes take the same advisory
 lock, so the migration and those steps wait for each other. (The Scryfall card/rulings
-upsert takes no lock and needs none: it is one transaction and touches no `calls`
-rows.) A deploy during a refresh therefore waits at startup until the CR load
+upsert takes no lock and needs none: it commits in batches of whole cards and touches no
+`calls` rows.) A deploy during a refresh therefore waits at startup until the CR load
 finishes, which is minutes on a NAS. It logs one warning line,
 `another job holds the calls rewrite lock ... waiting`, in `docker compose logs judgebot`.
-That is a wait, not a hang.
+That is a wait, not a hang. A stop-then-start deploy (`docker compose up -d`) does not
+wait: the old container cuts the load off as it stops.
 
 `scripts/deploy.sh` starts the new container while the old one still answers, so the
 old binary runs against the new schema for a minute or two. Within a major release,

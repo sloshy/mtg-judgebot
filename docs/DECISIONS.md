@@ -709,8 +709,8 @@ the retirement pass holds the calls lock, persisting an answer's vector waits, a
 reply with it, exactly as under a cron run. Every run, whatever started it, checks before
 each step that the migration ledger matches its binary, ahead or behind, and stops after
 three hours, so neither a stale container nor a hung download can write or hold the
-lease indefinitely. A run stopped by a schema change records neither success nor
-failure. A run whose process died is counted as failed once it is older than any live
+lease indefinitely. A run stopped by a schema change, or by its process shutting down
+(D40), records neither success nor failure. A run whose process died is counted as failed once it is older than any live
 run can be, so a crash loop backs off and alerts once.
 
 **A scheduled run never pays for a mass re-embed.** Embeddings are behind the spend cap
@@ -1064,9 +1064,9 @@ What follows:
   limit are in memory, so the new container starts them empty, as a restart does.
 - **Spend overlaps by one sync.** Both containers bill one period through the ledger,
   which syncs every 10 s (D19).
-- **A refresh in progress ends with the old container.** Its run record is left open
-  and is counted as a failed run after 3 h 10 min, as after a crash. The new
-  container's schedule runs a refresh once the lease is free.
+- **A refresh in progress is stopped with the old container** (D40). The step in
+  progress is cut off, the run is recorded as stopped (no alert, no backoff), and the
+  new container's first check runs the refresh again.
 - **A migration that cannot keep the previous release working** (a rewrite of rows the
   old binary writes) is deployed with `docker compose up -d`, stop then start, and the
   CHANGELOG says so.
@@ -1715,3 +1715,91 @@ every call, with the spend and the private detail. Both, `judge-cli stats` and t
   interface and stage, cost per answer, latency, the dearest runs and refusals at the cap,
   the lowest-rated calls, the feedback queue's counts and the latest refreshes. The
   ledger is not narrowed by a filter: it records spend per day, not per call.
+
+## D40. Refresh stopped at shutdown
+
+*Decided 2026-10-20.*
+
+A scheduled refresh running when `judgebot` is asked to stop (every `scripts/deploy.sh`,
+D29) used to die with the process. Its `refresh_runs` row stayed open until the record
+counted it as a failed run, 3 h 10 min later, which alerted and backed off the next run
+for an ordinary deploy. While it was in the CR load or the retirement pass it held
+`CALLS_REWRITE_LOCK`, and the answers still draining waited on a step that would never
+finish (#33).
+
+The shutdown is now a third reason for a run to stop, beside the lost lease and the
+schema skew, and it reuses what the run timeout does:
+
+- **The scheduler is told.** `jobs::start` takes the process's `Shutdown`. Once it is
+  requested no check starts, a wait between checks ends, and a run in progress stops.
+- **The step is cut off at once.** `ingest::refresh` takes a `Caller`:
+  `Caller::Schedule(&Shutdown)` for the schedule, `Caller::Manual` for `judgebot ingest
+  refresh`, so a scheduled run cannot be started without the shutdown it obeys. The step
+  in progress is dropped at its next await point, as `RUN_TIMEOUT` drops one, and recorded
+  as skipped with `interrupted`. The steps after it are skipped with `shutdown`.
+- **The run is stopped, not failed.** It closes its row with `ok` null
+  (`RunOutcome::Stopped`), even when a step before the cut failed: the next run does every
+  step again, and a failure that is real fails that run. A stopped run is no attempt
+  either (`runs::history` leaves it out of `last_attempt_age_secs`), so it charges no
+  backoff and the new container's first check, 1.5 to 3.5 minutes after it starts, finds
+  the refresh due and runs it. That applies to a run stopped by a schema change too.
+- **The lock goes with the connection.** The thread releases the lease and ends, and
+  shuts its runtime down, which closes every connection it opened. A statement the cut
+  step had already sent keeps running on the server, since sqlx sends no cancel, and a
+  server notices a closed client only when it next writes to it. The scheduler's
+  connections therefore set `client_connection_check_interval` to 2 s (Postgres 14 on,
+  set after connecting so an older server still connects): the server checks while a
+  statement runs, ends it and its transaction, and frees `CALLS_REWRITE_LOCK`. A test
+  holds a lock under `pg_sleep` in a step, stops the thread, and sees the lock free
+  within seconds. Without the setting it stays held until `statement_timeout` (30 min).
+- **`main` waits for the record.** After the roles have drained, `Scheduler::stopped`
+  waits for the thread at most until the drain's limit, then the ledger is written, so
+  the refresh's spend is in it. The thread has been stopping since the request, beside
+  the drain. Every wait outside a step is raced against the request too: the reads and
+  checks before a run or a step (the migration ledger, the record, the lease, the stored
+  CR version) are dropped at once, and the writes that record the run (its row begun,
+  read back and finished) and the lease's release share one deadline,
+  `ingest::STOP_WRITES` (15 s) after the request. A row the start wrote is always
+  closed; an insert still waiting at the deadline goes with its connection. A run that
+  had finished, failed, before the request still posts its alerts (each bounded by the
+  webhook's 10 s), since the next run would not repeat a streak's first failure; a
+  stopped run posts none. All of it, with the runtime's shutdown, is
+  `jobs::STOP_LIMIT` (46 s), which a `const` assertion keeps under `DRAIN_LIMIT`. It
+  runs on the scheduler's own runtime and pool, so the wait cannot deadlock with the
+  serving roles. The exit stays within `DRAIN_LIMIT` plus the ledger's `FLUSH_LIMIT`, as
+  before. A second signal still exits at once.
+
+Every step is safe to cut off at any await point:
+
+| Step | What a cut leaves | Why it is safe |
+|------|-------------------|----------------|
+| `cards` | Bulk files are downloaded to `.part` and renamed whole; the upserts commit per batch, the batch in progress rolls back; the deletion of retired cards and withdrawn rulings runs only after every batch | The upserts are idempotent, and nothing is deleted on a partial pass. Its parse loops, which read the bulk files for tens of seconds on a slow machine, yield every 2,000 lines, so a cut does not wait for them |
+| `rules` | One transaction holding `CALLS_REWRITE_LOCK`: rolled back, or committed whole if the cut came during its `COMMIT` | `rules latest` compares the stored version, so the next run loads it again or finds it loaded; the retirement pass runs then. The CR file is written to `.part` and renamed |
+| `lists` | Each list's replacement and its record are one transaction | The next run's plan reads the same record and reloads |
+| `prune` | Each batch is one statement: deleted or not | Batches until none is left, so the next run finishes it |
+| `sweep` | One statement | Idempotent |
+| `retire` | One transaction holding `CALLS_REWRITE_LOCK`, rolled back | It recomputes every call from scratch |
+| `embed` | Each batch embeds, then writes its vectors in one transaction; the space row is written in the first batch's | Rows left empty are embedded by the next run. A request already sent is billed (its reservation kept at the worst case, D7), so at most one batch is paid twice |
+| `emoji` | An upload already sent may have been created; the SVG cache is written then renamed | The next run lists the application's emoji and skips those that exist. `runs::emoji_since` counts an `interrupted` emoji step as one that may have uploaded, so the bot reloads its table |
+
+**Not covered:** a crash or SIGKILL still leaves an open row, which the record counts as
+failed after 3 h 10 min (D24). A process that exits because a role failed, not on a
+signal, does not stop its scheduler first. `scripts/refresh-data.sh` runs in its own
+container and is stopped by whoever stops it.
+
+**Rejected:**
+
+- *Letting the step finish.* A Scryfall sync on a NAS, or an embed of a new CR's few
+  hundred rules, can outlast the two minutes of the drain, and the CR load holds the
+  lock the draining answers wait on.
+- *Recording the cut run as failed.* Every deploy that met a refresh would alert and
+  back the next run off by an hour.
+- *`pg_cancel_backend` or `pg_terminate_backend` from a side connection.* It needs the
+  scheduler's backend ids: its `application_name` is the same in the old and the new
+  container during a deploy, so a name would reach the new one's connections. A
+  cancelled statement also leaves its transaction open, with its locks, until the
+  client rolls it back or goes away. Closing the connection, with the server checking
+  for it, does both.
+- *Waiting a separate, shorter bound after the drain.* The thread stops beside the
+  drain, and a bound counted from the request keeps the exit inside the compose
+  `stop_grace_period` whatever the drain took.

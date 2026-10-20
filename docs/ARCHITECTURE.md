@@ -641,10 +641,20 @@ Every `ingest::refresh`, whatever started it, checks before each step that it st
 holds the lease and that the migration ledger matches its binary (`migrate::skew`), and
 stops at `ingest::RUN_TIMEOUT` (3 h), abandoning the step in progress. A schema change
 skips the remaining steps and the run is `RunOutcome::Stopped`, stored with `ok` null:
-neither a success nor a failure. A single-step `judgebot ingest` command makes the same
+neither a success nor a failure, and not an attempt that backs the schedule off. A
+single-step `judgebot ingest` command makes the same
 check once (`ingest::ensure_writable`). `runs::history` counts an unfinished row older
 than `runs::ABANDONED_AFTER` as a failed run, so a process that dies mid-run still
 lengthens the failure streak.
+
+A scheduled run also stops at its process's shutdown (D40). `ingest::refresh` takes a
+`Caller`: `Caller::Schedule(&Shutdown)` from the scheduler, `Caller::Manual` from
+`judgebot ingest refresh`. Once the shutdown is requested the step in progress is cut
+off at its next await point (`Skip::Interrupted`), the rest are skipped
+(`Skip::Shutdown`), and the run is `Stopped`, whatever its earlier steps did. Every step
+is safe to cut off: each writes in transactions or idempotent statements, and downloads
+are renamed into place whole (the table in D40).
+`emoji_since` counts an interrupted emoji step as one that may have uploaded.
 
 The schedule is `judge_bot::jobs`, which a process with `--jobs` starts after migrating. It runs
 on an OS thread of its own, with a current-thread runtime and a three-connection pool, so
@@ -666,6 +676,20 @@ without waiting, re-reads the record under it and runs `ingest::refresh` with
 (`judge_bot::alert`, shared with the spend cap) hears the first failure of a streak, the
 recovery, a new ceiling skip and a panicking check. D24 records why the schedule is in
 the process and not in cron.
+
+`jobs::start` takes the process's `Shutdown`. On the request the scheduler starts no
+check, every wait outside a step is dropped (`ingest::unless_stopped`), the run in
+progress stops as above, its row is closed and the lease released (those writes share
+one deadline, `ingest::STOP_WRITES` after the request: `ingest::until_stopped`), a run
+that finished before the request still posts its alerts, and the thread ends
+(`Ended::Shutdown`),
+shutting its runtime down so every connection it opened closes. Its connections carry
+`client_connection_check_interval` (`jobs::CLIENT_CHECK_INTERVAL`, 2 s), so a statement
+the cut step left running on the server ends within seconds of that, and with it the
+transaction and any `CALLS_REWRITE_LOCK` it held. `main` waits for the thread after the
+roles drain, at most until the drain's limit (`Scheduler::stopped`), then writes the
+spend ledger and exits. `jobs::STOP_LIMIT` (everything after the request) is a
+`const` under `DRAIN_LIMIT`.
 
 The record is also what users and the operator see of it. `About` carries the CR release
 loaded and the age of the last successful run (see the HTTP adapter above), and

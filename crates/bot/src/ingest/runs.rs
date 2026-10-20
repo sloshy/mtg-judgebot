@@ -214,14 +214,34 @@ pub enum Skip {
     /// `judgebot ingest init` is a first load and prunes or sweeps nothing;
     /// the next refresh does.
     NotInInit,
+    /// The process was shutting down (`judgebot --jobs` asked to stop, as at
+    /// every deploy), so this step was not started. The run stops
+    /// ([`RunOutcome::Stopped`]).
+    Shutdown,
+    /// The process began shutting down while this step ran, and the step was
+    /// cut off: its future dropped at an await point, so its transaction
+    /// rolled back unless it was committing. Every step is safe to cut off
+    /// and run again (`docs/DECISIONS.md` D40). The run stops
+    /// ([`RunOutcome::Stopped`]).
+    Interrupted,
 }
 
 impl Skip {
     /// Whether this skip stops the run without failing it: the schema is not
-    /// the binary's.
+    /// the binary's, or the process shut down ([`Skip::shut_down`]).
     #[must_use]
     pub const fn stops(self) -> bool {
-        matches!(self, Self::SchemaAhead | Self::SchemaBehind)
+        matches!(
+            self,
+            Self::SchemaAhead | Self::SchemaBehind | Self::Shutdown | Self::Interrupted
+        )
+    }
+
+    /// Whether this skip is the process's shutdown: the run has no verdict
+    /// whatever its earlier steps did, because the next process runs it again.
+    #[must_use]
+    pub const fn shut_down(self) -> bool {
+        matches!(self, Self::Shutdown | Self::Interrupted)
     }
 }
 
@@ -239,6 +259,11 @@ impl std::fmt::Display for Skip {
             Self::InitStopped => "not run: init stops at its first failure",
             Self::KeepCalls => "JUDGE_CALL_RETENTION_DAYS is unset or 0: every call is kept",
             Self::NotInInit => "not run by init: the next refresh does",
+            Self::Shutdown => "not run: the process was shutting down; the next run does it",
+            Self::Interrupted => {
+                "cut off: the process shut down while it ran, what it had not committed \
+                 rolled back, and the next run does it again"
+            }
             Self::EmbedCeiling { rows, ceiling } => {
                 return write!(
                     f,
@@ -259,7 +284,7 @@ pub enum Outcome<T> {
         /// What it did.
         summary: T,
     },
-    /// It did not run.
+    /// It did not run, or was cut off by a shutdown ([`Skip::Interrupted`]).
     Skipped {
         /// Why not.
         reason: Skip,
@@ -421,9 +446,11 @@ pub enum RunOutcome {
     Ok,
     /// A step failed, or the run timed out (`ok = false`).
     Failed,
-    /// The run stopped because the schema is not its binary's, a deploy in
-    /// progress or migrations pending (`ok = null`): neither a success that
-    /// resets the schedule nor a failure that alerts or backs off.
+    /// The run stopped because the schema is not its binary's (a deploy in
+    /// progress or migrations pending), or because its process shut down
+    /// (`ok = null`): neither a success that resets the schedule nor a
+    /// failure that alerts or backs off, and not an attempt either
+    /// ([`history`]), so the next check finds the refresh still due.
     Stopped,
 }
 
@@ -484,10 +511,19 @@ impl RunReport {
             .collect()
     }
 
-    /// How the run ended; see [`RunOutcome`].
+    /// How the run ended; see [`RunOutcome`]. A run its process's shutdown
+    /// cut off is stopped even when a step before the cut failed: the next
+    /// run does every step again, and a failure that is real fails that one,
+    /// which alerts.
     #[must_use]
     pub fn outcome(&self) -> RunOutcome {
-        if self.timed_out || self.aborted || self.steps.iter().any(StepReport::failed) {
+        if self
+            .steps
+            .iter()
+            .any(|s| s.skipped().is_some_and(Skip::shut_down))
+        {
+            RunOutcome::Stopped
+        } else if self.timed_out || self.aborted || self.steps.iter().any(StepReport::failed) {
             RunOutcome::Failed
         } else if self
             .steps
@@ -519,7 +555,7 @@ impl RunReport {
                     .iter()
                     .find_map(|s| s.skipped().filter(|k| k.stops()))
                     .map_or_else(String::new, |k| format!(": {k}"));
-                anyhow::bail!("refresh stopped before writing{why}")
+                anyhow::bail!("refresh stopped{why}")
             }
             RunOutcome::Failed => {
                 let names: Vec<&str> = self.failed().iter().map(|s| s.name()).collect();
@@ -637,8 +673,10 @@ pub const ABANDONED_AFTER: Duration = super::RUN_TIMEOUT.saturating_add(Duration
 pub struct RunHistory {
     /// Seconds since the latest run that finished with every step ok.
     pub last_ok_age_secs: Option<i64>,
-    /// Seconds since the latest run started, finished or not (a run whose
-    /// process died never finishes, and still counts as an attempt).
+    /// Seconds since the latest attempt started: a run finished or not (a
+    /// run whose process died never finishes, and still counts as an
+    /// attempt), except a stopped one ([`RunOutcome::Stopped`]), which
+    /// charges no backoff.
     pub last_attempt_age_secs: Option<i64>,
     /// Whether the latest run with a verdict succeeded.
     pub last_finished_ok: Option<bool>,
@@ -684,7 +722,7 @@ pub async fn history(pool: &PgPool) -> Result<RunHistory> {
           (SELECT extract(epoch FROM now() - max(ended_at))::bigint
              FROM verdicts WHERE ok) AS "last_ok_age_secs?",
           (SELECT extract(epoch FROM now() - max(started_at))::bigint
-             FROM r) AS "last_attempt_age_secs?",
+             FROM r WHERE ok IS NOT NULL) AS "last_attempt_age_secs?",
           (SELECT ok FROM latest) AS "last_finished_ok?",
           (SELECT max(cr_version) FROM rules) AS "stored_cr_version?",
           (SELECT count(*) FROM verdicts
@@ -841,7 +879,7 @@ pub enum RunState {
     Ok,
     /// Finished with a failed step, or timed out, or dropped at its limit.
     Failed,
-    /// Stopped before writing: the schema is not its binary's.
+    /// Stopped: the schema is not its binary's, or its process shut down.
     Stopped,
     /// Not finished, and younger than [`ABANDONED_AFTER`]: in progress.
     Running,
@@ -936,8 +974,9 @@ pub struct EmojiCheck {
 /// every run), and whether any of them may have uploaded emoji, so the bot
 /// reloads its table ([`crate::discord`]).
 ///
-/// A run may have uploaded unless its `emoji` step is recorded as skipped or
-/// as ok with `uploaded: 0`. A failed step, a run dropped at its limit (no
+/// A run may have uploaded unless its `emoji` step is recorded as skipped
+/// (other than cut off by a shutdown, [`Skip::Interrupted`]) or as ok with
+/// `uploaded: 0`. A failed step, a run dropped at its limit (no
 /// steps recorded) and a timed-out one all may have, and a reload costs one
 /// Discord call, so they count.
 ///
@@ -948,7 +987,8 @@ pub async fn emoji_since(pool: &PgPool, seen: Option<&str>) -> Result<EmojiCheck
         r#"
         SELECT max(finished_at)::text AS "latest?",
                COALESCE(bool_or(NOT (
-                 steps @> '[{"step": "emoji", "outcome": "skipped"}]'
+                 (steps @> '[{"step": "emoji", "outcome": "skipped"}]'
+                  AND NOT steps @> '[{"step": "emoji", "reason": "interrupted"}]')
                  OR steps @> '[{"step": "emoji", "outcome": "ok", "summary": {"uploaded": 0}}]'
                )), false) AS "uploaded!"
         FROM refresh_runs
@@ -1076,6 +1116,8 @@ mod tests {
                          "notes": {"action": "current"}}},
             {"step": "embed", "outcome": "skipped",
              "reason": {"embed_ceiling": {"rows": 1912, "ceiling": 800}}},
+            {"step": "rules", "outcome": "skipped", "reason": "interrupted"},
+            {"step": "emoji", "outcome": "skipped", "reason": "shutdown"},
         ]);
         let back: Vec<StepReport> = serde_json::from_value(more.clone())?;
         assert_eq!(serde_json::to_value(&back)?, more);
@@ -1101,6 +1143,65 @@ mod tests {
             }),
         ]);
         assert!(fine.ok() && fine.ensure_ok().is_ok());
+    }
+
+    /// A run cut off by its process's shutdown is stopped, not failed, even
+    /// when a step before the cut failed: the next run does them all again.
+    #[test]
+    fn a_run_cut_off_by_a_shutdown_is_stopped_whatever_ran_before() {
+        let cut = |before: StepReport| {
+            let mut steps = vec![before, Step::Rules.skipped(Skip::Interrupted)];
+            steps.extend(Step::ALL.iter().skip(2).map(|s| s.skipped(Skip::Shutdown)));
+            RunReport::of(steps)
+        };
+        for before in [
+            StepReport::Cards(Outcome::Ok { summary: () }),
+            Step::Cards.failed("boom".into()),
+        ] {
+            let report = cut(before);
+            assert_eq!(report.outcome(), RunOutcome::Stopped, "{report:?}");
+            assert_eq!(report.outcome().stored(), None);
+            let err = report.ensure_ok().err().map(|e| e.to_string());
+            assert!(
+                err.as_deref()
+                    .is_some_and(|e| e.starts_with("refresh stopped: cut off")),
+                "{err:?}"
+            );
+        }
+        let never_started = RunReport::of(
+            Step::ALL
+                .iter()
+                .map(|s| s.skipped(Skip::Shutdown))
+                .collect(),
+        );
+        assert_eq!(never_started.outcome(), RunOutcome::Stopped);
+        // A schema skip after a failure stays a failure, as before.
+        let skewed = RunReport::of(vec![
+            Step::Cards.failed("boom".into()),
+            Step::Rules.skipped(Skip::SchemaAhead),
+        ]);
+        assert_eq!(skewed.outcome(), RunOutcome::Failed);
+    }
+
+    /// A stopped run is no attempt: the refresh it did not finish is due at
+    /// once, with no backoff charged, while a run in progress still counts.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_stopped_run_is_not_an_attempt(pool: PgPool) -> Result<()> {
+        finished(&pool, 30, Some(true), json!([])).await?;
+        sqlx::query(
+            "INSERT INTO refresh_runs (started_at, finished_at, trigger, process, ok, steps)
+             VALUES (now() - interval '2 minutes', now() - interval '1 minute', 'schedule', 'bot', NULL, $1)",
+        )
+        .bind(json!([{"step": "cards", "outcome": "skipped", "reason": "interrupted"}]))
+        .execute(&pool)
+        .await?;
+        let h = history(&pool).await?;
+        assert_eq!((h.last_finished_ok, h.failed_streak), (Some(true), 0));
+        assert!(
+            h.last_attempt_age_secs.is_some_and(|s| s >= 30 * 3600 - 5),
+            "the success is the latest attempt: {h:?}"
+        );
+        Ok(())
     }
 
     #[sqlx::test(migrations = "../bot/migrations")]
@@ -1473,8 +1574,16 @@ mod tests {
             EmojiCheck::default()
         );
 
-        // Newer runs that uploaded nothing or skipped the step.
+        // Newer runs that uploaded nothing or skipped the step (not
+        // started for a shutdown included).
         finished(&pool, 4, Some(true), emoji(0)).await?;
+        finished(
+            &pool,
+            4,
+            None,
+            json!([{"step": "emoji", "outcome": "skipped", "reason": "shutdown"}]),
+        )
+        .await?;
         finished(
             &pool,
             3,
@@ -1499,6 +1608,7 @@ mod tests {
             emoji(2),
             json!([{"step": "emoji", "outcome": "failed", "error": "boom"}]),
             json!([]),
+            json!([{"step": "emoji", "outcome": "skipped", "reason": "interrupted"}]),
         ] {
             let mark = emoji_since(&pool, None).await?.latest;
             sqlx::query(

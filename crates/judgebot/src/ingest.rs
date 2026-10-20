@@ -57,9 +57,9 @@ use std::{
 use anyhow::{Context as _, Result};
 use judge_bot::budget::{self, Budget};
 use judge_bot::ingest::{
-    Embedder, RefreshLease, aliases, cache_dir, connect, cr, embed, embedder_from_config, emoji,
-    ensure_writable, init, lease, lists::ListText, notes, prune, reembed, refresh, retire,
-    runs::Trigger, schema, scryfall,
+    Caller, Embedder, RefreshLease, aliases, cache_dir, connect, cr, embed, embedder_from_config,
+    emoji, ensure_writable, init, lease, lists::ListText, notes, prune, reembed, refresh, retire,
+    schema, scryfall,
 };
 use judge_llm::SpendMeter;
 use sqlx::PgPool;
@@ -358,7 +358,7 @@ impl Job {
                 tracing::info!("{why}");
                 Ok(())
             }
-            Self::Refresh => refresh(lease, cache_dir, Trigger::Manual, meter)
+            Self::Refresh => refresh(lease, cache_dir, Caller::Manual, meter)
                 .await
                 .ensure_ok(),
         }
