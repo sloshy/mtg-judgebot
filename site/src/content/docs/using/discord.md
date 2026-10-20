@@ -104,7 +104,10 @@ excluded.
   two texts.
 - The reason goes to the operator's feedback queue, beside the question, the answer,
   its citations and cards, so they can fix what went wrong (a card note, a nickname, a
-  prompt). The model never reads it.
+  prompt). The model never reads it. When the operator sets
+  `JUDGE_PUBLIC_FEEDBACK=true`, the reason is also shown on the answer's public web
+  page, without your name; the form's hints and the confirmation say so. A reason the
+  operator dismisses is taken off the public page.
 - Rating an answer you already rated asks first: "You already rated this answer
   **Partially correct** (Wrong card). Replace it with **Incorrect**?" **Replace** goes on
   to the new rating's form, or records Correct; **Keep** changes nothing and says what is

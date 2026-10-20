@@ -16,7 +16,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 use judge_core::{
-    CallId, CardId, CardRef, Citation, Confidence, Interface, JudgeError, RulingKey, Score, Source,
+    CallId, CardId, CardRef, Citation, Confidence, FeedbackCategory, Interface, JudgeError,
+    RaterKind, RulingKey, Score, Source,
 };
 use regex::Regex;
 use schemars::JsonSchema;
@@ -287,20 +288,117 @@ impl Search {
     }
 }
 
-/// How a call has been rated: counts, and the judge override when a member
-/// with the judge role rated (the latest such rating). Who rated is never
-/// shown.
+/// How a call has been rated: counts per kind of rater, and the judge
+/// override when a member with the judge role rated (the latest such
+/// rating). Who rated is never shown. Discord's and the web's are apart: only
+/// Discord's count toward the examples (D10), and a page shows the web's
+/// only when its reader asks to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Ratings {
+    /// Discord ratings.
+    pub discord: Counts,
+    /// Ratings from the web app's anonymous sessions.
+    pub web: Counts,
+    /// The judge override's score, when there is one.
+    #[serde(serialize_with = "score_name")]
+    pub judge: Option<Score>,
+}
+
+/// Ratings by score.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Counts {
     /// Rated correct.
     pub correct: u32,
     /// Rated partially correct.
     pub partial: u32,
     /// Rated incorrect.
     pub incorrect: u32,
-    /// The judge override's score, when there is one.
-    #[serde(serialize_with = "score_name")]
-    pub judge: Option<Score>,
+}
+
+/// One rater's reason, as the public may read it when the operator sets
+/// `JUDGE_PUBLIC_FEEDBACK=true`: what kind of rater (so a reader who hides
+/// web ratings hides their reasons too), the score and the reason, and
+/// nothing that names the rater: no user id, no name, no address.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PublicReason {
+    /// Discord or the web.
+    pub rater_kind: RaterKind,
+    /// `partial` or `incorrect`.
+    pub score: &'static str,
+    /// What kind of problem.
+    pub category: FeedbackCategory,
+    /// What is wrong, in the rater's words (mentions reduced as the feed's).
+    pub wrong: Option<String>,
+    /// The right answer, likewise.
+    pub right: Option<String>,
+}
+
+/// A reason as the query reads it.
+#[derive(Deserialize)]
+struct StoredReason {
+    kind: String,
+    score: i16,
+    category: String,
+    wrong: Option<String>,
+    right: Option<String>,
+}
+
+impl StoredReason {
+    fn public(self) -> Option<PublicReason> {
+        Some(PublicReason {
+            rater_kind: RaterKind::parse(&self.kind)?,
+            score: match self.score {
+                1 => "incorrect",
+                2 => "partial",
+                _ => return None,
+            },
+            category: FeedbackCategory::parse(&self.category)?,
+            wrong: self.wrong.as_deref().map(public_text),
+            right: self.right.as_deref().map(public_text),
+        })
+    }
+}
+
+/// A rater's words as the public reads them: user, role and channel
+/// mentions reduced to `@…` and `#…` ([`without_mentions`]), and `@everyone`
+/// and `@here` broken with a zero-width space so no client that renders
+/// them can ping. Nothing else is changed.
+fn public_text(text: &str) -> String {
+    without_mentions(text)
+        .replace("@everyone", "@\u{200b}everyone")
+        .replace("@here", "@\u{200b}here")
+}
+
+/// Whether the public reads carry raters' reasons
+/// (`JUDGE_PUBLIC_FEEDBACK`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Reasons {
+    /// Admin-only: the default.
+    #[default]
+    Hidden,
+    /// Shown, without the raters' identity.
+    Shown,
+}
+
+/// `JUDGE_PUBLIC_FEEDBACK`: `true` shows raters' reasons on the public feed.
+pub const PUBLIC_FEEDBACK_ENV: &str = "JUDGE_PUBLIC_FEEDBACK";
+
+impl Reasons {
+    /// Parse `JUDGE_PUBLIC_FEEDBACK` (blank: hidden).
+    ///
+    /// # Errors
+    /// The value, when it is not a boolean.
+    pub fn parse(raw: Option<&str>) -> Result<Self, String> {
+        match raw.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("" | "false" | "0" | "no" | "off") => Ok(Self::Hidden),
+            Some("true" | "1" | "yes" | "on") => Ok(Self::Shown),
+            Some(_) => Err(raw.unwrap_or_default().to_owned()),
+        }
+    }
+
+    const fn shown(self) -> bool {
+        matches!(self, Self::Shown)
+    }
 }
 
 #[expect(
@@ -346,6 +444,9 @@ pub struct Entry {
     pub cards: Vec<CardRef>,
     /// Its ratings.
     pub ratings: Ratings,
+    /// Raters' reasons, oldest first, when `JUDGE_PUBLIC_FEEDBACK` shows
+    /// them; `None` when it does not.
+    pub reasons: Option<Vec<PublicReason>>,
     /// Why the retirement pass took it out of the examples, when it has.
     pub retired: Option<String>,
 }
@@ -397,10 +498,14 @@ struct Row {
     cr_version: String,
     citations: serde_json::Value,
     cards: serde_json::Value,
-    correct: i64,
-    partial: i64,
-    incorrect: i64,
+    d_correct: i64,
+    d_partial: i64,
+    d_incorrect: i64,
+    w_correct: i64,
+    w_partial: i64,
+    w_incorrect: i64,
     judge: Option<i16>,
+    reasons: Option<serde_json::Value>,
     retired_reason: Option<String>,
 }
 
@@ -417,6 +522,7 @@ fn window_days(window: Option<Days>) -> Option<i32> {
 pub async fn page(
     pool: &PgPool,
     window: Option<Days>,
+    reasons: Reasons,
     filter: &Filter,
     after: Option<Cursor>,
 ) -> Result<Page, JudgeError> {
@@ -431,15 +537,33 @@ pub async fn page(
                to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "asked_at!",
                c.interface, c.asker_name, c.question, c.answer, c.confidence, c.source,
                c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS "cards!",
-               rt.correct AS "correct!", rt.partial AS "partial!", rt.incorrect AS "incorrect!",
-               rt.judge, c.retired_reason
+               rt.d_correct AS "d_correct!", rt.d_partial AS "d_partial!",
+               rt.d_incorrect AS "d_incorrect!", rt.w_correct AS "w_correct!",
+               rt.w_partial AS "w_partial!", rt.w_incorrect AS "w_incorrect!",
+               rt.judge, rt.reasons, c.retired_reason
         FROM calls c
         CROSS JOIN LATERAL (
-            SELECT count(*) FILTER (WHERE r.score = 3) AS correct,
-                   count(*) FILTER (WHERE r.score = 2) AS partial,
-                   count(*) FILTER (WHERE r.score = 1) AS incorrect,
-                   (array_agg(r.score ORDER BY r.ts DESC) FILTER (WHERE r.is_judge))[1] AS judge
-            FROM ratings r WHERE r.call_id = c.id
+            SELECT count(*) FILTER (WHERE r.score = 3 AND r.rater_kind = 'discord') AS d_correct,
+                   count(*) FILTER (WHERE r.score = 2 AND r.rater_kind = 'discord') AS d_partial,
+                   count(*) FILTER (WHERE r.score = 1 AND r.rater_kind = 'discord') AS d_incorrect,
+                   count(*) FILTER (WHERE r.score = 3 AND r.rater_kind = 'web') AS w_correct,
+                   count(*) FILTER (WHERE r.score = 2 AND r.rater_kind = 'web') AS w_partial,
+                   count(*) FILTER (WHERE r.score = 1 AND r.rater_kind = 'web') AS w_incorrect,
+                   (array_agg(r.score ORDER BY r.ts DESC)
+                        FILTER (WHERE r.is_judge AND r.rater_kind = 'discord'))[1] AS judge,
+                   -- Reasons only when the operator shows them, and never
+                   -- who gave them: no user id, name, address or agent.
+                   CASE WHEN $8::boolean THEN coalesce(
+                       jsonb_agg(jsonb_build_object(
+                           'kind', r.rater_kind, 'score', r.score, 'category', r.category,
+                           'wrong', r.what_wrong, 'right', r.right_answer) ORDER BY r.ts)
+                           -- A reason the operator dismissed is not shown.
+                           FILTER (WHERE r.category IS NOT NULL
+                                     AND q.status IS DISTINCT FROM 'dismissed'),
+                       '[]'::jsonb) END AS reasons
+            FROM ratings r
+            LEFT JOIN feedback_queue q ON q.call_id = r.call_id AND q.user_id = r.user_id
+            WHERE r.call_id = c.id
         ) rt
         WHERE NOT c.private
           AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))
@@ -464,6 +588,7 @@ pub async fn page(
         after.map_or(Uuid::nil(), |c| c.id),
         limit,
         filter.search.as_ref().map(Search::pattern),
+        reasons.shown(),
     )
     .fetch_all(pool)
     .await
@@ -495,6 +620,7 @@ pub async fn page(
 pub async fn call(
     pool: &PgPool,
     window: Option<Days>,
+    reasons: Reasons,
     id: CallId,
 ) -> Result<Option<(Entry, Names)>, JudgeError> {
     let row = sqlx::query_as!(
@@ -505,15 +631,33 @@ pub async fn call(
                to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "asked_at!",
                c.interface, c.asker_name, c.question, c.answer, c.confidence, c.source,
                c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS "cards!",
-               rt.correct AS "correct!", rt.partial AS "partial!", rt.incorrect AS "incorrect!",
-               rt.judge, c.retired_reason
+               rt.d_correct AS "d_correct!", rt.d_partial AS "d_partial!",
+               rt.d_incorrect AS "d_incorrect!", rt.w_correct AS "w_correct!",
+               rt.w_partial AS "w_partial!", rt.w_incorrect AS "w_incorrect!",
+               rt.judge, rt.reasons, c.retired_reason
         FROM calls c
         CROSS JOIN LATERAL (
-            SELECT count(*) FILTER (WHERE r.score = 3) AS correct,
-                   count(*) FILTER (WHERE r.score = 2) AS partial,
-                   count(*) FILTER (WHERE r.score = 1) AS incorrect,
-                   (array_agg(r.score ORDER BY r.ts DESC) FILTER (WHERE r.is_judge))[1] AS judge
-            FROM ratings r WHERE r.call_id = c.id
+            SELECT count(*) FILTER (WHERE r.score = 3 AND r.rater_kind = 'discord') AS d_correct,
+                   count(*) FILTER (WHERE r.score = 2 AND r.rater_kind = 'discord') AS d_partial,
+                   count(*) FILTER (WHERE r.score = 1 AND r.rater_kind = 'discord') AS d_incorrect,
+                   count(*) FILTER (WHERE r.score = 3 AND r.rater_kind = 'web') AS w_correct,
+                   count(*) FILTER (WHERE r.score = 2 AND r.rater_kind = 'web') AS w_partial,
+                   count(*) FILTER (WHERE r.score = 1 AND r.rater_kind = 'web') AS w_incorrect,
+                   (array_agg(r.score ORDER BY r.ts DESC)
+                        FILTER (WHERE r.is_judge AND r.rater_kind = 'discord'))[1] AS judge,
+                   -- Reasons only when the operator shows them, and never
+                   -- who gave them: no user id, name, address or agent.
+                   CASE WHEN $3::boolean THEN coalesce(
+                       jsonb_agg(jsonb_build_object(
+                           'kind', r.rater_kind, 'score', r.score, 'category', r.category,
+                           'wrong', r.what_wrong, 'right', r.right_answer) ORDER BY r.ts)
+                           -- A reason the operator dismissed is not shown.
+                           FILTER (WHERE r.category IS NOT NULL
+                                     AND q.status IS DISTINCT FROM 'dismissed'),
+                       '[]'::jsonb) END AS reasons
+            FROM ratings r
+            LEFT JOIN feedback_queue q ON q.call_id = r.call_id AND q.user_id = r.user_id
+            WHERE r.call_id = c.id
         ) rt
         WHERE NOT c.private
           AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))
@@ -521,6 +665,7 @@ pub async fn call(
         "#,
         window_days(window),
         id.into_inner(),
+        reasons.shown(),
     )
     .fetch_optional(pool)
     .await
@@ -529,6 +674,29 @@ pub async fn call(
     let entry = entry(row)?;
     let names = names(pool, std::slice::from_ref(&entry)).await?;
     Ok(Some((named(entry, &names), names)))
+}
+
+/// Whether the public may rate call `id` from the web: it exists, was not
+/// asked private, and is within `window` (the feed's reach). A missing,
+/// private and too-old call are the same `false`, as the feed's `None`.
+///
+/// # Errors
+/// `Upstream` from sqlx.
+pub async fn rateable(pool: &PgPool, window: Option<Days>, id: CallId) -> Result<bool, JudgeError> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM calls c
+            WHERE c.id = $2 AND NOT c.private
+              AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))
+        ) AS "rateable!"
+        "#,
+        window_days(window),
+        id.into_inner(),
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(upstream("check a call is rateable"))
 }
 
 /// A unit-variant enum from its stored serde name.
@@ -587,11 +755,27 @@ fn entry(r: Row) -> Result<Entry, JudgeError> {
         citations,
         cards,
         ratings: Ratings {
-            correct: count(r.correct),
-            partial: count(r.partial),
-            incorrect: count(r.incorrect),
+            discord: Counts {
+                correct: count(r.d_correct),
+                partial: count(r.d_partial),
+                incorrect: count(r.d_incorrect),
+            },
+            web: Counts {
+                correct: count(r.w_correct),
+                partial: count(r.w_partial),
+                incorrect: count(r.w_incorrect),
+            },
             judge,
         },
+        // A reason in a shape this build does not read is left out.
+        reasons: r.reasons.map(|v| match v {
+            serde_json::Value::Array(items) => items
+                .into_iter()
+                .filter_map(|i| serde_json::from_value::<StoredReason>(i).ok())
+                .filter_map(StoredReason::public)
+                .collect(),
+            _ => vec![],
+        }),
         retired: r.retired_reason,
     })
 }
@@ -815,32 +999,64 @@ mod tests {
             .execute(&pool)
             .await?;
         }
+        // Two web raters, one with a reason that names a Discord user, and a
+        // Discord one whose name the reason must never carry.
+        sqlx::query(
+            "INSERT INTO ratings (call_id, user_id, score, rater_kind, category, what_wrong, \
+             web_name, ip, user_agent) VALUES \
+             ($1, 'web:a', 1, 'web', 'wrong_card', 'not <@123>', 'Jaya', '203.0.113.7', 'UA'), \
+             ($1, 'web:b', 3, 'web', NULL, NULL, NULL, NULL, NULL)",
+        )
+        .bind(alice)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "UPDATE ratings SET category = 'outdated' WHERE call_id = $1 AND user_id = '2'",
+        )
+        .bind(alice)
+        .execute(&pool)
+        .await?;
 
-        let all = page(&pool, None, &Filter::default(), None).await?;
+        let all = page(&pool, None, Reasons::Hidden, &Filter::default(), None).await?;
         assert_eq!(
             ids(&all),
             [web, alice, old],
             "newest first, private left out"
         );
         let thirty = Days::new(30);
-        let windowed = page(&pool, thirty, &Filter::default(), None).await?;
+        let windowed = page(&pool, thirty, Reasons::Hidden, &Filter::default(), None).await?;
         assert_eq!(ids(&windowed), [web, alice]);
         for private in [hidden, mcp_hidden] {
-            assert!(call(&pool, None, CallId::new(private)).await?.is_none());
+            assert!(
+                call(&pool, None, Reasons::Hidden, CallId::new(private))
+                    .await?
+                    .is_none()
+            );
         }
-        assert!(call(&pool, thirty, CallId::new(old)).await?.is_none());
-        assert!(call(&pool, None, CallId::new(old)).await?.is_some());
+        assert!(
+            call(&pool, thirty, Reasons::Hidden, CallId::new(old))
+                .await?
+                .is_none()
+        );
+        assert!(
+            call(&pool, None, Reasons::Hidden, CallId::new(old))
+                .await?
+                .is_some()
+        );
         let by_alice = Filter {
             user: judge_core::DiscordUsername::try_new("alice".to_owned()).ok(),
             ..Filter::default()
         };
-        assert_eq!(ids(&page(&pool, None, &by_alice, None).await?), [alice]);
+        assert_eq!(
+            ids(&page(&pool, None, Reasons::Hidden, &by_alice, None).await?),
+            [alice]
+        );
         for asked in [Asked::Discord, Asked::Mcp] {
             let only = Filter {
                 asked: Some(asked),
                 ..Filter::default()
             };
-            let got = ids(&page(&pool, None, &only, None).await?);
+            let got = ids(&page(&pool, None, Reasons::Hidden, &only, None).await?);
             assert!(
                 !got.contains(&hidden) && !got.contains(&mcp_hidden),
                 "{got:?}"
@@ -861,36 +1077,40 @@ mod tests {
             search: Search::parse(text),
             ..Filter::default()
         };
-        assert_eq!(ids(&page(&pool, None, &found("SEE"), None).await?), [web]);
         assert_eq!(
-            ids(&page(&pool, None, &found("alic"), None).await?),
+            ids(&page(&pool, None, Reasons::Hidden, &found("SEE"), None).await?),
+            [web]
+        );
+        assert_eq!(
+            ids(&page(&pool, None, Reasons::Hidden, &found("alic"), None).await?),
             [alice]
         );
         assert!(
-            page(&pool, None, &found("98765"), None)
+            page(&pool, None, Reasons::Hidden, &found("98765"), None)
                 .await?
                 .entries
                 .is_empty()
         );
         // Not across the mention either: its digits are never read.
         assert!(
-            page(&pool, None, &found("55"), None)
+            page(&pool, None, Reasons::Hidden, &found("55"), None)
                 .await?
                 .entries
                 .is_empty()
         );
         assert_eq!(
-            ids(&page(&pool, None, &found("5@…5 about"), None).await?),
+            ids(&page(&pool, None, Reasons::Hidden, &found("5@…5 about"), None).await?),
             [web]
         );
         assert!(
-            page(&pool, None, &found("%"), None)
+            page(&pool, None, Reasons::Hidden, &found("%"), None)
                 .await?
                 .entries
                 .is_empty()
         );
 
-        let Some((entry, names)) = call(&pool, None, CallId::new(alice)).await? else {
+        let Some((entry, names)) = call(&pool, None, Reasons::Hidden, CallId::new(alice)).await?
+        else {
             anyhow::bail!("alice's call is public");
         };
         assert_eq!(entry.asker.as_deref(), Some("alice"));
@@ -916,12 +1136,77 @@ mod tests {
         assert_eq!(
             entry.ratings,
             Ratings {
-                correct: 1,
-                partial: 1,
-                incorrect: 1,
+                discord: Counts {
+                    correct: 1,
+                    partial: 1,
+                    incorrect: 1,
+                },
+                web: Counts {
+                    correct: 1,
+                    partial: 0,
+                    incorrect: 1,
+                },
                 judge: Some(Score::Partial),
-            }
+            },
+            "the web's ratings counted apart from Discord's"
         );
+        assert_eq!(entry.reasons, None, "reasons are the operator's by default");
+        let Some((shown, _)) = call(&pool, None, Reasons::Shown, CallId::new(alice)).await? else {
+            anyhow::bail!("alice's call is public");
+        };
+        let reasons = shown.reasons.ok_or_else(|| anyhow::anyhow!("no reasons"))?;
+        assert_eq!(reasons.len(), 2, "{reasons:?}");
+        let web = reasons
+            .iter()
+            .find(|r| r.rater_kind == RaterKind::Web)
+            .ok_or_else(|| anyhow::anyhow!("no web reason"))?;
+        assert_eq!(web.wrong.as_deref(), Some("not @…"), "mentions reduced");
+        assert_eq!(
+            public_text("@everyone and @here"),
+            "@\u{200b}everyone and @\u{200b}here"
+        );
+        // A reason the operator dismissed leaves the public reads.
+        sqlx::query(
+            "INSERT INTO feedback_queue (call_id, user_id, status, note, resolved_at) \
+             VALUES ($1, 'web:a', 'dismissed', 'spam', now())",
+        )
+        .bind(alice)
+        .execute(&pool)
+        .await?;
+        let Some((after, _)) = call(&pool, None, Reasons::Shown, CallId::new(alice)).await? else {
+            anyhow::bail!("alice's call is public");
+        };
+        let left = after.reasons.ok_or_else(|| anyhow::anyhow!("no reasons"))?;
+        assert!(
+            left.iter().all(|r| r.rater_kind != RaterKind::Web),
+            "the dismissed reason is gone: {left:?}"
+        );
+        assert_eq!(left.len(), 1);
+        assert_eq!(
+            after.ratings, entry.ratings,
+            "the counts are not the queue's"
+        );
+        let text = serde_json::to_string(&reasons)?;
+        for identity in ["Jaya", "203.0.113.7", "UA", "web:a", "\"2\""] {
+            assert!(!text.contains(identity), "{identity} in {text}");
+        }
+        let page = page(&pool, None, Reasons::Shown, &Filter::default(), None).await?;
+        assert!(page.entries.iter().all(|e| e.reasons.is_some()));
+        Ok(())
+    }
+
+    /// The web may rate a public call within the window, and nothing else.
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn only_a_public_call_in_the_window_is_rateable(pool: PgPool) -> anyhow::Result<()> {
+        let public = call_at(&pool, 0, 0, "web", None, false).await?;
+        let private = call_at(&pool, 0, 0, "discord", Some("alice"), true).await?;
+        let old = call_at(&pool, 40, 0, "web", None, false).await?;
+        let thirty = Days::new(30);
+        assert!(rateable(&pool, thirty, CallId::new(public)).await?);
+        assert!(!rateable(&pool, thirty, CallId::new(private)).await?);
+        assert!(!rateable(&pool, thirty, CallId::new(old)).await?);
+        assert!(rateable(&pool, None, CallId::new(old)).await?);
+        assert!(!rateable(&pool, None, CallId::new(Uuid::nil())).await?);
         Ok(())
     }
 
@@ -938,7 +1223,7 @@ mod tests {
         let mut seen = vec![];
         let mut after = None;
         loop {
-            let p = page(&pool, None, &Filter::default(), after).await?;
+            let p = page(&pool, None, Reasons::Hidden, &Filter::default(), after).await?;
             assert!(p.entries.len() <= PAGE_SIZE);
             seen.extend(ids(&p));
             match p.next {

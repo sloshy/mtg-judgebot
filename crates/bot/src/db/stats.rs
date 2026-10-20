@@ -182,8 +182,12 @@ pub struct Usage {
     pub by_model: Vec<ModelUse>,
     /// Those runs by outcome, commonest first.
     pub outcomes: Vec<OutcomeCount>,
-    /// Ratings recorded in the window: incorrect, partially correct, correct.
+    /// Discord ratings recorded in the window: incorrect, partially
+    /// correct, correct. The ones that count toward the examples.
     pub ratings: [i64; 3],
+    /// Web ratings recorded in the window, likewise: anonymous, so one
+    /// person can add many; counted apart so they cannot skew the above.
+    pub web_ratings: [i64; 3],
     /// Calls in the whole table the retirement pass has retired.
     pub retired_calls: i64,
     /// The rated calls with the lowest effective score, worst first.
@@ -260,9 +264,12 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
 
     let ratings = sqlx::query!(
         r#"
-        SELECT count(*) FILTER (WHERE score = 1) AS "incorrect!",
-               count(*) FILTER (WHERE score = 2) AS "partial!",
-               count(*) FILTER (WHERE score = 3) AS "correct!"
+        SELECT count(*) FILTER (WHERE score = 1 AND rater_kind = 'discord') AS "incorrect!",
+               count(*) FILTER (WHERE score = 2 AND rater_kind = 'discord') AS "partial!",
+               count(*) FILTER (WHERE score = 3 AND rater_kind = 'discord') AS "correct!",
+               count(*) FILTER (WHERE score = 1 AND rater_kind = 'web') AS "web_incorrect!",
+               count(*) FILTER (WHERE score = 2 AND rater_kind = 'web') AS "web_partial!",
+               count(*) FILTER (WHERE score = 3 AND rater_kind = 'web') AS "web_correct!"
         FROM ratings
         WHERE (ts AT TIME ZONE 'utc')::date >= (now() AT TIME ZONE 'utc')::date - $1::int
         "#,
@@ -383,6 +390,11 @@ pub async fn usage(pool: &PgPool, days: u32) -> Result<Usage, JudgeError> {
         outcomes,
         by_day,
         ratings: [ratings.incorrect, ratings.partial, ratings.correct],
+        web_ratings: [
+            ratings.web_incorrect,
+            ratings.web_partial,
+            ratings.web_correct,
+        ],
         retired_calls,
         lowest_rated,
         feedback: crate::feedback::counts(pool).await?,

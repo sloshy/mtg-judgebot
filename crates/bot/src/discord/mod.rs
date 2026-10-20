@@ -326,6 +326,9 @@ pub struct Data {
     locale: Locale,
     /// Whether `/help` says public calls may be on the web feed.
     feed: Feed,
+    /// Whether raters' reasons are shown on the public pages
+    /// (`JUDGE_PUBLIC_FEEDBACK`), which the form and its confirmation say.
+    public_feedback: bool,
     /// How interactions arrive, which decides how a rating form is laid out
     /// ([`feedback::Layout`]).
     delivery: Delivery,
@@ -355,6 +358,10 @@ impl Data {
         let availability = serving.availability().clone();
         let locale = serving.judge().locale();
         let feed = serving.judge().feed();
+        let public_feedback = matches!(
+            serving.judge().public_feedback(),
+            crate::feed::Reasons::Shown
+        );
         Self {
             deps,
             store,
@@ -371,6 +378,7 @@ impl Data {
             availability,
             locale,
             feed,
+            public_feedback,
             delivery: cfg.interactions,
         }
     }
@@ -722,7 +730,8 @@ impl Data {
     ) -> anyhow::Result<()> {
         match self.delivery {
             Delivery::Http => {
-                let form = feedback::modal(locale, feedback::form(call, fault));
+                let form =
+                    feedback::modal(locale, feedback::form(call, fault), self.public_feedback);
                 respond_raw(http, c.id, &c.token, ack, &form)
                     .await
                     .context("open the rating form")
@@ -774,7 +783,8 @@ impl Data {
             fault,
             category: Some(category),
         };
-        respond_raw(http, c.id, &c.token, ack, &feedback::modal(locale, form))
+        let modal = feedback::modal(locale, form, self.public_feedback);
+        respond_raw(http, c.id, &c.token, ack, &modal)
             .await
             .context("open the rating form")
     }
@@ -877,6 +887,7 @@ impl Data {
                     rater.is_judge(),
                     &self.offer,
                     &self.operator,
+                    self.public_feedback,
                 )
             }
             Err(e) => {

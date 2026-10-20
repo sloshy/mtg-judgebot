@@ -84,6 +84,9 @@ pub struct Messages {
     /// The rating's acknowledgement, given its label, its reason's category
     /// (labelled) when it has one, and whether it counts as a judge's.
     pub rated: fn(&str, Option<&str>, bool) -> String,
+    /// The same, for a rating with a reason, when `JUDGE_PUBLIC_FEEDBACK`
+    /// shows reasons on the public pages.
+    pub rated_public: fn(&str, Option<&str>, bool) -> String,
     /// After an *Incorrect* rating: who reads the reason, given the
     /// operator's username.
     pub report_wrong: fn(&str) -> String,
@@ -119,10 +122,14 @@ pub struct Messages {
     pub form_wrong: &'static str,
     /// Its hint (at most 100 characters).
     pub form_wrong_hint: &'static str,
+    /// Its hint when reasons are shown publicly (at most 100 characters).
+    pub form_wrong_hint_public: &'static str,
     /// "The right answer": the field's label (at most 45 characters).
     pub form_right: &'static str,
     /// Its hint (at most 100 characters).
     pub form_right_hint: &'static str,
+    /// Its hint when reasons are shown publicly (at most 100 characters).
+    pub form_right_hint_public: &'static str,
     /// Above the category menu shown before the form when interactions
     /// arrive over the gateway, given the rating's label.
     pub category_prompt: fn(&str) -> String,
@@ -349,6 +356,15 @@ beside the answer. Rating again asks before replacing it."
             }
         }
     },
+    rated_public: |label, category, as_judge| {
+        let who = if as_judge { " as a judge ruling" } else { "" };
+        let category = category.map(|c| format!(" ({c})")).unwrap_or_default();
+        format!(
+            "Recorded your rating{who}: {label}{category}. The operator sees your reason beside the \
+answer, and it is shown on the answer's public web page, without your name. Rating again asks before \
+replacing it."
+        )
+    },
     report_wrong: |username| format!("`@{username}` runs this bot and reads every reason given."),
     report_link: |url| {
         format!(
@@ -387,8 +403,10 @@ beside the answer. Rating again asks before replacing it."
     form_category_placeholder: "Choose one",
     form_wrong: "What's wrong",
     form_wrong_hint: "Optional. What did the answer get wrong?",
+    form_wrong_hint_public: "Optional. Shown on the public web page, without your name.",
     form_right: "The right answer",
     form_right_hint: "Optional. What should it have said?",
+    form_right_hint_public: "Optional. Also shown publicly, without your name.",
     category_prompt: |label| {
         format!(
             "You rated this answer **{label}**. What kind of problem is it? Choose one, then add \
@@ -628,6 +646,7 @@ mod tests {
                 (m.rating_label)(Score::Partial).to_owned(),
                 (m.rated)("Correct", None, true),
                 (m.rated)("Incorrect", Some("Wrong card"), false),
+                (m.rated_public)("Incorrect", Some("Wrong card"), false),
                 m.already_rated.to_owned(),
                 (m.replace_prompt)("Partially correct", Some("Wrong card"), "Incorrect"),
                 m.replace_label.to_owned(),
@@ -726,6 +745,8 @@ mod tests {
                 m.form_category_placeholder,
                 m.form_wrong_hint,
                 m.form_right_hint,
+                m.form_wrong_hint_public,
+                m.form_right_hint_public,
             ] {
                 assert!(fits(hint, 100), "{l}: {hint:?}");
             }

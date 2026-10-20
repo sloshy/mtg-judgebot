@@ -71,6 +71,18 @@ pub enum Rated {
     CallGone,
 }
 
+/// What became of a rating written only if the rater had none
+/// ([`CallStore::rate_if_new`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RatedNew {
+    /// Stored: the rater had no rating on the call.
+    Recorded,
+    /// Not written: the rater's rating already on the call.
+    Taken(Earlier),
+    /// The call is no longer stored.
+    CallGone,
+}
+
 /// What an embedding will be used for; retrieval quality depends on telling
 /// the provider which side of the search a text is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -119,6 +131,17 @@ pub trait CallStore: Send + Sync {
     /// addresses older than `FEEDBACK_IP_DAYS`.
     async fn rate(&self, call: CallId, rater: &Rater, rating: &Rating)
     -> Result<Rated, JudgeError>;
+    /// Record one rater's rating of a call only if they have none on it
+    /// yet: atomically, so two requests racing from one rater cannot
+    /// replace each other unasked. With a rating already there nothing is
+    /// written and it comes back ([`RatedNew::Taken`]). Otherwise as
+    /// [`Self::rate`].
+    async fn rate_if_new(
+        &self,
+        call: CallId,
+        rater: &Rater,
+        rating: &Rating,
+    ) -> Result<RatedNew, JudgeError>;
     /// The rater's current rating of a call, if they have one. One indexed
     /// read: a Discord click must be answered within 3 s of arriving.
     async fn earlier_rating(

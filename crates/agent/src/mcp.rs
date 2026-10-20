@@ -510,7 +510,7 @@ impl JudgeMcp<Privileged> {
 
     #[tool(
         name = "queue_dismiss",
-        description = "Admin: dismiss a feedback item: nothing to fix (the answer was right, or the reason is not about the answer). `note` (required) says why."
+        description = "Admin: dismiss a feedback item: nothing to fix (the answer was right, or the reason is not about the answer). `note` (required) says why. With JUDGE_PUBLIC_FEEDBACK=true it also takes the reason off the public pages: dismiss spam and abuse."
     )]
     async fn queue_dismiss(
         &self,

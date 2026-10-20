@@ -174,6 +174,7 @@ export type AdminMessages = {
   modelLine: (requests: number, tokens: string, estimated: number) => string;
   outcomesTitle: string;
   ratingsSummary: (r: [number, number, number]) => string;
+  webRatingsSummary: (r: [number, number, number]) => string;
   retiredCalls: (n: number) => string;
   lowestTitle: string;
   lowestLine: (score: number, ratings: number) => string;
@@ -379,7 +380,9 @@ export const en = {
     `${requests} ${requests === 1 ? "request" : "requests"} · ${tokens}${estimated > 0 ? ` · ${estimated} at the worst case` : ""}`,
   outcomesTitle: "Runs by outcome",
   ratingsSummary: ([incorrect, partial, correct]) =>
-    `Ratings: ${correct} correct, ${partial} partially correct, ${incorrect} incorrect.`,
+    `Discord ratings: ${correct} correct, ${partial} partially correct, ${incorrect} incorrect.`,
+  webRatingsSummary: ([incorrect, partial, correct]) =>
+    `Web ratings (anonymous, never counted toward the examples): ${correct} correct, ${partial} partially correct, ${incorrect} incorrect.`,
   retiredCalls: (n) => `${n} ${n === 1 ? "call is" : "calls are"} retired.`,
   lowestTitle: "Lowest rated",
   lowestLine: (score, ratings) =>

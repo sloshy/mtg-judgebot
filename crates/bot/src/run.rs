@@ -287,6 +287,14 @@ mod tests {
         ) -> Result<Option<judge_core::Earlier>, JudgeError> {
             Ok(None)
         }
+        async fn rate_if_new(
+            &self,
+            _c: CallId,
+            _r: &judge_core::Rater,
+            _s: &judge_core::Rating,
+        ) -> Result<judge_core::RatedNew, JudgeError> {
+            Ok(judge_core::RatedNew::Recorded)
+        }
         async fn history(
             &self,
             _t: &str,

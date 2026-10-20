@@ -67,10 +67,17 @@ impl Layout {
     }
 }
 
-/// The interaction response that opens the form `form` in `locale`.
+/// The interaction response that opens the form `form` in `locale`; with
+/// `public` (`JUDGE_PUBLIC_FEEDBACK`) its hints say the texts are shown on
+/// the public web page, without the rater's name.
 #[must_use]
-pub fn modal(locale: Locale, form: FormId) -> Value {
+pub fn modal(locale: Locale, form: FormId, public: bool) -> Value {
     let m = catalog::messages(locale);
+    let (wrong_hint, right_hint) = if public {
+        (m.form_wrong_hint_public, m.form_right_hint_public)
+    } else {
+        (m.form_wrong_hint, m.form_right_hint)
+    };
     let max = judge_core::feedback::FEEDBACK_TEXT_MAX_CHARS;
     let text = |field: &str, label: &str, hint: &str, layout: Layout| match layout {
         Layout::Labels => json!({
@@ -119,8 +126,8 @@ pub fn modal(locale: Locale, form: FormId) -> Value {
             },
         }));
     }
-    components.push(text(WRONG_FIELD, m.form_wrong, m.form_wrong_hint, layout));
-    components.push(text(RIGHT_FIELD, m.form_right, m.form_right_hint, layout));
+    components.push(text(WRONG_FIELD, m.form_wrong, wrong_hint, layout));
+    components.push(text(RIGHT_FIELD, m.form_right, right_hint, layout));
     json!({
         "type": MODAL,
         "data": {
@@ -255,8 +262,11 @@ mod tests {
     /// listing every category, as Discord's component reference has them.
     #[test]
     fn the_one_form_modal_is_pinned() -> Result<(), Box<dyn std::error::Error>> {
-        let got = modal(Locale::En, form(nil(), Fault::Incorrect));
+        let got = modal(Locale::En, form(nil(), Fault::Incorrect), false);
         assert_eq!(got, fixture("rating_form_labels.json")?);
+        // With reasons public, the hints say so.
+        let public = modal(Locale::En, form(nil(), Fault::Incorrect), true).to_string();
+        assert!(public.contains("Shown on the public web page"), "{public}");
         Ok(())
     }
 
@@ -270,7 +280,10 @@ mod tests {
             category: Some(FeedbackCategory::WrongCard),
         };
         assert_eq!(Layout::of(id), Layout::Rows);
-        assert_eq!(modal(Locale::En, id), fixture("rating_form_rows.json")?);
+        assert_eq!(
+            modal(Locale::En, id, false),
+            fixture("rating_form_rows.json")?
+        );
         Ok(())
     }
 

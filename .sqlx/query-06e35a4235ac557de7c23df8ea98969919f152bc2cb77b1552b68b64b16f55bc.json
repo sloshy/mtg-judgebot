@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FILTER (WHERE score = 1 AND rater_kind = 'discord') AS \"incorrect!\",\n               count(*) FILTER (WHERE score = 2 AND rater_kind = 'discord') AS \"partial!\",\n               count(*) FILTER (WHERE score = 3 AND rater_kind = 'discord') AS \"correct!\",\n               count(*) FILTER (WHERE score = 1 AND rater_kind = 'web') AS \"web_incorrect!\",\n               count(*) FILTER (WHERE score = 2 AND rater_kind = 'web') AS \"web_partial!\",\n               count(*) FILTER (WHERE score = 3 AND rater_kind = 'web') AS \"web_correct!\"\n        FROM ratings\n        WHERE (ts AT TIME ZONE 'utc')::date >= (now() AT TIME ZONE 'utc')::date - $1::int\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "incorrect!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "partial!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "correct!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "web_incorrect!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "web_partial!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "web_correct!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "06e35a4235ac557de7c23df8ea98969919f152bc2cb77b1552b68b64b16f55bc"
+}

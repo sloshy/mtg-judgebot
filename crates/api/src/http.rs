@@ -11,7 +11,7 @@ use std::{
 use anyhow::Context as _;
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, FromRequest, FromRequestParts, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, FromRequest, FromRequestParts, Request, State},
     http::{HeaderMap, StatusCode, request::Parts},
     response::{IntoResponse as _, Response},
     routing::{any, get, post},
@@ -35,6 +35,7 @@ use crate::{
     feed::{self, PublicCalls},
     interfaces::Interfaces,
     limit::RateLimiter,
+    rating::{self, Rateable},
     shape::{self, ApiReply, JudgeRequest},
 };
 
@@ -131,6 +132,14 @@ pub struct App {
     public_calls: Option<Arc<dyn PublicCalls>>,
     /// The feed reads' own per-address window ([`feed::READ_LIMIT`]).
     reads: RateLimiter,
+    /// Which calls the web may rate, when `POST /api/calls/{id}/feedback`
+    /// is served.
+    rateable: Option<Arc<dyn Rateable>>,
+    /// The ratings' own per-address window ([`rating::LIMIT`]).
+    ratings: RateLimiter,
+    /// Whether raters' reasons are shown on the public pages
+    /// (`JUDGE_PUBLIC_FEEDBACK`), which a rater is told.
+    public_feedback: bool,
 }
 
 impl std::fmt::Debug for App {
@@ -167,7 +176,46 @@ impl App {
             locale: Locale::default(),
             public_calls: None,
             reads: RateLimiter::new(feed::READ_LIMIT, feed::READ_WINDOW),
+            rateable: None,
+            ratings: RateLimiter::new(rating::LIMIT, rating::WINDOW),
+            public_feedback: false,
         }
+    }
+
+    /// Tell raters their reasons are shown on the public pages
+    /// (`JUDGE_PUBLIC_FEEDBACK=true`).
+    #[must_use]
+    pub const fn with_public_feedback(mut self, shown: bool) -> Self {
+        self.public_feedback = shown;
+        self
+    }
+
+    /// Whether raters' reasons are shown publicly.
+    pub(crate) const fn public_feedback(&self) -> bool {
+        self.public_feedback
+    }
+
+    /// Serve `POST /api/calls/{id}/feedback` beside `POST /api/judge`, for
+    /// the calls `rateable` admits.
+    #[must_use]
+    pub fn with_ratings(mut self, rateable: Arc<dyn Rateable>) -> Self {
+        self.rateable = Some(rateable);
+        self
+    }
+
+    /// Which calls the web may rate, when ratings are served.
+    pub(crate) fn rateable(&self) -> Option<Arc<dyn Rateable>> {
+        self.rateable.clone()
+    }
+
+    /// Count a rating from `ip`; `false` when its window is used up.
+    pub(crate) fn allow_rating(&self, ip: IpAddr) -> bool {
+        self.ratings.allow(ip)
+    }
+
+    /// The call store.
+    pub(crate) fn store(&self) -> &Arc<dyn CallStore> {
+        &self.store
     }
 
     /// Serve the public feed (`GET /api/feed`, `GET /api/calls/{id}`) from
@@ -290,7 +338,7 @@ impl App {
             "POST /api/judge"
         );
         match ran.result {
-            Ok(v) => shape::answer(locale, &v, ran.context.as_ref()),
+            Ok(v) => shape::answer(locale, &v, ran.context.as_ref(), ran.call),
             Err(e) => {
                 // The line above classifies the outcome; a genuine failure also
                 // needs its cause, or the operator sees `outcome=upstream` and
@@ -328,6 +376,12 @@ pub fn router(app: Arc<App>, interfaces: &Interfaces, web_dist: &Path) -> Router
         .route("/api/about", get(about));
     if interfaces.api() {
         router = router.route("/api/judge", post(judge_route));
+        if app.rateable.is_some() {
+            router = router.route(
+                "/api/calls/{id}/feedback",
+                post(rating::feedback_route).layer(DefaultBodyLimit::max(rating::BODY_LIMIT)),
+            );
+        }
     }
     if interfaces.web() {
         if app.public_calls.is_some() {
@@ -462,6 +516,11 @@ struct AboutReply {
     about: About,
     /// Whether the public feed is served here (`/feed`, `GET /api/feed`).
     feed: bool,
+    /// Whether answers may be rated here (`POST /api/calls/{id}/feedback`).
+    ratings: bool,
+    /// Whether raters' reasons are shown on the public pages
+    /// (`JUDGE_PUBLIC_FEEDBACK`), so the form can say so.
+    public_feedback: bool,
 }
 
 /// The source offer as JSON (`judge_core::About`): repository, commit,
@@ -478,6 +537,8 @@ async fn about(State(app): State<Arc<App>>) -> Json<AboutReply> {
             .offer
             .about(app.operator.operator(), freshness, app.locale),
         feed: app.public_calls.is_some(),
+        ratings: app.rateable.is_some(),
+        public_feedback: app.public_feedback,
     })
 }
 
@@ -807,6 +868,14 @@ mod tests {
         ) -> Result<Option<judge_core::Earlier>, JudgeError> {
             Ok(None)
         }
+        async fn rate_if_new(
+            &self,
+            _call: CallId,
+            _rater: &judge_core::Rater,
+            _rating: &judge_core::Rating,
+        ) -> Result<judge_core::RatedNew, JudgeError> {
+            Ok(judge_core::RatedNew::Recorded)
+        }
         async fn history(
             &self,
             _thread: &str,
@@ -959,6 +1028,11 @@ mod tests {
             "{j}"
         );
         assert_eq!(persisted(&store), vec!["does lifelink stack?".to_owned()]);
+        assert_eq!(
+            j.get("call"),
+            Some(&serde_json::json!(Uuid::from_u128(9))),
+            "the stored call's id, to rate it: {j}"
+        );
         let runs = runs(&store, 1).await;
         let [run] = runs.as_slice() else {
             return Err(format!("one run recorded, got {runs:?}").into());
@@ -1336,8 +1410,14 @@ mod tests {
             cards: vec![],
             ratings: judge_bot::feed::Ratings {
                 judge: Some(Score::Partial),
+                web: judge_bot::feed::Counts {
+                    correct: 0,
+                    partial: 0,
+                    incorrect: 2,
+                },
                 ..judge_bot::feed::Ratings::default()
             },
+            reasons: None,
             retired: None,
         }
     }
@@ -1426,6 +1506,16 @@ mod tests {
             first.pointer("/ratings/judge"),
             Some(&serde_json::json!("partial"))
         );
+        assert_eq!(
+            first.pointer("/ratings/web/incorrect"),
+            Some(&serde_json::json!(2)),
+            "the web's counts sent apart: {first}"
+        );
+        assert_eq!(
+            first.pointer("/ratings/discord/incorrect"),
+            Some(&serde_json::json!(0))
+        );
+        assert!(first.get("reasons").is_none(), "no reasons unless shown");
         assert!(first.get("asker_id").is_none(), "{first}");
         let next = j
             .get("next")
@@ -1510,6 +1600,486 @@ mod tests {
         let (status, j) = get_json(&app, "/api/calls/00000000-0000-0000-0000-000000000001").await?;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(kind(&j), Some("rate_limited"));
+        Ok(())
+    }
+
+    /// Keeps each rater's rating, as the database's upsert does.
+    #[derive(Default)]
+    struct RatingStore {
+        ratings: Mutex<Vec<(CallId, judge_core::Rater, judge_core::Rating)>>,
+        /// Reads miss every rating, as a read can that loses a race to a
+        /// write from the same session.
+        stale_reads: bool,
+    }
+
+    impl RatingStore {
+        fn of(
+            &self,
+            call: CallId,
+            id: judge_core::RaterId,
+        ) -> Option<(judge_core::Rater, judge_core::Rating)> {
+            self.ratings
+                .lock()
+                .ok()?
+                .iter()
+                .find(|(c, r, _)| *c == call && r.id() == id)
+                .map(|(_, r, g)| (r.clone(), g.clone()))
+        }
+    }
+
+    #[async_trait]
+    impl CallStore for RatingStore {
+        async fn persist(
+            &self,
+            _q: &Question,
+            _origin: &Origin,
+            _v: &Verdict<Validated>,
+            _ctx: &Context,
+            _t: &Tally,
+        ) -> Result<CallId, JudgeError> {
+            Err(JudgeError::Upstream(anyhow::anyhow!("unused")))
+        }
+        async fn rate(
+            &self,
+            call: CallId,
+            rater: &judge_core::Rater,
+            rating: &judge_core::Rating,
+        ) -> Result<judge_core::Rated, JudgeError> {
+            let mut all = self
+                .ratings
+                .lock()
+                .map_err(|_| JudgeError::Upstream(anyhow::anyhow!("poisoned")))?;
+            all.retain(|(c, r, _)| !(*c == call && r.id() == rater.id()));
+            all.push((call, rater.clone(), rating.clone()));
+            Ok(judge_core::Rated::Recorded)
+        }
+        async fn earlier_rating(
+            &self,
+            call: CallId,
+            rater: judge_core::RaterId,
+        ) -> Result<Option<judge_core::Earlier>, JudgeError> {
+            if self.stale_reads {
+                return Ok(None);
+            }
+            Ok(self.of(call, rater).map(|(_, g)| judge_core::Earlier {
+                score: g.score(),
+                category: g.reason().map(|r| r.category),
+            }))
+        }
+        async fn rate_if_new(
+            &self,
+            call: CallId,
+            rater: &judge_core::Rater,
+            rating: &judge_core::Rating,
+        ) -> Result<judge_core::RatedNew, JudgeError> {
+            if let Some((_, g)) = self.of(call, rater.id()) {
+                return Ok(judge_core::RatedNew::Taken(judge_core::Earlier {
+                    score: g.score(),
+                    category: g.reason().map(|r| r.category),
+                }));
+            }
+            self.rate(call, rater, rating).await?;
+            Ok(judge_core::RatedNew::Recorded)
+        }
+        async fn history(
+            &self,
+            _thread: &str,
+            _n: usize,
+            _scope: HistoryScope,
+        ) -> Result<Vec<Qa>, JudgeError> {
+            Ok(vec![])
+        }
+        async fn forget_user(&self, _user: &str) -> Result<judge_core::Forgotten, JudgeError> {
+            Ok(judge_core::Forgotten::default())
+        }
+        async fn record_failure(
+            &self,
+            _failed: &judge_core::FailedCall,
+        ) -> Result<judge_core::FailedCallId, JudgeError> {
+            Ok(judge_core::FailedCallId(1))
+        }
+        async fn record_run(&self, _run: &RunRecord) -> Result<(), JudgeError> {
+            Ok(())
+        }
+    }
+
+    /// Call 1 is public and in the window; nothing else is.
+    struct OneRateable;
+    #[async_trait]
+    impl crate::rating::Rateable for OneRateable {
+        async fn rateable(&self, id: CallId) -> Result<bool, JudgeError> {
+            Ok(id == CallId::new(Uuid::from_u128(1)))
+        }
+    }
+
+    const ONE: &str = "/api/calls/00000000-0000-0000-0000-000000000001/feedback";
+    const SESSION: &str = "11111111-1111-1111-1111-111111111111";
+
+    fn rating_app(
+        availability: Availability,
+        client_ip: ClientIpSource,
+        interfaces: &[Interface],
+    ) -> (Router, Arc<RatingStore>) {
+        rating_app_over(
+            RatingStore::default(),
+            availability,
+            client_ip,
+            interfaces,
+            false,
+        )
+    }
+
+    fn rating_app_over(
+        store: RatingStore,
+        availability: Availability,
+        client_ip: ClientIpSource,
+        interfaces: &[Interface],
+        public_feedback: bool,
+    ) -> (Router, Arc<RatingStore>) {
+        let store = Arc::new(store);
+        let mut cfg = test_cfg(10, Path::new("does-not-exist"));
+        cfg.client_ip = client_ip;
+        let app = App::new(
+            stub_deps(),
+            Arc::clone(&store) as Arc<dyn CallStore>,
+            &cfg,
+            SourceOffer::upstream(judge_core::Commit::Unknown),
+            test_operator(),
+        )
+        .with_availability(availability)
+        .with_ratings(Arc::new(OneRateable))
+        .with_public_feedback(public_feedback);
+        let set = NonEmpty::from_vec(interfaces.to_vec()).unwrap_or(nonempty![Interface::Api]);
+        (
+            router(Arc::new(app), &Interfaces::of(&set), &cfg.web_dist),
+            store,
+        )
+    }
+
+    async fn post_rating(
+        router: &Router,
+        path: &str,
+        body: &serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> Result<(StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
+        let mut req = Request::post(path).header("content-type", "application/json");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let res = router
+            .clone()
+            .oneshot(req.body(Body::from(body.to_string()))?)
+            .await?;
+        let status = res.status();
+        let bytes = res.into_body().collect().await?.to_bytes();
+        Ok((status, serde_json::from_slice(&bytes).unwrap_or_default()))
+    }
+
+    fn web_rater() -> judge_core::RaterId {
+        judge_core::RaterId::Web(Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111))
+    }
+
+    /// The server decides when a rating replaces another: without
+    /// `replace: true` an earlier rating is a 409 and nothing is written,
+    /// whatever the client did; Correct over Correct changes nothing.
+    #[tokio::test]
+    async fn a_web_rating_replaces_another_only_when_confirmed() -> Res {
+        let (app, store) = rating_app(
+            Availability::open(),
+            ClientIpSource::PeerAddr,
+            &[Interface::Api],
+        );
+        let call = CallId::new(Uuid::from_u128(1));
+        let incorrect = serde_json::json!({
+            "session_id": SESSION, "score": "incorrect", "category": "wrong_card",
+            "wrong": "  Not Bob. ", "name": "Jaya",
+        });
+        let (status, j) =
+            post_rating(&app, ONE, &incorrect, &[("user-agent", "TestBrowser/1")]).await?;
+        assert_eq!(status, StatusCode::OK, "{j}");
+        assert_eq!(kind(&j), Some("rated"));
+        assert_eq!(j.get("replaced"), Some(&serde_json::Value::Null));
+        let (rater, rating) = store.of(call, web_rater()).ok_or("stored")?;
+        let judge_core::Rater::Web {
+            name,
+            ip,
+            user_agent,
+            ..
+        } = rater
+        else {
+            return Err("a web rater".into());
+        };
+        assert_eq!(name.map(|n| n.to_string()).as_deref(), Some("Jaya"));
+        assert_eq!(ip, Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert_eq!(
+            user_agent.as_ref().map(judge_core::UserAgent::as_str),
+            Some("TestBrowser/1")
+        );
+        assert_eq!(
+            rating
+                .reason()
+                .and_then(|r| r.wrong.as_ref())
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("Not Bob.")
+        );
+
+        let correct = serde_json::json!({"session_id": SESSION, "score": "correct"});
+        let (status, j) = post_rating(&app, ONE, &correct, &[]).await?;
+        assert_eq!(status, StatusCode::CONFLICT, "{j}");
+        assert_eq!(kind(&j), Some("confirm"));
+        assert_eq!(
+            j.pointer("/earlier/score"),
+            Some(&serde_json::json!("incorrect"))
+        );
+        assert_eq!(
+            j.pointer("/earlier/category"),
+            Some(&serde_json::json!("wrong_card"))
+        );
+        assert_eq!(
+            store.of(call, web_rater()).map(|(_, g)| g.score()),
+            Some(Score::Incorrect),
+            "a confirmation writes nothing"
+        );
+
+        let replace =
+            serde_json::json!({"session_id": SESSION, "score": "correct", "replace": true});
+        let (status, j) = post_rating(&app, ONE, &replace, &[]).await?;
+        assert_eq!(status, StatusCode::OK, "{j}");
+        assert_eq!(j.get("replaced"), Some(&serde_json::json!("incorrect")));
+        assert_eq!(
+            store.of(call, web_rater()).map(|(_, g)| g.score()),
+            Some(Score::Correct)
+        );
+        let (status, j) = post_rating(&app, ONE, &replace, &[]).await?;
+        assert_eq!((status, kind(&j)), (StatusCode::OK, Some("already_rated")));
+        Ok(())
+    }
+
+    /// Two requests from one session racing past the read: the second's
+    /// write refuses to replace the first's, and the reply is the
+    /// confirmation it would have had. Correct over Correct stays
+    /// `already_rated`.
+    #[tokio::test]
+    async fn a_racing_rating_is_confirmed_not_written_over() -> Res {
+        let (app, store) = rating_app_over(
+            RatingStore {
+                stale_reads: true,
+                ..RatingStore::default()
+            },
+            Availability::open(),
+            ClientIpSource::PeerAddr,
+            &[Interface::Api],
+            false,
+        );
+        let call = CallId::new(Uuid::from_u128(1));
+        let incorrect = serde_json::json!({
+            "session_id": SESSION, "score": "incorrect", "category": "outdated",
+        });
+        assert_eq!(
+            post_rating(&app, ONE, &incorrect, &[]).await?.0,
+            StatusCode::OK
+        );
+        let correct = serde_json::json!({"session_id": SESSION, "score": "correct"});
+        let (status, j) = post_rating(&app, ONE, &correct, &[]).await?;
+        assert_eq!(
+            (status, kind(&j)),
+            (StatusCode::CONFLICT, Some("confirm")),
+            "{j}"
+        );
+        assert_eq!(
+            store.of(call, web_rater()).map(|(_, g)| g.score()),
+            Some(Score::Incorrect),
+            "nothing written over"
+        );
+        let replace =
+            serde_json::json!({"session_id": SESSION, "score": "correct", "replace": true});
+        assert_eq!(
+            post_rating(&app, ONE, &replace, &[]).await?.0,
+            StatusCode::OK
+        );
+        let (status, j) = post_rating(&app, ONE, &correct, &[]).await?;
+        assert_eq!(
+            (status, kind(&j)),
+            (StatusCode::OK, Some("already_rated")),
+            "{j}"
+        );
+        Ok(())
+    }
+
+    /// With reasons shown publicly, a rater is told so, and the page can
+    /// say it before they write one.
+    #[tokio::test]
+    async fn a_rater_is_told_when_reasons_are_public() -> Res {
+        for public in [false, true] {
+            let (app, _) = rating_app_over(
+                RatingStore::default(),
+                Availability::open(),
+                ClientIpSource::PeerAddr,
+                &[Interface::Api],
+                public,
+            );
+            let (_, about) = get_json(&app, "/api/about").await?;
+            assert_eq!(
+                about.get("public_feedback"),
+                Some(&serde_json::json!(public))
+            );
+            let body = serde_json::json!({
+                "session_id": SESSION, "score": "partial", "category": "other",
+            });
+            let (_, j) = post_rating(&app, ONE, &body, &[]).await?;
+            let message = j
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            assert_eq!(message.contains("public page"), public, "{message}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_web_rating_that_does_not_read_is_a_400() -> Res {
+        let (app, store) = rating_app(
+            Availability::open(),
+            ClientIpSource::PeerAddr,
+            &[Interface::Api],
+        );
+        for body in [
+            serde_json::json!({"session_id": SESSION, "score": "incorrect"}),
+            serde_json::json!({"session_id": SESSION, "score": "correct", "category": "other"}),
+            serde_json::json!({"session_id": SESSION, "score": "correct", "name": "Jaya"}),
+            serde_json::json!({"session_id": SESSION, "score": "partial", "category": "other",
+                               "right": "x".repeat(1001)}),
+            serde_json::json!({"session_id": SESSION, "score": "partial", "category": "other",
+                               "wrong": "a\u{0}b"}),
+            serde_json::json!({"session_id": SESSION, "score": "partial", "category": "other",
+                               "name": "n".repeat(101)}),
+            serde_json::json!({"session_id": SESSION, "score": "correct", "confirm": true}),
+            serde_json::json!({"session_id": "not-a-uuid", "score": "correct"}),
+            serde_json::json!({"session_id": SESSION, "score": "great"}),
+            serde_json::json!({"score": "correct"}),
+        ] {
+            let (status, j) = post_rating(&app, ONE, &body, &[]).await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {j}");
+            assert_eq!(kind(&j), Some("error"), "{body}");
+        }
+        assert!(
+            store
+                .of(CallId::new(Uuid::from_u128(1)), web_rater())
+                .is_none()
+        );
+        let huge = serde_json::json!({"session_id": SESSION, "score": "correct",
+                                      "locale": "x".repeat(crate::rating::BODY_LIMIT)});
+        let (status, _) = post_rating(&app, ONE, &huge, &[]).await?;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        Ok(())
+    }
+
+    /// A call the public may not read is one 404, whatever the reason; an
+    /// upgrade is a 503; and ratings have a window of their own.
+    #[tokio::test]
+    async fn a_web_rating_is_refused_where_the_call_is_not_public() -> Res {
+        let (app, _) = rating_app(
+            Availability::open(),
+            ClientIpSource::PeerAddr,
+            &[Interface::Api],
+        );
+        let body = serde_json::json!({"session_id": SESSION, "score": "correct"});
+        for path in [
+            "/api/calls/00000000-0000-0000-0000-000000000002/feedback",
+            "/api/calls/not-a-call/feedback",
+        ] {
+            let (status, j) = post_rating(&app, path, &body, &[]).await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {j}");
+        }
+        let (closed, _) = rating_app(
+            Availability::upgrading(),
+            ClientIpSource::PeerAddr,
+            &[Interface::Api],
+        );
+        let (status, j) = post_rating(&closed, ONE, &body, &[]).await?;
+        assert_eq!(
+            (status, kind(&j)),
+            (StatusCode::SERVICE_UNAVAILABLE, Some("maintenance"))
+        );
+
+        let (app, _) = rating_app(
+            Availability::open(),
+            ClientIpSource::PeerAddr,
+            &[Interface::Api],
+        );
+        for n in 0..crate::rating::LIMIT {
+            let session = Uuid::from_u128(u128::from(n) + 100);
+            let one = serde_json::json!({"session_id": session, "score": "correct"});
+            assert_eq!(post_rating(&app, ONE, &one, &[]).await?.0, StatusCode::OK);
+        }
+        let (status, j) = post_rating(&app, ONE, &body, &[]).await?;
+        assert_eq!(
+            (status, kind(&j)),
+            (StatusCode::TOO_MANY_REQUESTS, Some("rate_limited"))
+        );
+        // The questions' own window is untouched by ratings.
+        let (status, _) = post_judge(app, r#"{"question":"does lifelink stack?"}"#).await?;
+        assert_ne!(status, StatusCode::TOO_MANY_REQUESTS);
+        Ok(())
+    }
+
+    /// The stored address is the one every limiter buckets on: behind
+    /// Cloudflare, `CF-Connecting-IP`; never `X-Forwarded-For`.
+    #[tokio::test]
+    async fn a_web_rating_stores_the_address_the_limiters_trust() -> Res {
+        let body = serde_json::json!({"session_id": SESSION, "score": "correct"});
+        let call = CallId::new(Uuid::from_u128(1));
+        let (cf, store) = rating_app(
+            Availability::open(),
+            ClientIpSource::CloudflareConnectingIp,
+            &[Interface::Api],
+        );
+        post_rating(
+            &cf,
+            ONE,
+            &body,
+            &[
+                ("cf-connecting-ip", "203.0.113.9"),
+                ("x-forwarded-for", "198.51.100.1"),
+            ],
+        )
+        .await?;
+        let ip = |store: &RatingStore| match store.of(call, web_rater()) {
+            Some((judge_core::Rater::Web { ip, .. }, _)) => ip,
+            _ => None,
+        };
+        assert_eq!(ip(&store), "203.0.113.9".parse().ok());
+        let (peer, store) = rating_app(
+            Availability::open(),
+            ClientIpSource::PeerAddr,
+            &[Interface::Api],
+        );
+        post_rating(
+            &peer,
+            ONE,
+            &body,
+            &[
+                ("x-forwarded-for", "198.51.100.1"),
+                ("cf-connecting-ip", "203.0.113.9"),
+            ],
+        )
+        .await?;
+        assert_eq!(ip(&store), Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        Ok(())
+    }
+
+    /// Rating sits beside `POST /api/judge`: not served without `--api`.
+    #[tokio::test]
+    async fn ratings_are_served_with_the_questions() -> Res {
+        let (web_only, _) = rating_app(
+            Availability::open(),
+            ClientIpSource::PeerAddr,
+            &[Interface::Web],
+        );
+        let body = serde_json::json!({"session_id": SESSION, "score": "correct"});
+        let (status, _) = post_rating(&web_only, ONE, &body, &[]).await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
         Ok(())
     }
 

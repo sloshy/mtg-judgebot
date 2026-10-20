@@ -581,7 +581,8 @@ pipeline.
   application emoji. The rendering logic is pure and unit-tested. A mana emoji tag is about
   thirty characters and must never be cut in half by Discord's length limit, so rendered
   text is carried as segments where only plain text is cuttable.
-- **Web** (`crates/api` + `web/`, a SolidJS web app): anonymous, so no ratings. Ambiguity comes
+- **Web** (`crates/api` + `web/`, a SolidJS web app): anonymous, so its ratings go to the
+  operator's queue and never to retrieval. Ambiguity comes
   back as data. The client re-asks with pins that the server rewrites to
   `[[Full Card Name]]`. Session history keys on a client UUID. Rate-limited per IP.
 - **Agent** (`crates/agent`, `judge-cli` and `judge-mcp`): the judge as a tool for other AI

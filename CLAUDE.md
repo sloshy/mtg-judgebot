@@ -206,9 +206,9 @@ deletes the caller's ratings with their reasons and feedback-queue items (`feedb
 - An *Incorrect* rating's ephemeral reply names the operator and, when the source offer
   is a GitHub repository, links its `wrong_answer.yml` issue form (`render::report_url`).
 - **Ratings with reasons** (D38): a rating click reads `CallStore::earlier_rating` within
-  `EARLIER_WAIT` (2 s, no defer), then `judge_core::feedback::next_step`: the same Correct
+  `EARLIER_BUDGET` (1.5 s from the interaction's arrival, `Ack::deadline`; no defer), then `judge_core::feedback::next_step`: the same Correct
   is already recorded; another earlier rating gets Replace/Keep (`rate-replace:` /
-  `rate-keep:`); Correct is recorded; Partial/Incorrect open the form
+  `rate-keep:`, which reads the rating back and says what is on record); Correct is recorded; Partial/Incorrect open the form
   (`discord::feedback`). Over HTTP the form is one modal written as JSON (Label + string
   select + text inputs), its values read from the raw body (`feedback::submitted`),
   because serenity 0.12.5 parses a Label as an empty action row and the gateway gives
@@ -619,11 +619,19 @@ Also true of `api`:
   with their own read limiter (`feed::READ_LIMIT`). `/api/about` carries `feed`, and
   under `--web` an unrouted `/api/` path is a JSON 404, not `index.html`. The web app
   routes `/feed`, `/calls/<id>`, `/users/<name>` in `web/src/router.ts`; `/help`
-  mentions the feed unless it is off.
+  mentions the feed unless it is off. `ratings` counts Discord and web apart
+  (`Ratings { discord, web, judge }`); `reasons` only with `JUDGE_PUBLIC_FEEDBACK=true`
+  (`feed::Reasons`), never the rater's identity. `/api/about` also carries `ratings`.
 - `mcp::router` gates with `route_layer`, not `layer`. `layer` wraps a router's fallback
   too, and merging that into a router with no web fallback made the 401 the catch-all for
   every unrouted path.
-- No ratings. "Did you mean?" is stateless, via `pins` → `pin_card` rewriting. Session
+- Web ratings: `POST /api/calls/{id}/feedback` (`judge_api::rating`, beside
+  `/api/judge`, D38) as the tab's session (`web:<uuid>`, the history id). The server
+  decides replacing: an earlier rating without `replace: true` is a 409 `confirm`,
+  nothing written. Its own limiter (`rating::LIMIT`, 30 per 10 min), a 16 KiB body,
+  `deny_unknown_fields`, a public in-window call only (`feed::rateable`), the IP via
+  `client_ip` and the UA stored. `/api/judge`'s answer carries `call`.
+- "Did you mean?" is stateless, via `pins` → `pin_card` rewriting. Session
   history is keyed by a client UUID (`web:<uuid>` thread ids).
 - Per-IP fixed-window rate limiting (`API_RATE_LIMIT`/`API_RATE_WINDOW_SECS`) sits ahead
   of the concurrency semaphore and the spend cap.
@@ -892,6 +900,8 @@ Key cross-file facts that aren't obvious from any one file:
   load; D34): the refresh's `prune` step (`ingest::prune`) and `judgebot ingest prune`
   delete older calls with their ratings. `judge_runs` stay (`call_id` SET NULL), and
   the retirement pass treats a cited prior call that no longer exists as supported.
+- `JUDGE_PUBLIC_FEEDBACK` (default false, validated at `Config` load; D38): the feed
+  shows raters' reasons without identity.
 - `FEEDBACK_IP_DAYS` (default 90, `1..=3650`, validated at `Config` load; D38): web
   ratings' ip/user_agent are cleared past it on every rating write (`PgCallStore`) and
   by the refresh's `sweep` step.

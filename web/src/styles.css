@@ -1238,6 +1238,163 @@ code {
   margin-top: 4px;
 }
 
+/* Rating an answer: three small buttons under it, then a form, a question
+   or a line saying what happened. */
+.rate {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.rate-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.rate-ask {
+  float: left;
+  margin-right: 4px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.rate-buttons .chip {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 0.8125rem;
+}
+
+.rate-buttons .chip[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rate-form,
+.rate-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.rate-form-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.rate-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.rate-optional {
+  font-weight: 400;
+}
+
+.rate-field select,
+.rate-field input,
+.rate-field textarea {
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--field-line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 400;
+}
+
+.rate-field textarea {
+  resize: vertical;
+}
+
+.rate-field select:focus-visible,
+.rate-field input:focus-visible,
+.rate-field textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.rate-note,
+.rate-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.rate-status-ok {
+  color: var(--green);
+}
+
+.rate-status-caution {
+  color: var(--amber);
+}
+
+.rate-confirm p {
+  margin: 0;
+}
+
+.rate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+}
+
+.reasons {
+  margin-top: 8px;
+  font-size: 0.875rem;
+}
+
+.reasons-title {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.reasons ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.reason {
+  padding: 8px 12px;
+  overflow-wrap: anywhere;
+}
+
+.reason + .reason {
+  border-top: 1px solid var(--line);
+}
+
+.reasons p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .retired {
   margin: 8px 0 0;
   display: inline-block;

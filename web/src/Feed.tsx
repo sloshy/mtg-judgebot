@@ -4,6 +4,7 @@ import { type FeedEntry, type FeedQuery, fetchCall, fetchFeed, type Interface } 
 import { BotMessage, Message, Notice, PersonAvatar, Typing } from "./Chat";
 import { feedView, type View, ViewSwitch } from "./Controls";
 import type { Locale, Messages } from "./messages";
+import { RateAnswer, RatingsLine, Reasons, withWebRating } from "./Rating";
 import { href, navigate, visit } from "./router";
 import Symbols from "./Symbols";
 
@@ -114,8 +115,12 @@ function AskedVia(props: { m: Messages; entry: FeedEntry }) {
   );
 }
 
-/** The judge's side of a call: the answer, its ratings and whether it is retired. */
+/** The judge's side of a call: the answer, its ratings (and the buttons to
+ * rate it) and whether it is retired. */
 function JudgeReply(props: { m: Messages; entry: FeedEntry; clamp?: boolean }) {
+  // The counts as this page last knew them: a rating given here adds to
+  // the web's.
+  const [ratings, setRatings] = createSignal(props.entry.ratings);
   return (
     <BotMessage m={props.m}>
       <Answer m={props.m} answer={props.entry} clamp={props.clamp} />
@@ -129,8 +134,16 @@ function JudgeReply(props: { m: Messages; entry: FeedEntry; clamp?: boolean }) {
             stroke-linejoin="round"
           />
         </svg>
-        {props.m.ratingsLine(props.entry.ratings)}
+        <RatingsLine m={props.m} ratings={ratings()} />
       </p>
+      <Show when={props.entry.reasons}>
+        {(reasons) => <Reasons m={props.m} reasons={reasons()} />}
+      </Show>
+      <RateAnswer
+        m={props.m}
+        call={props.entry.id}
+        onRated={(score, replaced) => setRatings((r) => withWebRating(r, score, replaced))}
+      />
       <Show when={props.entry.retired}>
         {(reason) => <p class="retired">{props.m.retiredNote(reason())}</p>}
       </Show>

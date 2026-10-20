@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT c.id,\n               (extract(epoch FROM c.created_at) * 1000000)::bigint AS \"at_micros!\",\n               to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"asked_at!\",\n               c.interface, c.asker_name, c.question, c.answer, c.confidence, c.source,\n               c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS \"cards!\",\n               rt.correct AS \"correct!\", rt.partial AS \"partial!\", rt.incorrect AS \"incorrect!\",\n               rt.judge, c.retired_reason\n        FROM calls c\n        CROSS JOIN LATERAL (\n            SELECT count(*) FILTER (WHERE r.score = 3) AS correct,\n                   count(*) FILTER (WHERE r.score = 2) AS partial,\n                   count(*) FILTER (WHERE r.score = 1) AS incorrect,\n                   (array_agg(r.score ORDER BY r.ts DESC) FILTER (WHERE r.is_judge))[1] AS judge\n            FROM ratings r WHERE r.call_id = c.id\n        ) rt\n        WHERE NOT c.private\n          AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))\n          AND c.id = $2\n        ",
+  "query": "\n        SELECT c.id,\n               (extract(epoch FROM c.created_at) * 1000000)::bigint AS \"at_micros!\",\n               to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"asked_at!\",\n               c.interface, c.asker_name, c.question, c.answer, c.confidence, c.source,\n               c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS \"cards!\",\n               rt.d_correct AS \"d_correct!\", rt.d_partial AS \"d_partial!\",\n               rt.d_incorrect AS \"d_incorrect!\", rt.w_correct AS \"w_correct!\",\n               rt.w_partial AS \"w_partial!\", rt.w_incorrect AS \"w_incorrect!\",\n               rt.judge, rt.reasons, c.retired_reason\n        FROM calls c\n        CROSS JOIN LATERAL (\n            SELECT count(*) FILTER (WHERE r.score = 3 AND r.rater_kind = 'discord') AS d_correct,\n                   count(*) FILTER (WHERE r.score = 2 AND r.rater_kind = 'discord') AS d_partial,\n                   count(*) FILTER (WHERE r.score = 1 AND r.rater_kind = 'discord') AS d_incorrect,\n                   count(*) FILTER (WHERE r.score = 3 AND r.rater_kind = 'web') AS w_correct,\n                   count(*) FILTER (WHERE r.score = 2 AND r.rater_kind = 'web') AS w_partial,\n                   count(*) FILTER (WHERE r.score = 1 AND r.rater_kind = 'web') AS w_incorrect,\n                   (array_agg(r.score ORDER BY r.ts DESC)\n                        FILTER (WHERE r.is_judge AND r.rater_kind = 'discord'))[1] AS judge,\n                   -- Reasons only when the operator shows them, and never\n                   -- who gave them: no user id, name, address or agent.\n                   CASE WHEN $3::boolean THEN coalesce(\n                       jsonb_agg(jsonb_build_object(\n                           'kind', r.rater_kind, 'score', r.score, 'category', r.category,\n                           'wrong', r.what_wrong, 'right', r.right_answer) ORDER BY r.ts)\n                           -- A reason the operator dismissed is not shown.\n                           FILTER (WHERE r.category IS NOT NULL\n                                     AND q.status IS DISTINCT FROM 'dismissed'),\n                       '[]'::jsonb) END AS reasons\n            FROM ratings r\n            LEFT JOIN feedback_queue q ON q.call_id = r.call_id AND q.user_id = r.user_id\n            WHERE r.call_id = c.id\n        ) rt\n        WHERE NOT c.private\n          AND ($1::int IS NULL OR c.created_at >= now() - make_interval(days => $1))\n          AND c.id = $2\n        ",
   "describe": {
     "columns": [
       {
@@ -122,30 +122,54 @@
       },
       {
         "ordinal": 12,
-        "name": "correct!",
+        "name": "d_correct!",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
         "ordinal": 13,
-        "name": "partial!",
+        "name": "d_partial!",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
         "ordinal": 14,
-        "name": "incorrect!",
+        "name": "d_incorrect!",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
         "ordinal": 15,
+        "name": "w_correct!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
+        "name": "w_partial!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "w_incorrect!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 18,
         "name": "judge",
         "type_info": "Int2",
         "origin": "Expression"
       },
       {
-        "ordinal": 16,
+        "ordinal": 19,
+        "name": "reasons",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 20,
         "name": "retired_reason",
         "type_info": "Text",
         "origin": {
@@ -159,7 +183,8 @@
     "parameters": {
       "Left": [
         "Int4",
-        "Uuid"
+        "Uuid",
+        "Bool"
       ]
     },
     "nullable": [
@@ -179,8 +204,12 @@
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
       true
     ]
   },
-  "hash": "fb943a9e15349cb34303096b1193c3b8e87bac5529e2a3441e8fa97e35cd6999"
+  "hash": "2635808e977a8a351a9607a4b0d33a58cfcf7d2b2aff574dd2bbdcb5aa5ea977"
 }

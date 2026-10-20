@@ -159,7 +159,7 @@ details.
 ### Web app and HTTP API
 
 The web app at <http://localhost:8787> uses the same pipeline, citations and "did you
-mean…?" prompts as the bot. It has no rating buttons, since nobody logs in. Its `/feed`
+mean…?" prompts as the bot. Its ratings are anonymous and never shape later answers. Its `/feed`
 lists answered questions from every interface, except those asked private. What a
 judgebot runs is set by roles: `--discord`, `--api` (the JSON API), `--web` (the web
 app), `--mcp` (for AI agents) and `--jobs` (the data refresh). `JUDGE_ROLES` in `.env`

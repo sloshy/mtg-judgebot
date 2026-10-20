@@ -413,9 +413,18 @@ Three interfaces share this pipeline through the same composition root
     bot cannot start without `JUDGE_OPERATOR_DISCORD`, and the network roles
     cannot start without `JUDGE_OPERATOR_EMAIL`, whichever of them it opens. A local
     `judge-cli` or stdio `judge-mcp` holds a plain `Operator` and needs neither.
-  - There are no rating endpoints yet. The storage takes a web rater (`Rater::Web`,
-    `user_id` `web:<session uuid>`, D38), and `calls_rated` never counts one, because
-    anonymous callers are not accountable identities.
+  - `POST /api/calls/{id}/feedback` (`judge_api::rating`, beside `/api/judge`, D38)
+    rates a public call within the feed window as the tab's session (`Rater::Web`,
+    `user_id` `web:<session uuid>`), with the address from `client_ip` and the user
+    agent. The server is authoritative on replacing: an earlier rating without
+    `replace: true` is a 409 `confirm` and nothing is written. Its own limiter
+    (`rating::LIMIT`), a 16 KiB body, unknown fields refused. `calls_rated` never
+    counts a web rating, because anonymous callers are not accountable identities.
+  - `/api/judge`'s answer carries `call` (the stored call's id). The feed's `ratings`
+    count Discord's and the web's apart; `reasons` appear only with
+    `JUDGE_PUBLIC_FEEDBACK=true`, without the raters' identity, a dismissed queue
+    item's left out. Without `replace` the route writes with `rate_if_new` (insert
+    only), so a race from one session ends in a 409, never a silent replace.
   - Ambiguity is returned as data and resolved statelessly. The client re-asks
     with `pins: [{span, name}]`, which the server rewrites to `[[Full Name]]`
     with the same `pin_card` used by the Discord buttons.

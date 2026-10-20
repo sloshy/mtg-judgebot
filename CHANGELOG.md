@@ -28,8 +28,18 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   once, as before. Rating an answer you already rated asks first (**Replace** or
   **Keep**), and pressing *Correct* again says it is already recorded. Rating buttons on
   answers posted before the upgrade get the new flow. Private answers have the buttons
-  too. The reasons go to the operator, never the model, and web ratings (still to come)
-  will never count toward the examples.
+  too. The reasons go to the operator, never the model.
+- **Rating on the web.** The chat, the feed and call pages have the same three buttons,
+  and *Partially correct* and *Incorrect* open the same form under the answer (with an
+  optional name). Rating again asks before replacing. A web rating is anonymous (the
+  tab's session) and never counts toward the examples. The feed's counts are Discord's;
+  "Include N from the web" adds the web's. New endpoint `POST /api/calls/{id}/feedback`
+  (beside `/api/judge`, 30 ratings per address per ten minutes), and `/api/judge`'s
+  answer now carries the stored call's id (`call`). The feed's `ratings` are now
+  `{"discord": {...}, "web": {...}, "judge"}`. `JUDGE_PUBLIC_FEEDBACK=true` shows raters'
+  reasons on the feed and call pages, without who gave them (raters are told so); a
+  dismissed queue item's reason is taken off. `judge-cli stats` and the admin Usage page
+  count web ratings apart (`web_ratings`).
 - **The feedback queue.** Every rating given a reason is an item for the operator,
   beside the call's question, answer, citations and cards: the admin page's new
   Feedback tab, `judge-cli queue`, `queue-show`, `queue-resolve` and `queue-dismiss`,

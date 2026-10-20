@@ -526,8 +526,8 @@ mod tests {
     use std::num::NonZeroU64;
 
     use judge_core::{
-        CallId, CallStore, Closing, Earlier, Fault, FeedbackText, FixedBy, QueueNote, Rated, Rater,
-        RaterId, Rating, Reason, Score, UserAgent, WebName,
+        CallId, CallStore, Closing, Earlier, Fault, FeedbackText, FixedBy, QueueNote, Rated,
+        RatedNew, Rater, RaterId, Rating, Reason, Score, UserAgent, WebName,
     };
 
     use crate::db::PgCallStore;
@@ -718,6 +718,38 @@ mod tests {
         writer.commit().await?;
         let gone = forget.await??;
         assert_eq!((gone.ratings, gone.feedback), (1, 1));
+        Ok(())
+    }
+
+    /// A first-only rating never replaces: the rater's earlier one stays
+    /// and comes back.
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_first_rating_only_never_replaces(pool: PgPool) -> anyhow::Result<()> {
+        let store = PgCallStore::new(pool.clone());
+        let c = call(&pool, "web", 0).await?;
+        let wrong = faulted(Fault::Incorrect, FeedbackCategory::WrongCard, "");
+        assert_eq!(
+            store.rate_if_new(c, &web(1), &wrong).await?,
+            RatedNew::Recorded
+        );
+        assert_eq!(
+            store.rate_if_new(c, &web(1), &Rating::Correct).await?,
+            RatedNew::Taken(Earlier {
+                score: Score::Incorrect,
+                category: Some(FeedbackCategory::WrongCard)
+            })
+        );
+        let left: i16 = sqlx::query_scalar("SELECT score FROM ratings WHERE call_id = $1")
+            .bind(c.into_inner())
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(left, 1, "the earlier rating stays");
+        assert_eq!(
+            store
+                .rate_if_new(CallId::new(Uuid::nil()), &web(1), &Rating::Correct)
+                .await?,
+            RatedNew::CallGone
+        );
         Ok(())
     }
 

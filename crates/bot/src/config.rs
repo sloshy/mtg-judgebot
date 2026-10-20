@@ -1060,6 +1060,12 @@ pub enum ConfigError {
         /// The value as set.
         value: String,
     },
+    /// `JUDGE_PUBLIC_FEEDBACK` is not a boolean.
+    #[error("{}={value:?}: not true or false", feed::PUBLIC_FEEDBACK_ENV)]
+    BadPublicFeedback {
+        /// The value as set.
+        value: String,
+    },
     /// `FEEDBACK_IP_DAYS` is not a whole number of days in range.
     #[error(
         "{}={value:?}: not a whole number of days from 1 to {} (unset keeps web raters' addresses {} days)",
@@ -1230,6 +1236,7 @@ impl ConfigError {
             Self::BadSchedule { .. } => env(jobs::REFRESH_HOURS_ENV),
             Self::BadRetention { .. } => env(prune::RETENTION_ENV),
             Self::BadFeedbackIpDays { .. } => env(crate::feedback::IP_DAYS_ENV),
+            Self::BadPublicFeedback { .. } => env(feed::PUBLIC_FEEDBACK_ENV),
             Self::BadLocale { .. } => env(LOCALE_ENV),
             Self::BadFeed { .. } => env(feed::FEED_ENV),
             Self::BadFeedDays { .. } => env(feed::FEED_DAYS_ENV),
@@ -1633,6 +1640,9 @@ pub struct Config {
     locale: Locale,
     /// The public feed (`JUDGE_FEED`, `JUDGE_FEED_DAYS`).
     feed: Feed,
+    /// Whether the public reads carry raters' reasons
+    /// (`JUDGE_PUBLIC_FEEDBACK`).
+    public_feedback: feed::Reasons,
 }
 
 /// The budget settings from `env`, blank meaning unset.
@@ -1695,6 +1705,16 @@ pub fn refresh_schedule(env: impl Fn(&str) -> Option<String>) -> Result<Schedule
 pub fn call_retention(env: impl Fn(&str) -> Option<String>) -> Result<Retention, ConfigError> {
     Retention::parse(env(prune::RETENTION_ENV).as_deref())
         .map_err(|value| ConfigError::BadRetention { value })
+}
+
+/// Whether the public reads show raters' reasons, from `env`
+/// (`JUDGE_PUBLIC_FEEDBACK`), blank meaning hidden.
+///
+/// # Errors
+/// [`ConfigError::BadPublicFeedback`] for anything but a boolean.
+pub fn public_feedback(env: impl Fn(&str) -> Option<String>) -> Result<feed::Reasons, ConfigError> {
+    feed::Reasons::parse(env(feed::PUBLIC_FEEDBACK_ENV).as_deref())
+        .map_err(|value| ConfigError::BadPublicFeedback { value })
 }
 
 /// How long a web rating keeps its address and user agent, from `env`
@@ -1883,6 +1903,7 @@ impl Config {
             refresh: refresh_schedule(&env)?,
             locale: instance_locale(&env)?,
             feed: feed_settings(&env)?,
+            public_feedback: public_feedback(&env)?,
         })
     }
 
@@ -1990,6 +2011,7 @@ impl Config {
             refresh: refresh_schedule(&env)?,
             locale: instance_locale(&env)?,
             feed: feed_settings(&env)?,
+            public_feedback: public_feedback(&env)?,
         })
     }
 
@@ -2022,6 +2044,13 @@ impl Config {
     #[must_use]
     pub const fn feed(&self) -> Feed {
         self.feed
+    }
+
+    /// Whether the public reads show raters' reasons
+    /// (`JUDGE_PUBLIC_FEEDBACK`).
+    #[must_use]
+    pub const fn public_feedback(&self) -> feed::Reasons {
+        self.public_feedback
     }
 
     /// What the long-running processes run beside their requests, and where
@@ -3236,6 +3265,21 @@ model = "qwen3:8b"
         assert!(matches!(err, ConfigError::BadFeed { .. }), "{err}");
         let err = with(feed::FEED_DAYS_ENV, "9999").err().ok_or("refused")?;
         assert!(matches!(err, ConfigError::BadFeedDays { .. }), "{err}");
+        assert_eq!(
+            Config::from_vars(|_| None)?.public_feedback(),
+            feed::Reasons::Hidden
+        );
+        assert_eq!(
+            with(feed::PUBLIC_FEEDBACK_ENV, "true")?.public_feedback(),
+            feed::Reasons::Shown
+        );
+        let err = with(feed::PUBLIC_FEEDBACK_ENV, "sometimes")
+            .err()
+            .ok_or("refused")?;
+        assert!(
+            matches!(err, ConfigError::BadPublicFeedback { .. }),
+            "{err}"
+        );
         Ok(())
     }
 

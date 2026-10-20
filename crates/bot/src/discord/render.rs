@@ -754,7 +754,8 @@ pub fn rating_label(locale: Locale, score: Score) -> &'static str {
 }
 
 /// Ephemeral acknowledgement of a rating, naming its reason's category
-/// when it has one. An *Incorrect* one also names who reads the reasons,
+/// when it has one, and saying the reason is public when `public`
+/// (`JUDGE_PUBLIC_FEEDBACK`). An *Incorrect* one also names who reads the reasons,
 /// and, when the instance's source is on GitHub, links that repository's
 /// wrong-ruling issue form.
 #[must_use]
@@ -765,9 +766,15 @@ pub fn rated(
     is_judge: bool,
     offer: &SourceOffer,
     operator: &DiscordOperator,
+    public: bool,
 ) -> String {
     let m = catalog::messages(locale);
-    let mut out = (m.rated)(
+    let rated = if public && category.is_some() {
+        m.rated_public
+    } else {
+        m.rated
+    };
+    let mut out = rated(
         rating_label(locale, score),
         category.map(m.category_label),
         is_judge,
@@ -2092,10 +2099,14 @@ mod lookup_tests {
     #[test]
     fn only_an_incorrect_rating_says_where_to_report_it() -> Res {
         let (offer, op) = (offer("https://github.com/someone/fork")?, operator()?);
-        assert!(rated(Locale::En, Score::Correct, None, true, &offer, &op).contains("judge"));
-        assert!(!rated(Locale::En, Score::Correct, None, false, &offer, &op).contains("judge"));
+        assert!(
+            rated(Locale::En, Score::Correct, None, true, &offer, &op, false).contains("judge")
+        );
+        assert!(
+            !rated(Locale::En, Score::Correct, None, false, &offer, &op, false).contains("judge")
+        );
         for score in [Score::Correct, Score::Partial] {
-            assert!(!rated(Locale::En, score, None, false, &offer, &op).contains("a_judge"));
+            assert!(!rated(Locale::En, score, None, false, &offer, &op, false).contains("a_judge"));
         }
         let wrong = rated(
             Locale::En,
@@ -2104,8 +2115,27 @@ mod lookup_tests {
             false,
             &offer,
             &op,
+            false,
         );
         assert!(wrong.contains("`@a_judge`"), "{wrong}");
+        assert!(!wrong.contains("public"), "{wrong}");
+        let public = rated(
+            Locale::En,
+            Score::Incorrect,
+            Some(FeedbackCategory::WrongCard),
+            false,
+            &offer,
+            &op,
+            true,
+        );
+        assert!(
+            public.contains("public web page, without your name"),
+            "{public}"
+        );
+        assert!(
+            !rated(Locale::En, Score::Correct, None, false, &offer, &op, true).contains("public"),
+            "a Correct has no reason to show"
+        );
         assert!(wrong.contains("Incorrect (Wrong card)"), "{wrong}");
         assert!(
             wrong
@@ -2183,6 +2213,7 @@ mod lookup_tests {
             false,
             &offer("https://gitlab.com/someone/fork")?,
             &operator()?,
+            false,
         );
         assert!(wrong.contains("`@a_judge`") && !wrong.contains("issues/new"));
         Ok(())

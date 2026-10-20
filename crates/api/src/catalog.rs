@@ -9,7 +9,7 @@
 use std::fmt;
 
 use judge_bot::discord::catalog as discord;
-use judge_core::Locale;
+use judge_core::{FeedbackCategory, Locale, Score};
 
 /// One locale's API text.
 #[derive(Clone, Copy)]
@@ -75,6 +75,33 @@ pub struct Messages {
     pub bad_fixed_by: fn(usize) -> String,
     /// A closing's body that is not the JSON it takes.
     pub bad_body: &'static str,
+
+    // ---- rating from the web (`POST /api/calls/{id}/feedback`) ----
+    /// A rating's name, as the buttons say it.
+    pub rating_label: fn(Score) -> &'static str,
+    /// A feedback category's name.
+    pub category_label: fn(FeedbackCategory) -> &'static str,
+    /// The rating was stored: its label and its category's, when it has one.
+    pub rated: fn(&str, Option<&str>) -> String,
+    /// The same, with a reason, when `JUDGE_PUBLIC_FEEDBACK` shows reasons
+    /// on the public pages.
+    pub rated_public: fn(&str, Option<&str>) -> String,
+    /// Correct again, when Correct is on record: nothing changed.
+    pub already_rated: &'static str,
+    /// "You already rated this…": the earlier rating's label, its
+    /// category's when it had one, and the new rating's.
+    pub confirm_replace: fn(&str, Option<&str>, &str) -> String,
+    /// The caller's address rated too many answers in its window.
+    pub feedback_rate_limited: &'static str,
+    /// A Correct sent with a reason.
+    pub correct_takes_no_reason: &'static str,
+    /// A Partially correct or Incorrect sent without its category.
+    pub category_required: &'static str,
+    /// A text over its limit or holding a control character: the field's
+    /// name and the limit.
+    pub bad_feedback_text: fn(&str, usize) -> String,
+    /// The rating could not be stored.
+    pub feedback_failed: &'static str,
 }
 
 impl fmt::Debug for Messages {
@@ -124,6 +151,34 @@ Your question was not answered; please try again shortly.",
         format!("fixed_by must be at most {n} characters of text, without control characters")
     },
     bad_body: "The body must be JSON: {\"note\": \"…\", \"fixed_by\": \"…\"} (fixed_by optional).",
+
+    rating_label: discord::EN.rating_label,
+    category_label: discord::EN.category_label,
+    rated: |label, category| match category {
+        Some(category) => format!(
+            "Recorded your rating: {label} ({category}). The operator sees your reason beside the answer."
+        ),
+        None => format!("Recorded your rating: {label}."),
+    },
+    rated_public: |label, category| match category {
+        Some(category) => format!(
+            "Recorded your rating: {label} ({category}). The operator sees your reason beside the \
+answer, and it is shown on this answer's public page, without your name."
+        ),
+        None => format!("Recorded your rating: {label}."),
+    },
+    already_rated: "You already rated this answer Correct. Nothing changed.",
+    confirm_replace: |earlier, category, new| {
+        let category = category.map(|c| format!(" ({c})")).unwrap_or_default();
+        format!("You already rated this answer {earlier}{category}. Replace it with {new}?")
+    },
+    feedback_rate_limited: "You've rated many answers in a short time. Please wait a few minutes.",
+    correct_takes_no_reason: "A Correct rating takes no category, text or name.",
+    category_required: "A Partially correct or Incorrect rating needs its category.",
+    bad_feedback_text: |field, n| {
+        format!("{field} must be at most {n} characters of text, without control characters")
+    },
+    feedback_failed: "Sorry, your rating couldn't be recorded just now. Please try again.",
 };
 
 #[cfg(test)]
@@ -163,6 +218,16 @@ mod tests {
                 (m.bad_note)(2000),
                 (m.bad_fixed_by)(200),
                 m.bad_body.to_owned(),
+                (m.rated)("Incorrect", Some("Wrong card")),
+                (m.rated)("Correct", None),
+                (m.rated_public)("Incorrect", Some("Wrong card")),
+                m.already_rated.to_owned(),
+                (m.confirm_replace)("Partially correct", None, "Correct"),
+                m.feedback_rate_limited.to_owned(),
+                m.correct_takes_no_reason.to_owned(),
+                m.category_required.to_owned(),
+                (m.bad_feedback_text)("wrong", 1000),
+                m.feedback_failed.to_owned(),
             ] {
                 assert!(!t.trim().is_empty(), "{l}");
             }

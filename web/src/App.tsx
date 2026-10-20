@@ -26,6 +26,7 @@ import { ThemeSelect } from "./Controls";
 import { CallPage, FeedPage } from "./Feed";
 import { DOCS_URL } from "./links";
 import { isLocale, type Locale, type Messages, messages, pickLocale } from "./messages";
+import { enableRating, RateAnswer } from "./Rating";
 import { follow, href, route } from "./router";
 import Symbols from "./Symbols";
 
@@ -81,6 +82,12 @@ export default function App() {
   const m = createMemo(() => messages(locale()));
   createEffect(() => {
     document.documentElement.lang = locale();
+  });
+  // Rating buttons appear once the server says ratings are served here; the
+  // tab rates under the session id its questions share history under.
+  createEffect(() => {
+    const a = about();
+    if (a?.ratings === true) enableRating(session, browserLocale, a.public_feedback === true);
   });
 
   async function ask(question: string, pins: Pin[], index?: number) {
@@ -523,7 +530,12 @@ function Reply(props: {
     <BotMessage m={props.m}>
       <Switch>
         <Match when={props.reply.kind === "answer" && props.reply}>
-          {(r) => <Answer m={props.m} answer={r()} />}
+          {(r) => (
+            <>
+              <Answer m={props.m} answer={r()} />
+              <Show when={r().call}>{(call) => <RateAnswer m={props.m} call={call()} />}</Show>
+            </>
+          )}
         </Match>
         <Match when={props.reply.kind === "ambiguous" && props.reply}>
           {(r) => {

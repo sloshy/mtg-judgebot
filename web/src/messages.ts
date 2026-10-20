@@ -13,7 +13,8 @@
 // text as it comes.
 
 import type { JSX } from "solid-js";
-import type { FeedEntry, Interface } from "./api";
+import type { FeedEntry, Interface, RatingCounts, Score } from "./api";
+import type { FeedbackCategory } from "./router";
 
 /** The locales the page has a catalog for. */
 export const LOCALES = ["en"] as const;
@@ -108,8 +109,38 @@ export type Messages = {
   entryMeta: (asker: JSX.Element, via: string, when: JSX.Element) => JSX.Element;
   /** When an entry was asked, from its RFC 3339 time. */
   askedAt: (iso: string) => string;
-  /** How an entry was rated. */
-  ratingsLine: (r: FeedEntry["ratings"]) => string;
+  /** How an entry was rated: the counts shown and the judge's rating. */
+  ratingsLine: (r: RatingCounts, judge: FeedEntry["ratings"]["judge"]) => string;
+  /** The button that adds the web's ratings to the counts, given how many. */
+  includeWebRatings: (n: number) => string;
+  /** The button that takes them away again. */
+  hideWebRatings: string;
+  /** Over raters' reasons, when the operator shows them. */
+  reasonsTitle: string;
+
+  /** Rating an answer: the buttons' lead, each score and kind of problem. */
+  rateAsk: string;
+  scoreName: Record<Score, string>;
+  categoryName: Record<FeedbackCategory, string>;
+  /** The reason form: its title, its fields, its note and buttons. */
+  rateFormTitle: (fault: "partial" | "incorrect") => string;
+  rateCategory: string;
+  rateChoose: string;
+  rateWrong: string;
+  rateRight: string;
+  rateName: string;
+  rateOptional: string;
+  rateFormNote: string;
+  /** The same, when the operator shows reasons publicly. */
+  rateFormNotePublic: string;
+  rateSend: string;
+  rateCancel: string;
+  rateSending: string;
+  /** "You already rated this…": replace it, or keep it. */
+  rateReplace: string;
+  rateKeep: string;
+  /** After Keep: the rating kept, and its category when it had one. */
+  rateKept: (score: string, category: string | null) => string;
   /** Under an entry whose citations no longer hold. */
   retiredNote: (reason: string) => string;
   loading: string;
@@ -235,7 +266,7 @@ export const en = {
   strangeReply: (status) => `The judge answered strangely (HTTP ${status}). Please try again.`,
 
   notRated:
-    "Answers here can't be rated. Answers are AI-generated; verify anything important with a human judge.",
+    "Ratings here are anonymous and never shape later answers. Answers are AI-generated; verify anything important with a human judge.",
   // Keep in step with site/src/components/Footer.astro.
   fanContent: (policy) => [
     "MTG Judgebot is unofficial Fan Content permitted under the ",
@@ -314,16 +345,51 @@ export const en = {
       ? iso
       : new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(d);
   },
-  ratingsLine: (r) => {
+  ratingsLine: (r, judgeScore) => {
     const total = r.correct + r.partial + r.incorrect;
     const judge =
-      r.judge === null
+      judgeScore === null
         ? ""
-        : ` · a judge rated it ${{ correct: "correct", partial: "partially correct", incorrect: "incorrect" }[r.judge]}`;
+        : ` · a judge rated it ${{ correct: "correct", partial: "partially correct", incorrect: "incorrect" }[judgeScore]}`;
     return total === 0
-      ? "Not rated yet."
+      ? `Not rated yet${judge}.`
       : `Rated ${r.correct} correct, ${r.partial} partially correct, ${r.incorrect} incorrect${judge}.`;
   },
+  includeWebRatings: (n) => `Include ${n} from the web`,
+  hideWebRatings: "Hide web ratings",
+  reasonsTitle: "Reasons given",
+
+  rateAsk: "Was this right?",
+  scoreName: { correct: "Correct", partial: "Partially correct", incorrect: "Incorrect" },
+  categoryName: {
+    wrong_conclusion: "Wrong conclusion",
+    missed_part: "Missed part of the question",
+    bad_citation: "A citation doesn't support it",
+    wrong_card: "Wrong card",
+    misread_question: "Misread the question",
+    wrong_refusal: "Shouldn't have refused",
+    outdated: "Outdated",
+    other: "Other",
+  },
+  rateFormTitle: (fault) =>
+    fault === "incorrect" ? "Incorrect: what went wrong?" : "Partially correct: what's missing?",
+  rateCategory: "What kind of problem?",
+  rateChoose: "Choose one",
+  rateWrong: "What's wrong",
+  rateRight: "The right answer",
+  rateName: "Your name",
+  rateOptional: "(optional)",
+  rateFormNote:
+    "Your reason goes to whoever runs this site, beside the question and answer. The judge never reads it.",
+  rateFormNotePublic:
+    "Your reason goes to whoever runs this site, and is shown under this answer on the public pages, without your name. The judge never reads it.",
+  rateSend: "Send",
+  rateCancel: "Cancel",
+  rateSending: "Sending…",
+  rateReplace: "Replace",
+  rateKeep: "Keep",
+  rateKept: (score, category) =>
+    `Kept your earlier rating: ${score}${category === null ? "" : ` (${category})`}.`,
   retiredNote: (reason) => `No longer used as an example: ${reason}`,
   loading: "Loading…",
   loadMore: "Show older answers",

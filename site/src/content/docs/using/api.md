@@ -55,13 +55,14 @@ An answer takes twenty to forty-five seconds. Every reply to a `POST` is JSON ta
       "quote": "…"
     }
   ],
-  "cards": [{ "name": "Dark Confidant", "url": "https://scryfall.com/search?q=oracleid%3A…" }]
+  "cards": [{ "name": "Dark Confidant", "url": "https://scryfall.com/search?q=oracleid%3A…" }],
+  "call": "0d3f…"
 }
 ```
 
 | `kind` | Status | Fields | Meaning |
 | --- | --- | --- | --- |
-| `answer` | 200 | `answer`, `confidence` (`low`/`medium`/`high`), `source` (`cr`/`commander`), `cr_version` (`YYYYMMDD`), `citations`, `cards` | A validated verdict. Every citation's `quote` was checked verbatim against its source. A citation's `kind` is `rule`, `ruling`, `oracle_text` or `prior_call`; its `label` is for display and may be translated. `url` is `null` for a prior call, which has no public page. |
+| `answer` | 200 | `answer`, `confidence` (`low`/`medium`/`high`), `source` (`cr`/`commander`), `cr_version` (`YYYYMMDD`), `citations`, `cards`, `call` | A validated verdict. `call` is the stored call's id, to rate it or open `/calls/<id>`; `null` when the store failed to keep it. The other kinds store no call. Every citation's `quote` was checked verbatim against its source. A citation's `kind` is `rule`, `ruling`, `oracle_text` or `prior_call`; its `label` is for display and may be translated. `url` is `null` for a prior call, which has no public page. |
 | `ambiguous` | 200 | `spans`: `[{"query", "choices", "truncated"}]` | A name matched several cards. Ask again with the same `question` and a `pins` entry per span. At most five `choices` each; `truncated` says there were more. |
 | `not_found` | 200 | `names` | Card names that matched nothing. |
 | `error` | 200 or 4xx | `message` | 200 for a question the judge declined or could not answer: out of scope, no verified answer, the spend cap. 400 for a body that is not JSON or a request over the limits above, 413 for a body over 2 MB, 415 for a missing `Content-Type` or one that is not JSON (`application/json` or `application/*+json`), 422 for JSON of the wrong shape (a missing `question`, a `session_id` that is not a UUID). |
@@ -127,7 +128,8 @@ curl 'http://localhost:8787/api/feed?interface=discord'
   "asker": "alice", "question": "…", "answer": "…", "confidence": "high", "source": "cr",
   "cr_version": "20260925", "citations": [{"kind": "rule", "label": "702.19b", "url": "…", "quote": "…"}],
   "cards": [{"name": "…", "url": "…"}],
-  "ratings": {"correct": 2, "partial": 0, "incorrect": 0, "judge": null},
+  "ratings": {"discord": {"correct": 2, "partial": 0, "incorrect": 0},
+              "web": {"correct": 1, "partial": 0, "incorrect": 3}, "judge": null},
   "retired": null}],
  "next": "1760788800000000.0d3f…"}
 ```
@@ -143,9 +145,18 @@ The query parameters are all optional:
   is searched as the feed shows it (`@…`), so it never matches an id.
 - `locale`: the language of the citation labels and messages, ahead of `Accept-Language`.
 
-`asker` is `null` for an anonymous call. Asker ids are never sent. `ratings.judge` is the
-latest rating by a member with the judge role (`correct`, `partial`, `incorrect`), or
-`null`. `retired` is why the call no longer serves as an example, or `null`. A query that
+`asker` is `null` for an anonymous call. Asker ids are never sent. `ratings` counts
+Discord's and the web's ratings apart: only Discord's shape later answers, and the web
+app shows the web's only when its reader asks. `ratings.judge` is the latest rating by a
+member with the judge role (`correct`, `partial`, `incorrect`), or `null`. With
+`JUDGE_PUBLIC_FEEDBACK=true` an entry also has `reasons`, oldest first:
+`[{"rater_kind": "discord" | "web", "score": "partial" | "incorrect", "category", "wrong",
+"right"}]`, never who gave them. The rater's words are as written except that user and
+role mentions become `@…`, channel mentions `#…`, and `@everyone` / `@here` carry a
+zero-width space after the `@`. A reason whose queue item the operator dismissed is left
+out. Without the setting there is no `reasons` field. Web counts are anonymous and
+trivially inflated (any new session is a new rater), which is why the web app hides them
+by default. `retired` is why the call no longer serves as an example, or `null`. A query that
 does not parse is a `400` `error`.
 
 ## `GET /api/calls/{id}`
@@ -156,6 +167,49 @@ that names nothing are the same `404` `error`.
 Both routes answer `429` `rate_limited` past 120 reads a minute per address (a window of
 their own, apart from the questions') and `503` `maintenance` while a major upgrade
 migrates.
+
+## `POST /api/calls/{id}/feedback`
+
+Rate a call, anonymously, as a browser session. Served wherever `POST /api/judge` is
+(the `--api` role).
+
+```sh
+curl -s http://localhost:8787/api/calls/0d3f…/feedback -H 'Content-Type: application/json' -d '{
+  "session_id": "6f1c…", "score": "incorrect", "category": "wrong_card",
+  "wrong": "It read Bob as Bob Jr.", "right": "…"
+}'
+```
+
+| Field | Type | |
+| --- | --- | --- |
+| `session_id` | UUID, required | The rater. One rating per call and session; the web app sends the tab's session id. |
+| `score` | `correct`, `partial` or `incorrect`, required | |
+| `category` | string | Required for `partial` and `incorrect`, refused for `correct`: `wrong_conclusion`, `missed_part`, `bad_citation`, `wrong_card`, `misread_question`, `wrong_refusal`, `outdated`, `other`. |
+| `wrong`, `right` | string, optional | What's wrong and the right answer, at most 1000 characters each, no control characters but line breaks and tabs. Blank is none. Refused for `correct`. |
+| `name` | string, optional | A name the operator sees, at most 100 characters. Refused for `correct`. |
+| `replace` | boolean, optional | `true` confirms replacing the session's earlier rating. |
+| `locale` | string, optional | As `/api/judge`'s. |
+
+Unknown fields are refused, and the body may be at most 16 KiB.
+
+| `kind` | Status | Fields | Meaning |
+| --- | --- | --- | --- |
+| `rated` | 200 | `message`, `score`, `replaced` | Stored. `replaced` is the score it replaced, or `null`. |
+| `already_rated` | 200 | `message` | `correct` over `correct`: nothing changed. |
+| `confirm` | 409 | `message`, `earlier` (`{"score", "category"}`) | The session already rated the call otherwise. Nothing was written; send the same body with `"replace": true` to replace it. The server decides this, and without `replace` its write only ever adds a first rating, so even two requests racing from one session cannot replace each other unasked. |
+| `error` | 400, 404, 413, 415 | `message` | A body that does not read or breaks a rule above (400), a call that is private, older than `JUDGE_FEED_DAYS` or missing (one 404), a body over the limit (413). |
+| `rate_limited` | 429 | `message` | 30 ratings per address per ten minutes, a window of its own. |
+| `error` | 500 | `message` | The rating could not be stored or checked just now; nothing changed. Try again. |
+| `maintenance` | 503 | `message`, `retry_after_secs` | As `/api/judge`'s. |
+
+The rating stores the address the limits bucket on (`API_CLIENT_IP`; never
+`X-Forwarded-For`) and the `User-Agent`, both cleared after `FEEDBACK_IP_DAYS`. A
+`partial` or `incorrect` rating opens an item in the operator's feedback queue. Web
+ratings never count toward the examples later answers see. `JUDGE_FEED=false` does not
+turn rating off: the id of an answer reaches only whoever asked it. `GET /api/about`
+says `"ratings": true` where the route is served, and `"public_feedback": true` when
+reasons are shown publicly, so a form can tell the rater. The `rated` message says so
+too.
 
 ## Admin API
 

@@ -179,7 +179,9 @@ above.
   [--fixed-by F]`: fixed. `note` (required, at most 2000 characters) says what was wrong
   and what you did; `fixed_by` (at most 200) names the fix.
 - `queue_dismiss {item, note}` / `judge-cli queue-dismiss <item> --note N`: nothing to
-  fix (the answer was right, or the reason is not about the answer), and why.
+  fix (the answer was right, or the reason is not about the answer), and why. With
+  `JUDGE_PUBLIC_FEEDBACK=true` it also takes the reason off the public pages: dismiss
+  spam and abuse.
 
 To work the queue:
 

@@ -145,6 +145,9 @@ function Report(props: { ctx: AdminContext; usage: Usage }) {
           </ul>
         </Show>
         <p class="admin-note">{m().ratingsSummary(u().ratings)}</p>
+        <Show when={u().web_ratings}>
+          {(web) => <p class="admin-note">{m().webRatingsSummary(web())}</p>}
+        </Show>
         <p class="admin-note">{m().retiredCalls(u().retired_calls)}</p>
       </section>
 

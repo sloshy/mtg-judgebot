@@ -65,9 +65,9 @@ Operators should know these properties. The reasoning behind each is in
     *Partially correct* or *Incorrect* rating the reason they give in its form (a
     category and up to two texts of 1000 characters), which the operator reads in the
     feedback queue (`feedback_queue`, with the operator's note on it)
-  - for a rating given on the web (the storage takes one; the web app's rating form is
-    still to come): the browser session id, the name the rater gave, and the address and
-    user agent it came from. Address and user agent are cleared once the rating is
+  - for a rating given on the web: the browser tab's session id (the one its questions
+    share history under), the reason, the name the rater gave, and the address and user
+    agent it came from. Address and user agent are cleared once the rating is
     `FEEDBACK_IP_DAYS` old (default 90, at most 3650, never kept for good) by every
     rating written and by each refresh's `sweep` step; the rating and its reason stay.
   - for a call that failed (`failed_calls`): the question, the error, the model's answer

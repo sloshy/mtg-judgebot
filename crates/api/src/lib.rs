@@ -36,6 +36,7 @@ pub mod interfaces;
 pub mod limit;
 pub mod mcp;
 pub mod network;
+pub mod rating;
 pub mod shape;
 
 pub use config::{ApiConfig, Refused, Unmet};

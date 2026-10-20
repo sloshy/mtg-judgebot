@@ -111,7 +111,7 @@ raters, their reasons and failed questions.
 | `queue_list` | `queue` | The feedback queue: every *Partially correct* or *Incorrect* rating given a reason, newest first, 50 a page. Filters: `status` (open / resolved / dismissed), `category`, `interface`, `rater` (discord / web). |
 | `queue_show` | `queue-show <item>` | One item with its call whole: question, answer, citations, cards, models, retired state, every rating with its reason. |
 | `queue_resolve` | `queue-resolve <item> --note N [--fixed-by F]` | Close an item as fixed, saying what was done and what fixed it (a commit, a notes entry). The one write. |
-| `queue_dismiss` | `queue-dismiss <item> --note N` | Close an item with nothing to fix, saying why. |
+| `queue_dismiss` | `queue-dismiss <item> --note N` | Close an item with nothing to fix, saying why. With `JUDGE_PUBLIC_FEEDBACK=true` this also takes the reason off the public pages. |
 
 A rater who replaces their reason reopens the item, with the note kept. The `judge`
 skill (`.claude/skills/judge/SKILL.md`) walks an agent through the queue: read an item,

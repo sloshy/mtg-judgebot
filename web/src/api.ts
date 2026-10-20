@@ -3,6 +3,7 @@
 // crates/api/src/feed.rs (the feed's pages and entries).
 
 import type { Locale, Messages } from "./messages";
+import type { FeedbackCategory } from "./router";
 
 export interface Pin {
   span: string;
@@ -40,6 +41,9 @@ export type ApiReply =
       cr_version: string;
       citations: CitationView[];
       cards: CardView[];
+      /** The stored call, to rate; null when it was not stored. Absent from
+       * an older server. */
+      call?: string | null;
     }
   | { kind: "ambiguous"; spans: AmbiguousView[] }
   | { kind: "not_found"; names: string[] }
@@ -104,6 +108,12 @@ export interface About {
   locales?: string[];
   /** Whether the public feed is served here. Absent from an older server. */
   feed?: boolean;
+  /** Whether answers may be rated here (POST /api/calls/{id}/feedback).
+   * Absent from an older server. */
+  ratings?: boolean;
+  /** Whether raters' reasons are shown on the public pages
+   * (`JUDGE_PUBLIC_FEEDBACK`), which the rating form says. */
+  public_feedback?: boolean;
 }
 
 /** The Comprehensive Rules release loaded and the last refresh. */
@@ -201,12 +211,15 @@ export interface FeedEntry {
   cr_version: string;
   citations: CitationView[];
   cards: CardView[];
+  /** Discord's and the web's apart: only Discord's shape later answers. */
   ratings: {
-    correct: number;
-    partial: number;
-    incorrect: number;
-    judge: "correct" | "partial" | "incorrect" | null;
+    discord: RatingCounts;
+    web: RatingCounts;
+    judge: Score | null;
   };
+  /** Raters' reasons, with no one's identity, when the operator shows them
+   * (`JUDGE_PUBLIC_FEEDBACK`); absent otherwise. */
+  reasons?: PublicReason[];
   /** Why it no longer serves as an example; null while its citations hold. */
   retired: string | null;
 }
@@ -303,4 +316,80 @@ function isEntry(v: unknown): v is FeedEntry {
     typeof o.ratings === "object" &&
     o.ratings !== null
   );
+}
+
+/** A rating (crates/api/src/rating.rs `ScoreName`). */
+export type Score = "correct" | "partial" | "incorrect";
+
+/** Ratings by score. */
+export interface RatingCounts {
+  correct: number;
+  partial: number;
+  incorrect: number;
+}
+
+/** A rater's reason as the public may see it (crates/bot/src/feed.rs
+ * `PublicReason`): never who gave it. */
+export interface PublicReason {
+  rater_kind: "discord" | "web";
+  score: "partial" | "incorrect";
+  category: FeedbackCategory;
+  wrong: string | null;
+  right: string | null;
+}
+
+/** What a rating asks for. */
+export interface RateRequest {
+  score: Score;
+  category?: FeedbackCategory;
+  wrong?: string;
+  right?: string;
+  name?: string;
+  replace?: boolean;
+}
+
+/** What a rating came to (crates/api/src/rating.rs `FeedbackReply`, or an
+ * `ApiReply` for a refusal). */
+export type RateReply =
+  | { kind: "rated"; message: string; score: Score; replaced: Score | null }
+  | { kind: "already_rated"; message: string }
+  | {
+      kind: "confirm";
+      message: string;
+      earlier: { score: Score; category: FeedbackCategory | null };
+    }
+  | { kind: "error"; message: string }
+  | { kind: "rate_limited"; message: string }
+  | { kind: "maintenance"; message: string; retry_after_secs: number };
+
+/** POST /api/calls/{id}/feedback, as the tab's rater `session`. Never
+ * throws: a failure comes back as an `error` reply (in `m`). */
+export async function rateCall(
+  call: string,
+  rating: RateRequest,
+  session: string,
+  locale: Locale | undefined,
+  m: Messages,
+): Promise<RateReply> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/calls/${encodeURIComponent(call)}/feedback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...rating, session_id: session, locale }),
+    });
+  } catch {
+    return { kind: "error", message: m.unreachable };
+  }
+  const body: unknown = await res.json().catch(() => null);
+  if (isRateReply(body)) return body;
+  return { kind: "error", message: m.strangeReply(res.status) };
+}
+
+const RATE_KINDS = ["rated", "already_rated", "confirm", "error", "rate_limited", "maintenance"];
+
+function isRateReply(v: unknown): v is RateReply {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.kind === "string" && RATE_KINDS.includes(o.kind) && typeof o.message === "string";
 }

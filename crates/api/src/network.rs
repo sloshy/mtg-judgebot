@@ -8,7 +8,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use judge_agent::{Client, Options, Quota, Toolbox, Transport};
 use judge_bot::{
-    discord::endpoint::Interactions, feed::Feed, ingest::runs::FreshnessReader, serving::Serving,
+    discord::endpoint::Interactions,
+    feed::{Feed, Reasons},
+    ingest::runs::FreshnessReader,
+    serving::Serving,
     shutdown::Shutdown,
 };
 use judge_core::NetworkOperator;
@@ -19,6 +22,7 @@ use crate::{
     discord::{All, Open},
     feed::{PgPublicCalls, PublicCalls},
     http::{self, Maintenance, Probe},
+    rating::{PgRateable, Rateable},
     router, serve_on,
 };
 
@@ -259,15 +263,27 @@ impl Network {
 /// `JUDGE_FEED=false`.
 fn feed_reads(
     feed: Feed,
+    reasons: Reasons,
     interfaces: &Interfaces,
     pool: &sqlx::PgPool,
 ) -> Option<Arc<dyn PublicCalls>> {
     match feed {
         Feed::On { window } if interfaces.web() => {
-            Some(Arc::new(PgPublicCalls::new(pool.clone(), window)))
+            Some(Arc::new(PgPublicCalls::new(pool.clone(), window, reasons)))
         }
         Feed::On { .. } | Feed::Off => None,
     }
+}
+
+/// Which calls the web may rate: public ones within the feed's window.
+/// With the feed off there is no window, and a call is rated by the id its
+/// asker got back from `POST /api/judge`.
+fn rateable(feed: Feed, pool: &sqlx::PgPool) -> Arc<dyn Rateable> {
+    let window = match feed {
+        Feed::On { window } => window,
+        Feed::Off => None,
+    };
+    Arc::new(PgRateable::new(pool.clone(), window))
 }
 
 /// The router for `interfaces`, the MCP transport mounted when asked for,
@@ -281,7 +297,7 @@ fn routes(
 ) -> axum::Router {
     let judge = serving.judge();
     let pool = serving.pool();
-    let feed = feed_reads(judge.feed(), interfaces, pool);
+    let feed = feed_reads(judge.feed(), judge.public_feedback(), interfaces, pool);
     // /api/health answers 503 when Postgres does not: the compose healthcheck
     // and the tunnel's readiness key off it. MCP's `judge` bills to the same
     // meter as the page (the process's one), so it is under the same budget.
@@ -308,7 +324,14 @@ fn routes(
     .with_availability(serving.availability().clone())
     // /api/about reads the run record for the data's freshness, cached
     // for a minute: the page asks on every load.
-    .with_data_status(Arc::new(FreshnessReader::new(pool.clone())));
+    .with_data_status(Arc::new(FreshnessReader::new(pool.clone())))
+    .with_public_feedback(matches!(judge.public_feedback(), Reasons::Shown));
+    // Rating sits beside `POST /api/judge`: served where questions are.
+    let app = if interfaces.api() {
+        app.with_ratings(rateable(judge.feed(), pool))
+    } else {
+        app
+    };
     let app = Arc::new(match feed {
         Some(reads) => app.with_public_calls(reads),
         None => app,

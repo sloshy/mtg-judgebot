@@ -57,8 +57,8 @@ The image you pulled is CI's build of upstream `main`, not of your checkout. To 
 you cloned or changed, use `docker compose up -d --build` instead (minutes, about
 4 GB of RAM).
 
-Open <http://localhost:8787>. The web app runs the same pipeline as the bot, without the
-rating buttons.
+Open <http://localhost:8787>. The web app runs the same pipeline as the bot. Its ratings
+are anonymous, so they reach your feedback queue but never shape later answers.
 
 By default each address may ask 4 questions per 5 minutes. That suits a public page but
 will stop you quickly while testing. To ask more, raise `API_RATE_LIMIT` (or shorten

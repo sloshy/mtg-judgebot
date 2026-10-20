@@ -420,7 +420,11 @@ What follows for the code and the docs:
 
 ## D17. Non-goals
 
-Tournament policy (MTR/IPG). Accounts or ratings on the web app. Streaming responses.
+*Revised 2026-10-20:* the web app rates answers now (D38), still without accounts; its
+ratings never shape retrieval.
+
+Tournament policy (MTR/IPG). Accounts on the web app, or web ratings that shape
+retrieval. Streaming responses.
 A plugin system for providers (they are workspace crates chosen by configuration).
 Retraining or fine-tuning of any kind. Automatic detection of "nightmare" cards (the
 notes are curated by hand). Multi-server tenancy (D16).
@@ -1553,8 +1557,33 @@ It never reaches the model (D10).
 - **Two kinds of rater.** `ratings.rater_kind` is `discord` (the user id) or `web` (the
   browser session: `user_id` is `web:<session uuid>`, so the primary key is unchanged).
   `judge_core::Rater` keeps a web rater's name, address and user agent off a Discord
-  rating by type, and the table by check. The web app's buttons and form are the next
-  step of #27; the storage is ready for them.
+  rating by type, and the table by check.
+- **The web rates without accounts.** `POST /api/calls/{id}/feedback`, served beside
+  `/api/judge` (`--api`), takes the score, the reason and an optional name, as the
+  browser tab's session id: the one its questions already share history under, so a
+  tab is one rater and a new tab another. The server is authoritative on replacing:
+  without `replace: true` an earlier rating is a 409 `confirm` and nothing is written,
+  so a client that skips the question cannot replace silently. Its own per-address
+  limit (30 per ten minutes), a 16 KiB body, unknown fields refused. Only a public call
+  within the feed window may be rated (one 404 otherwise). `JUDGE_FEED=false` leaves
+  rating on: an answer's id reaches only its asker. Rejected: a rater id of its own in
+  `localStorage`, which would follow a browser across visits for no gain in counts
+  that never shape retrieval.
+- **Counts apart, reasons on request.** The feed and call pages count Discord's and the
+  web's ratings apart; the page shows the web's only when its reader asks (a choice the
+  browser remembers), because they are trivially inflated: a new session is a new
+  rater. `judge-cli stats` keeps them apart too. Reasons stay the operator's unless
+  `JUDGE_PUBLIC_FEEDBACK=true`, and even then are sent without the rater: no name, user
+  id, address or user agent. Raters are told when their reasons are public (the form
+  and the confirmation, Discord's and the web's; `/api/about` carries the setting).
+  Turning it on publishes free text from anonymous raters, so a **dismissed** queue
+  item's reason is never read publicly: dismissing is how the operator takes one down.
+  User, role and channel mentions are reduced and `@everyone` / `@here` broken; nothing
+  else is filtered.
+- **Unconfirmed writes only add.** Without `replace: true` the web route writes with
+  `CallStore::rate_if_new` (`ON CONFLICT DO NOTHING`, then a re-read), so two requests
+  racing from one session cannot replace each other unasked; the loser gets the 409.
+  Discord keeps its upsert: its Replace / Keep prompt is the confirmation.
 - **Addresses expire.** A web rating keeps its address and user agent for
   `FEEDBACK_IP_DAYS` (default 90, 1 to 3650; there is no "keep forever"), for dealing
   with abuse. Every rating written clears older ones, and so does the refresh's `sweep`

@@ -1,6 +1,6 @@
 ---
 title: The web app
-description: The anonymous interface, with the same pipeline, no ratings, and a rate limit per address.
+description: The anonymous interface, with the same pipeline, anonymous ratings, and a rate limit per address.
 sidebar:
   order: 2
 ---
@@ -28,10 +28,39 @@ one browser session share history, so a follow-up works. Before the first questi
 page offers four examples. Choosing one fills the box but does not send it, because an
 answer spends the operator's money and one of the visitor's rate-limited questions.
 
-Nobody is logged in there, so the web app has **no rating buttons**, and nothing about the
-visitor is stored beyond a random session id that groups their questions. Their questions
-are listed on the [feed](#the-feed) without a name. The browser itself remembers the theme
-and the feed's layout (`localStorage`); neither is sent to the server. The footer
+Nobody is logged in there. Nothing about the visitor is stored beyond a random session
+id, one per browser tab, that groups their questions and their ratings. Their questions
+are listed on the [feed](#the-feed) without a name. The browser itself remembers the
+theme, the feed's layout and whether to count web ratings (`localStorage`); none of them
+is sent to the server.
+
+## Ratings
+
+An answer in the chat, on the feed and on a call's page has three buttons:
+**Correct**, **Partially correct** and **Incorrect**.
+
+- **Correct** is recorded at once.
+- **Partially correct** and **Incorrect** open a form under the answer, which the
+  keyboard reaches first: the kind of problem (required), *What's wrong* and *The right
+  answer* (up to 1000 characters each) and a name (up to 100), all three optional. The
+  reason goes to the operator's feedback queue beside the question and answer; the
+  judge never reads it.
+- Rating an answer the tab already rated asks first, under the buttons: **Replace** or
+  **Keep**. *Correct* over *Correct* says it is already recorded.
+
+A web rating is anonymous, so it never shapes which past answers the judge sees as
+examples; only Discord's ratings do. Each rating keeps the address and browser it came
+from for `FEEDBACK_IP_DAYS` (default 90), for dealing with abuse, then loses both.
+Ratings are limited to 30 per address per ten minutes, apart from the questions' limit.
+
+Under each answer on the feed and its page, the counts are Discord's. **Include N from
+the web** adds the web's, a choice this browser remembers. The web's are hidden by
+default because anyone can inflate them: a new tab is a new rater.
+
+When the operator sets `JUDGE_PUBLIC_FEEDBACK=true`, the reasons raters gave are listed
+there too, with the kind of problem and their words, never who gave them; the form says
+so before a rater writes one. A reason the operator dismisses in the feedback queue
+leaves the public pages. Rating needs `--api` beside `--web`, as asking does. The footer
 names the source repository, the commit the instance was built from and the operator's
 support address (`JUDGE_OPERATOR_EMAIL`, without which the web app does not start). A
 line above it gives the Comprehensive Rules release loaded and how long ago the data was

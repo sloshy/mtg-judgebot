@@ -123,6 +123,9 @@ pub enum ApiReply {
         citations: Vec<CitationView>,
         /// The cards the question's names were resolved to.
         cards: Vec<CardView>,
+        /// The stored call, to rate it (`POST /api/calls/{id}/feedback`) or
+        /// link its page; `null` when it was not stored (the store failed).
+        call: Option<uuid::Uuid>,
     },
     /// Card spans that matched several cards; re-ask with `pins`.
     Ambiguous {
@@ -246,7 +249,12 @@ pub fn question_text(req: &JudgeRequest) -> String {
 /// Shape a validated verdict. `ctx` (the captured retrieval context) supplies
 /// card names for ruling / Oracle-text labels; the links work without it.
 #[must_use]
-pub fn answer(locale: Locale, v: &Verdict<Validated>, ctx: Option<&Context>) -> ApiReply {
+pub fn answer(
+    locale: Locale,
+    v: &Verdict<Validated>,
+    ctx: Option<&Context>,
+    call: Option<judge_core::CallId>,
+) -> ApiReply {
     let m = catalog::messages(locale);
     ApiReply::Answer {
         answer: v.answer().to_owned(),
@@ -259,6 +267,7 @@ pub fn answer(locale: Locale, v: &Verdict<Validated>, ctx: Option<&Context>) -> 
             .map(|c| citation_view(m, c, &ctx))
             .collect(),
         cards: v.cards().iter().map(card_view).collect(),
+        call: call.map(judge_core::CallId::into_inner),
     }
 }
 
@@ -538,7 +547,7 @@ mod tests {
     #[test]
     fn answer_carries_linked_citations() -> Result<(), Box<dyn std::error::Error>> {
         let (v, ctx) = validated()?;
-        let reply = answer(Locale::En, &v, Some(&ctx));
+        let reply = answer(Locale::En, &v, Some(&ctx), None);
         let j = serde_json::to_value(&reply)?;
         assert_eq!(j.get("kind").and_then(|k| k.as_str()), Some("answer"));
         assert_eq!(j.get("confidence").and_then(|k| k.as_str()), Some("high"));
@@ -568,7 +577,7 @@ mod tests {
             Some("Ruling (2020-01-01) — Dark Confidant")
         );
         // Whitespace in quotes is collapsed for display.
-        let without_ctx = answer(Locale::En, &v, None);
+        let without_ctx = answer(Locale::En, &v, None, None);
         let j = serde_json::to_value(&without_ctx)?;
         assert_eq!(
             j.get("citations")

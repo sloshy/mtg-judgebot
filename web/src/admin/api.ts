@@ -302,7 +302,10 @@ export interface Usage {
   run_usd: number;
   by_model: ModelUse[];
   outcomes: { outcome: string; runs: number }[];
+  /** Discord's, then the web's (anonymous; apart so they cannot skew
+   * Discord's). */
   ratings: [number, number, number];
+  web_ratings?: [number, number, number];
   retired_calls: number;
   lowest_rated: {
     call: string;
