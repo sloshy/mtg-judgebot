@@ -265,13 +265,32 @@ struct Row {
     user_agent: Option<String>,
     rated_at: String,
     interface: String,
+    confidence: String,
+    source: String,
     private: bool,
     question: String,
     retired_reason: Option<String>,
 }
 
 impl Row {
+    /// The item, or `None` (and a WARN naming it and its call) when a value
+    /// in it, or in its call, is one this build does not know: a newer
+    /// build of the same major may write one. The call's confidence and
+    /// source are checked too, though the item does not carry them, so an
+    /// item is listed exactly when [`show`] can open it (`admin::call`
+    /// reads both).
+    fn readable(self) -> Option<QueueItem> {
+        let (id, call) = (self.id, self.call_id);
+        self.item()
+            .inspect_err(|e| {
+                tracing::warn!(item = %id, call = %call, error = %format_args!("{e:#}"), "a feedback item does not read; left out of the queue");
+            })
+            .ok()
+    }
+
     fn item(self) -> Result<QueueItem, JudgeError> {
+        crate::feed::stored::<judge_core::Confidence>(&self.confidence, "confidence")?;
+        crate::feed::stored::<judge_core::Source>(&self.source, "source")?;
         Ok(QueueItem {
             id: self.id,
             call: self.call_id,
@@ -312,10 +331,12 @@ fn one_line(text: &str) -> String {
 }
 
 /// The newest [`PAGE_SIZE`] items matching `filter` before `after` (from the
-/// newest when `None`).
+/// newest when `None`). An item holding a value this build does not read is
+/// left out, with a WARN ([`Row::readable`]), so a page can hold fewer than
+/// [`PAGE_SIZE`] and still have a next one.
 ///
 /// # Errors
-/// `Upstream` from sqlx, or a row that does not read.
+/// `Upstream` from sqlx.
 pub async fn list(
     pool: &PgPool,
     filter: QueueFilter,
@@ -334,7 +355,7 @@ pub async fn list(
                q.note, q.fixed_by, r.score, r.category, r.what_wrong, r.right_answer,
                r.rater_kind, r.user_id, r.web_name, r.is_judge, host(r.ip) AS ip, r.user_agent,
                to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "rated_at!",
-               c.interface, c.private, c.question, c.retired_reason
+               c.interface, c.confidence, c.source, c.private, c.question, c.retired_reason
         FROM feedback_queue q
         JOIN ratings r ON r.call_id = q.call_id AND r.user_id = q.user_id
         JOIN calls c ON c.id = q.call_id
@@ -366,19 +387,19 @@ pub async fn list(
     } else {
         None
     };
-    let items = rows
-        .into_iter()
-        .map(Row::item)
-        .collect::<Result<Vec<_>, JudgeError>>()?;
+    // The cursor above is the last row read, so an item left out here still
+    // moves the next page past it.
+    let items = rows.into_iter().filter_map(Row::readable).collect();
     Ok(QueuePage { items, next })
 }
 
-/// Item `id`, `None` when there is none.
+/// Item `id`; `None` when there is none, and for one the queue leaves out
+/// as unreadable ([`Row::readable`]).
 ///
 /// # Errors
-/// `Upstream` from sqlx, or a row that does not read.
+/// `Upstream` from sqlx.
 pub async fn item(pool: &PgPool, id: Uuid) -> Result<Option<QueueItem>, JudgeError> {
-    sqlx::query_as!(
+    Ok(sqlx::query_as!(
         Row,
         r#"
         SELECT (extract(epoch FROM q.opened_at) * 1000000)::bigint AS "at_micros!",
@@ -388,7 +409,7 @@ pub async fn item(pool: &PgPool, id: Uuid) -> Result<Option<QueueItem>, JudgeErr
                q.note, q.fixed_by, r.score, r.category, r.what_wrong, r.right_answer,
                r.rater_kind, r.user_id, r.web_name, r.is_judge, host(r.ip) AS ip, r.user_agent,
                to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "rated_at!",
-               c.interface, c.private, c.question, c.retired_reason
+               c.interface, c.confidence, c.source, c.private, c.question, c.retired_reason
         FROM feedback_queue q
         JOIN ratings r ON r.call_id = q.call_id AND r.user_id = q.user_id
         JOIN calls c ON c.id = q.call_id
@@ -399,15 +420,15 @@ pub async fn item(pool: &PgPool, id: Uuid) -> Result<Option<QueueItem>, JudgeErr
     .fetch_optional(pool)
     .await
     .map_err(upstream("read a queue item"))?
-    .map(Row::item)
-    .transpose()
+    .and_then(Row::readable))
 }
 
 /// Item `id` with everything stored about its call, and the names the
-/// call's citation labels need; `None` when there is no such item.
+/// call's citation labels need; `None` when there is no such item, or it
+/// does not read ([`item`]).
 ///
 /// # Errors
-/// `Upstream` from sqlx, or a row that does not read.
+/// `Upstream` from sqlx.
 pub async fn show(pool: &PgPool, id: Uuid) -> Result<Option<(QueueDetail, Names)>, JudgeError> {
     let Some(item) = item(pool, id).await? else {
         return Ok(None);
@@ -415,8 +436,8 @@ pub async fn show(pool: &PgPool, id: Uuid) -> Result<Option<(QueueDetail, Names)
     let Some((call, names)) = crate::admin::call(pool, judge_core::CallId::new(item.call)).await?
     else {
         // The call went (the retention) between the two reads, and the item
-        // with it; or it holds a value this build does not read, which
-        // `admin::call` logs.
+        // with it. ([`item`] has already left out a call `admin::call`
+        // would not read.)
         return Ok(None);
     };
     Ok(Some((QueueDetail { item, call }, names)))
@@ -424,15 +445,20 @@ pub async fn show(pool: &PgPool, id: Uuid) -> Result<Option<(QueueDetail, Names)
 
 /// Close item `id` as `close` says: resolved or dismissed, with its note
 /// and what fixed it, now. Closing a closed item again replaces all three.
-/// `None` when there is no such item.
+/// `None` when there is no such item, and for one the queue leaves out as
+/// unreadable, which is left as it is.
 ///
 /// # Errors
-/// `Upstream` from sqlx, or a row that does not read.
+/// `Upstream` from sqlx.
 pub async fn close(
     pool: &PgPool,
     id: Uuid,
     close: &Close,
 ) -> Result<Option<QueueItem>, JudgeError> {
+    // An item the queue does not show cannot be closed from it either.
+    if item(pool, id).await?.is_none() {
+        return Ok(None);
+    }
     let closed = sqlx::query_scalar!(
         r#"
         UPDATE feedback_queue
@@ -456,10 +482,13 @@ pub async fn close(
 
 /// How many items there are per category and status, every category
 /// listed (a zero row included) in [`FeedbackCategory::ALL`]'s order, then
-/// the items re-rated Correct when there are any.
+/// the items re-rated Correct when there are any. Items of a category this
+/// build does not know are left out of the counts, with a WARN; an item
+/// unreadable for another reason (its call's interface, its rater's kind)
+/// is still counted, though [`list`] leaves it out.
 ///
 /// # Errors
-/// `Upstream` from sqlx, or a row that does not read.
+/// `Upstream` from sqlx.
 pub async fn counts(pool: &PgPool) -> Result<Vec<QueueCount>, JudgeError> {
     let rows = sqlx::query!(
         r#"
@@ -477,19 +506,25 @@ pub async fn counts(pool: &PgPool) -> Result<Vec<QueueCount>, JudgeError> {
     .map_err(upstream("count the feedback queue"))?;
     let mut read = rows
         .into_iter()
-        .map(|r| {
-            Ok(QueueCount {
-                category: r
-                    .category
-                    .as_deref()
-                    .map(|c| stored(c, "ratings.category", FeedbackCategory::parse))
-                    .transpose()?,
+        .filter_map(|r| {
+            let category = match r.category.as_deref() {
+                None => None,
+                Some(c) => match stored(c, "ratings.category", FeedbackCategory::parse) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        tracing::warn!(error = %format_args!("{e:#}"), "feedback items of an unknown category; left out of the counts");
+                        return None;
+                    }
+                },
+            };
+            Some(QueueCount {
+                category,
                 open: r.open,
                 resolved: r.resolved,
                 dismissed: r.dismissed,
             })
         })
-        .collect::<Result<Vec<_>, JudgeError>>()?;
+        .collect::<Vec<_>>();
     let mut out: Vec<QueueCount> = FeedbackCategory::ALL
         .into_iter()
         .map(|c| {
@@ -668,6 +703,75 @@ mod tests {
         assert_eq!(reopened.category, Some(FeedbackCategory::MissedPart));
         assert_eq!(reopened.wrong, None, "nothing of the old reason is left");
         assert_eq!(close(&pool, Uuid::nil(), &resolve("x")?).await?, None);
+        Ok(())
+    }
+
+    /// An item holding a value this build does not read (an interface,
+    /// rater kind or category a newer build of the same major may write, or
+    /// a call `admin::call` would not read) is left out of the list, is
+    /// `None` by id, cannot be opened or closed, and does not fail the
+    /// counts; every item the list shows opens.
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn an_unreadable_item_is_left_out_everywhere_alike(pool: PgPool) -> anyhow::Result<()> {
+        // What a newer build's migration could relax.
+        for sql in [
+            "ALTER TABLE calls DROP CONSTRAINT calls_interface_check",
+            "ALTER TABLE ratings DROP CONSTRAINT ratings_category_check",
+            "ALTER TABLE ratings DROP CONSTRAINT ratings_rater_kind_check",
+        ] {
+            sqlx::query(sql).execute(&pool).await?;
+        }
+        let store = PgCallStore::new(pool.clone());
+        let wrong = faulted(Fault::Incorrect, FeedbackCategory::WrongCard, "");
+        let mut calls = vec![];
+        for n in 0..5_u32 {
+            let c = call(&pool, "discord", n).await?;
+            store.rate(c, &discord(42), &wrong).await?;
+            calls.push(c.into_inner());
+        }
+        let [good, bad @ ..] = calls.as_slice() else {
+            anyhow::bail!("five calls");
+        };
+        for (sql, c) in [
+            "UPDATE calls SET interface = 'telegram' WHERE id = $1",
+            "UPDATE calls SET confidence = 'certain' WHERE id = $1",
+            "UPDATE ratings SET category = 'a_newer_category' WHERE call_id = $1",
+            "UPDATE ratings SET rater_kind = 'matrix' WHERE call_id = $1",
+        ]
+        .into_iter()
+        .zip(bad)
+        {
+            sqlx::query(sql).bind(c).execute(&pool).await?;
+        }
+        let item_of = |c: Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Uuid>("SELECT id FROM feedback_queue WHERE call_id = $1")
+                    .bind(c)
+                    .fetch_one(&pool)
+                    .await
+            }
+        };
+
+        let shown = only_item(&pool).await?;
+        assert_eq!(shown.call, *good);
+        assert!(
+            show(&pool, shown.id).await?.is_some(),
+            "a listed item opens"
+        );
+        for c in bad {
+            let id = item_of(*c).await?;
+            assert_eq!(item(&pool, id).await?, None, "{c}");
+            assert!(show(&pool, id).await?.is_none(), "{c}");
+            assert_eq!(close(&pool, id, &resolve("x")?).await?, None, "{c}");
+        }
+        let still_open: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM feedback_queue WHERE status = 'open'")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(still_open, 5, "an unreadable item is not closed");
+        let counted: i64 = counts(&pool).await?.iter().map(|c| c.open).sum();
+        assert_eq!(counted, 4, "the unknown category is left out of the counts");
         Ok(())
     }
 

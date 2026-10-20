@@ -65,7 +65,9 @@ export function FeedbackPage(props: { ctx: AdminContext; filter: AdminQueueFilte
         <Show
           when={items().length > 0}
           fallback={
-            <Show when={failure() === null}>
+            // A page whose every item the server left out (values it could
+            // not read) is empty but has a next: not "nothing here".
+            <Show when={failure() === null && !next()}>
               <p class="admin-empty">{m().feedbackEmpty}</p>
             </Show>
           }

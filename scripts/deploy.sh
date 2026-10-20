@@ -51,12 +51,16 @@ finish() {
   local status=$?
   [ "$status" -eq 0 ] && return
   local kept="the running container was kept"
-  if [ "$stage" = before ] && [ -n "$new" ]; then
+  # `old` is set once the running containers have been counted.
+  if [ "${old+set}" = set ] && [ -z "$old" ]; then kept="no $service container was running before it"; fi
+  if [ "$stage" = refused ]; then
+    kept="it refused before changing anything: no container was started or stopped"
+  elif [ "$stage" = before ] && [ -n "$new" ]; then
     docker rm -f "$new" >/dev/null 2>&1 || true
   elif [ "$stage" = stopping ]; then
     kept="the old container was being stopped and the new one is serving; check docker compose ps"
   elif [ "$stage" = major ]; then
-    kept="this was a major upgrade and the old container has stopped, so nothing is serving questions; the database may be partly migrated. Check docker compose logs $service; to go back, restore the backup taken before it (docs/DEPLOYMENT.md §6) and deploy the previous release"
+    kept="this was a major upgrade and the old container has stopped, so nothing is serving questions; the database may be partly migrated. Check docker compose logs $service; to go back, restore the backup taken before it and deploy the previous release (docs/DEPLOYMENT.md, Rolling back)"
   elif [ "$stage" = proxy ]; then
     kept="the new container is serving, but the proxy in front of it did not load proxy/Caddyfile; check docker compose logs proxy"
   fi
@@ -135,6 +139,7 @@ esac
 # old release already stopped. Refused before anything changes.
 if [ "$upgrade" != in-place ] && [ "$auto_migrate" = off ]; then
   if [ "$upgrade" = major-from-1.x ]; then stop_hint="docker stop judgebot-bot judgebot-api"; else stop_hint="docker compose stop $service"; fi
+  stage=refused
   die "the new image's migrations are a major upgrade ($upgrade) and .env sets JUDGE_AUTO_MIGRATE=false, so the new container would never migrate. Migrate by hand, then run this again: $stop_hint; docker compose run --rm refresh migrate; scripts/deploy.sh${1:+ $1} (docs/DEPLOYMENT.md, Releases with a migration)"
 fi
 

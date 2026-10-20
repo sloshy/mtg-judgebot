@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT (extract(epoch FROM q.opened_at) * 1000000)::bigint AS \"at_micros!\",\n               q.id, q.call_id, q.status,\n               to_char(q.opened_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"opened_at!\",\n               to_char(q.resolved_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS resolved_at,\n               q.note, q.fixed_by, r.score, r.category, r.what_wrong, r.right_answer,\n               r.rater_kind, r.user_id, r.web_name, r.is_judge, host(r.ip) AS ip, r.user_agent,\n               to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"rated_at!\",\n               c.interface, c.private, c.question, c.retired_reason\n        FROM feedback_queue q\n        JOIN ratings r ON r.call_id = q.call_id AND r.user_id = q.user_id\n        JOIN calls c ON c.id = q.call_id\n        WHERE ($1::text IS NULL OR q.status = $1)\n          AND ($2::text IS NULL OR r.category = $2)\n          AND ($3::text IS NULL OR c.interface = $3)\n          AND ($4::text IS NULL OR r.rater_kind = $4)\n          AND ($5::bigint IS NULL\n               OR (q.opened_at, q.id) < ('epoch'::timestamptz + $5 * interval '1 microsecond', $6))\n        ORDER BY q.opened_at DESC, q.id DESC\n        LIMIT $7\n        ",
+  "query": "\n        SELECT (extract(epoch FROM q.opened_at) * 1000000)::bigint AS \"at_micros!\",\n               q.id, q.call_id, q.status,\n               to_char(q.opened_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"opened_at!\",\n               to_char(q.resolved_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS resolved_at,\n               q.note, q.fixed_by, r.score, r.category, r.what_wrong, r.right_answer,\n               r.rater_kind, r.user_id, r.web_name, r.is_judge, host(r.ip) AS ip, r.user_agent,\n               to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"rated_at!\",\n               c.interface, c.confidence, c.source, c.private, c.question, c.retired_reason\n        FROM feedback_queue q\n        JOIN ratings r ON r.call_id = q.call_id AND r.user_id = q.user_id\n        JOIN calls c ON c.id = q.call_id\n        WHERE ($1::text IS NULL OR q.status = $1)\n          AND ($2::text IS NULL OR r.category = $2)\n          AND ($3::text IS NULL OR c.interface = $3)\n          AND ($4::text IS NULL OR r.rater_kind = $4)\n          AND ($5::bigint IS NULL\n               OR (q.opened_at, q.id) < ('epoch'::timestamptz + $5 * interval '1 microsecond', $6))\n        ORDER BY q.opened_at DESC, q.id DESC\n        LIMIT $7\n        ",
   "describe": {
     "columns": [
       {
@@ -200,6 +200,28 @@
       },
       {
         "ordinal": 20,
+        "name": "confidence",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "confidence"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
         "name": "private",
         "type_info": "Bool",
         "origin": {
@@ -210,7 +232,7 @@
         }
       },
       {
-        "ordinal": 21,
+        "ordinal": 23,
         "name": "question",
         "type_info": "Text",
         "origin": {
@@ -221,7 +243,7 @@
         }
       },
       {
-        "ordinal": 22,
+        "ordinal": 24,
         "name": "retired_reason",
         "type_info": "Text",
         "origin": {
@@ -266,8 +288,10 @@
       false,
       false,
       false,
+      false,
+      false,
       true
     ]
   },
-  "hash": "063988fb209567854e07ced45a6e96a83cdce92b04d8f6aa7ed46892b0b08369"
+  "hash": "34697fc963929583ee24715f0828e4b1a29a47182669c43d6db83e0cf181a7c3"
 }
