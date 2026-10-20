@@ -25,6 +25,8 @@ ignore = [
   { id = "RUSTSEC-2026-0099", reason = "Wildcard name constraints; only the Discord gateway connection is exposed. No 0.102 fix; via serenity." },
   { id = "RUSTSEC-2026-0346", reason = "Debug of client session values; only a custom ClientSessionStore formats them, and none is used. rustls 0.22 has no fix; via serenity." },
   { id = "RUSTSEC-2026-0349", reason = "Key-share prediction downgrades post-quantum key exchange; rustls 0.22 offers none to lose. No 0.22 fix; via serenity." },
+  { id = "RUSTSEC-2026-0381", reason = "Flags webpki-roots 0.26.11 by number; it is a shim over the locked 1.0.10, which drops the emSign root. Via serenity." },
+  { id = "RUSTSEC-2026-0382", reason = "Needs a trust anchor that allows emSign intermediates; the gateway trusts webpki-roots 1.0.10, which dropped it. No 0.102 fix; via serenity." },
 ]
 
 [licenses]
