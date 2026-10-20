@@ -75,11 +75,14 @@ up to an hour for a command that holds it, so two never overlap. `migrate` (its 
 
 ## `judgebot backup`
 
-The database backup to Cloudflare R2 (or any S3-compatible store). In the image, run
-`docker compose run --rm backup <command>`. The settings are `.env.deploy`'s (`R2_*`,
-`BACKUP_*`, `JUDGE_ALERT_WEBHOOK`), plus `DATABASE_URL` for `run` and `serve`; the
-[configuration reference](../../self-hosting/configuration/) lists them. A missing or
-malformed one is an error naming each. Logs go to standard error.
+The database backup to an S3-compatible store (Cloudflare R2, AWS S3, Backblaze B2,
+MinIO). In the image, run `docker compose run --rm backup <command>`. The settings are
+`.env.deploy`'s (`BACKUP_S3_*`, `BACKUP_*`, `JUDGE_ALERT_WEBHOOK`), plus `DATABASE_URL`
+for `run` and `serve`; the [configuration reference](../../self-hosting/configuration/)
+lists them. A missing or malformed one is an error naming each, and a pre-2.0.0 `R2_*`
+one names the line that replaces it; `run` and `serve` post the names to
+`JUDGE_ALERT_WEBHOOK`, and `serve` then stays up refusing until stopped. Logs go to
+standard error.
 
 | Command | What it does |
 | --- | --- |
@@ -87,6 +90,7 @@ malformed one is an error naming each. Logs go to standard error.
 | `list` | The objects under `BACKUP_PREFIX`, oldest first. |
 | `fetch <name> [file]` | Download one to `file`, or to standard output, which must not be a terminal (`docker compose run --rm --no-deps -T backup fetch <name> > <name>`). |
 | `serve` | The `backup` compose service: a backup whenever the newest in the bucket is `BACKUP_EVERY_DAYS` old, checked hourly. Retries a failure after an hour, then less often, and posts the first failure of a streak, a failure at a different step, and the recovery. |
+| `check` | Read the settings and find `pg_dump` as `run` would, sending nothing; exits non-zero naming each problem. `scripts/deploy.sh` runs it with the new image before a deploy when the `backup` profile is on. |
 
 `scripts/backup-db.sh` writes the same objects, so each reads the other's backups.
 
@@ -138,12 +142,12 @@ JSON goes to stdout and logs to stderr. The admin reads (`stats`, `failures`, `c
 | --- | --- |
 | `docker compose up -d` | `db`, `judgebot` and `proxy` (which publishes `127.0.0.1:8787`), plus `edge` (HTTPS on ports 80 and 443 for `JUDGE_DOMAIN`) with `public` in `COMPOSE_PROFILES`, `cloudflared` with `tunnel` and `backup` with `backup`. |
 | `docker compose up -d --build judgebot` | Rebuild and redeploy after code changes. |
-| `scripts/deploy.sh [--build]` | Deploy without downtime: pull the image (or build it from the checkout), start a new `judgebot` container beside the running one, wait until it is healthy, then stop the old one, which finishes its answers first. A new container that is not healthy is removed and the old one keeps serving. A major release (`judgebot ingest upgrade` says) takes a backup first when one is configured, and the new container answers with a maintenance reply until the old one has stopped and it has migrated. |
+| `scripts/deploy.sh [--build]` | Deploy without downtime: pull the image (or build it from the checkout), start a new `judgebot` container beside the running one, wait until it is healthy, then stop the old one, which finishes its answers first. A new container that is not healthy is removed and the old one keeps serving. A major release (`judgebot ingest upgrade` says) takes a backup first when one is configured, and the new container answers with a maintenance reply until the old one has stopped and it has migrated. With the `backup` profile on, it checks the backup's settings with the new image first and recreates the `backup` service at the end; a pre-2.0.0 `R2_*` in `.env.deploy` refuses the deploy. |
 | `docker compose pull && docker compose up -d --remove-orphans` | Deploy by stopping the old container first, with a gap while the new one starts. `--remove-orphans` removes the `bot` and `api` containers of a compose file from before `judgebot`, which would otherwise keep running. |
 | `docker compose logs judgebot` | The process's log: the roles it runs, then each role's lines. |
 | `docker compose run --rm --entrypoint judge-cli judgebot <command>` | `judge-cli` from the image. |
 | `scripts/refresh-data.sh` | A refresh now, or from your own cron with `JUDGE_REFRESH_HOURS=0`: `docker compose run --rm refresh`. Arguments pass through to `judgebot ingest`. A failed run posts to `JUDGE_ALERT_WEBHOOK` when that is set. |
 | `docker compose run --rm backup run\|list` | The `backup` service's commands by hand: a backup now, or the objects in the bucket. `docker compose logs backup` shows the scheduled ones. |
 | `docker compose run --rm --no-deps -T backup fetch <name> > <name>` | Download one backup for the restore drill. `-T` keeps the bytes off a terminal. |
-| `scripts/backup-db.sh [list\|fetch]` | The same backup from a host cron, without the `backup` profile: `pg_dump` to Cloudflare R2. `list` and `fetch` serve the restore drill. A failed backup posts to `JUDGE_ALERT_WEBHOOK` (from `.env.deploy`, else `.env`). |
+| `scripts/backup-db.sh [list\|fetch]` | The same backup from a host cron, without the `backup` profile: `pg_dump` to the same bucket. `list` and `fetch` serve the restore drill. A failed backup posts to `JUDGE_ALERT_WEBHOOK` (from `.env.deploy`, else `.env`). |
 | `scripts/alert.sh` | Sourced by `scripts/refresh-data.sh`, `scripts/backup-db.sh` and `scripts/deploy.sh`: posts one line to the webhook, passing the URL on stdin so it never shows in `ps`. |

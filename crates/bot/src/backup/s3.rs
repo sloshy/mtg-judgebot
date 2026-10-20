@@ -1,12 +1,15 @@
 //! The four S3 operations a backup needs (list, put, get, delete), signed
 //! with `SigV4` and sent with the reqwest client every other adapter uses.
 //!
-//! Cloudflare R2 speaks the S3 API: region `auto`, path-style URLs
-//! (`https://<account>.r2.cloudflarestorage.com/<bucket>/<key>`). Any other
-//! S3-compatible store (`MinIO`, a local stand-in for tests) takes the same
-//! requests. An upload is one `PUT` of the dump file, streamed from disk,
-//! with its SHA-256 in `x-amz-content-sha256`: the store verifies the bytes
-//! it received against the signed hash and refuses a corrupted upload.
+//! Nothing here is one provider's: the requests are the S3 API's core
+//! (`ListObjectsV2`, `PutObject`, `GetObject`, `DeleteObject`) with no
+//! checksum header but `SigV4`'s own `x-amz-content-sha256`, so AWS S3,
+//! Cloudflare R2, Backblaze B2 and `MinIO` take them alike. What differs per
+//! store is configuration ([`Store`]): the endpoint, the signing region and
+//! where the bucket goes in the URL ([`Addressing`]). An upload is one `PUT`
+//! of the dump file, streamed from disk, with its SHA-256 in
+//! `x-amz-content-sha256`: the store verifies the bytes it received against
+//! the signed hash and refuses a corrupted upload.
 //!
 //! Each request is tried up to [`ATTEMPTS`] times when the store does not
 //! answer or answers 5xx or 429; any other refusal is final. Nothing here
@@ -33,14 +36,12 @@ use reqwest::{
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 
-use super::settings::{Prefix, Store};
+use super::settings::{Addressing, Prefix, Store};
 
-/// The signing region R2 documents; S3-compatible stand-ins accept it too.
-pub const REGION: &str = "auto";
 /// The `SigV4` service name of the S3 API.
 const SERVICE: &str = "s3";
-/// The largest dump one `PUT` may carry. S3 and R2 take up to 5 GiB in a
-/// single request (R2 a little less); a judgebot dump is tens of MB, so a
+/// The largest dump one `PUT` may carry. S3 takes up to 5 GiB in a single
+/// request (some stores a little less); a judgebot dump is tens of MB, so a
 /// dump this size means something else is wrong.
 pub const MAX_PUT_BYTES: u64 = 5_000_000_000;
 /// Tries per request.
@@ -216,18 +217,64 @@ impl Want<'_> {
     }
 }
 
+/// Where a bucket's requests go: the bucket's URL, which a listing is sent
+/// to, and the path its object keys are put under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BucketUrls {
+    /// `<endpoint>/<bucket>` (path-style) or `<bucket>.<endpoint host>/`
+    /// (virtual-hosted).
+    list: url::Url,
+    /// What an object's path starts with: `/<bucket>`, or nothing.
+    key_base: String,
+}
+
+impl BucketUrls {
+    /// The URLs of `store`'s bucket. The bucket and the endpoint's host are
+    /// checked at load ([`Addressing::check`]), so the host can be built.
+    fn of(store: &Store) -> Result<Self, String> {
+        let mut list = store.endpoint.url().clone();
+        match store.addressing {
+            Addressing::Path => {
+                let key_base = format!("/{}", store.bucket);
+                list.set_path(&key_base);
+                Ok(Self { list, key_base })
+            }
+            Addressing::VirtualHosted => {
+                let host = format!("{}.{}", store.bucket, store.endpoint.host());
+                list.set_host(Some(&host))
+                    .map_err(|e| format!("the bucket's host name {host}: {e}"))?;
+                list.set_path("/");
+                Ok(Self {
+                    list,
+                    key_base: String::new(),
+                })
+            }
+        }
+    }
+
+    /// The URL of `key`. Keys are built from plain segments
+    /// ([`super::settings::is_plain_segment`]), which need no encoding.
+    fn object(&self, key: &str) -> url::Url {
+        let mut url = self.list.clone();
+        url.set_path(&format!("{}/{key}", self.key_base));
+        url
+    }
+}
+
 /// A client for one bucket.
 pub struct Client {
     http: reqwest::Client,
-    /// `<endpoint>/<bucket>`, without a trailing slash.
-    bucket_url: url::Url,
+    urls: BucketUrls,
+    /// The signing region.
+    region: String,
     credentials: Credentials,
 }
 
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
-            .field("bucket_url", &self.bucket_url.as_str())
+            .field("bucket_url", &self.urls.list.as_str())
+            .field("region", &self.region)
             .finish_non_exhaustive()
     }
 }
@@ -243,11 +290,16 @@ impl Client {
             .read_timeout(READ_TIMEOUT)
             .build()
             .map_err(|e| S3Error::request(Op::List, e))?;
-        let mut bucket_url = store.endpoint.url().clone();
-        bucket_url.set_path(store.bucket.as_str());
+        Self::with_http(store, http)
+    }
+
+    /// A client for the store's bucket that sends with `http`.
+    fn with_http(store: &Store, http: reqwest::Client) -> Result<Self, S3Error> {
+        let urls = BucketUrls::of(store).map_err(|why| S3Error::Response { op: Op::List, why })?;
         Ok(Self {
             http,
-            bucket_url,
+            urls,
+            region: store.region.as_str().to_owned(),
             credentials: Credentials::new(
                 store.access_key_id.expose(),
                 store.secret_access_key.expose(),
@@ -258,12 +310,8 @@ impl Client {
         })
     }
 
-    /// The URL of `key`. Keys are built from plain segments
-    /// ([`super::settings::is_plain_segment`]), which need no encoding.
     fn object_url(&self, key: &str) -> url::Url {
-        let mut url = self.bucket_url.clone();
-        url.set_path(&format!("{}/{key}", self.bucket_url.path()));
-        url
+        self.urls.object(key)
     }
 
     /// Sign `request` in place: `x-amz-date`, `x-amz-content-sha256` and
@@ -301,7 +349,7 @@ impl Client {
         let identity = self.credentials.clone().into();
         let params = v4::SigningParams::builder()
             .identity(&identity)
-            .region(REGION)
+            .region(&self.region)
             .name(SERVICE)
             .time(SystemTime::now())
             .settings(settings)
@@ -383,7 +431,7 @@ impl Client {
         let mut out = Listing::default();
         let mut token: Option<String> = None;
         for _ in 0..MAX_PAGES {
-            let mut url = self.bucket_url.clone();
+            let mut url = self.urls.list.clone();
             {
                 let mut q = url.query_pairs_mut();
                 q.append_pair("list-type", "2");
@@ -599,13 +647,15 @@ mod tests {
     };
 
     use super::*;
-    use crate::backup::settings::{Bucket, Endpoint};
+    use crate::backup::settings::{Bucket, Endpoint, Region};
 
     type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
     fn store(uri: &str) -> Result<Store> {
         Ok(Store {
             endpoint: Endpoint::parse(uri)?,
+            region: Region::parse(None)?,
+            addressing: Addressing::Path,
             bucket: Bucket::parse("judgebot-backups")?,
             prefix: Prefix::parse(Some("db"))?,
             access_key_id: ApiKey::from("AKIDEXAMPLE"),
@@ -637,16 +687,24 @@ mod tests {
         )
     }
 
+    fn signed_for(region: &str) -> impl Fn(&Request) -> bool {
+        let scope = format!("/{region}/s3/aws4_request");
+        move |r| {
+            r.headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|a| {
+                    a.starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+                        && a.contains(&scope)
+                        && a.contains("host;")
+                        && a.contains("x-amz-content-sha256")
+                        && !a.contains("very-secret")
+                })
+        }
+    }
+
     fn signed_for_r2(r: &Request) -> bool {
-        r.headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|a| {
-                a.starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
-                    && a.contains("/auto/s3/aws4_request")
-                    && a.contains("x-amz-content-sha256")
-                    && !a.contains("very-secret")
-            })
+        signed_for("auto")(r)
     }
 
     #[tokio::test]
@@ -813,6 +871,84 @@ mod tests {
             parse_error("<Error><Code>NoSuchBucket</Code></Error>"),
             (Some("NoSuchBucket".to_owned()), None)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn each_addressing_style_builds_its_urls() -> Result {
+        let mut s = store("https://s3.eu-west-1.amazonaws.com")?;
+        let path = BucketUrls::of(&s)?;
+        assert_eq!(
+            path.list.as_str(),
+            "https://s3.eu-west-1.amazonaws.com/judgebot-backups"
+        );
+        assert_eq!(
+            path.object("db/judgebot-20261009T041500Z.dump.gz").as_str(),
+            "https://s3.eu-west-1.amazonaws.com/judgebot-backups/db/judgebot-20261009T041500Z.dump.gz"
+        );
+        s.addressing = Addressing::VirtualHosted;
+        let virt = BucketUrls::of(&s)?;
+        assert_eq!(
+            virt.list.as_str(),
+            "https://judgebot-backups.s3.eu-west-1.amazonaws.com/"
+        );
+        assert_eq!(
+            virt.object("db/judgebot-20261009T041500Z.dump.gz").as_str(),
+            "https://judgebot-backups.s3.eu-west-1.amazonaws.com/db/judgebot-20261009T041500Z.dump.gz"
+        );
+        // A port stays on the host it belongs to.
+        let mut local = store("http://minio.lan:9000")?;
+        assert_eq!(
+            BucketUrls::of(&local)?.object("db/x").as_str(),
+            "http://minio.lan:9000/judgebot-backups/db/x"
+        );
+        local.addressing = Addressing::VirtualHosted;
+        assert_eq!(
+            BucketUrls::of(&local)?.object("db/x").as_str(),
+            "http://judgebot-backups.minio.lan:9000/db/x"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_virtual_hosted_store_gets_the_bucket_in_the_host_and_its_region() -> Result {
+        let server = MockServer::start().await;
+        let port = server.address().port();
+        let bucket_host = format!("judgebot-backups.s3.test:{port}");
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(header("host", bucket_host.as_str()))
+            .and(query_param("list-type", "2"))
+            .and(query_param("prefix", "db/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(page(
+                &[("db/judgebot-20261009T041500Z.dump.gz", 31_000_000)],
+                None,
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/db/judgebot-20261002T041500Z.dump.gz"))
+            .and(header("host", bucket_host.as_str()))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut s = store(&format!("http://s3.test:{port}"))?;
+        s.addressing = Addressing::VirtualHosted;
+        s.region = Region::parse(Some("eu-west-1"))?;
+        // The bucket's host name resolves to the mock server.
+        let http = reqwest::Client::builder()
+            .resolve("judgebot-backups.s3.test", *server.address())
+            .build()?;
+        let client = Client::with_http(&s, http)?;
+        let listing = client.list(&s.prefix).await?;
+        assert_eq!(listing.objects.len(), 1);
+        client
+            .delete("db/judgebot-20261002T041500Z.dump.gz")
+            .await?;
+        let requests = server.received_requests().await.unwrap_or_default();
+        assert!(requests.iter().all(signed_for("eu-west-1")), "{requests:?}");
         Ok(())
     }
 

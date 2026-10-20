@@ -71,7 +71,7 @@ init: the whole first load (migrate, cards, rules latest, aliases, notes, embed,
 aliases, notes: with no file, the lists this binary was built with (data/*.yaml), which refresh then keeps current; a file is yours, and refresh leaves it alone.";
 
 const BACKUP: &str = "\
-usage: judgebot backup <run | list | fetch <name> [file] | serve>
+usage: judgebot backup <run | list | fetch <name> [file] | serve | check>
 
   run          dump the database, upload it, prune old backups (scripts/backup-db.sh)
   list         the objects under the prefix, oldest first
@@ -79,9 +79,12 @@ usage: judgebot backup <run | list | fetch <name> [file] | serve>
                docker compose run --rm --no-deps -T backup fetch <name> > <name>
   serve        the backup service: a backup whenever the newest in the bucket is
                BACKUP_EVERY_DAYS old (default 7), checked hourly
+  check        read the settings and find pg_dump as run would, sending nothing
+               (scripts/deploy.sh runs it before a deploy changes anything)
 
-Settings come from .env.deploy (R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID,
-R2_SECRET_ACCESS_KEY, BACKUP_PREFIX, BACKUP_KEEP_DAYS, BACKUP_MIN_BYTES,
+Settings come from .env.deploy (BACKUP_S3_ENDPOINT, BACKUP_S3_REGION,
+BACKUP_S3_ADDRESSING, BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY_ID,
+BACKUP_S3_SECRET_ACCESS_KEY, BACKUP_PREFIX, BACKUP_KEEP_DAYS, BACKUP_MIN_BYTES,
 BACKUP_KEEP_LOCAL, BACKUP_EVERY_DAYS, JUDGE_ALERT_WEBHOOK) and, for run and
 serve, DATABASE_URL. See .env.deploy.example.";
 

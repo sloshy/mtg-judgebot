@@ -272,23 +272,28 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `DATABASE_URL` must be a direct connection, not a pooler in transaction mode.
 - **The weekly backup can run with no host cron.** The new `backup` compose service,
   off by default behind the `backup` profile (`COMPOSE_PROFILES=tunnel,backup`), dumps
-  the database, uploads it to R2 and prunes old copies, the same backup
-  `scripts/backup-db.sh` takes, with the same `.env.deploy` settings, object names and
-  format. It takes one whenever the newest backup in the bucket is `BACKUP_EVERY_DAYS`
+  the database, uploads it to an S3-compatible bucket and prunes old copies, the same
+  backup `scripts/backup-db.sh` takes, with the same `.env.deploy` settings, object
+  names and format. It takes one whenever the newest backup in the bucket is `BACKUP_EVERY_DAYS`
   old (new, default 7), checking hourly, so a restart does not reset the schedule and a
   cron'd script run counts. A failed attempt is retried after an hour, then less often,
   and `JUDGE_ALERT_WEBHOOK` (in `.env.deploy`) hears the first failure of a streak, a
   failure at a different step, and the recovery. It reaches Postgres over the compose
   network with the image's own `pg_dump` 16 (new in the image, about 6 MB unpacked), so
   it needs no Docker socket, and it reads `.env.deploy` and nothing of `.env` but
-  `JUDGE_LOCALE`. The upload carries the dump's SHA-256, which R2 checks. Its pruning
+  `JUDGE_LOCALE`. The upload carries the dump's SHA-256, which the store checks. Its pruning
   deletes only backup-named objects directly under the prefix, and never the two
   newest, however old, so a lapse longer than `BACKUP_KEEP_DAYS` cannot leave a single
   restore point (the script's pruning has no such floor).
-- **`judgebot backup run | list | fetch <name> [file] | serve`.** The service's commands
-  by hand: `docker compose run --rm backup run` takes one now, `list` prints the
-  objects, and `docker compose run --rm --no-deps -T backup fetch <name> > <name>`
-  downloads one for the restore drill. Each works on the script's backups too.
+- **`judgebot backup run | list | fetch <name> [file] | serve | check`.** The service's
+  commands by hand: `docker compose run --rm backup run` takes one now, `list` prints
+  the objects, and `docker compose run --rm --no-deps -T backup fetch <name> > <name>`
+  downloads one for the restore drill. Each works on the script's backups too. `check`
+  reads the settings and finds `pg_dump`, sending nothing. Settings that are not usable
+  are posted to `JUDGE_ALERT_WEBHOOK` by name, and `serve` then stays up refusing
+  rather than restarting with the same environment. `scripts/deploy.sh` runs `check`
+  with the new image before it changes anything when the `backup` profile is on, and
+  brings the `backup` service onto the new image once the deploy has succeeded.
 - **`judge-eval grade`.** The eval's answers are graded by a model (the synthesis
   model): whether each answer's ruling follows from its quotes, and whether it agrees
   with the gold reference (D28). `judge-eval grade <run.json>` grades a stored run
@@ -322,6 +327,14 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **Backups go to any S3-compatible store.** The backup's settings were Cloudflare R2's
+  and are now `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY_ID` and
+  `BACKUP_S3_SECRET_ACCESS_KEY`, with two new optional ones: `BACKUP_S3_REGION` (the
+  region requests are signed for, default `auto`, R2's) and `BACKUP_S3_ADDRESSING`
+  (`path`, the default, or `virtual-hosted`, which AWS recommends). `docs/DEPLOYMENT.md`
+  §6 gives the values for Cloudflare R2, AWS S3, Backblaze B2 and MinIO. The object
+  names are unchanged, so a bucket's backups keep listing, fetching and setting the
+  schedule. The `R2_*` names are refused, naming their replacements (Upgrading).
 - **One binary, `judgebot`, whose roles are launch options.** `bot`, `api` and `ingest`
   are now one program. `judgebot --discord --api --web --mcp --admin --jobs` runs any
   non-empty set of the bot, the JSON route, the web app, the MCP transport, the admin
@@ -481,8 +494,19 @@ of maintenance, take a backup, and update the checkout and the image together.
 
 **Before the deploy**
 
+- **Rename the backup's settings in `.env.deploy`.** They no longer assume Cloudflare
+  R2. Keep each value: `R2_ENDPOINT` becomes `BACKUP_S3_ENDPOINT`, `R2_BUCKET`
+  `BACKUP_S3_BUCKET`, `R2_ACCESS_KEY_ID` `BACKUP_S3_ACCESS_KEY_ID` and
+  `R2_SECRET_ACCESS_KEY` `BACKUP_S3_SECRET_ACCESS_KEY`; `sed -i 's/^R2_/BACKUP_S3_/'
+  .env.deploy` does all four. R2 needs nothing else: `BACKUP_S3_REGION` defaults to its
+  `auto`. Rename the lines rather than filling in the new example's blank
+  `BACKUP_S3_*=` lines as well: the last line of a name wins, a blank one too (the
+  script and `scripts/deploy.sh` refuse a name set twice). A set `R2_*` stops the
+  `backup` service, `scripts/backup-db.sh` and `scripts/deploy.sh`, each naming the
+  lines, so rename them right after `git pull`, before a cron'd script next runs and
+  before deploying. The deploy then recreates the `backup` service with them.
 - **Take a backup.** It is the only way back to 1.x (see *Rolling back* below).
-  `scripts/deploy.sh` takes one itself when `R2_BUCKET` is set in `.env.deploy`;
+  `scripts/deploy.sh` takes one itself when `BACKUP_S3_BUCKET` is set in `.env.deploy`;
   otherwise `scripts/backup-db.sh`, or `docker compose run --rm backup run` once the
   new compose file and image are in place.
 - **Update the compose file with the image.** This image cannot run the previous
@@ -550,16 +574,18 @@ and `scripts/config.sh` edits them):
   (default `en`). A bad `JUDGE_LOCALE` stops `judgebot`, the `judgebot ingest`
   commands that write data (they keep the spend ledger, whose alerts it sets the
   language of) and the `backup` service, which reads it from `.env` through Compose.
-- `.env.deploy`: `BACKUP_EVERY_DAYS` (the `backup` service's interval, default 7) and
-  `JUDGE_ALERT_WEBHOOK` (the `backup` service's alerts; it reads only that file).
-- Retired: `API_INTERFACES` (above).
+- `.env.deploy`: `BACKUP_EVERY_DAYS` (the `backup` service's interval, default 7),
+  `JUDGE_ALERT_WEBHOOK` (the `backup` service's alerts; it reads only that file),
+  `BACKUP_S3_REGION` (default `auto`) and `BACKUP_S3_ADDRESSING` (default `path`).
+- Retired: `API_INTERFACES` (above); `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` and
+  `R2_SECRET_ACCESS_KEY`, renamed `BACKUP_S3_*` (above).
 
 A bad value of any of these stops every binary that reads it, at startup.
 
 **The deploy**
 
 - **Deploy with `scripts/deploy.sh`** (after `git pull`). It sees a major upgrade from
-  1.x (`the new image's migrations: major-from-1.x`), takes the backup when R2 is
+  1.x (`the new image's migrations: major-from-1.x`), takes the backup when one is
   configured, removes the 1.x `bot` and `api` containers, and starts `judgebot` alone.
   Discord gets a maintenance reply while it migrates; the web app, the API on
   `127.0.0.1:8787` and the tunnel are down until it has, when the deploy starts the

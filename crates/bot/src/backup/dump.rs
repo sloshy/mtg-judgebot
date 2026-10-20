@@ -225,7 +225,7 @@ impl PgDump {
             .args(["--format=custom", "--no-password"])
             // Nothing inherited but what a program needs to run: an ambient
             // PGSERVICE or PGSSLMODE must not change what is dumped, and the
-            // R2 keys in this process's environment are not pg_dump's.
+            // store's keys in this process's environment are not pg_dump's.
             .env_clear()
             .envs(
                 INHERITED

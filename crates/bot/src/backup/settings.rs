@@ -16,14 +16,31 @@ use nonempty::NonEmpty;
 
 use crate::alert::{ALERT_WEBHOOK_ENV, AlertWebhook};
 
-/// `R2_ENDPOINT`: `https://<account-id>.r2.cloudflarestorage.com`.
-pub const ENDPOINT_ENV: &str = "R2_ENDPOINT";
-/// `R2_BUCKET`.
-pub const BUCKET_ENV: &str = "R2_BUCKET";
-/// `R2_ACCESS_KEY_ID`.
-pub const ACCESS_KEY_ID_ENV: &str = "R2_ACCESS_KEY_ID";
-/// `R2_SECRET_ACCESS_KEY`.
-pub const SECRET_ACCESS_KEY_ENV: &str = "R2_SECRET_ACCESS_KEY";
+/// `BACKUP_S3_ENDPOINT`: the S3 API's base URL, such as
+/// `https://s3.<region>.amazonaws.com` or
+/// `https://<account-id>.r2.cloudflarestorage.com`.
+pub const ENDPOINT_ENV: &str = "BACKUP_S3_ENDPOINT";
+/// `BACKUP_S3_REGION`: the region requests are signed for.
+pub const REGION_ENV: &str = "BACKUP_S3_REGION";
+/// `BACKUP_S3_ADDRESSING`: where the bucket goes in a request's URL.
+pub const ADDRESSING_ENV: &str = "BACKUP_S3_ADDRESSING";
+/// `BACKUP_S3_BUCKET`.
+pub const BUCKET_ENV: &str = "BACKUP_S3_BUCKET";
+/// `BACKUP_S3_ACCESS_KEY_ID`.
+pub const ACCESS_KEY_ID_ENV: &str = "BACKUP_S3_ACCESS_KEY_ID";
+/// `BACKUP_S3_SECRET_ACCESS_KEY`.
+pub const SECRET_ACCESS_KEY_ENV: &str = "BACKUP_S3_SECRET_ACCESS_KEY";
+/// The names the store's settings had before 2.0.0, when they were Cloudflare
+/// R2's, each with the variable that replaced it. A set one is refused
+/// ([`Problems`]) rather than ignored, which would leave the backup
+/// unconfigured, or read as an alias, which would keep two names for one
+/// setting.
+pub const RETIRED: [(&str, &str); 4] = [
+    ("R2_ENDPOINT", ENDPOINT_ENV),
+    ("R2_BUCKET", BUCKET_ENV),
+    ("R2_ACCESS_KEY_ID", ACCESS_KEY_ID_ENV),
+    ("R2_SECRET_ACCESS_KEY", SECRET_ACCESS_KEY_ENV),
+];
 /// `BACKUP_PREFIX`: the "directory" in the bucket.
 pub const PREFIX_ENV: &str = "BACKUP_PREFIX";
 /// `BACKUP_KEEP_DAYS`: backups older than this are pruned after an upload.
@@ -38,6 +55,10 @@ pub const EVERY_DAYS_ENV: &str = "BACKUP_EVERY_DAYS";
 /// `DATABASE_URL`: the database `pg_dump` reads.
 pub const DATABASE_URL_ENV: &str = "DATABASE_URL";
 
+/// The default signing region: what Cloudflare R2 documents, and what a
+/// store that does not check the region (`MinIO` with none configured)
+/// accepts. AWS and Backblaze B2 need their own.
+pub const DEFAULT_REGION: &str = "auto";
 /// The script's default prefix.
 pub const DEFAULT_PREFIX: &str = "db";
 /// The script's default retention.
@@ -91,13 +112,13 @@ fn problem(var: &'static str, expected: impl Into<String>) -> Problem {
 pub struct Endpoint(url::Url);
 
 impl Endpoint {
-    /// Parse `R2_ENDPOINT`.
+    /// Parse `BACKUP_S3_ENDPOINT`.
     ///
     /// # Errors
     /// What the value must be, when it is not that.
     pub fn parse(raw: &str) -> Result<Self, String> {
-        let expected = "an https:// URL with nothing after the host, such as \
-                        https://<account-id>.r2.cloudflarestorage.com";
+        let expected = "an https:// URL with nothing after the host and port, such as \
+                        https://s3.eu-west-1.amazonaws.com";
         let url = url::Url::parse(raw.trim()).map_err(|_| expected.to_owned())?;
         let plain = matches!(url.scheme(), "https" | "http")
             && url.host_str().is_some_and(|h| !h.is_empty())
@@ -131,6 +152,126 @@ impl Endpoint {
     pub fn is_tls(&self) -> bool {
         self.0.scheme() == "https"
     }
+
+    /// Whether the host is a name rather than an IP address, so a bucket can
+    /// be put in front of it ([`Addressing::VirtualHosted`]).
+    #[must_use]
+    pub fn is_domain(&self) -> bool {
+        matches!(self.0.host(), Some(url::Host::Domain(_)))
+    }
+}
+
+/// The region requests are signed for (`SigV4`'s credential scope):
+/// [`DEFAULT_REGION`] when unset, else up to 63 lowercase ASCII letters,
+/// digits, `-` and `_` (`us-east-1`, `us-west-004`, `auto`), lowercase as
+/// a bucket name is: the scope is compared as written, and no store names a
+/// region in capitals. It is part of the signed
+/// scope `<date>/<region>/s3/aws4_request`, so nothing else may reach it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Region(String);
+
+impl Region {
+    /// Parse `BACKUP_S3_REGION`; blank is [`DEFAULT_REGION`].
+    ///
+    /// # Errors
+    /// What the value must be, when it is not that.
+    pub fn parse(raw: Option<&str>) -> Result<Self, String> {
+        let r = raw.map(str::trim).unwrap_or_default();
+        if r.is_empty() {
+            return Ok(Self(DEFAULT_REGION.to_owned()));
+        }
+        if r.len() <= 63
+            && r.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+        {
+            Ok(Self(r.to_owned()))
+        } else {
+            Err(
+                "the store's region, such as auto (Cloudflare R2), eu-west-1 (AWS) or \
+                 us-west-004 (Backblaze B2): lowercase letters, digits, '-' and '_'"
+                    .to_owned(),
+            )
+        }
+    }
+
+    /// The region.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Region {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Where a request names the bucket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Addressing {
+    /// `<endpoint>/<bucket>/<key>`: what Cloudflare R2, Backblaze B2 and
+    /// `MinIO` take, and AWS for every bucket today. The default.
+    #[default]
+    Path,
+    /// `<bucket>.<endpoint host>/<key>`: what AWS recommends. Needs an endpoint host name (not an IP address) and, over
+    /// `https`, a bucket name without dots, which the store's wildcard
+    /// certificate does not cover.
+    VirtualHosted,
+}
+
+impl Addressing {
+    const ALL: [Self; 2] = [Self::Path, Self::VirtualHosted];
+
+    /// The variable's spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Path => "path",
+            Self::VirtualHosted => "virtual-hosted",
+        }
+    }
+
+    /// Parse `BACKUP_S3_ADDRESSING`; blank is [`Addressing::Path`].
+    ///
+    /// # Errors
+    /// What the value must be, when it is not that.
+    pub fn parse(raw: Option<&str>) -> Result<Self, String> {
+        let a = raw.map(str::trim).unwrap_or_default();
+        if a.is_empty() {
+            return Ok(Self::default());
+        }
+        Self::ALL
+            .into_iter()
+            .find(|s| s.as_str() == a)
+            .ok_or_else(|| "path or virtual-hosted".to_owned())
+    }
+
+    /// Whether `endpoint` and `bucket` can be addressed this way.
+    ///
+    /// # Errors
+    /// Why not, naming what to change.
+    pub fn check(self, endpoint: &Endpoint, bucket: &Bucket) -> Result<(), String> {
+        match self {
+            Self::VirtualHosted if !endpoint.is_domain() => Err(format!(
+                "set it to path: virtual-hosted needs a host name in {ENDPOINT_ENV}, not an IP \
+                 address"
+            )),
+            Self::VirtualHosted if endpoint.is_tls() && bucket.as_str().contains('.') => {
+                Err(format!(
+                    "set it to path: the store's certificate does not cover a virtual-hosted \
+                     name for a bucket with dots ({BUCKET_ENV})"
+                ))
+            }
+            Self::Path | Self::VirtualHosted => Ok(()),
+        }
+    }
+}
+
+impl fmt::Display for Addressing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl fmt::Debug for Endpoint {
@@ -139,14 +280,15 @@ impl fmt::Debug for Endpoint {
     }
 }
 
-/// A bucket name as S3 and R2 take it: 3 to 63 lowercase letters, digits,
+/// A bucket name as S3 takes it: 3 to 63 lowercase letters, digits,
 /// hyphens and dots, starting and ending with a letter or digit. It is a
-/// path segment of every request, so nothing else may reach the URL.
+/// path segment or a host label of every request, so nothing else may reach
+/// the URL.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bucket(String);
 
 impl Bucket {
-    /// Parse `R2_BUCKET`.
+    /// Parse `BACKUP_S3_BUCKET`.
     ///
     /// # Errors
     /// What the value must be, when it is not that.
@@ -280,16 +422,20 @@ impl Days {
 /// `fetch` need.
 #[derive(Clone, Debug)]
 pub struct Store {
-    /// `R2_ENDPOINT`.
+    /// `BACKUP_S3_ENDPOINT`.
     pub endpoint: Endpoint,
-    /// `R2_BUCKET`.
+    /// `BACKUP_S3_REGION`.
+    pub region: Region,
+    /// `BACKUP_S3_ADDRESSING`, checked against the endpoint and bucket.
+    pub addressing: Addressing,
+    /// `BACKUP_S3_BUCKET`.
     pub bucket: Bucket,
     /// `BACKUP_PREFIX`.
     pub prefix: Prefix,
-    /// `R2_ACCESS_KEY_ID`. Not secret by itself, and shown in R2's dashboard
-    /// beside the token; never logged all the same.
+    /// `BACKUP_S3_ACCESS_KEY_ID`. Not secret by itself, and shown in the
+    /// store's dashboard beside the key; never logged all the same.
     pub access_key_id: ApiKey,
-    /// `R2_SECRET_ACCESS_KEY`.
+    /// `BACKUP_S3_SECRET_ACCESS_KEY`.
     pub secret_access_key: ApiKey,
 }
 
@@ -489,6 +635,20 @@ impl Collect {
         }
     }
 
+    /// [`Collect::take`], except that a missing value (`quiet`) is not a
+    /// problem of its own: a retired name standing in for it already is.
+    fn take_or_quiet<T>(
+        &mut self,
+        var: &'static str,
+        quiet: bool,
+        r: Result<T, String>,
+    ) -> Option<T> {
+        match r {
+            Err(_) if quiet => None,
+            r => self.take(var, r),
+        }
+    }
+
     fn finish<T>(self, value: Option<T>) -> Result<T, Problems> {
         match (NonEmpty::from_vec(self.0), value) {
             (None, Some(v)) => Ok(v),
@@ -511,25 +671,94 @@ fn required(env: &impl Fn(&str) -> Option<String>, var: &str) -> Result<String, 
     get(env, var).ok_or_else(|| "is not set".to_owned())
 }
 
+/// A problem for every [retired](RETIRED) name that is set, saying which
+/// line replaces it (or, when that is set too, to remove it), never its
+/// value. Returns the successors those problems already cover, whose own
+/// "is not set" would say the same thing twice.
+fn retired(env: &impl Fn(&str) -> Option<String>, c: &mut Collect) -> Vec<&'static str> {
+    let mut covered = Vec::new();
+    for (old, new) in RETIRED {
+        if get(env, old).is_none() {
+            continue;
+        }
+        let expected = if get(env, new).is_some() {
+            format!("no longer read since 2.0.0, and {new} is set: remove the {old} line")
+        } else {
+            covered.push(new);
+            format!("no longer read since 2.0.0: rename the line to {new}=, keeping its value")
+        };
+        c.0.push(problem(old, expected));
+    }
+    covered
+}
+
 fn store_parts(env: &impl Fn(&str) -> Option<String>, c: &mut Collect) -> Option<Store> {
-    let endpoint = c.take(
+    let covered = retired(env, c);
+    let quiet = |var| covered.contains(&var);
+    let endpoint = c.take_or_quiet(
         ENDPOINT_ENV,
+        quiet(ENDPOINT_ENV),
         required(env, ENDPOINT_ENV).and_then(|v| Endpoint::parse(&v)),
     );
-    let bucket = c.take(
+    let region = c.take(REGION_ENV, Region::parse(get(env, REGION_ENV).as_deref()));
+    let addressing = c.take(
+        ADDRESSING_ENV,
+        Addressing::parse(get(env, ADDRESSING_ENV).as_deref()),
+    );
+    let bucket = c.take_or_quiet(
         BUCKET_ENV,
+        quiet(BUCKET_ENV),
         required(env, BUCKET_ENV).and_then(|v| Bucket::parse(&v)),
     );
     let prefix = c.take(PREFIX_ENV, Prefix::parse(get(env, PREFIX_ENV).as_deref()));
-    let key = c.take(ACCESS_KEY_ID_ENV, required(env, ACCESS_KEY_ID_ENV));
-    let secret = c.take(SECRET_ACCESS_KEY_ENV, required(env, SECRET_ACCESS_KEY_ENV));
+    let key = c.take_or_quiet(
+        ACCESS_KEY_ID_ENV,
+        quiet(ACCESS_KEY_ID_ENV),
+        required(env, ACCESS_KEY_ID_ENV),
+    );
+    let secret = c.take_or_quiet(
+        SECRET_ACCESS_KEY_ENV,
+        quiet(SECRET_ACCESS_KEY_ENV),
+        required(env, SECRET_ACCESS_KEY_ENV),
+    );
+    let addressing = match (addressing, &endpoint, &bucket) {
+        (Some(a), Some(e), Some(b)) => c.take(ADDRESSING_ENV, a.check(e, b).map(|()| a)),
+        (a, _, _) => a,
+    };
     Some(Store {
         endpoint: endpoint?,
+        region: region?,
+        addressing: addressing?,
         bucket: bucket?,
         prefix: prefix?,
         access_key_id: ApiKey::from(key?.trim()),
         secret_access_key: ApiKey::from(secret?.trim()),
     })
+}
+
+/// `JUDGE_ALERT_WEBHOOK` in `JUDGE_LOCALE`, read on its own: where to say
+/// that the rest of the settings are not usable ([`Problems`]), which
+/// [`Settings::from_env`] cannot return beside its error. A malformed
+/// webhook is `None` (that is one of the problems), and a malformed locale
+/// is the default.
+pub fn alert_from_env(env: impl Fn(&str) -> Option<String>) -> Option<AlertWebhook> {
+    let hook = AlertWebhook::parse(&get(&env, ALERT_WEBHOOK_ENV)?).ok()?;
+    let locale = Locale::parse_setting(get(&env, LOCALE_ENV).as_deref()).unwrap_or_default();
+    Some(hook.in_locale(locale))
+}
+
+impl Problems {
+    /// The variables at fault, each once, in the order reported.
+    #[must_use]
+    pub fn vars(&self) -> Vec<&'static str> {
+        let mut vars: Vec<&'static str> = Vec::new();
+        for p in &self.0 {
+            if !vars.contains(&p.var) {
+                vars.push(p.var);
+            }
+        }
+        vars
+    }
 }
 
 impl Store {
@@ -756,6 +985,216 @@ mod tests {
             "{shown}"
         );
         Ok(())
+    }
+
+    /// The store settings of each documented provider, as the runbook gives
+    /// them, and what they parse to.
+    #[test]
+    fn each_providers_settings_parse() -> Result<(), Problems> {
+        let keys = [
+            (ACCESS_KEY_ID_ENV, "AKIDEXAMPLE"),
+            (SECRET_ACCESS_KEY_ENV, "very-secret"),
+            (BUCKET_ENV, "judgebot-backups"),
+        ];
+        for (provider, vars, region, addressing, tls) in [
+            (
+                "Cloudflare R2",
+                &[(ENDPOINT_ENV, "https://abc123.r2.cloudflarestorage.com")][..],
+                "auto",
+                Addressing::Path,
+                true,
+            ),
+            (
+                "AWS S3",
+                &[
+                    (ENDPOINT_ENV, "https://s3.eu-west-1.amazonaws.com"),
+                    (REGION_ENV, "eu-west-1"),
+                    (ADDRESSING_ENV, "virtual-hosted"),
+                ],
+                "eu-west-1",
+                Addressing::VirtualHosted,
+                true,
+            ),
+            (
+                "Backblaze B2",
+                &[
+                    (ENDPOINT_ENV, "https://s3.us-west-004.backblazeb2.com"),
+                    (REGION_ENV, "us-west-004"),
+                ],
+                "us-west-004",
+                Addressing::Path,
+                true,
+            ),
+            (
+                "MinIO",
+                &[
+                    (ENDPOINT_ENV, "http://minio:9000"),
+                    (REGION_ENV, "us-east-1"),
+                    (ADDRESSING_ENV, "path"),
+                ],
+                "us-east-1",
+                Addressing::Path,
+                false,
+            ),
+        ] {
+            let mut all = keys.to_vec();
+            all.extend_from_slice(vars);
+            let s = Store::from_env(env(&all))?;
+            assert_eq!(s.region.as_str(), region, "{provider}");
+            assert_eq!(s.addressing, addressing, "{provider}");
+            assert_eq!(s.endpoint.is_tls(), tls, "{provider}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_r2_names_are_refused_with_their_replacements() -> Result<(), &'static str> {
+        // The pre-2.0 file, renamed nowhere: each old line is named with the
+        // one that replaces it, the new ones are not reported missing on top,
+        // and no value is quoted.
+        let old = [
+            ("R2_ENDPOINT", "https://abc123.r2.cloudflarestorage.com"),
+            ("R2_BUCKET", "judgebot-backups"),
+            ("R2_ACCESS_KEY_ID", "AKIDEXAMPLE"),
+            ("R2_SECRET_ACCESS_KEY", "very-secret"),
+        ];
+        let problems = Store::from_env(env(&old)).err().ok_or("accepted")?;
+        let named: Vec<(&str, &str)> = problems
+            .0
+            .iter()
+            .map(|p| (p.var, p.expected.as_str()))
+            .collect();
+        assert_eq!(
+            named.iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+            [
+                "R2_ENDPOINT",
+                "R2_BUCKET",
+                "R2_ACCESS_KEY_ID",
+                "R2_SECRET_ACCESS_KEY"
+            ]
+        );
+        for ((old, new), (_, expected)) in RETIRED.iter().zip(&named) {
+            assert!(
+                expected.contains(&format!("rename the line to {new}=")),
+                "{old}: {expected}"
+            );
+        }
+        let text = problems.to_string();
+        for (_, value) in old {
+            assert!(!text.contains(value), "{text}");
+        }
+
+        // Renamed but the old line kept: remove it, and the rest still parses.
+        let mut both = FULL.to_vec();
+        both.push(("R2_SECRET_ACCESS_KEY", "very-secret"));
+        let problems = Settings::from_env(env(&both)).err().ok_or("accepted")?;
+        assert_eq!(problems.0.len(), 1);
+        assert!(
+            problems
+                .0
+                .head
+                .expected
+                .contains("remove the R2_SECRET_ACCESS_KEY line"),
+            "{problems}"
+        );
+
+        // One left behind: it is named, and the others' new names are read.
+        let mut half = FULL.to_vec();
+        half.retain(|(k, _)| *k != BUCKET_ENV);
+        half.push(("R2_BUCKET", "judgebot-backups"));
+        let problems = Store::from_env(env(&half)).err().ok_or("accepted")?;
+        assert_eq!(
+            problems.0.iter().map(|p| p.var).collect::<Vec<_>>(),
+            ["R2_BUCKET"]
+        );
+
+        // Blank is unset, as everywhere here: an old example's empty lines pass.
+        let mut blank = FULL.to_vec();
+        blank.extend(RETIRED.iter().map(|(old, _)| (*old, "")));
+        assert!(Settings::from_env(env(&blank)).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn regions_and_addressing_are_checked() {
+        assert_eq!(Region::parse(None).map(|r| r.0), Ok("auto".to_owned()));
+        assert_eq!(Region::parse(Some(" ")).map(|r| r.0), Ok("auto".to_owned()));
+        for ok in ["us-east-1", "us-west-004", "default", "fr_par"] {
+            assert!(Region::parse(Some(ok)).is_ok(), "{ok}");
+        }
+        for bad in ["us east", "eu/west", "a\nb", "EU-WEST-1", &"a".repeat(64)] {
+            assert!(Region::parse(Some(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(Addressing::parse(None), Ok(Addressing::Path));
+        assert_eq!(
+            Addressing::parse(Some("virtual-hosted")),
+            Ok(Addressing::VirtualHosted)
+        );
+        for bad in ["virtual", "Path", "vhost"] {
+            assert!(Addressing::parse(Some(bad)).is_err(), "{bad}");
+        }
+
+        // Virtual-hosted needs a name to put the bucket in front of, and over
+        // https a bucket the store's wildcard certificate covers.
+        let refused = |endpoint: &str, bucket: &str| {
+            let mut vars = FULL.to_vec();
+            vars.retain(|(k, _)| *k != ENDPOINT_ENV && *k != BUCKET_ENV);
+            vars.extend([
+                (ENDPOINT_ENV, endpoint),
+                (BUCKET_ENV, bucket),
+                (ADDRESSING_ENV, "virtual-hosted"),
+            ]);
+            Store::from_env(env(&vars))
+                .err()
+                .map(|p| p.0.iter().map(|p| p.var).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            refused("http://127.0.0.1:9000", "judgebot-backups"),
+            Some(vec![ADDRESSING_ENV])
+        );
+        assert_eq!(
+            refused("https://s3.eu-west-1.amazonaws.com", "backups.example.com"),
+            Some(vec![ADDRESSING_ENV])
+        );
+        assert_eq!(
+            refused("http://minio.lan:9000", "backups.example.com"),
+            None
+        );
+        assert_eq!(
+            refused("https://s3.eu-west-1.amazonaws.com", "judgebot-backups"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_alert_is_read_apart_from_the_settings_it_reports() {
+        // The store refused, the webhook still found, in JUDGE_LOCALE.
+        let vars = [
+            ("R2_BUCKET", "judgebot-backups"),
+            (ALERT_WEBHOOK_ENV, "https://discord.com/api/webhooks/1/tok"),
+            (LOCALE_ENV, "qps"),
+        ];
+        let problems = Settings::from_env(env(&vars)).err();
+        assert_eq!(
+            problems.as_ref().map(Problems::vars),
+            Some(vec![
+                "R2_BUCKET",
+                ENDPOINT_ENV,
+                ACCESS_KEY_ID_ENV,
+                SECRET_ACCESS_KEY_ENV,
+                DATABASE_URL_ENV
+            ])
+        );
+        let hook = alert_from_env(env(&vars));
+        assert_eq!(hook.as_ref().map(AlertWebhook::locale), Some(Locale::Stub));
+        // A malformed webhook is no webhook; a malformed locale is English.
+        assert!(alert_from_env(env(&[(ALERT_WEBHOOK_ENV, "http://x.example/h")])).is_none());
+        assert!(alert_from_env(env(&[])).is_none());
+        let en = alert_from_env(env(&[
+            (ALERT_WEBHOOK_ENV, "https://discord.com/api/webhooks/1/tok"),
+            (LOCALE_ENV, "xx"),
+        ]));
+        assert_eq!(en.as_ref().map(AlertWebhook::locale), Some(Locale::En));
     }
 
     #[test]

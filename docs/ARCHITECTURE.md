@@ -289,7 +289,8 @@ process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, 
   (`migrate::rollback_refusal`) unless it stays within a major.
 - `judgebot ingest <cmd>` is the data command line.
 - `judgebot backup <run|list|fetch|serve>` is the database backup (`judge_bot::backup`,
-  D26): `pg_dump -Fc` over the network, gzipped, uploaded to R2 by a `SigV4` client of
+  D26): `pg_dump -Fc` over the network, gzipped, uploaded to an S3-compatible store
+  (`BACKUP_S3_*`: endpoint, region, path-style or virtual-hosted) by a `SigV4` client of
   four requests, pruned past `BACKUP_KEEP_DAYS` after the upload. `serve` checks the
   bucket hourly and takes a backup when the newest `judgebot-<stamp>.dump.gz` is
   `BACKUP_EVERY_DAYS` old. It writes what `scripts/backup-db.sh` writes, so each reads

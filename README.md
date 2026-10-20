@@ -178,7 +178,8 @@ over its gateway connection. To publish the web app, set `COMPOSE_PROFILES=publi
 80 and 443 with a Let's Encrypt certificate. A reverse proxy of your own, or a [Cloudflare
 Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/)
 with no open ports, works instead. `docs/DEPLOYMENT.md` is the runbook. It covers the
-three routes, protecting the model bill, and weekly backups to R2.
+three routes, protecting the model bill, and weekly backups to S3-compatible storage
+(Cloudflare R2, AWS S3, Backblaze B2, MinIO).
 
 ## Evaluation
 

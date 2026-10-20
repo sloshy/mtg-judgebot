@@ -496,7 +496,7 @@ handling lives, so you can read further.
 | New CR release | daily scrape of Wizards' page, version compared before download |
 | Scryfall data drift | daily bulk re-sync, with content-hashed ruling keys that keep identity |
 | Prompt or schema drift breaking the wire format | golden request fixtures pinned byte-for-byte, and the system prompt SHA pinned |
-| Losing the database (re-embedding costs money) | weekly `pg_dump` to R2 with a restore drill |
+| Losing the database (re-embedding costs money) | weekly `pg_dump` to an S3-compatible bucket with a restore drill |
 | Unknown config keys silently ignored | `deny_unknown_fields` and "this knob would be ignored" errors at load |
 
 ---
@@ -689,8 +689,8 @@ roles are launch options (D25), reached through a bundled Caddy: on the host's l
 by default, at a public HTTPS name with a Let's Encrypt certificate under the `public`
 profile, or through a Cloudflare Tunnel with no open inbound port (D41). It has a
 daily data refresh that the running process schedules in the database rather than a
-host cron job (D24), weekly backups to R2 from an opt-in container that keeps its
-schedule in the bucket (D26). `docs/DEPLOYMENT.md` is the runbook.
+host cron job (D24), weekly backups to any S3-compatible store from an opt-in container
+that keeps its schedule in the bucket (D26). `docs/DEPLOYMENT.md` is the runbook.
 
 ---
 

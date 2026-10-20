@@ -23,8 +23,8 @@
 #
 # The new image says first what its migrations are (`judgebot ingest
 # upgrade`). A major upgrade's cannot run beside the old release, so: a backup
-# is taken when one is configured (.env.deploy's R2_BUCKET; DEPLOY_SKIP_BACKUP=1
-# skips it), the new container starts beside the old one and answers every
+# is taken when one is configured (.env.deploy's BACKUP_S3_BUCKET;
+# DEPLOY_SKIP_BACKUP=1 skips it), the new container starts beside the old one and answers every
 # question with a maintenance reply, the old one is stopped as soon as the new
 # one listens, and the new one migrates once it has gone and becomes healthy.
 # From a 1.x release, whose processes hold no schema lock, the old container
@@ -33,6 +33,13 @@
 # backup. With JUDGE_AUTO_MIGRATE=false the new container would never migrate
 # a major, so it is refused before anything changes, with the steps to
 # migrate by hand first.
+#
+# The backup's settings are checked before anything changes too: the
+# pre-2.0.0 R2_* names, a BACKUP_S3_* variable set twice in .env.deploy, and,
+# when the `backup` profile is on, the new image's `judgebot backup check`.
+# Once the deploy has succeeded, the `backup` service is brought up to date
+# (`up -d --no-deps backup`: the new image and the current .env.deploy). It
+# holds no state but the bucket, and a backup cut short uploads nothing.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -61,6 +68,8 @@ finish() {
     kept="the old container was being stopped and the new one is serving; check docker compose ps"
   elif [ "$stage" = major ]; then
     kept="this was a major upgrade and the old container has stopped, so nothing is serving questions; the database may be partly migrated. Check docker compose logs $service; to go back, restore the backup taken before it and deploy the previous release (docs/DEPLOYMENT.md, Rolling back)"
+  elif [ "$stage" = backup ]; then
+    kept="the new container is serving, but the backup service could not be brought up to date; check docker compose ps backup and docker compose logs backup"
   elif [ "$stage" = proxy ]; then
     kept="the new container is serving, but the proxy in front of it did not load proxy/Caddyfile; check docker compose logs proxy"
     [ -z "${edge:-}" ] || kept="the new container is serving, but the proxy or the public site (edge) in front of it did not start or load its Caddyfile; check docker compose logs proxy edge"
@@ -93,6 +102,28 @@ if docker compose config --services 2>/dev/null | grep -qx edge; then
   docker compose run --rm --no-deps -T edge caddy validate --config /etc/caddy/edge.Caddyfile --adapter caddyfile >/dev/null 2>&1 ||
     die "proxy/edge.Caddyfile does not load, or JUDGE_DOMAIN in .env is not a host name: docker compose run --rm --no-deps edge caddy validate --config /etc/caddy/edge.Caddyfile --adapter caddyfile"
 fi
+
+# The backup's settings in .env.deploy, for every kind of deploy: a refused
+# backup service stops taking backups, which is noticed only when one is
+# needed. R2_* are the names before 2.0.0, which the backup now refuses.
+if [ -f .env.deploy ]; then
+  retired="$(grep -Eo '^[[:space:]]*(export[[:space:]]+)?R2_(ENDPOINT|BUCKET|ACCESS_KEY_ID|SECRET_ACCESS_KEY)=[[:space:]]*([^[:space:]"#'"'"']|"[^"]|'"'"'[^'"'"'])' .env.deploy |
+    sed -E 's/^[[:space:]]*(export[[:space:]]+)?(R2_[A-Z_]+)=.*/\2/' | sort -u | tr '\n' ' ' || true)"
+  if [ -n "$retired" ]; then
+    stage=refused
+    die ".env.deploy names the backup's store with ${retired% }, which 2.0.0 no longer reads. Rename each line, keeping its value (sed -i 's/^R2_/BACKUP_S3_/' .env.deploy does all four): R2_ENDPOINT= to BACKUP_S3_ENDPOINT=, R2_BUCKET= to BACKUP_S3_BUCKET=, R2_ACCESS_KEY_ID= to BACKUP_S3_ACCESS_KEY_ID=, R2_SECRET_ACCESS_KEY= to BACKUP_S3_SECRET_ACCESS_KEY= (docs/DEPLOYMENT.md §6)"
+  fi
+  # A later line wins, a blank one too: a pasted example line would unset
+  # what the line above it set.
+  twice="$(grep -Eo '^[[:space:]]*(export[[:space:]]+)?BACKUP_S3_[A-Z_]+=' .env.deploy |
+    sed -E 's/^[[:space:]]*(export[[:space:]]+)?//; s/=$//' | sort | uniq -d | tr '\n' ' ' || true)"
+  if [ -n "$twice" ]; then
+    stage=refused
+    die ".env.deploy sets ${twice% } more than once, and the last line wins (a blank one unsets it): keep one line each"
+  fi
+fi
+backup=""
+docker compose config --services 2>/dev/null | grep -qx backup && backup=backup
 
 case "${1:-}" in
   "")
@@ -155,16 +186,30 @@ if [ "$upgrade" != in-place ] && [ "$auto_migrate" = off ]; then
   die "the new image's migrations are a major upgrade ($upgrade) and .env sets JUDGE_AUTO_MIGRATE=false, so the new container would never migrate. Migrate by hand, then run this again: $stop_hint; docker compose run --rm refresh migrate; scripts/deploy.sh${1:+ $1} (docs/DEPLOYMENT.md, Releases with a migration)"
 fi
 
+# The backup service runs the new image too: its settings are checked by it
+# now, while the deploy is watched, rather than when it is next recreated.
+if [ -n "$backup" ]; then
+  log "checking the backup service's settings with the new image"
+  backup_log="$(mktemp)"
+  if ! docker compose run --rm --no-deps -T backup check </dev/null >"$backup_log" 2>&1; then
+    tail -n 20 "$backup_log" >&2
+    rm -f "$backup_log"
+    stage=refused
+    die "the backup service's settings are not usable with the new image (its log is above); fix .env.deploy, or take backup out of COMPOSE_PROFILES: docker compose run --rm --no-deps backup check"
+  fi
+  rm -f "$backup_log"
+fi
+
 # A major upgrade cannot be rolled back without the database as it was.
 if [ "$upgrade" != in-place ]; then
   if [ "${DEPLOY_SKIP_BACKUP:-}" = 1 ]; then
     log "a major upgrade, and DEPLOY_SKIP_BACKUP=1: no backup taken first"
-  elif [ -f .env.deploy ] && grep -Eq '^R2_BUCKET=.+' .env.deploy; then
+  elif [ -f .env.deploy ] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?BACKUP_S3_BUCKET=.+' .env.deploy; then
     log "a major upgrade: taking a backup first"
     docker compose run --rm backup run ||
       die "the backup before a major upgrade failed; fix it, or deploy with DEPLOY_SKIP_BACKUP=1 to go on without one"
   else
-    log "a major upgrade and no backup configured (.env.deploy R2_BUCKET): it cannot be rolled back without one (docs/DEPLOYMENT.md §6)"
+    log "a major upgrade and no backup configured (.env.deploy BACKUP_S3_BUCKET): it cannot be rolled back without one (docs/DEPLOYMENT.md §6)"
   fi
 fi
 
@@ -372,4 +417,10 @@ reload() {
 }
 reload proxy Caddyfile
 [ -z "$edge" ] || reload edge edge.Caddyfile
+# The backup service onto the new image and the current .env.deploy, checked
+# above; nothing happens when it already runs both.
+if [ -n "$backup" ]; then
+  stage=backup
+  docker compose up -d --no-deps backup
+fi
 log "deployed: $(docker inspect -f '{{.Name}} {{.Config.Image}}' "$new")"

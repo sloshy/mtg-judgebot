@@ -1,5 +1,5 @@
-//! `judgebot backup` — the database backup to Cloudflare R2: argument
-//! parsing over `judge_bot::backup`.
+//! `judgebot backup` — the database backup to an S3-compatible store:
+//! argument parsing over `judge_bot::backup`.
 //!
 //! ```text
 //! judgebot backup run                 # dump, upload, prune now (what scripts/backup-db.sh does)
@@ -7,15 +7,21 @@
 //! judgebot backup fetch <name> [file] # download one to <file>, or to standard output
 //! judgebot backup serve               # the `backup` compose service: a backup whenever the
 //!                                     #   newest is BACKUP_EVERY_DAYS old
+//! judgebot backup check               # the settings and pg_dump, nothing sent (scripts/deploy.sh)
 //! ```
 //!
 //! The settings are the ones `scripts/backup-db.sh` reads from `.env.deploy`
-//! (`R2_*`, `BACKUP_*`, `JUDGE_ALERT_WEBHOOK`), plus `DATABASE_URL` for `run`
+//! (`BACKUP_S3_*`, `BACKUP_*`, `JUDGE_ALERT_WEBHOOK`), plus `DATABASE_URL` for `run`
 //! and `serve`. A `.env.deploy`, then a `.env`, in the working directory are
 //! loaded first, and the process environment wins: the compose service has
 //! neither file and gets `.env.deploy` as its `env_file` and `DATABASE_URL`
 //! from the compose file, never `.env`. Logs go to standard error, so
 //! `list` and `fetch` can write to standard output.
+//!
+//! Settings that are not usable stop `run` and `serve` with every problem
+//! named, and are posted to `JUDGE_ALERT_WEBHOOK` when that one variable can
+//! be read on its own: an unattended service must not stop taking backups
+//! silently. `serve` then stays up, refusing, until it is stopped (D26).
 
 use std::{ffi::OsString, path::PathBuf};
 
@@ -23,7 +29,7 @@ use anyhow::Result;
 use judge_bot::backup::{
     self, Backup, Output,
     schedule::Attempt,
-    settings::{Settings, Store},
+    settings::{self, Problems, Settings, Store},
 };
 
 /// What to do.
@@ -42,6 +48,9 @@ pub enum Command {
     },
     /// The schedule, forever.
     Serve,
+    /// Read the settings and find `pg_dump` as `run` would, and send
+    /// nothing: exit 0 when a backup could be attempted.
+    Check,
 }
 
 /// What the command line asked for.
@@ -70,6 +79,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Launch> {
         Some("run") => Command::Run,
         Some("list") => Command::List,
         Some("serve") => Command::Serve,
+        Some("check") => Command::Check,
         Some("fetch") => {
             let name = args.next().ok_or_else(|| {
                 bad("fetch needs the object's name (judgebot backup list)".to_owned())
@@ -129,8 +139,13 @@ pub async fn run(cmd: Command) -> Result<()> {
             }
             Ok(())
         }
+        Command::Check => {
+            drop(Backup::start(Settings::from_env(env)?).await?);
+            tracing::info!("the backup settings are usable");
+            Ok(())
+        }
         Command::Run => {
-            let backup = Backup::start(Settings::from_env(env)?).await?;
+            let backup = Backup::start(told(env).await?).await?;
             match backup.run_now().await {
                 Attempt::Done { .. } => Ok(()),
                 Attempt::Failed { stage, name } => anyhow::bail!(
@@ -142,10 +157,53 @@ pub async fn run(cmd: Command) -> Result<()> {
             }
         }
         Command::Serve => {
-            let backup = Backup::start(Settings::from_env(env)?).await?;
+            let settings = match told(env).await {
+                Ok(s) => s,
+                Err(problems) => return refuse_until_stopped(problems).await,
+            };
+            let backup = Backup::start(settings).await?;
             match backup::serve(backup).await {}
         }
     }
+}
+
+/// The settings, or their problems after telling `JUDGE_ALERT_WEBHOOK`
+/// about them (by variable name), when it can be read on its own.
+async fn told(env: impl Fn(&str) -> Option<String> + Copy) -> Result<Settings, Problems> {
+    let problems = match Settings::from_env(env) {
+        Ok(s) => return Ok(s),
+        Err(p) => p,
+    };
+    if let Some(hook) = settings::alert_from_env(env) {
+        backup::tell_unusable(&problems, &hook).await;
+    } else {
+        tracing::warn!("no usable JUDGE_ALERT_WEBHOOK: nobody is told but this log");
+    }
+    Err(problems)
+}
+
+/// `serve` with settings that are not usable: say so now and every
+/// [`backup::CHECK_EVERY`], and exit (non-zero) only when stopped. Exiting
+/// at once would only have Docker restart the container with the same
+/// environment, since Compose reads `env_file` when it creates a container,
+/// not when it restarts one, and alert again on every restart. The fix is
+/// an edited `.env.deploy` and `docker compose up -d`, which recreates it.
+async fn refuse_until_stopped(problems: Problems) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = signal(SignalKind::terminate())?;
+    let mut int = signal(SignalKind::interrupt())?;
+    let mut every = tokio::time::interval(backup::CHECK_EVERY);
+    loop {
+        tokio::select! {
+            _ = term.recv() => break,
+            _ = int.recv() => break,
+            _ = every.tick() => tracing::error!(
+                "{problems}\nNo backup is taken until .env.deploy is fixed and \
+                 `docker compose up -d` recreates this service."
+            ),
+        }
+    }
+    Err(problems.into())
 }
 
 #[cfg(test)]
@@ -162,6 +220,7 @@ mod tests {
             (&["run"][..], Command::Run),
             (&["list"], Command::List),
             (&["serve"], Command::Serve),
+            (&["check"], Command::Check),
             (
                 &["fetch", "judgebot-20261009T041500Z.dump.gz"],
                 Command::Fetch {

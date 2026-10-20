@@ -798,8 +798,8 @@ What follows:
 - **One spend meter.** With `JUDGE_BUDGET_PERIOD=process` the bot and the web app now share
   one `JUDGE_MAX_USD`, where the two processes had one each. `day` and `month` were
   already shared (D19).
-- **The backup and `judge-config` stay separate containers.** The backup reads R2
-  credentials from `.env.deploy`, which must stay out of the internet-facing process
+- **The backup and `judge-config` stay separate containers.** The backup reads the object
+  store's credentials from `.env.deploy`, which must stay out of the internet-facing process
   (D15), so it is the `backup` service rather than a role (D26). `judge-config` edits `.env` and `judge.toml` on localhost and has no business in
   a process the public reaches.
 - **Safe to run twice.** The refresh lease makes a second `--jobs` process safe, and the
@@ -862,7 +862,7 @@ needs neither the socket nor a host scheduler.
   the value. Keys and the database password are `ApiKey`s, redacted in `Debug`.
 - **Credentials stay separated (D15).** The service reads `.env.deploy` and is given
   `DATABASE_URL` by the compose file. It has no `env_file: .env`, so it holds no model
-  or Discord keys, and the internet-facing `judgebot` still holds no R2 keys.
+  or Discord keys, and the internet-facing `judgebot` still holds no bucket keys.
   `pg_dump` gets the database password in its environment, never its arguments.
 
 **`pg_dump` comes from PGDG, binary only.** Debian bookworm's client is 15, and `pg_dump`
@@ -884,7 +884,7 @@ and `PATH`, `HOME`, `TMPDIR`, nothing else of the process's.
   differs per architecture.
 - *A second image for the backup* (built `FROM postgres:16`). Another tag to publish,
   pin and roll back in step with the first, for a few megabytes.
-- *A role of `judgebot`.* The R2 keys can delete every backup; they would sit in the
+- *A role of `judgebot`.* The bucket's keys can delete every backup; they would sit in the
   internet-facing process.
 
 **The S3 client is four signed requests.** List (`ListObjectsV2`), put, get and delete,
@@ -892,13 +892,13 @@ signed with `aws-sigv4` and sent with reqwest, the response XML read with `roxml
 All three were already in the dependency graph (the Anthropic AWS endpoints, resvg), so
 the change adds no crate that is built (the lockfile gains a wasm-only `wasm-streams`
 entry, from reqwest's `stream` feature). An upload is one `PUT` streamed from the file, with its SHA-256
-signed in `x-amz-content-sha256`, so R2 refuses bytes that differ from the dump.
+signed in `x-amz-content-sha256`, so the store refuses bytes that differ from the dump.
 
 *Rejected:*
 
 - *`aws-sdk-s3`.* The standard client, but a very large generated crate for four calls,
-  and its default request checksums have needed configuration to suit R2 and
-  S3-compatible stand-ins.
+  and its default request checksums have needed configuration to suit R2 and other
+  S3-compatible stores.
 - *`object_store`.* A good abstraction, but it brings its own reqwest and TLS stack
   beside ours.
 - *Keeping `rclone` in a container.* That needs the Docker socket, which is root on the
@@ -907,6 +907,64 @@ signed in `x-amz-content-sha256`, so R2 refuses bytes that differ from the dump.
 **No healthcheck.** What matters is the age of the newest backup, which is in the
 bucket, and a failure goes to the webhook rather than into a status nobody reads on an
 unattended host.
+
+**Any S3-compatible store** (amended 2026-10-20). The settings were Cloudflare R2's
+(`R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`), with the
+signing region fixed at R2's `auto` and the bucket always in the path. Nothing else in
+the client was R2's: the four requests send no checksum header but `SigV4`'s own and
+list with `ListObjectsV2`, which AWS S3, Backblaze B2 and MinIO take as R2 does. So the
+store became configuration, with R2 one documented provider:
+
+- **`BACKUP_S3_*`.** `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`,
+  `BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY` replace the four `R2_*`
+  one for one. `BACKUP_S3_REGION` (a `Region`, default `auto`) is what requests are
+  signed for, and `BACKUP_S3_ADDRESSING` (`Addressing::{Path, VirtualHosted}`, default
+  `path`) where the bucket goes. Path-style is the default because R2, B2, MinIO and AWS
+  all take it today. AWS recommends virtual-hosted, so the runbook gives AWS
+  `virtual-hosted`. `Addressing::check` refuses at load the two
+  settings virtual-hosted cannot reach: an IP-address endpoint, and over `https` a
+  bucket with dots, which the store's wildcard certificate does not cover.
+- **The old names are refused, not aliased.** A set `R2_*` is a `Problem` naming the
+  line that replaces it (or, when that is set too, saying to remove it), never its
+  value, and its successor is not reported missing on top. `scripts/backup-db.sh`
+  refuses them the same way, and `scripts/deploy.sh` before anything changes, on every
+  deploy (`export` lines included). The scripts also refuse a `BACKUP_S3_*` set twice
+  in `.env.deploy`, since a pasted blank example line after a renamed one would unset
+  it; `judgebot` sees only the environment, so it cannot tell.
+- **A refusal is heard, once.** Settings that are not usable stop `run` and `serve`
+  before anything else, and with them the alert webhook they hold. So
+  `settings::alert_from_env` reads `JUDGE_ALERT_WEBHOOK` (and `JUDGE_LOCALE`) on its
+  own, and the variables' names, never their values, are posted
+  (`Messages::backup_unusable`). `serve` then stays up, refusing and logging hourly,
+  until stopped: exiting would have `restart: unless-stopped` restart it with the
+  environment it was created with, alerting again on every restart (Docker's backoff
+  stops at a minute) and fixing nothing. The fix is an edited `.env.deploy` and
+  `up -d`, which recreates it.
+- **The deploy checks the backup too.** `scripts/deploy.sh` recreates only `judgebot`,
+  so a `backup` service would keep its old image and environment until some later
+  `up -d`, where a refusal goes unwatched. With the `backup` profile on, the deploy runs
+  the new image's `judgebot backup check` (settings and `pg_dump`, nothing sent) before
+  it changes anything, and ends with `up -d --no-deps backup`. The service holds no
+  state but the bucket, and an upload cut short leaves no object. The object names and prefix are unchanged, so a bucket's backups
+  keep listing, fetching and setting the schedule.
+- **The script follows.** It passes the region and addressing to rclone
+  (`force_path_style`), and picks rclone's provider from the endpoint (`Cloudflare`,
+  `AWS`, else `Other`), which tunes only rclone's own quirks.
+
+*Rejected:*
+
+- *Reading `R2_*` as aliases.* Two names for one setting, with a precedence to learn,
+  kept for good; the instances that use them are few and the refusal names the rename.
+- *A required region.* An R2 or MinIO setup would need a line that says nothing. A
+  store that checks the region refuses a wrong one on the first request, and AWS's
+  refusal names the region it expects.
+- *Deriving the region or addressing from the endpoint's host.* A guess that holds for
+  the providers named today and fails silently for the next.
+- *Virtual-hosted by default.* MinIO on the compose network (`http://minio:9000`) and
+  any endpoint given as an IP address cannot take it.
+- *Exiting on a refusal and alerting from a marker.* No state survives a restart but
+  the bucket, which the settings at fault may be what reaches; a marker file needs a
+  volume of its own for one alert.
 
 ## D27. Failed calls are kept, private ones included
 

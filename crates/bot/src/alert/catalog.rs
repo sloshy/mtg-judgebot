@@ -162,6 +162,9 @@ pub struct Messages {
     /// What a backup was doing when it failed: a clause, `listing the
     /// bucket` (`judgebot backup run` prints it too).
     pub backup_stage: fn(BackupStage<'_>) -> String,
+    /// The backup's settings are not usable, so it takes none: the
+    /// variables at fault, by name (never a value).
+    pub backup_unusable: fn(&[&str]) -> String,
     /// A signed Discord interaction refused for its timestamp: how far it
     /// was from this host's clock (`None`: unreadable), and the allowance,
     /// in seconds.
@@ -331,6 +334,15 @@ resume{}.",
         BackupStage::KeepLocal => "copying it to BACKUP_KEEP_LOCAL".to_owned(),
         BackupStage::Crashed => "running the check (it crashed)".to_owned(),
     },
+    backup_unusable: |vars| {
+        format!(
+            "judgebot backup: the backup settings are not usable, so no backup is taken until \
+             they are fixed: {}. The log says what each must be (`docker compose logs \
+             backup`). Fix .env.deploy; `docker compose up -d` then recreates the service with \
+             it.",
+            vars.join(", ")
+        )
+    },
     discord_clock: |skew, allowed| {
         format!(
             "Discord interaction refused: its signed timestamp is {} from this host's clock \
@@ -415,6 +427,7 @@ pub const STUB: Messages = Messages {
         )
     },
     backup_stage: |stage| format!("⟦backup_stage {stage:?}⟧"),
+    backup_unusable: |vars| format!("⟦backup_unusable {}⟧", vars.join(",")),
     discord_clock: |skew, allowed| {
         format!("⟦discord_clock {} {allowed}⟧", skew.unwrap_or_default())
     },
@@ -459,6 +472,7 @@ mod tests {
                     uploaded: None,
                     before: LastGood::Empty,
                 }),
+                (m.backup_unusable)(&["BACKUP_S3_ENDPOINT", "R2_BUCKET"]),
                 (m.discord_clock)(None, 300),
                 (m.discord_delivery)(Delivery::HttpNoUrl { path: "/p" }),
             ];

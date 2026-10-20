@@ -79,7 +79,7 @@ base64 = "0.23"
 # `discord::pick::Digest`: ties a "did you mean?" button to its prompt;
 # `backup`: the dump's payload hash, which the object store verifies.
 sha2.workspace = true
-# `backup::s3`: SigV4 for the S3 API (R2), the request signing the AWS SDK
+# `backup::s3`: SigV4 for the S3 API, the request signing the AWS SDK
 # does, without the SDK. Already in the graph for the Anthropic AWS endpoints.
 aws-sigv4.workspace = true
 aws-credential-types.workspace = true

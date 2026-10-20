@@ -1,8 +1,9 @@
-//! The database backup: `pg_dump -Fc`, gzipped, uploaded to Cloudflare R2
-//! (any S3-compatible store), then old backups pruned. `judgebot backup`
-//! runs it: `run` takes one now, `list` and `fetch` serve the restore drill,
-//! and `serve` is the `backup` compose service, which takes one whenever the
-//! newest in the bucket is `BACKUP_EVERY_DAYS` old ([`schedule`]).
+//! The database backup: `pg_dump -Fc`, gzipped, uploaded to an S3-compatible
+//! store (AWS S3, Cloudflare R2, Backblaze B2, `MinIO`), then old backups
+//! pruned. `judgebot backup` runs it: `run` takes one now, `list` and
+//! `fetch` serve the restore drill, and `serve` is the `backup` compose
+//! service, which takes one whenever the newest in the bucket is
+//! `BACKUP_EVERY_DAYS` old ([`schedule`]).
 //!
 //! It writes exactly what `scripts/backup-db.sh` writes: the same settings
 //! ([`settings`], from `.env.deploy`), the same object names under the same
@@ -12,7 +13,7 @@
 //! operator can move from cron to the service, or run both.
 //!
 //! The service is its own container, not a role of the internet-facing
-//! process: the R2 keys can delete every backup, and they stay out of that
+//! process: the store's keys can delete every backup, and they stay out of that
 //! process's environment (D15). It reaches Postgres over the compose network
 //! like any client, so it needs neither the Docker socket nor a host cron.
 
@@ -144,6 +145,8 @@ impl Backup {
         let s = &settings;
         tracing::info!(
             endpoint = s.store.endpoint.host(),
+            region = %s.store.region,
+            addressing = %s.store.addressing,
             bucket = %s.store.bucket,
             prefix = %s.store.prefix,
             database = %format!("{}/{}", s.database.host(), s.database.name()),
@@ -351,6 +354,14 @@ async fn probe_writable(dir: &Path) -> std::io::Result<()> {
     tokio::fs::remove_file(&probe).await
 }
 
+/// Tell `hook` that the settings are not usable, so no backup is taken:
+/// the variables at fault by name ([`settings::Problems::vars`]), never a
+/// value. Best effort, as every alert.
+pub async fn tell_unusable(problems: &settings::Problems, hook: &alert::AlertWebhook) {
+    let text = (hook.messages().backup_unusable)(&problems.vars());
+    alert::post(&alert::client(), hook, "backup settings alert", &text).await;
+}
+
 /// The `backup` service: check every [`CHECK_EVERY`] (the first after
 /// [`FIRST_CHECK`]) and take a backup when one is due. Never returns. Each
 /// check is a task of its own, so a panic in one is a failed attempt, not
@@ -513,6 +524,34 @@ pub async fn fetch(store: &Store, name: &str, out: &Output) -> anyhow::Result<u6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unusable_settings_are_told_by_name_only() -> anyhow::Result<()> {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let problems =
+            Settings::from_env(|k| (k == "R2_SECRET_ACCESS_KEY").then(|| "very-secret".to_owned()))
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("accepted"))?;
+        let hook = alert::AlertWebhook::mock(&server.uri()).map_err(anyhow::Error::msg)?;
+        tell_unusable(&problems, &hook).await;
+        let requests = server.received_requests().await.unwrap_or_default();
+        let body = requests
+            .first()
+            .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+            .unwrap_or_default();
+        assert!(
+            body.contains("R2_SECRET_ACCESS_KEY") && body.contains("BACKUP_S3_ENDPOINT"),
+            "{body}"
+        );
+        assert!(!body.contains("very-secret"), "{body}");
+        Ok(())
+    }
 
     #[test]
     fn the_scratch_directory_is_private_and_removed() -> std::io::Result<()> {

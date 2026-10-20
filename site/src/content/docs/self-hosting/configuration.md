@@ -102,16 +102,19 @@ failed calls, and the dashboard with usage and spend
 | `JUDGE_IMAGE`, `JUDGE_IMAGE_TAG` | upstream package, `latest` | Which image `judgebot`, `refresh` and `backup` run (amd64 and arm64). A fork sets its own package. A release version (`1`, `1.2`, `1.2.0`) or a `sha-<short>` tag pins or rolls back. |
 | `COMPOSE_PROFILES` | | The optional services `up -d` also starts, comma-separated. `public`: `edge`, the HTTPS site at `JUDGE_DOMAIN` on ports 80 and 443 (with `API_CLIENT_IP=proxy`). `tunnel`: `cloudflared`, a Cloudflare Tunnel (with `API_CLIENT_IP=cloudflare`). `backup`: the weekly database backup. Empty: `127.0.0.1:8787` on the host only. [Exposure](../deployment/#3-exposure). |
 | `JUDGE_DOMAIN` | | The public host name `edge` serves and gets a Let's Encrypt certificate for, e.g. `judge.example.com`: two or more dot-separated labels of letters, digits and inner hyphens, the last not all digits (not `localhost` or an IP address), with no scheme, port, path or trailing dot. A DNS record must point it at the host, with ports 80 and 443 forwarded. Read only by `edge`, which refuses to start under `public` without it; the config editor checks it. |
-| `TUNNEL_TOKEN`, `R2_*` | | In `.env.deploy`, read only by `cloudflared`, the `backup` service and the backup script, never by the internet-facing containers. |
+| `TUNNEL_TOKEN`, `BACKUP_S3_*` | | In `.env.deploy`, read only by `cloudflared`, the `backup` service and the backup script, never by the internet-facing containers. |
 
 ## Backup
 
-These live in `.env.deploy`, beside `R2_*`. The `backup` service and `scripts/backup-db.sh` read the same ones, with the same defaults, and blank means the default. The [deployment runbook](../../self-hosting/deployment/) has the setup and the restore drill.
+These live in `.env.deploy`, beside `TUNNEL_TOKEN`. The `backup` service and `scripts/backup-db.sh` read the same ones, with the same defaults, and blank means the default. The [deployment runbook](../../self-hosting/deployment/) has the setup and the restore drill.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `R2_ENDPOINT`, `R2_BUCKET` | | `https://<account-id>.r2.cloudflarestorage.com` and the bucket. Required. |
-| `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | | An R2 API token scoped to Object Read & Write on that bucket. Required. |
+| `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET` | | The S3 API's URL (`https://`, or `http://` on a private network, with a warning) and the bucket. Required. Cloudflare R2: `https://<account-id>.r2.cloudflarestorage.com`; AWS: `https://s3.<region>.amazonaws.com`; Backblaze B2: `https://s3.<region>.backblazeb2.com`. |
+| `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | | A key scoped to reading and writing that bucket. Required. |
+| `BACKUP_S3_REGION` | `auto` | The region requests are signed for. `auto` suits Cloudflare R2; AWS and Backblaze B2 need the bucket's own (`eu-west-1`, `us-west-004`). |
+| `BACKUP_S3_ADDRESSING` | `path` | `path` (`<endpoint>/<bucket>/…`) or `virtual-hosted` (`<bucket>.<endpoint host>/…`, what AWS recommends; needs a host name and, over `https`, a bucket without dots). |
+| `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | | Retired in 2.0.0: a set one stops the backup, naming the `BACKUP_S3_*` line that replaces it. |
 | `BACKUP_PREFIX` | `db` | The key prefix the backups live under. |
 | `BACKUP_KEEP_DAYS` | `60` | Backups older than this are pruned after a successful upload. The service never prunes the two newest. |
 | `BACKUP_MIN_BYTES` | `20000000` | A smaller dump is refused, never uploaded. |

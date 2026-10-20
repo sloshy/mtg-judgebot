@@ -352,7 +352,7 @@ scripts/config.sh                  # app config (.env) in the config editor: API
                                    # GUILD_ID, JUDGE_OPERATOR_DISCORD and JUDGE_OPERATOR_EMAIL (both
                                    # required here), and judge.toml. Over SSH, forward the port first:
                                    # ssh -N -L 8790:127.0.0.1:8790 <host>
-cp .env.deploy.example .env.deploy # with the tunnel or backup profile: TUNNEL_TOKEN, R2_*
+cp .env.deploy.example .env.deploy # with the tunnel or backup profile: TUNNEL_TOKEN, BACKUP_S3_*
 ```
 
 The editor saves `.env`, creating it from `.env.example` the first time, and checks each
@@ -803,17 +803,18 @@ Full Turnstile with server-side `siteverify` is stronger. It needs a token in th
 body and a verification call inside `judge_route` before any spending. Add it only if
 the edge rules prove insufficient.
 
-## 6. Weekly backups to R2
+## 6. Weekly backups
 
 The database is cheap to dump and expensive to rebuild (§2). The `backup` compose
-service dumps it, uploads the dump to Cloudflare R2 and prunes old copies on its own
-schedule, with no host cron and no Docker socket. `scripts/backup-db.sh` does the same
-from a host cron. Both write the same objects under the same names, so `list`, `fetch`
-and the restore drill work on either's backups, and the two can run side by side.
+service dumps it, uploads the dump to an S3-compatible object store and prunes old
+copies on its own schedule, with no host cron and no Docker socket.
+`scripts/backup-db.sh` does the same from a host cron. Both write the same objects under
+the same names, so `list`, `fetch` and the restore drill work on either's backups, and
+the two can run side by side.
 
-1. Create an R2 bucket.
-2. Create an API token scoped to **Object Read & Write on that bucket only**.
-3. Fill in the `R2_*` values in `.env.deploy`.
+1. Create a bucket with your provider (below).
+2. Create an access key scoped to **reading and writing that bucket only**.
+3. Fill in the `BACKUP_S3_*` values in `.env.deploy`.
 4. Add `backup` to `COMPOSE_PROFILES` in `.env` and bring it up:
 
 ```ini
@@ -827,6 +828,53 @@ docker compose logs backup          # the settings it read, then each check
 
 Then **do a restore drill** (below). An untested backup is not a backup.
 
+### Providers
+
+The backup sends four S3 requests (`ListObjectsV2`, `PutObject`, `GetObject`,
+`DeleteObject`) signed with `SigV4`, with no checksum header beyond `SigV4`'s own
+`x-amz-content-sha256` and an upload of one `PUT`. Any store that takes those works.
+Each provider needs the endpoint, and some a region or the addressing style:
+
+| Provider | `BACKUP_S3_ENDPOINT` | `BACKUP_S3_REGION` | `BACKUP_S3_ADDRESSING` |
+| --- | --- | --- | --- |
+| Cloudflare R2 | `https://<account-id>.r2.cloudflarestorage.com` | `auto` (the default) | `path` (the default) |
+| AWS S3 | `https://s3.<region>.amazonaws.com` | the bucket's region, e.g. `eu-west-1` | `virtual-hosted` |
+| Backblaze B2 | `https://s3.<region>.backblazeb2.com` | the region in the endpoint, e.g. `us-west-004` | `path` |
+| MinIO, self-hosted | `https://minio.example.lan:9000` | `us-east-1`, or the server's `MINIO_REGION` | `path` |
+
+- **Keys.** R2: an API token with Object Read & Write on the bucket. AWS: an IAM user
+  whose policy allows `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutObject`
+  and `s3:DeleteObject` on its objects. B2: an application key restricted to the bucket;
+  its key ID is `BACKUP_S3_ACCESS_KEY_ID`.
+- **Addressing.** `path` puts the bucket in the path (`<endpoint>/<bucket>/<key>`),
+  which all four take. AWS serves it but recommends `virtual-hosted`
+  (`<bucket>.s3.<region>.amazonaws.com/<key>`).
+  `virtual-hosted` needs a host name in the endpoint (not an IP address) and, over
+  `https`, a bucket name without dots, which the provider's certificate does not cover;
+  a setting that breaks either is refused at start.
+- **Plain `http`** is accepted for a store on the same private network, such as MinIO
+  beside `db` on the compose network (`http://minio:9000`), and logged as a warning at
+  every start: the dump would cross the network unencrypted.
+- **The script** (Cron, below) reads the same variables and hands them to rclone.
+
+Before 2.0.0 the store was always R2 and its settings were `R2_*`. A set `R2_*` now
+stops the service, the script and every `scripts/deploy.sh` run, naming each line to
+rename, keeping its value (`sed -i 's/^R2_/BACKUP_S3_/' .env.deploy` does all four):
+
+| Before 2.0.0 | Now |
+| --- | --- |
+| `R2_ENDPOINT` | `BACKUP_S3_ENDPOINT` |
+| `R2_BUCKET` | `BACKUP_S3_BUCKET` |
+| `R2_ACCESS_KEY_ID` | `BACKUP_S3_ACCESS_KEY_ID` |
+| `R2_SECRET_ACCESS_KEY` | `BACKUP_S3_SECRET_ACCESS_KEY` |
+
+R2's region is `auto`, the default, so a renamed R2 setup needs no other line. Rename
+the lines rather than filling in the example's blank `BACKUP_S3_*=` lines below them:
+the last line of a name wins, a blank one too. The script and `scripts/deploy.sh`
+refuse a `BACKUP_S3_*` name set twice. The
+object names are unchanged, so the bucket's existing backups still list, fetch and set
+the schedule.
+
 ### Service
 
 `judgebot backup serve` lists the bucket a few minutes after it starts, then hourly. A
@@ -838,16 +886,16 @@ backup the cron'd script took counts as that week's. Each backup works in this o
 1. It dumps the database (`pg_dump -Fc`, gzipped) over the compose network.
 2. It refuses to upload anything under `BACKUP_MIN_BYTES`, so a stub never becomes the
    newest restore point.
-3. It uploads, with the file's SHA-256 signed into the request. R2 refuses an upload
-   whose bytes do not match.
+3. It uploads, with the file's SHA-256 signed into the request. The store refuses an
+   upload whose bytes do not match.
 4. Only then does it prune past `BACKUP_KEEP_DAYS`. It deletes only objects named like
    a backup, directly under the prefix, and never the two newest (the one just uploaded
    among them), however old: after a lapse longer than the retention, one success does
    not delete every earlier restore point.
 5. It copies the dump to `BACKUP_KEEP_LOCAL`, when that is set.
 
-Weekly backups at the default 60 days keep about eight restore points, far inside R2's
-10 GB free tier.
+Weekly backups at the default 60 days keep about eight restore points, a few hundred
+MB, inside R2's and B2's free tiers.
 
 A failed attempt is retried after an hour, then less often while it keeps failing, at
 least once a day. `JUDGE_ALERT_WEBHOOK` hears the first failure of a streak, a failure
@@ -857,10 +905,14 @@ ends, with a note, when the bucket can be listed again and no backup is due. The
 webhook goes in `.env.deploy` for the backup's alerts and in `.env` for `judgebot`'s:
 set it in both to hear from both.
 
-The settings are read once, at start. A missing or malformed one stops the container
-with a line naming each, and `restart: unless-stopped` retries it, so `docker compose
-ps` shows it restarting. After editing `.env.deploy`, `docker compose up -d` recreates
-it.
+The settings are read once, at start. When one is missing or malformed, the service
+takes no backup: it logs a line naming each, posts the variables' names (never their
+values) to `JUDGE_ALERT_WEBHOOK` once, when that variable is itself usable, and stays up
+refusing, repeating the log line hourly. Restarting would not help, because a restarted
+container keeps the environment it was created with. After editing `.env.deploy`,
+`docker compose up -d` recreates it. `docker compose run --rm --no-deps backup check`
+reads the settings and finds `pg_dump` without sending anything, and
+`scripts/deploy.sh` runs it with the new image before a deploy changes anything.
 
 The image carries `pg_dump` 16, the major version of the `db` service. `pg_dump` refuses
 a server newer than itself, so moving `db` to a newer PostgreSQL major needs an image
@@ -925,7 +977,7 @@ object under the prefix older than that, not only backups, and keeps no minimum 
 ### Restore drill
 
 Run one backup by hand to confirm the credentials, then restore it into a scratch
-database. The drill restores the object that landed in R2, not a local copy:
+database. The drill restores the object that landed in the bucket, not a local copy:
 
 ```sh
 docker compose run --rm backup run         # take one now, whatever the schedule
@@ -1396,7 +1448,14 @@ beside the running one:
 
 If the new container is not healthy within five minutes (`DEPLOY_WAIT_SECS`), or
 restarts, the script removes it, prints its last log lines and exits non-zero. The old
-container keeps serving. `scripts/deploy.sh --build` builds the image from the checkout
+container keeps serving.
+
+With the `backup` profile on, the script also runs the new image's `judgebot backup
+check` before it changes anything, and refuses the deploy when the backup's settings are
+not usable (§6). A `.env.deploy` with a pre-2.0.0 `R2_*` name is refused whatever the
+profile. Once the new `judgebot` is serving, it brings the `backup` service onto the new
+image and the current `.env.deploy` (`up -d --no-deps backup`). A backup that service
+had in progress is cut short and uploads nothing; the next check takes it again. `scripts/deploy.sh --build` builds the image from the checkout
 instead of pulling it.
 
 "Healthy" means `GET /api/health` answers, which needs a listener: an HTTP role, or
@@ -1593,8 +1652,10 @@ A major release's migrations may change what the previous release reads, so they
 for it to stop (D32). The deploy is the same command, `scripts/deploy.sh`, and it says
 which path it takes (`the new image's migrations: major`):
 
-1. With `R2_BUCKET` set in `.env.deploy` it takes a backup first, the way back if the
-   upgrade has to be undone (`DEPLOY_SKIP_BACKUP=1` skips it).
+1. With `BACKUP_S3_BUCKET` set in `.env.deploy` it takes a backup first, the way back if
+   the upgrade has to be undone (`DEPLOY_SKIP_BACKUP=1` skips it). A `.env.deploy` that
+   still names the store with `R2_*` stops the deploy here, before anything changes,
+   with the lines to rename (§6, Providers).
 2. It starts the new container beside the old one. The new one answers every question
    with a maintenance reply and a way to retry (Discord's Retry button, the web app's
    Try again, a `maintenance` reply with `Retry-After` from the API) and waits.
@@ -1711,6 +1772,11 @@ gunzip -c judgebot-<stamp>.dump.gz \
 docker compose pull && docker compose up -d --remove-orphans
 ```
 
+The backup's settings keep their 2.0.0 names (`BACKUP_S3_*`) through that: only the
+compose file and the image go back, and 1.x has no `backup` service, so the checkout's
+`scripts/backup-db.sh` stays the backup and reads them. A whole 1.x checkout's script
+reads the `R2_*` names instead (§6, Providers).
+
 `judgebot ingest migrate` refuses a database that is ahead rather than guessing, and the
 scheduled refresh stays paused while it is (§7): the data is not refreshed until the
 image and the schema match again. An image from before the built-in schedule refreshes
@@ -1765,7 +1831,9 @@ on its own if the connector restarts.
 | `refresh step skipped` for `embed`, `rows to embed, over the 800` | the spend guard: a scheduled run found more empty vectors than a CR release leaves. Run `scripts/refresh-data.sh embed` if that spend is expected (§7) |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |
 | `docker compose up -d` stops at `env file .env.deploy not found` | the `backup` or `tunnel` profile is in `COMPOSE_PROFILES` and `.env.deploy` does not exist (`cp .env.deploy.example .env.deploy`) |
-| `backup` keeps restarting | a setting in `.env.deploy` is missing or malformed; `docker compose logs backup` names each one (`R2_*`, `BACKUP_*`, `JUDGE_ALERT_WEBHOOK`) |
+| `backup` keeps restarting | it could not start: no `pg_dump` in the image, or `BACKUP_KEEP_LOCAL` is not a directory the container can write. `docker compose logs backup` says which |
+| No new backups, and the webhook or `docker compose logs backup` says the backup settings are not usable | a setting in `.env.deploy` is missing or malformed, or still has a pre-2.0.0 `R2_*` name. The log names each one (`BACKUP_S3_*`, `BACKUP_*`, `JUDGE_ALERT_WEBHOOK`) and the line that replaces an `R2_*`. Fix the file, then `docker compose up -d`: the running container keeps the environment it was created with |
+| `scripts/deploy.sh` refuses, naming `R2_*` or the backup service's settings | `.env.deploy` still names the store with the pre-2.0.0 `R2_*`, sets a `BACKUP_S3_*` twice, or fails the new image's `judgebot backup check`. Nothing was changed: fix the file and deploy again (§6, Providers) |
 | The backup alert says `pg_dump` is older than the server | `db` runs a newer PostgreSQL major than the image's `pg_dump` (16); the image needs a newer client (§6) |
 | No backup in the bucket for over a week, and no alert | the `backup` profile is not in `COMPOSE_PROFILES` (`docker compose ps backup` lists nothing) and there is no cron entry; or `JUDGE_ALERT_WEBHOOK` is not in `.env.deploy` |
 | Refresh logs `waiting for it to finish` and sits there | another refresh or ingest step holds the refresh lease (a scheduled or cron run and a manual one overlapped); it proceeds when that one ends, or fails after an hour. The log line names the holder; `select pid, application_name, query_start, state from pg_stat_activity where application_name like 'judgebot refresh lease%';` lists it (`… since <UTC time>`) and any waiters (`… waiting`, waiting since `query_start`). A hung holder can be ended with `select pg_terminate_backend(<pid>);`. A killed run's lock is dropped by Postgres, so there is nothing to remove |

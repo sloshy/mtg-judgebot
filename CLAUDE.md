@@ -392,7 +392,7 @@ docker compose up -d --build judgebot  # redeploy after code changes
 scripts/deploy.sh [--build]          # blue-green deploy (D29): pull (or build), start a second
                                      # judgebot beside the running one, wait for healthy, stop
                                      # the old one (it drains); an unhealthy new one is removed.
-                                     # A major (`judgebot ingest upgrade` says): backup if R2 is
+                                     # A major (`judgebot ingest upgrade` says): backup if `BACKUP_S3_BUCKET` is
                                      # set, new beside old in maintenance, old stopped once the
                                      # new one listens, then wait for the migration (D32)
 docker compose pull && docker compose up -d --remove-orphans  # stop-then-start deploy: pulls the
@@ -557,7 +557,8 @@ and `bot` ← the other bins):
   `--discord` role), `serving.rs` (`Serving`: what the serving roles of one process
   share), and `ingest.rs`, the data steps (Scryfall, CR, curated lists, embedding, emoji,
   `init`, `refresh`), which `jobs.rs` schedules, and `backup.rs`, the database backup
-  (settings, `pg_dump`, a SigV4 S3 client over reqwest for R2, the bucket-kept schedule).
+  (settings, `pg_dump`, a SigV4 S3 client over reqwest for any S3-compatible store (`BACKUP_S3_*`: endpoint,
+  region, path-style or virtual-hosted; R2 one provider), the bucket-kept schedule).
 - `api` (lib `judge_api`): the network roles. `Network` (made only by passing
   `ApiConfig::check`) and `run`.
 - `judgebot`: the binary. `roles.rs` (`Role`, `plan`), `cli.rs` (the command line),
@@ -1014,7 +1015,8 @@ finishes requests in flight; `deploy.sh`'s `up -d --no-deps proxy` can take up t
 once when the definition changed. `edge`'s entrypoint is `proxy/edge-entrypoint.sh`,
 which refuses a `JUDGE_DOMAIN` by the same rule as judge-config's `check::is_host_name`
 (a test runs the script against it; shellcheck covers `proxy/*.sh`). Deploy credentials live in
-`.env.deploy` (`TUNNEL_TOKEN`, `R2_*`, `BACKUP_*`). Only `cloudflared`, the `backup`
+`.env.deploy` (`TUNNEL_TOKEN`, `BACKUP_S3_*`, `BACKUP_*`; a set `R2_*` is refused with
+its rename). Only `cloudflared`, the `backup`
 service and `scripts/backup-db.sh` read it, never the internet-facing `judgebot` (D15).
 The weekly backup is the `backup` compose service (`judgebot backup serve`, profile
 `backup`, D26): it reaches `db:5432` over the compose network with the image's `pg_dump`

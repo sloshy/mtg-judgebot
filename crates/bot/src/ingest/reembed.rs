@@ -24,7 +24,7 @@
 //! one short text (a few tokens): a wrong key, URL or model name, or a model
 //! whose real width is not the configured `dimensions`, fails here with the
 //! old vectors intact — after the switch the only ways back would be paying
-//! for the old space again or the R2 restore drill.
+//! for the old space again or the backup's restore drill.
 
 use std::fmt::Write as _;
 
