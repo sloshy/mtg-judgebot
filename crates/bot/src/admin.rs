@@ -463,7 +463,7 @@ fn usd(micro: i64) -> f64 {
 /// otherwise.
 ///
 /// # Errors
-/// `Upstream` from sqlx, or a row that does not read.
+/// `Upstream` from sqlx. A call that does not read is left out, with a WARN.
 pub async fn calls(
     pool: &PgPool,
     filter: &CallFilter,
@@ -522,25 +522,36 @@ pub async fn calls(
     } else {
         None
     };
+    // A call holding a value this build does not know (a newer build of the
+    // same major wrote it) is left out with a WARN rather than failing the
+    // list; the cursor above already moves past it.
     let calls = rows
         .into_iter()
-        .map(|r| {
-            Ok(CallRow {
-                id: r.id,
-                asked_at: r.asked_at,
-                interface: asked(&r.interface)?,
-                asker: r.asker_name,
-                asker_id: r.asker_id,
-                private: r.private,
-                question: r.question,
-                confidence: stored(&r.confidence, "confidence")?,
-                retired: r.retired_reason,
-                models: r.models,
-                usd: r.micro_usd.map(usd),
-                cost_estimated: r.estimated,
-            })
+        .filter_map(|r| {
+            let id = r.id;
+            let row = || -> Result<CallRow, JudgeError> {
+                Ok(CallRow {
+                    id: r.id,
+                    asked_at: r.asked_at,
+                    interface: asked(&r.interface)?,
+                    asker: r.asker_name,
+                    asker_id: r.asker_id,
+                    private: r.private,
+                    question: r.question,
+                    confidence: stored(&r.confidence, "confidence")?,
+                    retired: r.retired_reason,
+                    models: r.models,
+                    usd: r.micro_usd.map(usd),
+                    cost_estimated: r.estimated,
+                })
+            };
+            row()
+                .inspect_err(|e| {
+                    tracing::warn!(call = %id, error = %format_args!("{e:#}"), "a stored call does not read; left out of the admin list");
+                })
+                .ok()
         })
-        .collect::<Result<Vec<_>, JudgeError>>()?;
+        .collect::<Vec<_>>();
     let models = sqlx::query_scalar!(
         "SELECT DISTINCT model FROM judge_run_charges WHERE stage <> 'embedding' ORDER BY model"
     )
@@ -559,10 +570,13 @@ fn asked(id: &str) -> Result<Asked, JudgeError> {
 }
 
 /// Everything stored about call `id`, and the names its citations' labels
-/// need; `None` when there is no such call.
+/// need; `None` when there is no such call, and for one holding a value this
+/// build does not read (an interface, confidence or source a newer build of
+/// the same major wrote), with a WARN naming it, as the list leaves it out.
+/// A rating of the call that does not read is left out of it the same way.
 ///
 /// # Errors
-/// `Upstream` from sqlx, or a row that does not read.
+/// `Upstream` from sqlx.
 pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names)>, JudgeError> {
     let Some(r) = sqlx::query!(
         r#"
@@ -581,6 +595,20 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
     .map_err(upstream("read a call"))?
     else {
         return Ok(None);
+    };
+    let decoded = || -> Result<_, JudgeError> {
+        Ok((
+            asked(&r.interface)?,
+            stored::<Confidence>(&r.confidence, "confidence")?,
+            stored::<Source>(&r.source, "source")?,
+        ))
+    };
+    let (interface, confidence, source) = match decoded() {
+        Ok(fields) => fields,
+        Err(e) => {
+            tracing::warn!(call = %r.id, error = %format_args!("{e:#}"), "a stored call does not read; answered as not found");
+            return Ok(None);
+        }
     };
     // Each citation alone, as the feed reads them: a shape from an older
     // release that no longer reads is left out rather than failing the call.
@@ -621,7 +649,9 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
     .await
     .map_err(upstream("read a call's ratings"))?
     .into_iter()
-    .map(|r| {
+    .filter_map(|r| {
+        let user = r.user_id.clone();
+        let row = || -> Result<RatingRow, JudgeError> {
         Ok(RatingRow {
             user: r.user_id,
             kind: RaterKind::parse(&r.rater_kind)
@@ -641,14 +671,20 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
             wrong: r.what_wrong,
             right: r.right_answer,
         })
+        };
+        row()
+            .inspect_err(|e| {
+                tracing::warn!(call = %id.into_inner(), rater = %user, error = %format_args!("{e:#}"), "a rating does not read; left out of the call");
+            })
+            .ok()
     })
-    .collect::<Result<Vec<_>, JudgeError>>()?;
+    .collect::<Vec<_>>();
     let runs = runs(pool, id).await?;
     Ok(Some((
         CallDetail {
             id: r.id,
             asked_at: r.asked_at,
-            interface: asked(&r.interface)?,
+            interface,
             asker: r.asker_name,
             asker_id: r.asker_id,
             private: r.private,
@@ -657,8 +693,8 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
             session: r.session_id,
             question: r.question,
             answer: r.answer,
-            confidence: stored(&r.confidence, "confidence")?,
-            source: stored(&r.source, "source")?,
+            confidence,
+            source,
             category: r.category,
             cr_version: r.cr_version,
             citations,
@@ -926,6 +962,46 @@ mod tests {
 
     fn ids(page: &CallsPage) -> Vec<Uuid> {
         page.calls.iter().map(|c| c.id).collect()
+    }
+
+    /// A call holding a value this build does not read (a newer build of
+    /// the same major may write one) is left out of the list and answered
+    /// as not found by id, rather than failing either; a rating that does
+    /// not read is left out of its call, which still reads.
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn an_unreadable_call_or_rating_is_left_out_not_fatal(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        // What a newer build's migration could relax.
+        sqlx::query("ALTER TABLE ratings DROP CONSTRAINT ratings_category_check")
+            .execute(&pool)
+            .await?;
+        let good = stored_call(&pool, 30, "web", None, false, "good").await?;
+        let bad = stored_call(&pool, 20, "web", None, false, "bad").await?;
+        sqlx::query("UPDATE calls SET confidence = 'certain' WHERE id = $1")
+            .bind(bad)
+            .execute(&pool)
+            .await?;
+        for (user, category) in [("7", "wrong_card"), ("8", "a_newer_category")] {
+            sqlx::query(
+                "INSERT INTO ratings (call_id, user_id, score, category) VALUES ($1, $2, 1, $3)",
+            )
+            .bind(good)
+            .bind(user)
+            .bind(category)
+            .execute(&pool)
+            .await?;
+        }
+
+        let list = calls(&pool, &CallFilter::default(), None).await?;
+        assert_eq!(ids(&list), [good]);
+        assert!(call(&pool, CallId::new(bad)).await?.is_none());
+        let (detail, _) = call(&pool, CallId::new(good))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("the good call reads"))?;
+        let raters: Vec<&str> = detail.ratings.iter().map(|r| r.user.as_str()).collect();
+        assert_eq!(raters, ["7"]);
+        Ok(())
     }
 
     /// The admin list reads private calls, every filter narrows it, and a

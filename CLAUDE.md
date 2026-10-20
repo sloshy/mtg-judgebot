@@ -468,6 +468,7 @@ cargo run -r -p judgebot -- --api --web                 # roles: --discord --api
                                                         # pointed at: JUDGE_REFRESH_HOURS=0 in a dev .env
 npm --prefix web run build           # build the SolidJS page into web/dist (served by judgebot --web)
 npm --prefix web run dev             # Vite dev server, proxies /api to a local judgebot --api
+                                     # and /admin/api to a local judgebot --admin (:8789)
 
 cargo build --release -p judge-agent                    # target/release/judge-cli + judge-mcp (build before
                                                         # .mcp.json can start judge-mcp)

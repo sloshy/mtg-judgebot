@@ -30,7 +30,9 @@
 # From a 1.x release, whose processes hold no schema lock, the old container
 # is stopped before the new one starts. Once the old one is stopped there is
 # nothing to fall back to: a failure then says so, and the way back is the
-# backup.
+# backup. With JUDGE_AUTO_MIGRATE=false the new container would never migrate
+# a major, so it is refused before anything changes, with the steps to
+# migrate by hand first.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -89,7 +91,7 @@ case "${1:-}" in
       docker compose build "$service"
     ;;
   -h | --help)
-    sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *) die "unknown argument '$1' (scripts/deploy.sh [--build])" ;;
@@ -110,8 +112,12 @@ probe_secs=120
 probe_name="judgebot-deploy-probe-$$"
 probe_log="$(mktemp)"
 log "asking the new image what its migrations are (at most ${probe_secs}s)"
-upgrade="$(timeout -k 10 "$probe_secs" docker compose run --rm --no-deps -T --name "$probe_name" "$service" ingest upgrade </dev/null 2>"$probe_log" | sed -n 's/^upgrade: //p' | tail -n 1 || true)"
+probe_out="$(timeout -k 10 "$probe_secs" docker compose run --rm --no-deps -T --name "$probe_name" "$service" ingest upgrade </dev/null 2>"$probe_log" || true)"
 docker rm -f "$probe_name" >/dev/null 2>&1 || true
+upgrade="$(printf '%s\n' "$probe_out" | sed -n 's/^upgrade: //p' | tail -n 1)"
+# JUDGE_AUTO_MIGRATE=false, as the new container would see it (.env).
+auto_migrate=on
+if grep -qx 'auto-migrate: off' <<<"$probe_out"; then auto_migrate=off; fi
 case "$upgrade" in
   in-place | major | major-from-1.x)
     rm -f "$probe_log"
@@ -123,6 +129,14 @@ case "$upgrade" in
     die "could not read what the new image's migrations are within ${probe_secs}s (its log is above): docker compose run --rm --no-deps $service ingest upgrade"
     ;;
 esac
+
+# With JUDGE_AUTO_MIGRATE=false the new container never migrates, so a
+# major upgrade would wait here for a migration that does not come, with the
+# old release already stopped. Refused before anything changes.
+if [ "$upgrade" != in-place ] && [ "$auto_migrate" = off ]; then
+  if [ "$upgrade" = major-from-1.x ]; then stop_hint="docker stop judgebot-bot judgebot-api"; else stop_hint="docker compose stop $service"; fi
+  die "the new image's migrations are a major upgrade ($upgrade) and .env sets JUDGE_AUTO_MIGRATE=false, so the new container would never migrate. Migrate by hand, then run this again: $stop_hint; docker compose run --rm refresh migrate; scripts/deploy.sh${1:+ $1} (docs/DEPLOYMENT.md, Releases with a migration)"
+fi
 
 # A major upgrade cannot be rolled back without the database as it was.
 if [ "$upgrade" != in-place ]; then

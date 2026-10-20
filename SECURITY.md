@@ -48,6 +48,13 @@ Operators should know these properties. The reasoning behind each is in
   - Stdio `judge-mcp` and `judge-cli` hold the admin reads too: whoever runs them already
     holds `DATABASE_URL`. So does any program built on `judge_agent::Toolbox::from_env`,
     which connects with it.
+- **Public calls are published.** Under `--web`, unless `JUDGE_FEED=false`, the feed
+  (`/feed`, `GET /api/feed`, `GET /api/calls/{id}`) and the dashboard (`GET /api/stats`)
+  show every call not asked private, within `JUDGE_FEED_DAYS` when set, with the Discord
+  asker's username. Never the asker's id, the server or the channel. Raters' reasons
+  (without who gave them), the cost and the models are added only by
+  `JUDGE_PUBLIC_FEEDBACK`, `JUDGE_PUBLIC_COST` and `JUDGE_PUBLIC_MODELS`, all off by
+  default.
 - **Secrets never live in tracked files.** `judge.toml` names environment variables.
   `.env` holds the keys `judgebot` reads. `.env.deploy` holds the tunnel and backup
   credentials that only `cloudflared`, the `backup` service and the backup script read;
@@ -73,6 +80,12 @@ Operators should know these properties. The reasoning behind each is in
   - for a call that failed (`failed_calls`): the question, the error, the model's answer
     text and, for a Discord question, the asker's user id and username. Pruned to 30
     days / 500 rows when a later failure is recorded.
+  - for each run of the pipeline (`judge_runs`): the interface, whether it was private,
+    how it ended, when, and the models, tokens and cost of each request. No text and no
+    user id.
+  - for each "did you mean?" prompt a card is picked from (`pick_claims`): the Discord
+    message id, when the prompt was shown and a short digest of its content. No text and
+    no user id; rows are deleted after a day.
 
   Calls are kept until the operator's `JUDGE_CALL_RETENTION_DAYS` (unset: kept), then
   deleted with their ratings by the next refresh.
@@ -81,12 +94,6 @@ Operators should know these properties. The reasoning behind each is in
   operator's notes on them included), and removes their id and username from their calls
   and failed calls. A private call loses its question, answer, citations and card ids too,
   and a failed one its text. A public call keeps its text, which the channel saw.
-  - for each run of the pipeline (`judge_runs`): the interface, whether it was private,
-    how it ended, when, and the models, tokens and cost of each request. No text and no
-    user id.
-  - for each "did you mean?" prompt a card is picked from (`pick_claims`): the Discord
-    message id, when the prompt was shown and a short digest of its content. No text and
-    no user id; rows are deleted after a day.
 
   The bot requests no gateway intents, so it never receives message content beyond the
   slash-command input. Process logs at `info` record each rating with the user id and its

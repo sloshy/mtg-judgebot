@@ -440,7 +440,8 @@ pub struct CallInput {
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct CallReply {
     /// The call with its runs, charges and raters; `None` when there is no
-    /// call with that id (never stored, or deleted by the retention).
+    /// call with that id (never stored, or deleted by the retention), or it
+    /// holds a value this build does not read (logged with its id).
     pub call: Option<CallDetail>,
 }
 

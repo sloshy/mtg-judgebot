@@ -18,7 +18,11 @@ runs the same pipeline as the Discord bot and shows the same answer:
 
 A reply that is not an answer (busy, rate limited, a card not found, an error, the
 maintenance notice) is a titled notice in the judge's message. The header links to this
-documentation and has a theme switch (Auto, Dark, Light).
+documentation and has a theme switch (Auto, Dark, Light). The footer names the source
+repository, the commit the instance was built from and the operator's support address
+(`JUDGE_OPERATOR_EMAIL`, without which the web app does not start). A line above it gives
+the Comprehensive Rules release loaded and how long ago the data was last refreshed, for
+example `Comprehensive Rules 2026-09-25 · refreshed 3 hours ago`.
 
 Answers are written in the light Markdown Discord renders (bold card names, rule numbers
 in backticks). The web app renders the same three marks and nothing else.
@@ -60,11 +64,7 @@ default because anyone can inflate them: a new tab is a new rater.
 When the operator sets `JUDGE_PUBLIC_FEEDBACK=true`, the reasons raters gave are listed
 there too, with the kind of problem and their words, never who gave them; the form says
 so before a rater writes one. A reason the operator dismisses in the feedback queue
-leaves the public pages. Rating needs `--api` beside `--web`, as asking does. The footer
-names the source repository, the commit the instance was built from and the operator's
-support address (`JUDGE_OPERATOR_EMAIL`, without which the web app does not start). A
-line above it gives the Comprehensive Rules release loaded and how long ago the data was
-last refreshed, for example `Comprehensive Rules 2026-09-25 · refreshed 3 hours ago`.
+leaves the public pages. Rating needs `--api` beside `--web`, as asking does.
 
 ## The feed
 

@@ -78,7 +78,8 @@ pub struct Messages {
     pub bad_private: &'static str,
     /// An admin filter over its limit, given its name and the limit.
     pub bad_filter: fn(&str, usize) -> String,
-    /// No stored call has that id.
+    /// No stored call has that id, or the one that has holds a value this
+    /// build does not read (the log names it).
     pub admin_call_not_found: &'static str,
     /// An admin read failed.
     pub admin_failed: &'static str,
@@ -172,7 +173,7 @@ Your question was not answered; please try again shortly.",
     admin_unauthorized: "This needs the admin token: open the address `judge-cli admin-url` prints.",
     bad_private: "private must be true or false",
     bad_filter: |name, n| format!("{name} must be at most {n} characters"),
-    admin_call_not_found: "There is no call with that id.",
+    admin_call_not_found: "There is no call with that id, or it holds a value this version cannot read (the log names it).",
     admin_failed: "The database could not be read just now. Please try again.",
     bad_choice: |name, all| format!("{name} must be one of: {all}"),
     admin_item_not_found: "There is no feedback item with that id.",

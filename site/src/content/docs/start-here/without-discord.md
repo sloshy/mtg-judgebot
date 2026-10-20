@@ -58,14 +58,16 @@ you cloned or changed, use `docker compose up -d --build` instead (minutes, abou
 4 GB of RAM).
 
 Open <http://localhost:8787>. The web app runs the same pipeline as the bot. Its ratings
-are anonymous, so they reach your feedback queue but never shape later answers.
+are anonymous, so they never shape later answers, and the reasons given with them reach
+your feedback queue.
 
 By default each address may ask 4 questions per 5 minutes. That suits a public page but
 will stop you quickly while testing. To ask more, raise `API_RATE_LIMIT` (or shorten
 `API_RATE_WINDOW_SECS`) in `.env` first.
 
 Each role is a launch option. `--api --jobs` alone serves the question route with no
-public web app, and `--mcp` adds the MCP transport.
+public web app, `--mcp` adds the MCP transport, and `--admin` the operator's pages on a
+port of their own ([Web app](../../using/web/#admin-pages)).
 
 To develop the API without Docker, run `cargo run --release -p judgebot -- --api --web`.
 It serves the built page from `web/dist` (run

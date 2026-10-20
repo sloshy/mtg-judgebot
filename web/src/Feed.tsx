@@ -383,7 +383,9 @@ export function FeedPage(props: {
         <Show
           when={entries().length > 0}
           fallback={
-            <Show when={failure() === null}>
+            // A page whose every row the server left out (values it could
+            // not read) is empty but has a next: not "nothing here".
+            <Show when={failure() === null && !next()}>
               <BotMessage m={props.m}>
                 <p class="bubble bubble-bot">
                   {props.query.q || (props.filters && props.query.user)

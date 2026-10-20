@@ -882,7 +882,7 @@ async fn dashboard(
         .collect();
     let outcomes = match p.user {
         Some(_) => None,
-        None => Some(grouped(&run_outcomes(conn, p).await?)?),
+        None => Some(grouped(&run_outcomes(conn, p).await?)),
     };
     Ok(Dashboard {
         from: p.from(),
@@ -985,18 +985,21 @@ async fn run_outcomes(
     .collect())
 }
 
-/// `counts` in the dashboard's groups.
-fn grouped(counts: &[OutcomeCount]) -> Result<Outcomes, StatsError> {
+/// `counts` in the dashboard's groups. An outcome this build does not know
+/// (a newer build of the same major wrote it) is left out with a WARN rather
+/// than failing the report.
+fn grouped(counts: &[OutcomeCount]) -> Outcomes {
     let mut out = Outcomes::default();
     for c in counts {
-        let outcome = Outcome::parse(&c.outcome).ok_or_else(|| {
-            StatsError::Store(bad_row(format!("judge_runs.outcome {:?}", c.outcome)))
-        })?;
+        let Some(outcome) = Outcome::parse(&c.outcome) else {
+            tracing::warn!(outcome = %c.outcome, runs = c.runs, "judge_runs.outcome this build does not know; left out of the dashboard's outcomes");
+            continue;
+        };
         if let Some(group) = outcome.group() {
             out.add(group, c.runs);
         }
     }
-    Ok(out)
+    out
 }
 
 // --- The operator's report -------------------------------------------------------

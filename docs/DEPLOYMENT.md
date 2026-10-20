@@ -972,7 +972,8 @@ stay unembedded until the next successful run, because `embed` always fills ever
 
 To watch a run, read `docker compose logs judgebot | grep refresh` after the first
 check, or start one now with `scripts/refresh-data.sh`. Expect one line per step,
-`cards`, `rules`, `lists`, `retire`, `embed` and `emoji` in that order, each `refresh step ok`
+`cards`, `rules`, `lists`, `prune`, `sweep`, `retire`, `embed` and `emoji` in that order, each
+`refresh step ok`
 or `refresh step skipped` and none `refresh step failed`. A run that loaded a new CR
 then logs `CR <old> → <new>` last. A one-off manual load also works from a workstation
 (`cargo run --release -p judgebot -- ingest rules <url>`). To force a re-parse of an
@@ -1177,11 +1178,12 @@ over the gateway) passes its healthcheck at once, so the script switches to it b
 anything shows that it can connect to Discord. Check its log for the gateway connection
 after the deploy.
 
-The deploy that stops the old container first is still
-`docker compose pull && docker compose up -d --remove-orphans`. Use it for the upgrade
-to one `judgebot` service below, which is also the first deploy of this script, and
-for a release whose notes say its migration cannot run beside the previous release
-(Releases with a migration, below).
+The deploy that stops the old container first,
+`docker compose pull && docker compose up -d --remove-orphans`, still works for every
+release, with a gap while the new container starts. `scripts/deploy.sh` covers the two
+cases that once needed it: the upgrade to one `judgebot` service below (it finds no
+`judgebot` container and runs that same `up -d --remove-orphans`, after a backup when
+one is configured), and a major release (Releases with a migration, below).
 
 **`--remove-orphans` is required on the upgrade that replaced the `bot` and `api`
 services with `judgebot`.** Without it the old `judgebot-bot` and `judgebot-api`
@@ -1400,6 +1402,12 @@ Until the migrations are applied, a `judgebot` whose code reads a new table or f
 fails the requests that read it with a `500` (2.0.0's `publicly_visible`: the feed, web
 rating, the dashboard and the admin dashboard), while the rest of it answers.
 
+A major release's migrations wait for the previous release to stop, so with
+`JUDGE_AUTO_MIGRATE=false` stop it before `migrate` (from 1.x:
+`docker stop judgebot-bot judgebot-api`). `scripts/deploy.sh` refuses a major with the
+setting off before it changes anything, since the new container would never migrate,
+and names these steps. Run it again once `migrate` has run: it then deploys in place.
+
 ### Private package pulls
 
 The upstream package is public and needs no login. A fork's package has the
@@ -1452,11 +1460,27 @@ An older tag starting against a newer schema depends on how far back it goes:
 - **Across a major release**, or from one build of a new major's pre-release to another
   (`latest` while `main` is on `3.0.0-dev`, say), it refuses to start and exits, naming
   the build that migrated the database and its own. From 2.0 on: a 1.x image has no
-  such check, starts, and fails on the queries the new schema broke. Rolling back that far means
-  restoring the backup taken before the upgrade too
-  (`docker compose run --rm --no-deps -T backup fetch`, §6). Take one by hand right
+  such check, starts, and fails on the queries the new schema broke. Rolling back that
+  far means restoring the backup taken before the upgrade too. Take one by hand right
   before a major release's deploy (`docker compose run --rm backup run`, or
   `scripts/backup-db.sh`).
+
+A major's backup is restored into an empty database: `pg_restore --clean` cannot drop
+the old release's tables while the new release's tables reference them. Stop `judgebot`
+first, or it migrates the restored database again, then restore, then start the older
+release's compose file and image:
+
+```sh
+docker compose stop judgebot
+docker compose run --rm --no-deps -T backup fetch judgebot-<stamp>.dump.gz \
+  > judgebot-<stamp>.dump.gz              # or scripts/backup-db.sh fetch <name>
+docker compose exec -T db dropdb -U judgebot --force judgebot
+docker compose exec -T db createdb -U judgebot judgebot
+gunzip -c judgebot-<stamp>.dump.gz \
+  | docker compose exec -T db pg_restore -U judgebot -d judgebot
+# then the older release's docker-compose.yml and JUDGE_IMAGE_TAG, as above
+docker compose pull && docker compose up -d --remove-orphans
+```
 
 `judgebot ingest migrate` refuses a database that is ahead rather than guessing, and the
 scheduled refresh stays paused while it is (§7): the data is not refreshed until the

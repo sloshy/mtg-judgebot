@@ -27,8 +27,9 @@ four kinds of source:
 - a card's current **Oracle text** (its official wording, which changes through errata),
 - a **prior call** the bot itself made earlier that users rated well.
 
-Discord users rate each answer 1 to 3. Ratings never make the bot "learn" in the model
-sense. They decide which old answers the model sees later as examples, and nothing else.
+Discord users rate each answer 1 to 3, and so, anonymously, can web visitors. Ratings never
+make the bot "learn" in the model sense. Discord's decide which old answers the model sees
+later as examples, and nothing else. The web's are only counted and shown.
 A rating that finds fault comes with a reason (what kind of problem, what is wrong, the
 right answer), which goes to the operator's feedback queue, not to the model.
 
@@ -218,7 +219,7 @@ columns and indexes) and `pg_trgm` (trigram similarity). Migrations are in
 | `card_notes` | `data/notes.yaml` | when the built-in copy changes, detected daily | nightmare cards |
 | `curated_lists` | each alias or note load | with the list | where each list came from (built-in or a file), and its digest |
 | `categories` | `data/categories.yaml`, via the compiled enum | with each CR load | category → CR subsections |
-| `calls`, `ratings` | the bot | continuous | answers and their votes |
+| `calls`, `ratings` | every interface | continuous | answers and their votes |
 | `embedding_space` | `ingest embed` | on switch | one row: which embedding model the vectors came from |
 | `agent_sessions` | the agent surface | continuous | state for the step-by-step agent mode |
 
@@ -352,7 +353,8 @@ synthesis. Having read the material, the model can ask for rules by number once.
 The prior-call query is the feedback loop. Earlier answers are stored with their own
 embedding (of the question). The prior-call query picks calls in the same categories, about at least one
 of the same cards, not retired and not down-voted. It orders them by vector distance to the
-new question. The rating is a **Bayesian-smoothed mean**: `(2.0 × 3 + Σ scores) / (3 + n)`.
+new question. The rating is a **Bayesian-smoothed mean** of the Discord ratings (an
+anonymous web rating is never counted): `(2.0 × 3 + Σ scores) / (3 + n)`.
 That is "pretend there were three votes of 2.0 before anyone voted". One 3 does not make a
 call look perfect, and one 1 does not bury it. The latest rating from someone with the
 Judge role overrides the crowd. Calls scoring under 1.5 with five or more votes are
@@ -581,8 +583,9 @@ pipeline.
   application emoji. The rendering logic is pure and unit-tested. A mana emoji tag is about
   thirty characters and must never be cut in half by Discord's length limit, so rendered
   text is carried as segments where only plain text is cuttable.
-- **Web** (`crates/api` + `web/`, a SolidJS web app): anonymous, so its ratings go to the
-  operator's queue and never to retrieval. Ambiguity comes
+- **Web** (`crates/api` + `web/`, a SolidJS web app): anonymous, so its ratings never
+  reach retrieval; a reason given with one goes to the operator's queue. It also serves
+  the public feed of answered questions and a dashboard of their counts. Ambiguity comes
   back as data. The client re-asks with pins that the server rewrites to
   `[[Full Card Name]]`. Session history keys on a client UUID. Rate-limited per IP.
 - **Agent** (`crates/agent`, `judge-cli` and `judge-mcp`): the judge as a tool for other AI

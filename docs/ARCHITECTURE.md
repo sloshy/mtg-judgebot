@@ -466,7 +466,7 @@ Three interfaces share this pipeline through the same composition root
     runs and the failed calls; the same range and filters as the public one, the asker
     by name or id), and the feedback queue (D38): `queue` (filtered
     by status, category, interface and rater kind; keyset pages), `queue/{id}` (the item
-    with its call whole) and the one write, `POST queue/{id}/resolve` and `…/dismiss`
+    with its call whole) and its two writes, `POST queue/{id}/resolve` and `…/dismiss`
     with `{note, fixed_by}`. The queries are `judge_bot::admin`, `judge_bot::feedback`
     and `db::stats`. The network roles' listener answers `/admin` paths 404.
   - `/admin` and below serve the web app, whose admin pages are a chunk of their own.

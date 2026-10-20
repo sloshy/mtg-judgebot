@@ -19,7 +19,8 @@
 //!                                       #   startup; this is for an empty database, or JUDGE_AUTO_MIGRATE=false)
 //! judgebot ingest refresh               # cards, rules latest, lists, prune, sweep, retire, embed, emoji — the scheduled job
 //! judgebot ingest upgrade               # print what this binary's pending migrations are (`upgrade: in-place`,
-//!                                       #   `upgrade: major` or `upgrade: major-from-1.x`), changing nothing;
+//!                                       #   `upgrade: major` or `upgrade: major-from-1.x`, after
+//!                                       #   `auto-migrate: off` when JUDGE_AUTO_MIGRATE is), changing nothing;
 //!                                       #   scripts/deploy.sh asks the new image before it deploys
 //! ```
 //!
@@ -240,7 +241,12 @@ pub async fn run(cmd: Command) -> Result<()> {
                 judge_bot::db::migrate::Upgrade::Major { from: Some(_) } => "major",
                 judge_bot::db::migrate::Upgrade::Major { from: None } => "major-from-1.x",
             };
-            // On its own line, after any log line: deploy.sh reads it.
+            // On its own lines, after any log line: deploy.sh reads them. A
+            // major with JUDGE_AUTO_MIGRATE off would never migrate by
+            // itself, so deploy.sh refuses it rather than wait on it.
+            if !judge_bot::db::migrate::auto_migrate_enabled()? {
+                println!("auto-migrate: off");
+            }
             println!("upgrade: {kind}");
             Ok(())
         }

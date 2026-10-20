@@ -110,7 +110,7 @@ raters, their reasons and failed questions.
 | `admin_usage` | `stats` | The admin dashboard over a range (`days`, or `from` / `to`, at most 366) narrowed by `interface`, `asker` and `model`: questions per day by interface (private ones counted apart), outcomes, ratings, the most-asked categories, cards and askers, cost and models; spend per day and month, the budget and what is left, the runs by model, interface and stage, cost per answer, latency, the dearest runs, failed calls, the lowest-rated calls, the feedback queue's counts and the latest data refreshes. |
 | `queue_list` | `queue` | The feedback queue: every *Partially correct* or *Incorrect* rating given a reason, newest first, 50 a page. Filters: `status` (open / resolved / dismissed), `category`, `interface`, `rater` (discord / web). |
 | `queue_show` | `queue-show <item>` | One item with its call whole: question, answer, citations, cards, models, retired state, every rating with its reason. |
-| `queue_resolve` | `queue-resolve <item> --note N [--fixed-by F]` | Close an item as fixed, saying what was done and what fixed it (a commit, a notes entry). The one write. |
+| `queue_resolve` | `queue-resolve <item> --note N [--fixed-by F]` | Close an item as fixed, saying what was done and what fixed it (a commit, a notes entry). |
 | `queue_dismiss` | `queue-dismiss <item> --note N` | Close an item with nothing to fix, saying why. With `JUDGE_PUBLIC_FEEDBACK=true` this also takes the reason off the public pages. |
 
 A rater who replaces their reason reopens the item, with the note kept. The `judge`

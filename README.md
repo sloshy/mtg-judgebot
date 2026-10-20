@@ -163,8 +163,9 @@ mean…?" prompts as the bot. Its ratings are anonymous and never shape later an
 lists answered questions from every interface, except those asked private, and its
 `/dashboard` counts them by day, interface, outcome, rating, topic and card. What a
 judgebot runs is set by roles: `--discord`, `--api` (the JSON API), `--web` (the web
-app), `--mcp` (for AI agents) and `--jobs` (the data refresh). `JUDGE_ROLES` in `.env`
-lists them, and unset it is `--discord --api --web --jobs`.
+app), `--mcp` (for AI agents), `--admin` (the operator's pages, on a port of their own)
+and `--jobs` (the data refresh). `JUDGE_ROLES` in `.env` lists them, and unset it is
+`--discord --api --web --jobs`.
 [The web app](https://mtg-judgebot.rpeters.dev/using/web/) and
 [The HTTP API](https://mtg-judgebot.rpeters.dev/using/api/) have the details.
 

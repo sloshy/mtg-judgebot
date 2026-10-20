@@ -516,10 +516,12 @@ pub(crate) fn window_days(window: Option<Days>) -> Option<i32> {
 }
 
 /// The newest [`PAGE_SIZE`] public calls matching `filter` before `after`
-/// (from the newest when `None`), within `window`.
+/// (from the newest when `None`), within `window`. A call holding a value
+/// this build does not read is left out, with a WARN, so a page can hold
+/// fewer than [`PAGE_SIZE`] and still have a next one.
 ///
 /// # Errors
-/// `Upstream` from sqlx, or a row that does not read.
+/// `Upstream` from sqlx.
 pub async fn page(
     pool: &PgPool,
     window: Option<Days>,
@@ -602,7 +604,9 @@ pub async fn page(
     } else {
         None
     };
-    let entries = rows.into_iter().map(entry).collect::<Result<Vec<_>, _>>()?;
+    // The cursor above is the last row read, so a row left out here still
+    // moves the next page past it.
+    let entries: Vec<Entry> = rows.into_iter().filter_map(readable).collect();
     let names = names(pool, &entries).await?;
     let entries = entries.into_iter().map(|e| named(e, &names)).collect();
     Ok(Page {
@@ -613,10 +617,11 @@ pub async fn page(
 }
 
 /// The public call `id` within `window`; `None` for a call that is missing,
-/// private or older than the window alike.
+/// private or older than the window alike, and for one holding a value this
+/// build does not read (with a WARN).
 ///
 /// # Errors
-/// `Upstream` from sqlx, or a row that does not read.
+/// `Upstream` from sqlx.
 pub async fn call(
     pool: &PgPool,
     window: Option<Days>,
@@ -669,8 +674,9 @@ pub async fn call(
     .fetch_optional(pool)
     .await
     .map_err(upstream("read a public call"))?;
-    let Some(row) = row else { return Ok(None) };
-    let entry = entry(row)?;
+    let Some(entry) = row.and_then(readable) else {
+        return Ok(None);
+    };
     let names = names(pool, std::slice::from_ref(&entry)).await?;
     Ok(Some((named(entry, &names), names)))
 }
@@ -708,6 +714,20 @@ pub(crate) fn stored<T: serde::de::DeserializeOwned>(
 
 fn count(n: i64) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// `r` as an entry, or `None` (and a WARN naming the call) when a value in it
+/// is one this build does not know, such as an interface, confidence or
+/// source a newer build of the same major wrote. One such call is left out
+/// of the feed rather than failing the page it is on, and its own page is
+/// the `None` of a call the feed does not show.
+fn readable(r: Row) -> Option<Entry> {
+    let id = r.id;
+    entry(r)
+        .inspect_err(|e| {
+            tracing::warn!(call = %id, error = %format_args!("{e:#}"), "a public call does not read; left out of the feed");
+        })
+        .ok()
 }
 
 fn entry(r: Row) -> Result<Entry, JudgeError> {
@@ -1205,6 +1225,81 @@ mod tests {
         assert!(!rateable(&pool, thirty, CallId::new(old)).await?);
         assert!(rateable(&pool, None, CallId::new(old)).await?);
         assert!(!rateable(&pool, None, CallId::new(Uuid::nil())).await?);
+        Ok(())
+    }
+
+    /// A call holding a value this build does not know (an interface,
+    /// confidence or source a newer build of the same major may write) is
+    /// left out of its page and has no page of its own; the rest of the
+    /// feed reads, and a page whose last row is left out still has a next.
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn an_unreadable_call_is_left_out_not_fatal(pool: PgPool) -> anyhow::Result<()> {
+        // What a newer build's migration could relax.
+        sqlx::query("ALTER TABLE calls DROP CONSTRAINT calls_interface_check")
+            .execute(&pool)
+            .await?;
+        let mut asked = vec![];
+        for i in 0..=PAGE_SIZE {
+            // Newest first: `asked[0]` heads the first page.
+            asked.push(call_at(&pool, 0, i32::try_from(i)?, "web", None, false).await?);
+        }
+        let last_of_first = *asked
+            .get(PAGE_SIZE - 1)
+            .ok_or_else(|| anyhow::anyhow!("calls"))?;
+        let bad = [
+            (
+                asked.first().copied(),
+                "UPDATE calls SET confidence = 'certain' WHERE id = $1",
+            ),
+            (
+                Some(last_of_first),
+                "UPDATE calls SET source = 'oracle' WHERE id = $1",
+            ),
+            (
+                asked.get(3).copied(),
+                "UPDATE calls SET interface = 'telegram' WHERE id = $1",
+            ),
+        ];
+        let mut unreadable = vec![];
+        for (id, sql) in bad {
+            let id = id.ok_or_else(|| anyhow::anyhow!("calls"))?;
+            sqlx::query(sql).bind(id).execute(&pool).await?;
+            unreadable.push(id);
+        }
+        let first = page(&pool, None, Reasons::Hidden, &Filter::default(), None).await?;
+        assert_eq!(first.entries.len(), PAGE_SIZE - 3);
+        let after = first.next.ok_or_else(|| anyhow::anyhow!("a next page"))?;
+        assert_eq!(after.id(), last_of_first);
+        let second = page(
+            &pool,
+            None,
+            Reasons::Hidden,
+            &Filter::default(),
+            Some(after),
+        )
+        .await?;
+        assert_eq!(second.next, None);
+        let mut seen = ids(&first);
+        seen.extend(ids(&second));
+        let expected: Vec<Uuid> = asked
+            .iter()
+            .copied()
+            .filter(|id| !unreadable.contains(id))
+            .collect();
+        assert_eq!(seen, expected);
+        for id in unreadable {
+            assert!(
+                call(&pool, None, Reasons::Hidden, CallId::new(id))
+                    .await?
+                    .is_none()
+            );
+        }
+        let good = *asked.get(1).ok_or_else(|| anyhow::anyhow!("calls"))?;
+        assert!(
+            call(&pool, None, Reasons::Hidden, CallId::new(good))
+                .await?
+                .is_some()
+        );
         Ok(())
     }
 

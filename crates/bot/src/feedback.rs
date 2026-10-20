@@ -415,7 +415,8 @@ pub async fn show(pool: &PgPool, id: Uuid) -> Result<Option<(QueueDetail, Names)
     let Some((call, names)) = crate::admin::call(pool, judge_core::CallId::new(item.call)).await?
     else {
         // The call went (the retention) between the two reads, and the item
-        // with it.
+        // with it; or it holds a value this build does not read, which
+        // `admin::call` logs.
         return Ok(None);
     };
     Ok(Some((QueueDetail { item, call }, names)))

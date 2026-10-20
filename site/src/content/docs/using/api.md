@@ -5,10 +5,10 @@ sidebar:
   order: 3
 ---
 
-The HTTP interfaces serve three routes on `API_ADDR`:
+The HTTP interfaces serve these routes on `API_ADDR`:
 
-- `POST /api/judge`, on with the `--api` role (the compose service runs it unless
-  `JUDGE_ROLES` leaves it out).
+- `POST /api/judge` and `POST /api/calls/{id}/feedback`, on with the `--api` role (the
+  compose service runs it unless `JUDGE_ROLES` leaves it out).
 - `GET /api/health` and `GET /api/about`, served whenever any of `--api`, `--web` and
   `--mcp` is on.
 - `GET /api/feed` and `GET /api/calls/{id}`, the public feed, and `GET /api/stats`, the
@@ -93,7 +93,9 @@ The source offer and the operator contact as JSON: `program`, `repository`, `com
 `operator_email`, `operator_discord` and a ready-to-show `notice`. The web app's footer is
 built from it. `locale` is the instance's language (`JUDGE_LOCALE`), which `notice` is
 written in, and `locales` every language its replies can be in. `feed` says whether this
-listener serves the feed. `stats` is `null` where the dashboard is not served, and
+listener serves the feed, `ratings` whether it takes ratings
+(`POST /api/calls/{id}/feedback`) and `public_feedback` whether raters' reasons are shown
+on the public pages (`JUDGE_PUBLIC_FEEDBACK`). `stats` is `null` where the dashboard is not served, and
 otherwise says what it shows beyond the counts: `{"cost": false, "models": false}`
 (`JUDGE_PUBLIC_COST`, `JUDGE_PUBLIC_MODELS`).
 
@@ -270,7 +272,7 @@ too.
 
 ## Admin API
 
-The operator's reads, and the feedback queue's one write, are served by the `--admin`
+The operator's reads, and the feedback queue's two writes, are served by the `--admin`
 listener only (`ADMIN_ADDR`, loopback), never on this one, which answers `/admin` paths
 `404`. Every route takes `Authorization: Bearer <ADMIN_TOKEN>` and answers `401` without
 it; replies carry `Cache-Control: no-store`, and an error is the same

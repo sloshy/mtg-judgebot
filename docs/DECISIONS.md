@@ -747,8 +747,8 @@ The webhook hears the first failure of a streak and the recovery, never each ret
 The Discord bot, the HTTP interfaces and the data command line were three binaries
 (`bot`, `api`, `ingest`) in two long-running compose services. They are now one binary,
 `judgebot`, and one service. What a process does is a set of roles chosen at launch:
-`--discord`, `--api`, `--web`, `--mcp` and `--jobs`, from the command line or, with none
-there, `JUDGE_ROLES`. `judgebot ingest <command>` is the data command line.
+`--discord`, `--api`, `--web`, `--mcp` and `--jobs` (D37 adds `--admin`), from the command
+line or, with none there, `JUDGE_ROLES`. `judgebot ingest <command>` is the data command line.
 
 - **The set cannot be empty.** `Roles` holds a `NonEmpty<Role>`, as `Interfaces` does
   for the API's interfaces, so a process that serves nothing is not a value the program

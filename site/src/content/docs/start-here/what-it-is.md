@@ -51,9 +51,11 @@ see it: it is never shown to anyone else, never read as another question's histo
 never used as an example. A failed call is kept with what the model sent, until a later
 failure finds it older than 30 days, so the operator can diagnose it. When someone
 presses a rating button, the instance stores their Discord user id, the score and, for
-*Partially correct* or *Incorrect*, the reason they give in its form. It stores nothing
-else. The bot receives only its own slash commands and button presses,
-never channel messages.
+*Partially correct* or *Incorrect*, the reason they give in its form. A rating given in
+the web app stores the browser tab's session id instead of a user id, the name the rater
+typed if any, and the address and browser it came from, which are cleared after
+`FEEDBACK_IP_DAYS` (default 90). It stores nothing else. The bot receives only its own
+slash commands and button presses, never channel messages.
 
 Every answered question not asked private is listed on the web app's public feed, with
 the Discord asker's username, unless the operator turns it off (`JUDGE_FEED=false`).

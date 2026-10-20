@@ -8,6 +8,30 @@ use crate::budget::Period;
 const BLOOD_MOON: &str = "b4f1e8a7-0000-4000-8000-000000000001";
 const OKO: &str = "b4f1e8a7-0000-4000-8000-000000000002";
 
+/// An outcome this build does not know (a newer build of the same major
+/// wrote it) is left out of the groups, not a failed report.
+#[test]
+fn an_unknown_outcome_is_left_out_of_the_groups() {
+    let counts = [
+        ("answered", 4),
+        ("teleported", 9),
+        ("at_cap", 2),
+        ("abandoned", 1),
+    ]
+    .map(|(outcome, runs)| OutcomeCount {
+        outcome: outcome.to_owned(),
+        runs,
+    });
+    assert_eq!(
+        grouped(&counts),
+        Outcomes {
+            answered: 4,
+            failed: 2,
+            ..Outcomes::default()
+        }
+    );
+}
+
 #[test]
 fn a_date_reads_only_a_real_day_and_writes_it_back() {
     for day in [
