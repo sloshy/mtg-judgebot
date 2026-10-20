@@ -898,7 +898,8 @@ For the HTTP API it also holds:
 - `ADMIN_ADDR` (default `127.0.0.1:8789`; compose sets `0.0.0.0:8789` in the container)
   and `ADMIN_TOKEN`: the `--admin` role's own listener and bearer token
   (`/admin/api/*`, the `/admin` pages; `judge-cli admin-url`). The three tokens are
-  ≥24 chars and must differ.
+  ≥24 chars and must differ. `ADMIN_PORT` (default 8789) is the host port the proxy
+  publishes it on (`127.0.0.1:${ADMIN_PORT:-8789}:8789`).
 
 The `judgebot` and `refresh` containers override `DATABASE_URL` to `db:5432` inside the
 compose network. The image builds the web app and sets `WEB_DIST=/srv/web`. The
@@ -914,7 +915,7 @@ is `docker rm -f judgebot-bot judgebot-api`.
 
 Deployment is self-hosted behind a Cloudflare Tunnel. `docs/DEPLOYMENT.md` is the
 runbook. `db` and `proxy` publish on `127.0.0.1` only: `proxy` (Caddy) holds
-`127.0.0.1:8787` and forwards to `judgebot:8787` (and `127.0.0.1:8789` to
+`127.0.0.1:8787` and forwards to `judgebot:8787` (and `127.0.0.1:${ADMIN_PORT:-8789}` to
 `judgebot:8789`, the admin listener, which the tunnel never points at), because `judgebot` has no
 `container_name` and no port so a deploy can run two (D29). A release's migrations keep
 the previous release working (expand, contract later; `CONTRIBUTING.md`). `proxy/Caddyfile`
