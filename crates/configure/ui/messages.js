@@ -29,6 +29,7 @@ const EN = {
     discord: "Discord bot",
     http: "HTTP API",
     admin: "Admin interface",
+    exposure: "Exposure",
   },
   outcome: {
     ok: "✓ starts",

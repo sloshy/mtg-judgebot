@@ -309,7 +309,16 @@ process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, 
   container listens, on a new connection per request with dial retries for 5 s: a
   draining container closes its listener, so a refused dial goes on to the other, and
   no kept-alive connection to it can be closed under a POST. A connection the kernel
-  had queued for it as it closes its listener is reset, the one loss left.
+  had queued for it as it closes its listener is reset, the one loss left. Its
+  `:8787` site (the tunnel's) and its admin site remove `X-Judgebot-Client-IP`; the
+  host's `127.0.0.1:8787` is its `:8788` site, which passes it on from a reverse proxy
+  on the host (any container on the compose network can dial it too, so nothing there
+  points at it). Both Caddyfiles drain for 70 s (`grace_period`), under compose's 80 s
+  `stop_grace_period`. `edge` (profile `public`, `proxy/edge.Caddyfile`, D41) is the bundled
+  public site: Caddy on ports 80 and 443 serving `JUDGE_DOMAIN` with a Let's Encrypt
+  certificate, dialling `judgebot:8787` with the same handover settings and setting
+  `X-Judgebot-Client-IP` to the visitor's address. `cloudflared` (profile `tunnel`) is
+  the alternative route, through `proxy:8787`.
   `refresh` runs `judgebot ingest` on demand,
   and `backup` (profile `backup`, `.env.deploy` and no `.env`) runs `judgebot backup
   serve`.
@@ -387,6 +396,11 @@ Three interfaces share this pipeline through the same composition root
     `PgLibrary::rulings`. They call no model and touch no meter.
 - **HTTP adapter** (`crates/api` + `web/`): anonymous `POST /api/judge` behind
   a per-IP fixed-window rate limit, and a SolidJS web app.
+  - The limit's address is `client_ip` under `API_CLIENT_IP`
+    (`config::ClientIpSource`): the peer, `CF-Connecting-IP`, or `X-Judgebot-Client-IP`
+    (`ProxyHeader`, read only as a single copy from a loopback or private peer), never
+    `X-Forwarded-For`. Every limiter keys on `limit::Bucket`: the IPv4 address, or the
+    IPv6 address's /64.
   - Each interface is a role of its own on one listener (`API_ADDR`): `--api`
     the JSON route, `--web` the web app and `--mcp` the MCP transport. An interface
     nobody named is not mounted.

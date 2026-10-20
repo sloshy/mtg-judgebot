@@ -19,13 +19,27 @@ Operators should know these properties. The reasoning behind each is in
 
 - **Spend is the main asset to protect.** Every model call, embeddings included, goes
   through a hard cap (`JUDGE_MAX_USD`) that reserves the worst case before sending. The anonymous API
-  adds a per-IP fixed-window rate limit ahead of the concurrency semaphore, and the
-  runbook puts a Cloudflare rate-limiting rule in front of that.
+  adds a per-IP fixed-window rate limit ahead of the concurrency semaphore. Behind a
+  Cloudflare Tunnel the runbook puts a Cloudflare rate-limiting rule in front of that;
+  behind the bundled HTTPS site or the operator's own proxy, the process's limit, the
+  semaphore and the cap are what there is.
 - **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP`
-  is `peer` or `cloudflare` (`CF-Connecting-IP`). `X-Forwarded-For` is never read,
-  because Cloudflare appends to a caller-supplied header instead of replacing it,
-  which would give every request a fresh allowance. `cloudflare` is only sound when
-  nothing but Cloudflare can reach the origin.
+  is `peer`, `proxy` (`X-Judgebot-Client-IP`) or `cloudflare` (`CF-Connecting-IP`).
+  `X-Forwarded-For` is never read, because Cloudflare appends to a caller-supplied
+  header instead of replacing it, which would give every request a fresh allowance.
+  `cloudflare` is only sound when nothing but Cloudflare can reach the origin. `proxy`
+  is only sound while the bundled `edge` site, which overwrites the header, or the
+  operator's own proxy is the only public route: the compose proxy's tunnel and admin
+  sites remove a caller's copy, and judgebot reads it only as a single copy from a
+  loopback or private peer. The peer check stops only a caller connecting from a
+  public address of its own: where Docker rewrites the source (its userland proxy for
+  IPv6, rootless Docker, Docker Desktop) every caller is private. The proxy's `:8788`
+  site, which the host's `127.0.0.1:8787` maps to, passes the client headers through
+  and is reachable from every container on the compose network: a tunnel or proxy
+  pointed at `proxy:8788` or `judgebot:8787`, or a non-loopback host address mapped to
+  8788, would pass a forged one. A compose override that publishes 8787 on a LAN
+  address lets that network choose `CF-Connecting-IP` under `cloudflare`. An IPv6
+  address is counted by its /64.
 - **The MCP endpoint is bearer-token only and off by default.** It mounts only when
   `judgebot` is launched with `--mcp` *and* `MCP_TOKEN` (at least 24 bytes) is set.
   The flag alone is refused at startup, and the token alone serves nothing. The token is
@@ -37,7 +51,8 @@ Operators should know these properties. The reasoning behind each is in
   operator (D37):
   - The admin pages (`--admin`) listen on `ADMIN_ADDR` (loopback; in compose,
     `127.0.0.1:${ADMIN_PORT:-8789}` on the host through the proxy) behind `ADMIN_TOKEN`. The public
-    listener answers their paths 404, and the tunnel never points at them. cloudflared
+    listener answers their paths 404, and neither the public site nor the tunnel points
+    at them. cloudflared
     shares the compose network and could reach the port, so the token is the guard
     there.
   - `/mcp` offers the admin tools only to `MCP_ADMIN_TOKEN` (off unless set). `MCP_TOKEN`
@@ -62,7 +77,9 @@ Operators should know these properties. The reasoning behind each is in
   in the code redacts itself in `Debug`.
 - **Postgres, the API and the admin interface bind to loopback** in `docker-compose.yml`. The compose
   database uses a default password (`judgebot`), which is fine only while that binding
-  holds. Change it if you publish the port.
+  holds. Change it if you publish the port. The `public` profile's `edge` service is the
+  one thing that publishes on every address (ports 80 and 443), and it forwards to the
+  API's port alone.
 - **The image runs as `nobody`** and is rebuilt by CI from the committed lockfiles.
 - **User data stored:**
   - the question and answer text of every call, private ones included

@@ -45,6 +45,68 @@ pub enum Surface {
     Admin,
     /// The database settings.
     Database,
+    /// Where compose opens the instance: `127.0.0.1:8787` always, the
+    /// `public` profile's HTTPS site (`JUDGE_DOMAIN`) and the `tunnel`
+    /// profile's cloudflared.
+    Exposure,
+}
+
+/// The public host name the compose `edge` service (the `public` profile)
+/// serves and gets a certificate for. Read by Caddy alone, so checked here.
+pub const DOMAIN_ENV: &str = "JUDGE_DOMAIN";
+
+/// The compose profiles `docker compose up -d` starts.
+pub const PROFILES_ENV: &str = "COMPOSE_PROFILES";
+
+/// The profiles of `COMPOSE_PROFILES` that open the instance beyond this
+/// host.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Exposure {
+    /// `public`: the `edge` service on ports 80 and 443.
+    pub public: bool,
+    /// `tunnel`: cloudflared.
+    pub tunnel: bool,
+}
+
+impl Exposure {
+    /// Read from `COMPOSE_PROFILES` (comma-separated, as compose reads it).
+    #[must_use]
+    pub fn of(env: &dyn Fn(&str) -> Option<String>) -> Self {
+        let profiles = env(PROFILES_ENV).unwrap_or_default();
+        let has = |p: &str| profiles.split(',').any(|q| q.trim() == p);
+        Self {
+            public: has("public"),
+            tunnel: has("tunnel"),
+        }
+    }
+}
+
+/// Whether `s` is a host name Caddy can get a certificate for: dot-separated
+/// labels of letters, digits and inner hyphens, at least two of them, the
+/// last not all digits (an IP address is not a domain), with no scheme, port,
+/// path or trailing dot.
+#[must_use]
+pub fn is_host_name(s: &str) -> bool {
+    let label = |l: &str| {
+        (1..=63).contains(&l.len())
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+    };
+    let labels: Vec<&str> = s.split('.').collect();
+    s.len() <= 253
+        && labels.len() >= 2
+        && labels.iter().all(|l| label(l))
+        && labels
+            .last()
+            .is_some_and(|tld| !tld.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A variable's value, trimmed, when it is set and not blank.
+fn set_var(env: &dyn Fn(&str) -> Option<String>, k: &str) -> Option<String> {
+    env(k)
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
 }
 
 /// One surface's verdict.
@@ -142,7 +204,70 @@ pub fn run(locale: Locale, toml: Option<&str>, env: &dyn Fn(&str) -> Option<Stri
             surface: Surface::Admin,
             outcome: admin(m, roles.as_ref(), env),
         },
+        Check {
+            surface: Surface::Exposure,
+            outcome: exposure(m, env),
+        },
     ]
+}
+
+/// The `public` profile's site needs its host name: without one the `edge`
+/// container refuses to start, and with a malformed one Caddy cannot get a
+/// certificate. The summary lists every route in.
+fn exposure(m: &Messages, env: &dyn Fn(&str) -> Option<String>) -> Outcome {
+    let open = Exposure::of(env);
+    let domain = set_var(env, DOMAIN_ENV);
+    let location = || Location::Env {
+        var: DOMAIN_ENV.to_owned(),
+    };
+    if open.public {
+        match domain.as_deref() {
+            None => {
+                return Outcome::Error {
+                    message: m.domain_missing.to_owned(),
+                    location: location(),
+                };
+            }
+            Some(d) if !is_host_name(d) => {
+                return Outcome::Error {
+                    message: (m.bad_domain)(d),
+                    location: location(),
+                };
+            }
+            Some(_) => {}
+        }
+    }
+    let public = domain.as_deref().filter(|_| open.public);
+    Outcome::Ok {
+        summary: Some((m.exposure)(public, open.tunnel)),
+    }
+}
+
+/// Warnings about exposure that no loader sees: the `public` profile's or
+/// the tunnel's visitors in one rate-limit bucket, and a host name nothing
+/// serves.
+#[must_use]
+pub fn exposure_warnings(m: &Messages, env: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+    let open = Exposure::of(env);
+    let domain = set_var(env, DOMAIN_ENV);
+    let mut out = vec![];
+    let mode =
+        judge_api::config::ClientIpSource::parse(env(judge_api::config::CLIENT_IP_ENV).as_deref())
+            .ok();
+    if open.public
+        && let Some(d) = &domain
+        && let Some(mode) = mode
+        && mode != judge_api::config::ClientIpSource::ProxyHeader
+    {
+        out.push((m.public_client_ip)(d, mode.name()));
+    }
+    if open.tunnel && mode == Some(judge_api::config::ClientIpSource::ProxyHeader) {
+        out.push(m.tunnel_client_ip.to_owned());
+    }
+    if !open.public && domain.is_some() {
+        out.push(m.domain_unused.to_owned());
+    }
+    out
 }
 
 /// `--admin`: its token (well formed, its own) and the host port compose
@@ -241,12 +366,7 @@ fn names(message: &str, var: &str) -> Option<usize> {
 }
 
 fn database(m: &Messages, env: &dyn Fn(&str) -> Option<String>) -> Outcome {
-    let set = |k: &str| {
-        env(k)
-            .map(|v| v.trim().to_owned())
-            .filter(|v| !v.is_empty())
-    };
-    if let Some(port) = set("DB_PORT")
+    if let Some(port) = set_var(env, "DB_PORT")
         && !port.parse::<u16>().is_ok_and(|p| p > 0)
     {
         return Outcome::Error {
@@ -384,7 +504,187 @@ mod tests {
                 assert!(matches!(o, Outcome::Ok { .. }), "{s:?}: {o:?}");
             }
         }
-        assert_eq!(c.len(), 6);
+        assert_eq!(c.len(), 7);
+    }
+
+    fn summary(o: Option<&Outcome>) -> Option<String> {
+        match o {
+            Some(Outcome::Ok { summary }) => summary.clone(),
+            _ => None,
+        }
+    }
+
+    /// The `public` profile needs a host name it can get a certificate for;
+    /// without the profile nothing reads one.
+    #[test]
+    fn the_public_profile_needs_a_host_name() {
+        let mut with = OK.to_vec();
+        let c = checks(None, &with);
+        assert_eq!(
+            summary(c.get(&Surface::Exposure)),
+            Some("127.0.0.1:8787 on this host".to_owned())
+        );
+        with.push(("COMPOSE_PROFILES", "backup, public"));
+        let c = checks(None, &with);
+        assert_eq!(
+            error_at(c.get(&Surface::Exposure)),
+            Some(env("JUDGE_DOMAIN"))
+        );
+        for bad in [
+            "https://judge.example.com",
+            "judge.example.com:443",
+            "judge.example.com/",
+            "localhost",
+            "203.0.113.9",
+            "judge.example.com.",
+            "-judge.example.com",
+            "judge_bot.example.com",
+            "judge..example.com",
+        ] {
+            let mut bad_domain = with.clone();
+            bad_domain.push(("JUDGE_DOMAIN", bad));
+            let c = checks(None, &bad_domain);
+            assert_eq!(
+                error_at(c.get(&Surface::Exposure)),
+                Some(env("JUDGE_DOMAIN")),
+                "{bad}"
+            );
+        }
+        with.push(("JUDGE_DOMAIN", " judge.example.com "));
+        let c = checks(None, &with);
+        assert_eq!(
+            summary(c.get(&Surface::Exposure)),
+            Some(
+                "127.0.0.1:8787 on this host; https://judge.example.com on ports 80 and 443"
+                    .to_owned()
+            )
+        );
+        with.retain(|(k, _)| *k != "COMPOSE_PROFILES");
+        with.push(("COMPOSE_PROFILES", "tunnel,public"));
+        let c = checks(None, &with);
+        assert!(
+            summary(c.get(&Surface::Exposure))
+                .is_some_and(|s| s.ends_with("; the Cloudflare tunnel")),
+            "{c:?}"
+        );
+        assert!(is_host_name("xn--bcher-kva.example"));
+        assert!(is_host_name("a.b.c.example.org"));
+    }
+
+    /// The `public` profile with another client-address mode puts every
+    /// visitor in one bucket, and a host name without the profile serves
+    /// nothing: both are said, neither refused.
+    #[test]
+    fn the_public_profile_suggests_the_proxy_client_address() {
+        let warn = |vars: &[(&str, &str)]| {
+            let vars: HashMap<String, String> = vars
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
+            exposure_warnings(catalog::messages(Locale::En), &|k| vars.get(k).cloned())
+        };
+        let public = [
+            ("COMPOSE_PROFILES", "public"),
+            ("JUDGE_DOMAIN", "judge.example.com"),
+        ];
+        let w = warn(&public);
+        assert!(
+            matches!(w.as_slice(), [one] if one.contains("API_CLIENT_IP=proxy") && one.contains("peer")),
+            "{w:?}"
+        );
+        let mut cf = public.to_vec();
+        cf.push(("API_CLIENT_IP", "cloudflare"));
+        assert!(warn(&cf).iter().any(|w| w.contains("cloudflare")));
+        let mut proxy = public.to_vec();
+        proxy.push(("API_CLIENT_IP", "proxy"));
+        assert!(warn(&proxy).is_empty());
+        let w = warn(&[("JUDGE_DOMAIN", "judge.example.com")]);
+        assert!(
+            matches!(w.as_slice(), [one] if one.contains("COMPOSE_PROFILES")),
+            "{w:?}"
+        );
+        assert!(warn(&[]).is_empty());
+        // The tunnel's path removes the proxy header, so proxy mode puts its
+        // visitors in one bucket; cloudflare is its mode.
+        let w = warn(&[("COMPOSE_PROFILES", "tunnel"), ("API_CLIENT_IP", "proxy")]);
+        assert!(
+            matches!(w.as_slice(), [one] if one.contains("API_CLIENT_IP=cloudflare")),
+            "{w:?}"
+        );
+        assert!(
+            warn(&[
+                ("COMPOSE_PROFILES", "tunnel"),
+                ("API_CLIENT_IP", "cloudflare")
+            ])
+            .is_empty()
+        );
+    }
+
+    /// The `edge` container's own guard (`proxy/edge-entrypoint.sh`)
+    /// accepts exactly the host names this check does, so a draft the editor
+    /// passes starts and one it refuses does not.
+    #[test]
+    fn the_edge_guard_agrees_with_the_check() -> Result<(), std::io::Error> {
+        let script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../proxy/edge-entrypoint.sh");
+        let long_label = format!("{}.example", "a".repeat(64));
+        let long_name = format!("{}example", "abcdefghi.".repeat(25));
+        let cases = [
+            "judge.example.com",
+            "a.b",
+            "xn--bcher-kva.example",
+            "judge-1.example.org",
+            "",
+            "localhost",
+            "203.0.113.9",
+            "-",
+            "https://judge.example.com",
+            "judge.example.com:443",
+            "judge.example.com/x",
+            "judge.example.com.",
+            ".judge.example.com",
+            "judge..example.com",
+            "-judge.example.com",
+            "judge-.example.com",
+            "judge.-example.com",
+            "judge_bot.example.com",
+            "judge example.com",
+            "example.123",
+            &long_label,
+            &long_name,
+        ];
+        for d in cases {
+            let status = std::process::Command::new("sh")
+                .arg(&script)
+                .arg("true")
+                .env("JUDGE_DOMAIN", d)
+                .stderr(std::process::Stdio::null())
+                .status()?;
+            assert_eq!(status.success(), is_host_name(d), "{d:?}");
+        }
+        Ok(())
+    }
+
+    /// The `edge` service reads the variable the check names, under the
+    /// profile it names.
+    #[test]
+    fn the_compose_file_serves_the_domain_under_the_public_profile() {
+        let compose = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docker-compose.yml"),
+        )
+        .unwrap_or_default();
+        assert!(
+            compose.contains("profiles: [\"public\"]"),
+            "no service under the public profile"
+        );
+        assert!(
+            compose.contains(&format!("{DOMAIN_ENV}: ${{{DOMAIN_ENV}:-}}")),
+            "the edge service no longer reads {DOMAIN_ENV}"
+        );
+        assert!(
+            compose.contains("entrypoint: [\"sh\", \"/etc/caddy/edge-entrypoint.sh\"]"),
+            "the edge service no longer runs its guard"
+        );
     }
 
     /// `--admin` is checked when the roles run it: its own token, distinct

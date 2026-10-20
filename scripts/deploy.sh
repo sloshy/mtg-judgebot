@@ -14,7 +14,7 @@
 # Discord gateway (the new container connects at once, or 15 s later when the
 # old one is from a release that does not record a clean release), and finishes
 # the answers in flight within two minutes before it exits. The `proxy`
-# service on 127.0.0.1:8787 and the tunnel reach whichever is listening.
+# service on 127.0.0.1:8787, `edge` and the tunnel reach whichever listens.
 #
 # A new container that is not healthy within DEPLOY_WAIT_SECS (default 300) is
 # removed, its last log lines are printed, and the old one keeps serving; the
@@ -63,6 +63,7 @@ finish() {
     kept="this was a major upgrade and the old container has stopped, so nothing is serving questions; the database may be partly migrated. Check docker compose logs $service; to go back, restore the backup taken before it and deploy the previous release (docs/DEPLOYMENT.md, Rolling back)"
   elif [ "$stage" = proxy ]; then
     kept="the new container is serving, but the proxy in front of it did not load proxy/Caddyfile; check docker compose logs proxy"
+    [ -z "${edge:-}" ] || kept="the new container is serving, but the proxy or the public site (edge) in front of it did not start or load its Caddyfile; check docker compose logs proxy edge"
   fi
   alert "judgebot deploy failed on $(hostname 2>/dev/null || echo this host) (exit $status); $kept."
 }
@@ -81,6 +82,17 @@ case "$wait_secs" in '' | *[!0-9]*) die "DEPLOY_WAIT_SECS must be a number of se
 log "checking that proxy/Caddyfile loads"
 docker compose run --rm --no-deps -T proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 ||
   die "proxy/Caddyfile does not load: docker compose run --rm --no-deps proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+# The public profile's site (`edge`, COMPOSE_PROFILES=public) mounts the same
+# directory and is checked the same way, with the JUDGE_DOMAIN it will serve.
+# Without the profile it is none of this deploy's business.
+edge=""
+if docker compose config --services 2>/dev/null | grep -qx edge; then
+  edge=edge
+  [ -f proxy/edge.Caddyfile ] || die "proxy/edge.Caddyfile is missing: run this from a full checkout (git pull)"
+  log "checking that proxy/edge.Caddyfile loads"
+  docker compose run --rm --no-deps -T edge caddy validate --config /etc/caddy/edge.Caddyfile --adapter caddyfile >/dev/null 2>&1 ||
+    die "proxy/edge.Caddyfile does not load, or JUDGE_DOMAIN in .env is not a host name: docker compose run --rm --no-deps edge caddy validate --config /etc/caddy/edge.Caddyfile --adapter caddyfile"
+fi
 
 case "${1:-}" in
   "")
@@ -310,6 +322,9 @@ fi
 # a proxy whose definition changed is recreated with the old container and
 # the new one both behind it. It cannot start while an old judgebot that
 # publishes 8787 itself holds the port; the call after the stop starts it.
+# A recreated proxy first finishes the requests it is serving (up to 70 s,
+# its grace_period), so this can take that long once.
+log "bringing the proxy up to date"
 docker compose up -d --no-deps proxy ||
   log "the proxy did not start yet; trying again once the old container has stopped"
 case "$upgrade" in
@@ -328,26 +343,33 @@ case "$upgrade" in
 esac
 # The proxy on 127.0.0.1:8787 is never restarted by a deploy; this starts it
 # if it is not running, as on the first deploy from a judgebot container that
-# published the port itself. Then it is asked to load proxy/Caddyfile as it
-# is now: nothing happens when it already runs it (it watches the file), and
-# a proxy that is not running, or kept an older configuration because the
-# file stopped loading, fails the deploy, since nothing reaches judgebot
-# without it.
+# published the port itself, and `edge` likewise under the public profile (as
+# on the first deploy after turning it on). Each is then asked to load its
+# file as it is now: nothing happens when it already runs it (it watches the
+# file), and one that is not running, or kept an older configuration because
+# the file stopped loading, fails the deploy, since nothing reaches judgebot
+# through it.
 stage=proxy
 docker compose up -d --no-deps proxy
-# A proxy started a moment ago may not have opened its admin API yet, so a
-# few tries; Caddy's own answer is shown when none succeeds.
-reload_log="$(mktemp)"
-for try in 1 2 3 4 5; do
-  if docker compose exec -T proxy caddy reload --adapter caddyfile --config /etc/caddy/Caddyfile >"$reload_log" 2>&1; then
-    break
-  fi
-  [ "$try" -lt 5 ] || {
-    tail -n 20 "$reload_log" >&2
-    rm -f "$reload_log"
-    die "the proxy did not load proxy/Caddyfile (Caddy's answer is above): docker compose exec proxy caddy reload --adapter caddyfile --config /etc/caddy/Caddyfile"
-  }
-  sleep 2
-done
-rm -f "$reload_log"
+[ -z "$edge" ] || docker compose up -d --no-deps edge
+# One started a moment ago may not have opened its admin API yet, so a few
+# tries; Caddy's own answer is shown when none succeeds.
+reload() {
+  local reload_log try
+  reload_log="$(mktemp)"
+  for try in 1 2 3 4 5; do
+    if docker compose exec -T "$1" caddy reload --adapter caddyfile --config "/etc/caddy/$2" >"$reload_log" 2>&1; then
+      break
+    fi
+    [ "$try" -lt 5 ] || {
+      tail -n 20 "$reload_log" >&2
+      rm -f "$reload_log"
+      die "the $1 service did not load proxy/$2 (Caddy's answer is above): docker compose exec $1 caddy reload --adapter caddyfile --config /etc/caddy/$2"
+    }
+    sleep 2
+  done
+  rm -f "$reload_log"
+}
+reload proxy Caddyfile
+[ -z "$edge" ] || reload edge edge.Caddyfile
 log "deployed: $(docker inspect -f '{{.Name}} {{.Config.Image}}' "$new")"

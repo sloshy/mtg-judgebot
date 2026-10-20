@@ -169,8 +169,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # docker-compose.yml reads .env through env_file, and the tunnel and
-      # backup profiles .env.deploy; the examples stand in.
+      # backup profiles .env.deploy; the examples stand in. The public
+      # profile parses with JUDGE_DOMAIN blank, as in the example.
       - run: |
           cp .env.example .env && cp .env.deploy.example .env.deploy
           docker compose config --quiet
-          docker compose --profile tunnel --profile backup config --quiet
+          docker compose --profile public --profile tunnel --profile backup config --quiet

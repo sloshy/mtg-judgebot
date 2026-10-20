@@ -361,15 +361,18 @@ The operations are one list (`crates/agent/src/ops.rs`). The CLI and the MCP ser
 transport. This is also the cheapest way to reproduce a reported bad answer: no API spend,
 same code paths.
 
-## D15. Single host behind a Cloudflare Tunnel
+## D15. Single self-hosted machine
 
 *Decided 2026-08-31.*
 
-The reference deployment is one machine at home behind a Cloudflare Tunnel, running a
-CI-built image. It has no public IP, no forwarded port and no cloud compute bill. The
-tunnel keeps two properties a serverless split would lose. The Discord gateway stays one
-long-lived connection, with no HTTP-interactions rewrite. The spend cap, semaphore and
-rate limiter stay single-process values.
+The reference deployment is one machine at home, running a CI-built image, with no
+cloud compute bill. One machine keeps two properties a serverless split would lose. The
+Discord gateway stays one long-lived connection, with no HTTP-interactions rewrite. The
+spend cap, semaphore and rate limiter stay single-process values.
+
+It was first published only through a Cloudflare Tunnel: no public IP, no forwarded
+port. D41 made the bundled HTTPS site the default route and the tunnel the
+alternative; what follows holds for both.
 
 CI publishes the image and the host pulls it, because a release build wants about 4 GB of
 RAM and real CPU, which a NAS does not have. The data refresh runs inside the `judgebot`
@@ -378,7 +381,8 @@ process (its `--jobs` role, D25) on a schedule kept in the database (D24). The o
 an opt-in container of its own (D26).
 
 **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP` is
-`peer` or `cloudflare` (`CF-Connecting-IP`), never `X-Forwarded-For`. Cloudflare *appends*
+`peer` or `cloudflare` (`CF-Connecting-IP`), and since D41 `proxy`, never
+`X-Forwarded-For`. Cloudflare *appends*
 to a caller-supplied header instead of replacing it, which would hand every request a
 fresh allowance against a paid endpoint. Any other `API_CLIENT_IP` value fails at
 startup rather than falling back. Deploy credentials live in their own env file that the
@@ -1805,3 +1809,106 @@ container and is stopped by whoever stops it.
 - *Waiting a separate, shorter bound after the drain.* The thread stops beside the
   drain, and a bound counted from the request keeps the exit inside the compose
   `stop_grace_period` whatever the drain took.
+
+## D41. Public HTTPS by default
+
+*Decided 2026-10-20.*
+
+Cloudflare is an alternative, not the default. A first setup answers on the host's
+loopback only, and an operator who wants the web app, the API or Discord's interactions
+endpoint on the internet turns on the bundled HTTPS site. The owner's own instance keeps
+its Cloudflare Tunnel unchanged.
+
+- **The bundled site is a profile service.** `edge` runs the same Caddy image as
+  `proxy`, under the compose profile `public` (`COMPOSE_PROFILES=public`, as
+  `cloudflared` is under `tunnel`). It publishes ports 80 and 443 (and 443/udp for
+  HTTP/3) on every address of the host and serves `https://<JUDGE_DOMAIN>` with a Let's
+  Encrypt certificate Caddy gets and renews itself, kept in the `judgebot-edge-data`
+  volume. Without the profile nothing claims 80 or 443, and the stack is what it was:
+  `127.0.0.1:8787` through `proxy`.
+- **It dials `judgebot:8787` itself**, with `proxy`'s handover settings (a new
+  connection per request, dial retries for 5 s), so a blue-green deploy (D29) hands
+  over the same way, and a deploy never restarts it. Going through `proxy:8787` would
+  have added a hop and made `proxy` tell the bundled site's header apart from a
+  caller's on the same site.
+- **A neutral client-address header.** `API_CLIENT_IP=proxy`
+  (`ClientIpSource::ProxyHeader`) buckets on `X-Judgebot-Client-IP`. `edge` sets it to
+  the address it was dialled from, replacing any copy the caller sent, and removes a
+  caller's `CF-Connecting-IP`. The other public routes remove it: `proxy`'s `:8787`
+  site, where a tunnel's hostname points, and its admin site. The
+  host's `127.0.0.1:8787` now maps to a third site, `:8788`, which passes it on, so a
+  reverse proxy on the host can set it as well. That site is reached by the host's
+  processes and by any container on the compose network, which can dial `proxy:8788`;
+  Caddy cannot tell the two apart (both arrive from the network), so nothing on the
+  network may be pointed there and no other host address may be mapped to it. judgebot
+  reads the header only in that mode, only as a single copy (a proxy that appended to
+  the caller's leaves two) and only from a peer on a loopback, private, link-local,
+  shared (100.64.0.0/10) or unique local address, which keeps out a caller connecting
+  from a public address of its own. Where Docker rewrites the source (its userland
+  proxy for IPv6, rootless Docker, Docker Desktop) every caller is a private address,
+  so the check passes them all and the routes are the guard. Anything else counts the
+  peer, which over-counts rather than under-counts.
+- **An IPv6 /64 is one bucket.** Every limiter keys on `limit::Bucket`: an IPv4
+  address, or an IPv6 address cut to its /64, the block one subscriber is given. Keyed
+  on the /128, one visitor could pick a new address per request.
+- **Caddy drains for 70 s.** Both Caddyfiles set `grace_period 70s` (an answer takes up
+  to a minute) and compose's `stop_grace_period` is 80 s, so stopping or recreating
+  `proxy` or `edge` finishes the requests in flight, Discord's HTTP interactions among
+  them, instead of Docker killing Caddy's unbounded wait at 10 s.
+- **A missing domain stops `edge`, not compose.** Compose interpolates every service
+  whatever its profile, so `${JUDGE_DOMAIN:?}` would fail every command on a host
+  without the profile. The container's entrypoint (`proxy/edge-entrypoint.sh`) refuses
+  an empty or malformed `JUDGE_DOMAIN` with a line naming it, and `judge-config` checks
+  the same rule (`check::is_host_name`, which a test holds the script to) in its
+  `exposure` check, which also warns when `public` runs with another `API_CLIENT_IP`
+  and `tunnel` with `proxy`.
+
+The reasons:
+
+- **Cloudflare was a requirement in all but name.** A first setup needed a Cloudflare
+  account and the zone's DNS moved there before anyone could open the web app from
+  outside, for a stack that already runs Caddy, which gets certificates by itself.
+- **A profile, not always-published ports.** Compose cannot publish a port on a
+  condition, and a stack that always took 80 and 443 would fail to start beside a NAS's
+  own web page or an existing reverse proxy, and would put a public listener on every
+  trial install. A profile keeps the default loopback-only and the public site one
+  variable away.
+- **A header of judgebot's own.** `CF-Connecting-IP` from a non-Cloudflare proxy, the
+  earlier advice for a reverse proxy, claims an origin the request does not have, and
+  under the tunnel a caller's copy arriving any other way would be read as Cloudflare's.
+  A name no CDN or proxy sets by default cannot be mistaken for another's, and stripping
+  it on every other route is a line per site.
+
+**Rejected:**
+
+- *`X-Forwarded-For` from the bundled proxy.* Caddy rewrites it, but proxies differ in
+  whether they append or replace, and a mode that trusts it is one misconfigured hop
+  from the forgery D15 refused.
+- *The public site inside `proxy`.* One Caddy with ports 80 and 443 would need them
+  published whether or not the site is wanted, and `auto_https off`, which `proxy` keeps
+  so it never asks for a certificate, would have to go.
+- *Restricting `:8788` to the host's connections.* They arrive from the compose
+  network's gateway, whose address Docker picks when it creates the network; pinning a
+  subnet to name it could collide with the host's own networks.
+- *Rate limiting in Caddy.* The stock image has no rate-limit module, and the process's
+  own limit already counts per address once the header is right.
+
+What follows:
+
+- **Existing tunnel setups need no change.** `proxy:8787` and the `api` alias behave as
+  before, `CF-Connecting-IP` still passes through, and `127.0.0.1:8787` still answers.
+- **The host needs ports 80 and 443** and a DNS record for the name; a dynamic home
+  address needs a dynamic DNS client. Spend is protected by the process alone: the
+  per-address limit, the concurrency slots and the cap, with no edge rules in front.
+- **IPv6 visitors may share a bucket.** Docker's userland proxy hands `edge` the
+  network's gateway as the address of every IPv6 visitor unless the compose network
+  has IPv6, which over-counts; the runbook says to leave out the `AAAA` record or
+  enable IPv6 there. Rootless Docker and Docker Desktop do the same for every visitor.
+- **`proxy` mode trusts the compose network.** A container on it that dials
+  `judgebot:8787` or `proxy:8788` (a tunnel whose service names either, which the
+  runbook says never to do) passes a caller's header through.
+- **A proxy on another machine cannot use `proxy` mode.** It would need 8787 published
+  on the LAN, whose site removes the header; it keeps `peer` and rate limits itself.
+- **The first deploy recreates `proxy` once,** for its new port mapping and grace
+  period, and `edge` once where it already ran; each finishes its requests in flight
+  first.

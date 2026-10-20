@@ -62,6 +62,64 @@ pub enum ClientIpSource {
     /// clients cannot forge. Correct only when Cloudflare is the sole ingress
     /// — as with a tunnel, where no other path to the origin exists.
     CloudflareConnectingIp,
+    /// [`CLIENT_IP_HEADER`], which the bundled public site (the compose
+    /// `edge` service) or the operator's own reverse proxy sets to the
+    /// address it was dialled from, overwriting any copy the caller sent.
+    /// The `proxy` service's tunnel and admin sites remove it; its `:8788`
+    /// site, the host's `127.0.0.1:8787`, passes it on. Correct only while
+    /// that proxy is the one public route to the listener. The header is
+    /// read only from a peer on a loopback or private address, which keeps
+    /// a caller that reaches the listener from a public address of its own
+    /// from choosing it; where Docker rewrites the source (its userland
+    /// proxy, rootless Docker, Docker Desktop) every caller arrives from a
+    /// private gateway and this check passes them all.
+    ProxyHeader,
+}
+
+/// The header [`ClientIpSource::ProxyHeader`] reads: judgebot's own, so no
+/// proxy or CDN sets it by default and a caller's copy is never mistaken for
+/// one a trusted proxy wrote. Lower case, as `http` stores names.
+pub const CLIENT_IP_HEADER: &str = "x-judgebot-client-ip";
+
+/// `API_CLIENT_IP`.
+pub const CLIENT_IP_ENV: &str = "API_CLIENT_IP";
+
+impl ClientIpSource {
+    /// Every value, in the order `API_CLIENT_IP` documents them.
+    pub const ALL: [Self; 3] = [
+        Self::PeerAddr,
+        Self::CloudflareConnectingIp,
+        Self::ProxyHeader,
+    ];
+
+    /// The `API_CLIENT_IP` value that names it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::PeerAddr => "peer",
+            Self::CloudflareConnectingIp => "cloudflare",
+            Self::ProxyHeader => "proxy",
+        }
+    }
+
+    /// Read an `API_CLIENT_IP` value; unset or blank is [`Self::PeerAddr`].
+    ///
+    /// # Errors
+    /// Any other value: it fails rather than falling back, since a typo
+    /// for a header mode would otherwise put every visitor in one bucket
+    /// unnoticed.
+    pub fn parse(value: Option<&str>) -> anyhow::Result<Self> {
+        let value = value.map(str::trim).filter(|v| !v.is_empty());
+        let Some(v) = value else {
+            return Ok(Self::PeerAddr);
+        };
+        Self::ALL
+            .into_iter()
+            .find(|s| s.name() == v)
+            .ok_or_else(|| {
+                anyhow::anyhow!("{CLIENT_IP_ENV} must be peer, cloudflare or proxy, got {v:?}")
+            })
+    }
 }
 
 impl ApiConfig {
@@ -114,11 +172,7 @@ impl ApiConfig {
             .unwrap_or(Self::DEFAULT_RATE_LIMIT);
         let rate_window = parse_min(var("API_RATE_WINDOW_SECS"), "API_RATE_WINDOW_SECS", 1u64)?
             .map_or(Self::DEFAULT_RATE_WINDOW, Duration::from_secs);
-        let client_ip = match var("API_CLIENT_IP").as_deref() {
-            None | Some("peer") => ClientIpSource::PeerAddr,
-            Some("cloudflare") => ClientIpSource::CloudflareConnectingIp,
-            Some(v) => anyhow::bail!("API_CLIENT_IP must be peer or cloudflare, got {v:?}"),
-        };
+        let client_ip = ClientIpSource::parse(var(CLIENT_IP_ENV).as_deref())?;
         // Each token travels in an HTTP header: anything a client cannot
         // send would mount an endpoint that is 401 forever.
         let mcp_token = match var(MCP_TOKEN_ENV) {
@@ -438,6 +492,32 @@ mod tests {
             cfg.map(|c| c.rate_limit),
             Some(ApiConfig::DEFAULT_RATE_LIMIT)
         );
+    }
+
+    /// Each mode is spelled one way, and a value that names none fails
+    /// rather than falling back to one.
+    #[test]
+    fn every_client_ip_mode_parses_from_its_own_name() {
+        for mode in ClientIpSource::ALL {
+            let cfg = ApiConfig::from_vars(vars(&[("API_CLIENT_IP", mode.name())])).ok();
+            assert_eq!(cfg.map(|c| c.client_ip), Some(mode), "{}", mode.name());
+        }
+        assert_eq!(
+            ClientIpSource::parse(Some(" proxy ")).ok(),
+            Some(ClientIpSource::ProxyHeader)
+        );
+        assert_eq!(
+            ClientIpSource::parse(Some("")).ok(),
+            Some(ClientIpSource::PeerAddr)
+        );
+        for bad in ["Proxy", "x-forwarded-for", "header", "cloudflare,proxy"] {
+            let r = ClientIpSource::parse(Some(bad));
+            assert!(
+                r.as_ref()
+                    .is_err_and(|e| format!("{e:#}").contains("peer, cloudflare or proxy")),
+                "{bad}: {r:?}"
+            );
+        }
     }
 
     #[test]

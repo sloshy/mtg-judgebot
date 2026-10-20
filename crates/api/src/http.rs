@@ -31,7 +31,7 @@ use uuid::Uuid;
 
 use crate::{
     catalog,
-    config::{ApiConfig, ClientIpSource},
+    config::{ApiConfig, CLIENT_IP_HEADER, ClientIpSource},
     feed::{self, PublicCalls},
     interfaces::Interfaces,
     limit::RateLimiter,
@@ -730,31 +730,71 @@ async fn judge_route(
 }
 
 /// The address rate limiting buckets on: `CF-Connecting-IP` behind Cloudflare,
-/// otherwise the peer address (loopback if the connect info is missing, as in
-/// tests).
+/// [`CLIENT_IP_HEADER`] behind the bundled public site or the operator's own
+/// proxy, otherwise the peer address (loopback if the connect info is
+/// missing, as in tests).
 ///
 /// `X-Forwarded-For` is deliberately never consulted. Cloudflare *appends* the
 /// connecting address to a client-supplied header instead of replacing it, so
 /// its first hop is chosen by the caller; bucketing on that would let anyone
-/// mint a fresh allowance per request against a paid endpoint. A missing
-/// `CF-Connecting-IP` falls back to the peer, which over-counts (everything
+/// mint a fresh allowance per request against a paid endpoint. A missing or
+/// unreadable header falls back to the peer, which over-counts (everything
 /// behind the proxy shares one bucket) rather than under-counting.
+///
+/// The proxy's header is read only when exactly one copy arrived, from a
+/// peer on a loopback or private address ([`on_local_network`]): a proxy
+/// that appended its copy to the caller's leaves two, and a caller arriving
+/// from a public address of its own is not behind a proxy. That check is
+/// only as good as the peer address: where Docker rewrites the source (its
+/// userland proxy for IPv6, rootless Docker, Docker Desktop) every caller
+/// arrives from a private gateway address. Which *route* the request took
+/// is beyond what the process can see, so the routes themselves must strip
+/// the header (`proxy/Caddyfile`).
 pub(crate) fn client_ip(
     headers: &HeaderMap,
     peer: Option<SocketAddr>,
     source: ClientIpSource,
 ) -> IpAddr {
+    let read = |v: &axum::http::HeaderValue| {
+        v.to_str()
+            .ok()
+            .and_then(|v| v.trim().parse::<IpAddr>().ok())
+    };
     let trusted = match source {
         ClientIpSource::PeerAddr => None,
-        ClientIpSource::CloudflareConnectingIp => headers
-            .get("cf-connecting-ip")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<IpAddr>().ok()),
+        ClientIpSource::CloudflareConnectingIp => headers.get("cf-connecting-ip").and_then(read),
+        ClientIpSource::ProxyHeader => {
+            let mut copies = headers.get_all(CLIENT_IP_HEADER).iter();
+            match (peer, copies.next(), copies.next()) {
+                (Some(p), Some(one), None) if on_local_network(p.ip()) => read(one),
+                _ => None,
+            }
+        }
     };
     match (trusted, peer) {
         (Some(ip), _) => ip,
         (None, Some(p)) => p.ip(),
         (None, None) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+    }
+}
+
+/// Whether a peer could be a proxy beside the process: loopback (a proxy
+/// on the host), a private or link-local address (another container on
+/// the compose network, a machine on the LAN), the shared address space
+/// (100.64.0.0/10, as overlay networks such as Tailscale use) or an IPv6
+/// unique local address. A public address is a caller that reached the
+/// listener without a proxy, whatever header it sends; a private one may
+/// still be any caller once Docker has rewritten the source.
+fn on_local_network(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || (a == 100 && (64..128).contains(&b))
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local(),
     }
 }
 
@@ -2689,6 +2729,81 @@ mod tests {
             client_ip(&headers, Some(peer), Cf),
             "198.51.100.7".parse::<IpAddr>()?
         );
+        Ok(())
+    }
+
+    /// `API_CLIENT_IP=proxy`: the header the bundled public site sets
+    /// counts only in that mode, only from a peer beside the process, and
+    /// only as a single copy. Anything else is the caller's word and falls
+    /// back to the peer.
+    #[test]
+    fn the_proxy_header_counts_only_from_a_local_proxy_in_proxy_mode() -> Res {
+        use ClientIpSource::{CloudflareConnectingIp as Cf, PeerAddr, ProxyHeader as Proxy};
+        let edge: SocketAddr = "172.18.0.5:51000".parse()?;
+        let client: IpAddr = "198.51.100.7".parse()?;
+        let mut headers = HeaderMap::new();
+        headers.insert(CLIENT_IP_HEADER, " 198.51.100.7 ".parse()?);
+        assert_eq!(client_ip(&headers, Some(edge), Proxy), client);
+        // The other modes never read it: a caller who sends it through the
+        // tunnel or straight to the listener chooses nothing.
+        assert_eq!(client_ip(&headers, Some(edge), PeerAddr), edge.ip());
+        assert_eq!(client_ip(&headers, Some(edge), Cf), edge.ip());
+        // Nor does proxy mode read Cloudflare's header or X-Forwarded-For.
+        let mut others = HeaderMap::new();
+        others.insert("cf-connecting-ip", "203.0.113.50".parse()?);
+        others.insert("x-forwarded-for", "203.0.113.51".parse()?);
+        assert_eq!(client_ip(&others, Some(edge), Proxy), edge.ip());
+        // A proxy beside the process: on the host, the compose network, the
+        // LAN, an overlay network.
+        for local in [
+            "127.0.0.1:1",
+            "10.1.2.3:1",
+            "192.168.1.50:1",
+            "169.254.0.9:1",
+            "100.101.102.103:1",
+            "[::1]:1",
+            "[fd7a:115c:a1e0::1]:1",
+            "[fe80::1]:1",
+            "[::ffff:172.18.0.5]:1",
+        ] {
+            let peer: SocketAddr = local.parse()?;
+            assert_eq!(client_ip(&headers, Some(peer), Proxy), client, "{local}");
+        }
+        // A caller on a public address reached the listener without a
+        // proxy, so the header is its own invention.
+        for public in [
+            "203.0.113.9:44210",
+            "8.8.8.8:1",
+            "100.128.0.1:1",
+            "[2001:db8::1]:1",
+            "[::ffff:8.8.8.8]:1",
+        ] {
+            let peer: SocketAddr = public.parse()?;
+            assert_eq!(
+                client_ip(&headers, Some(peer), Proxy),
+                peer.ip(),
+                "{public}"
+            );
+        }
+        // No connect info: nothing to vouch for the header.
+        assert_eq!(
+            client_ip(&headers, None, Proxy),
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        );
+        // A proxy that appended its copy to the caller's leaves two.
+        headers.append(CLIENT_IP_HEADER, "192.0.2.1".parse()?);
+        assert_eq!(client_ip(&headers, Some(edge), Proxy), edge.ip());
+        // A list or garbage in one copy is not an address.
+        for bad in [
+            "198.51.100.7, 192.0.2.1",
+            "not-an-ip",
+            "198.51.100.7:443",
+            "",
+        ] {
+            let mut one = HeaderMap::new();
+            one.insert(CLIENT_IP_HEADER, bad.parse()?);
+            assert_eq!(client_ip(&one, Some(edge), Proxy), edge.ip(), "{bad:?}");
+        }
         Ok(())
     }
 

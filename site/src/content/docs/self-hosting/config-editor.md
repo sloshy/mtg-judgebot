@@ -18,8 +18,8 @@ sidebar:
 - **Each draft is checked by the binaries' own code.** On every change, the draft runs
   through the same loaders the binaries use at startup. The side panel says whether the
   database settings, the model configuration and the roles would start (the Discord bot,
-  the HTTP API and the admin interface, each when `JUDGE_ROLES` runs it), and which key or variable to fix
-  if not.
+  the HTTP API and the admin interface, each when `JUDGE_ROLES` runs it), how the
+  instance is reached, and which key or variable to fix if not.
 - **Only the lines you change are written.** Comments, blank lines, key order and the
   spelling of every unchanged value survive. The Review tab shows the diff of both
   files before anything is written.
@@ -84,6 +84,7 @@ cargo run --release -p judge-configure
 | Discord bot | under `--discord`: the bot's own settings, then its operator contact | an unset `DISCORD_TOKEN`, a bad `GUILD_ID`, no `JUDGE_OPERATOR_DISCORD` |
 | HTTP API | under `--api`, `--web` or `--mcp`: the API's settings and those roles, then its operator contact | `--mcp` with no `MCP_TOKEN`, a bad `API_ADDR`, `MCP_ADMIN_TOKEN` equal to `MCP_TOKEN`, no `JUDGE_OPERATOR_EMAIL` |
 | Admin interface | under `--admin`: `ADMIN_TOKEN`, with the address the compose service sets (`0.0.0.0:8789`, whatever `.env` says); `ADMIN_PORT` always | no `ADMIN_TOKEN`, one under 24 characters or equal to `MCP_TOKEN`, an `ADMIN_PORT` that is not a port |
+| Exposure | the routes `COMPOSE_PROFILES` opens; under `public`, that `JUDGE_DOMAIN` is a host name: two or more dot-separated labels of letters, digits and inner hyphens (1 to 63 characters each, 253 in all), the last not all digits, with no scheme, port, path or trailing dot (the rule the `edge` container applies) | `public` with no `JUDGE_DOMAIN`, `localhost`, an IP address, `https://judge.example.com` |
 
 Two checks depend on the machine that serves rather than on the files, so the editor
 leaves them to startup:
@@ -100,6 +101,11 @@ The panel also warns about the files together:
 - a `judge.toml` the containers will not see, because `JUDGE_CONFIG` is blank or names
   another file
 - a `DB_PORT` that differs from the port in `DATABASE_URL`
+- the `public` profile with an `API_CLIENT_IP` other than `proxy`, which puts every
+  visitor in one rate-limit bucket
+- a `JUDGE_DOMAIN` without the `public` profile, which nothing serves
+- the `tunnel` profile with `API_CLIENT_IP=proxy`, whose header the tunnel's path
+  removes, so the tunnel's visitors share one bucket
 
 ## After saving
 

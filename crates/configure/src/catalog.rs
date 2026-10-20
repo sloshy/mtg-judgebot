@@ -122,6 +122,22 @@ pub struct Messages {
     pub models_fail: &'static str,
     /// `DB_PORT` is not a port, given it (a setting, shown on the page).
     pub bad_db_port: fn(&str) -> String,
+    /// The `public` profile is on and `JUDGE_DOMAIN` is not set.
+    pub domain_missing: &'static str,
+    /// `JUDGE_DOMAIN` is not a host name, given it (a setting, shown).
+    pub bad_domain: fn(&str) -> String,
+    /// The routes in: the `public` profile's host name, if it is on, and
+    /// whether the `tunnel` profile is.
+    pub exposure: fn(Option<&str>, bool) -> String,
+
+    // ---- warnings about exposure ----
+    /// The `public` profile with another `API_CLIENT_IP`: its host name and
+    /// the mode.
+    pub public_client_ip: fn(&str, &str) -> String,
+    /// `JUDGE_DOMAIN` set without the `public` profile.
+    pub domain_unused: &'static str,
+    /// The `tunnel` profile with `API_CLIENT_IP=proxy`.
+    pub tunnel_client_ip: &'static str,
 
     // ---- help ----
     /// Schema help in this locale: (the JSON pointer of the schema object
@@ -258,6 +274,37 @@ whether each is set, and can replace one with a value you type.
     },
     models_fail: "its own settings pass; the model configuration does not load",
     bad_db_port: |port| format!("DB_PORT must be a port number 1..=65535, got {port:?}"),
+    domain_missing: "COMPOSE_PROFILES includes public, which serves https://JUDGE_DOMAIN: set \
+                     JUDGE_DOMAIN to the instance's public host name, such as judge.example.com",
+    bad_domain: |domain| {
+        format!(
+            "JUDGE_DOMAIN must be a host name such as judge.example.com, with no scheme, port \
+             or path, got {domain:?}"
+        )
+    },
+    exposure: |public, tunnel| {
+        let mut ways = vec!["127.0.0.1:8787 on this host".to_owned()];
+        if let Some(domain) = public {
+            ways.push(format!("https://{domain} on ports 80 and 443"));
+        }
+        if tunnel {
+            ways.push("the Cloudflare tunnel".to_owned());
+        }
+        ways.join("; ")
+    },
+
+    public_client_ip: |domain, mode| {
+        format!(
+            "COMPOSE_PROFILES includes public, but API_CLIENT_IP is {mode}, so every visitor to \
+             https://{domain} shares one rate-limit bucket. Set API_CLIENT_IP=proxy."
+        )
+    },
+    domain_unused: "JUDGE_DOMAIN is set, but COMPOSE_PROFILES does not include public, so \
+                    nothing serves it.",
+    tunnel_client_ip: "COMPOSE_PROFILES includes tunnel, but API_CLIENT_IP is proxy, whose header \
+                       the tunnel's path removes, so every visitor through the tunnel shares \
+                       one rate-limit bucket. Set API_CLIENT_IP=cloudflare unless the public \
+                       profile is the route you count on.",
 
     schema_help: &[],
     env_help: &[],
@@ -316,6 +363,13 @@ pub const STUB: Messages = Messages {
     not_among_roles: |absent, flags| format!("⟦not_among_roles {absent:?} {flags}⟧"),
     models_fail: "⟦models_fail⟧",
     bad_db_port: |port| format!("⟦bad_db_port {port}⟧"),
+    domain_missing: "⟦domain_missing⟧",
+    bad_domain: |domain| format!("⟦bad_domain {domain}⟧"),
+    exposure: |public, tunnel| format!("⟦exposure {public:?} {tunnel}⟧"),
+
+    public_client_ip: |domain, mode| format!("⟦public_client_ip {domain} {mode}⟧"),
+    domain_unused: "⟦domain_unused⟧",
+    tunnel_client_ip: "⟦tunnel_client_ip⟧",
 
     schema_help: &[("/properties/providers", "⟦schema_help providers⟧")],
     env_help: &[("JUDGE_LOCALE", "⟦env_help JUDGE_LOCALE⟧")],
@@ -387,6 +441,13 @@ mod tests {
                 m.roles_unparsed.to_owned(),
                 m.models_fail.to_owned(),
                 (m.bad_db_port)("x"),
+                m.domain_missing.to_owned(),
+                (m.bad_domain)("x"),
+                (m.exposure)(None, false),
+                (m.exposure)(Some("judge.example.com"), true),
+                (m.public_client_ip)("judge.example.com", "peer"),
+                m.domain_unused.to_owned(),
+                m.tunnel_client_ip.to_owned(),
             ];
             for a in [Absent::Admin, Absent::Discord, Absent::Network] {
                 texts.push((m.not_among_roles)(a, "--jobs"));

@@ -69,7 +69,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D40),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D41),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -386,8 +386,9 @@ docker compose up -d                 # db (pgvector/pg16) + judgebot (JUDGE_ROLE
                                      # --discord --api --web --jobs) + proxy (127.0.0.1:8787);
                                      # all restart with Docker
 docker compose up -d --build judgebot  # redeploy after code changes
-                                     # COMPOSE_PROFILES=tunnel also starts cloudflared, `backup` the
-                                     # backup service (docs/DEPLOYMENT.md)
+                                     # COMPOSE_PROFILES=public also starts edge (HTTPS on 80/443 for
+                                     # JUDGE_DOMAIN), `tunnel` cloudflared, `backup` the backup
+                                     # service (docs/DEPLOYMENT.md §3)
 scripts/deploy.sh [--build]          # blue-green deploy (D29): pull (or build), start a second
                                      # judgebot beside the running one, wait for healthy, stop
                                      # the old one (it drains); an unhealthy new one is removed.
@@ -958,11 +959,13 @@ For the HTTP API it also holds:
   launch with the `JUDGE_ROLES` line that replaces it (`roles::refuse_api_interfaces`,
   also reached through `compose_roles`, so `judge-config` reports it).
 - `API_RATE_LIMIT`, `API_RATE_WINDOW_SECS`.
-- `API_CLIENT_IP` (`peer` or `cloudflare`, see below).
+- `API_CLIENT_IP` (`peer`, `proxy` or `cloudflare`, see below; IPv6 counted per /64).
 - `MCP_TOKEN`: the credential for `/mcp`, which also needs the `--mcp` role. ≥24
   chars, bearer-checked before the protocol.
 - `MCP_ALLOWED_HOSTS`: the `Host` values the MCP transport accepts, meaning the public
-  hostname behind the tunnel.
+  hostname (`JUDGE_DOMAIN`, or the tunnel's).
+- `JUDGE_DOMAIN`: the host name the `public` profile's `edge` serves (read by Caddy
+  alone; judge-config checks it).
 - `MCP_JUDGE_LIMIT`/`MCP_JUDGE_WINDOW_SECS`: `judge` runs per window through `/mcp`. This
   is the most a leaked token can spend.
 - `MCP_ADMIN_TOKEN`: off unless set. The second `/mcp` credential, the only one that
@@ -985,10 +988,11 @@ Without it, a running `judgebot-api` makes the new container fail on port 8787, 
 only `judgebot-bot` running `up -d` exits 0 and leaves two bots on one token. The fix
 is `docker rm -f judgebot-bot judgebot-api`.
 
-Deployment is self-hosted behind a Cloudflare Tunnel. `docs/DEPLOYMENT.md` is the
-runbook. `db` and `proxy` publish on `127.0.0.1` only: `proxy` (Caddy) holds
+Deployment is self-hosted (D15, D41). `docs/DEPLOYMENT.md` is the runbook; §3 lists the
+routes: local only (default), public HTTPS (`COMPOSE_PROFILES=public`), an own reverse
+proxy, or a Cloudflare Tunnel. `db` and `proxy` publish on `127.0.0.1` only: `proxy` (Caddy) holds
 `127.0.0.1:8787` and forwards to `judgebot:8787` (and `127.0.0.1:${ADMIN_PORT:-8789}` to
-`judgebot:8789`, the admin listener, which the tunnel never points at), because `judgebot` has no
+`judgebot:8789`, the admin listener, which neither the public site nor the tunnel points at), because `judgebot` has no
 `container_name` and no port so a deploy can run two (D29). A release's migrations keep
 the previous release working (expand, contract later; `CONTRIBUTING.md`). `proxy/Caddyfile`
 dials `judgebot:8787` afresh for every request (`keepalive off`, retrying a refused dial
@@ -999,9 +1003,17 @@ save it; a config-changing `caddy reload` resets connections too, so the deploy 
 not switch upstreams that way). It runs with `--watch` over the mounted `proxy/`
 directory, so a Caddyfile edit needs no restart; `deploy.sh` validates the file first
 and ends with a `caddy reload` of it, a no-op unless the proxy runs something else. Public
-traffic reaches `proxy:8787` (network alias `api`, the old service name a tunnel may
-still point at) over the compose network from the `cloudflared` service, which the `tunnel` compose
-profile starts (`COMPOSE_PROFILES=tunnel` in `.env`). Deploy credentials live in
+traffic reaches `judgebot:8787` through `edge` (profile `public`, `proxy/edge.Caddyfile`:
+Caddy on 80/443, Let's Encrypt for `JUDGE_DOMAIN`, the same handover settings, validated
+and reloaded by `deploy.sh` like the proxy), or `proxy:8787` (network alias `api`, the
+old service name a tunnel may still point at) from the `cloudflared` service, which the
+`tunnel` compose profile starts. The host's `127.0.0.1:8787` is the proxy's `:8788`
+site. Both Caddyfiles set `grace_period 70s` (an answer takes up to a minute) and
+compose gives `proxy` and `edge` `stop_grace_period: 80s`, so a stop or recreation
+finishes requests in flight; `deploy.sh`'s `up -d --no-deps proxy` can take up to 70 s
+once when the definition changed. `edge`'s entrypoint is `proxy/edge-entrypoint.sh`,
+which refuses a `JUDGE_DOMAIN` by the same rule as judge-config's `check::is_host_name`
+(a test runs the script against it; shellcheck covers `proxy/*.sh`). Deploy credentials live in
 `.env.deploy` (`TUNNEL_TOKEN`, `R2_*`, `BACKUP_*`). Only `cloudflared`, the `backup`
 service and `scripts/backup-db.sh` read it, never the internet-facing `judgebot` (D15).
 The weekly backup is the `backup` compose service (`judgebot backup serve`, profile
@@ -1014,11 +1026,20 @@ re-ingesting, which re-pays the embedder per row, so take a backup before
 `ingest reembed --yes` (runbook in `docs/DEPLOYMENT.md` §7).
 
 **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP` is
-`peer` (socket address) or `cloudflare` (`CF-Connecting-IP`). `client_ip` never reads
+`peer` (socket address), `proxy` (`X-Judgebot-Client-IP`, `ClientIpSource::ProxyHeader`)
+or `cloudflare` (`CF-Connecting-IP`). `client_ip` never reads
 `X-Forwarded-For`, because Cloudflare *appends* to a caller-supplied header instead of
 replacing it. Its first hop is attacker-chosen, which would hand every request a fresh
 allowance against a paid endpoint. `cloudflare` is only sound when nothing can reach the
-origin except Cloudflare.
+origin except Cloudflare. `proxy` is only sound while `edge` (which overwrites the header
+and drops a caller's `CF-Connecting-IP`) or the operator's own proxy on the host is the
+only public route: `proxy/Caddyfile`'s `:8787` (tunnel) and `:8789` (admin) sites strip
+it; `:8788` (the host's `127.0.0.1:8787`) passes client headers through and is reachable
+from every compose-network container, so nothing on the network may point at it and no
+non-loopback host address may map to it. `client_ip` reads the header only as a single
+copy from a loopback/private peer, which does not help where Docker rewrites the source
+(userland proxy for IPv6, rootless Docker, Docker Desktop). Every limiter keys on
+`limit::Bucket`: IPv4 per address, IPv6 per /64.
 
 **Data refresh runs inside `judgebot --jobs`** (`judge_bot::jobs`, D24), every
 `JUDGE_REFRESH_HOURS`. The compose `judgebot` service runs `--jobs` by default.

@@ -428,7 +428,7 @@ group_lint() {
   step "cargo machete" cargo machete
   step "taplo" env RUST_LOG=warn taplo fmt --check
   step "typos" typos
-  step "shellcheck" shellcheck scripts/*.sh scripts/hooks/*
+  step "shellcheck" shellcheck scripts/*.sh scripts/hooks/* proxy/*.sh
   step "actionlint" actionlint
   step "hadolint" hadolint Dockerfile
   step "icons" check_icons
@@ -437,7 +437,8 @@ group_lint() {
   step "versions" scripts/release-version.sh
   # docker-compose.yml names .env as an env_file, and the tunnel and backup
   # profiles .env.deploy. The --at worktree has the examples there, as CI's
-  # compose job does; a plain run uses yours.
+  # compose job does; a plain run uses yours. The public profile reads
+  # neither, and parses with JUDGE_DOMAIN unset (its container refuses then).
   if ! command -v docker > /dev/null; then
     echo "docker not found: compose config not checked" >&2
   elif [ ! -f .env ]; then
@@ -445,8 +446,9 @@ group_lint() {
   else
     step "compose config" docker compose config --quiet
     if [ -f .env.deploy ]; then
-      step "compose config (profiles)" docker compose --profile tunnel --profile backup config --quiet
+      step "compose config (profiles)" docker compose --profile public --profile tunnel --profile backup config --quiet
     else
+      step "compose config (public)" docker compose --profile public config --quiet
       echo "no .env.deploy: the tunnel and backup profiles not checked" >&2
     fi
   fi

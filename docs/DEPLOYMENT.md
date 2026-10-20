@@ -1,18 +1,23 @@
 # Deployment
 
-judgebot runs on a machine you own, behind a Cloudflare Tunnel. There is no
-public IP, no forwarded port and no cloud compute bill. `cloudflared` dials *out* to
-Cloudflare's edge and traffic returns down that connection.
+judgebot runs on a machine you own, with Docker Compose: Postgres, the `judgebot`
+process and a small Caddy proxy in front of it. Out of the box it answers on
+`127.0.0.1:8787` on that machine and nowhere else. That is all a trial, or a Discord bot
+over its gateway connection, needs. To put the web app, the API or Discord's
+interactions endpoint on the internet, choose a public route (§3): the bundled HTTPS site, a
+reverse proxy of your own, or a Cloudflare Tunnel.
 
 ```
-Browser ──https──> Cloudflare edge        [TLS, WAF, rate limiting, challenge]
-                        ↕ outbound tunnel — no inbound port on the host
-                   cloudflared ──http──> proxy:8787 ──> judgebot:8787 ──> db:5432
-                                                        judgebot ──outbound WS──> Discord
+Browser ──https──> host :443 ──> edge (Caddy, Let's Encrypt) ──> judgebot:8787 ──> db:5432
+                                 [COMPOSE_PROFILES=public]       judgebot ──outbound WS──> Discord
+Browser on the host ──> 127.0.0.1:8787 ──> proxy ──> judgebot:8787
 Operator (loopback or SSH) ──> 127.0.0.1:8789 ──> proxy:8789 ──> judgebot:8789   [--admin]
 ```
 
-This keeps two properties that a serverless split would lose:
+With a Cloudflare Tunnel instead, `cloudflared` dials *out* to Cloudflare and the
+public hostname reaches `proxy:8787` over the compose network, with no inbound port.
+
+One host keeps two properties that a serverless split would lose:
 
 - The Discord bot can keep a long-lived gateway connection (the default) rather than
   needing a public endpoint ([Discord over HTTP](#discord-over-http) is the option).
@@ -41,9 +46,13 @@ Hostnames, paths and the image name below are placeholders (`judge.example.com`,
   `docker compose run --rm refresh migrate` is the explicit form, for an empty
   database or an operator who opted out. Restoring a dump (§2) brings the schema
   *and* the `_sqlx_migrations` ledger with it.
-- A domain whose DNS is hosted **on Cloudflare**. Tunnel hostnames resolve only for
-  records in the same Cloudflare account, so a third-party DNS host cannot CNAME to
-  `<uuid>.cfargotunnel.com`. On the free plan that means moving the whole zone.
+- For a public address, a domain name, and one of:
+  - for the bundled HTTPS site, a DNS record for it pointing at the host, and ports 80
+    and 443 reachable from the internet (forwarded by the router at home);
+  - for a Cloudflare Tunnel, the domain's DNS hosted **on Cloudflare**. Tunnel
+    hostnames resolve only for records in the same Cloudflare account, so a third-party
+    DNS host cannot CNAME to `<uuid>.cfargotunnel.com`. On the free plan that means
+    moving the whole zone.
 
 ## 2. Data migration
 
@@ -90,7 +99,173 @@ and it never mixes vectors from two models in one column. The fix depends on the
   because it embeds every row again.
 - The row is already right: the same command only fills whatever is still empty.
 
-## 3. Create the tunnel
+## 3. Exposure
+
+Compose publishes nothing beyond the host's loopback until a profile in
+`COMPOSE_PROFILES` says so. Choose one route:
+
+| Route | For | In `.env` |
+| --- | --- | --- |
+| [Local only](#local-only) | a trial, or Discord over its gateway connection | nothing |
+| [Public HTTPS](#public-https) | a host that can take ports 80 and 443 | `COMPOSE_PROFILES=public`, `JUDGE_DOMAIN`, `API_CLIENT_IP=proxy` |
+| [Own reverse proxy](#own-reverse-proxy) | a host that already runs one | `API_CLIENT_IP=proxy` |
+| [Cloudflare Tunnel](#cloudflare-tunnel) | no inbound port or public IP, or Cloudflare's rules in front | `COMPOSE_PROFILES=tunnel`, `API_CLIENT_IP=cloudflare` |
+
+Whichever it is, the process's own limits guard the model bill (§5). The tunnel adds
+Cloudflare's rules in front of them.
+
+### Local only
+
+Nothing to set. `docker compose up -d` starts `db`, `judgebot` and `proxy`, and the web
+app and the API answer at `http://127.0.0.1:8787` on the host. A Discord bot over its
+gateway connection (the default) dials out to Discord and needs no inbound connection at
+all. From another machine, forward the port over SSH:
+`ssh -N -L 8787:127.0.0.1:8787 <host>`.
+
+On a trusted network the proxy can publish the port on the host's LAN address as well,
+through a `docker-compose.override.yml` as for the admin interface (§4):
+
+```yaml
+services:
+  proxy:
+    ports:
+      - "192.168.1.50:8787:8787" # the host's LAN address : the port to open : 8787
+```
+
+The container side must be 8787. The host's own `127.0.0.1:8787` maps to the
+container's 8788, the site that trusts a reverse proxy on the host (Client address,
+below), and nothing else may: never map another host address to 8788.
+
+The LAN then reaches the proxy's 8787 site, which passes `CF-Connecting-IP` through.
+Under `API_CLIENT_IP=cloudflare`, anyone on that network can send one and choose their
+own rate-limit bucket, so keep `peer` (or `proxy`, whose header that site removes) on a
+host that publishes 8787 beyond loopback.
+
+### Public HTTPS
+
+The `edge` service (the `public` profile) is a second Caddy, on ports 80 and 443 of
+every address of the host. It serves `https://<JUDGE_DOMAIN>` with a certificate it gets
+from Let's Encrypt and renews itself, and redirects plain HTTP there. It forwards to
+`judgebot:8787` the way `proxy` does, so a deploy (§8) hands over without a gap and
+never restarts it.
+
+1. Point a DNS `A` record for the name at the host's public IPv4 address. Behind a
+   router, forward TCP ports 80 and 443 to the host (and UDP 443, for HTTP/3). A home
+   connection whose address changes needs a dynamic DNS client to keep the record
+   current. The record must not be proxied by Cloudflare (orange cloud): every visitor
+   would then arrive from a Cloudflare address, one rate-limit bucket per Cloudflare
+   server under `API_CLIENT_IP=proxy`. Keep it DNS only (grey cloud), or use the
+   tunnel instead.
+
+   An `AAAA` record for the host's IPv6 address is optional, and costs the per-visitor
+   limit for IPv6 unless the compose network has IPv6 too. Without it, Docker passes an
+   IPv6 connection on through its userland proxy, so `edge` sees the network's gateway
+   as the address of every IPv6 visitor, and they all share one bucket. Either leave
+   the `AAAA` record out, or enable IPv6 on the compose network in a
+   `docker-compose.override.yml` (Docker 27 or later gives it a range of its own):
+
+   ```yaml
+   networks:
+     default:
+       enable_ipv6: true
+   ```
+
+   then `docker compose down && docker compose up -d`, since a network is not changed
+   in place. Each visitor's address then reaches `edge`, and the limit counts an IPv6
+   visitor by its /64 prefix, the block one subscriber is given, so picking another
+   address in it buys no fresh allowance.
+2. Set in `.env` (§4):
+
+   ```ini
+   COMPOSE_PROFILES=public          # `docker compose up -d` now includes edge
+   JUDGE_DOMAIN=judge.example.com   # the name alone: no scheme, port, path or trailing dot
+   API_CLIENT_IP=proxy              # rate-limit on the address edge saw (Client address)
+   ```
+
+3. `docker compose up -d`, then `curl -s https://judge.example.com/api/health`. The
+   first request waits a few seconds for the certificate; `docker compose logs edge`
+   shows Caddy getting it.
+
+What to know:
+
+- `edge` refuses to start without `JUDGE_DOMAIN`, or with one that is not a host name,
+  and its log names the variable. A host name here is two or more dot-separated labels
+  of letters, digits and inner hyphens (1 to 63 characters each, 253 in all), the last
+  not all digits, so not `localhost` or an IP address, with no scheme, port, path or
+  trailing dot. The config editor checks the same rule.
+- Let's Encrypt must reach the host under that name on port 80 or 443. While the record
+  or the forwarding is wrong, Caddy retries with a growing pause. Let's Encrypt limits
+  failed attempts per hour, so fix the cause rather than restarting `edge` repeatedly.
+- The certificates live in the `judgebot-edge-data` volume, so a restart or an upgrade
+  does not ask for them again.
+- Its configuration is `proxy/edge.Caddyfile`, mounted and watched like the proxy's.
+  `scripts/deploy.sh` checks that it loads before a deploy, and starts `edge` when the
+  profile is on.
+- Answers take up to a minute, and Caddy's proxy has no read timeout by default. When
+  `edge` or `proxy` is stopped or recreated, it finishes the requests in flight for up
+  to 70 s (`grace_period`), inside compose's `stop_grace_period` of 80 s.
+- Docker must hand `edge` the visitor's address. Rootless Docker and Docker Desktop
+  pass published ports through a proxy of their own, so every visitor arrives from one
+  private address and shares one bucket; run the stack on rootful Docker Engine for a
+  per-visitor limit.
+- Something else on the host holding port 80 or 443 (a web server, a NAS's own page)
+  keeps `edge` from starting. Use your own reverse proxy then.
+- `MCP_ALLOWED_HOSTS` names `JUDGE_DOMAIN` (§4, MCP endpoint), and Discord's
+  Interactions Endpoint URL is `https://<JUDGE_DOMAIN>/discord/interactions` (§4,
+  Discord over HTTP).
+
+### Own reverse proxy
+
+A reverse proxy already running on the host can terminate TLS in front of
+`127.0.0.1:8787`, the `proxy` service. That address passes the `Host` header through
+unchanged, and a deploy does not restart it, so it stays up while `judgebot` is replaced.
+A proxy in a container of its own reaches the host's loopback only with
+`network_mode: host`. Point nothing on the compose network at `proxy:8788`, and never
+map a host address other than `127.0.0.1` to it: that site passes the client headers
+through, so whatever reaches it chooses its own bucket. Two things need care.
+
+**Answers take up to a minute**, so the proxy's read timeout must be longer than that.
+Caddy's default is unlimited. nginx's is 60 seconds.
+
+**Every request arrives from the proxy**, so `API_CLIENT_IP=peer` puts all visitors in
+one rate-limit bucket. To restore the per-address limit, have the proxy set
+`X-Judgebot-Client-IP` to the client's address, replacing any copy the client sent, and
+set `API_CLIENT_IP=proxy`. This is sound because something you control sets the header
+and `127.0.0.1:8787` is reachable from the host alone. It holds only while that proxy is
+the public edge. With Cloudflare in front of the proxy as well, `{remote_host}` is
+Cloudflare's address, so use the tunnel setup instead.
+
+```caddyfile
+judge.example.com {
+    reverse_proxy 127.0.0.1:8787 {
+        header_up X-Judgebot-Client-IP {remote_host}
+    }
+}
+```
+
+```nginx
+server {
+    server_name judge.example.com;          # plus your TLS configuration
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header Host $host;
+        proxy_set_header X-Judgebot-Client-IP $remote_addr;
+        proxy_read_timeout 120s;
+    }
+}
+```
+
+A proxy that *adds* the header instead of setting it (HAProxy's `http-request
+add-header`) leaves the client's copy beside its own, and judgebot then trusts neither
+and counts the proxy's address. If the proxy cannot set it, leave `API_CLIENT_IP=peer`
+and rate limit at the proxy instead (nginx's `limit_req`). With `--mcp`, add the public
+hostname to `MCP_ALLOWED_HOSTS`.
+
+**A proxy on another machine** (a router's or a NAS's reverse proxy on the LAN) cannot
+use `proxy` mode: it would need 8787 published on the LAN, whose site removes the
+header (§3, Local only). Keep `API_CLIENT_IP=peer` and rate limit at that proxy.
+
+### Cloudflare Tunnel
 
 In Cloudflare **Zero Trust → Networks → Tunnels**, create a tunnel (remotely managed)
 and add a public hostname:
@@ -104,15 +279,68 @@ and add a public hostname:
 `proxy` is the compose service in front of `judgebot`'s HTTP listener. cloudflared
 resolves it on the compose network, so nothing needs a published port. It forwards
 each request to whichever `judgebot` container is listening, so requests keep being
-answered while a deploy, which runs two for a minute, switches between them. It also answers to `api`, the name of the service that
-served HTTP before `bot` and `api` became one, so a tunnel set up then with
-`http://api:8787` keeps working. A tunnel whose service is `http://judgebot:8787` (what
-this step said before) reaches the containers directly: it works, but a deploy can lose a
-request in flight, so change it to `http://proxy:8787`. Cloudflare creates the
-`judge CNAME <uuid>.cfargotunnel.com` record for you, proxied. It must stay **proxied**
-(orange cloud), unlike every other record in the zone.
+answered while a deploy, which runs two for a minute, switches between them. It also
+answers to `api`, the name of the service that served HTTP before `bot` and `api`
+became one, so a tunnel set up then with `http://api:8787` keeps working. A tunnel whose
+service is `http://judgebot:8787` reaches the containers directly: a deploy can lose a
+request in flight, and a caller's `X-Judgebot-Client-IP` is not removed on that path, so
+change it to `http://proxy:8787`. Cloudflare creates the
+`judge CNAME <uuid>.cfargotunnel.com` record for you, proxied. It must stay
+**proxied** (orange cloud), unlike every other record in the zone.
 
-Copy the connector token into `.env.deploy` as `TUNNEL_TOKEN`.
+Copy the connector token into `.env.deploy` as `TUNNEL_TOKEN`, and set in `.env` (§4):
+
+```ini
+COMPOSE_PROFILES=tunnel     # `docker compose up -d` now includes cloudflared
+API_CLIENT_IP=cloudflare    # rate-limit on CF-Connecting-IP
+```
+
+Cloudflare's rules in front of the origin are in §5.
+
+### Client address
+
+The per-address limiter needs an address the caller cannot choose, because
+`/api/judge` is anonymous and every request costs model tokens. `API_CLIENT_IP` says
+where it comes from:
+
+| Value | Buckets on | Sound while |
+| --- | --- | --- |
+| `peer` (default) | the connection's address | nothing sits in front, or every visitor may share one bucket |
+| `proxy` | `X-Judgebot-Client-IP` | the bundled site, or your own proxy, is the only public route |
+| `cloudflare` | `CF-Connecting-IP` | Cloudflare is the only public route |
+
+**`X-Forwarded-For` is not that address.** Cloudflare *appends* the connecting address
+to a caller-supplied `X-Forwarded-For` rather than replacing it, so its first hop is
+whatever the caller wrote. A client could send `X-Forwarded-For: 1.2.3.4`, increment it
+on each request, and get a fresh rate-limit allowance every time. Binding to loopback
+does not help, because the forged header arrives through the tunnel, the trusted path.
+`crates/api/src/http.rs` never reads it.
+
+**`proxy`.** `edge` sets `X-Judgebot-Client-IP` to the address it was dialled from,
+overwriting any copy the caller sent. The proxy's other sites remove it:
+`proxy:8787`, where a tunnel's hostname points, and the admin site. The proxy's
+`:8788` site passes it on, for a reverse proxy on the host: the host's `127.0.0.1:8787`
+maps to it, and any container on the compose network can dial `proxy:8788` as well, so
+nothing on that network may be pointed there. `judgebot` publishes no port, so what
+remains is another container on the compose network dialling `judgebot:8787` or
+`proxy:8788` itself, such as a tunnel whose service names either. As a last check,
+`judgebot` reads the header only from a peer on a loopback or private address and only
+when exactly one copy arrived; otherwise it counts the peer. That check keeps out a
+caller connecting from a public address of its own, nothing more: where Docker rewrites
+the source, every caller is a private address.
+
+The limit counts an IPv4 address by itself and an IPv6 address by its /64 prefix.
+Docker hands `edge` the visitor's IPv4 address. An IPv6 visitor reaches it through
+Docker's userland proxy unless the compose network has IPv6 enabled, and then arrives
+from the network's gateway, so IPv6 visitors share one bucket (Public HTTPS, step 1,
+has the two ways out). Rootless Docker and Docker Desktop do the same for every
+visitor. Both err on the side of counting too much, never too little.
+
+**`cloudflare`.** Cloudflare sets `CF-Connecting-IP` on every request and the client
+cannot forge it. `CF-Connecting-IP` is trustworthy only when nothing can reach the
+origin except through Cloudflare. `edge` removes a caller's copy, so the `public` and
+`tunnel` profiles can run side by side: under `cloudflare` the visitors through `edge`
+share one bucket, and under `proxy` those through the tunnel do.
 
 ## 4. Configure and start
 
@@ -124,7 +352,7 @@ scripts/config.sh                  # app config (.env) in the config editor: API
                                    # GUILD_ID, JUDGE_OPERATOR_DISCORD and JUDGE_OPERATOR_EMAIL (both
                                    # required here), and judge.toml. Over SSH, forward the port first:
                                    # ssh -N -L 8790:127.0.0.1:8790 <host>
-cp .env.deploy.example .env.deploy # deploy credentials: TUNNEL_TOKEN, R2_*
+cp .env.deploy.example .env.deploy # with the tunnel or backup profile: TUNNEL_TOKEN, R2_*
 ```
 
 The editor saves `.env`, creating it from `.env.example` the first time, and checks each
@@ -146,9 +374,11 @@ Model credentials belong in `.env`: `ANTHROPIC_API_KEY`, every `api_key_env` a
 In the editor's Settings tab (or `.env`), set:
 
 ```ini
-COMPOSE_PROFILES=tunnel     # `docker compose up -d` now includes cloudflared
-API_CLIENT_IP=cloudflare    # rate-limit on CF-Connecting-IP
-JUDGE_MAX_USD=...           # the backstop for anonymous traffic
+COMPOSE_PROFILES=public     # the route from §3 (public or tunnel; empty for local only),
+                            # plus backup for the weekly backup (§6): public,backup
+JUDGE_DOMAIN=...            # with public: the host name it serves (§3)
+API_CLIENT_IP=proxy         # proxy with public or your own proxy, cloudflare with the tunnel
+JUDGE_MAX_USD=...           # the backstop for anonymous traffic (§5)
 JUDGE_BUDGET_PERIOD=month   # one budget for the month, kept across restarts
 JUDGE_SPEND_WARN_AT=50,80   # warn at these percentages of the cap first
 JUDGE_ALERT_WEBHOOK=...     # told when the cap trips, a refresh or backup fails, or Discord's setup is off
@@ -161,7 +391,7 @@ to zero. `judge-cli stats` shows
 what each day cost.
 
 If `COMPOSE_PROFILES` in `.env` doesn't take effect on an older Compose, pass
-`--profile tunnel` instead.
+`--profile public` (or `--profile tunnel`) instead.
 
 Then bring it up. A restored database (§2) already carries the schema and the
 migration ledger, so there is nothing to migrate:
@@ -282,7 +512,7 @@ and `refresh`, with the mount left as it is.
 ### MCP endpoint
 
 This step is optional. `judgebot` can serve the judge's tools (`crates/agent`) to an
-MCP client over the same tunnel, at `/mcp`. It needs both the `--mcp` role and an
+MCP client at `/mcp`, on the same public address as the web app (§3). It needs both the `--mcp` role and an
 `MCP_TOKEN`:
 
 - `--mcp` without a token is refused at startup.
@@ -300,13 +530,15 @@ a 401 before the protocol sees it. Behind the token are:
 ```ini
 JUDGE_ROLES='--discord --api --web --mcp --jobs'   # the default roles plus --mcp; without it the token only warns
 MCP_TOKEN=<openssl rand -base64 32>       # at least 24 characters, or the API refuses to start
-MCP_ALLOWED_HOSTS=judge.example.com,localhost   # Host values accepted: the tunnel's hostname, plus
-                                                   # localhost for curl on the host; the list replaces the default
+MCP_ALLOWED_HOSTS=judge.example.com,localhost   # Host values accepted: the public host name (JUDGE_DOMAIN or the
+                                                   # tunnel's), plus localhost for curl on the host; the list
+                                                   # replaces the default
 ```
 
-Behind the tunnel, `MCP_ALLOWED_HOSTS` must name the public hostname. The MCP transport accepts only the `Host`
-values on its list, which defaults to loopback (a guard against DNS rebinding), and
-cloudflared forwards the public hostname. Without it, every `/mcp` request gets a 403
+Behind the public site, a reverse proxy or the tunnel, `MCP_ALLOWED_HOSTS` must name the
+public hostname. The MCP transport accepts only the `Host` values on its list, which
+defaults to loopback (a guard against DNS rebinding), and each of them forwards the
+hostname the client used. Without it, every `/mcp` request gets a 403
 while `/api/judge` keeps working. Then run `docker compose up -d` and, from a workstation:
 
 ```sh
@@ -327,8 +559,8 @@ To rotate a leaked token, change it in `.env` and run `docker compose up -d`, wh
 recreates `judgebot` because its environment changed. Two optional extra
 layers:
 
-- Extend the edge rate-limiting rule of §5 to `/mcp`. It costs nothing.
-- Put a Cloudflare Access policy (service token) in front of `/mcp`. It keeps
+- Behind Cloudflare, extend §5's rate-limiting rule to `/mcp`. It costs nothing.
+- Behind Cloudflare, put an Access policy (service token) in front of `/mcp`. It keeps
   unauthenticated traffic off the origin, and the bearer check stays as a second layer.
 
 A verdict an agent persists through a session is kept only as history for that agent's
@@ -352,7 +584,7 @@ of its own that the public never reaches:
 - on the host at `127.0.0.1:8789`, published by the `proxy` service, loopback only
   (`ADMIN_PORT` in `.env` moves the host port; an `ADMIN_ADDR` there is overridden by
   compose);
-- never through the tunnel, whose hostname points at `proxy:8787`.
+- never through the public site or the tunnel, which reach `judgebot:8787` only.
 
 It needs its own token and refuses to start without it. The token must differ from
 `MCP_TOKEN` and `MCP_ADMIN_TOKEN`:
@@ -395,7 +627,7 @@ services:
 ```
 
 `docker compose up -d proxy` applies it. The proxy is recreated, so `127.0.0.1:8787` is
-down for a few seconds. Open the address `judge-cli admin-url` prints, with the host's
+down for a few seconds, or until the answers in flight finish (up to 70 s). Open the address `judge-cli admin-url` prints, with the host's
 LAN address in place of `127.0.0.1`.
 
 - The page is plain HTTP. The token crosses the network unencrypted and is the only
@@ -409,6 +641,10 @@ LAN address in place of `127.0.0.1`.
   who can reach it.
 - The container side stays 8789 whatever `ADMIN_PORT` says; the host side is any free
   port.
+- Publish 8789 only. The same override for 8787 (§3, Local only) reaches a site that
+  passes `CF-Connecting-IP` through, so under `API_CLIENT_IP=cloudflare` anyone on that
+  network could choose their own rate-limit bucket; and never map a LAN address to the
+  container's 8788.
 
 The proxy publishes this port whether `--admin` runs or not. When something else on
 the host already has 8789, set `ADMIN_PORT` to a free port before `docker compose up`,
@@ -460,17 +696,19 @@ The refresh (§7) runs the same upload. A running bot lists the emoji again:
 By default the bot receives slash commands and button clicks over its gateway
 connection, which one container holds at a time. A deploy hands that connection to the
 new container, and Discord is quiet while it logs in. With `DISCORD_INTERACTIONS=http`
-Discord POSTs each interaction to `/discord/interactions` instead, through the tunnel
-and the `proxy` like any other request, and keep being answered while a deploy
+Discord POSTs each interaction to `/discord/interactions` instead, through the public
+address (§3) like any other request, and they keep being answered while a deploy
 switches containers (D30). The bot then
 opens no gateway connection.
 
-It needs a public HTTPS address that reaches the container: the tunnel's public
-hostname, which already serves the web app. Discord's requests come from its servers,
-not a browser, so they cannot pass a challenge: a Cloudflare Access policy or a WAF
-challenge on that hostname must leave `/discord/interactions` alone, and Bot Fight
-Mode, which covers the whole zone and cannot skip a path, must be off. A deployment without `--api`, `--web` or `--mcp` listens
-on `API_ADDR` for the endpoint and `/api/health` only, and still needs the tunnel.
+It needs a public HTTPS address that reaches the container (§3): `https://<JUDGE_DOMAIN>`
+with the bundled site, or your proxy's or the tunnel's hostname, the one that already
+serves the web app. Discord's requests come from its servers, not a browser, so they
+cannot pass a challenge. Behind Cloudflare, an Access policy or a WAF challenge on that
+hostname must leave `/discord/interactions` alone, and Bot Fight Mode, which covers the
+whole zone and cannot skip a path, must be off. A deployment without `--api`, `--web` or
+`--mcp` listens on `API_ADDR` for the endpoint and `/api/health` only, and still needs a
+public route.
 
 1. Set it in `.env` and deploy:
 
@@ -497,80 +735,48 @@ only. The bot compares them when it starts and logs an ERROR (and posts to
 `JUDGE_ALERT_WEBHOOK`) if they differ, but keeps running. To go back, clear the URL
 in the portal, set `DISCORD_INTERACTIONS=gateway` and deploy.
 
-### Client address
+## 5. Spend protection
 
-The per-IP limiter needs an address the caller cannot choose, because `/api/judge` is
-anonymous and every request costs Anthropic tokens.
+The model bill is most of what an instance costs, and `/api/judge` is anonymous. What
+guards it depends on the route (§3).
 
-**`X-Forwarded-For` is not that address.** Cloudflare *appends* the connecting address
-to a caller-supplied `X-Forwarded-For` rather than replacing it, so its first hop is
-whatever the caller wrote. A client could send `X-Forwarded-For: 1.2.3.4`, increment it
-on each request, and get a fresh rate-limit allowance every time. Binding to loopback
-does not help, because the forged header arrives through the tunnel, the trusted path.
+### In the process
 
-Cloudflare sets `CF-Connecting-IP` on every request and the client cannot forge it.
-`API_CLIENT_IP=cloudflare` buckets on that header. `crates/api/src/http.rs` never reads
-`X-Forwarded-For`.
+Every deployment has these, whatever is in front of it:
 
-Leave `API_CLIENT_IP=peer` for any deployment where Cloudflare is not the sole ingress.
-`CF-Connecting-IP` is trustworthy only when nothing can reach the origin directly.
+- **The per-address limit** on `/api/judge`: `API_RATE_LIMIT` questions per
+  `API_RATE_WINDOW_SECS` (default 4 per 300 s), counted on the address
+  `API_CLIENT_IP` names (§3, Client address). With `peer` behind a proxy it counts every
+  visitor together.
+- **The concurrency slots**: at most `JUDGE_CONCURRENCY` answers at once (default 2).
+  A question beyond them is told the bot is busy, at no cost.
+- **The spend cap**: `JUDGE_MAX_USD`, over `JUDGE_BUDGET_PERIOD` (§4). A question that
+  could take the spend past it is refused before anything is sent.
 
-### Behind another reverse proxy
+The bundled HTTPS site and your own reverse proxy add nothing to these unless you
+configure it (nginx's `limit_req`, say). Behind them, the cap is the backstop and the
+limit the first line.
 
-The tunnel is a choice, not a requirement. The `proxy` service publishes `127.0.0.1:8787`
-in front of `judgebot`, and any reverse proxy on the host can terminate TLS in front of
-that. It passes the `Host` header and `CF-Connecting-IP` through unchanged, and it is not
-restarted by a deploy, so the address stays up while `judgebot` is replaced. Two things
-need care.
+With a budget period set, a capped instance comes back by itself when the period turns.
+To resume sooner, raise `JUDGE_MAX_USD` and `docker compose up -d`. The period's spend is
+in the database, so the restart does not reset it.
 
-**Answers take up to a minute**, so the proxy's read timeout must be longer than that.
-Caddy's default is unlimited. nginx's is 60 seconds.
+The cap covers embeddings as well as the chat calls: each question's query embedding, a
+stored call's vector, the scheduled refresh's embed step and every `judgebot ingest`
+command that embeds. They bill to the same meter and the same `spend_days` rows, so
+`judge-cli stats` shows them combined. At the cap a question is still answered without
+vector search if its chat calls fit, and its call is stored without a vector for the next
+`embed` to fill.
 
-**Every request now arrives from the proxy**, so `API_CLIENT_IP=peer` puts all visitors in
-one rate-limit bucket. To restore the per-address limit, have the proxy set
-`CF-Connecting-IP` to the client's address, overwriting whatever the client sent, and
-set `API_CLIENT_IP=cloudflare`. This is sound for the same reason as behind Cloudflare:
-something you control sets the header, and the origin listens on loopback only, so
-nothing off the host can reach it. It holds only while that proxy is the public edge.
-With Cloudflare in front of the proxy as well, `{remote_host}` is Cloudflare's address,
-so use the tunnel setup instead.
+### At Cloudflare
 
-```caddyfile
-judge.example.com {
-    reverse_proxy 127.0.0.1:8787 {
-        header_up CF-Connecting-IP {remote_host}
-    }
-}
-```
-
-```nginx
-server {
-    server_name judge.example.com;          # plus your TLS configuration
-    location / {
-        proxy_pass http://127.0.0.1:8787;
-        proxy_set_header Host $host;
-        proxy_set_header CF-Connecting-IP $remote_addr;
-        proxy_read_timeout 120s;
-    }
-}
-```
-
-If the proxy does not set that header, leave `API_CLIENT_IP=peer` and rate limit at the
-proxy instead (nginx's `limit_req`), because the in-process limit then counts everyone
-together. With `--mcp`, add the public hostname to `MCP_ALLOWED_HOSTS` as in the tunnel
-setup. §5's edge rules are Cloudflare features, so without Cloudflare only the
-in-process limit, the concurrency slots and the spend budget protect the model bill
-from anonymous traffic.
-
-## 5. Edge spend protection
-
-With hosting at $0, the LLM bill is the entire bill. The edge rules below are the
-first line of defence, and the in-process limiter is the backstop.
+Behind a Cloudflare Tunnel, the rules below are the first line of defence, at
+Cloudflare's edge before a request reaches the host, and the process's own limits are
+the backstop. They are Cloudflare features and apply to the tunnel's hostname only.
 
 - **Rate limiting rule** on `/api/judge`, a burst limit in front of the process's own
-  limit (`API_RATE_LIMIT` per `API_RATE_WINDOW_SECS`, default 4 per 300 s). The free
-  plan has one rule, matched on the path only, counted per IP over 10 seconds, with a
-  10-second block, so it cannot match the process's window:
+  limit. The free plan has one rule, matched on the path only, counted per IP over 10
+  seconds, with a 10-second block, so it cannot match the process's window:
 
   | Field | Value |
   | --- | --- |
@@ -597,17 +803,6 @@ Full Turnstile with server-side `siteverify` is stronger. It needs a token in th
 body and a verification call inside `judge_route` before any spending. Add it only if
 the edge rules prove insufficient.
 
-With a budget period set, a capped instance comes back by itself when the period turns.
-To resume sooner, raise `JUDGE_MAX_USD` and `docker compose up -d`. The period's spend is
-in the database, so the restart does not reset it.
-
-The cap covers embeddings as well as the chat calls: each question's query embedding, a
-stored call's vector, the scheduled refresh's embed step and every `judgebot ingest`
-command that embeds. They bill to the same meter and the same `spend_days` rows, so
-`judge-cli stats` shows them combined. At the cap a question is still answered without
-vector search if its chat calls fit, and its call is stored without a vector for the next
-`embed` to fill.
-
 ## 6. Weekly backups to R2
 
 The database is cheap to dump and expensive to rebuild (§2). The `backup` compose
@@ -622,7 +817,7 @@ and the restore drill work on either's backups, and the two can run side by side
 4. Add `backup` to `COMPOSE_PROFILES` in `.env` and bring it up:
 
 ```ini
-COMPOSE_PROFILES=tunnel,backup
+COMPOSE_PROFILES=public,backup    # or tunnel,backup
 ```
 
 ```sh
@@ -1195,7 +1390,8 @@ beside the running one:
    container's login, a few seconds, get Discord's "The application did not respond".
    An old container from a release before this record (the first deploy onto it)
    leaves none, and the new one waits out the grace. The web app and the API see no
-   gap: the `proxy` service and the tunnel reach whichever container is listening.
+   gap: the `proxy` service, `edge` and the tunnel reach whichever container is
+   listening.
    Neither does Discord with `DISCORD_INTERACTIONS=http` ([Discord over HTTP](#discord-over-http)).
 
 If the new container is not healthy within five minutes (`DEPLOY_WAIT_SECS`), or
@@ -1241,7 +1437,8 @@ Check afterwards:
 docker ps -a --filter name=judgebot- --format '{{.Names}} {{.Status}}'
 ```
 
-It should list `judgebot-db`, `judgebot-proxy` (and `judgebot-tunnel` with the tunnel)
+It should list `judgebot-db`, `judgebot-proxy` (and `judgebot-edge` or `judgebot-tunnel`
+with their profile)
 and the service's own container, which Compose names after the checkout's directory
 (`mtg-judgebot-judgebot-1`). A `judgebot-bot` or `judgebot-api` is left over. If either
 is still there, `docker rm -f judgebot-bot judgebot-api` removes it.
@@ -1519,14 +1716,18 @@ scheduled refresh stays paused while it is (§7): the data is not refreshed unti
 image and the schema match again. An image from before the built-in schedule refreshes
 nothing by itself, so a rollback that far needs the cron entry of §7 until you upgrade.
 
-`cloudflared` and `db` are untouched by a code deploy. The tunnel reconnects on its
-own if the connector restarts.
+`edge`, `cloudflared` and `db` are untouched by a code deploy. The tunnel reconnects
+on its own if the connector restarts.
 
 ## 9. Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
-| 502 from the public hostname | `judgebot` is down or runs no network role, or the tunnel's service is not `http://proxy:8787` (or `http://api:8787`) |
+| 502 from the public hostname | `judgebot` is down, restarting or runs no network role (`docker compose ps`; under `public`, `edge` answers 502 for it), or the tunnel's service is not `http://proxy:8787` (or `http://api:8787`) |
+| `edge` restarts, logging `set JUDGE_DOMAIN in .env` | the `public` profile is on and `JUDGE_DOMAIN` is empty or not a host name (two or more labels, not `localhost` or an IP address, no `https://`, port, path or trailing dot) |
+| `edge` will not start: `port is already allocated` for 80 or 443 | something else on the host serves the web ports; stop it, or put your own reverse proxy in front of `127.0.0.1:8787` instead (§3) |
+| The public site answers with a certificate error, and `docker compose logs edge` shows `challenge failed` or a timeout | Let's Encrypt cannot reach the host under `JUDGE_DOMAIN`: ports 80 and 443 are not forwarded to it (or a firewall or the ISP blocks them), or the `A`/`AAAA` record does not point at the host (`dig +short judge.example.com`; an `AAAA` to another machine fails too) |
+| `docker compose logs edge` shows the certificate order `rejected`, `rateLimited` or `caa` | Let's Encrypt refused the name: too many failed attempts or certificates for it lately (wait for the limit's window; stop restarting `edge`), or a `CAA` record on the domain names another authority |
 | Tunnel healthy, hostname NXDOMAIN | the `judge` record is grey-clouded; it must be proxied |
 | `/mcp` answers 401 | wrong or missing `Authorization: Bearer <MCP_TOKEN>` |
 | `/mcp` answers 403 while `/api/health` is fine | the public hostname is not in `MCP_ALLOWED_HOSTS` |
@@ -1552,8 +1753,8 @@ own if the connector restarts.
 | `localhost:8787` answers 502 while the tunnel works | the `proxy` service is up and `judgebot` runs no network role, or is restarting (`docker compose ps`) |
 | `up -d` fails with `port is already allocated` for 8787 | something else on the host listens on 8787: a `judgebot` from `cargo run`, or a container from before the `proxy` service that is not part of this compose project |
 | `judgebot` reads healthy but nothing answers on 8787 | the roles have no `--api`, `--web` or `--mcp`, so the healthcheck passes without probing (§4) |
-| Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the tunnel — every request looks like the cloudflared container |
-| Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied |
+| Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the public site, a proxy or the tunnel, where every request comes from the proxy; or `proxy` with the tunnel, or `cloudflare` with the public site (§3, Client address) |
+| Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied; or `proxy` while a route that does not remove `X-Judgebot-Client-IP` is public (a tunnel to `judgebot:8787`, or 8788 published beyond loopback) |
 | `judgebot` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact a role must show is unset or malformed in `.env` (`--discord` needs the first, `--api`/`--web`/`--mcp` the second); set it and `docker compose up -d` |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
 | Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and `docker compose up -d`, or wait for the period to turn |

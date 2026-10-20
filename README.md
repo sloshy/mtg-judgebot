@@ -171,10 +171,14 @@ and `--jobs` (the data refresh). `JUDGE_ROLES` in `.env` lists them, and unset i
 
 ### Hosting
 
-The intended setup is a machine at home behind a [Cloudflare
-Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/):
-no public IP, no open ports, no cloud bill. `docs/DEPLOYMENT.md` is the runbook. It
-covers the tunnel, rate limiting at Cloudflare, and weekly backups to R2.
+The intended setup is a machine you own running the compose stack, with no cloud bill.
+Out of the box it answers on `127.0.0.1:8787` only, which is enough for a Discord bot
+over its gateway connection. To publish the web app, set `COMPOSE_PROFILES=public` and
+`JUDGE_DOMAIN` in `.env`: the bundled Caddy then serves `https://<JUDGE_DOMAIN>` on ports
+80 and 443 with a Let's Encrypt certificate. A reverse proxy of your own, or a [Cloudflare
+Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/)
+with no open ports, works instead. `docs/DEPLOYMENT.md` is the runbook. It covers the
+three routes, protecting the model bill, and weekly backups to R2.
 
 ## Evaluation
 

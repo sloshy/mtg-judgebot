@@ -136,7 +136,7 @@ JSON goes to stdout and logs to stderr. The admin reads (`stats`, `failures`, `c
 
 | Entry point | What it does |
 | --- | --- |
-| `docker compose up -d` | `db`, `judgebot` and `proxy` (which publishes `127.0.0.1:8787`), plus `cloudflared` with `tunnel` in `COMPOSE_PROFILES` and `backup` with `backup`. |
+| `docker compose up -d` | `db`, `judgebot` and `proxy` (which publishes `127.0.0.1:8787`), plus `edge` (HTTPS on ports 80 and 443 for `JUDGE_DOMAIN`) with `public` in `COMPOSE_PROFILES`, `cloudflared` with `tunnel` and `backup` with `backup`. |
 | `docker compose up -d --build judgebot` | Rebuild and redeploy after code changes. |
 | `scripts/deploy.sh [--build]` | Deploy without downtime: pull the image (or build it from the checkout), start a new `judgebot` container beside the running one, wait until it is healthy, then stop the old one, which finishes its answers first. A new container that is not healthy is removed and the old one keeps serving. A major release (`judgebot ingest upgrade` says) takes a backup first when one is configured, and the new container answers with a maintenance reply until the old one has stopped and it has migrated. |
 | `docker compose pull && docker compose up -d --remove-orphans` | Deploy by stopping the old container first, with a gap while the new one starts. `--remove-orphans` removes the `bot` and `api` containers of a compose file from before `judgebot`, which would otherwise keep running. |

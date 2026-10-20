@@ -1,0 +1,38 @@
+# The `edge` compose service (the `public` profile, docs/DECISIONS.md D41):
+# judgebot's public HTTPS site, https://JUDGE_DOMAIN on ports 80 and 443.
+# Caddy gets the certificate from Let's Encrypt, renews it, and keeps it in the
+# judgebot-edge-data volume; port 80 answers the ACME challenge and redirects
+# everything else to HTTPS. It dials judgebot:8787 itself, the way the `proxy`
+# service does (proxy/Caddyfile), so a deploy (D29) hands over without a gap,
+# and a deploy never restarts it. Answers take up to a minute, and Caddy's
+# proxy has no read timeout by default.
+{
+	# The admin API listens inside the container only: scripts/deploy.sh
+	# asks it to load this file as it is (`caddy reload`), as for `proxy`.
+	admin localhost:2019
+	# A stop, a restart or a recreation finishes the requests in flight
+	# for up to 70 s, since an answer takes up to a minute; compose's
+	# stop_grace_period (80 s) is set above it. Without it Caddy waits
+	# forever and Docker kills it after 10 s.
+	grace_period 70s
+}
+
+{$JUDGE_DOMAIN} {
+	reverse_proxy judgebot:8787 {
+		# The address this connection came from, which judgebot buckets on
+		# under API_CLIENT_IP=proxy. Set, so it replaces any copy the
+		# caller sent.
+		header_up X-Judgebot-Client-IP {remote_host}
+		# A caller's own CF-Connecting-IP, which API_CLIENT_IP=cloudflare
+		# would trust: only the tunnel's path may carry one.
+		header_up -CF-Connecting-IP
+		transport http {
+			# A new connection for every request, so a draining
+			# container's refused dial goes on to the other one
+			# (proxy/Caddyfile says why).
+			keepalive off
+		}
+		lb_try_duration 5s
+		lb_try_interval 100ms
+	}
+}

@@ -58,7 +58,8 @@ services:
     # No container_name and no published port: `scripts/deploy.sh` starts a
     # second container of this service beside the running one (blue-green,
     # D29), and two containers cannot share a name or a host port. The
-    # `proxy` service below publishes 127.0.0.1:8787 for both.
+    # `proxy` service below publishes 127.0.0.1:8787 for both, and `edge`
+    # (the public profile) ports 80 and 443.
     restart: unless-stopped
     logging: *bounded-logs
     entrypoint: ["judgebot"]
@@ -147,19 +148,26 @@ services:
 
   # The entrance to judgebot's HTTP listener: 127.0.0.1:8787 on the host, for
   # a browser on this machine and for a reverse proxy that runs on the host
-  # (docs/DEPLOYMENT.md §4), and proxy:8787 on the compose network, for the
+  # (docs/DEPLOYMENT.md §3), and proxy:8787 on the compose network, for the
   # tunnel. Also the entrance to the --admin listener, 127.0.0.1:8789 on the
-  # host only, which the tunnel never points at. It forwards to judgebot:8787, whichever container of that service
-  # is listening, on a new connection per request (proxy/Caddyfile says why),
-  # and a deploy never restarts it, so the address stays up while judgebot is
-  # replaced. The Host header and the client's CF-Connecting-IP pass through
-  # unchanged; judgebot reads no X-Forwarded-For. Answers take up to a
-  # minute, and Caddy's proxy has no read timeout by default.
+  # host only, which the tunnel never points at. It forwards to
+  # judgebot:8787, whichever container of that service is listening, on a new
+  # connection per request (proxy/Caddyfile says why), and a deploy never
+  # restarts it, so the address stays up while judgebot is replaced. The Host
+  # header and the client's CF-Connecting-IP pass through unchanged; judgebot
+  # reads no X-Forwarded-For. X-Judgebot-Client-IP (API_CLIENT_IP=proxy)
+  # passes through from the host's loopback only and is removed on the
+  # tunnel's site and the admin site. Answers take up to a minute, and Caddy's
+  # proxy has no read timeout by default.
   proxy:
     image: caddy:2.10.2-alpine
     container_name: judgebot-proxy
     restart: unless-stopped
     logging: *bounded-logs
+    # When it is stopped or recreated, Caddy finishes the requests in flight
+    # for up to 70 s (`grace_period` in proxy/Caddyfile: an answer takes up
+    # to a minute) before Docker's SIGKILL.
+    stop_grace_period: 80s
     # --watch: a Caddyfile changed by `git pull` is loaded within a second,
     # gracefully, with no restart (the directory is mounted, not the file,
     # because git replaces a file rather than writing into it).
@@ -173,12 +181,17 @@ services:
         # keeps that address working, now through the proxy, with no
         # dashboard edit.
         aliases: [api]
-    # Loopback-only. Public traffic arrives through the cloudflared tunnel on
-    # the compose network, never through a published port. This is also what
-    # makes API_CLIENT_IP=cloudflare sound: CF-Connecting-IP is only
-    # trustworthy while Cloudflare is the sole route to the origin.
+    # Loopback-only. Public traffic arrives through `edge` or through the
+    # cloudflared tunnel on the compose network, never through a port this
+    # service publishes. That is also what makes API_CLIENT_IP=cloudflare and
+    # proxy sound: each header is only trustworthy while the proxy that sets
+    # it is the sole public route. The host's 8787 is the container's 8788,
+    # the site that passes X-Judgebot-Client-IP on from a reverse proxy on the
+    # host. Any container on the compose network can dial proxy:8788 too, so
+    # point nothing there (a tunnel's service is http://proxy:8787), and never
+    # map a host address other than 127.0.0.1 to 8788.
     ports:
-      - "127.0.0.1:8787:8787"
+      - "127.0.0.1:8787:8788"
       # The admin interface (--admin): loopback on the host, ADMIN_PORT in
       # .env (default 8789; set another when 8789 is taken, or this service
       # fails to start and takes 8787 with it), reached from another machine
@@ -191,6 +204,43 @@ services:
     # the port) before this one binds it.
     depends_on:
       - judgebot
+
+  # The public HTTPS site, off by default: COMPOSE_PROFILES=public in .env
+  # (docs/DEPLOYMENT.md §3, D41). Caddy on ports 80 and 443 of the host
+  # serves https://JUDGE_DOMAIN with a Let's Encrypt certificate it gets and
+  # renews itself, kept in the judgebot-edge-data volume so a restart does not
+  # ask again. It dials judgebot:8787 the way `proxy` does
+  # (proxy/edge.Caddyfile), so a deploy hands over without a gap and never
+  # restarts it, and it sets X-Judgebot-Client-IP to the visitor's address for
+  # API_CLIENT_IP=proxy. Its configuration is mounted and watched as the
+  # proxy's is.
+  edge:
+    image: caddy:2.10.2-alpine
+    container_name: judgebot-edge
+    restart: unless-stopped
+    profiles: ["public"]
+    logging: *bounded-logs
+    # As `proxy`'s: 70 s for the requests in flight (proxy/edge.Caddyfile).
+    stop_grace_period: 80s
+    # A missing or malformed JUDGE_DOMAIN stops the container with a line that
+    # names it, rather than a Caddyfile error, by the rule judge-config checks
+    # (proxy/edge-entrypoint.sh). Compose cannot require the variable for this
+    # profile alone: a `${JUDGE_DOMAIN:?}` fails every compose command, profile
+    # or not. The command after it runs as given (`docker compose run edge
+    # caddy ...`).
+    entrypoint: ["sh", "/etc/caddy/edge-entrypoint.sh"]
+    command: ["caddy", "run", "--config", "/etc/caddy/edge.Caddyfile", "--adapter", "caddyfile", "--watch"]
+    environment:
+      JUDGE_DOMAIN: ${JUDGE_DOMAIN:-}
+    volumes:
+      - ./proxy:/etc/caddy:ro
+      - judgebot-edge-data:/data
+    # Every address of the host: this is the public entrance. 80 answers
+    # Let's Encrypt's challenge and redirects to HTTPS; 443/udp is HTTP/3.
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
 
   # `judgebot ingest` on demand: the first load (`docker compose run --rm
   # refresh init`), a refresh by hand or from an operator's own cron
@@ -252,7 +302,7 @@ services:
   # BACKUP_EVERY_DAYS old (default 7), checked hourly, so a restart does not
   # reset the schedule and a cron'd scripts/backup-db.sh run counts. Off by
   # default; deployments opt in with `backup` in COMPOSE_PROFILES in .env
-  # (COMPOSE_PROFILES=tunnel,backup). Same image as judgebot, which carries a
+  # (COMPOSE_PROFILES=public,backup). Same image as judgebot, which carries a
   # pg_dump matched to `db` above (Dockerfile, PG_MAJOR); it reaches Postgres
   # over the compose network, so it needs no Docker socket.
   #
@@ -294,9 +344,10 @@ services:
       db:
         condition: service_healthy
 
-  # Public entry point. Dials out to Cloudflare's edge, so the host needs no
-  # open inbound port, no public IPv4 and no dynamic DNS. Off by default;
-  # deployments opt in with COMPOSE_PROFILES=tunnel in .env.
+  # The Cloudflare Tunnel, the alternative to `edge` (docs/DEPLOYMENT.md §3).
+  # Dials out to Cloudflare's edge, so the host needs no open inbound port, no
+  # public IPv4 and no dynamic DNS. Off by default; deployments opt in with
+  # COMPOSE_PROFILES=tunnel in .env, and API_CLIENT_IP=cloudflare.
   cloudflared:
     image: cloudflare/cloudflared:2026.9.1
     container_name: judgebot-tunnel
@@ -329,3 +380,5 @@ services:
 volumes:
   judgebot-pgdata:
   judgebot-ingest-cache:
+  # The edge service's certificates and ACME account.
+  judgebot-edge-data:

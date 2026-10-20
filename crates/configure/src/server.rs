@@ -518,6 +518,7 @@ fn warnings(editor: &Editor, r: &Rendered, m: &Messages) -> Vec<String> {
     {
         out.push((m.db_port_mismatch)(&published, url.port().unwrap_or(5432)));
     }
+    out.extend(check::exposure_warnings(m, &lookup));
     out
 }
 

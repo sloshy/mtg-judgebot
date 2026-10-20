@@ -303,6 +303,23 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   database returned first. A card's own name still beats the same name on another card's
   face. None of the built-in aliases is affected.
 
+- **Public HTTPS without Cloudflare.** The compose file has a `public` profile:
+  `COMPOSE_PROFILES=public` with `JUDGE_DOMAIN=judge.example.com` starts `edge`, a
+  Caddy on ports 80 and 443 that serves `https://<JUDGE_DOMAIN>` with a Let's Encrypt
+  certificate it gets and renews itself, in front of `judgebot:8787` with the same
+  handover as the proxy, so deploys keep serving. Without the profile nothing changes:
+  the stack answers on `127.0.0.1:8787` only. A Cloudflare Tunnel is now the
+  alternative rather than the runbook's setup, and `docs/DEPLOYMENT.md` §3 lists the
+  routes (local only, public HTTPS, your own reverse proxy, the tunnel). `API_CLIENT_IP`
+  gains `proxy`: the rate limit counts `X-Judgebot-Client-IP`, which `edge` sets to
+  the visitor's address and the proxy's other sites remove from callers, read only as
+  one copy from a loopback or private peer. A reverse proxy of your own on the host can
+  set it too. `judge-config` checks `JUDGE_DOMAIN` under `public` (the rule the `edge`
+  container applies) and suggests `API_CLIENT_IP=proxy` with it and `cloudflare` with
+  the tunnel, and `scripts/deploy.sh` checks and starts `edge` when the profile is on.
+  Every rate limit now counts an IPv6 visitor by its /64 rather than the full address.
+  Caddy finishes the requests in flight for up to 70 s when `proxy` or `edge` stops.
+
 ### Changed
 
 - **One binary, `judgebot`, whose roles are launch options.** `bot`, `api` and `ingest`
@@ -495,6 +512,17 @@ of maintenance, take a backup, and update the checkout and the image together.
   and `127.0.0.1:8789` (the admin interface, whether or not `--admin` runs). If
   something on the host already listens on 8789, set `ADMIN_PORT` in `.env` to a free
   port first, or the proxy cannot start and takes 8787 down with it.
+- **The first deploy recreates the `proxy` service once.** Its host port now maps to a
+  new site, and it drains for up to 70 s when stopped. While it is recreated,
+  `127.0.0.1:8787` and the tunnel are down from the moment it stops listening until
+  the answers it was serving finish (up to 70 s) and the new one starts; Discord over
+  the gateway is not affected.
+- **A Cloudflare Tunnel setup needs no change.** `proxy:8787` (and the `api` alias)
+  behaves as before, `API_CLIENT_IP=cloudflare` still reads `CF-Connecting-IP`, and
+  `127.0.0.1:8787` still answers. The `public` profile is opt-in and claims ports 80 and
+  443 only when it is on. A reverse proxy of your own on the host that sets
+  `CF-Connecting-IP` with `API_CLIENT_IP=cloudflare` keeps working; setting
+  `X-Judgebot-Client-IP` with `API_CLIENT_IP=proxy` is now the documented way.
 - **Leave `/discord/interactions` unchallenged if you turn on Discord over HTTP.**
   Discord's requests come from its servers, not a browser, so they cannot pass a
   challenge: a Managed Challenge rule or a Cloudflare Access policy that covers that
@@ -511,6 +539,8 @@ and `scripts/config.sh` edits them):
   `MCP_ADMIN_TOKEN` (the admin tools over `/mcp`). `MCP_TOKEN`, `MCP_ADMIN_TOKEN` and
   `ADMIN_TOKEN` must all differ: a process that reads two equal ones refuses to start.
 - Discord: `DISCORD_INTERACTIONS` (`gateway`, the default, or `http`).
+- Exposure: `JUDGE_DOMAIN` (the host name the `public` profile serves; `edge` refuses
+  to start without it), and `proxy`, a new value of `API_CLIENT_IP`.
 - The data: `JUDGE_REFRESH_HOURS` (default 24; `0` in a development `.env`),
   `JUDGE_CALL_RETENTION_DAYS` (default: keep), `FEEDBACK_IP_DAYS` (default 90).
 - What the public sees: `JUDGE_FEED` (default on), `JUDGE_FEED_DAYS` (default: no

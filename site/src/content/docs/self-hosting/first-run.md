@@ -6,17 +6,19 @@ sidebar:
 ---
 
 Each community runs its own judgebot, with its own Discord application, model key and
-spend cap. A complete instance is two containers from one compose file:
+spend cap. A complete instance is three containers from one compose file:
 
 - `db`: Postgres with pgvector.
 - `judgebot`: the Discord bot, the web app and HTTP API, and the daily data refresh.
+- `proxy`: Caddy in front of `judgebot`, on `127.0.0.1:8787`.
 
 What `judgebot` runs is a set of roles, `JUDGE_ROLES` in `.env`: `--discord`, `--api`,
 `--web`, `--mcp`, `--admin` (the operator's pages) and `--jobs` (the refresh). Unset, it
 runs every role but `--mcp` and `--admin`, which each need a token of their own. A
-third service, `refresh`, runs the data loads on demand. An optional `cloudflared`
-publishes the API without opening a port. You can stop at the web app and never touch
-Discord. The bot is the last thing to add.
+further service, `refresh`, runs the data loads on demand. Two optional ones put the
+instance on the internet: `edge` serves it over HTTPS on ports 80 and 443, and
+`cloudflared` through a Cloudflare Tunnel without opening a port. You can stop at the
+web app and never touch Discord. The bot is the last thing to add.
 
 ## Requirements
 
@@ -116,7 +118,25 @@ and runs without vector search.
 
 ## Behind a domain
 
-The deployment runbook publishes `judgebot` through a Cloudflare Tunnel, with rate limiting
-at Cloudflare's edge in front of the public page. Any reverse proxy works. Keep
-`API_CLIENT_IP=peer` unless Cloudflare is the only route to the origin. The
+Until a profile says otherwise, the stack answers on `127.0.0.1:8787` only. That is
+enough for Discord over its gateway connection, which dials out. To publish the web app:
+
+1. Point a DNS `A` record for the name at the host, not proxied by Cloudflare, and
+   forward ports 80 and 443 to it. Leave out an `AAAA` record unless the compose network
+   has IPv6: otherwise every IPv6 visitor reaches `edge` from Docker's gateway and they
+   share one rate-limit bucket (the runbook has the override that enables it).
+2. Set in `.env`:
+
+   ```ini
+   COMPOSE_PROFILES=public
+   JUDGE_DOMAIN=judge.example.com
+   API_CLIENT_IP=proxy
+   ```
+
+3. `docker compose up -d`. The bundled Caddy (`edge`) gets a Let's Encrypt certificate
+   and serves `https://judge.example.com`.
+
+A reverse proxy of your own, or a Cloudflare Tunnel with no open port, works instead.
+The [deployment runbook](../deployment/#3-exposure) has all three. `API_CLIENT_IP` must
+match the route, or the rate limit counts the wrong address; the
 [security page](../../reference/security/) gives the reason.

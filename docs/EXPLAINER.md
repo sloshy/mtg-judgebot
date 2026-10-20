@@ -684,8 +684,10 @@ lock-in.
 **serenity** for Discord, **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite**
 for the web app. All conventional, well-maintained choices for their niches.
 
-**Docker Compose behind a Cloudflare Tunnel.** One host, no open inbound ports, a
-CI-built image run as one `judgebot` service whose roles are launch options (D25), a
+**Docker Compose on one host.** A CI-built image run as one `judgebot` service whose
+roles are launch options (D25), reached through a bundled Caddy: on the host's loopback
+by default, at a public HTTPS name with a Let's Encrypt certificate under the `public`
+profile, or through a Cloudflare Tunnel with no open inbound port (D41). It has a
 daily data refresh that the running process schedules in the database rather than a
 host cron job (D24), weekly backups to R2 from an opt-in container that keeps its
 schedule in the bucket (D26). `docs/DEPLOYMENT.md` is the runbook.

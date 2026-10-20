@@ -166,8 +166,10 @@ Anonymous traffic is rate limited per address (`API_RATE_LIMIT` questions per
 `API_RATE_WINDOW_SECS`, default 4 per 5 minutes), ahead of the `JUDGE_CONCURRENCY` slots
 and the spend cap. The feed's reads have a window of their own, 120 a minute per address,
 so browsing does not use up questions, and the dashboard's another, 30 a minute. The [HTTP API](../../using/api/) page has the request and reply
-shapes, and the [deployment runbook](../../self-hosting/deployment/) puts a Cloudflare
-rate-limiting rule in front of all of it.
+shapes. Behind a Cloudflare Tunnel, the
+[deployment runbook](../../self-hosting/deployment/#5-spend-protection) puts a Cloudflare
+rate-limiting rule in front of all of it; behind the bundled public site or your own
+proxy, `API_CLIENT_IP=proxy` keeps the count per visitor.
 
 ## Developing the web app
 

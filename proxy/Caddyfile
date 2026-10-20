@@ -1,36 +1,74 @@
-# The `proxy` compose service: the one entrance to judgebot's HTTP listener,
-# for 127.0.0.1:8787 on the host and for the tunnel (`proxy:8787`, or `api:8787`
+# The `proxy` compose service: the entrance to judgebot's HTTP listener for
+# 127.0.0.1:8787 on the host and for the tunnel (`proxy:8787`, or `api:8787`
 # from before it existed), and to the --admin listener, for 127.0.0.1:8789 on
 # the host only (docs/DECISIONS.md D37). A deploy runs two judgebot containers
 # for a minute (D29) and never restarts this one, so traffic moves from the old
 # container to the new without a gap, Discord's interactions (D30) among it.
+# The public profile's HTTPS site is another service, `edge` (edge.Caddyfile).
+#
+# X-Judgebot-Client-IP is the visitor's address under API_CLIENT_IP=proxy
+# (D41). Only a proxy the operator runs may set it: the `edge` service, or a
+# reverse proxy on the host in front of 127.0.0.1:8787. So the site the tunnel
+# reaches and the admin site remove any copy a caller sent, and only the
+# host's loopback port (the :8788 site) passes it on.
 {
 	# The admin API listens inside the container only: scripts/deploy.sh
 	# checks through it that the proxy runs this file as it is
 	# (`docker compose exec proxy caddy reload`). A reload that changes the
 	# configuration can reset a connection in progress, so a deploy never
 	# switches upstreams that way. Nothing here needs a certificate: TLS
-	# ends at Cloudflare or at a reverse proxy on the host.
+	# ends at the `edge` service, at Cloudflare or at a reverse proxy on the
+	# host.
 	admin localhost:2019
 	auto_https off
+	# A stop, a restart or a recreation finishes the requests in flight
+	# for up to 70 s, since an answer takes up to a minute; compose's
+	# stop_grace_period (80 s) is set above it. Without it Caddy waits
+	# forever and Docker kills it after 10 s.
+	grace_period 70s
 }
 
+# The handover between two judgebot containers, shared by every site.
+(handover) {
+	transport http {
+		# A new connection for every request. The name resolves to
+		# every judgebot container, and a draining one closes its
+		# listener at once, so a dial refused by it goes on to the
+		# other. A kept-alive connection to it could instead be closed
+		# under a request already written, which a POST cannot repeat:
+		# that lost a few requests per deploy in a drill, and none
+		# without it.
+		keepalive off
+	}
+	# A dial every container refuses (one starting, one stopping) is
+	# tried again for up to five seconds before the caller gets a 502.
+	lb_try_duration 5s
+	lb_try_interval 100ms
+}
+
+# `proxy:8787` on the compose network: what a Cloudflare Tunnel's public
+# hostname points at. A caller's X-Judgebot-Client-IP is removed here; the
+# tunnel's own CF-Connecting-IP passes through for API_CLIENT_IP=cloudflare.
 :8787 {
 	reverse_proxy judgebot:8787 {
-		transport http {
-			# A new connection for every request. The name resolves to
-			# every judgebot container, and a draining one closes its
-			# listener at once, so a dial refused by it goes on to the
-			# other. A kept-alive connection to it could instead be closed
-			# under a request already written, which a POST cannot repeat:
-			# that lost a few requests per deploy in a drill, and none
-			# without it.
-			keepalive off
-		}
-		# A dial every container refuses (one starting, one stopping) is
-		# tried again for up to five seconds before the caller gets a 502.
-		lb_try_duration 5s
-		lb_try_interval 100ms
+		header_up -X-Judgebot-Client-IP
+		import handover
+	}
+}
+
+# 127.0.0.1:8787 on the host (compose maps it to this port): a browser on the
+# host, and a reverse proxy on the host, which may set X-Judgebot-Client-IP
+# for API_CLIENT_IP=proxy (docs/DEPLOYMENT.md, own reverse proxy). The header
+# (and CF-Connecting-IP) passes through, so whoever reaches this port picks
+# their own rate-limit bucket: the host's processes, and any container on the
+# compose network, which can dial proxy:8788. Point nothing on the network at
+# it (a tunnel's service stays http://proxy:8787), and never map a host
+# address other than 127.0.0.1 to it: a compose override that opens 8787 to
+# the LAN maps it to 8787 above. Caddy cannot tell the host's connections
+# from a container's here: both arrive from the compose network.
+:8788 {
+	reverse_proxy judgebot:8787 {
+		import handover
 	}
 }
 
@@ -40,10 +78,7 @@
 # the draining one closes its listener and a refused dial goes on to the other.
 :8789 {
 	reverse_proxy judgebot:8789 {
-		transport http {
-			keepalive off
-		}
-		lb_try_duration 5s
-		lb_try_interval 100ms
+		header_up -X-Judgebot-Client-IP
+		import handover
 	}
 }

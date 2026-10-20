@@ -22,6 +22,7 @@
 
 use std::collections::BTreeMap;
 
+use judge_api::config::CLIENT_IP_ENV;
 use judge_bot::{
     admin::{ADMIN_ADDR_ENV, ADMIN_PORT_ENV, ADMIN_TOKEN_ENV, MCP_ADMIN_TOKEN_ENV, MCP_TOKEN_ENV},
     alert::ALERT_WEBHOOK_ENV,
@@ -43,6 +44,12 @@ use judge_core::{
 };
 use judgebot::roles::{API_INTERFACES_ENV, ROLES_ENV};
 use serde::Serialize;
+
+use crate::check::{DOMAIN_ENV, PROFILES_ENV};
+
+/// `API_CLIENT_IP`'s values, as `judge_api::config::ClientIpSource` names
+/// them (`the_client_ip_choice_is_every_mode`).
+const CLIENT_IP_VALUES: &[&str] = &["peer", "cloudflare", "proxy"];
 
 /// The annotated template, the source of every variable's help text.
 pub const EXAMPLE: &str = include_str!("../../../.env.example");
@@ -187,10 +194,10 @@ pub const VARS: &[Var] = &[
     setting("API_RATE_LIMIT", Group::Http, int(1)),
     setting("API_RATE_WINDOW_SECS", Group::Http, int(1)),
     setting(
-        "API_CLIENT_IP",
+        CLIENT_IP_ENV,
         Group::Http,
         Widget::Choice {
-            values: &["peer", "cloudflare"],
+            values: CLIENT_IP_VALUES,
         },
     ),
     setting(FEED_ENV, Group::Http, Widget::Toggle),
@@ -210,7 +217,8 @@ pub const VARS: &[Var] = &[
     setting(SOURCE_URL_ENV, Group::Instance, TEXT),
     setting(OPERATOR_DISCORD_ENV, Group::Instance, TEXT),
     setting(OPERATOR_EMAIL_ENV, Group::Instance, TEXT),
-    setting("COMPOSE_PROFILES", Group::Deployment, TEXT),
+    setting(PROFILES_ENV, Group::Deployment, TEXT),
+    setting(DOMAIN_ENV, Group::Deployment, TEXT),
     setting("JUDGE_IMAGE", Group::Deployment, TEXT),
     setting("JUDGE_IMAGE_TAG", Group::Deployment, TEXT),
 ];
@@ -666,6 +674,15 @@ mod tests {
                 v.name
             );
         }
+    }
+
+    #[test]
+    fn the_client_ip_choice_is_every_mode() {
+        let modes: Vec<&str> = judge_api::config::ClientIpSource::ALL
+            .iter()
+            .map(|m| m.name())
+            .collect();
+        assert_eq!(CLIENT_IP_VALUES, modes.as_slice());
     }
 
     #[test]
