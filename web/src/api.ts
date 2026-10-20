@@ -171,12 +171,24 @@ export function sessionId(): string {
   try {
     const existing = sessionStorage.getItem(key);
     if (existing) return existing;
-    const fresh = crypto.randomUUID();
+    const fresh = randomUuid();
     sessionStorage.setItem(key, fresh);
     return fresh;
   } catch {
-    return crypto.randomUUID();
+    return randomUuid();
   }
+}
+
+/** A random (version 4) UUID. `crypto.randomUUID` exists only in a secure
+ * context (HTTPS or localhost), so a page opened over plain HTTP on a LAN
+ * address builds one from `getRandomValues`, which every context has. */
+function randomUuid(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = ((b[6] ?? 0) & 0x0f) | 0x40;
+  b[8] = ((b[8] ?? 0) & 0x3f) | 0x80;
+  const hex = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /** The footer's data line: `Comprehensive Rules 2026-09-25 · refreshed 3
