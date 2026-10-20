@@ -128,7 +128,8 @@ Check site changes in a browser with the `playwright-cli` skill. Run it against
 wide, on a splash page *and* a docs page. Read positions out of
 `getBoundingClientRect()` rather than by eye.
 
-CI is `.github/workflows/ci.yml`: fmt, clippy, `.sqlx` freshness, tests on a pgvector
+CI is `.github/workflows/ci.yml`: fmt, clippy twice (every target, the dev-only stub
+locale unified in; then the libraries and binaries alone, the features that ship), `.sqlx` freshness, tests on a pgvector
 container started by a step (after a Docker Hub login, when the secrets exist), web and site builds, compose parse. It also runs Biome over `web/` and `site/`
 (`biome.json` at the root, `.astro` files left to `astro check`), `astro check`, and
 lychee over the built site's internal links. A `lint` job runs `cargo deny check`
@@ -137,8 +138,9 @@ lychee over the built site's internal links. A `lint` job runs `cargo deny check
 actionlint, hadolint (`.hadolint.yaml`), `check_icons` (the icon's copies are
 byte-identical and the right size) and `check_pg_major` (the `Dockerfile`'s `PG_MAJOR`
 equals the compose `db` image's major, so the backup's `pg_dump` can dump it),
-`check_stub_locale` (the dev-only `stub-locale` feature is enabled nowhere but
-`[dev-dependencies]`) and
+`check_stub_locale` (the workspace's feature graph without dev-dependencies,
+`cargo tree -e features,no-dev -i judge-core`, has no `stub-locale`, and neither
+`Dockerfile` nor a workflow names it or `--all-features`) and
 `scripts/release-version.sh` (web/ and site/'s `package.json` versions equal the crates'
 one `[workspace.package]` version; `publish-image.yml` runs it with the release tag,
 which must match, and its `## [X.Y.Z]` changelog heading). Every tool's config records why each
@@ -572,7 +574,8 @@ and `bot` ← the other bins):
   - The page (`crates/configure/ui/`) is plain JS under a strict CSP, built with no
     `innerHTML`, linted by web's Biome in `check.sh web`. `app.js` is an ES module and
     its text is in `ui/messages.js` (one object per locale, held to English's keys by a
-    Rust test); server text is `judge_configure::catalog`.
+    Rust test); server text is `judge_configure::catalog`. A refused request (host or
+    token) is answered without reading `.env`.
 
 `judge_bot::build_deps(pool, Models, embedder)` is the composition root shared by the bot,
 eval, the HTTP API and the agent's `judge` tool. `Models::{single, pair, priced}` take the
@@ -822,7 +825,8 @@ Key cross-file facts that aren't obvious from any one file:
   `site/src/i18n.ts`. The dev-only `stub-locale` feature adds `Locale::Stub` (`qps`,
   every message `⟦name values⟧`) so tests render every message in a second locale;
   `check_stub_locale` keeps it out of shipped builds. Command lines read the terminal
-  locale (LC_ALL → LC_MESSAGES → LANG), then `JUDGE_LOCALE`. No user-facing
+  locale (LC_ALL → LC_MESSAGES → LANG; codeset and modifier stripped, a `C`/`POSIX`
+  value passes to the next), then `JUDGE_LOCALE`. No user-facing
   string inline elsewhere; logs stay English. `Locale` is negotiated per request
   (Discord user → `JUDGE_LOCALE`; web body `locale` → `Accept-Language` →
   `JUDGE_LOCALE`). `ids::Pick`/`Retry` end in `:<locale>` for any locale but `en` (absent = `en`, the
