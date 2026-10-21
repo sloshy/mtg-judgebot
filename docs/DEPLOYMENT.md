@@ -636,6 +636,14 @@ LAN address in place of `127.0.0.1`.
 - Name the LAN address, not `0.0.0.0`. The override adds to the loopback mapping rather
   than replacing it, a wildcard can clash with it, and it would listen on every
   interface, a public one included.
+- To listen on every address anyway (a host whose LAN address changes), move the
+  loopback mapping out of the way with `ADMIN_PORT=18789` in `.env` and publish
+  `"8789:8789"`. This works on any Compose version, unlike replacing the list with
+  `ports: !override`, which needs Compose 2.24 (newer than some NAS packages). It
+  listens on every interface, so the host must not face the internet directly.
+- On a Tailscale (or other VPN) network, name the host's address on it instead
+  (`"100.x.y.z:8789:8789"`). Only the network's own devices reach it, and the VPN
+  encrypts the token in transit.
 - Docker writes its own firewall rules for published ports, ahead of ufw and firewalld,
   so a host firewall rule does not close this one. The address it binds is what limits
   who can reach it.
