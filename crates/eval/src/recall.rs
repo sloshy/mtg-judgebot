@@ -189,7 +189,7 @@ pub async fn run(
 }
 
 /// A leaf id (`613.1d`) counts if the leaf row or its rule row (`613.1`) is among `rules`.
-fn present<'a>(mut rules: impl Iterator<Item = &'a RuleChunk>, id: &str) -> bool {
+pub(crate) fn present<'a>(mut rules: impl Iterator<Item = &'a RuleChunk>, id: &str) -> bool {
     let rule = id.trim_end_matches(|c: char| c.is_ascii_alphabetic());
     rules.any(|r| {
         let rid: &str = r.id.as_ref();

@@ -25,6 +25,13 @@
 //!
 //! `eval show <run.json>`: expected vs. bot answers side by side, graded
 //! against the current gold file as `rescore` grades it, with any grade.
+//!
+//! `eval sweep <plan.toml> [--dry-run] [--summary] [--only k,k] [--repeats N] [--max-usd X]`:
+//! a models × efforts grid for the extraction stage alone, the synthesis
+//! stage on the gold extraction, and named end-to-end configurations, each
+//! run `repeats` times under one spend cap, graded by one fixed model and
+//! averaged into `eval/runs/sweep-<label>/summary.md`. Resumable (see
+//! `sweep.rs`); `eval/sweeps/` holds the plans.
 
 mod answer;
 mod categories;
@@ -33,6 +40,7 @@ mod gold;
 mod grade;
 mod recall;
 mod score;
+mod sweep;
 
 use std::process::ExitCode;
 
@@ -76,7 +84,7 @@ async fn main() -> ExitCode {
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage:\n  eval recall [--vectors] [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--grade] [--config judge.toml]\n  eval grade <run.json> [--max-usd X] [--config judge.toml] [--gold path] [--force]\n  eval show <run.json>"
+        "usage:\n  eval recall [--vectors] [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--grade] [--config judge.toml]\n  eval grade <run.json> [--max-usd X] [--config judge.toml] [--gold path] [--force]\n  eval show <run.json>\n  eval sweep <plan.toml> [--dry-run] [--summary] [--only extract,synth,pipeline] [--repeats N] [--max-usd X]"
     )
 }
 
@@ -124,6 +132,10 @@ async fn run() -> anyhow::Result<bool> {
             let (_, pass) = grade::run(&opts).await?;
             Ok(pass.complete())
         }
+        "sweep" => {
+            let opts = sweep::Options::parse(args)?;
+            sweep::run(&opts).await
+        }
         "show" => {
             let path = args.next().ok_or_else(usage)?;
             print!(
@@ -144,7 +156,7 @@ async fn run() -> anyhow::Result<bool> {
     }
 }
 
-async fn connect() -> anyhow::Result<sqlx::PgPool> {
+pub(crate) async fn connect() -> anyhow::Result<sqlx::PgPool> {
     let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL is not set")?;
     sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)

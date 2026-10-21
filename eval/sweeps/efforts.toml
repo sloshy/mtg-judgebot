@@ -1,0 +1,41 @@
+# The effort sweep: every current Anthropic model at every effort from low to
+# xhigh, on each stage separately, then the two shipped configurations end to
+# end. Run with `judge-eval sweep eval/sweeps/efforts.toml` (`--dry-run` lists
+# the runs and which are done; `--summary` re-prints the table). Output and
+# summary: eval/runs/sweep-efforts/.
+#
+# Estimated cost (22 questions, one repeat): about $24, most of it
+# Opus synthesis at high and xhigh. `repeats` multiplies it.
+
+label = "efforts"
+repeats = 2
+max_usd = 60.00    # the whole sweep, grading included
+run_max_usd = 8.00 # one answer run of the gold set
+
+# One grader for every run, so grades compare across cells.
+[grader]
+model = "claude-opus-5-5"
+max_usd = 1.50
+
+# The extraction stage alone: source, resolved cards, primary category and
+# the gold rule ids the synthesis prompt would show from this extraction.
+[extract]
+models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+efforts = ["low", "medium", "high", "xhigh"]
+
+# The synthesis stage on the gold extraction.
+[synth]
+models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+efforts = ["low", "medium", "high", "xhigh"]
+
+# The shipped configurations as they stand (judge.example.toml's defaults and
+# eval/published/v1-sonnet-5-5.judge.toml).
+[[pipeline]]
+name = "default"
+extract = { model = "claude-opus-5-5", effort = "low" }
+synth = { model = "claude-opus-5-5", effort = "medium" }
+
+[[pipeline]]
+name = "budget"
+extract = { model = "claude-sonnet-5-5", effort = "low" }
+synth = { model = "claude-sonnet-5-5", effort = "high" }

@@ -603,6 +603,7 @@ mod tests {
             max_usd: 1.0,
             models: Some(RunModels {
                 extract: "a/b".to_owned(),
+                extract_effort: None,
                 synth: "a/b".to_owned(),
                 synth_effort: None,
             }),

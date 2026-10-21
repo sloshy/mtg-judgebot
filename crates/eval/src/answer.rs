@@ -203,6 +203,10 @@ pub struct Row {
 pub struct RunModels {
     /// The extraction model (`gold` when `--gold-extraction` replaced it).
     pub extract: String,
+    /// The extraction effort as resolved; absent with the gold extraction
+    /// and in run files from before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract_effort: Option<String>,
     /// The synthesis model.
     pub synth: String,
     /// The synthesis effort as resolved (`medium`, `high`, …); absent in run
@@ -248,7 +252,14 @@ impl Run {
                     .synth_effort
                     .as_deref()
                     .map_or_else(String::new, |e| format!(" effort={e}"));
-                format!("extract={} synth={}{effort}", m.extract, m.synth)
+                let extract_effort = m
+                    .extract_effort
+                    .as_deref()
+                    .map_or_else(String::new, |e| format!("@{e}"));
+                format!(
+                    "extract={}{extract_effort} synth={}{effort}",
+                    m.extract, m.synth
+                )
             },
         )
     }
@@ -330,6 +341,13 @@ pub async fn run(
                 .map(judge_bot::config::Stage::label)
                 .unwrap_or_default()
         },
+        extract_effort: (!opts.gold_extraction)
+            .then(|| {
+                config
+                    .extract()
+                    .map(|s| format!("{:?}", s.effort).to_lowercase())
+            })
+            .flatten(),
         synth: config
             .synth()
             .map(judge_bot::config::Stage::label)
@@ -983,6 +1001,7 @@ mod tests {
         let with_models = Run {
             models: Some(RunModels {
                 extract: "ollama/qwen3:8b".into(),
+                extract_effort: None,
                 synth: "anthropic/claude-opus-5-5".into(),
                 synth_effort: Some("medium".into()),
             }),
