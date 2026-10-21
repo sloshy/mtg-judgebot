@@ -162,6 +162,11 @@ before the source record existed is still recognised as built-in.
 float and is rejected). `cargo run -p judge-eval -- recall` is the free retrieval gate.
 `rescore` re-scores stored runs after a gold edit without spending anything.
 
+**Model and effort comparisons.** A comparison is a plan file in `eval/sweeps/` run
+with `judge-eval sweep`, not a series of hand-run `answer` commands: the plan names the
+models, efforts and repeats, the sweep grades every run with one model and averages
+them in `summary.md`. `--dry-run` first.
+
 ## Design rules
 
 The full statement is `docs/DECISIONS.md` D1. These are the ones a change is most

@@ -194,6 +194,7 @@ cargo run -p judge-eval -- answer --label x --limit 22 --max-usd 6   # full live
 cargo run -p judge-eval -- grade eval/runs/x.json                    # a model grades each answer (~$0.40)
 cargo run -p judge-eval -- rescore eval/runs/x.json                  # re-score a stored run (free)
 cargo run -p judge-eval -- show eval/runs/x.json                     # bot vs. reference, side by side
+cargo run -p judge-eval -- sweep eval/sweeps/efforts.toml            # models × efforts per stage, averaged
 ```
 
 Each question can list alternate rule ids that state the same fact, so the score tracks

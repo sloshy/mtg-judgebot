@@ -501,6 +501,11 @@ cargo run -p judge-eval -- grade eval/runs/<run>.json   # the synthesis model gr
                                                         # resumable; --force regrades; answer --grade does both)
 cargo run -p judge-eval -- rescore eval/runs/<run>.json # re-score a stored run, zero API cost
 cargo run -p judge-eval -- show eval/runs/<run>.json    # bot vs gold answers side by side
+cargo run -r -p judge-eval -- sweep eval/sweeps/<plan>.toml [--dry-run]  # the way to compare models/efforts:
+                                                        # extraction alone, synthesis on the gold extraction,
+                                                        # named end-to-end configs; × repeats, one fixed grader,
+                                                        # resumable, max_usd over the sweep's ledger.jsonl;
+                                                        # eval/runs/sweep-<label>/summary.md
 ```
 
 ## Architecture
