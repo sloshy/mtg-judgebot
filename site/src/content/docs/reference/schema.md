@@ -46,7 +46,8 @@ rewritten, but only where the match is unambiguous.
 | `calls_rated` (view) | Per call, over Discord ratings only: the Bayesian-smoothed mean (prior 2.0, weight 3), the vote count, the latest judge rating, and the effective score the retriever uses. A web rating never counts. |
 
 Some calls never appear as examples to the model: private calls, retired calls, calls
-saved through an agent session, and calls scoring below 1.5 with at least five votes. A
+saved through an agent session, and calls scoring below 1.5 (with at least five votes,
+or on a judge's rating alone). A
 private call is never read as a public question's thread history either.
 
 ## Operations

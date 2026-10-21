@@ -857,12 +857,15 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
         .execute(&pool)
         .await?;
 
+    let layers = || extraction(&[Category::Layers], &[]);
+    let priors = |ctx: &judge_core::Context| ctx.prior.iter().map(|p| p.id).collect::<Vec<_>>();
+
     // rate() upserts on (call_id, user_id).
     store
-        .rate(call, &rater(1, false), &rating(Score::Correct))
+        .rate(call, &rater(1, false), &rating(Score::Incorrect))
         .await?;
     store
-        .rate(call, &rater(1, true), &rating(Score::Incorrect))
+        .rate(call, &rater(1, true), &rating(Score::Correct))
         .await?;
     let (n, score, judge): (i64, i16, bool) = sqlx::query_as(
         "SELECT count(*), min(score), bool_or(is_judge) FROM ratings WHERE call_id = $1",
@@ -870,54 +873,74 @@ async fn persist_then_prior_calls_and_rate_upserts(pool: PgPool) -> anyhow::Resu
     .bind(call.into_inner())
     .fetch_one(&pool)
     .await?;
-    assert_eq!((n, score, judge), (1, 1, true));
+    assert_eq!((n, score, judge), (1, 3, true));
     let ctx3 = retriever
-        .retrieve(
-            &q,
-            &[],
-            &extraction(&[Category::Layers], &[]),
-            &judge_core::Tally::new(),
-        )
+        .retrieve(&q, &[], &layers(), &judge_core::Tally::new())
         .await?;
     let prior = ctx3
         .prior
         .first()
         .ok_or_else(|| anyhow::anyhow!("no prior"))?;
     assert_eq!(prior.rating_count, 1);
+    // One crowd 3 would smooth to 2.25; the judge's score stands as given.
     assert!(
-        (prior.rating - 1.0).abs() < 1e-6,
+        (prior.rating - 3.0).abs() < 1e-6,
         "judge score overrides: {}",
         prior.rating
     );
 
-    // Five crowd votes of 1 push smoothed_mean below 1.5 -> excluded.
+    // A judge's Incorrect excludes the call on its own, whatever the count.
+    store
+        .rate(call, &rater(1, true), &rating(Score::Incorrect))
+        .await?;
+    let ctx4 = retriever
+        .retrieve(&q, &[], &layers(), &judge_core::Tally::new())
+        .await?;
+    assert!(priors(&ctx4).is_empty(), "a judge's lone Incorrect");
+    // ... and against a crowd that rated it Correct.
+    for u in [2, 3, 4, 5] {
+        store
+            .rate(call, &rater(u, false), &rating(Score::Correct))
+            .await?;
+    }
+    let ctx5 = retriever
+        .retrieve(&q, &[], &layers(), &judge_core::Tally::new())
+        .await?;
+    assert!(
+        priors(&ctx5).is_empty(),
+        "a judge's Incorrect over the crowd"
+    );
+    // A judge's Correct brings it back.
+    store
+        .rate(call, &rater(1, true), &rating(Score::Correct))
+        .await?;
+    let ctx6 = retriever
+        .retrieve(&q, &[], &layers(), &judge_core::Tally::new())
+        .await?;
+    assert_eq!(priors(&ctx6), vec![call]);
+
+    // With no judge rating, the crowd needs five votes to exclude: four 1s
+    // smooth to 1.43 and keep the call, a fifth (1.375) drops it.
+    sqlx::query("DELETE FROM ratings WHERE call_id = $1 AND is_judge")
+        .bind(call.into_inner())
+        .execute(&pool)
+        .await?;
     for u in [2, 3, 4, 5] {
         store
             .rate(call, &rater(u, false), &rating(Score::Incorrect))
             .await?;
     }
-    let ctx4 = retriever
-        .retrieve(
-            &q,
-            &[],
-            &extraction(&[Category::Layers], &[]),
-            &judge_core::Tally::new(),
-        )
+    let ctx7 = retriever
+        .retrieve(&q, &[], &layers(), &judge_core::Tally::new())
         .await?;
-    assert!(ctx4.prior.is_empty());
-    // ... unless a judge says otherwise: the judge score dominates the exclusion too.
+    assert_eq!(priors(&ctx7), vec![call], "four crowd votes do not exclude");
     store
-        .rate(call, &rater(1, true), &rating(Score::Correct))
+        .rate(call, &rater(6, false), &rating(Score::Incorrect))
         .await?;
-    let ctx5 = retriever
-        .retrieve(
-            &q,
-            &[],
-            &extraction(&[Category::Layers], &[]),
-            &judge_core::Tally::new(),
-        )
+    let ctx8 = retriever
+        .retrieve(&q, &[], &layers(), &judge_core::Tally::new())
         .await?;
-    assert_eq!(ctx5.prior.len(), 1);
+    assert!(priors(&ctx8).is_empty(), "five crowd votes of 1 exclude");
     Ok(())
 }
 

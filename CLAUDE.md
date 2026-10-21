@@ -728,7 +728,8 @@ Key cross-file facts that aren't obvious from any one file:
   targets. Scoring and `lookup_rules` treat leaf↔parent as covering each other.
 - **Ratings shape retrieval, nothing else.** The `calls_rated` view is a Bayesian mean
   (prior 2.0, weight 3) with a judge-role override (`effective_score`). Prior calls below
-  1.5 with ≥5 votes are excluded, as are retired calls. Prior calls are always rendered
+  1.5 are excluded (the crowd's score with ≥5 votes, a judge's at once), as are retired
+  calls. Prior calls are always rendered
   *after* CR material as examples. `calls_rated` counts Discord ratings only
   (`rater_kind`). A rating's reason (`judge_core::Rating`, `feedback_queue`) reaches the
   operator's queue (`judge_bot::feedback`, ops `queue_*`, `/admin/api/queue*`), never

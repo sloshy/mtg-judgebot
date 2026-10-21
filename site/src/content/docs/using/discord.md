@@ -89,7 +89,7 @@ rating's score changes one thing: which past answers are shown to the model as
 *examples* when a similar question comes in. Scores are smoothed (a Bayesian mean with a
 prior of "partially correct" and a weight of three votes), so one early vote cannot
 swing an answer's standing. Answers rated below 1.5 with at least five votes are
-excluded.
+excluded, and so is one a judge rated *Incorrect* (see below).
 
 - **Correct** is recorded at once.
 - **Partially correct** and **Incorrect** open a short form, which only you see:
@@ -119,7 +119,8 @@ reason given. When the instance's source is on GitHub, it also links that reposi
 *Wrong or unhelpful ruling* issue form, for a wrong answer the project should hear about.
 
 Members holding the server's judge role (`JUDGE_ROLE`, default `Judge`) rate with an
-override. The most recent judge rating replaces the crowd's score for that answer. The
+override. The most recent judge rating replaces the crowd's score for that answer, so a
+judge's Incorrect excludes it at once, however few votes it has. The
 rules always outrank examples. Prior answers are rendered after the CR material and labeled
 with their rating, and the model is told they are precedent, not authority.
 

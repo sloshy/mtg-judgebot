@@ -357,8 +357,8 @@ new question. The rating is a **Bayesian-smoothed mean** of the Discord ratings 
 anonymous web rating is never counted): `(2.0 × 3 + Σ scores) / (3 + n)`.
 That is "pretend there were three votes of 2.0 before anyone voted". One 3 does not make a
 call look perfect, and one 1 does not bury it. The latest rating from someone with the
-Judge role overrides the crowd. Calls scoring under 1.5 with five or more votes are
-excluded.
+Judge role overrides the crowd. Calls scoring under 1.5 are excluded: with five or more
+votes on the crowd's score, at once on a judge's.
 
 Prior calls are rendered *after* all CR material, and the prompt says they never outrank
 it. They are examples of how a question was answered, not authorities.

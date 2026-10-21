@@ -730,8 +730,8 @@ database in one transaction after probing the new embedder (`docs/PROVIDERS.md` 
 Rating aggregation: Bayesian-smoothed mean (prior 2.0, weight 3) over Discord ratings
 only (`calls_rated` reads `rater_kind = 'discord'`). A rating with
 `is_judge = true` (operator-assigned role) dominates crowd votes. It is used for
-labeling and ordering *among* prior calls, and for exclusion (< 1.5 with ≥ 5
-votes). It never ranks prior calls above CR chunks. A rating's reason is read by the
+labeling and ordering *among* prior calls, and for exclusion (< 1.5, with ≥ 5
+votes unless a judge rated it). It never ranks prior calls above CR chunks. A rating's reason is read by the
 operator's queue alone.
 
 ## 5. Domain model

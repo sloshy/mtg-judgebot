@@ -486,6 +486,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - The retry after an answer named a rule without citing it now gets that rule. A rule
   reached through a pointer ("see rule 111.10" in a glossary entry) was often not in the
   material, so the retry had nothing to quote and could not call `lookup_rules`.
+- A judge's *Incorrect* now drops an answer from the examples the model is shown, at
+  once. It used to need five ratings in all, like the crowd's, so a wrong answer only a
+  judge had rated stayed in.
 
 ### Upgrading
 

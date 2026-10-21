@@ -191,8 +191,9 @@ impl PgRetriever {
     /// Prior calls in any of `categories` that were answered about at least one
     /// of `cards` (any call when no card resolved), not retired (every citation
     /// still supported by the current data — see `retire.rs`), excluding calls
-    /// whose judge-aware `effective_score` is below 1.5 with five or more
-    /// ratings, and excluding calls persisted from agent sessions
+    /// whose judge-aware `effective_score` is below 1.5 (a judge's rating
+    /// alone, the crowd's with five or more), and excluding calls persisted
+    /// from agent sessions
     /// (`session_id` set): their citations were validated but their answer
     /// text is an outside agent's, and nothing can rate them (no Discord
     /// message to vote on), so they serve as history for their own thread
@@ -222,7 +223,7 @@ impl PgRetriever {
                       AND c.retired_at IS NULL
                       AND c.session_id IS NULL
                       AND NOT c.private
-                      AND NOT (r.effective_score < 1.5 AND r.n >= 5)
+                      AND NOT (r.effective_score < 1.5 AND (r.n >= 5 OR r.judge_score IS NOT NULL))
                       AND (cardinality($4::uuid[]) = 0 OR EXISTS (
                             SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)
                             WHERE x.v::uuid = ANY($4)))
@@ -249,7 +250,7 @@ impl PgRetriever {
                       AND c.retired_at IS NULL
                       AND c.session_id IS NULL
                       AND NOT c.private
-                      AND NOT (r.effective_score < 1.5 AND r.n >= 5)
+                      AND NOT (r.effective_score < 1.5 AND (r.n >= 5 OR r.judge_score IS NOT NULL))
                       AND (cardinality($3::uuid[]) = 0 OR EXISTS (
                             SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)
                             WHERE x.v::uuid = ANY($3)))

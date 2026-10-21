@@ -266,14 +266,19 @@ why the weekly backup exists (D26).
 *Revised 2026-10-20:* a rating that finds fault now carries a reason for the operator
 (D38). The reason never reaches retrieval, and neither does a web rating.
 
+*Revised 2026-10-21:* a judge's low rating excludes a call at once. The five-vote floor
+had applied to it too, so a call only a judge had rated Incorrect stayed an example.
+
 Ratings shape retrieval and nothing else. Answers can be rated 1–3 on Discord. A rating's
 score changes one thing: which prior calls are shown to the model as *examples* for a
 similar question.
 
 - Scores are a Bayesian mean (prior 2.0, weight 3), so one early vote cannot swing a
   call's standing.
-- Calls below 1.5 with at least five votes are excluded.
 - A member holding the operator's judge role overrides the crowd (`effective_score`).
+- Calls below 1.5 are excluded: on the crowd's score, once it has at least five votes; on
+  a judge's, at once. The five-vote floor guards against early crowd noise, and a judge's
+  rating is not noise.
 - Only Discord ratings count. `calls_rated` reads `rater_kind = 'discord'`, so a rating
   with no identity behind it (a web browser session's, D38) never moves a call's
   standing: it is noise.
