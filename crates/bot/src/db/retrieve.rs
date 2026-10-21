@@ -7,8 +7,11 @@
 //! the stored one, and embedding succeeds), then the secondary categories,
 //! also ranked. The synthesis prompt shows a prefix of it. Then Scryfall rulings and nightmare notes for
 //! the cards, glossary entries whose term occurs in any face's Oracle text,
-//! and up to five prior rated calls (same category, about one of the cards,
-//! current CR version, not down-voted) as examples.
+//! and up to five prior calls as examples ([`PgRetriever::prior_calls`]: in
+//! one of the question's categories, about one of its cards if any resolved,
+//! public, not retired, not from an agent session, not down-voted). Their CR
+//! version is not checked: a call whose citations stopped holding is retired
+//! by the next retirement pass instead (`retire.rs`).
 
 use std::{fmt, sync::Arc};
 
