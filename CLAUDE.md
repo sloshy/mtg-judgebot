@@ -394,11 +394,16 @@ scripts/deploy.sh [--build]          # blue-green deploy (D29): pull (or build),
                                      # the old one (it drains); an unhealthy new one is removed.
                                      # A major (`judgebot ingest upgrade` says): backup if `BACKUP_S3_BUCKET` is
                                      # set, new beside old in maintenance, old stopped once the
-                                     # new one listens, then wait for the migration (D32)
+                                     # new one listens, then wait for the migration (D32).
+                                     # Every deploy first refuses a set R2_* or a BACKUP_S3_*
+                                     # set twice in .env.deploy, runs `judgebot backup check`
+                                     # with the new image under the backup profile, and ends
+                                     # with `up -d --no-deps backup`
 docker compose pull && docker compose up -d --remove-orphans  # stop-then-start deploy: pulls the
                                      # CI-built GHCR image, never builds; --remove-orphans drops the
                                      # pre-judgebot `bot`/`api` containers (D25)
 docker compose run --rm backup run  # one backup now (judgebot backup; the service's command by hand)
+docker compose run --rm --no-deps backup check         # the settings and pg_dump, nothing sent
 docker compose run --rm --no-deps backup list          # --no-deps: works with db down
 docker compose run --rm --no-deps -T backup fetch <name> > <name>   # -T: bytes to stdout, no tty
 scripts/backup-db.sh [list|fetch NAME]   # the same backup from a host cron, without the profile
@@ -1023,7 +1028,10 @@ The weekly backup is the `backup` compose service (`judgebot backup serve`, prof
 16 (PGDG, `PG_MAJOR` in the `Dockerfile`), has no `env_file: .env`, and takes a backup
 whenever the newest `judgebot-<stamp>.dump.gz` in the bucket is `BACKUP_EVERY_DAYS` old.
 `scripts/backup-db.sh` is the cron alternative and writes the same objects, so `list`,
-`fetch` and the restore drill work across both. Restoring is far cheaper than
+`fetch` and the restore drill work across both. With unusable settings (a retired `R2_*`
+name among them) `serve` posts the problem names once to `JUDGE_ALERT_WEBHOOK` and stays
+up refusing rather than crash-looping, since a restart reuses the same environment.
+Restoring is far cheaper than
 re-ingesting, which re-pays the embedder per row, so take a backup before
 `ingest reembed --yes` (runbook in `docs/DEPLOYMENT.md` §7).
 
