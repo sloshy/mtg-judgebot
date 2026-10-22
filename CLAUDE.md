@@ -505,7 +505,8 @@ cargo run -r -p judge-eval -- sweep eval/sweeps/<plan>.toml [--dry-run]  # the w
                                                         # extraction alone, synthesis on the gold extraction,
                                                         # named end-to-end configs; × repeats, one fixed grader,
                                                         # resumable, max_usd over the sweep's ledger.jsonl;
-                                                        # eval/runs/sweep-<label>/summary.md
+                                                        # `concurrency` questions × `parallel_runs` runs at
+                                                        # once (4 × 3); eval/runs/sweep-<label>/summary.md
 ```
 
 ## Architecture

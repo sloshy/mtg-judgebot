@@ -37,6 +37,9 @@ pub struct Options {
     pub config: Option<PathBuf>,
     /// Grade the answers after the run (`--grade`), on the same spend cap.
     pub grade: bool,
+    /// Questions in flight at once (`--concurrency`, default 1), after the
+    /// first, which runs alone. Above 1, `secs` includes waiting on the others.
+    pub concurrency: usize,
 }
 
 impl Options {
@@ -56,6 +59,7 @@ impl Options {
         let mut gold_extraction = false;
         let mut grade = false;
         let mut config = None;
+        let mut concurrency = 1usize;
         while let Some(a) = args.next() {
             let mut val = || {
                 args.next()
@@ -77,6 +81,12 @@ impl Options {
                 "--label" => label = Some(val()?),
                 "--gold-extraction" => gold_extraction = true,
                 "--grade" => grade = true,
+                "--concurrency" => {
+                    concurrency = val()?.parse().context("--concurrency must be an integer")?;
+                    if concurrency == 0 {
+                        anyhow::bail!("--concurrency must be at least 1");
+                    }
+                }
                 other => anyhow::bail!("unknown flag {other}"),
             }
         }
@@ -107,6 +117,7 @@ impl Options {
             gold_extraction,
             config,
             grade,
+            concurrency,
         })
     }
 }
@@ -237,6 +248,10 @@ pub struct Run {
     pub total_usd: f64,
     /// Sum of `calls`.
     pub total_calls: u64,
+    /// A question was refused at the spend cap: the run is cut short, even
+    /// when questions in flight beside the refused one filled every row.
+    #[serde(default)]
+    pub capped: bool,
 }
 
 impl Run {
@@ -367,36 +382,48 @@ pub async fn run(
     let selected = select(&gold, opts);
 
     let mut rows = Vec::with_capacity(selected.len());
-    for q in selected {
-        // This question's own tally: exact, whatever else shares the meter.
-        let tally = judge_core::Tally::new();
-        let question = Question {
-            thread_id: q.id.clone(),
-            text: q.question.clone(),
-        };
-        let started = Instant::now();
-        let traced = judge_traced(&deps, &question, &[], &tally).await;
-        let elapsed_ms = started.elapsed().as_millis();
-        let model_calls = tally.count(judge_core::Stage::Extraction)
-            + tally.count(judge_core::Stage::Synthesis)
-            + tally.count(judge_core::Stage::ToolRound);
-        let row = score_row(
-            q,
-            &traced,
-            elapsed_ms,
-            u64::try_from(model_calls).unwrap_or(u64::MAX),
-            tally.cost().usd(),
-        );
-        tracing::info!(id = %row.id, ok = row.correct_shape, usd = format_args!("{:.4}", row.usd), "scored");
-        rows.push(row);
-        if let Err(JudgeError::Upstream(e)) = &traced.result
-            && e.downcast_ref::<LlmError>()
-                .is_some_and(|c| matches!(c, LlmError::SpendCapExceeded { .. }))
-        {
-            tracing::warn!("spend cap reached; stopping the run");
-            break;
-        }
-    }
+    let mut capped_run = false;
+    let deps = &deps;
+    crate::concurrent::in_order(
+        selected,
+        opts.concurrency,
+        |q| async move {
+            // This question's own tally: exact, whatever else shares the meter.
+            let tally = judge_core::Tally::new();
+            let question = Question {
+                thread_id: q.id.clone(),
+                text: q.question.clone(),
+            };
+            let started = Instant::now();
+            let traced = judge_traced(deps, &question, &[], &tally).await;
+            let elapsed_ms = started.elapsed().as_millis();
+            let model_calls = tally.count(judge_core::Stage::Extraction)
+                + tally.count(judge_core::Stage::Synthesis)
+                + tally.count(judge_core::Stage::ToolRound);
+            let row = score_row(
+                q,
+                &traced,
+                elapsed_ms,
+                u64::try_from(model_calls).unwrap_or(u64::MAX),
+                tally.cost().usd(),
+            );
+            let capped = matches!(&traced.result, Err(JudgeError::Upstream(e))
+                if e.downcast_ref::<LlmError>()
+                    .is_some_and(|c| matches!(c, LlmError::SpendCapExceeded { .. })));
+            Ok((row, capped))
+        },
+        |(row, capped)| {
+            tracing::info!(id = %row.id, ok = row.correct_shape, usd = format_args!("{:.4}", row.usd), "scored");
+            rows.push(row);
+            if capped {
+                capped_run = true;
+                tracing::warn!("spend cap reached; stopping the run");
+                return Ok(crate::concurrent::Flow::Stop);
+            }
+            Ok(crate::concurrent::Flow::Continue)
+        },
+    )
+    .await?;
     let mut run = Run {
         label: opts.label.clone(),
         gold: opts.gold.display().to_string(),
@@ -405,6 +432,7 @@ pub async fn run(
         traced: true,
         total_usd: rows.iter().map(|r| r.usd).sum(),
         total_calls: rows.iter().map(|r| r.calls).sum(),
+        capped: capped_run,
         rows,
     };
     if let Some(dir) = opts.out.parent() {
@@ -412,11 +440,16 @@ pub async fn run(
     }
     crate::grade::write_run(&opts.out, &run)?;
     let pass = if opts.grade {
-        let pass =
-            crate::grade::grade_rows(&models.synth(), &meter, &mut run, &gold, false, |run| {
-                crate::grade::write_run(&opts.out, run)
-            })
-            .await?;
+        let pass = crate::grade::grade_rows(
+            &models.synth(),
+            &meter,
+            &mut run,
+            &gold,
+            false,
+            opts.concurrency,
+            |run| crate::grade::write_run(&opts.out, run),
+        )
+        .await?;
         Some(pass)
     } else {
         None
@@ -986,6 +1019,7 @@ mod tests {
             rows: vec![r],
             total_usd: 0.01,
             total_calls: 1,
+            capped: false,
         };
         assert!(table(&run).contains("TOTAL $0.0100"));
         assert!(
@@ -1072,6 +1106,7 @@ mod tests {
             rows: vec![r],
             total_usd: 0.01,
             total_calls: 1,
+            capped: false,
         };
         assert_eq!(run.any_expected_cited(), (1, 1));
         let t = table(&run);
@@ -1163,6 +1198,7 @@ mod tests {
             rows: vec![r],
             total_usd: 0.01,
             total_calls: 1,
+            capped: false,
         };
         let t = table(&run);
         assert!(t.contains("verdict/high    tool"), "{t}");

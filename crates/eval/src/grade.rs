@@ -179,6 +179,8 @@ pub struct Options {
     pub config: Option<PathBuf>,
     /// Grade rows that already have a grade again.
     pub force: bool,
+    /// Requests in flight at once (`--concurrency`, default 1).
+    pub concurrency: usize,
 }
 
 impl Options {
@@ -189,6 +191,7 @@ impl Options {
     pub fn parse(mut args: impl Iterator<Item = String>) -> anyhow::Result<Self> {
         let (mut run, mut gold, mut config, mut max_usd, mut force) =
             (None, None, None, 1.00f64, false);
+        let mut concurrency = 1usize;
         while let Some(a) = args.next() {
             let mut val = || {
                 args.next()
@@ -199,6 +202,12 @@ impl Options {
                 "--config" => config = Some(PathBuf::from(val()?)),
                 "--max-usd" => max_usd = val()?.parse().context("--max-usd must be a number")?,
                 "--force" => force = true,
+                "--concurrency" => {
+                    concurrency = val()?.parse().context("--concurrency must be an integer")?;
+                    if concurrency == 0 {
+                        anyhow::bail!("--concurrency must be at least 1");
+                    }
+                }
                 flag if flag.starts_with("--") => anyhow::bail!("unknown flag {flag}"),
                 path if run.is_none() => run = Some(PathBuf::from(path)),
                 extra => anyhow::bail!("unexpected argument {extra}"),
@@ -213,6 +222,7 @@ impl Options {
             max_usd,
             config,
             force,
+            concurrency,
         })
     }
 }
@@ -264,6 +274,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<(Run, Pass)> {
         &mut run,
         &gold,
         opts.force,
+        opts.concurrency,
         |run| write_run(&out, run),
     )
     .await?;
@@ -314,6 +325,7 @@ pub async fn grade_rows(
     run: &mut Run,
     gold: &Gold,
     force: bool,
+    concurrency: usize,
     mut saved: impl FnMut(&Run) -> anyhow::Result<()>,
 ) -> anyhow::Result<Pass> {
     let mut pass = Pass::default();
@@ -325,8 +337,10 @@ pub async fn grade_rows(
         saved(run)?;
     }
     let quotes_cut = !run.traced;
-    for i in 0..run.rows.len() {
-        let Some(row) = run.rows.get(i) else { break };
+    // Every request is built before any is sent, so the requests in flight
+    // borrow nothing of `run`, which each grade is written into as it lands.
+    let mut todo = Vec::new();
+    for (i, row) in run.rows.iter().enumerate() {
         let Some(q) = gold.questions.iter().find(|q| q.id == row.id) else {
             tracing::warn!(id = %row.id, "row not in gold file; not graded");
             continue;
@@ -339,44 +353,57 @@ pub async fn grade_rows(
         {
             continue;
         }
-        let Some(req) = build_request(model.capabilities(), row, &q.expected_answer, quotes_cut)
-        else {
-            continue;
-        };
-        let tally = judge_core::Tally::new();
-        let result = model
-            .complete(&req, &tally.bill(judge_core::Stage::Synthesis))
-            .await;
-        let usd = tally.cost().usd();
-        let graded = match result {
-            Ok(resp) => parse(&resp, model.provider(), usd, &q.expected_answer),
-            Err(LlmError::SpendCapExceeded { .. }) => {
-                tracing::warn!("spend cap reached; stopping the grading");
-                pass.capped = true;
-                break;
-            }
-            Err(e) => {
-                tracing::warn!(id = %q.id, "grading request failed, stopping: {e}");
-                pass.failed += 1;
-                pass.stopped = Some(e.to_string());
-                break;
-            }
-        };
-        match graded {
-            Ok(grade) => {
-                tracing::info!(id = %q.id, grade = %grade.cell(), usd = format_args!("{usd:.4}"), "graded");
-                if let Some(row) = run.rows.get_mut(i) {
-                    row.grade = Some(grade);
-                }
-                pass.graded += 1;
-                saved(run)?;
-            }
-            Err(e) => {
-                tracing::warn!(id = %q.id, "grading failed: {e:#}");
-                pass.failed += 1;
-            }
+        if let Some(req) = build_request(model.capabilities(), row, &q.expected_answer, quotes_cut)
+        {
+            todo.push((i, q.id.clone(), q.expected_answer.clone(), req));
         }
     }
+    crate::concurrent::in_order(
+        todo,
+        concurrency,
+        |(i, id, reference, req)| async move {
+            let tally = judge_core::Tally::new();
+            let result = model
+                .complete(&req, &tally.bill(judge_core::Stage::Synthesis))
+                .await;
+            let usd = tally.cost().usd();
+            let graded = result.map(|resp| parse(&resp, model.provider(), usd, &reference));
+            Ok((i, id, usd, graded))
+        },
+        |(i, id, usd, graded)| {
+            let graded = match graded {
+                Ok(graded) => graded,
+                Err(LlmError::SpendCapExceeded { .. }) => {
+                    tracing::warn!("spend cap reached; stopping the grading");
+                    pass.capped = true;
+                    return Ok(crate::concurrent::Flow::Stop);
+                }
+                Err(e) => {
+                    // A failed request would fail the same way on every row.
+                    tracing::warn!(id = %id, "grading request failed, stopping: {e}");
+                    pass.failed += 1;
+                    pass.stopped.get_or_insert_with(|| e.to_string());
+                    return Ok(crate::concurrent::Flow::Stop);
+                }
+            };
+            match graded {
+                Ok(grade) => {
+                    tracing::info!(id = %id, grade = %grade.cell(), usd = format_args!("{usd:.4}"), "graded");
+                    if let Some(row) = run.rows.get_mut(i) {
+                        row.grade = Some(grade);
+                    }
+                    pass.graded += 1;
+                    saved(run)?;
+                }
+                Err(e) => {
+                    tracing::warn!(id = %id, "grading failed: {e:#}");
+                    pass.failed += 1;
+                }
+            }
+            Ok(crate::concurrent::Flow::Continue)
+        },
+    )
+    .await?;
     pass.spent_usd = meter.spent_usd() - start_usd;
     Ok(pass)
 }
@@ -611,6 +638,7 @@ mod tests {
             rows,
             total_usd: 0.0,
             total_calls: 0,
+            capped: false,
         }
     }
 
@@ -779,7 +807,7 @@ mod tests {
             row("missing", verdict()),
         ]);
         let mut saves = 0;
-        let pass = grade_rows(&model, &meter, &mut run, &gold()?, false, |_| {
+        let pass = grade_rows(&model, &meter, &mut run, &gold()?, false, 1, |_| {
             saves += 1;
             Ok(())
         })
@@ -803,11 +831,11 @@ mod tests {
         if let Some(g) = run.rows.get_mut(1).and_then(|r| r.grade.as_mut()) {
             g.reference = "an older reference".to_owned();
         }
-        let pass = grade_rows(&model, &meter, &mut run, &gold()?, false, |_| Ok(())).await?;
+        let pass = grade_rows(&model, &meter, &mut run, &gold()?, false, 1, |_| Ok(())).await?;
         assert_eq!(pass.graded, 1, "a stale grade is made again");
 
         let mut cleared = 0;
-        let pass = grade_rows(&model, &meter, &mut run, &gold()?, true, |r| {
+        let pass = grade_rows(&model, &meter, &mut run, &gold()?, true, 1, |r| {
             cleared += usize::from(r.rows.iter().all(|r| r.grade.is_none()));
             Ok(())
         })
@@ -829,7 +857,7 @@ mod tests {
         };
         let model: Arc<dyn ChatModel> = Arc::new(Metered::new(fake, meter.clone())?);
         let mut run = run_of(vec![row("a", verdict()), row("b", verdict())]);
-        let pass = grade_rows(&model, &meter, &mut run, &gold()?, false, |_| Ok(())).await?;
+        let pass = grade_rows(&model, &meter, &mut run, &gold()?, false, 1, |_| Ok(())).await?;
         assert_eq!((pass.failed, pass.complete()), (1, false));
         assert!(pass.stopped.is_some());
         assert_eq!(seen.lock().map(|s| s.len()).unwrap_or_default(), 1);

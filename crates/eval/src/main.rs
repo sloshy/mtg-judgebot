@@ -26,7 +26,7 @@
 //! `eval show <run.json>`: expected vs. bot answers side by side, graded
 //! against the current gold file as `rescore` grades it, with any grade.
 //!
-//! `eval sweep <plan.toml> [--dry-run] [--summary] [--only k,k] [--repeats N] [--max-usd X]`:
+//! `eval sweep <plan.toml> [--dry-run] [--summary] [--only k,k] [--repeats N] [--max-usd X] [--concurrency N] [--parallel N]`:
 //! a models × efforts grid for the extraction stage alone, the synthesis
 //! stage on the gold extraction, and named end-to-end configurations, each
 //! run `repeats` times under one spend cap, graded by one fixed model and
@@ -35,6 +35,7 @@
 
 mod answer;
 mod categories;
+mod concurrent;
 mod deps;
 mod gold;
 mod grade;
@@ -84,7 +85,7 @@ async fn main() -> ExitCode {
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage:\n  eval recall [--vectors] [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--grade] [--config judge.toml]\n  eval grade <run.json> [--max-usd X] [--config judge.toml] [--gold path] [--force]\n  eval show <run.json>\n  eval sweep <plan.toml> [--dry-run] [--summary] [--only extract,synth,pipeline] [--repeats N] [--max-usd X]"
+        "usage:\n  eval recall [--vectors] [gold.yaml]\n  eval rescore <run.json> | answer --label <name> [--limit N] [--ids a,b] [--max-usd X] [--out path] [--gold path] [--gold-extraction] [--grade] [--config judge.toml] [--concurrency N]\n  eval grade <run.json> [--max-usd X] [--config judge.toml] [--gold path] [--force] [--concurrency N]\n  eval show <run.json>\n  eval sweep <plan.toml> [--dry-run] [--summary] [--only extract,synth,pipeline] [--repeats N] [--max-usd X] [--concurrency N] [--parallel N]"
     )
 }
 
@@ -105,7 +106,7 @@ async fn run() -> anyhow::Result<bool> {
                 .first()
                 .map_or_else(gold::default_path, std::path::PathBuf::from);
             let gold = gold::load(&path)?;
-            let pool = connect().await?;
+            let pool = connect(1).await?;
             let vectors = if with_vectors {
                 let config = judge_bot::config::Config::load()?;
                 Some(
@@ -122,7 +123,7 @@ async fn run() -> anyhow::Result<bool> {
         }
         "answer" => {
             let opts = answer::Options::parse(args)?;
-            let pool = connect().await?;
+            let pool = connect(opts.concurrency).await?;
             let (run, pass) = answer::run(pool, &opts).await?;
             Ok(run.rows.iter().all(|r| r.correct_shape)
                 && pass.as_ref().is_none_or(grade::Pass::complete))
@@ -156,10 +157,15 @@ async fn run() -> anyhow::Result<bool> {
     }
 }
 
-pub(crate) async fn connect() -> anyhow::Result<sqlx::PgPool> {
+/// A pool with room for `concurrency` questions in flight at once.
+pub(crate) async fn connect(concurrency: usize) -> anyhow::Result<sqlx::PgPool> {
     let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL is not set")?;
+    // Retrieval runs several queries at once per question; the long acquire
+    // timeout lets a busy pool queue them rather than fail a question.
+    let size = u32::try_from(concurrency.saturating_mul(2).saturating_add(3)).unwrap_or(u32::MAX);
     sqlx::postgres::PgPoolOptions::new()
-        .max_connections(4)
+        .max_connections(size.max(4))
+        .acquire_timeout(std::time::Duration::from_secs(120))
         .connect(&database_url)
         .await
         .context("connecting to DATABASE_URL")

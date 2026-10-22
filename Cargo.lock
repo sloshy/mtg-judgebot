@@ -2079,6 +2079,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "dotenvy",
+ "futures",
  "judge-bot",
  "judge-core",
  "judge-llm",

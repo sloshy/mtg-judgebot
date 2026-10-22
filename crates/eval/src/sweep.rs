@@ -32,6 +32,7 @@ use std::{
 };
 
 use anyhow::Context as _;
+use futures::StreamExt as _;
 use judge_bot::{
     config::Config,
     synth::{Budget, shown_rules},
@@ -163,6 +164,14 @@ const fn default_repeats() -> u32 {
     1
 }
 
+const fn default_concurrency() -> usize {
+    4
+}
+
+const fn default_parallel_runs() -> usize {
+    3
+}
+
 fn default_provider() -> String {
     "anthropic".to_owned()
 }
@@ -177,6 +186,12 @@ struct RawPlan {
     max_usd: f64,
     #[serde(default = "default_run_usd")]
     run_max_usd: f64,
+    /// Questions in flight at once within one run.
+    #[serde(default = "default_concurrency")]
+    concurrency: usize,
+    /// Runs in flight at once.
+    #[serde(default = "default_parallel_runs")]
+    parallel_runs: usize,
     #[serde(default)]
     base: Option<PathBuf>,
     #[serde(default = "default_provider")]
@@ -253,6 +268,8 @@ pub struct Plan {
     repeats: u32,
     max_usd: f64,
     run_max_usd: f64,
+    concurrency: usize,
+    parallel_runs: usize,
     base: toml::Table,
     gold: PathBuf,
     ids: Vec<String>,
@@ -306,6 +323,9 @@ impl Plan {
         }
         if raw.repeats == 0 {
             anyhow::bail!("repeats must be at least 1");
+        }
+        if raw.concurrency == 0 || raw.parallel_runs == 0 {
+            anyhow::bail!("concurrency and parallel_runs must be at least 1");
         }
         for (key, v) in [("max_usd", raw.max_usd), ("run_max_usd", raw.run_max_usd)] {
             if !(v.is_finite() && v > 0.0) {
@@ -412,6 +432,8 @@ impl Plan {
             repeats: raw.repeats,
             max_usd: raw.max_usd,
             run_max_usd: raw.run_max_usd,
+            concurrency: raw.concurrency,
+            parallel_runs: raw.parallel_runs,
             base,
             gold: raw.gold.unwrap_or_else(crate::gold::default_path),
             ids: raw.ids,
@@ -460,6 +482,8 @@ pub struct Options {
     only: Option<Vec<Kind>>,
     repeats: Option<u32>,
     max_usd: Option<f64>,
+    concurrency: Option<usize>,
+    parallel: Option<usize>,
 }
 
 impl Options {
@@ -471,6 +495,7 @@ impl Options {
         let mut plan = None;
         let (mut dry_run, mut summary_only, mut only, mut repeats, mut max_usd) =
             (false, false, None, None, None);
+        let (mut concurrency, mut parallel) = (None, None);
         while let Some(a) = args.next() {
             let mut val = || {
                 args.next()
@@ -494,6 +519,19 @@ impl Options {
                     }
                     repeats = Some(n);
                 }
+                "--concurrency" | "--parallel" => {
+                    let n: usize = val()?
+                        .parse()
+                        .with_context(|| format!("{a} must be an integer"))?;
+                    if n == 0 {
+                        anyhow::bail!("{a} must be at least 1");
+                    }
+                    if a == "--concurrency" {
+                        concurrency = Some(n);
+                    } else {
+                        parallel = Some(n);
+                    }
+                }
                 "--max-usd" => {
                     let v: f64 = val()?.parse().context("--max-usd must be a number")?;
                     if !(v.is_finite() && v > 0.0) {
@@ -513,6 +551,8 @@ impl Options {
             only,
             repeats,
             max_usd,
+            concurrency,
+            parallel,
         })
     }
 }
@@ -563,15 +603,19 @@ pub struct ExtractRun {
     pub rows: Vec<ExtractRow>,
     /// Sum of `usd`.
     pub total_usd: f64,
+    /// A question was refused at the spend cap (see [`answer::Run::capped`]).
+    #[serde(default)]
+    pub capped: bool,
 }
 
-/// Run the extraction stage alone over `questions`.
+/// Run the extraction stage alone over `questions`, `concurrency` at a time.
 async fn run_extract(
     pool: PgPool,
     questions: &[&GoldQuestion],
     config_path: &Path,
     cap: f64,
     label: &str,
+    concurrency: usize,
 ) -> anyhow::Result<ExtractRun> {
     let config = Config::load_from(Some(config_path))?;
     tracing::info!("{}", config.summary());
@@ -587,114 +631,158 @@ async fn run_extract(
         .ok_or_else(|| anyhow::anyhow!("no extraction stage configured"))?;
     let (model, effort) = (stage.label(), format!("{:?}", stage.effort).to_lowercase());
     let deps = judge_bot::build_deps_with(pool, &models, vectors, &config.deps_config());
-    let budget = Budget::default();
     let mut rows = Vec::with_capacity(questions.len());
-    for q in questions {
-        let tally = judge_core::Tally::new();
-        let question = Question {
-            thread_id: q.id.clone(),
-            text: q.question.clone(),
-        };
-        let started = Instant::now();
-        let all_ids = if q.is_answerable() {
-            q.all_ids()
-        } else {
-            Vec::new()
-        };
-        let extracted = deps.extractor.extract(&question, &[], &tally).await;
-        let row = match extracted {
-            Err(e) => {
-                let capped = matches!(&e, judge_core::JudgeError::Upstream(u)
-                    if u.downcast_ref::<LlmError>().is_some_and(|c| matches!(c, LlmError::SpendCapExceeded { .. })));
-                let row = ExtractRow {
-                    id: q.id.clone(),
-                    spans: Vec::new(),
-                    source: String::new(),
-                    source_ok: false,
-                    cards: Err("not extracted".into()),
-                    cards_ok: false,
-                    primary: String::new(),
-                    primary_ok: None,
-                    shown: (0, all_ids.len()),
-                    error: Some(format!("{e:#}")),
-                    elapsed_ms: started.elapsed().as_millis(),
-                    usd: tally.cost().usd(),
-                };
-                if capped {
-                    tracing::warn!("spend cap reached; stopping the run");
-                    rows.push(row);
-                    break;
-                }
-                row
+    let mut capped_run = false;
+    crate::concurrent::in_order(
+        questions.iter().copied(),
+        concurrency,
+        |q| extract_one(&deps, q),
+        |(row, capped)| {
+            tracing::info!(id = %row.id, source = row.source_ok, cards = row.cards_ok, usd = format_args!("{:.4}", row.usd), "extracted");
+            rows.push(row);
+            if capped {
+                capped_run = true;
+                tracing::warn!("spend cap reached; stopping the run");
+                return Ok(crate::concurrent::Flow::Stop);
             }
-            Ok(e) => {
-                let mut resolutions = Vec::with_capacity(e.card_spans.len());
-                for span in &e.card_spans {
-                    resolutions.push(deps.resolver.resolve(span).await?);
-                }
-                let cards = collect_resolved(resolutions).map_err(|err| format!("{err:#}"));
-                // Gold names resolve to ids (a double-faced card's gold name is
-                // its front face), and extra cards the question names are not
-                // a miss: every gold card resolved, and no span left the
-                // pipeline asking "did you mean?".
-                let mut want = HashSet::new();
-                for name in &q.cards {
-                    if let judge_core::Resolution::Resolved { card, .. } =
-                        deps.resolver.resolve(name).await?
-                    {
-                        want.insert(card.id);
-                    }
-                }
-                let cards_ok = cards.as_ref().is_ok_and(|cards| {
-                    let got: HashSet<_> = cards.iter().map(|c| c.id).collect();
-                    want.len() == q.cards.len() && want.is_subset(&got)
-                });
-                let mapped = crate::categories::map_labels(&q.id, &q.categories);
-                let primary_ok =
-                    (!mapped.is_empty()).then(|| mapped.contains(&e.primary_category()));
-                let hit = match (&cards, e.source.answerable(), all_ids.is_empty()) {
-                    (Ok(cards), Some(_), false) => {
-                        let ctx = deps
-                            .retriever
-                            .retrieve(&question, cards, &e, &tally)
-                            .await?;
-                        let shown = shown_rules(&ctx, &[], &budget);
-                        all_ids
-                            .iter()
-                            .filter(|id| crate::recall::present(shown.iter().copied(), id))
-                            .count()
-                    }
-                    _ => 0,
-                };
-                ExtractRow {
-                    id: q.id.clone(),
-                    spans: e.card_spans.clone(),
-                    source: serde_json::to_value(e.source)
-                        .ok()
-                        .and_then(|v| v.as_str().map(str::to_owned))
-                        .unwrap_or_default(),
-                    source_ok: crate::score::source_matches(&q.source, e.source),
-                    cards: cards.map(|c| c.into_iter().map(|c| c.name).collect()),
-                    cards_ok,
-                    primary: e.primary_category().to_string(),
-                    primary_ok,
-                    shown: (hit, all_ids.len()),
-                    error: None,
-                    elapsed_ms: started.elapsed().as_millis(),
-                    usd: tally.cost().usd(),
-                }
-            }
-        };
-        tracing::info!(id = %row.id, source = row.source_ok, cards = row.cards_ok, usd = format_args!("{:.4}", row.usd), "extracted");
-        rows.push(row);
-    }
+            Ok(crate::concurrent::Flow::Continue)
+        },
+    )
+    .await?;
     Ok(ExtractRun {
         label: label.to_owned(),
         model,
         effort,
         total_usd: rows.iter().map(|r| r.usd).sum(),
+        capped: capped_run,
         rows,
     })
+}
+
+/// One question through extraction, resolution and retrieval; `true` when
+/// the extraction was refused at the spend cap. A database failure is the
+/// row's error, so the run, and what it spent, carries on.
+async fn extract_one(
+    deps: &judge_core::Deps,
+    q: &GoldQuestion,
+) -> anyhow::Result<(ExtractRow, bool)> {
+    let tally = judge_core::Tally::new();
+    let started = Instant::now();
+    match extract_scored(deps, q, &tally, started).await {
+        Ok(done) => Ok(done),
+        Err(e) => Ok((
+            ExtractRow {
+                id: q.id.clone(),
+                spans: Vec::new(),
+                source: String::new(),
+                source_ok: false,
+                cards: Err("not scored".into()),
+                cards_ok: false,
+                primary: String::new(),
+                primary_ok: None,
+                shown: (
+                    0,
+                    if q.is_answerable() {
+                        q.all_ids().len()
+                    } else {
+                        0
+                    },
+                ),
+                error: Some(format!("{e:#}")),
+                elapsed_ms: started.elapsed().as_millis(),
+                usd: tally.cost().usd(),
+            },
+            false,
+        )),
+    }
+}
+
+async fn extract_scored(
+    deps: &judge_core::Deps,
+    q: &GoldQuestion,
+    tally: &judge_core::Tally,
+    started: Instant,
+) -> anyhow::Result<(ExtractRow, bool)> {
+    let question = Question {
+        thread_id: q.id.clone(),
+        text: q.question.clone(),
+    };
+    let all_ids = if q.is_answerable() {
+        q.all_ids()
+    } else {
+        Vec::new()
+    };
+    let e = match deps.extractor.extract(&question, &[], tally).await {
+        Ok(e) => e,
+        Err(e) => {
+            let capped = matches!(&e, judge_core::JudgeError::Upstream(u)
+                if u.downcast_ref::<LlmError>().is_some_and(|c| matches!(c, LlmError::SpendCapExceeded { .. })));
+            let row = ExtractRow {
+                id: q.id.clone(),
+                spans: Vec::new(),
+                source: String::new(),
+                source_ok: false,
+                cards: Err("not extracted".into()),
+                cards_ok: false,
+                primary: String::new(),
+                primary_ok: None,
+                shown: (0, all_ids.len()),
+                error: Some(format!("{e:#}")),
+                elapsed_ms: started.elapsed().as_millis(),
+                usd: tally.cost().usd(),
+            };
+            return Ok((row, capped));
+        }
+    };
+    let mut resolutions = Vec::with_capacity(e.card_spans.len());
+    for span in &e.card_spans {
+        resolutions.push(deps.resolver.resolve(span).await?);
+    }
+    let cards = collect_resolved(resolutions).map_err(|err| format!("{err:#}"));
+    // Gold names resolve to ids (a double-faced card's gold name is its front
+    // face), and extra cards the question names are not a miss: every gold
+    // card resolved, and no span left the pipeline asking "did you mean?".
+    let mut want = HashSet::new();
+    for name in &q.cards {
+        if let judge_core::Resolution::Resolved { card, .. } = deps.resolver.resolve(name).await? {
+            want.insert(card.id);
+        }
+    }
+    let cards_ok = cards.as_ref().is_ok_and(|cards| {
+        let got: HashSet<_> = cards.iter().map(|c| c.id).collect();
+        want.len() == q.cards.len() && want.is_subset(&got)
+    });
+    let mapped = crate::categories::map_labels(&q.id, &q.categories);
+    let primary_ok = (!mapped.is_empty()).then(|| mapped.contains(&e.primary_category()));
+    let hit = match (&cards, e.source.answerable(), all_ids.is_empty()) {
+        (Ok(cards), Some(_), false) => {
+            let ctx = deps.retriever.retrieve(&question, cards, &e, tally).await?;
+            let shown = shown_rules(&ctx, &[], &Budget::default());
+            all_ids
+                .iter()
+                .filter(|id| crate::recall::present(shown.iter().copied(), id))
+                .count()
+        }
+        _ => 0,
+    };
+    let row = ExtractRow {
+        id: q.id.clone(),
+        spans: e.card_spans.clone(),
+        source: serde_json::to_value(e.source)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        source_ok: crate::score::source_matches(&q.source, e.source),
+        cards: cards.map(|c| c.into_iter().map(|c| c.name).collect()),
+        cards_ok,
+        primary: e.primary_category().to_string(),
+        primary_ok,
+        shown: (hit, all_ids.len()),
+        error: None,
+        elapsed_ms: started.elapsed().as_millis(),
+        usd: tally.cost().usd(),
+    };
+    Ok((row, false))
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
@@ -753,11 +841,295 @@ fn complete(ids: &[String], have: impl Iterator<Item = String>) -> bool {
     have.collect::<Vec<_>>() == ids
 }
 
+/// One run of one cell.
+struct Job {
+    cell: Cell,
+    label: String,
+    out: PathBuf,
+    config: PathBuf,
+}
+
+impl Job {
+    /// The model a job mostly waits on, for spreading jobs across models.
+    fn model(&self) -> &str {
+        match (self.cell.kind, &self.cell.extract) {
+            (Kind::Extract, Some(e)) => &e.model,
+            _ => &self.cell.synth.model,
+        }
+    }
+}
+
+/// `jobs` reordered so neighbours wait on different models: each model's own
+/// rate limit then carries part of the load when several run at once.
+fn interleave(jobs: Vec<Job>) -> Vec<Job> {
+    let mut queues: Vec<(String, std::collections::VecDeque<Job>)> = Vec::new();
+    for job in jobs {
+        let model = job.model().to_owned();
+        match queues.iter_mut().find(|(m, _)| *m == model) {
+            Some((_, q)) => q.push_back(job),
+            None => queues.push((model, std::collections::VecDeque::from([job]))),
+        }
+    }
+    let mut out = Vec::new();
+    while queues.iter().any(|(_, q)| !q.is_empty()) {
+        for (_, q) in &mut queues {
+            if let Some(job) = q.pop_front() {
+                out.push(job);
+            }
+        }
+    }
+    out
+}
+
+/// The sweep's money while runs are in flight: what the ledger holds, and
+/// the caps handed to runs that have not settled.
+struct Books {
+    max_usd: f64,
+    spent: f64,
+    reserved: f64,
+    /// Holds not yet settled. Waiting is decided on this count, not on
+    /// `reserved`, which float rounding can leave a hair above zero.
+    in_flight: usize,
+}
+
+/// What [`Books::reserve`] answers.
+#[derive(Debug, PartialEq)]
+enum Grant {
+    /// This much is held for the run.
+    Cap(f64),
+    /// Not enough is free while other runs hold theirs: wait for one to settle.
+    Wait,
+    /// The sweep's cap is reached.
+    Exhausted,
+}
+
+impl Books {
+    /// Hold `want` for one run. Runs in flight hold their whole cap, so
+    /// together they never pass `max_usd`. With less than `want` free, a run
+    /// waits while others hold caps (they usually spend less and give the
+    /// rest back), and takes what is left only when none does.
+    fn reserve(&mut self, want: f64) -> Grant {
+        let left = self.max_usd - self.spent - self.reserved;
+        let cap = if left >= want {
+            want
+        } else if self.in_flight > 0 {
+            return Grant::Wait;
+        } else if left >= MIN_RUN_USD {
+            left
+        } else {
+            return Grant::Exhausted;
+        };
+        self.reserved += cap;
+        self.in_flight += 1;
+        Grant::Cap(cap)
+    }
+
+    fn settle(&mut self, cap: f64, used: f64) {
+        self.in_flight = self.in_flight.saturating_sub(1);
+        self.reserved = if self.in_flight == 0 {
+            0.0
+        } else {
+            self.reserved - cap
+        };
+        self.spent += used;
+    }
+}
+
+/// What every job reads.
+struct Shared<'a> {
+    plan: &'a Plan,
+    ids: &'a [String],
+    questions: &'a [&'a GoldQuestion],
+    dir: &'a Path,
+    grader_config: Option<&'a Path>,
+    cut: &'a HashSet<String>,
+    concurrency: usize,
+    books: std::cell::RefCell<Books>,
+    /// Signalled whenever a run settles, for runs waiting on a cap.
+    settled: tokio::sync::Notify,
+}
+
+impl<'a> Shared<'a> {
+    /// [`Books::reserve`], waiting while it says to. The cap is given back
+    /// when the [`Hold`] is finished or dropped, on every path out.
+    async fn reserve(&self, want: f64) -> Option<Hold<'_, 'a>> {
+        loop {
+            // Made before the check, so a settle between the two still wakes it.
+            let settled = self.settled.notified();
+            match self.books.borrow_mut().reserve(want) {
+                Grant::Cap(cap) => {
+                    return Some(Hold {
+                        sh: self,
+                        cap,
+                        settled: false,
+                    });
+                }
+                Grant::Exhausted => return None,
+                Grant::Wait => {}
+            }
+            settled.await;
+        }
+    }
+
+    fn settle(&self, cap: f64, used: f64) {
+        self.books.borrow_mut().settle(cap, used);
+        self.settled.notify_waiters();
+    }
+}
+
+/// A cap held for one run or grading pass.
+struct Hold<'s, 'a> {
+    sh: &'s Shared<'a>,
+    cap: f64,
+    settled: bool,
+}
+
+impl Hold<'_, '_> {
+    /// Give back what `used` left of the cap.
+    fn finish(mut self, used: f64) {
+        self.settled = true;
+        self.sh.settle(self.cap, used);
+    }
+}
+
+impl Drop for Hold<'_, '_> {
+    /// An error path gives the whole cap back, so no run waits on it.
+    fn drop(&mut self) {
+        if !self.settled {
+            self.sh.settle(self.cap, 0.0);
+        }
+    }
+}
+
+/// An answer run that holds every question and was not cut at the cap.
+fn answer_complete(run: &answer::Run, ids: &[String]) -> bool {
+    !run.capped && complete(ids, run.rows.iter().map(|r| r.id.clone()))
+}
+
+/// An extraction run that holds every question and was not cut at the cap.
+fn extract_complete(run: &ExtractRun, ids: &[String]) -> bool {
+    !run.capped && complete(ids, run.rows.iter().map(|r| r.id.clone()))
+}
+
+fn is_done(job: &Job, ids: &[String]) -> bool {
+    match job.cell.kind {
+        Kind::Extract => {
+            read_json::<ExtractRun>(&job.out).is_some_and(|run| extract_complete(&run, ids))
+        }
+        Kind::Synth | Kind::Pipeline => {
+            read_json::<answer::Run>(&job.out).is_some_and(|run| answer_complete(&run, ids))
+        }
+    }
+}
+
+/// Run one job and grade it. `Ok(true)` when it finished and was graded.
+async fn run_job(sh: &Shared<'_>, job: &Job) -> anyhow::Result<bool> {
+    let label = &job.label;
+    if is_done(job, sh.ids) {
+        println!("{label}: done");
+    } else if sh.cut.contains(label) {
+        println!(
+            "{label}: cut by its cap earlier; raise run_max_usd and delete {} to redo it",
+            job.out.display()
+        );
+        return Ok(false);
+    } else {
+        let Some(hold) = sh.reserve(sh.plan.run_max_usd).await else {
+            println!(
+                "{label}: not started, the sweep cap ${:.2} is reached",
+                sh.plan.max_usd
+            );
+            return Ok(false);
+        };
+        let cap = hold.cap;
+        println!("{label}: {}  (cap ${cap:.2})", job.cell.describe());
+        let pool = crate::connect(sh.concurrency).await?;
+        let (used, finished, what) = match job.cell.kind {
+            Kind::Extract => {
+                let run = run_extract(pool, sh.questions, &job.config, cap, label, sh.concurrency)
+                    .await?;
+                // Settled before the write, so a failed write loses no spend.
+                let (used, finished) = (run.total_usd, extract_complete(&run, sh.ids));
+                hold.finish(used);
+                write_json(&job.out, &run)?;
+                println!("{label}: {}", extract_line(&[&run]));
+                (used, finished, "extract")
+            }
+            Kind::Synth | Kind::Pipeline => {
+                let a = answer::Options {
+                    gold: sh.plan.gold.clone(),
+                    limit: sh.ids.len(),
+                    ids: sh.ids.to_vec(),
+                    max_usd: cap,
+                    out: job.out.clone(),
+                    label: label.clone(),
+                    gold_extraction: job.cell.extract.is_none(),
+                    config: Some(job.config.clone()),
+                    grade: false,
+                    concurrency: sh.concurrency,
+                };
+                let (run, _) = answer::run(pool, &a).await?;
+                let (used, finished) = (run.total_usd, answer_complete(&run, sh.ids));
+                hold.finish(used);
+                (used, finished, "answer")
+            }
+        };
+        record(
+            sh.dir,
+            &Entry {
+                run: label.clone(),
+                what: what.into(),
+                usd: used,
+                cut: !finished,
+            },
+        )?;
+        if !finished {
+            println!("{label}: cut by its cap; not graded, not counted, not retried");
+            return Ok(false);
+        }
+    }
+    let (Kind::Synth | Kind::Pipeline, Some(path), Some((_, grade_cap))) =
+        (job.cell.kind, sh.grader_config, &sh.plan.grader)
+    else {
+        return Ok(true);
+    };
+    let Some(hold) = sh.reserve(*grade_cap).await else {
+        println!(
+            "{label}: not graded, the sweep cap ${:.2} is reached",
+            sh.plan.max_usd
+        );
+        return Ok(false);
+    };
+    let g = grade::Options {
+        run: job.out.clone(),
+        gold: sh.plan.gold.clone(),
+        max_usd: hold.cap,
+        config: Some(path.to_path_buf()),
+        force: false,
+        concurrency: sh.concurrency,
+    };
+    let (_, pass) = grade::run(&g).await?;
+    hold.finish(pass.spent_usd);
+    if pass.spent_usd > 0.0 {
+        record(
+            sh.dir,
+            &Entry {
+                run: label.clone(),
+                what: "grade".into(),
+                usd: pass.spent_usd,
+                cut: false,
+            },
+        )?;
+    }
+    Ok(pass.complete())
+}
+
 /// `eval sweep`. `Ok(true)` when every run finished and was graded.
 ///
 /// # Errors
-/// An unreadable plan or gold file, a config a cell generates that does not
-/// load, or a database failure. A run cut short by its cap is reported, not raised.
+/// An unreadable plan or gold file, or a config a cell generates that does
+/// not load. A run that fails or is cut short by its cap is reported, and
+/// the other runs go on.
 pub async fn run(opts: &Options) -> anyhow::Result<bool> {
     let mut plan = Plan::load(&opts.plan)?;
     if let Some(n) = opts.repeats {
@@ -765,6 +1137,12 @@ pub async fn run(opts: &Options) -> anyhow::Result<bool> {
     }
     if let Some(v) = opts.max_usd {
         plan.max_usd = v;
+    }
+    if let Some(n) = opts.concurrency {
+        plan.concurrency = n;
+    }
+    if let Some(n) = opts.parallel {
+        plan.parallel_runs = n;
     }
     if let Some(only) = &opts.only {
         plan.cells.retain(|c| only.contains(&c.kind));
@@ -799,168 +1177,54 @@ pub async fn run(opts: &Options) -> anyhow::Result<bool> {
         }
         None => None,
     };
-
+    let mut jobs = Vec::new();
+    for cell in &plan.cells {
+        let extract = cell.extract.clone().unwrap_or_else(|| StageSpec {
+            effort: EffortName::Low,
+            ..cell.synth.clone()
+        });
+        let config = dir.join(format!("{}.judge.toml", cell.name));
+        std::fs::write(&config, plan.config_text(&extract, &cell.synth)?)?;
+        // Every generated config must load before anything is spent.
+        Config::load_from(Some(&config))
+            .with_context(|| format!("the config for {} does not load", cell.name))?;
+        for r in 1..=plan.repeats {
+            let label = format!("{}-r{r}", cell.name);
+            jobs.push(Job {
+                cell: cell.clone(),
+                out: dir.join(format!("{label}.json")),
+                label,
+                config: config.clone(),
+            });
+        }
+    }
     let ledger = read_ledger(&dir)?;
-    let mut spent: f64 = ledger.iter().map(|e| e.usd).sum();
     let cut: HashSet<String> = ledger
         .iter()
         .filter(|e| e.cut)
         .map(|e| e.run.clone())
         .collect();
-    let mut all_done = true;
-    let total_runs = plan.cells.len() * plan.repeats as usize;
-    let mut n = 0usize;
-    for cell in plan.cells.clone() {
-        let extract = cell.extract.clone().unwrap_or_else(|| StageSpec {
-            effort: EffortName::Low,
-            ..cell.synth.clone()
-        });
-        let config_path = dir.join(format!("{}.judge.toml", cell.name));
-        std::fs::write(&config_path, plan.config_text(&extract, &cell.synth)?)?;
-        // Every generated config must load before anything is spent on it.
-        Config::load_from(Some(&config_path))
-            .with_context(|| format!("the config for {} does not load", cell.name))?;
-        for r in 1..=plan.repeats {
-            n += 1;
-            let label = format!("{}-r{r}", cell.name);
-            let out = dir.join(format!("{label}.json"));
-            let left = plan.max_usd - spent;
-            let done = match cell.kind {
-                Kind::Extract => read_json::<ExtractRun>(&out)
-                    .is_some_and(|run| complete(&ids, run.rows.into_iter().map(|r| r.id))),
-                Kind::Synth | Kind::Pipeline => read_json::<answer::Run>(&out)
-                    .is_some_and(|run| complete(&ids, run.rows.into_iter().map(|r| r.id))),
-            };
-            let was_cut = !done && cut.contains(&label);
-            if opts.dry_run {
-                println!(
-                    "[{n}/{total_runs}] {label}: {}  ({})",
-                    if done {
-                        "done"
-                    } else if was_cut {
-                        "cut by its cap"
-                    } else {
-                        "to run"
-                    },
-                    cell.describe()
-                );
-                continue;
-            }
-            if done {
-                println!("[{n}/{total_runs}] {label}: done");
-            } else if was_cut {
-                println!(
-                    "[{n}/{total_runs}] {label}: cut by its cap earlier; raise run_max_usd and delete {} to redo it",
-                    out.display()
-                );
-                all_done = false;
-                continue;
-            } else {
-                if left < MIN_RUN_USD {
-                    println!(
-                        "sweep cap ${:.2} reached (${spent:.2} spent); stopping before {label}",
-                        plan.max_usd
-                    );
-                    all_done = false;
-                    break;
-                }
-                let cap = plan.run_max_usd.min(left);
-                println!(
-                    "[{n}/{total_runs}] {label}: {}  (cap ${cap:.2})",
-                    cell.describe()
-                );
-                match cell.kind {
-                    Kind::Extract => {
-                        let pool = crate::connect().await?;
-                        let run = run_extract(pool, &questions, &config_path, cap, &label).await?;
-                        spent += run.total_usd;
-                        write_json(&out, &run)?;
-                        let finished = complete(&ids, run.rows.iter().map(|r| r.id.clone()));
-                        record(
-                            &dir,
-                            &Entry {
-                                run: label.clone(),
-                                what: "extract".into(),
-                                usd: run.total_usd,
-                                cut: !finished,
-                            },
-                        )?;
-                        println!("  {}", extract_line(&[&run]));
-                        all_done &= finished;
-                    }
-                    Kind::Synth | Kind::Pipeline => {
-                        let pool = crate::connect().await?;
-                        let a = answer::Options {
-                            gold: plan.gold.clone(),
-                            limit: ids.len(),
-                            ids: ids.clone(),
-                            max_usd: cap,
-                            out: out.clone(),
-                            label: label.clone(),
-                            gold_extraction: cell.extract.is_none(),
-                            config: Some(config_path.clone()),
-                            grade: false,
-                        };
-                        let (run, _) = answer::run(pool, &a).await?;
-                        spent += run.total_usd;
-                        let finished = complete(&ids, run.rows.iter().map(|r| r.id.clone()));
-                        record(
-                            &dir,
-                            &Entry {
-                                run: label.clone(),
-                                what: "answer".into(),
-                                usd: run.total_usd,
-                                cut: !finished,
-                            },
-                        )?;
-                        if !finished {
-                            println!("  cut by its cap: not graded, not counted, not retried");
-                            all_done = false;
-                            continue;
-                        }
-                    }
-                }
-            }
-            if let (Kind::Synth | Kind::Pipeline, Some(path), Some((_, grade_cap))) =
-                (cell.kind, &grader_config, &plan.grader)
-                && out.exists()
-            {
-                let left = plan.max_usd - spent;
-                if left < MIN_RUN_USD {
-                    all_done = false;
-                    continue;
-                }
-                let g = grade::Options {
-                    run: out.clone(),
-                    gold: plan.gold.clone(),
-                    max_usd: grade_cap.min(left),
-                    config: Some(path.clone()),
-                    force: false,
-                };
-                let (_, pass) = grade::run(&g).await?;
-                spent += pass.spent_usd;
-                if pass.spent_usd > 0.0 {
-                    record(
-                        &dir,
-                        &Entry {
-                            run: label.clone(),
-                            what: "grade".into(),
-                            usd: pass.spent_usd,
-                            cut: false,
-                        },
-                    )?;
-                }
-                all_done &= pass.complete();
-            }
-        }
-    }
+
     if opts.dry_run {
+        for job in &jobs {
+            let state = if is_done(job, &ids) {
+                "done"
+            } else if cut.contains(&job.label) {
+                "cut by its cap"
+            } else {
+                "to run"
+            };
+            println!("{}: {state}  ({})", job.label, job.cell.describe());
+        }
         println!(
-            "{} cells × {} repeats over {} questions; sweep cap ${:.2}, run cap ${:.2}{}",
+            "{} cells × {} repeats over {} questions; {} runs at once, {} questions at once in each; sweep cap ${:.2} (${:.2} spent), run cap ${:.2}{}",
             plan.cells.len(),
             plan.repeats,
             ids.len(),
+            plan.parallel_runs,
+            plan.concurrency,
             plan.max_usd,
+            ledger.iter().map(|e| e.usd).sum::<f64>(),
             plan.run_max_usd,
             plan.grader
                 .as_ref()
@@ -971,9 +1235,45 @@ pub async fn run(opts: &Options) -> anyhow::Result<bool> {
         );
         return Ok(true);
     }
+
+    let sh = Shared {
+        plan: &plan,
+        ids: &ids,
+        questions: &questions,
+        dir: &dir,
+        grader_config: grader_config.as_deref(),
+        cut: &cut,
+        concurrency: plan.concurrency,
+        books: std::cell::RefCell::new(Books {
+            max_usd: plan.max_usd,
+            spent: ledger.iter().map(|e| e.usd).sum(),
+            reserved: 0.0,
+            in_flight: 0,
+        }),
+        settled: tokio::sync::Notify::new(),
+    };
+    let jobs = interleave(jobs);
+    let results: Vec<bool> = futures::stream::iter(&jobs)
+        .map(|job| {
+            let sh = &sh;
+            async move {
+                match run_job(sh, job).await {
+                    Ok(done) => done,
+                    Err(e) => {
+                        tracing::error!(run = %job.label, "run failed: {e:#}");
+                        println!("{}: failed: {e:#}", job.label);
+                        false
+                    }
+                }
+            }
+        })
+        .buffer_unordered(plan.parallel_runs.max(1))
+        .collect()
+        .await;
+    let spent = sh.books.borrow().spent;
     println!("\nsweep total ${spent:.4} of ${:.2}", plan.max_usd);
     print_summary(&plan, &gold, &ids)?;
-    Ok(all_done)
+    Ok(results.into_iter().all(|done| done))
 }
 
 fn ratio(n: usize, d: usize) -> Option<f64> {
@@ -1055,13 +1355,15 @@ fn print_summary(plan: &Plan, gold: &Gold, ids: &[String]) -> anyhow::Result<()>
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "# Sweep {}\n\n{} questions, up to {} repeats per cell; grader {}. Each figure is the mean over the cell's complete runs, with the range across runs in brackets. Cost is per run of all questions.\n",
+        "# Sweep {}\n\n{} questions, up to {} repeats per cell; grader {}; {} questions at once in a run and {} runs at once, so secs/q includes waiting on the others. Each figure is the mean over the cell's complete runs, with the range across runs in brackets. Cost is per run of all questions.\n",
         plan.label,
         ids.len(),
         plan.repeats,
         plan.grader
             .as_ref()
-            .map_or_else(|| "none".to_owned(), |(g, _)| g.model.clone())
+            .map_or_else(|| "none".to_owned(), |(g, _)| g.model.clone()),
+        plan.concurrency,
+        plan.parallel_runs
     );
     let runs_of = |cell: &Cell| -> Vec<PathBuf> {
         (1..=plan.repeats)
@@ -1082,7 +1384,7 @@ fn print_summary(plan: &Plan, gold: &Gold, ids: &[String]) -> anyhow::Result<()>
             let runs: Vec<ExtractRun> = runs_of(cell)
                 .iter()
                 .filter_map(|p| read_json::<ExtractRun>(p))
-                .filter(|r| complete(ids, r.rows.iter().map(|x| x.id.clone())))
+                .filter(|r| extract_complete(r, ids))
                 .collect();
             let per = |f: &dyn Fn(&ExtractRun) -> Option<f64>| -> Vec<f64> {
                 runs.iter().filter_map(f).collect()
@@ -1144,7 +1446,7 @@ fn print_summary(plan: &Plan, gold: &Gold, ids: &[String]) -> anyhow::Result<()>
             let runs: Vec<answer::Run> = runs_of(cell)
                 .iter()
                 .filter_map(|p| read_json::<answer::Run>(p))
-                .filter(|r| complete(ids, r.rows.iter().map(|x| x.id.clone())))
+                .filter(|r| answer_complete(r, ids))
                 .collect();
             let per = |f: &dyn Fn(&answer::Run) -> Option<f64>| -> Vec<f64> {
                 runs.iter().filter_map(f).collect()
@@ -1395,6 +1697,71 @@ synth = { model = "claude-sonnet-5-5", effort = "xhigh" }
                 .map(|e| e.run.as_str())
                 .collect::<Vec<_>>(),
             ["b-r1"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runs_in_flight_never_hold_more_than_the_sweep_cap() {
+        let mut books = Books {
+            max_usd: 10.0,
+            spent: 3.0,
+            reserved: 0.0,
+            in_flight: 0,
+        };
+        assert_eq!(books.reserve(4.0), Grant::Cap(4.0));
+        assert_eq!(
+            books.reserve(4.0),
+            Grant::Wait,
+            "3 free while a run holds 4"
+        );
+        books.settle(4.0, 1.0);
+        assert_eq!(
+            books.reserve(4.0),
+            Grant::Cap(4.0),
+            "the unspent 3 came back"
+        );
+        assert_eq!(books.reserve(4.0), Grant::Wait);
+        books.settle(4.0, 4.0);
+        assert_eq!(
+            books.reserve(4.0),
+            Grant::Cap(2.0),
+            "the last of it, nothing in flight"
+        );
+        books.settle(2.0, 2.0);
+        assert_eq!(books.reserve(4.0), Grant::Exhausted);
+    }
+
+    #[test]
+    fn neighbouring_jobs_wait_on_different_models() -> anyhow::Result<()> {
+        let p = plan(
+            r#"
+label = "t"
+max_usd = 10
+[synth]
+models = ["claude-opus-5-5", "claude-haiku-5-5"]
+efforts = ["low", "high"]
+"#,
+        )?;
+        let jobs = p
+            .cells
+            .iter()
+            .map(|cell| Job {
+                cell: cell.clone(),
+                label: cell.name.clone(),
+                out: PathBuf::new(),
+                config: PathBuf::new(),
+            })
+            .collect();
+        let order: Vec<String> = interleave(jobs).into_iter().map(|j| j.label).collect();
+        assert_eq!(
+            order,
+            [
+                "synth-opus-5-5-low",
+                "synth-haiku-5-5-low",
+                "synth-opus-5-5-high",
+                "synth-haiku-5-5-high"
+            ]
         );
         Ok(())
     }

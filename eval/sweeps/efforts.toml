@@ -11,6 +11,8 @@ label = "efforts"
 repeats = 2
 max_usd = 60.00    # the whole sweep, grading included
 run_max_usd = 8.00 # one answer run of the gold set
+concurrency = 4    # questions in flight at once within a run
+parallel_runs = 3  # runs in flight at once, spread across models
 
 # One grader for every run, so grades compare across cells.
 [grader]
