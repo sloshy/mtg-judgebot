@@ -752,8 +752,8 @@ enum FreePricing {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ModelsEntry {
-    /// Entity extraction and classification: one cheap, low-effort call per
-    /// question.
+    /// Entity extraction and classification: one cheap call per question,
+    /// at the model's measured extraction effort unless `effort` says otherwise.
     extract: StageEntry,
     /// Synthesis: the judge's answer, with at most one `lookup_rules` round.
     synth: StageEntry,
@@ -776,16 +776,18 @@ struct StageEntry {
     #[schemars(with = "String", length(min = 1))]
     model: ModelId,
     /// The output ceiling in tokens, reasoning included. Default 2000 for
-    /// extract, 16000 for synth.
+    /// extract (4000 when its effort is high or above, where a model thinks
+    /// longer), 16000 for synth.
     #[serde(default)]
     #[schemars(with = "Option<u32>", range(min = 1))]
     max_tokens: Option<MaxTokens>,
-    /// How hard the model thinks. Default low for extract; for synth the
-    /// model's measured effort on an `anthropic` provider (medium for
-    /// claude-opus-5-5 and claude-haiku-5-5), high for any other model or
-    /// provider. A truncated answer retries
-    /// once at medium, or at low from medium. On an `openai` provider it
-    /// needs `reasoning_effort = true`.
+    /// How hard the model thinks. Default: the model's measured effort on an
+    /// `anthropic` provider. For extract, medium for claude-opus-5-5, high for
+    /// claude-haiku-5-5, low for claude-sonnet-5-5 and any other model or
+    /// provider. For synth, medium for claude-opus-5-5 and claude-haiku-5-5,
+    /// low for claude-sonnet-5-5, high for any other. A truncated answer
+    /// retries once at medium, or at low from medium. On an `openai` provider
+    /// it needs `reasoning_effort = true`.
     #[serde(default)]
     effort: Option<EffortKnob>,
     /// The model's price, which the spend cap reserves and settles at.
@@ -1996,12 +1998,16 @@ impl Config {
                         ),
                     })
                 };
-                let (x, s) = (
-                    crate::extract::ExtractConfig::default(),
-                    judge_llm::SynthConfig::default(),
-                );
+                let s = judge_llm::SynthConfig::default();
                 Ok::<_, ConfigError>(Chat {
-                    extract: stage("extract", x.max_tokens, x.effort)?,
+                    extract: {
+                        let effort = judge_llm::extract_effort_for(judge_anthropic::BACKEND, model);
+                        stage(
+                            "extract",
+                            crate::extract::default_max_tokens(effort),
+                            effort,
+                        )?
+                    },
                     synth: stage(
                         "synth",
                         s.max_tokens,
@@ -2431,11 +2437,15 @@ impl<'a, E: Fn(&str) -> Option<String>> Resolver<'a, E> {
                 })?)
             }
         };
-        // Synthesis defaults to the effort the model's gold runs chose
-        // (`judge_llm::SYNTH_EFFORTS`), `high` for a model nobody measured.
+        // Each stage defaults to the effort the model's gold runs chose
+        // (`judge_llm::EXTRACT_EFFORTS`, `SYNTH_EFFORTS`): `low` extraction
+        // and `high` synthesis for a model nobody measured.
         let (default_max, default_effort) = if stage == "extract" {
-            let x = crate::extract::ExtractConfig::default();
-            (x.max_tokens, x.effort)
+            let effort = entry.effort.map_or_else(
+                || judge_llm::extract_effort_for(backend.kind(), &model),
+                Effort::from,
+            );
+            (crate::extract::default_max_tokens(effort), effort)
         } else {
             let s = judge_llm::SynthConfig::default();
             (
@@ -3076,8 +3086,37 @@ model = "qwen3:8b"
 "#;
 
     /// With no `effort`, synthesis takes the model's measured effort: medium
-    /// for Opus 5.5, high for Sonnet 5.5, medium for Haiku 5.5, high for any model with no row
+    /// for Opus 5.5, low for Sonnet 5.5, medium for Haiku 5.5, high for any model with no row
     /// (an unlisted Anthropic id, a local model). An explicit knob wins.
+    /// With no `effort`, extraction takes the model's measured effort too:
+    /// medium for Opus 5.5, low for Sonnet 5.5, high for Haiku 5.5, low for a
+    /// model with no row. An explicit knob wins.
+    #[test]
+    fn extraction_effort_defaults_to_the_models_measured_one() -> R {
+        let env = [("ANTHROPIC_API_KEY", "k")];
+        let effort = |file: &str| -> Result<Effort, Box<dyn std::error::Error>> {
+            Ok(load(file, &env)?.extract().ok_or("extract")?.effort)
+        };
+        let extract_model = |m: &str| MINIMAL.replacen("claude-opus-5-5", m, 1);
+        assert_eq!(effort(MINIMAL)?, Effort::Medium);
+        assert_eq!(effort(&extract_model("claude-sonnet-5-5"))?, Effort::Low);
+        assert_eq!(effort(&extract_model("claude-haiku-5-5"))?, Effort::High);
+        assert_eq!(effort(&extract_model("claude-fable-5-1"))?, Effort::Low);
+        let pinned = MINIMAL.replacen(
+            "model = \"claude-opus-5-5\"",
+            "model = \"claude-opus-5-5\"\neffort = \"low\"",
+            1,
+        );
+        assert_eq!(effort(&pinned)?, Effort::Low);
+        // The ceiling follows the effort: Haiku at high gets room to think.
+        let ceiling = |file: &str| -> Result<u32, Box<dyn std::error::Error>> {
+            Ok(load(file, &env)?.extract().ok_or("extract")?.max_tokens)
+        };
+        assert_eq!(ceiling(MINIMAL)?, 2000);
+        assert_eq!(ceiling(&extract_model("claude-haiku-5-5"))?, 4000);
+        Ok(())
+    }
+
     #[test]
     fn synthesis_effort_defaults_to_the_models_measured_one() -> R {
         let env = [("ANTHROPIC_API_KEY", "k")];
@@ -3086,7 +3125,7 @@ model = "qwen3:8b"
         };
         let synth_model = |m: &str| MINIMAL.replacen("claude-opus-5-5", m, 2);
         assert_eq!(effort(MINIMAL)?, Effort::Medium);
-        assert_eq!(effort(&synth_model("claude-sonnet-5-5"))?, Effort::High);
+        assert_eq!(effort(&synth_model("claude-sonnet-5-5"))?, Effort::Low);
         assert_eq!(effort(&synth_model("claude-haiku-5-5"))?, Effort::Medium);
         assert_eq!(effort(&synth_model("claude-fable-5-1"))?, Effort::High);
         assert_eq!(effort(KEYLESS)?, Effort::High);
@@ -3096,10 +3135,10 @@ model = "qwen3:8b"
         );
         assert_ne!(pinned, MINIMAL);
         assert_eq!(effort(&pinned)?, Effort::High);
-        // The extraction stage is unaffected.
+        // The extraction stage is unaffected: Opus 5.5's measured one.
         assert_eq!(
             load(MINIMAL, &env)?.extract().ok_or("extract")?.effort,
-            Effort::Low
+            Effort::Medium
         );
         Ok(())
     }
@@ -3110,8 +3149,8 @@ model = "qwen3:8b"
         let env = Config::from_vars(|k| (k == "ANTHROPIC_API_KEY").then(|| "k".to_owned()))?;
         for c in [&file, &env] {
             let (x, s) = (c.extract().ok_or("x")?, c.synth().ok_or("s")?);
-            assert_eq!((x.max_tokens, x.effort), (2000, Effort::Low));
-            // Opus 5.5's measured synthesis effort (judge_llm::SYNTH_EFFORTS).
+            // Opus 5.5's measured efforts (judge_llm::EXTRACT_EFFORTS, SYNTH_EFFORTS).
+            assert_eq!((x.max_tokens, x.effort), (2000, Effort::Medium));
             assert_eq!((s.max_tokens, s.effort), (16000, Effort::Medium));
             assert_eq!(s.model, "claude-opus-5-5");
             assert_eq!(

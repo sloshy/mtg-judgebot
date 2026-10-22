@@ -24,12 +24,28 @@ use judge_llm::{
 /// Knobs for the extraction request. The model itself is the backend's.
 #[derive(Clone, Debug)]
 pub struct ExtractConfig {
-    /// Effort; extraction is cheap and needs little thinking.
+    /// Effort. The default is `Low`, the effort for a model with no measured
+    /// one; the configuration resolves a listed model's
+    /// (`judge_llm::EXTRACT_EFFORTS`).
     pub effort: Effort,
-    /// Output ceiling; the JSON is a few hundred tokens at most.
+    /// Output ceiling, thinking included; the JSON is a few hundred tokens
+    /// at most. See [`default_max_tokens`].
     pub max_tokens: u32,
     /// How many of the most recent thread Q&As to include.
     pub history_turns: usize,
+}
+
+/// The extraction output ceiling for `effort` when the operator sets none:
+/// 2000, or 4000 from `High` up. Haiku 5.5 at high used up to 1,600 tokens on
+/// the gold set and at xhigh hit 2000, and a truncated extraction is a
+/// failed question with no rerun. Unused tokens are not billed; the cap only
+/// reserves the ceiling while the call runs.
+#[must_use]
+pub const fn default_max_tokens(effort: Effort) -> u32 {
+    match effort {
+        Effort::Low | Effort::Medium => 2000,
+        Effort::High | Effort::XHigh | Effort::Max => 4000,
+    }
 }
 
 impl Default for ExtractConfig {

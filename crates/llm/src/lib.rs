@@ -41,8 +41,9 @@ pub use spend::{
     SpendMeter, pricing_for,
 };
 pub use synth::{
-    Final, Fresh, LOOKUP_RULES, LookupRulesInput, SYNTH_EFFORTS, SendOutcome, Step, Synth,
-    SynthConfig, ToolRequested, Truncated, classify, synth_effort_for,
+    EXTRACT_EFFORTS, Final, Fresh, LOOKUP_RULES, LookupRulesInput, SYNTH_EFFORTS, SendOutcome,
+    Step, Synth, SynthConfig, ToolRequested, Truncated, classify, extract_effort_for,
+    synth_effort_for,
 };
 pub use types::{
     AssistantTurn, Backend, Billed, CacheHint, Capabilities, ChatModel, ChatRequest, ChatResponse,

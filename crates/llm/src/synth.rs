@@ -104,18 +104,19 @@ pub struct SynthConfig {
 }
 
 /// The synthesis effort each current model's gold runs chose, `(provider,
-/// model)`. Opus 5.5 at medium answered the gold set as well as at high, with
-/// no wrong asides, for slightly less; Sonnet 5.5 at medium misdescribed a card
-/// on one question and made three wrong asides, so it stays at high
-/// (2026-09-29, one run each; the high runs predate the examples fix
-/// `f6d7224`). Haiku 5.5 agreed with the reference as often at medium as at
-/// high on the questions both answered, with fewer wrong asides, and
-/// medium is Anthropic's default for it (2026-10-07, one run each). Only current models are listed, as in [`crate::PRICES`]: an
+/// model)`, from the effort sweep of 2026-10-21 (`eval/sweeps/efforts.toml`:
+/// low to xhigh, two cold runs each, one Opus grader). Opus 5.5 agreed with
+/// the reference at every effort; medium is where its decisive-rule recall
+/// levels off (84% low, 89% medium, 91% high) for 7% over low. Sonnet 5.5 at
+/// low agreed as often as at high (37 of 38 answers against 36) with no
+/// failed answer in three runs, against about one a run at high, for 26%
+/// less, so it runs at low. Haiku 5.5 is tied between medium and high, and
+/// medium is Anthropic's default for it. Only current models are listed, as in [`crate::PRICES`]: an
 /// upgrade replaces its predecessor's row, and a new model is measured before
 /// it gets one. Ids match exactly, so a Bedrock `anthropic.` id is unlisted.
 pub const SYNTH_EFFORTS: &[(&str, &str, Effort)] = &[
     (crate::spend::ANTHROPIC, "claude-opus-5-5", Effort::Medium),
-    (crate::spend::ANTHROPIC, "claude-sonnet-5-5", Effort::High),
+    (crate::spend::ANTHROPIC, "claude-sonnet-5-5", Effort::Low),
     (crate::spend::ANTHROPIC, "claude-haiku-5-5", Effort::Medium),
 ];
 
@@ -128,6 +129,34 @@ pub fn synth_effort_for(provider: &str, model: &str) -> Effort {
         .iter()
         .find(|(p, m, _)| *p == provider && *m == model)
         .map_or(SynthConfig::default().effort, |(_, _, e)| *e)
+}
+
+/// The extraction effort each current model's gold runs chose, `(provider,
+/// model)`, from the effort sweep of 2026-10-21 (`eval/sweeps/efforts.toml`,
+/// extraction alone, two runs each) and the end-to-end runs of
+/// `eval/sweeps/tiers.toml`. Opus 5.5 at low twice wrote part of a card's name
+/// alone ("mind sculptor", "Bruna" and "Gisela"), stopping the answer on a "did
+/// you mean?", in six end-to-end runs, and never at medium in four, for about
+/// 3% of a question's cost. Sonnet 5.5 found the gold cards as often at low as
+/// at high. Haiku 5.5 found them on 95% of questions at high against 86% at
+/// low, in both runs, for a fraction of a cent; at xhigh it outthinks the
+/// stage's output ceiling. Listed and matched as [`SYNTH_EFFORTS`] is; a model
+/// with no row extracts at low.
+pub const EXTRACT_EFFORTS: &[(&str, &str, Effort)] = &[
+    (crate::spend::ANTHROPIC, "claude-opus-5-5", Effort::Medium),
+    (crate::spend::ANTHROPIC, "claude-sonnet-5-5", Effort::Low),
+    (crate::spend::ANTHROPIC, "claude-haiku-5-5", Effort::High),
+];
+
+/// The extraction effort for `model` at `provider` when the operator names
+/// none: its [`EXTRACT_EFFORTS`] row, else `Low`, enough for a structured
+/// list of names and categories.
+#[must_use]
+pub fn extract_effort_for(provider: &str, model: &str) -> Effort {
+    EXTRACT_EFFORTS
+        .iter()
+        .find(|(p, m, _)| *p == provider && *m == model)
+        .map_or(Effort::Low, |(_, _, e)| *e)
 }
 
 impl Default for SynthConfig {

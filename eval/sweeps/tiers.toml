@@ -1,16 +1,17 @@
-# The suggested configurations, end to end, priced per run of the gold set:
-# the tiers the docs offer by estimated cost. Opus at low extracts for every
-# tier but one: it costs about half a cent a question and keeps a cheaper
-# synthesis model from stopping on a card name. `default-medium-extract`
-# measures whether Opus at medium extracts more reliably than at low.
+# The default (Opus 5.5 at medium on both stages) and what moving one stage
+# from it does, end to end, priced per run of the gold set: the examples the
+# model-choice docs give. The `*-medium-extract` cells hold extraction at the
+# default and move synthesis; `default`, `thorough`, `balanced` and `economy`
+# were measured first with Opus at low extraction, the earlier default.
 # Run with `judge-eval sweep eval/sweeps/tiers.toml`; output in
 # eval/runs/sweep-tiers/.
 #
-# Estimated cost (22 questions, two repeats, grading included): about $17.
+# Measured cost (22 questions, two repeats, grading included): $16.71 for the
+# first five cells; the three medium-extraction deviations about $9 more.
 
 label = "tiers"
 repeats = 2
-max_usd = 25.00
+max_usd = 35.00
 run_max_usd = 6.00
 concurrency = 4
 parallel_runs = 3
@@ -42,4 +43,19 @@ synth = { model = "claude-sonnet-5-5", effort = "low" }
 [[pipeline]]
 name = "economy"
 extract = { model = "claude-opus-5-5", effort = "low" }
+synth = { model = "claude-haiku-5-5", effort = "high" }
+
+[[pipeline]]
+name = "thorough-medium-extract"
+extract = { model = "claude-opus-5-5", effort = "medium" }
+synth = { model = "claude-opus-5-5", effort = "xhigh" }
+
+[[pipeline]]
+name = "balanced-medium-extract"
+extract = { model = "claude-opus-5-5", effort = "medium" }
+synth = { model = "claude-sonnet-5-5", effort = "low" }
+
+[[pipeline]]
+name = "economy-medium-extract"
+extract = { model = "claude-opus-5-5", effort = "medium" }
 synth = { model = "claude-haiku-5-5", effort = "high" }

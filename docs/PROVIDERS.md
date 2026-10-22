@@ -38,8 +38,8 @@ a type that *is* the schema (invariant I5 in `docs/DECISIONS.md`).
 
 | # | Call | System | Tools | Tool choice | Structured output | Effort |
 |---|---|---|---|---|---|---|
-| 1 | Extraction | cached, stable | none | — | `Extraction` schema | low |
-| 2 | Synthesis, first turn | cached, stable | `lookup_rules`, strict | auto, ≤1 call | `Verdict` schema | high (medium on truncation retry) |
+| 1 | Extraction | cached, stable | none | — | `Extraction` schema | measured per model (`EXTRACT_EFFORTS`), else low |
+| 2 | Synthesis, first turn | cached, stable | `lookup_rules`, strict | auto, ≤1 call | `Verdict` schema | measured per model (`SYNTH_EFFORTS`), else high; a truncated answer reruns at medium, or low from medium |
 | 3 | Synthesis, tool continuation | same | same | same (cache-preserving) | same | same |
 | 4 | Synthesis, citation retry | same | `lookup_rules` still listed | **none** | same | same |
 
@@ -152,13 +152,14 @@ pub struct ChatResponse {
 - **`Effort` maps per backend.** Anthropic gets `output_config.effort`. OpenAI gets
   `reasoning_effort` (`low|medium|high`, `xhigh|max → high`), and only when the provider's
   `reasoning_effort = true`. Asking for effort on a provider that cannot send it is a
-  *load error*, not a silent drop. A stage that names no effort gets `low` for extraction
-  and, for synthesis, the effort the model's gold runs chose (`judge_llm::SYNTH_EFFORTS`:
-  `claude-opus-5-5` medium, `claude-sonnet-5-5` high, `claude-haiku-5-5` medium), else
-  `high`. A truncated answer is
+  *load error*, not a silent drop. A stage that names no effort gets the effort the
+  model's gold runs chose for it: for extraction `judge_llm::EXTRACT_EFFORTS`
+  (`claude-opus-5-5` medium, `claude-sonnet-5-5` low, `claude-haiku-5-5` high), else
+  `low`; for synthesis `judge_llm::SYNTH_EFFORTS` (`claude-opus-5-5` medium,
+  `claude-sonnet-5-5` low, `claude-haiku-5-5` medium), else `high`. A truncated answer is
   rerun once at medium, or at low from medium (`Effort::truncation_rerun`); one at `low` is
   not rerun. Ids match exactly, so a Bedrock `anthropic.claude-opus-5-5` is unlisted and
-  runs at `high` unless its stage says otherwise.
+  runs at the unlisted efforts unless its stage says otherwise.
 - **`Capabilities`** = `{ structured_output: Enforced | JsonMode | PromptOnly, strict_tools,
   effort, cache_hints, refusal_fallbacks }`. The adapters use it for two things:
   - When enforcement is `PromptOnly`/`JsonMode`, they append the schema to the **user

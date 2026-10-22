@@ -513,7 +513,9 @@ cargo run -r -p judge-eval -- sweep eval/sweeps/<plan>.toml [--dry-run]  # the w
 
 Pipeline (`docs/ARCHITECTURE.md` §3 is kept current):
 
-1. **Extraction + classification.** One low-effort LLM call with structured output.
+1. **Extraction + classification.** One LLM call with structured output, at the model's
+   measured effort (`judge_llm::EXTRACT_EFFORTS`: Opus 5.5 medium, Sonnet 5.5 low, Haiku
+   5.5 high, unlisted low).
 2. **Card resolution.** A typed resolution order: alias → possessive-stripped alias → exact →
    printed name → short-name-before-comma → epithet after the comma (two words or more) →
    alias-suffix → trigram fuzzy.
@@ -532,7 +534,7 @@ Pipeline (`docs/ARCHITECTURE.md` §3 is kept current):
    model reads. Retrieval also adds rulings for all faces, glossary, nightmare-card notes
    and rated prior calls.
 4. **Synthesis.** At the model's measured effort (`judge_llm::SYNTH_EFFORTS`: Opus 5.5
-   medium, Sonnet 5.5 high, Haiku 5.5 medium, unlisted high; a truncated answer reruns at medium, or low from medium),
+   medium, Sonnet 5.5 low, Haiku 5.5 medium, unlisted high; a truncated answer reruns at medium, or low from medium),
    with citation validation and one retry. At most one
    `lookup_rules` tool round, enforced by typestate.
 5. **Persist** + Discord rating buttons.

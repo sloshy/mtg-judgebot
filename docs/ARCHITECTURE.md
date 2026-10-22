@@ -34,7 +34,7 @@ The design principle. Rules questions have the shape "card A + card B + rule con
 Discord message (+ last N Q&A in the same thread)
   │
   ▼
-[1] Entity extraction (LLM, low effort, structured output)
+[1] Entity extraction (LLM, the model's measured effort, structured output)
     Splits the message into card-name spans and rules concepts. Runs FIRST so
     fuzzy matching sees only candidate spans, not rules vocabulary.
     Model choice: `judge_bot::config` picks a provider per stage, from a

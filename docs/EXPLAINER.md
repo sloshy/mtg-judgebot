@@ -677,10 +677,11 @@ approximate nearest neighbour search fast on a few thousand rows.
 distinction and a hosted API, so the zero-config setup does not need a local model (which
 is not worth the trouble under WSL2). Swappable by config.
 
-**Anthropic Claude for both model stages.** A low-effort call for extraction and a
-medium-effort call with tool use and structured outputs for synthesis (Opus 5.5 answered
-the gold set as well at medium as at high, for less; a model without a measurement runs
-at high). Prompt caching
+**Anthropic Claude for both model stages.** Opus 5.5 at medium effort for both: a short
+call for extraction and a call with tool use and structured outputs for synthesis. On the
+gold set, medium extraction never wrote a card's name in part, which low occasionally
+did, and medium synthesis agreed with the reference as often as high, for less. A model
+without a measurement extracts at low and synthesizes at high. Prompt caching
 matters for the large synthesis turn. The provider seam means this is a default, not a
 lock-in.
 
