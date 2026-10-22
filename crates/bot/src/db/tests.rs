@@ -63,6 +63,8 @@ const RAGAVAN: Uuid = Uuid::from_u128(10);
 const RASHMI: Uuid = Uuid::from_u128(11);
 const BRUNA_FADING: Uuid = Uuid::from_u128(12);
 const BRUNA_ALABASTER: Uuid = Uuid::from_u128(13);
+const DOVIN: Uuid = Uuid::from_u128(14);
+const AUGUSTIN: Uuid = Uuid::from_u128(15);
 
 /// `(face_idx, face name, oracle text)`.
 type FaceSeed = (i16, &'static str, &'static str);
@@ -73,7 +75,7 @@ type FaceSeed = (i16, &'static str, &'static str);
     reason = "test fixture: one row per seeded card"
 )]
 pub(crate) async fn seed(pool: &PgPool) -> anyhow::Result<()> {
-    let cards: [(Uuid, &str, &str, &[FaceSeed]); 13] = [
+    let cards: [(Uuid, &str, &str, &[FaceSeed]); 15] = [
         (
             BOB,
             "Dark Confidant",
@@ -181,6 +183,18 @@ pub(crate) async fn seed(pool: &PgPool) -> anyhow::Result<()> {
             "Bruna, Light of Alabaster",
             "normal",
             &[(0, "Bruna, Light of Alabaster", "")],
+        ),
+        (
+            DOVIN,
+            "Dovin, Grand Arbiter",
+            "normal",
+            &[(0, "Dovin, Grand Arbiter", "")],
+        ),
+        (
+            AUGUSTIN,
+            "Grand Arbiter Augustin IV",
+            "normal",
+            &[(0, "Grand Arbiter Augustin IV", "")],
         ),
     ];
     for (id, name, layout, faces) in cards {
@@ -442,6 +456,74 @@ async fn fuzzy_ignores_a_span_buried_inside_a_word(pool: PgPool) -> anyhow::Resu
         resolver.resolve("led").await?,
         Resolution::NotFound { .. }
     ));
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_name_after_the_comma_names_the_card(pool: PgPool) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    let resolver = PgResolver::new(pool);
+    // The epithet alone, any case, with or without a leading "the" on either side.
+    for span in ["nimble pilferer", "Nimble Pilferer", "the nimble pilferer"] {
+        assert_eq!(
+            resolved_name(&resolver.resolve(span).await?),
+            Some(("Ragavan, Nimble Pilferer", MatchedVia::Epithet)),
+            "{span}"
+        );
+    }
+    for span in ["fading light", "the Fading Light"] {
+        assert_eq!(
+            resolved_name(&resolver.resolve(span).await?),
+            Some(("Bruna, the Fading Light", MatchedVia::Epithet)),
+            "{span}"
+        );
+    }
+    // Part of an epithet is not one: it goes on to the looser steps.
+    assert!(
+        !matches!(
+            resolved_name(&resolver.resolve("pilferer").await?),
+            Some((_, MatchedVia::Epithet))
+        ),
+        "a single word of the epithet"
+    );
+    // An epithet that is also part of another card's name is offered with
+    // that card, never taken: players mean Augustin by "Grand Arbiter".
+    for span in ["grand arbiter", "the Grand Arbiter", "[[Grand Arbiter]]"] {
+        match resolver.resolve(span).await? {
+            Resolution::Ambiguous {
+                candidates, via, ..
+            } => {
+                assert_eq!(via, MatchedVia::Epithet, "{span}");
+                let mut names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+                names.sort_unstable();
+                assert_eq!(
+                    names,
+                    ["Dovin, Grand Arbiter", "Grand Arbiter Augustin IV"],
+                    "{span}"
+                );
+            }
+            other => anyhow::bail!("{span}: expected an offer, got {other:?}"),
+        }
+    }
+    // The full name still resolves on its own.
+    assert_eq!(
+        resolved_name(&resolver.resolve("grand arbiter augustin iv").await?),
+        Some(("Grand Arbiter Augustin IV", MatchedVia::Exact))
+    );
+    // A bracketed epithet is offered, not resolved.
+    match resolver.resolve("[[Nimble Pilferer]]").await? {
+        Resolution::Ambiguous {
+            candidates, via, ..
+        } => {
+            assert_eq!(via, MatchedVia::Epithet);
+            assert!(
+                candidates
+                    .iter()
+                    .any(|c| c.name == "Ragavan, Nimble Pilferer")
+            );
+        }
+        other => anyhow::bail!("expected an offer, got {other:?}"),
+    }
     Ok(())
 }
 

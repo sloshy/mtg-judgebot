@@ -515,7 +515,8 @@ Pipeline (`docs/ARCHITECTURE.md` §3 is kept current):
 
 1. **Extraction + classification.** One low-effort LLM call with structured output.
 2. **Card resolution.** A typed resolution order: alias → possessive-stripped alias → exact →
-   printed name → short-name-before-comma → alias-suffix → trigram fuzzy.
+   printed name → short-name-before-comma → epithet after the comma (two words or more) →
+   alias-suffix → trigram fuzzy.
    - A `[[bracketed]]` span is `CardSpan::Exact` and takes only exact → printed name →
      whole-span alias (`[[bob]]` resolves: an alias names one card). A miss is offered
      only as `Ambiguous`: the possessive / short-name / alias-suffix hits under their own

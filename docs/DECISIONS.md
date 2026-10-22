@@ -108,7 +108,10 @@ questions have the shape "card A + card B + rule concept C", so:
 
 - **Card names are entities.** A cheap structured-output call extracts them and SQL
   resolves them through a typed resolution order: alias → possessive-stripped alias → exact →
-  printed name → short name before the comma → alias suffix → trigram fuzzy. A
+  printed name → short name before the comma → the name after the comma (two words or
+  more, and offered, not taken, when another card's name holds the same words: "Nimble
+  Pilferer" is Ragavan, "Grand Arbiter" asks between Dovin and Augustin) → alias suffix →
+  trigram fuzzy. A
   `[[bracketed]]` span is exact name, printed name or exact alias only, with near misses
   offered as choices. An alias is not a near miss: the table maps that spelling to one
   card, so `[[bob]]` is Dark Confidant. Embeddings are never used for this: a nickname

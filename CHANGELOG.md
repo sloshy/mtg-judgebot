@@ -478,6 +478,14 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Fixed
 
+- **A card's epithet names it.** The words after the comma in a legendary card's name now
+  resolve on their own when they are two words or more: "Nimble Pilferer" is Ragavan.
+  When another card's name holds the same words, the bot asks: "Grand Arbiter" offers
+  Dovin and Grand Arbiter Augustin IV, "mind sculptor" Jace and Way of the Mind Sculptor.
+  Either way a question that names the card in full as well no longer stops on a "did you
+  mean?". Before, such a span went to the fuzzy search, which never counts as the same
+  card. A one-word epithet ("ravager") still asks, since players often mean another card
+  by it.
 - `scripts/refresh-data.sh` works on Compose v2.20 (Synology's Container Manager), which
   has no `docker compose run --pull`. It checks that the pulled image is present
   instead, and still never builds on the host.

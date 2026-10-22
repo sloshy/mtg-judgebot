@@ -12,7 +12,11 @@
 //! the card — else the fuzzy neighbours.
 //!
 //! Anything else takes the full order: `card_aliases` → exact current name →
-//! `printed_names` → name-before-the-comma → alias suffix → `pg_trgm` fuzzy.
+//! `printed_names` → name-before-the-comma → name-after-the-comma (a leading
+//! "the" dropped on both sides, two words or more: "Nimble Pilferer" is
+//! Ragavan; offered with every other card whose name holds the same words,
+//! never resolved, when there is one: "Grand Arbiter") → alias suffix →
+//! `pg_trgm` fuzzy.
 //! Exact steps match case-insensitively on both `cards.name` and
 //! `card_faces.name` (so "Stomp" finds "Bonecrusher Giant // Stomp"); every
 //! current name is also a printed name, so `Exact` runs first to keep `via`
@@ -54,7 +58,8 @@ pub const MAX_CANDIDATES: usize = 5;
 const FUZZY_FETCH: i64 = 6;
 
 /// `[[Exact Name]]` → exact / printed name only; anything else: alias table →
-/// exact name → printed-name table → short name → alias suffix → `pg_trgm` fuzzy.
+/// exact name → printed-name table → short name → epithet → alias suffix →
+/// `pg_trgm` fuzzy.
 #[derive(Clone, Debug)]
 pub struct PgResolver {
     pool: PgPool,
@@ -168,6 +173,80 @@ impl PgResolver {
         .fetch_all(&self.pool)
         .await
         .map_err(upstream("short name lookup"))
+    }
+
+    /// Cards with a face whose name after the first comma, a leading "the "
+    /// dropped, is [`epithet_key`] of `lowered`: "mind sculptor" and "the mind
+    /// sculptor" for "Jace, the Mind Sculptor". Faces, not `cards.name`, so a
+    /// two-faced card's " // " never joins two names.
+    async fn epithet(&self, lowered: &str) -> Result<Vec<Uuid>, JudgeError> {
+        let Some(span) = epithet_key(lowered) else {
+            return Ok(Vec::new());
+        };
+        sqlx::query_scalar!(
+            r#"
+            SELECT DISTINCT oracle_id AS "oracle_id!" FROM card_faces
+            WHERE position(',' IN name) > 0
+              AND regexp_replace(btrim(lower(substr(name, position(',' IN name) + 1))), '^the ', '') = $1
+            "#,
+            span
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(upstream("epithet lookup"))
+    }
+
+    /// Cards other than `except` with a face whose name holds `lowered`'s
+    /// words as a contiguous run of whole words (ASCII letters and digits;
+    /// anything else separates words, as in [`word_key`]): "grand arbiter" in
+    /// "Grand Arbiter Augustin IV", "mind sculptor" in "Way of the Mind
+    /// Sculptor".
+    async fn names_containing(
+        &self,
+        lowered: &str,
+        except: &[Uuid],
+    ) -> Result<Vec<Uuid>, JudgeError> {
+        let key = word_key(lowered);
+        if key.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_scalar!(
+            r#"
+            SELECT oracle_id AS "oracle_id!" FROM (
+                SELECT oracle_id,
+                       ' ' || btrim(regexp_replace(lower(name), '[^a-z0-9]+', ' ', 'g')) || ' ' AS words
+                FROM card_faces
+                WHERE NOT (oracle_id = ANY($2))
+            ) f
+            WHERE words LIKE '% ' || $1 || ' %'
+            GROUP BY oracle_id
+            -- A name the span begins ("Grand Arbiter Augustin IV") first: the
+            -- offer holds MAX_CANDIDATES, and that is the card it most likely means.
+            ORDER BY bool_or(words LIKE ' ' || $1 || ' %') DESC, oracle_id
+            "#,
+            key,
+            except
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(upstream("name containment lookup"))
+    }
+
+    /// The epithet step's cards, and whether it may resolve: an epithet that
+    /// is also part of another card's name ("Grand Arbiter" for Dovin, Grand
+    /// Arbiter and Grand Arbiter Augustin IV) is offered with those cards,
+    /// never taken, since players name the other card by it as often.
+    async fn epithet_step(&self, lowered: &str) -> Result<(Vec<Uuid>, bool), JudgeError> {
+        let mut ids = self.epithet(lowered).await?;
+        let Some(key) = epithet_key(lowered).filter(|_| !ids.is_empty()) else {
+            return Ok((ids, false));
+        };
+        // The key, not the span: "the grand arbiter" is contested by "Grand
+        // Arbiter Augustin IV" as surely as "grand arbiter" is.
+        let others = self.names_containing(&key, &ids).await?;
+        let contested = !others.is_empty();
+        ids.extend(others);
+        Ok((ids, contested))
     }
 
     /// Among `ids`, those whose full card name is exactly `lowered` (case-insensitive).
@@ -356,6 +435,10 @@ impl PgResolver {
         if !ids.is_empty() {
             return Ok(Some((ids, MatchedVia::ShortName)));
         }
+        let (ids, _) = self.epithet_step(lowered).await?;
+        if !ids.is_empty() {
+            return Ok(Some((ids, MatchedVia::Epithet)));
+        }
         let candidates = alias_suffix_candidates(lowered);
         if !candidates.is_empty()
             && let [(alias, id)] = self.aliases_among(&candidates).await?.as_slice()
@@ -411,6 +494,16 @@ impl PgResolver {
         let ids = self.short_name(&lowered).await?;
         if let Some(r) = self
             .decide(&query, &lowered, ids, MatchedVia::ShortName)
+            .await?
+        {
+            return Ok(r);
+        }
+        let (ids, contested) = self.epithet_step(&lowered).await?;
+        if contested {
+            return self.ambiguous(&query, &ids, MatchedVia::Epithet).await;
+        }
+        if let Some(r) = self
+            .decide(&query, &lowered, ids, MatchedVia::Epithet)
             .await?
         {
             return Ok(r);
@@ -588,6 +681,32 @@ fn only_qualifiers_before(lowered: &str, alias: &str) -> bool {
         .is_some_and(|prefix| prefix.iter().all(|w| QUALIFIERS.contains(w)))
 }
 
+/// The span as the epithet step compares it: trimmed, a leading "the "
+/// dropped, and `None` under two words. A one-word epithet is how players
+/// name some other card as often as this one ("ravager" is Arcbound Ravager
+/// more often than Nicol Bolas, the Ravager), so it is left to the fuzzy
+/// step's "did you mean…?" rather than resolved.
+fn epithet_key(lowered: &str) -> Option<String> {
+    let span = lowered.trim();
+    let span = span.strip_prefix("the ").unwrap_or(span).trim();
+    (span.split_whitespace().count() >= 2).then(|| span.to_owned())
+}
+
+/// Lower-cased ASCII letters and digits, every other run of characters one
+/// space, trimmed: how [`PgResolver::names_containing`] compares a span with
+/// names, so "Heron's Grace" and "herons grace" do not both match.
+fn word_key(text: &str) -> String {
+    let mut key = String::new();
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() {
+            key.push(c.to_ascii_lowercase());
+        } else if !key.ends_with(' ') && !key.is_empty() {
+            key.push(' ');
+        }
+    }
+    key.trim_end().to_owned()
+}
+
 /// Drop a trailing English possessive (`bob's`, `goyf’s`, `Jace's`) and
 /// trailing punctuation so nicknames written in running prose still reach
 /// the alias and name steps. Returns `None` when nothing was stripped.
@@ -639,7 +758,38 @@ impl Resolver for PgResolver {
 
 #[cfg(test)]
 mod unit {
-    use super::{CardSpan, alias_suffix_candidates, only_qualifiers_before, strip_possessive};
+    use super::{
+        CardSpan, alias_suffix_candidates, epithet_key, only_qualifiers_before, strip_possessive,
+        word_key,
+    };
+
+    #[test]
+    fn word_keys_match_the_sql_normalisation() {
+        assert_eq!(word_key("Grand Arbiter"), "grand arbiter");
+        assert_eq!(word_key("  Heron's   Grace! "), "heron s grace");
+        assert_eq!(word_key("Ætherize"), "therize");
+        assert_eq!(word_key("--"), "");
+    }
+
+    #[test]
+    fn epithet_keys_need_two_words() {
+        assert_eq!(
+            epithet_key("mind sculptor").as_deref(),
+            Some("mind sculptor")
+        );
+        assert_eq!(
+            epithet_key(" the mind sculptor ").as_deref(),
+            Some("mind sculptor")
+        );
+        assert_eq!(
+            epithet_key("child of ungoliant").as_deref(),
+            Some("child of ungoliant")
+        );
+        assert_eq!(epithet_key("ravager"), None);
+        assert_eq!(epithet_key("the ravager"), None);
+        assert_eq!(epithet_key("the"), None);
+        assert_eq!(epithet_key(""), None);
+    }
 
     #[test]
     fn suffix_candidates() {

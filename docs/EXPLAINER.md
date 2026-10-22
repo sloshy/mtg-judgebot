@@ -114,8 +114,11 @@ lookups and stops at the first step that answers:
 3. exact current name (also matches a single face of a two-faced card),
 4. every name the card has ever been printed under (old names, errata'd names),
 5. the part of a name before the comma (`Jace` → several Jaces → ambiguous),
-6. a nickname preceded only by printing words (`foil bob`),
-7. trigram fuzzy match, for typos.
+6. the part after it, when it is two words or more (`Nimble Pilferer` → Ragavan), unless
+   another card's name holds the same words (`Grand Arbiter` → Dovin, Grand Arbiter or
+   Grand Arbiter Augustin IV? → ambiguous),
+7. a nickname preceded only by printing words (`foil bob`),
+8. trigram fuzzy match, for typos.
 
 A span written in brackets, `[[Full Card Name]]`, skips that resolution order. The brackets say "this
 exact name", so it is tried only against current and printed names, then the alias table.

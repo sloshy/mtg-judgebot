@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT DISTINCT oracle_id AS \"oracle_id!\" FROM card_faces\n            WHERE position(',' IN name) > 0\n              AND regexp_replace(btrim(lower(substr(name, position(',' IN name) + 1))), '^the ', '') = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oracle_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "card_faces",
+            "name": "oracle_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "23ba731f4194a7ecc45029f2112558b4b656b22e6c9a76c853abfaf5be2ce7f2"
+}

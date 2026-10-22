@@ -436,6 +436,13 @@ pub enum MatchedVia {
     /// The part of a name before its first comma (`Ragavan` for
     /// "Ragavan, Nimble Pilferer"): how legendary cards are usually referred to.
     ShortName,
+    /// The part of a face name after its first comma, a leading "the"
+    /// dropped on both sides (`mind sculptor` for "Jace, the Mind Sculptor",
+    /// `Nimble Pilferer` for "Ragavan, Nimble Pilferer"): the other half of a
+    /// legendary card's name, which players and the extractor also write alone.
+    /// Two words or more, and only ever offered when another card's name
+    /// holds the same words ("Grand Arbiter").
+    Epithet,
     /// `pg_trgm` similarity.
     Fuzzy,
 }

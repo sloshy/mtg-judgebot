@@ -56,14 +56,19 @@ Discord message (+ last N Q&A in the same thread)
     A typed resolution order, each step tried only when the one above found nothing:
     alias → possessive-stripped alias ("bob's" → "bob") →
     exact name → printed-name table → short name before the comma ("Ragavan")
-    → alias as a suffix → trigram fuzzy
+    → the name after the comma, a leading "the" dropped, two words or more
+      ("Nimble Pilferer"; a one-word "ravager" goes on to fuzzy, since
+      players mean other cards by it). When another card's name holds the
+      same words ("Grand Arbiter Augustin IV" for Dovin, Grand Arbiter's
+      "Grand Arbiter"), every such card is offered instead: Ambiguous, never
+      resolved → alias as a suffix → trigram fuzzy
     A [[bracketed]] span has its own resolution order: exact name → printed name →
     alias (whole span). It is CardSpan::Exact, chosen by an exhaustive
     match, so no looser step can resolve it. An alias maps one spelling to
     one card, so [[bob]] resolves. A miss is never resolved, only offered
     as Ambiguous:
-      - the cards the other naming steps (possessive, short name, alias
-        suffix) point at, under that step's matchedVia, so [[bob's]] offers
+      - the cards the other naming steps (possessive, short name, the name
+        after the comma, alias suffix) point at, under that step's matchedVia, so [[bob's]] offers
         Dark Confidant. Dropped as a duplicate when the extractor also
         named the card.
       - with no naming-step hit, the fuzzy neighbours.

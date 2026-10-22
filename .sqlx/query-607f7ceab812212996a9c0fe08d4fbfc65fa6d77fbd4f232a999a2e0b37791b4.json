@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT oracle_id AS \"oracle_id!\" FROM (\n                SELECT oracle_id,\n                       ' ' || btrim(regexp_replace(lower(name), '[^a-z0-9]+', ' ', 'g')) || ' ' AS words\n                FROM card_faces\n                WHERE NOT (oracle_id = ANY($2))\n            ) f\n            WHERE words LIKE '% ' || $1 || ' %'\n            GROUP BY oracle_id\n            -- A name the span begins (\"Grand Arbiter Augustin IV\") first: the\n            -- offer holds MAX_CANDIDATES, and that is the card it most likely means.\n            ORDER BY bool_or(words LIKE ' ' || $1 || ' %') DESC, oracle_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oracle_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "card_faces",
+            "name": "oracle_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "607f7ceab812212996a9c0fe08d4fbfc65fa6d77fbd4f232a999a2e0b37791b4"
+}
