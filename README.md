@@ -200,94 +200,104 @@ cargo run -p judge-eval -- sweep eval/sweeps/efforts.toml            # models ×
 Each question can list alternate rule ids that state the same fact, so the score tracks
 whether the answer is right, not whether it picked one author's preferred citation.
 `grade` asks a model whether each ruling follows from its quotes and agrees with the
-reference, the same reading the Results table was graded with by hand
-(`docs/DECISIONS.md` D28). It is a score, not a pass/fail gate.
+reference, which is how the Results table below was graded (`docs/DECISIONS.md` D28). It
+is a score, not a pass/fail gate. `sweep` runs a plan of models and efforts, each several
+times, graded by one model, and averages them; `eval/sweeps/` holds the plans behind the
+table.
 
 ### Results
 
-Three full runs of the 21 questions the set held then, on CR 2026-08-19 with Voyage `voyage-3.5`
-embeddings: Opus and Sonnet on 2026-09-29, Haiku on 2026-10-07 on the same pipeline. The
-run files are in `eval/published/` with every question, answer, citation, time and cost.
-`judge-eval show eval/published/v1-opus-5-5.json` prints each answer beside its reference.
+The default and four changes from it, each run twice over the 22 questions (19 in scope,
+3 out of scope) on 2026-10-22, on CR 2026-09-25 with Voyage `voyage-3.5` embeddings. Every
+figure is pooled over both runs. Each configuration's `judge.toml` and both run files are in
+`eval/published/` (`v2-*`), with every question, answer, citation, time and cost.
+`judge-eval show eval/published/v2-default-r1.json` prints each answer beside its
+reference. The two cheaper models keep the default's extraction and only answer.
 
-| | `claude-opus-5-5`, both stages, synthesis at medium effort (the default) | `claude-sonnet-5-5`, both stages, synthesis at high effort | `claude-haiku-5-5`, both stages, synthesis at medium effort |
-| --- | --- | --- | --- |
-| Out-of-scope questions declined (of 3) | 3 | 3 | 3 |
-| In-scope questions answered (of 18) | 18 | 17 | 16 |
-| …agreeing with the reference ruling | 18 | 17 | 14 |
-| …partly (right on the main point, a sub-question missed) | 0 | 0 | 2 |
-| …contradicting the reference | 0 | 0 | 0 |
-| Asked "did you mean?" instead | 0 | 1 | 2 |
-| Not answered | 0 | 0 | 0 |
-| …following from what they cite alone | 14 | 13 | 10 |
-| Decisive rule ids cited | 31 of 35 (89%) | 29 of 35 (83%) | 24 of 35 (69%) |
-| Supporting rule ids also cited | 16 of 32 | 12 of 32 | 10 of 32 |
-| Cost per in-scope question (median) | $0.09 | $0.05 | $0.003 |
-| Cost per question *answered* | $0.09 | $0.06 | $0.003 |
-| Time per in-scope question (median / longest) | 15 s / 27 s | 11 s / 32 s | 13 s / 26 s |
-| Whole run | $1.62 | $0.98 | $0.05 |
+| | Default: `claude-opus-5-5` at medium effort, both stages | Extraction at low | Synthesis at xhigh | Synthesis on `claude-sonnet-5-5` at low | Synthesis on `claude-haiku-5-5` at high |
+| --- | --- | --- | --- | --- | --- |
+| Out-of-scope questions declined (of 6) | 6 | 6 | 6 | 6 | 6 |
+| In-scope questions answered (of 38) | 38 | 37 | 38 | 38 | 38 |
+| …agreeing with the reference ruling | 38 | 37 | 38 | 36 | 35 |
+| …partly (right on the main point, a sub-question missed) | 0 | 0 | 0 | 2 | 3 |
+| …contradicting the reference | 0 | 0 | 0 | 0 | 0 |
+| Asked "did you mean?" instead | 0 | 1 | 0 | 0 | 0 |
+| Not answered | 0 | 0 | 0 | 0 | 0 |
+| …following from what they cite alone | 21 | 21 | 24 | 12 | 20 |
+| Wrong side remarks | 1 | 2 | 0 | 5 | 3 |
+| Decisive rule ids cited | 64 of 74 (86%) | 61 of 74 (82%) | 67 of 74 (91%) | 57 of 74 (77%) | 59 of 74 (80%) |
+| Supporting rule ids also cited | 34 of 66 | 26 of 66 | 34 of 66 | 32 of 66 | 24 of 66 |
+| Cost per in-scope question (median) | $0.087 | $0.086 | $0.099 | $0.046 | $0.009 |
+| Time per in-scope question (median / longest) | 13 s / 24 s | 12 s / 29 s | 18 s / 43 s | 9 s / 19 s | 17 s / 39 s |
+| Whole run (of 22 questions) | $1.67 | $1.63 | $1.93 | $0.93 | $0.21 |
 
 How to read the table:
 
 - **Answered** means the answer passed validation: every citation points to material the
   model was shown and quotes it word for word, and every rule number in the text is
   cited. "Not answered" means the bot refused to show an answer, not that it showed a
-  wrong one. A rejected answer gets one retry with a note on what failed. Sonnet needed
-  five retries in this run, Haiku three, Opus one, and every retry succeeded.
+  wrong one. A rejected answer gets one retry with a note on what failed. Of the 44
+  questions each configuration was asked, Sonnet needed 8 retries, the default 2, low
+  extraction 4, xhigh and Haiku none, and every retry succeeded.
 - **"Did you mean?"** is the bot working as designed when a name could mean several
-  cards, but it leaves the question unanswered. Sonnet asked once, about "Bruna" and
-  "Gisela": it doesn't always expand shortened names (about half the time over several
-  runs), where Opus names the melded pair. Haiku asked about the same pair, and once
-  about "Glimmerpuff", a card name it made up for a question about Clone and Tarmogoyf.
-- **Agreement with the reference** was judged by Claude, reading each answer against the
-  reference under a strict rubric. The references were written and checked by models,
-  then audited against Oracle text, rulings and the rules, which found three to correct.
-  No human judge has reviewed either side, so read this as "no contradiction found", not
-  as measured accuracy. It grades the ruling, not every side remark. The Opus run had no
-  wrong side remarks. The Sonnet run had one (it said Urborg under Blood Moon has no
-  abilities, when Blood Moon gives it "{T}: Add {R}"), which didn't change the ruling.
-  The Haiku run had two: that an opponent gets priority only once all players pass, and
-  a ruling on Urborg's page credited to Magus of the Moon.
+  cards, but it leaves the question unanswered. With extraction at low, Opus once wrote
+  "Bruna" and "Gisela" without the full names; at medium it named the melded pair every
+  time.
+- **Agreement with the reference** was judged by Claude Opus 5.5 (`judge-eval grade`),
+  reading each answer against the reference under a strict rubric. The references were
+  written and checked by models, then audited against Oracle text, rulings and the rules,
+  which found three to correct. No human judge has reviewed either side, so read this as
+  "no contradiction found", not as measured accuracy. It grades the ruling, not every side
+  remark. The default made one wrong remark (that you choose the order of Bruna and Gisela
+  in exile). Sonnet's partial answers misdescribed Opalescence under Humility and missed
+  the Lion's Eye Diamond line of holding priority. Haiku's never worked through the
+  trample-and-deathtouch case the Questing Beast question describes, and once wouldn't
+  name "Tim" (Prodigal Sorcerer). Both said once that Blood Moon leaves Urborg with no
+  abilities, when it gives it "{T}: Add {R}".
 - **Following from what they cite** asks whether the ruling follows from the quoted text
   alone. The rest rely on a step they don't cite: Doubling Season's own text for the
   counter math, the definition of "dies" (700.4), or the rule that Oracle text overrides
-  an old printing (108.1). Graders apply this one less evenly than agreement, so a
-  difference of one or two between runs means little.
+  an old printing (108.1). Graders apply this one less evenly than agreement.
 - **Decisive rule ids** are the rules a reference answer rests on, which a correct answer
   should cite. **Supporting** ids are background a good answer may leave out, so missing
   one doesn't count against it. The split was drafted by a model and accepted by the
   maintainer, not a judge. It signals regressions between runs rather than measuring
-  accuracy: Opus's Blood Moon answer misses 305.7, the rule it rests on, but cites Blood
-  Moon's own ruling, which says the same thing.
-- Twenty-one hard questions is a small sample. It shows the bot holds up on layers,
+  accuracy.
+- **Small differences are noise.** On 19 graded questions one answer is about five points
+  of a run, and repeating a run moves agreement by one or two answers. Read a difference
+  of one or two as a tie; cost and decisive-rule recall move far less between runs.
+- Twenty-two hard questions is a small sample. It shows the bot holds up on layers,
   multi-faced cards, old wordings and Commander. It doesn't tell you how often an answer
   in your server will be right.
 - **The dollar figures are list prices** as the spend cap counts them, from the built-in
-  price table. Your provider's console has the real bill.
+  price table, with every question's material written to the prompt cache as a new
+  question's is. Your provider's console has the real bill. The questions ran four at a
+  time, so the times include some waiting.
 
-Opus 5.5 answers at medium effort, Anthropic's default for it. At high effort it did
-equally well on the set, with no more of its rulings following from what it cited, for a
-few cents more per run. That high run predates the change that prints CR examples under
-their own rule, and each setting was run once, so read that as "no worse", not as a
-measured gain.
+Opus 5.5 at medium effort on both stages is the default: every in-scope answer agreed
+with the reference, for $0.087 a question. The effort sweep behind it ran each stage alone
+at every effort from low to xhigh on all three models, two runs each
+(`eval/published/v2-efforts-summary.md`, `eval/sweeps/efforts.toml`). Opus agreed with the
+reference at every synthesis effort; medium is where its decisive-rule recall levels off,
+for 7% over low. At extraction, low and medium found the same cards except where low wrote
+part of a name alone, so low is a few percent cheaper with an occasional "did you mean?".
 
-Sonnet is the budget option, at half of Opus 5.5's price per token
-(`eval/published/v1-sonnet-5-5.judge.toml`). It stays at high effort: at medium it
-misdescribed a card once and made three wrong side remarks, which the 15% saved doesn't
-justify. At high, every answer it gave agreed with the reference, at about 60% of the
-cost per answer and slightly faster. It needed more retries, asked "did you mean?" once
-where Opus answered, and cited fewer background rules.
+Moving one stage from the default, as the table shows:
 
-Haiku is the cheapest model, at a twentieth of Sonnet's price per token
-(`eval/published/v1-haiku-5-5.judge.toml`). A whole run cost five cents. No answer
-contradicted the reference, but two answered only part of the question: it noted that
-Questing Beast has no trample without working through the trample-and-deathtouch case
-the asker described, and it wouldn't name "Tim" (Prodigal Sorcerer). Fewer of its rulings
-follow from what they cite, usually because it uses a card's text without quoting it.
-It answers at medium effort, Anthropic's default for it: high and low agreed with the
-reference no more often and made more wrong side remarks (one run each). Sonnet stays the recommended budget option. Haiku suits a
-community where the bill matters more than an occasional partial answer. The
-documentation site's Model choice page covers switching and other ways to save money.
+- **Extraction at low** saves about 3% and is otherwise as good, with an occasional "did
+  you mean?" when a name is written in part (once in 38 here).
+- **Synthesis at xhigh** gives the same rulings with a few more of the decisive rules
+  cited, for 16% more and about 40% longer per answer.
+- **Synthesis on Sonnet 5.5 at low** costs about half the default. It ran at low because
+  that matched its high-effort runs for a quarter less. About one answer in twenty is
+  right only in part, and it makes more wrong side remarks.
+- **Synthesis on Haiku 5.5 at high** costs a tenth of the default. About one answer in
+  thirteen is right only in part. It suits a community where the bill matters more than an
+  occasional partial answer.
+
+The documentation site's Model choice page has each of these as a `judge.toml` and covers
+other ways to save money. The 2026-09-29 and 2026-10-07 runs of the earlier configurations
+stay in `eval/published/` as `v1-*`.
 
 ## Design
 

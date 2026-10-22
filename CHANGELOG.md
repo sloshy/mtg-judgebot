@@ -327,6 +327,15 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **Measured efforts per stage.** A `judge.toml` stage that names no `effort` now runs at
+  the level its model was measured at on the gold set, for extraction as well as synthesis.
+  The default setup is Claude Opus 5.5 at medium on both stages: extraction at low now and
+  then wrote part of a card's name alone and asked "did you mean?", which medium never did,
+  for about 3% more a question. Sonnet 5.5's synthesis default moves from high to low,
+  which agreed with the reference as often for a quarter less, and Haiku 5.5 extracts at
+  high. An extraction at high effort or above gets a 4000-token output ceiling by default.
+  Set `effort` on a stage to keep the previous behaviour.
+
 - **Backups go to any S3-compatible store.** The backup's settings were Cloudflare R2's
   and are now `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY_ID` and
   `BACKUP_S3_SECRET_ACCESS_KEY`, with two new optional ones: `BACKUP_S3_REGION` (the

@@ -6,8 +6,8 @@ sidebar:
 ---
 
 With nothing but `.env`, the judge runs on Anthropic's first-party API: `claude-opus-5-5`
-for both LLM stages, and Voyage `voyage-3.5` for embeddings if `VOYAGE_API_KEY` is set.
-The eval numbers were measured on that setup.
+at medium effort for both LLM stages, and Voyage `voyage-3.5` for embeddings if
+`VOYAGE_API_KEY` is set. The eval numbers were measured on that setup.
 
 A `judge.toml` picks something else, such as a different model per stage on different
 providers. The file is the one `JUDGE_CONFIG` names, else `./judge.toml` if present.
@@ -134,24 +134,49 @@ same summary line at startup.
 
 ## Cheaper models
 
-The default is the expensive model. It and two cheaper ones were measured on the
-21-question gold set, Opus and Sonnet on 2026-09-29 and Haiku on 2026-10-07
-([Evaluation](../../how-it-works/evaluation/#results) has the table, and the run files are
-in `eval/published/`):
+The default, Opus 5.5 at medium on both stages, answered every in-scope question of the
+gold set in agreement with the reference, at about $7.60 per 100 questions. Each change
+below moves one stage from it, measured end to end on the same set (two runs each,
+2026-10-22; [Evaluation](../../how-it-works/evaluation/#results) has the full table, and
+`eval/published/v2-*` the files and runs):
 
-| | Answered (of 18 in scope) | Agree with the reference | Per question answered |
-| --- | --- | --- | --- |
-| `claude-opus-5-5` on both stages, synthesis at medium effort | 18 | 18 | $0.09 |
-| `claude-sonnet-5-5` on both stages, synthesis at high effort | 17 | 17 | $0.06 |
-| `claude-haiku-5-5` on both stages, synthesis at medium effort | 16 | 14, and 2 in part | $0.003 |
+| Change from the default | Agree (of 38) | Partly right | Decisive rules cited | Per 100 questions | vs. default |
+| --- | --- | --- | --- | --- | --- |
+| None: Opus 5.5 at medium, both stages | 38 | 0 | 86% | $7.60 | |
+| Extraction at `low` | 37, and 1 "did you mean?" | 0 | 82% | $7.40 | −3% |
+| Synthesis at `xhigh` | 38 | 0 | 91% | $8.80 | +16% |
+| Synthesis on `claude-sonnet-5-5` at `low` | 36 | 2 | 77% | $4.20 | −44% |
+| Synthesis on `claude-haiku-5-5` at `high` | 35 | 3 | 80% | $0.96 | −87% |
 
-Sonnet 5.5 is the budget option. Its input and output tokens cost half as much, and an
-answer about 60% as much, slightly faster. Every answer it gave agreed with the
-reference. It cited about as many of the rules its answers rest on but fewer of the
-background ones, needed a retry more often, and made one small mistake in an aside the ruling did not turn on. It also asks
-"did you mean?" more often for a shortened name: it asked about "Bruna" and "Gisela" in
-this run, where the melded pair makes the card clear, which is the one question it did
-not answer. To run it, name it for both stages:
+The gold set is deliberately hard, so expect an everyday question to cost less. A
+difference of one or two answers is within what repeating a run moves.
+
+**Extraction at low** is about as good and slightly cheaper. Now and then it writes part
+of a card's name alone ("Bruna" for Bruna, the Fading Light), and the bot asks "did you
+mean?" instead of answering. Set it on the extraction stage:
+
+```toml
+[models.extract]
+provider = "anthropic"
+model = "claude-opus-5-5"
+effort = "low"
+```
+
+**Synthesis at xhigh** gives the same rulings with a few more of the rules they rest on
+cited, for about 16% more and 40% longer per answer:
+
+```toml
+[models.synth]
+provider = "anthropic"
+model = "claude-opus-5-5"
+effort = "xhigh"
+```
+
+**Synthesis on Sonnet 5.5** costs about half the default per answer, and is faster. It
+answered as well at `low` as at `high` for a quarter less, so `low` is its default effort.
+About one answer in twenty was right only in part, and it made more wrong side remarks
+than Opus. Keep extraction on Opus: it is a small share of the bill, and Sonnet more often
+writes a shortened name alone. The whole file:
 
 ```toml
 [providers.anthropic]
@@ -164,42 +189,40 @@ kind = "voyage"
 
 [models.extract]
 provider = "anthropic"
-model = "claude-sonnet-5-5"
+model = "claude-opus-5-5"
 
 [models.synth]
 provider = "anthropic"
 model = "claude-sonnet-5-5"
-effort = "high"
 
 [models.embed]                       # a judge.toml without it runs with no vector search
 provider = "voyage"
 model = "voyage-3.5"
 ```
 
-This is the file the run used (`eval/published/v1-sonnet-5-5.judge.toml`). The built-in
-price table knows the model, so it needs no `pricing` table.
+This is `eval/published/v2-sonnet-low.judge.toml` without the efforts it spells out, which
+are each model's defaults. The built-in price table knows the model, so it needs no
+`pricing` table.
 
-Haiku 5.5 is the cheapest: a twentieth of Sonnet's price per token, and five cents for the
-whole set. None of its answers contradicted the reference, but two answered only part of
-the question, and two more questions got "did you mean?", once over a card name its
-extraction made up. Fewer of its rulings follow from what they cite, and it made two
-wrong asides. Sonnet stays the budget option to recommend. Haiku suits a server where the
-bill matters more than an occasional partial answer. Its file is
-`eval/published/v1-haiku-5-5.judge.toml`: the one above with `claude-haiku-5-5` on both
-stages and `effort = "medium"`. The price table knows both of its rate cards, including
-the dearer one for a prompt over 100K tokens, which the judge's prompts stay well under.
+**Synthesis on Haiku 5.5** costs about a tenth of the default. None of its answers
+contradicted the reference, but about one in thirteen answered only part of the question,
+and fewer of its rulings follow from what they cite than Opus's. It suits a server where the
+bill matters more than an occasional partial answer. The file is the one above with
+`model = "claude-haiku-5-5"` on `[models.synth]` (`eval/published/v2-haiku-high.judge.toml`).
+The price table knows both of its rate cards, including the dearer one for a prompt over
+100K tokens, which the judge's prompts stay well under.
 
-Twenty-one questions is a small sample. Any other model means running
-`judge-eval answer --config <your file>` before you trust it. A model that fails often
-there may need the prompts in `crates/bot/src/prompts/` re-tuned for it against the gold
-set.
+Twenty-two questions is a small sample. Any other model means running
+`judge-eval answer --config <your file>` (or a `judge-eval sweep` plan) before you trust
+it. A model that fails often there may need the prompts in `crates/bot/src/prompts/`
+re-tuned for it against the gold set.
 
 Other ways to lower the bill, on any model:
 
-- **The extraction stage** is a small share of an answer's cost (about a third of a cent
-  of ten on the default). A local model there (`pricing = "free"`) removes it. It is the
-  safer stage to move: all three models above separated the 3 out-of-scope questions from the
-  18 in scope, which is the part of extraction the gold set measures.
+- **The extraction stage** is a small share of an answer's cost (about half a cent of
+  nine on the default). A local model there (`pricing = "free"`) removes it. It is the
+  safer stage to move, but measure it: a model that writes card names in part makes the
+  bot ask "did you mean?" more often.
 - **`JUDGE_USER_LIMIT`, `API_RATE_LIMIT` and `JUDGE_BUDGET_PERIOD`** limit how many
   questions are asked, and the bill is proportional to that.
 - **`/card` and `/rule`** answer the look-something-up questions without a model.
@@ -208,23 +231,21 @@ Other ways to lower the bill, on any model:
 ## Effort
 
 `effort` on a stage is how hard the model thinks, and thinking tokens are billed as
-output. Extraction runs at `low`. Synthesis, when the file names no effort, runs at the
-level measured for its model on the gold set:
+output. When the file names no effort, each stage runs at the level measured for its model
+on the gold set (2026-10-21, each stage alone at every effort from `low` to `xhigh`, two
+runs each, `eval/published/v2-efforts-summary.md`):
 
-| Model | Synthesis effort | Why |
-| --- | --- | --- |
-| `claude-opus-5-5` | `medium` | As good as `high` on the gold set (all 18 agreeing, no wrong asides) and a little cheaper. It is also Anthropic's default for this model. |
-| `claude-sonnet-5-5` | `high` | At `medium` it misdescribed a card on one question and made three wrong asides, for 15% less. |
-| `claude-haiku-5-5` | `medium` | On the questions every run answered it agreed with the reference as often as at `high`, with fewer wrong asides; `low` did worse. It is also Anthropic's default for this model. |
-| any other model | `high` | Unmeasured, so the setting that errs toward correctness. |
+| Model | Extraction | Synthesis | Why |
+| --- | --- | --- | --- |
+| `claude-opus-5-5` | `medium` | `medium` | Extraction at `low` occasionally wrote a card's name in part; `medium` never did, for 3% more. Synthesis agreed with the reference at every effort, and `medium` is where the rules it cites level off. |
+| `claude-sonnet-5-5` | `low` | `low` | Extraction found the cards as often at `low` as at `high`. Synthesis at `low` agreed as often as at `high`, with fewer failed answers, for a quarter less. |
+| `claude-haiku-5-5` | `high` | `medium` | Extraction found every card on 95% of questions at `high`, against 86% at `low`, for a fraction of a cent; at `xhigh` it outthinks the stage's output limit. Synthesis tied between `medium` and `high`; `medium` is Anthropic's default for it. |
+| any other model | `low` | `high` | Unmeasured: enough for extraction, and the setting that errs toward correctness for synthesis. |
 
-Each setting was run once, on 2026-09-29 (Haiku on 2026-10-07), and the Opus `high` run predates a change to how
-the material prints CR examples, so read "as good" as "no worse". Model ids match exactly: on
-Bedrock, `anthropic.claude-opus-5-5` is not in the table and runs at `high` unless you set
-`effort`.
+Model ids match exactly: on Bedrock, `anthropic.claude-opus-5-5` is not in the table and
+runs at the unmeasured levels unless you set `effort`.
 
-Setting `effort` on `[models.synth]` overrides this. An answer cut off at `max_tokens` is
-retried once at `medium`, or at `low` when it was already `medium`, and one at `low` is
-not retried. Raising effort
-above these costs more per answer. Measure a change with `judge-eval answer --config
-<your file>` before relying on it.
+Setting `effort` on a stage overrides this. An answer cut off at `max_tokens` is retried
+once at `medium`, or at `low` when it was already `medium`, and one at `low` is not
+retried. Raising effort costs more per answer. Measure a change with `judge-eval answer
+--config <your file>` before relying on it.

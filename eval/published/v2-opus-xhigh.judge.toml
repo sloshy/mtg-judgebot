@@ -1,0 +1,24 @@
+# The default with synthesis at xhigh effort: the same rulings, a few more of the
+# decisive rules cited, for about 16% more and about 40% longer per answer.
+# Run files: eval/published/v2-opus-xhigh-r1.json and -r2.json (eval/sweeps/tiers.toml).
+[models.embed]
+model = "voyage-3.5"
+provider = "voyage"
+
+[models.extract]
+effort = "medium"
+model = "claude-opus-5-5"
+provider = "anthropic"
+
+[models.synth]
+effort = "xhigh"
+model = "claude-opus-5-5"
+provider = "anthropic"
+
+[providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
+endpoint = "direct"
+kind = "anthropic"
+
+[providers.voyage]
+kind = "voyage"

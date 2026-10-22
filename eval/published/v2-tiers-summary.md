@@ -1,0 +1,19 @@
+# Sweep tiers
+
+22 questions, up to 2 repeats per cell; grader claude-opus-5-5; 4 questions at once in a run and 3 runs at once, so secs/q includes waiting on the others. Each figure is the mean over the cell's complete runs, with the range across runs in brackets. Cost is per run of all questions.
+
+## End to end
+
+shape = answered or declined as gold says; errors = questions that ended in an error where gold expects an answer; recall = decisive rule ids cited; retried = first attempt rejected; graded = answers graded / questions gold expects an answer to; agree, partial and follows are shares of those questions (an error or an ungraded answer counts against them), then the count pooled over the runs: on 19 questions one answer is about 5 points of a run, so a gap of an answer or two is noise; supported = claims the quotes support, over graded answers; cold = questions whose material the run wrote to the cache itself rather than reading another run's copy, as every production question does (`-` in run files from before it was recorded); cost is only comparable between cold runs.
+
+| cell | runs | shape | errors | recall | retried | graded | agree | partial | follows | supported | cold | cost | grading | secs/q |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| extract=claude-opus-5-5@low synth=claude-opus-5-5@xhigh | 2 | 100% (100%–100%) | 0.0 (0.0–0.0) | 86% (86%–86%) | 1.0 (0.0–2.0) | 19/19, 19/19 | 100% (100%–100%) · 38/38 | 0% (0%–0%) · 0/38 | 61% (58%–63%) · 23/38 | 71% (68%–74%) | 19/19, 19/19 | $1.970 ($1.940–$2.001) | $0.453 ($0.449–$0.458) | 16.6s (16.1s–17.2s) |
+| extract=claude-opus-5-5@low synth=claude-opus-5-5@medium | 2 | 98% (95%–100%) | 0.5 (0.0–1.0) | 82% (81%–84%) | 2.0 (2.0–2.0) | 18/19, 19/19 | 97% (95%–100%) · 37/38 | 0% (0%–0%) · 0/38 | 55% (47%–63%) · 21/38 | 66% (62%–70%) | 18/18, 19/19 | $1.627 ($1.580–$1.674) | $0.429 ($0.402–$0.457) | 11.8s (11.7s–12.0s) |
+| extract=claude-opus-5-5@medium synth=claude-opus-5-5@medium | 2 | 100% (100%–100%) | 0.0 (0.0–0.0) | 86% (86%–86%) | 1.0 (1.0–1.0) | 19/19, 19/19 | 100% (100%–100%) · 38/38 | 0% (0%–0%) · 0/38 | 55% (53%–58%) · 21/38 | 66% (64%–68%) | 19/19, 19/19 | $1.672 ($1.670–$1.674) | $0.417 ($0.411–$0.422) | 12.2s (11.9s–12.6s) |
+| extract=claude-opus-5-5@low synth=claude-sonnet-5-5@low | 2 | 100% (100%–100%) | 0.0 (0.0–0.0) | 74% (73%–76%) | 2.0 (2.0–2.0) | 19/19, 19/19 | 92% (84%–100%) · 35/38 | 8% (0%–16%) · 3/38 | 34% (32%–37%) · 13/38 | 60% (58%–62%) | 19/19, 19/19 | $0.831 ($0.813–$0.849) | $0.419 ($0.417–$0.421) | 7.6s (7.5s–7.6s) |
+| extract=claude-opus-5-5@low synth=claude-haiku-5-5@high | 2 | 100% (100%–100%) | 0.0 (0.0–0.0) | 81% (78%–84%) | 0.5 (0.0–1.0) | 19/19, 19/19 | 87% (84%–89%) · 33/38 | 13% (11%–16%) · 5/38 | 50% (37%–63%) · 19/38 | 74% (73%–76%) | 19/19, 19/19 | $0.170 ($0.156–$0.183) | $0.369 ($0.361–$0.377) | 15.1s (14.6s–15.5s) |
+| extract=claude-opus-5-5@medium synth=claude-opus-5-5@xhigh | 2 | 100% (100%–100%) | 0.0 (0.0–0.0) | 91% (89%–92%) | 0.0 (0.0–0.0) | 19/19, 19/19 | 100% (100%–100%) · 38/38 | 0% (0%–0%) · 0/38 | 63% (53%–74%) · 24/38 | 73% (73%–73%) | 19/19, 19/19 | $1.931 ($1.911–$1.952) | $0.444 ($0.428–$0.459) | 16.9s (16.2s–17.6s) |
+| extract=claude-opus-5-5@medium synth=claude-sonnet-5-5@low | 2 | 100% (100%–100%) | 0.0 (0.0–0.0) | 77% (73%–81%) | 4.0 (4.0–4.0) | 19/19, 19/19 | 95% (89%–100%) · 36/38 | 5% (0%–11%) · 2/38 | 32% (32%–32%) · 12/38 | 63% (59%–66%) | 19/19, 19/19 | $0.930 ($0.927–$0.933) | $0.409 ($0.398–$0.420) | 9.1s (8.9s–9.2s) |
+| extract=claude-opus-5-5@medium synth=claude-haiku-5-5@high | 2 | 100% (100%–100%) | 0.0 (0.0–0.0) | 80% (78%–81%) | 0.0 (0.0–0.0) | 19/19, 19/19 | 92% (89%–95%) · 35/38 | 8% (5%–11%) · 3/38 | 53% (47%–58%) · 20/38 | 70% (69%–70%) | 19/19, 19/19 | $0.211 ($0.202–$0.220) | $0.387 ($0.357–$0.417) | 15.6s (15.3s–16.0s) |
+

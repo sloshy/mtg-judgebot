@@ -1,0 +1,24 @@
+# Opus 5.5 extracting at medium, Claude Haiku 5.5 answering at high effort: about 87%
+# cheaper than the default, with about one answer in thirteen right only in part.
+# Run files: eval/published/v2-haiku-high-r1.json and -r2.json (eval/sweeps/tiers.toml).
+[models.embed]
+model = "voyage-3.5"
+provider = "voyage"
+
+[models.extract]
+effort = "medium"
+model = "claude-opus-5-5"
+provider = "anthropic"
+
+[models.synth]
+effort = "high"
+model = "claude-haiku-5-5"
+provider = "anthropic"
+
+[providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
+endpoint = "direct"
+kind = "anthropic"
+
+[providers.voyage]
+kind = "voyage"

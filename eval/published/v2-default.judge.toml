@@ -1,0 +1,24 @@
+# The default: Claude Opus 5.5 at medium effort on both stages, as a judge.toml with no
+# effort set now resolves it. Measured 2026-10-22 on the 22-question gold set, two runs.
+# Run files: eval/published/v2-default-r1.json and -r2.json (eval/sweeps/tiers.toml).
+[models.embed]
+model = "voyage-3.5"
+provider = "voyage"
+
+[models.extract]
+effort = "medium"
+model = "claude-opus-5-5"
+provider = "anthropic"
+
+[models.synth]
+effort = "medium"
+model = "claude-opus-5-5"
+provider = "anthropic"
+
+[providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
+endpoint = "direct"
+kind = "anthropic"
+
+[providers.voyage]
+kind = "voyage"

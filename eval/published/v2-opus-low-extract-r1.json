@@ -1,0 +1,2131 @@
+{
+  "label": "v2-opus-low-extract-r1",
+  "gold": "eval/gold.yaml",
+  "max_usd": 6.0,
+  "models": {
+    "extract": "anthropic/claude-opus-5-5",
+    "extract_effort": "low",
+    "synth": "anthropic/claude-opus-5-5",
+    "synth_effort": "medium"
+  },
+  "traced": true,
+  "rows": [
+    {
+      "id": "layers-ballista-scales-season-replacement",
+      "question": "i have [[Hardened Scales]] and [[Doubling Season]] and cast ballista for X=2. how many counters does it come in with? do i get to pick the order or is it timestamps",
+      "expected_answer": "You choose the order and the best answer is 6. Walking Ballista's 'enters with X +1/+1 counters' is a replacement effect (614.1c, 614.12), and Hardened Scales and Doubling Season are further replacement effects modifying the same event. When multiple replacement effects apply to the same event, the affected permanent's controller picks which applies first (616.1), and since none of the special priorities in 616.1a-d apply, any may be chosen (616.1e). Each effect applies only once to the event (614.5). Apply Scales first (2 -> 3), then Season doubles (3 -> 6). Timestamps are irrelevant for replacement effects; that is the layer system for continuous effects.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "616.1",
+        "616.1e",
+        "614.5"
+      ],
+      "supporting_rule_ids": [
+        "614.1c",
+        "614.12"
+      ],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "You pick the order. Timestamps don't matter here. Walking Ballista's own \"enters with X +1/+1 counters\" is the event being modified, and Hardened Scales and Doubling Season are two replacement effects trying to modify it. Per `616.1`, the affected object's controller (you) chooses which one applies first. Then, per `616.1f`, the other one applies to the modified event. Neither is a self-replacement effect, so `616.1e` lets you choose either one.\n\nWith X=2:\n\u2022 **Hardened Scales** first: 2 \u2192 3, then **Doubling Season**: 3 \u2192 **6 counters**.\n\u2022 Doubling Season first: 2 \u2192 4, then Hardened Scales: 4 \u2192 5 counters.\n\nSo put Scales first and you get a 6/6.\n\nBoth cards apply to counters a permanent enters with (Scryfall rulings on each), and the Hardened Scales ruling confirms that you choose the order. Each effect applies only once (`614.5`), so there's no loop.\n\nThe same choice comes up with Ballista's {4} ability: 1 counter becomes 4 if Scales goes first, or 3 if Doubling Season goes first.",
+        "confidence": "high",
+        "citations": [
+          "rule 616.1: \"the affected object\u2019s controller (or its owner if it has no controller) or the affected player chooses one to apply\"",
+          "rule 616.1f: \"Once the chosen effect has been applied, this process is repeated (taking into account only replacement or prevention effects that would now be applicable) until there are no more left to apply.\"",
+          "ruling a1f3da21-af6d-450e-bf0b-985d158418e6/636b245ed2960105: \"If two or more effects attempt to modify how many counters would be put on a creature you control, you choose the order to apply those effects\"",
+          "ruling a1f3da21-af6d-450e-bf0b-985d158418e6/86e5ac2af77f77bf: \"If a creature you control would enter the battlefield with a number of +1/+1 counters on it, it enters with that many plus one instead.\"",
+          "ruling 01546b7d-a233-4176-8843-d732074dc5b6/30e1af27509ea83b: \"Doubling Season affects permanents that enter with counters.\"",
+          "rule 616.1e: \"Any of the applicable replacement and/or prevention effects may be chosen.\"",
+          "rule 614.5: \"A replacement effect doesn\u2019t invoke itself repeatedly; it gets only one opportunity to affect an event or any modified events that may replace that event.\""
+        ],
+        "category": "replacement_effects",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "616.1",
+        "616.1f",
+        "616.1e",
+        "614.5"
+      ],
+      "recall": {
+        "hit": [
+          "616.1",
+          "616.1e",
+          "614.5"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 4,
+      "n_ruling_cites": 3,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 17241,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.07033572,
+      "tokens": {
+        "input": 138,
+        "output": 1113,
+        "cache_read": 11306,
+        "cache_write": 9052,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "You pick the order of the replacement effects.",
+            "support": "supported"
+          },
+          {
+            "claim": "Timestamps don't matter here.",
+            "support": "supported"
+          },
+          {
+            "claim": "Walking Ballista's own 'enters with X +1/+1 counters' is the event being modified, and Hardened Scales and Doubling Season are replacement effects modifying it.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "After the chosen effect applies, the other one applies to the modified event (616.1f).",
+            "support": "supported"
+          },
+          {
+            "claim": "Neither is a self-replacement effect, so 616.1e lets you choose either one.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Hardened Scales first: 2 \u2192 3.",
+            "support": "supported"
+          },
+          {
+            "claim": "Then Doubling Season: 3 \u2192 6 counters.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Doubling Season first: 2 \u2192 4, then Hardened Scales: 4 \u2192 5 counters.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Putting Scales first gives a 6/6.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Both cards apply to counters a permanent enters with.",
+            "support": "supported"
+          },
+          {
+            "claim": "Each effect applies only once, so there's no loop.",
+            "support": "supported"
+          },
+          {
+            "claim": "With Ballista's {4} ability, 1 counter becomes 4 if Scales goes first, or 3 if Doubling Season goes first.",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "The order choice and Scales' +1 are quoted. The count of 6 rests on Doubling Season doubling the counters, and no quote states that: the Season ruling only says it affects permanents that enter with counters, and its Oracle text is not cited.",
+        "grounding": "gap",
+        "agreement_reason": "Like the reference, the answer says you choose the order rather than timestamps, and that Scales first gives 6 counters.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0280742,
+        "reference": "You choose the order and the best answer is 6. Walking Ballista's 'enters with X +1/+1 counters' is a replacement effect (614.1c, 614.12), and Hardened Scales and Doubling Season are further replacement effects modifying the same event. When multiple replacement effects apply to the same event, the affected permanent's controller picks which applies first (616.1), and since none of the special priorities in 616.1a-d apply, any may be chosen (616.1e). Each effect applies only once to the event (614.5). Apply Scales first (2 -> 3), then Season doubles (3 -> 6). Timestamps are irrelevant for replacement effects; that is the layer system for continuous effects."
+      }
+    },
+    {
+      "id": "layers-blood-moon-tron",
+      "question": "opp cast [[Blood Moon]] while i have all three tron lands out. do i still get my 7 mana from urza's? can i tap tower for 3 colorless or is it just a Mountain now",
+      "expected_answer": "Tron is off. Blood Moon is a type-changing effect (layer 4, 613.1d) that sets each nonbasic land's subtype to Mountain. Per 305.7, a land whose subtype is set to a basic land type loses its old land types (so it is no longer an Urza's land), loses all abilities from its rules text (the colorless mana ability), and gains only '{T}: Add {R}'. Each Urza's land is a plain Mountain that taps for one red mana; Tower does not produce three because it no longer has that ability and the others no longer have the Urza's subtype. They are still nonbasic (305.8), so Blood Moon keeps affecting them.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "305.7"
+      ],
+      "supporting_rule_ids": [
+        "613.1d",
+        "305.8"
+      ],
+      "supporting_cited": [
+        "613.1d"
+      ],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "No. Under **Blood Moon** each Tron land is just a Mountain. **Urza's Tower** taps for {R}, not {C}{C}{C}, and so do **Urza's Mine** and **Urza's Power Plant**. That's 3 red mana in total, not 7 colorless.\n\nWhy: Blood Moon says \"Nonbasic lands are Mountains.\" That's a type-changing effect, applied in layer 4 per `613.1d`. Per Blood Moon's Scryfall ruling, nonbasic lands \"will lose any other land types and abilities they had. They will gain the land type Mountain and gain the ability \"{T}: Add {R}.\"\"\n\nSo Tower loses its whole printed ability, including the \"add {C}{C}{C} instead\" part. Even if that ability were still there, it wouldn't work: the Tron abilities check for land types, not names, and the Urza's Mine, Urza's Power-Plant and Urza's Tower subtypes are gone too. The lands keep their names and stay nonbasic, but that doesn't help, since only the land types matter.\n\nTo get Tron back, you need to remove Blood Moon.",
+        "confidence": "high",
+        "citations": [
+          "oracle 94fac5fe-97d5-4c12-a80c-8efff9d853ae#0: \"Nonbasic lands are Mountains.\"",
+          "ruling 94fac5fe-97d5-4c12-a80c-8efff9d853ae/de7b24c7cfc8d0d2: \"Nonbasic lands will lose any other land types and abilities they had. They will gain the land type Mountain and gain the ability \\\"{T}: Add {R}.\\\"\"",
+          "ruling 32fbb638-ab14-4e8b-a07a-d4c44e3496f2/67514ffa8ee40389: \"The ability checks for land types, not the names of other permanents you control.\"",
+          "rule 613.1d: \"Layer 4: Type-changing effects are applied. These include effects that change an object\u2019s card type, subtype, and/or supertype.\""
+        ],
+        "category": "layers",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "613.1d"
+      ],
+      "recall": {
+        "hit": [],
+        "missed": [
+          "305.7"
+        ]
+      },
+      "any_expected_cited": false,
+      "n_rule_cites": 1,
+      "n_ruling_cites": 2,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 12481,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.08486484,
+      "tokens": {
+        "input": 144,
+        "output": 1129,
+        "cache_read": 11306,
+        "cache_write": 11889,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Under Blood Moon each Tron land is just a Mountain.",
+            "support": "supported"
+          },
+          {
+            "claim": "Urza's Tower taps for {R}, not {C}{C}{C}, and so do Urza's Mine and Urza's Power Plant.",
+            "support": "supported"
+          },
+          {
+            "claim": "That's 3 red mana in total, not 7 colorless.",
+            "support": "supported"
+          },
+          {
+            "claim": "Blood Moon is a type-changing effect applied in layer 4.",
+            "support": "supported"
+          },
+          {
+            "claim": "Tower loses its whole printed ability.",
+            "support": "supported"
+          },
+          {
+            "claim": "The Tron abilities check for land types, not names.",
+            "support": "supported"
+          },
+          {
+            "claim": "The Urza's subtypes are gone too.",
+            "support": "supported"
+          },
+          {
+            "claim": "The lands keep their names and stay nonbasic.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "To get Tron back, you need to remove Blood Moon.",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "The Blood Moon ruling states that the lands lose other land types and abilities and gain '{T}: Add {R}'. That yields one red each and no Tron bonus without any outside step.",
+        "grounding": "follows",
+        "agreement_reason": "Both answers say each Tron land is a Mountain tapping for one red, with no Tron bonus because the ability and the subtypes are gone. They agree.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0138342,
+        "reference": "Tron is off. Blood Moon is a type-changing effect (layer 4, 613.1d) that sets each nonbasic land's subtype to Mountain. Per 305.7, a land whose subtype is set to a basic land type loses its old land types (so it is no longer an Urza's land), loses all abilities from its rules text (the colorless mana ability), and gains only '{T}: Add {R}'. Each Urza's land is a plain Mountain that taps for one red mana; Tower does not produce three because it no longer has that ability and the others no longer have the Urza's subtype. They are still nonbasic (305.8), so Blood Moon keeps affecting them."
+      }
+    },
+    {
+      "id": "layers-blood-moon-urborg-dependency",
+      "question": "follow up: what if I play [[Urborg, Tomb of Yawgmoth]] AFTER the moon is already down? urborg has the later timestamp so shouldn't it make everything a Swamp too? my friend says no",
+      "expected_answer": "Your friend is right. Both effects are layer 4 type-changing effects (613.1d). Urborg's effect depends on Blood Moon's (613.8a): applying Blood Moon makes Urborg a Mountain and strips its rules-text ability (305.7), which removes the existence of Urborg's effect. When a dependency exists it overrides timestamps (613.8), so Blood Moon applies first no matter which entered later (613.8b). Urborg is just a Mountain with '{T}: Add {R}' and nothing becomes a Swamp. (Any actual basic Swamps you control are still Swamps because Blood Moon only affects nonbasic lands.)",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "613.8",
+        "613.8a"
+      ],
+      "supporting_rule_ids": [
+        "613.8b",
+        "613.1d",
+        "305.7"
+      ],
+      "supporting_cited": [
+        "613.8b"
+      ],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "Your friend is right. Playing **Urborg, Tomb of Yawgmoth** after **Blood Moon** still makes nothing a Swamp. Urborg is just a Mountain with no other abilities, and timestamps don't change that.\n\nThe official Urborg ruling covers this exact case. If a moon effect sets Urborg to a basic land type, \"it won't turn lands into Swamps, no matter in what order those effects started to apply.\"\n\nWhy timestamps don't decide it: both effects change types, so both apply in layer 4. Normally effects in the same layer apply in timestamp order. But per `613.8`, \"If a dependency exists, it will override the timestamp system.\" Under `613.8a`, Urborg's effect depends on Blood Moon's, because applying Blood Moon would change \"the text or the existence of the first effect.\" Blood Moon (\"Nonbasic lands are Mountains.\") turns Urborg, a nonbasic land, into a Mountain that loses its other abilities, including \"Each land is a Swamp in addition to its other land types.\" Blood Moon does not depend on Urborg in return.\n\nSo Blood Moon applies first, and per `613.8b` Urborg's effect waits until after it. By then the effect no longer exists, so no land becomes a Swamp. Urborg itself is a legendary nonbasic Mountain that taps for {R} only.",
+        "confidence": "high",
+        "citations": [
+          "ruling db6174d7-211d-4817-b8e4-8384594c83f9/aebb4d57471c5c28: \"it won't turn lands into Swamps, no matter in what order those effects started to apply.\"",
+          "rule 613.8: \"If a dependency exists, it will override the timestamp system.\"",
+          "rule 613.8a: \"applying the other would change the text or the existence of the first effect, what it applies to, or what it does to any of the things it applies to\"",
+          "rule 613.8b: \"An effect dependent on one or more other effects waits to apply until just after all of those effects have been applied.\"",
+          "ruling 94fac5fe-97d5-4c12-a80c-8efff9d853ae/de7b24c7cfc8d0d2: \"Nonbasic lands will lose any other land types and abilities they had. They will gain the land type Mountain and gain the ability \\\"{T}: Add {R}.\\\"\""
+        ],
+        "category": "layers",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "613.8",
+        "613.8a",
+        "613.8b"
+      ],
+      "recall": {
+        "hit": [
+          "613.8",
+          "613.8a"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 3,
+      "n_ruling_cites": 2,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 14082,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.0916969,
+      "tokens": {
+        "input": 162,
+        "output": 1210,
+        "cache_read": 11306,
+        "cache_write": 12917,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Playing Urborg after Blood Moon still makes nothing a Swamp; timestamps don't change that",
+            "support": "supported"
+          },
+          {
+            "claim": "Urborg is just a Mountain with no other abilities that taps for {R} only",
+            "support": "supported"
+          },
+          {
+            "claim": "Both effects change types, so both apply in layer 4",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Normally effects in the same layer apply in timestamp order",
+            "support": "unsupported"
+          },
+          {
+            "claim": "A dependency overrides the timestamp system",
+            "support": "supported"
+          },
+          {
+            "claim": "Urborg's effect depends on Blood Moon's because applying Blood Moon removes Urborg's ability and so the existence of its effect",
+            "support": "supported"
+          },
+          {
+            "claim": "Blood Moon does not depend on Urborg in return",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Blood Moon applies first and Urborg's effect waits until after it, by which point it no longer exists",
+            "support": "supported"
+          }
+        ],
+        "grounding_reason": "The cited Urborg ruling directly states that lands won't become Swamps regardless of order. The dependency chain is also built from the quoted 613.8, 613.8a, 613.8b and the Blood Moon ruling. The layer-4 placement is uncited, but the ruling does not rest on it.",
+        "grounding": "follows",
+        "agreement_reason": "Like the reference, the answer says the friend is right: Blood Moon applies first through dependency, and Urborg is a Mountain tapping for {R} that makes nothing a Swamp.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0268062,
+        "reference": "Your friend is right. Both effects are layer 4 type-changing effects (613.1d). Urborg's effect depends on Blood Moon's (613.8a): applying Blood Moon makes Urborg a Mountain and strips its rules-text ability (305.7), which removes the existence of Urborg's effect. When a dependency exists it overrides timestamps (613.8), so Blood Moon applies first no matter which entered later (613.8b). Urborg is just a Mountain with '{T}: Add {R}' and nothing becomes a Swamp. (Any actual basic Swamps you control are still Swamps because Blood Moon only affects nonbasic lands.)"
+      }
+    },
+    {
+      "id": "layers-clone-goyf-copiable-values",
+      "question": "my goyf has two +1/+1 counters on it and I just giant growthed it. opponent [[Clone]]s it. is their clone a huge goyf too or just a regular one? and does the clone even know how big a goyf should be since the p/t is */*+1",
+      "expected_answer": "Just a regular Tarmogoyf. A copy acquires only the copiable values of the original (707.2): name, mana cost, types, rules text, printed P/T, etc. Counters, Giant Growth's +3/+3, and other non-copy effects are not copiable values, so the Clone gets none of them. The Clone does copy Tarmogoyf's rules text, and therefore its characteristic-defining ability (707.2a), so the Clone's own P/T is */*+1 computed from card types in graveyards (applied in layer 7a, 613.4a). The copy effect itself is applied in layer 1a (613.2a); your goyf's counters and pump are layer 7c (613.4c) and stay on your goyf only.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "707.2",
+        "707.2a"
+      ],
+      "supporting_rule_ids": [
+        "613.2a",
+        "613.4a",
+        "613.4c"
+      ],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "Their **Clone** is just a regular **Tarmogoyf**. It doesn't get your counters or the Giant Growth bonus, but it does copy the ability that sets Tarmogoyf's size, so it will be exactly as big as a fresh goyf.\n\nPer `707.2`, a copy takes only the copiable values, meaning the values from the printed text. \"Other effects (including type-changing and text-changing effects), status, counters, and stickers are not copied.\" That means your two +1/+1 counters and **Giant Growth**'s +3/+3 (\"Target creature gets +3/+3 until end of turn\") stay with your goyf. The Clone rulings say the same thing: Clone doesn't copy counters or \"any non-copy effects that have changed its power, toughness\".\n\nThe size isn't a problem. Per `707.2a`, a copy gets the abilities of the object it copies, and that includes Tarmogoyf's text: \"Tarmogoyf's power is equal to the number of card types among cards in all graveyards and its toughness is equal to that number plus 1.\" The Clone counts the graveyards itself, all the time. The only time a copy loses that ability is when the copy effect sets its own power and toughness, like Quicksilver Gargantuan in `707.9d`. Plain Clone doesn't do that.\n\nFor example, if the graveyards hold three card types, their Clone is 3/4. Your goyf is 3/4 + 2 counters + 3 = 8/9 until end of turn. Note that Giant Growth is an instant, so if it's the first instant in any graveyard, both goyfs count it.",
+        "confidence": "high",
+        "citations": [
+          "rule 707.2: \"Other effects (including type-changing and text-changing effects), status, counters, and stickers are not copied.\"",
+          "rule 707.2a: \"A copy acquires the abilities of the object it\u2019s copying because those values are derived from its rules text.\"",
+          "ruling 42226b87-0746-4ebf-9fd0-108d508462af/e115f2763b5d5e7e: \"any non-copy effects that have changed its power, toughness, types, color, or so on.\"",
+          "oracle 45900b2f-f6a9-4c42-9642-008f3c1cf6dd#0: \"Tarmogoyf's power is equal to the number of card types among cards in all graveyards and its toughness is equal to that number plus 1.\"",
+          "rule 707.9d: \"Quicksilver Gargantuan enters the battlefield as a copy of Tarmogoyf, which has a characteristic-defining ability that defines its power and toughness. Quicksilver Gargantuan does not have that ability.\""
+        ],
+        "category": "copying",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "707.2",
+        "707.2a",
+        "707.9d"
+      ],
+      "recall": {
+        "hit": [
+          "707.2",
+          "707.2a"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 3,
+      "n_ruling_cites": 1,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 16236,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.08940310000000001,
+      "tokens": {
+        "input": 182,
+        "output": 1135,
+        "cache_read": 11306,
+        "cache_write": 12742,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Their Clone is just a regular Tarmogoyf and doesn't get your counters or the Giant Growth bonus",
+            "support": "supported"
+          },
+          {
+            "claim": "A copy takes only the copiable values, meaning the values from the printed text",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Your two +1/+1 counters and Giant Growth's +3/+3 stay with your goyf",
+            "support": "supported"
+          },
+          {
+            "claim": "Giant Growth reads \"Target creature gets +3/+3 until end of turn\"",
+            "support": "unsupported"
+          },
+          {
+            "claim": "A copy gets the abilities of the object it copies, including Tarmogoyf's power/toughness-setting text",
+            "support": "supported"
+          },
+          {
+            "claim": "The Clone counts the graveyards itself, all the time",
+            "support": "supported"
+          },
+          {
+            "claim": "The only time a copy loses that ability is when the copy effect sets its own power and toughness, like Quicksilver Gargantuan",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Plain Clone doesn't set its own power and toughness",
+            "support": "unsupported"
+          },
+          {
+            "claim": "With three card types in graveyards, their Clone is 3/4",
+            "support": "supported"
+          },
+          {
+            "claim": "Your goyf is 3/4 + 2 counters + 3 = 8/9 until end of turn",
+            "support": "supported"
+          },
+          {
+            "claim": "If Giant Growth is the first instant in any graveyard, both goyfs count it",
+            "support": "supported"
+          }
+        ],
+        "grounding_reason": "The 707.2 quote and the Clone ruling show counters and non-copy effects aren't copied, and 707.2a plus Tarmogoyf's Oracle text show the Clone gets the P/T-defining ability and computes its own size. Every step of the ruling is in the quoted words.",
+        "grounding": "follows",
+        "agreement_reason": "Like the reference, the answer says the Clone is a plain Tarmogoyf without the counters or pump, and that it copies the CDA and computes its own */*+1. Both points the question asks about match.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.031394200000000004,
+        "reference": "Just a regular Tarmogoyf. A copy acquires only the copiable values of the original (707.2): name, mana cost, types, rules text, printed P/T, etc. Counters, Giant Growth's +3/+3, and other non-copy effects are not copiable values, so the Clone gets none of them. The Clone does copy Tarmogoyf's rules text, and therefore its characteristic-defining ability (707.2a), so the Clone's own P/T is */*+1 computed from card types in graveyards (applied in layer 7a, 613.4a). The copy effect itself is applied in layer 1a (613.2a); your goyf's counters and pump are layer 7c (613.4c) and stay on your goyf only."
+      }
+    },
+    {
+      "id": "layers-humility-opalescence",
+      "question": "ok classic one. I have [[Humility]] out and my opponent drops [[Opalescence]]. what are Humility and Opalescence now?? are all my creatures still 1/1? does the answer change if Opalescence was out first?",
+      "expected_answer": "Walk the layers. Opalescence reads 'each OTHER non-Aura enchantment', so it never affects itself: Opalescence stays a noncreature enchantment and keeps its ability in every scenario. Layer 4 (613.1d): Opalescence makes Humility a 'creature' enchantment. Layer 6 (613.1f): Humility removes all abilities from every creature, including itself; per 613.6 an effect that has started applying keeps applying in later layers even though its source ability is gone. Layer 7b (613.4b): Humility's 'base P/T 1/1' and Opalescence's 'base P/T equal to mana value' both set Humility's P/T. Neither depends on the other under 613.8a (applying one doesn't change the text, existence, or targets of the other), so timestamp order decides (613.7). If Opalescence has the later timestamp: Humility is a 4/4 creature with no abilities. If Humility has the later timestamp: Humility is a 1/1 creature with no abilities. Either way every ordinary creature is a 1/1 with no abilities, and Opalescence is an unaffected noncreature enchantment. Any other non-Aura enchantment Opalescence animates follows Humility itself: its base power and toughness are its mana value when Opalescence is later, and 1/1 when Humility is.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "613.6",
+        "613.4b",
+        "613.7"
+      ],
+      "supporting_rule_ids": [
+        "613.1d",
+        "613.1f",
+        "613.8a"
+      ],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "With **Humility** out first and **Opalescence** arriving later, your creatures are still 1/1 with no abilities. Humility becomes a 4/4 enchantment creature with no abilities. Opalescence isn't a creature at all and keeps working. If Opalescence had been out first, Humility would be a 1/1 instead.\n\nOpalescence says \"Each other non-Aura enchantment is a creature\", so it never animates itself. It stays a noncreature enchantment, and Humility can't touch its ability.\n\nHere's how the layers work out:\n\nLayer 4: Opalescence makes Humility (and any other non-Aura enchantment) a creature.\nLayer 6: Humility removes all abilities from all creatures, including itself. Per 613.6, once Humility's effect has started applying, it keeps applying in later layers \"even if the ability generating the effect is removed during this process.\" So Humility still makes things 1/1 in 7b.\nLayer 7b: Humility and Opalescence both set base P/T, so they apply in timestamp order (613.4b, 613.7). The later one wins.\n\nHumility first: Humility sets everything to 1/1. Then Opalescence sets Humility to 4/4, its mana value. Any other enchantment creatures end up at their mana value, while normal creatures stay 1/1.\nOpalescence first: Opalescence sets Humility to 4/4. Then Humility sets every creature, itself included, to 1/1.\n\nEither way, every creature has no abilities, and creatures that aren't enchantments are 1/1. This matches the official Humility/Opalescence ruling.",
+        "confidence": "high",
+        "citations": [
+          "rule 613.6: \"If an effect starts to apply in one layer and/or sublayer, it will continue to be applied to the same set of objects in each other applicable layer and/or sublayer, even if the ability generating the effect is removed during this process.\"",
+          "rule 613.4b: \"Effects that refer to the base power and/or toughness of a creature apply in this layer.\"",
+          "rule 613.7: \"An effect with an earlier timestamp is applied before an effect with a later timestamp.\"",
+          "oracle 59489b46-9d02-4f3c-bcd0-884e7605e9a5#0: \"Each other non-Aura enchantment is a creature in addition to its other types and has base power and base toughness each equal to its mana value.\"",
+          "ruling ed7bdb3e-5c51-4547-9266-76a791e0b2b0/18649cad787b2eba: \"Layer 7b: Humility becomes 1/1 and Worship becomes 1/1 (Humility). Humility becomes 4/4 and Worship becomes 4/4 (Opalescence).\""
+        ],
+        "category": "layers",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "613.6",
+        "613.4b",
+        "613.7"
+      ],
+      "recall": {
+        "hit": [
+          "613.6",
+          "613.4b",
+          "613.7"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 3,
+      "n_ruling_cites": 1,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 26584,
+      "calls": 3,
+      "first_rejection": {
+        "kind": "uncited",
+        "detail": [
+          "613.1"
+        ]
+      },
+      "stubs_dropped": 0,
+      "usd": 0.12537246,
+      "tokens": {
+        "input": 988,
+        "output": 2623,
+        "cache_read": 30337,
+        "cache_write": 12578,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Opalescence says 'Each other non-Aura enchantment is a creature', so it never animates itself and stays a noncreature enchantment.",
+            "support": "supported"
+          },
+          {
+            "claim": "Humility can't touch Opalescence's ability.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Layer 4: Opalescence makes Humility (and any other non-Aura enchantment) a creature.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Layer 6: Humility removes all abilities from all creatures, including itself.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Per 613.6, Humility's effect keeps applying in later layers even after its ability is removed, so it still makes things 1/1 in 7b.",
+            "support": "supported"
+          },
+          {
+            "claim": "Humility and Opalescence both set base P/T in layer 7b, so they apply in timestamp order and the later one wins.",
+            "support": "supported"
+          },
+          {
+            "claim": "With Humility first, Opalescence sets Humility to 4/4, its mana value.",
+            "support": "supported"
+          },
+          {
+            "claim": "With Humility first, other enchantment creatures end up at their mana value while normal creatures stay 1/1.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "With Opalescence first, Humility sets every creature, itself included, to 1/1.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Either way, every creature has no abilities and non-enchantment creatures are 1/1.",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "The timestamp ordering in 7b and Opalescence's self-exclusion follow from the quotes. But the ruling depends on Humility's own text, which removes all abilities and sets base P/T to 1/1, and that text is never quoted. The assignment of the effects to layers 4 and 6 is also not quoted.",
+        "grounding": "gap",
+        "agreement_reason": "The answer matches the reference on every point. Humility is 4/4 with no abilities when Opalescence is later and 1/1 when Humility is later. Ordinary creatures stay 1/1, and Opalescence remains an unaffected noncreature enchantment.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0266742,
+        "reference": "Walk the layers. Opalescence reads 'each OTHER non-Aura enchantment', so it never affects itself: Opalescence stays a noncreature enchantment and keeps its ability in every scenario. Layer 4 (613.1d): Opalescence makes Humility a 'creature' enchantment. Layer 6 (613.1f): Humility removes all abilities from every creature, including itself; per 613.6 an effect that has started applying keeps applying in later layers even though its source ability is gone. Layer 7b (613.4b): Humility's 'base P/T 1/1' and Opalescence's 'base P/T equal to mana value' both set Humility's P/T. Neither depends on the other under 613.8a (applying one doesn't change the text, existence, or targets of the other), so timestamp order decides (613.7). If Opalescence has the later timestamp: Humility is a 4/4 creature with no abilities. If Humility has the later timestamp: Humility is a 1/1 creature with no abilities. Either way every ordinary creature is a 1/1 with no abilities, and Opalescence is an unaffected noncreature enchantment. Any other non-Aura enchantment Opalescence animates follows Humility itself: its base power and toughness are its mana value when Opalescence is later, and 1/1 when Humility is."
+      }
+    },
+    {
+      "id": "faces-001",
+      "question": "quick one: if I have [[Valki, God of Lies]] in hand can I just cast the Tibalt side for 7? and while it's in my library/graveyard does it count as a planeswalker card for stuff like Vraska's Contempt / Kaya's Ghostform?",
+      "expected_answer": "Yes. Valki // Tibalt is a modal double-faced card: when you cast it you choose which face you're casting before it goes on the stack, and only that face is evaluated (712.11b, 712.11c), so you can cast Tibalt, Cosmic Impostor for {5}{B}{R} straight from your hand. Once chosen, the spell/permanent has only that face's characteristics (712.8f). But anywhere other than the stack or battlefield (hand, library, graveyard, exile) an MDFC has only its front face's characteristics (712.8a), so it is a legendary creature card named Valki, God of Lies there \u2014 never a planeswalker card.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "712.11b",
+        "712.8a"
+      ],
+      "supporting_rule_ids": [
+        "712.11c",
+        "712.8f"
+      ],
+      "supporting_cited": [
+        "712.8f"
+      ],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "Yes, you can cast **Tibalt, Cosmic Impostor** straight from your hand for {5}{B}{R}. When you cast a modal double-faced card, you choose which face you're casting before it goes on the stack (712.11b). On the stack and on the battlefield, it has only the characteristics of the face that's up (712.8f). So it's a Tibalt planeswalker spell, and then a Tibalt planeswalker permanent.\n\nIn your library, graveyard, hand or exile, it's **not** a planeswalker card. Outside the stack and battlefield, a double-faced card has only its front face's characteristics (712.8a). There it's just **Valki**, a legendary creature card with mana value 2.\n\nThat doesn't matter for your two examples, though. **Vraska's Contempt** reads \"Exile target creature or planeswalker\" and **Kaya's Ghostform** has \"Enchant creature or planeswalker you control\". Both only look at permanents on the battlefield. A Tibalt on the battlefield is a legal choice for either one.\n\nOne catch: suppose Tibalt has Ghostform on it and gets exiled or dies. Ghostform will \"return that card to the battlefield\". A double-faced card put onto the battlefield from anywhere other than the stack comes in front face up by default (712.14). So it comes back as Valki, not Tibalt.",
+        "confidence": "high",
+        "citations": [
+          "rule 712.11b: \"A player casting a modal double-faced card or a copy of a modal double-faced card as a spell chooses which face they are casting before putting it onto the stack.\"",
+          "rule 712.8f: \"While a modal double-faced spell is on the stack or a modal double-faced permanent is on the battlefield, it has only the characteristics of the face that\u2019s up.\"",
+          "rule 712.8a: \"While a double-faced card is outside the game or in a zone other than the battlefield or stack, it has only the characteristics of its front face.\"",
+          "rule 712.14: \"A double-faced card put onto the battlefield from a zone other than the stack enters the battlefield with its front face up by default.\"",
+          "oracle b15c6203-6311-44eb-916d-a4c271960c74#0: \"When enchanted permanent dies or is put into exile, return that card to the battlefield under your control.\""
+        ],
+        "category": "multi_faced_cards",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "712.11b",
+        "712.8f",
+        "712.8a",
+        "712.14"
+      ],
+      "recall": {
+        "hit": [
+          "712.11b",
+          "712.8a"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 4,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 14454,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.09894092,
+      "tokens": {
+        "input": 194,
+        "output": 1292,
+        "cache_read": 11306,
+        "cache_write": 14012,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "You can cast Tibalt, Cosmic Impostor straight from your hand for {5}{B}{R}, choosing that face before it goes on the stack.",
+            "support": "supported"
+          },
+          {
+            "claim": "On the stack and battlefield it has only the characteristics of the face that's up, so it is a Tibalt planeswalker spell and then permanent.",
+            "support": "supported"
+          },
+          {
+            "claim": "In library, graveyard, hand or exile it is not a planeswalker card; it has only its front face's characteristics.",
+            "support": "supported"
+          },
+          {
+            "claim": "There it's just Valki, a legendary creature card with mana value 2.",
+            "support": "supported"
+          },
+          {
+            "claim": "Vraska's Contempt reads \"Exile target creature or planeswalker\" and Kaya's Ghostform has \"Enchant creature or planeswalker you control\".",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Both only look at permanents on the battlefield, so a Tibalt on the battlefield is a legal choice for either.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "If Tibalt with Ghostform dies or is exiled, Ghostform returns it to the battlefield front face up, as Valki.",
+            "support": "supported"
+          }
+        ],
+        "grounding_reason": "Face choice when casting, single-face characteristics on the stack and battlefield, and front-face-only characteristics in other zones are all in the quoted 712.11b, 712.8f and 712.8a. The rulings on both questions follow from these.",
+        "grounding": "follows",
+        "agreement_reason": "The answer matches the reference: Tibalt can be cast from hand for its cost, and the card is a Valki creature card, not a planeswalker card, outside the stack and battlefield.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.025366199999999995,
+        "reference": "Yes. Valki // Tibalt is a modal double-faced card: when you cast it you choose which face you're casting before it goes on the stack, and only that face is evaluated (712.11b, 712.11c), so you can cast Tibalt, Cosmic Impostor for {5}{B}{R} straight from your hand. Once chosen, the spell/permanent has only that face's characteristics (712.8f). But anywhere other than the stack or battlefield (hand, library, graveyard, exile) an MDFC has only its front face's characteristics (712.8a), so it is a legendary creature card named Valki, God of Lies there \u2014 never a planeswalker card."
+      }
+    },
+    {
+      "id": "faces-002",
+      "question": "cast Stomp off my bonecrusher giant, it resolved and went to exile. my opp says I can only cast the creature half from exile now, not Stomp again, is that right? also can they counter Stomp with a 'counter target creature spell' effect since the card is a creature?",
+      "expected_answer": "Your opponent is right. When an Adventure spell resolves it is exiled instead of going to the graveyard, and you may cast the card from exile \u2014 but only as the creature (Bonecrusher Giant), not as Stomp again (715.3d). And no, Stomp can't be hit by 'counter target creature spell': while on the stack as an Adventure the spell has only its alternative characteristics (715.3a, 715.3b), so it is a red instant, not a creature spell. Everywhere else, including exile, the card is just the creature card Bonecrusher Giant (715.4).",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "715.3d",
+        "715.3b"
+      ],
+      "supporting_rule_ids": [
+        "715.3a",
+        "715.4"
+      ],
+      "supporting_cited": [
+        "715.4"
+      ],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "Your opponent is right on the first point, and no on the second: a \"counter target creature spell\" can't hit **Stomp**.\n\n**From exile:** per `715.3d`, when an Adventure resolves its controller exiles it, and \"For as long as that card remains exiled, that player may play it. It can't be cast as an Adventure this way.\" So you can cast **Bonecrusher Giant** as a creature, using normal creature timing (main phase, empty stack), but you can't cast Stomp again with that permission. Some other effect that lets you cast cards from exile might let you cast it as Stomp, but the Adventure's own permission doesn't.\n\n**Countering:** while it's on the stack as an Adventure, `715.3b` says \"the spell has only its alternative characteristics.\" Stomp is an Instant \u2014 Adventure spell, not a creature spell, so \"counter target creature spell\" can't target it. The card counts as a creature card in every other zone, and on the stack only when it's cast as the Giant (`715.4`). Anything that counters an instant or any spell can still counter Stomp. If Stomp is countered, it goes to your graveyard instead of exile, so you lose the chance to cast the Giant from exile.",
+        "confidence": "high",
+        "citations": [
+          "rule 715.3d: \"For as long as that card remains exiled, that player may play it. It can\u2019t be cast as an Adventure this way\"",
+          "rule 715.3b: \"While on the stack as an Adventure, the spell has only its alternative characteristics.\"",
+          "rule 715.4: \"In every zone except the stack, and while on the stack not as an Adventure, an adventurer card has only its normal characteristics.\"",
+          "ruling d6d72f5f-8f5d-4180-b514-f22ff5482902/9f9546560bbab6ce: \"If an Adventure spell leaves the stack in any way other than resolving (most likely by being countered or by failing to resolve because its targets have all become illegal), that card won't be exiled\""
+        ],
+        "category": "multi_faced_cards",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "715.3d",
+        "715.3b",
+        "715.4"
+      ],
+      "recall": {
+        "hit": [
+          "715.3d",
+          "715.3b"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 3,
+      "n_ruling_cites": 1,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 10331,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.07510286000000001,
+      "tokens": {
+        "input": 192,
+        "output": 882,
+        "cache_read": 11306,
+        "cache_write": 10886,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "When an Adventure resolves, its controller exiles it.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "While the card remains exiled you may cast Bonecrusher Giant, but you can't cast it as Stomp with that permission.",
+            "support": "supported"
+          },
+          {
+            "claim": "Casting the Giant from exile uses normal creature timing (main phase, empty stack).",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Some other effect that lets you cast cards from exile might let you cast it as Stomp.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "On the stack as an Adventure, Stomp has only its alternative characteristics, so it is an instant, not a creature spell.",
+            "support": "supported"
+          },
+          {
+            "claim": "'Counter target creature spell' can't target Stomp.",
+            "support": "supported"
+          },
+          {
+            "claim": "The card is a creature card in every other zone, and on the stack only when cast as the Giant.",
+            "support": "supported"
+          },
+          {
+            "claim": "Anything that counters an instant or any spell can still counter Stomp.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "If Stomp is countered, it goes to your graveyard instead of exile, so you lose the chance to cast the Giant from exile.",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "The quoted 715.3d gives the permission to cast from exile and forbids casting as an Adventure that way. The quoted 715.3b and 715.4 show Stomp has only its instant characteristics on the stack, so both rulings follow from the quotes.",
+        "grounding": "follows",
+        "agreement_reason": "Like the reference, the answer says the opponent is right that only the Giant can be cast from exile, and that a creature-only counter can't hit Stomp.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.024414199999999997,
+        "reference": "Your opponent is right. When an Adventure spell resolves it is exiled instead of going to the graveyard, and you may cast the card from exile \u2014 but only as the creature (Bonecrusher Giant), not as Stomp again (715.3d). And no, Stomp can't be hit by 'counter target creature spell': while on the stack as an Adventure the spell has only its alternative characteristics (715.3a, 715.3b), so it is a red instant, not a creature spell. Everywhere else, including exile, the card is just the creature card Bonecrusher Giant (715.4)."
+      }
+    },
+    {
+      "id": "faces-003",
+      "question": "melded my Bruna and Gisela into Brisela and then it got Path to Exiled. does that count as one creature leaving or two for my [[Blood Artist]] type triggers, and do I get one Plains or two off Path?",
+      "expected_answer": "Blood Artist does not trigger at all here: Path to Exile exiles Brisela, and Blood Artist\ntriggers on a creature dying, which means being put into a graveyard from the battlefield\n(700.4). Exile is not dying. If Brisela instead died (say, to a Wrath of God), Blood Artist\nwould trigger exactly once: one permanent left the battlefield, even though the melded\npermanent is a single object represented by two cards (712.21, 701.42a). A trigger reading\n\"whenever a card is put into a graveyard\" would see two cards (712.21e). Either way, the\nsearch happens once and Bruna and Gisela both go to exile. It is Brisela's controller who\nsearches, not the player who cast Path to Exile (\"Its controller may search their library\nfor a basic land card\"), and any basic land will do, not only a Plains.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "700.4",
+        "712.21e"
+      ],
+      "supporting_rule_ids": [
+        "712.21",
+        "701.42a",
+        "712.4a"
+      ],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "error",
+        "variant": "AmbiguousCards",
+        "message": "ambiguous card reference(s): Bruna, Gisela"
+      },
+      "cited_rule_ids": [],
+      "recall": {
+        "hit": [],
+        "missed": [
+          "700.4",
+          "712.21e"
+        ]
+      },
+      "any_expected_cited": false,
+      "n_rule_cites": 0,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 0,
+      "source_ok": false,
+      "correct_shape": false,
+      "elapsed_ms": 2652,
+      "calls": 1,
+      "stubs_dropped": 0,
+      "usd": 0.004358600000000001,
+      "tokens": {
+        "input": 82,
+        "output": 153,
+        "cache_read": 4853,
+        "cache_write": 0,
+        "cold": null
+      }
+    },
+    {
+      "id": "faces-004",
+      "question": "old school question. my Waylay (Urza's Saga printing) says 'at end of turn, remove them from the game'. so I cast it during my opponent's end step, the knights survive since the end step already started, and I get to swing with them on my turn right? classic waylay trick",
+      "expected_answer": "No \u2014 that trick was closed by errata. The printed text is not what the card does; you always use the current Oracle wording (108.1), which is 'Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step.' If you cast Waylay in your opponent's end step, the Knights are exiled at that same turn's cleanup step: the game checks for triggered abilities waiting during cleanup, puts the 'beginning of the next cleanup step' trigger on the stack, and then players get priority and another cleanup step follows (514.3a). You never get to attack with them. (Casting it during your opponent's declare-attackers step to get surprise blockers still works.)",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "108.1",
+        "514.3a"
+      ],
+      "supporting_rule_ids": [],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "No. That trick doesn't work under current Oracle wording. **Waylay** now reads: \"Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step.\" The old \"at end of turn\" wording has been replaced, and you play by the Oracle text, not the printing.\n\nIf you cast it during your opponent's end step, the Knights are exiled when that turn's cleanup step begins, a moment later. They never make it to your turn. Waylay creates a delayed triggered ability (`603.7`). It triggers only once, the next time its trigger event happens (`603.7b`), and \"at the beginning of\" abilities trigger when that step begins (`603.2b`).\n\nThe old trick relied on the end step not \"backing up\". Per `513.2`, a delayed trigger for \"the next end step\" created during the end step waits until the next turn's end step. The cleanup step wording closes that gap: the cleanup step comes after the end step, so casting it in the end step still gets the tokens exiled that same turn. You can still use the tokens as surprise blockers or sacrifice fodder during your opponent's turn, but you can't keep them to attack with.",
+        "confidence": "high",
+        "citations": [
+          "oracle f0db78c7-09b5-4981-8ca8-6dbab597c5d9#0: \"Exile them at the beginning of the next cleanup step.\"",
+          "rule 603.7b: \"A delayed triggered ability will trigger only once\u2014the next time its trigger event occurs\u2014unless it has a stated duration\"",
+          "rule 603.2b: \"When a phase or step begins, all abilities that trigger \u201cat the beginning of\u201d that phase or step trigger.\"",
+          "rule 513.2: \"if a delayed triggered ability that triggers \u201cat the beginning of the next end step\u201d is created during this step, that ability won\u2019t trigger until the next turn\u2019s end step.\"",
+          "rule 603.7: \"An effect may create a delayed triggered ability that can do something at a later time.\""
+        ],
+        "category": "triggered_abilities",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "603.7b",
+        "603.2b",
+        "513.2",
+        "603.7"
+      ],
+      "recall": {
+        "hit": [],
+        "missed": [
+          "108.1",
+          "514.3a"
+        ]
+      },
+      "any_expected_cited": false,
+      "n_rule_cites": 4,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 12190,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.07639398,
+      "tokens": {
+        "input": 186,
+        "output": 1146,
+        "cache_read": 11306,
+        "cache_write": 10093,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Waylay's current Oracle text reads 'Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step.'",
+            "support": "supported"
+          },
+          {
+            "claim": "You play by the Oracle text, not the printed text.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Waylay creates a delayed triggered ability.",
+            "support": "supported"
+          },
+          {
+            "claim": "The delayed trigger triggers only once, the next time its trigger event occurs.",
+            "support": "supported"
+          },
+          {
+            "claim": "'At the beginning of' abilities trigger when that step begins.",
+            "support": "supported"
+          },
+          {
+            "claim": "A delayed trigger for 'the next end step' created during the end step waits until the next turn's end step.",
+            "support": "supported"
+          },
+          {
+            "claim": "The cleanup step comes after the end step, so casting Waylay in the end step still gets the tokens exiled that same turn.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "If cast during the opponent's end step, the Knights are exiled when that turn's cleanup step begins and never make it to your turn.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "You can still use the tokens as surprise blockers or sacrifice fodder during the opponent's turn.",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "The ruling depends on two unquoted steps. One is that Oracle text overrides the printed wording, a rule the bot never quotes. The other is that a cleanup step follows the end step later in the same turn, which no quote states.",
+        "grounding": "gap",
+        "agreement_reason": "Both answers say the trick fails. The Knights are exiled in that same turn's cleanup step and can't attack, though they can still serve as surprise blockers.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.020974200000000002,
+        "reference": "No \u2014 that trick was closed by errata. The printed text is not what the card does; you always use the current Oracle wording (108.1), which is 'Create three 2/2 white Knight creature tokens. Exile them at the beginning of the next cleanup step.' If you cast Waylay in your opponent's end step, the Knights are exiled at that same turn's cleanup step: the game checks for triggered abilities waiting during cleanup, puts the 'beginning of the next cleanup step' trigger on the stack, and then players get priority and another cleanup step follows (514.3a). You never get to attack with them. (Casting it during your opponent's declare-attackers step to get surprise blockers still works.)"
+      }
+    },
+    {
+      "id": "faces-005",
+      "question": "my mirage LED says 'play this ability as an interrupt'. so it's a mana ability and I can crack it in the middle of casting Infernal Tutor to pay for it right? that way I still have tutor as the last card when I discard",
+      "expected_answer": "No. Ignore the printed 'interrupt' text and use the current Oracle wording (108.1): 'Discard your hand, Sacrifice this artifact: Add three mana of any one color. Activate only as an instant.' It is still a mana ability \u2014 the timing restriction doesn't change that (605.1) \u2014 but 'Activate only as an instant' means you may only activate it when you have priority (602.5e), so you can't activate it while paying for a spell the way 605.3a normally allows for mana abilities. The correct play is to cast Infernal Tutor with Tutor as the last card in hand, hold priority, then activate LED in response; when Tutor resolves you are hellbent and the mana is still floating.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "108.1",
+        "602.5e"
+      ],
+      "supporting_rule_ids": [
+        "605.1",
+        "605.3a"
+      ],
+      "supporting_cited": [
+        "605.1",
+        "605.3a"
+      ],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "No. You can't crack **Lion's Eye Diamond** in the middle of casting **Infernal Tutor**. The old \"interrupt\" wording isn't used anymore. The current Oracle text is: \"Discard your hand, Sacrifice this artifact: Add three mana of any one color. Activate only as an instant.\"\n\nIt is still a mana ability. Per `605.1`, an ability counts as a mana ability regardless of timing restrictions like \"Activate only as an instant\". The Scryfall ruling agrees: it resolves as a mana ability, \"but it can only be activated at times when you can cast an instant.\" Per `602.5e`, that restriction means following the timing rules for casting an instant. Instants are cast when you have priority, not partway through casting another spell, while you're activating mana abilities and paying its cost (`601.2g`\u2013`601.2h`). So LED's mana can't go toward paying for Tutor.\n\nYou don't need that anyway. Per `601.2a`, Tutor moves to the stack as soon as you start casting it, so it's never in your hand when you discard. The real line works like this:\n1. Cast Tutor using other mana.\n2. Hold priority (`601.2i` gives you priority again once the spell is cast).\n3. Activate LED in response, discarding your hand.\n\nTutor then resolves while you have no cards in hand, so Hellbent searches for any card. LED's three mana stays in your pool until the end of the step (`106.4`), so you can use it on what you find.",
+        "confidence": "high",
+        "citations": [
+          "oracle ee6099b0-fb1f-42f1-b862-7708c6e36d05#0: \"Discard your hand, Sacrifice this artifact: Add three mana of any one color. Activate only as an instant.\"",
+          "ruling ee6099b0-fb1f-42f1-b862-7708c6e36d05/311e9a5aa9d6c7d6: \"but it can only be activated at times when you can cast an instant\"",
+          "rule 602.5e: \"Activated abilities that read \u201cActivate only as an instant\u201d mean the player must follow the timing rules for casting an instant spell\"",
+          "rule 605.1: \"regardless of what other effects they may generate or what timing restrictions (such as \u201cActivate only as an instant\u201d) they may have\"",
+          "rule 601.2g: \"If the total cost includes a mana payment, the player then has a chance to activate mana abilities\"",
+          "rule 601.2h: \"The player pays the total cost.\"",
+          "rule 601.2a: \"To propose the casting of a spell, a player first moves that card (or that copy of a card) from where it is to the stack.\"",
+          "rule 601.2i: \"If the spell\u2019s controller had priority before casting it, they get priority.\"",
+          "rule 106.4: \"Each player\u2019s mana pool empties at the end of each step and phase\""
+        ],
+        "category": "mana_abilities",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "602.5e",
+        "605.1",
+        "601.2g",
+        "601.2h",
+        "601.2a",
+        "601.2i",
+        "106.4"
+      ],
+      "recall": {
+        "hit": [
+          "602.5e"
+        ],
+        "missed": [
+          "108.1"
+        ]
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 7,
+      "n_ruling_cites": 1,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 19363,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.0972302,
+      "tokens": {
+        "input": 164,
+        "output": 1852,
+        "cache_read": 11306,
+        "cache_write": 11454,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "You can't crack Lion's Eye Diamond in the middle of casting Infernal Tutor.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "The current Oracle text is 'Discard your hand, Sacrifice this artifact: Add three mana of any one color. Activate only as an instant.' and the old interrupt wording isn't used.",
+            "support": "supported"
+          },
+          {
+            "claim": "It is still a mana ability regardless of timing restrictions like 'Activate only as an instant' (605.1).",
+            "support": "supported"
+          },
+          {
+            "claim": "It can only be activated at times when you can cast an instant.",
+            "support": "supported"
+          },
+          {
+            "claim": "The restriction means following the timing rules for casting an instant (602.5e).",
+            "support": "supported"
+          },
+          {
+            "claim": "Instants are cast when you have priority, not partway through casting another spell while paying its cost.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Tutor moves to the stack as soon as you start casting it, so it's never in your hand when you discard.",
+            "support": "supported"
+          },
+          {
+            "claim": "After casting Tutor you get priority again and can activate LED in response.",
+            "support": "supported"
+          },
+          {
+            "claim": "Tutor resolves with no cards in hand, so Hellbent lets it search for any card.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "LED's mana stays in your pool until the end of the step.",
+            "support": "supported"
+          }
+        ],
+        "grounding_reason": "The key step, that instant timing means only when you have priority and not during cost payment, is not stated by any quote; 602.5e and the ruling only refer to 'timing rules for casting an instant' without defining them.",
+        "grounding": "gap",
+        "agreement_reason": "Same conclusion as the reference: still a mana ability, but can't be activated mid-cast; cast Tutor, hold priority, activate LED in response.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0279142,
+        "reference": "No. Ignore the printed 'interrupt' text and use the current Oracle wording (108.1): 'Discard your hand, Sacrifice this artifact: Add three mana of any one color. Activate only as an instant.' It is still a mana ability \u2014 the timing restriction doesn't change that (605.1) \u2014 but 'Activate only as an instant' means you may only activate it when you have priority (602.5e), so you can't activate it while paying for a spell the way 605.3a normally allows for mana abilities. The correct play is to cast Infernal Tutor with Tutor as the last card in hand, hold priority, then activate LED in response; when Tutor resolves you are hellbent and the mana is still floating."
+      }
+    },
+    {
+      "id": "stack-01",
+      "question": "ok so I have [[Blood Artist]] out and my opponent wraths with [[Wrath of God]]. Blood Artist dies at the same time as everything else so does it even see the other creatures die? do I drain for all of them or just itself?",
+      "expected_answer": "Yes, you drain for every creature that died, including Blood Artist itself. Leaves-the-battlefield abilities 'look back in time' (603.10, 603.6c): the game checks the state immediately before the event, when Blood Artist was still on the battlefield, so it sees every creature that died simultaneously, including itself. All those triggers go on the stack the next time a player would receive priority (603.3), and you choose a target player for each one.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "603.10"
+      ],
+      "supporting_rule_ids": [
+        "603.6c",
+        "603.3"
+      ],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "Yes, it sees all of them. **Blood Artist** triggers once for itself and once for every other creature that dies to **Wrath of God**, so you drain once per creature, Blood Artist included.\n\nThe reason is that dies triggers are leaves-the-battlefield abilities, and those \"look back in time\" (`603.10a`). The game checks for triggers using how things looked just before the event, when Blood Artist was still on the battlefield with its ability. The CR example under `603.10a` is basically your situation: an artifact with \"Whenever a creature dies, you gain 1 life\" that is destroyed along with two creatures still triggers twice. Since Wrath destroys several creatures in one event, the ability triggers once for each of them (`603.2c`). The Scryfall ruling on Blood Artist confirms it: \"If Blood Artist and one or more other creatures die at the same time, its ability will trigger for each of those creatures.\"\n\nEach trigger reads \"target player loses 1 life and you gain 1 life,\" and you choose a target for each one separately as it goes on the stack.",
+        "confidence": "high",
+        "citations": [
+          "rule 603.10a: \"Some zone-change triggers look back in time. These are leaves-the-battlefield abilities\"",
+          "rule 603.2c: \"However, it can trigger repeatedly if one event contains multiple occurrences.\"",
+          "ruling 310f141c-7f37-4729-aed6-dd9c09db448d/eaf0e0e76c3621ab: \"If Blood Artist and one or more other creatures die at the same time, its ability will trigger for each of those creatures.\"",
+          "oracle 310f141c-7f37-4729-aed6-dd9c09db448d#0: \"Whenever this creature or another creature dies, target player loses 1 life and you gain 1 life.\""
+        ],
+        "category": "triggered_abilities",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "603.10a",
+        "603.2c"
+      ],
+      "recall": {
+        "hit": [
+          "603.10"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 2,
+      "n_ruling_cites": 1,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 9652,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.07105225999999999,
+      "tokens": {
+        "input": 172,
+        "output": 815,
+        "cache_read": 11306,
+        "cache_write": 10360,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Blood Artist triggers once for itself and once for every other creature that dies to Wrath of God, so you drain once per creature, Blood Artist included",
+            "support": "supported"
+          },
+          {
+            "claim": "Dies triggers are leaves-the-battlefield abilities, and those look back in time",
+            "support": "unsupported"
+          },
+          {
+            "claim": "The game checks for triggers using how things looked just before the event, when Blood Artist was still on the battlefield",
+            "support": "unsupported"
+          },
+          {
+            "claim": "The CR example under 603.10a: an artifact with 'Whenever a creature dies, you gain 1 life' destroyed along with two creatures still triggers twice",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Since Wrath destroys several creatures in one event, the ability triggers once for each of them",
+            "support": "supported"
+          },
+          {
+            "claim": "If Blood Artist and one or more other creatures die at the same time, its ability will trigger for each of those creatures",
+            "support": "supported"
+          },
+          {
+            "claim": "Each trigger reads 'target player loses 1 life and you gain 1 life'",
+            "support": "supported"
+          },
+          {
+            "claim": "You choose a target for each one separately as it goes on the stack",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "The quoted Scryfall ruling directly states the ability triggers for each creature, including Blood Artist itself, when they die simultaneously, and the Oracle text covers 'this creature or another creature'. The look-back mechanics are partly unquoted, but the ruling alone carries the conclusion.",
+        "grounding": "follows",
+        "agreement_reason": "Both answers say you drain for every creature that died, including Blood Artist, because of look-back-in-time. Both also say a target is chosen for each trigger.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.023258199999999996,
+        "reference": "Yes, you drain for every creature that died, including Blood Artist itself. Leaves-the-battlefield abilities 'look back in time' (603.10, 603.6c): the game checks the state immediately before the event, when Blood Artist was still on the battlefield, so it sees every creature that died simultaneously, including itself. All those triggers go on the stack the next time a player would receive priority (603.3), and you choose a target player for each one."
+      }
+    },
+    {
+      "id": "stack-02",
+      "question": "my buddy says once I cast a spell he can't respond until I 'pass'. I cast Lightning Bolt at his bob, do I get to keep going and cast a second Bolt before he gets a chance to counter the first one?",
+      "expected_answer": "Your buddy is half right. After you cast a spell you receive priority again (117.3c), so you may cast the second Bolt immediately, before he can respond to the first. He only gets priority when you pass. Nothing resolves until all players pass in succession with the stack non-empty (117.4); then only the top object resolves, and the active player gets priority again after it resolves (117.3b). So he can still respond to either Bolt once you pass, but you are entitled to stack both first.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "117.3c",
+        "117.4"
+      ],
+      "supporting_rule_ids": [
+        "117.3b"
+      ],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "Yes. Once you've cast the first **Lightning Bolt**, you get priority back, so you can cast a second Bolt on top of it before your buddy gets a chance to do anything. He's right that he can't respond until you pass.\n\nPer `601.2i`, once casting is complete, \"If the spell's controller had priority before casting it, they get priority.\" `117.3c` says the same thing more generally. Your opponent only gets priority when you pass (`117.3d`). Since Bolt is an instant, you can cast it any time you have priority (`117.1a`), even with the first Bolt still on the stack. The second Bolt counts as cast \"in response to\" the first, goes on top, and resolves first (`117.7`).\n\nAfter you pass, he can respond to either Bolt, or both, before anything resolves. The stack only resolves when all players pass in succession (`117.4`). That means stacking Bolts doesn't stop him from countering. It only means both are already on the stack when he does. And if the first Bolt kills **Dark Confidant**, the second one has no legal target left and won't resolve (`608.2b`). If you want two Bolts on Bob, it's usually better to let the first one resolve and see what happens.",
+        "confidence": "high",
+        "citations": [
+          "rule 601.2i: \"If the spell\u2019s controller had priority before casting it, they get priority.\"",
+          "rule 117.3c: \"If a player has priority when they cast a spell, activate an ability, or take a special action, that player receives priority afterward.\"",
+          "rule 117.3d: \"If a player has priority and chooses not to take any actions, that player passes.\"",
+          "rule 117.1a: \"A player may cast an instant spell any time they have priority.\"",
+          "rule 117.7: \"The new spell or ability will resolve first.\"",
+          "rule 117.4: \"If all players pass in succession (that is, if all players pass without taking any actions in between passing), the spell or ability on top of the stack resolves\"",
+          "rule 608.2b: \"If all its targets, for every instance of the word \u201ctarget,\u201d are now illegal, the spell or ability doesn\u2019t resolve.\""
+        ],
+        "category": "stack_and_priority",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "601.2i",
+        "117.3c",
+        "117.3d",
+        "117.1a",
+        "117.7",
+        "117.4",
+        "608.2b"
+      ],
+      "recall": {
+        "hit": [
+          "117.3c",
+          "117.4"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 7,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 12228,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.07530396,
+      "tokens": {
+        "input": 160,
+        "output": 904,
+        "cache_read": 11306,
+        "cache_write": 10864,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Once you've cast the first Lightning Bolt, you get priority back.",
+            "support": "supported"
+          },
+          {
+            "claim": "You can cast a second Bolt on top of it before your buddy gets a chance to do anything.",
+            "support": "supported"
+          },
+          {
+            "claim": "Your opponent only gets priority when you pass.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Since Bolt is an instant, you can cast it any time you have priority, even with the first Bolt still on the stack.",
+            "support": "supported"
+          },
+          {
+            "claim": "The second Bolt goes on top and resolves first.",
+            "support": "supported"
+          },
+          {
+            "claim": "The stack only resolves when all players pass in succession.",
+            "support": "supported"
+          },
+          {
+            "claim": "After you pass, he can respond to either Bolt, or both, before anything resolves.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "If the first Bolt kills Dark Confidant, the second one has no legal target left and won't resolve.",
+            "support": "contradicted"
+          }
+        ],
+        "grounding_reason": "The core ruling, that you get priority back and may cast the second instant Bolt before the opponent acts, follows from the quoted 117.3c, 601.2i and 117.1a. The claim that only passing hands priority to the opponent is not in the quoted words, but it is a side point, not the ruling.",
+        "grounding": "follows",
+        "agreement_reason": "Like the reference, the answer says you may cast the second Bolt before he can respond, and that he can still respond to either Bolt after you pass and before anything resolves.",
+        "agreement": "agrees",
+        "wrong_remarks": [
+          "And if the first Bolt kills **Dark Confidant**, the second one has no legal target left and won't resolve"
+        ],
+        "usd": 0.026378199999999997,
+        "reference": "Your buddy is half right. After you cast a spell you receive priority again (117.3c), so you may cast the second Bolt immediately, before he can respond to the first. He only gets priority when you pass. Nothing resolves until all players pass in succession with the stack non-empty (117.4); then only the top object resolves, and the active player gets priority again after it resolves (117.3b). So he can still respond to either Bolt once you pass, but you are entitled to stack both first."
+      }
+    },
+    {
+      "id": "stack-03",
+      "question": "I control a 2/2 with a Giant Growth resolving on it, and mid-resolution of a different spell it's technically at 0 toughness for a second (Maro-style hand-size thing). Does it die? And separately, if I have two Ragavan on the battlefield somehow, when exactly does the legend rule kick in - can I respond in between?",
+      "expected_answer": "1) It doesn't die. State-based actions are only checked when a player would receive priority, not in the middle of a spell resolving (704.3, 704.4 - the CR's own Maro example). The creature only dies if it still has toughness 0 or less when SBAs are next checked (704.5f). 2) The legend rule (704.5j) is also a state-based action: the moment a player would get priority with two Ragavans you control, you choose one and the other goes to the graveyard. It doesn't use the stack and there is no window to respond between the second Ragavan entering and the legend rule applying; you can only respond before the second one enters/resolves.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "704.3",
+        "704.5j"
+      ],
+      "supporting_rule_ids": [
+        "704.4",
+        "704.5f"
+      ],
+      "supporting_cited": [
+        "704.4",
+        "704.5f"
+      ],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "No, it doesn't die. If its toughness is back above 0 by the time the spell finishes resolving, it survives. State-based actions only look at the game when a player would get priority, and they \"pay no attention to what happens during the resolution of a spell or ability\" (`704.4`). The rule's own example is Maro dropping to 0 toughness mid-resolution and surviving because it's back up afterward. **Maro**'s Scryfall ruling says the same: it \"won't be put into your graveyard\" if its toughness goes back above 0 before the resolution ends. The check under `704.5f` (toughness 0 or less goes to the graveyard) only happens at those check points, per `704.3`. One caution: if its toughness is still 0 or less when the spell finishes, it does die. Giant Growth's +3/+3 only helps if it has already resolved and is still applying at that moment.\n\nTwo **Ragavan**: you can't respond in between. The legend rule is a state-based action (`704.5j`). You choose one Ragavan and the other goes to your graveyard. State-based actions \"don't use the stack\" (`704.1`). They're performed as soon as the game checks, which happens whenever a player would receive priority, and before that player actually gets it (`704.3`, `117.2d`). So once the second Ragavan is on the battlefield, the legend rule is applied before anyone can cast a spell or activate an ability. Any triggers (for example, death triggers) go on the stack afterward, and only then does someone get priority.",
+        "confidence": "high",
+        "citations": [
+          "rule 704.4: \"Unlike triggered abilities, state-based actions pay no attention to what happens during the resolution of a spell or ability.\"",
+          "ruling ef32258a-d567-4fbc-ab85-8c00080f5b36/654c63e82671903c: \"it won\u2019t be put into your graveyard when state-based actions are checked\"",
+          "rule 704.5f: \"If a creature has toughness 0 or less, it\u2019s put into its owner\u2019s graveyard.\"",
+          "rule 704.5j: \"If two or more legendary permanents with the same name are controlled by the same player, that player chooses one of them, and the rest are put into their owners\u2019 graveyards.\"",
+          "rule 704.3: \"Whenever a player would get priority (see rule 117, \u201cTiming and Priority\u201d), the game checks for any of the listed conditions for state-based actions, then performs all applicable state-based actions simultaneously as a single event.\"",
+          "rule 704.1: \"State-based actions don\u2019t use the stack.\"",
+          "rule 117.2d: \"They\u2019re dealt with before a player would receive priority.\""
+        ],
+        "category": "state_based_actions",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "704.4",
+        "704.5f",
+        "704.5j",
+        "704.3",
+        "704.1",
+        "117.2d"
+      ],
+      "recall": {
+        "hit": [
+          "704.3",
+          "704.5j"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 6,
+      "n_ruling_cites": 1,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 12482,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.08731751999999998,
+      "tokens": {
+        "input": 238,
+        "output": 1108,
+        "cache_read": 11306,
+        "cache_write": 12388,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "The 2/2 doesn't die if its toughness is back above 0 by the time the spell finishes resolving.",
+            "support": "supported"
+          },
+          {
+            "claim": "State-based actions pay no attention to what happens during the resolution of a spell or ability.",
+            "support": "supported"
+          },
+          {
+            "claim": "The rule's own example is Maro dropping to 0 toughness mid-resolution and surviving.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Maro's ruling says it won't be put into the graveyard if its toughness goes back above 0 before resolution ends.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "The 704.5f check (toughness 0 or less goes to the graveyard) only happens when a player would get priority.",
+            "support": "supported"
+          },
+          {
+            "claim": "If its toughness is still 0 or less when the spell finishes, it does die.",
+            "support": "supported"
+          },
+          {
+            "claim": "Giant Growth's +3/+3 only helps if it has already resolved and is still applying at that moment.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "The legend rule is a state-based action: you choose one Ragavan and the other goes to the graveyard.",
+            "support": "supported"
+          },
+          {
+            "claim": "State-based actions don't use the stack.",
+            "support": "supported"
+          },
+          {
+            "claim": "State-based actions are performed whenever a player would receive priority, before that player gets it.",
+            "support": "supported"
+          },
+          {
+            "claim": "You can't respond in between; the legend rule is applied before anyone can cast a spell or activate an ability.",
+            "support": "supported"
+          },
+          {
+            "claim": "Any triggers go on the stack after state-based actions, and only then does someone get priority.",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "On the first point, 704.4 and 704.3 show that SBAs are checked only when a player would get priority, not mid-resolution, and 704.5f gives the toughness check, so the creature survives. On the second, 704.5j, 704.1, 704.3 and 117.2d together establish the no-response window. Both rulings follow from the quotes.",
+        "grounding": "follows",
+        "agreement_reason": "The answer matches the reference on both points: the creature doesn't die mid-resolution, and the legend rule is an SBA applied with no window to respond.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0288422,
+        "reference": "1) It doesn't die. State-based actions are only checked when a player would receive priority, not in the middle of a spell resolving (704.3, 704.4 - the CR's own Maro example). The creature only dies if it still has toughness 0 or less when SBAs are next checked (704.5f). 2) The legend rule (704.5j) is also a state-based action: the moment a player would get priority with two Ragavans you control, you choose one and the other goes to the graveyard. It doesn't use the stack and there is no window to respond between the second Ragavan entering and the legend rule applying; you can only respond before the second one enters/resolves."
+      }
+    },
+    {
+      "id": "stack-04",
+      "question": "I attack with a 5/5 trample that also has deathtouch (Questing Beast) and they block with a 4/4. how much can I trample over? my opponent says I have to assign 4 to the blocker first",
+      "expected_answer": "The premise is off: Questing Beast is a 4/4 with vigilance, deathtouch and haste, and it does not have trample, so blocked by one creature it assigns all its combat damage to that blocker and nothing goes to the player (510.1c). A good answer says so. For the creature the asker describes, a 5/5 with trample and deathtouch, you only need to assign 1 damage to the 4/4 and can trample 4 over to the player. Trample requires lethal damage to be assigned to all blockers before excess goes to the player (702.19b), but any nonzero damage from a deathtouch source counts as lethal for that purpose (702.2c). Damage assignment for a blocked creature follows 510.1c, then all combat damage is dealt simultaneously with no chance to respond in between (510.2). The 4/4 is then destroyed by deathtouch as an SBA.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "510.1c",
+        "702.19b",
+        "702.2c"
+      ],
+      "supporting_rule_ids": [
+        "510.2"
+      ],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "Your opponent is wrong. With deathtouch plus trample, you only have to assign **1** damage to the 4/4. The other 4 can go to the player (or planeswalker) you're attacking. Per `702.19b`, once every blocker has been \"assigned lethal damage\", any excess can be assigned to the player, planeswalker or battle the creature is attacking. Per `702.2c`, \"any nonzero amount of combat damage assigned to a creature by a source with deathtouch is considered to be lethal damage\", so 1 damage counts as lethal to the 4/4.\n\nOne catch: **Questing Beast** doesn't have trample on its own. Its current Oracle text gives it \"Vigilance, deathtouch, haste\", so this only works if something else gives it trample. Without trample, all of its damage goes to the blocker (`510.1c`).\n\nBonus: the Beast says \"Combat damage that would be dealt by creatures you control can't be prevented.\" If it deals combat damage to an opponent, its last ability also deals that much damage to a target planeswalker that player controls.",
+        "confidence": "high",
+        "citations": [
+          "rule 702.19b: \"Once all those blocking creatures are assigned lethal damage, any excess damage is assigned as its controller chooses among those blocking creatures and the player, planeswalker, or battle the creature is attacking.\"",
+          "rule 702.2c: \"Any nonzero amount of combat damage assigned to a creature by a source with deathtouch is considered to be lethal damage for the purposes of determining if excess damage is being dealt.\"",
+          "oracle b685757b-521e-4353-a233-97052359723d#0: \"Vigilance, deathtouch, haste\"",
+          "rule 510.1c: \"If exactly one creature is blocking it, it assigns all its combat damage to that creature.\""
+        ],
+        "category": "keyword_abilities",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "702.19b",
+        "702.2c",
+        "510.1c"
+      ],
+      "recall": {
+        "hit": [
+          "510.1c",
+          "702.19b",
+          "702.2c"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 3,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 14188,
+      "calls": 4,
+      "first_rejection": {
+        "kind": "tool",
+        "detail": {
+          "kind": "unreadable",
+          "raw": "{\"ids\":[\"702.19b\",\"702.19c\",\"702.2c\",\"510.1c-d\"]}",
+          "error": "RuleId violated the regular expression. Expected valid RuleId"
+        }
+      },
+      "stubs_dropped": 0,
+      "usd": 0.10006412,
+      "tokens": {
+        "input": 3418,
+        "output": 1167,
+        "cache_read": 45770,
+        "cache_write": 10779,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "With deathtouch plus trample, you only have to assign 1 damage to the 4/4, so the opponent is wrong.",
+            "support": "supported"
+          },
+          {
+            "claim": "The other 4 damage can go to the player or planeswalker being attacked.",
+            "support": "supported"
+          },
+          {
+            "claim": "Once every blocker has been assigned lethal damage, any excess can be assigned to the player, planeswalker or battle being attacked.",
+            "support": "supported"
+          },
+          {
+            "claim": "Any nonzero combat damage from a deathtouch source counts as lethal, so 1 damage is lethal to the 4/4.",
+            "support": "supported"
+          },
+          {
+            "claim": "Questing Beast doesn't have trample on its own; its Oracle text gives it vigilance, deathtouch, haste.",
+            "support": "supported"
+          },
+          {
+            "claim": "Without trample, all of its damage goes to the blocker.",
+            "support": "supported"
+          },
+          {
+            "claim": "Questing Beast says combat damage that would be dealt by creatures you control can't be prevented.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "If it deals combat damage to an opponent, it also deals that much damage to a target planeswalker that player controls.",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "The 1-damage ruling follows directly from the quoted 702.19b and 702.2c. The premise correction follows from the quoted Oracle keywords and 510.1c. Only the bonus remarks lack quotes.",
+        "grounding": "follows",
+        "agreement_reason": "Like the reference, the answer flags that Questing Beast lacks trample, so all damage goes to the blocker. For a hypothetical 5/5 deathtouch trampler, it agrees that 1 damage goes to the blocker and 4 tramples over.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0227942,
+        "reference": "The premise is off: Questing Beast is a 4/4 with vigilance, deathtouch and haste, and it does not have trample, so blocked by one creature it assigns all its combat damage to that blocker and nothing goes to the player (510.1c). A good answer says so. For the creature the asker describes, a 5/5 with trample and deathtouch, you only need to assign 1 damage to the 4/4 and can trample 4 over to the player. Trample requires lethal damage to be assigned to all blockers before excess goes to the player (702.19b), but any nonzero damage from a deathtouch source counts as lethal for that purpose (702.2c). Damage assignment for a blocked creature follows 510.1c, then all combat damage is dealt simultaneously with no chance to respond in between (510.2). The 4/4 is then destroyed by deathtouch as an SBA."
+      }
+    },
+    {
+      "id": "stack-05",
+      "question": "commander q: my commander is [[Kenrith, the Returned King]]. two things: 1) can I run Nicol Bolas, the Ravager since Kenrith's text mentions all 5 colors? and 2) someone bounced Kenrith to my hand with Unsummon - does he go to the command zone or is that only for graveyard/exile?",
+      "expected_answer": "1) Yes. Color identity includes mana symbols in the mana cost AND in the rules text (903.4), so Kenrith's identity is WUBRG even though his mana cost is only {4}{W}. Nicol Bolas, the Ravager (UBR) is legal because every color in its identity is in Kenrith's (903.5c). 2) Yes, Kenrith can go to the command zone. If a commander would be put into its owner's hand or library from anywhere, its owner may put it into the command zone instead - a replacement effect (903.9b). Graveyard/exile use a separate state-based action (903.9a). Either way it's optional.",
+      "expected_source": "Commander",
+      "expected_rule_ids": [
+        "903.4",
+        "903.9b"
+      ],
+      "supporting_rule_ids": [
+        "903.5c",
+        "903.9a"
+      ],
+      "supporting_cited": [
+        "903.5c",
+        "903.9a"
+      ],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "1) Yes. **Kenrith, the Returned King** has all five colors in his color identity, so **Nicol Bolas, the Ravager** is legal in your deck. 2) You get to choose. When **Unsummon** would put Kenrith into your hand, you may put him into the command zone instead. It isn't limited to the graveyard and exile.\n\n**Color identity:** A card's color identity includes \"the color or colors of any mana symbols in that card\u2019s mana cost or rules text\" (`903.4`). Kenrith costs {4}{W}, and his abilities use {R}, {G}, {U} and {B}, so his identity is WUBRG. Bolas's front face costs {1}{U}{B}{R}, and his back face counts too (`903.4d`). His identity is Grixis, which fits inside Kenrith's, so he's allowed under `903.5c`.\n\n**Bounce:** Hand and library are covered by a separate rule from graveyard and exile. `903.9b` says \"If a commander would be put into its owner\u2019s hand or library from anywhere, its owner may put it into the command zone instead.\" This is a replacement effect, so Kenrith never actually reaches your hand. The graveyard/exile option you're thinking of is a state-based action (`903.9a`). Either way, it's your choice: you can also keep him in hand and recast him from there. Casting from hand doesn't add commander tax, because the tax only counts casts from the command zone (`903.8`).",
+        "confidence": "high",
+        "citations": [
+          "rule 903.4: \"The color identity of a card is the color or colors of any mana symbols in that card\u2019s mana cost or rules text\"",
+          "rule 903.4d: \"The back face of a double-faced card (see rule 712) is included when determining a card\u2019s color identity.\"",
+          "rule 903.5c: \"A card can be included in a Commander deck only if every color in its color identity is also found in the color identity of the deck\u2019s commander.\"",
+          "rule 903.9b: \"If a commander would be put into its owner\u2019s hand or library from anywhere, its owner may put it into the command zone instead.\"",
+          "rule 903.9a: \"If a commander is in a graveyard or in exile and that object was put into that zone since the last time state-based actions were checked, its owner may put it into the command zone.\"",
+          "rule 903.8: \"A commander cast from the command zone costs an additional {2} for each previous time the player casting it has cast it from the command zone that game.\""
+        ],
+        "category": "commander",
+        "source": "commander",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "903.4",
+        "903.4d",
+        "903.5c",
+        "903.9b",
+        "903.9a",
+        "903.8"
+      ],
+      "recall": {
+        "hit": [
+          "903.4",
+          "903.9b"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 6,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 10922,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.09309570000000002,
+      "tokens": {
+        "input": 240,
+        "output": 1035,
+        "cache_read": 11306,
+        "cache_write": 13834,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "A card's color identity includes the colors of mana symbols in its mana cost or rules text.",
+            "support": "supported"
+          },
+          {
+            "claim": "Kenrith costs {4}{W} and his abilities use {R}, {G}, {U} and {B}, so his identity is WUBRG.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Bolas's front face costs {1}{U}{B}{R} and his back face counts too.",
+            "support": "supported"
+          },
+          {
+            "claim": "Bolas's identity is Grixis, which fits inside Kenrith's, so he is legal.",
+            "support": "supported"
+          },
+          {
+            "claim": "When Unsummon would put Kenrith into your hand, you may put him into the command zone instead.",
+            "support": "supported"
+          },
+          {
+            "claim": "This is a replacement effect, so Kenrith never reaches your hand.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "The graveyard/exile option is a state-based action.",
+            "support": "supported"
+          },
+          {
+            "claim": "It's optional; you can keep him in hand and recast him from there.",
+            "support": "supported"
+          },
+          {
+            "claim": "Casting from hand doesn't add commander tax because the tax only counts casts from the command zone.",
+            "support": "supported"
+          }
+        ],
+        "grounding_reason": "Ruling 2 follows directly from 903.9b. Ruling 1 rests on Kenrith's abilities containing {R}{G}{U}{B} symbols, which comes from his uncited Oracle text.",
+        "grounding": "gap",
+        "agreement_reason": "Both points match the reference: Bolas is legal, and Kenrith may go to the command zone from hand.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0157222,
+        "reference": "1) Yes. Color identity includes mana symbols in the mana cost AND in the rules text (903.4), so Kenrith's identity is WUBRG even though his mana cost is only {4}{W}. Nicol Bolas, the Ravager (UBR) is legal because every color in its identity is in Kenrith's (903.5c). 2) Yes, Kenrith can go to the command zone. If a commander would be put into its owner's hand or library from anywhere, its owner may put it into the command zone instead - a replacement effect (903.9b). Graveyard/exile use a separate state-based action (903.9a). Either way it's optional."
+      }
+    },
+    {
+      "id": "stack-06",
+      "question": "commander damage question. I've been hit for 15 by my opponent's Rafiq. she then copies it with a Clone and hits me for 6 more with the clone. do I lose? also does the 21 count noncombat damage like from Fling?",
+      "expected_answer": "No to both. A player loses when they've been dealt 21 or more COMBAT damage by the SAME commander over the course of the game (903.10a; checked as a state-based action, 704.6c). The Clone copying Rafiq is not a commander, so its 6 damage isn't commander damage - you're still at 15 from the real Rafiq. Fling damage is noncombat, so it never counts toward the 21 either; it just reduces your life total normally.",
+      "expected_source": "Commander",
+      "expected_rule_ids": [
+        "903.10a"
+      ],
+      "supporting_rule_ids": [
+        "704.6c"
+      ],
+      "supporting_cited": [
+        "704.6c"
+      ],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "No, you don't lose. The 6 from the **Clone** doesn't count toward Rafiq's commander damage. Noncombat damage like **Fling** never counts either.\n\nCommander status belongs to the physical card, not to its characteristics. Per `903.3`, \"A permanent that\u2019s copying a commander (such as a Body Double, for example, copying a commander in a player\u2019s graveyard) is not a commander.\" The Clone is a perfect copy of **Rafiq of the Many**, but it isn't her commander. Its damage only reduces your life total.\n\nThe loss condition in `903.10a` needs 21 or more *combat* damage from the *same* commander. You're still at 15 from the real Rafiq. Keep in mind that Rafiq hands out double strike: \"Whenever a creature you control attacks alone, it gains double strike until end of turn.\" Combined with exalted, Rafiq attacking alone can finish that last 6 quickly.\n\nOn Fling: it only says \"combat damage\", so Fling's damage doesn't count, even if she sacrifices the real Rafiq to it. In that case Fling deals the damage, not the commander, and it isn't combat damage anyway. It still makes you lose life as normal.",
+        "confidence": "high",
+        "citations": [
+          "rule 903.3: \"A permanent that\u2019s copying a commander (such as a Body Double, for example, copying a commander in a player\u2019s graveyard) is not a commander.\"",
+          "rule 903.10a: \"A player who\u2019s been dealt 21 or more combat damage by the same commander over the course of the game loses the game.\"",
+          "oracle c6e17443-2379-419d-8c32-13ea9bf52993#0: \"Whenever a creature you control attacks alone, it gains double strike until end of turn.\""
+        ],
+        "category": "commander",
+        "source": "commander",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "903.3",
+        "903.10a"
+      ],
+      "recall": {
+        "hit": [
+          "903.10a"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 2,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 10451,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.0867815,
+      "tokens": {
+        "input": 168,
+        "output": 973,
+        "cache_read": 11306,
+        "cache_write": 12877,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "You don't lose; the 6 from the Clone doesn't count toward Rafiq's commander damage.",
+            "support": "supported"
+          },
+          {
+            "claim": "A permanent copying a commander is not a commander, so the Clone isn't a commander.",
+            "support": "supported"
+          },
+          {
+            "claim": "Commander status belongs to the physical card, not to its characteristics.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "The Clone's damage only reduces your life total.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "The loss condition needs 21 or more combat damage from the same commander.",
+            "support": "supported"
+          },
+          {
+            "claim": "You're still at 15 from the real Rafiq.",
+            "support": "supported"
+          },
+          {
+            "claim": "Rafiq gives double strike to a creature that attacks alone.",
+            "support": "supported"
+          },
+          {
+            "claim": "Combined with exalted, Rafiq attacking alone can finish that last 6 quickly.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Noncombat damage like Fling never counts toward the 21, because the rule only says combat damage.",
+            "support": "supported"
+          },
+          {
+            "claim": "If she sacrifices the real Rafiq to Fling, Fling deals the damage, not the commander.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Fling's damage still makes you lose life as normal.",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "Rule 903.3 makes the Clone not a commander, and 903.10a limits the loss to combat damage from the same commander. Both rulings follow from those quoted words.",
+        "grounding": "follows",
+        "agreement_reason": "The answer matches the reference on both points: the Clone's damage doesn't count, and Fling's noncombat damage never counts.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0221942,
+        "reference": "No to both. A player loses when they've been dealt 21 or more COMBAT damage by the SAME commander over the course of the game (903.10a; checked as a state-based action, 704.6c). The Clone copying Rafiq is not a commander, so its 6 damage isn't commander damage - you're still at 15 from the real Rafiq. Fling damage is noncombat, so it never counts toward the 21 either; it just reduces your life total normally."
+      }
+    },
+    {
+      "id": "edge-mana-pool-casting",
+      "question": "two quick ones. 1) if I tap all my lands during my upkeep does that mana stick around so I can cast the mind sculptor in my main phase? 2) when I'm casting snappy can I tap lands in the middle of casting it or do I have to float the mana first?",
+      "expected_answer": "1) No. Each player's mana pool empties at the end of each step and phase, so mana added during your upkeep is lost before your main phase (106.4). Tap the lands in your main phase instead. 2) Yes. Casting a spell includes a step where, if the total cost includes mana, you get a chance to activate mana abilities such as tapping lands (601.2g), and only then do you pay the total cost (601.2h). You do not need to float mana before announcing the spell.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "106.4",
+        "601.2g"
+      ],
+      "supporting_rule_ids": [
+        "601.2h"
+      ],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "1) No. Mana you add during your upkeep empties out when the upkeep step ends, so it's gone long before your main phase. You'd have to tap the lands again in the main phase to cast **Jace, the Mind Sculptor**. Per `106.4`, \"Each player\u2019s mana pool empties at the end of each step and phase, and the player is said to lose this mana.\"\n\n2) You can tap lands partway through casting **Snapcaster Mage**. You don't need to float mana first. When you cast a spell, you put it on the stack, choose targets and so on, and work out the total cost. Then, per `601.2g`, you \"have a chance to activate mana abilities\" before you pay. `605.3a` also lets you activate a mana ability \"whenever they are casting a spell or activating an ability that requires a mana payment.\" This is the normal way to cast spells. Floating mana ahead of time works too, but it only lasts until the end of the current step or phase (see answer 1).",
+        "confidence": "high",
+        "citations": [
+          "rule 106.4: \"Each player\u2019s mana pool empties at the end of each step and phase, and the player is said to lose this mana.\"",
+          "rule 601.2g: \"If the total cost includes a mana payment, the player then has a chance to activate mana abilities (see rule 605, \u201cMana Abilities\u201d). Mana abilities must be activated before costs are paid.\"",
+          "rule 605.3a: \"A player may activate an activated mana ability whenever they have priority, whenever they are casting a spell or activating an ability that requires a mana payment\""
+        ],
+        "category": "game_concepts",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "106.4",
+        "601.2g",
+        "605.3a"
+      ],
+      "recall": {
+        "hit": [
+          "106.4",
+          "601.2g"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 3,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 8343,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.08008191999999999,
+      "tokens": {
+        "input": 188,
+        "output": 732,
+        "cache_read": 11306,
+        "cache_write": 12485,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Mana added during upkeep empties when the upkeep step ends, so it's gone before main phase.",
+            "support": "supported"
+          },
+          {
+            "claim": "You'd have to tap lands again in the main phase to cast Jace, the Mind Sculptor.",
+            "support": "supported"
+          },
+          {
+            "claim": "You can tap lands partway through casting Snapcaster Mage; no need to float mana first.",
+            "support": "supported"
+          },
+          {
+            "claim": "When casting, you put it on the stack, choose targets, work out total cost, then have a chance to activate mana abilities before paying.",
+            "support": "supported"
+          },
+          {
+            "claim": "605.3a lets you activate mana abilities while casting a spell that requires mana payment.",
+            "support": "supported"
+          },
+          {
+            "claim": "Floating mana ahead of time works but only lasts until end of current step or phase.",
+            "support": "supported"
+          }
+        ],
+        "grounding_reason": "Both rulings follow directly from the quoted text of 106.4, 601.2g and 605.3a. The ordering of stack and targets before cost is a minor unsupported detail that the rulings do not rest on.",
+        "grounding": "follows",
+        "agreement_reason": "Both points match the reference: upkeep mana is lost, and lands can be tapped mid-cast.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0118862,
+        "reference": "1) No. Each player's mana pool empties at the end of each step and phase, so mana added during your upkeep is lost before your main phase (106.4). Tap the lands in your main phase instead. 2) Yes. Casting a spell includes a step where, if the total cost includes mana, you get a chance to activate mana abilities such as tapping lands (601.2g), and only then do you pay the total cost (601.2h). You do not need to float mana before announcing the spell."
+      }
+    },
+    {
+      "id": "edge-nick-bob-mv",
+      "question": "my opp has [[bob]] and flipped a tim off the top, then next turn he flipped a goyf. how much life does he lose each time? goyf is like a 5/6 rn so is it 5?",
+      "expected_answer": "Dark Confidant makes you lose life equal to the revealed card's mana value, which is the total mana in its mana cost regardless of color (202.3). Prodigal Sorcerer costs {2}{U}, so he loses 3 life. Tarmogoyf costs {1}{G}, so he loses 2 life. Tarmogoyf's power/toughness is irrelevant; mana value is based only on the mana cost.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "202.3"
+      ],
+      "supporting_rule_ids": [],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "Your opponent loses **3** life for the Tim and **2** for the Goyf. **Dark Confidant** (Bob) uses the revealed card's mana value. It never looks at power, so the 5/6 doesn't matter.\n\nBob reads: \"reveal the top card of your library and put that card into your hand. You lose life equal to its mana value.\" Per `202.3`, mana value is the total amount of mana in the card's mana cost, regardless of color.\n\n- **Prodigal Sorcerer** (Tim) costs {2}{U}, so its mana value is 3 and he loses 3 life.\n- **Tarmogoyf** costs {1}{G}, so its mana value is 2 and he loses 2 life. Its power and toughness come from its own ability counting graveyards, and that has nothing to do with its mana cost.",
+        "confidence": "high",
+        "citations": [
+          "oracle 2068185c-1b50-47d0-aa3f-bf505d199428#0: \"You lose life equal to its mana value.\"",
+          "rule 202.3: \"The mana value of an object is a number equal to the total amount of mana in its mana cost, regardless of color.\""
+        ],
+        "category": "card_types_and_characteristics",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "202.3"
+      ],
+      "recall": {
+        "hit": [
+          "202.3"
+        ],
+        "missed": []
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 1,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 11352,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.08500513999999999,
+      "tokens": {
+        "input": 144,
+        "output": 676,
+        "cache_read": 11306,
+        "cache_write": 13729,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Bob makes you lose life equal to the revealed card's mana value",
+            "support": "supported"
+          },
+          {
+            "claim": "Mana value is the total amount of mana in the card's mana cost, regardless of color",
+            "support": "supported"
+          },
+          {
+            "claim": "Prodigal Sorcerer costs {2}{U}, mana value 3, so he loses 3 life",
+            "support": "supported"
+          },
+          {
+            "claim": "Tarmogoyf costs {1}{G}, mana value 2, so he loses 2 life",
+            "support": "supported"
+          },
+          {
+            "claim": "Power/toughness (5/6) doesn't matter",
+            "support": "supported"
+          },
+          {
+            "claim": "Tarmogoyf's power and toughness come from its own ability counting graveyards",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "The life loss follows from the Oracle quote plus the 202.3 definition, and the mana costs are given. The partly quoted Oracle line beyond the citation does not affect the ruling.",
+        "grounding": "follows",
+        "agreement_reason": "Same outcome as the reference: 3 for Tim, 2 for Goyf, and power is irrelevant.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0106342,
+        "reference": "Dark Confidant makes you lose life equal to the revealed card's mana value, which is the total mana in its mana cost regardless of color (202.3). Prodigal Sorcerer costs {2}{U}, so he loses 3 life. Tarmogoyf costs {1}{G}, so he loses 2 life. Tarmogoyf's power/toughness is irrelevant; mana value is based only on the mana cost."
+      }
+    },
+    {
+      "id": "edge-oos-card-price",
+      "question": "how much is a snappy going for these days? thinking about picking up a playset",
+      "expected_answer": "I only answer Magic rules questions, so I can't help with card prices. Check a price aggregator such as Scryfall's price listings, TCGplayer, or Cardmarket for current Snapcaster Mage prices.",
+      "expected_source": "OutOfScope",
+      "expected_rule_ids": [],
+      "supporting_rule_ids": [],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "error",
+        "variant": "OutOfScope",
+        "message": "question is out of scope (OutOfScope)"
+      },
+      "cited_rule_ids": [],
+      "recall": {
+        "hit": [],
+        "missed": []
+      },
+      "any_expected_cited": false,
+      "n_rule_cites": 0,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 1574,
+      "calls": 1,
+      "stubs_dropped": 0,
+      "usd": 0.0024985999999999997,
+      "tokens": {
+        "input": 32,
+        "output": 70,
+        "cache_read": 4853,
+        "cache_write": 0,
+        "cold": null
+      }
+    },
+    {
+      "id": "edge-oos-deck-check",
+      "question": "got deck checked at a comp REL event and they said my sleeves were too worn. can they actually make me resleeve mid tournament? is that a real rule",
+      "expected_answer": "That is a tournament-policy question (MTR/IPG: deck checks and marked cards/sleeves), not a Comprehensive Rules question, so I don't cover it. Ask the head judge at the event or consult the Magic Tournament Rules and Infraction Procedure Guide.",
+      "expected_source": "Tournament",
+      "expected_rule_ids": [],
+      "supporting_rule_ids": [],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "error",
+        "variant": "OutOfScope",
+        "message": "question is out of scope (Tournament)"
+      },
+      "cited_rule_ids": [],
+      "recall": {
+        "hit": [],
+        "missed": []
+      },
+      "any_expected_cited": false,
+      "n_rule_cites": 0,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 1427,
+      "calls": 1,
+      "stubs_dropped": 0,
+      "usd": 0.0026585999999999997,
+      "tokens": {
+        "input": 57,
+        "output": 73,
+        "cache_read": 4853,
+        "cache_write": 0,
+        "cold": null
+      }
+    },
+    {
+      "id": "edge-oos-missed-trigger-penalty",
+      "question": "at an RCQ my opponent forgot his [[bob]] trigger and only noticed after drawing for the turn. what's the penalty, is that a warning or game loss?",
+      "expected_answer": "That is a tournament-policy question (IPG Missed Trigger), not a Comprehensive Rules question, so I don't cover it. Ask a judge at the event or consult the Infraction Procedure Guide at the current Magic tournament rules/IPG documents.",
+      "expected_source": "Tournament",
+      "expected_rule_ids": [],
+      "supporting_rule_ids": [],
+      "supporting_cited": [],
+      "outcome": {
+        "kind": "error",
+        "variant": "OutOfScope",
+        "message": "question is out of scope (Tournament)"
+      },
+      "cited_rule_ids": [],
+      "recall": {
+        "hit": [],
+        "missed": []
+      },
+      "any_expected_cited": false,
+      "n_rule_cites": 0,
+      "n_ruling_cites": 0,
+      "n_oracle_cites": 0,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 1782,
+      "calls": 1,
+      "stubs_dropped": 0,
+      "usd": 0.0034466,
+      "tokens": {
+        "input": 64,
+        "output": 111,
+        "cache_read": 4853,
+        "cache_write": 0,
+        "cold": null
+      }
+    },
+    {
+      "id": "tokens-manufactor-shelob-food-copy",
+      "question": "i have [[Academy Manufactor]] and [[Shelob, Child of Ungoliant]] out. a creature my spider hit dies and shelob makes a token copy of it that's a food. with manufactor out do i get the food copy plus a clue and a treasure, or what happens?",
+      "expected_answer": "No copy. Academy Manufactor's \"instead\" makes it a replacement effect (614.1a), and Shelob's trigger would create a Food token, so Manufactor applies. The replaced event never happens (614.6): instead of the Food that would be a copy of the creature, you create one Clue, one Food and one Treasure token. Those are predefined tokens with only their standard characteristics (111.10a, 111.10b, 111.10f). 111.10 lets the effect that creates a predefined token modify it, but Shelob's modifications belonged to the replaced event, and Manufactor's own effect modifies nothing. You end up with a plain Food, a plain Clue and a plain Treasure, and the creature is not copied.",
+      "expected_source": "CR",
+      "expected_rule_ids": [
+        "614.6",
+        "111.10"
+      ],
+      "supporting_rule_ids": [
+        "614.1a"
+      ],
+      "supporting_cited": [
+        "614.1a"
+      ],
+      "outcome": {
+        "kind": "verdict",
+        "answer": "You get no copy of the creature. **Academy Manufactor** replaces Shelob's token creation. You create one plain Food, one plain Clue and one plain Treasure, and none of them is a copy of the creature that died.\n\n**Shelob, Child of Ungoliant** tries to create a token that is a Food artifact. Manufactor says: \"If you would create a Clue, Food, or Treasure token, instead create one of each.\" Because it uses \"instead\", it is a replacement effect (`614.1a`). Per `614.6`, a replaced event never happens; a modified event happens instead. So the copy-Food creation is thrown out completely. In its place you create one Clue, one Food and one Treasure, and those are the standard predefined tokens. Shelob's \"copy of that creature\" part belonged to the event that got replaced, so none of the three new tokens gets it. \"One of each\" doesn't mean you keep the original token and add the two missing types.\n\nSince no copy enters, the dead creature's enters-the-battlefield abilities won't trigger either. Each extra Manufactor multiplies the count, as its rulings describe.\n\nI've marked this medium confidence: the Comprehensive Rules don't address this exact pairing directly. The ruling comes from applying Manufactor's replacement as written, together with `614.6`.",
+        "confidence": "medium",
+        "citations": [
+          "oracle f36d1d8b-8303-44a9-ab56-531931641ea2#0: \"If you would create a Clue, Food, or Treasure token, instead create one of each.\"",
+          "rule 614.1a: \"Effects that use the word \u201cinstead\u201d are replacement effects.\"",
+          "rule 614.6: \"If an event is replaced, it never happens. A modified event occurs instead, which may in turn trigger abilities.\"",
+          "ruling f36d1d8b-8303-44a9-ab56-531931641ea2/6ba58dea264678bb: \"you will instead create that many Clue tokens, that many Food tokens, and that many Treasure tokens.\""
+        ],
+        "category": "replacement_effects",
+        "source": "cr",
+        "cr_version": "20260925"
+      },
+      "cited_rule_ids": [
+        "614.1a",
+        "614.6"
+      ],
+      "recall": {
+        "hit": [
+          "614.6"
+        ],
+        "missed": [
+          "111.10"
+        ]
+      },
+      "any_expected_cited": true,
+      "n_rule_cites": 2,
+      "n_ruling_cites": 1,
+      "n_oracle_cites": 1,
+      "source_ok": true,
+      "correct_shape": true,
+      "elapsed_ms": 16612,
+      "calls": 2,
+      "stubs_dropped": 0,
+      "usd": 0.07875998,
+      "tokens": {
+        "input": 200,
+        "output": 1330,
+        "cache_read": 11306,
+        "cache_write": 9819,
+        "cold": true
+      },
+      "grade": {
+        "grader": "anthropic/claude-opus-5-5",
+        "claims": [
+          {
+            "claim": "Academy Manufactor's effect is a replacement effect because it uses 'instead'.",
+            "support": "supported"
+          },
+          {
+            "claim": "A replaced event never happens; a modified event happens instead.",
+            "support": "supported"
+          },
+          {
+            "claim": "Shelob tries to create a token that is a Food artifact.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "The copy-Food creation is thrown out and you create one plain Clue, one plain Food and one plain Treasure, the standard predefined tokens.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Shelob's 'copy of that creature' part belonged to the replaced event, so none of the new tokens gets it.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "'One of each' doesn't mean you keep the original token and add the two missing types.",
+            "support": "supported"
+          },
+          {
+            "claim": "Since no copy enters, the dead creature's enters-the-battlefield abilities won't trigger.",
+            "support": "unsupported"
+          },
+          {
+            "claim": "Each extra Manufactor multiplies the count.",
+            "support": "unsupported"
+          }
+        ],
+        "grounding_reason": "The ruling depends on Shelob's trigger creating a Food token, but Shelob's Oracle text is not quoted. It also depends on the new tokens being plain predefined tokens without Shelob's modifications, and no rule on predefined tokens (111.10) is cited for that.",
+        "grounding": "gap",
+        "agreement_reason": "Like the reference, the answer says there is no copy and you get a plain Food, Clue and Treasure.",
+        "agreement": "agrees",
+        "wrong_remarks": [],
+        "usd": 0.0148422,
+        "reference": "No copy. Academy Manufactor's \"instead\" makes it a replacement effect (614.1a), and Shelob's trigger would create a Food token, so Manufactor applies. The replaced event never happens (614.6): instead of the Food that would be a copy of the creature, you create one Clue, one Food and one Treasure token. Those are predefined tokens with only their standard characteristics (111.10a, 111.10b, 111.10f). 111.10 lets the effect that creates a predefined token modify it, but Shelob's modifications belonged to the replaced event, and Manufactor's own effect modifies nothing. You end up with a plain Food, a plain Clue and a plain Treasure, and the creature is not copied."
+      }
+    }
+  ],
+  "total_usd": 1.5797654800000005,
+  "total_calls": 43,
+  "capped": false
+}
