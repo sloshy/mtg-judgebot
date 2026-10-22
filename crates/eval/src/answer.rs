@@ -203,9 +203,62 @@ pub struct Row {
     pub stubs_dropped: usize,
     /// Estimated USD this question cost.
     pub usd: f64,
+    /// Tokens this question's model calls used; absent in run files from
+    /// before they were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<RowTokens>,
     /// A model's grade of the answer (`eval grade`, D28); absent until graded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<crate::grade::Grade>,
+}
+
+/// The tokens one question's model calls used, as the provider reported them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowTokens {
+    /// Uncached input.
+    pub input: u64,
+    /// Output, thinking included.
+    pub output: u64,
+    /// Input read from the prompt cache.
+    pub cache_read: u64,
+    /// Input written to the prompt cache.
+    pub cache_write: u64,
+    /// Whether the question's first synthesis call wrote its material to the
+    /// cache (cold, as every production question is) rather than reading a
+    /// copy another run wrote (warm, billed at a tenth of the price).
+    /// `None` when no synthesis call ran or a call reported no usage. Only
+    /// meaningful where the provider reports cache writes (the `OpenAI`
+    /// backend reports none), so the summary shows `-` for a run in which no
+    /// question wrote any.
+    pub cold: Option<bool>,
+}
+
+impl RowTokens {
+    /// Sum what the model calls among `charges` report (embeddings left
+    /// out); `None` when none reported tokens.
+    #[must_use]
+    pub fn of(charges: &[judge_core::Charge]) -> Option<Self> {
+        let mut t = Self::default();
+        let mut any = false;
+        for c in charges
+            .iter()
+            .filter(|c| c.stage != judge_core::Stage::Embedding)
+        {
+            if let Some(k) = &c.tokens {
+                any = true;
+                t.input += k.input;
+                t.output += k.output;
+                t.cache_read += k.cache_read;
+                t.cache_write += k.cache_write;
+            }
+        }
+        t.cold = charges
+            .iter()
+            .find(|c| c.stage == judge_core::Stage::Synthesis)
+            .and_then(|c| c.tokens.as_ref())
+            .map(|k| k.cache_write > 0);
+        any.then_some(t)
+    }
 }
 
 /// Which model answered each stage of a run, as `provider/model`, so
@@ -371,11 +424,16 @@ pub async fn run(
             .synth()
             .map(|s| format!("{:?}", s.effort).to_lowercase()),
     };
+    // A fresh marker per run: no run reads the material cache another wrote.
+    let deps_config = judge_bot::DepsConfig {
+        cache_marker: Some(uuid::Uuid::new_v4().simple().to_string()),
+        ..config.deps_config()
+    };
     let deps = crate::deps::build(
         pool,
         &models,
         vectors,
-        &config.deps_config(),
+        &deps_config,
         &gold,
         opts.gold_extraction,
     );
@@ -406,6 +464,7 @@ pub async fn run(
                 elapsed_ms,
                 u64::try_from(model_calls).unwrap_or(u64::MAX),
                 tally.cost().usd(),
+                RowTokens::of(&tally.charges()),
             );
             let capped = matches!(&traced.result, Err(JudgeError::Upstream(e))
                 if e.downcast_ref::<LlmError>()
@@ -462,7 +521,14 @@ pub async fn run(
     Ok((run, pass))
 }
 
-fn score_row(q: &GoldQuestion, traced: &Traced, elapsed_ms: u128, calls: u64, usd: f64) -> Row {
+fn score_row(
+    q: &GoldQuestion,
+    traced: &Traced,
+    elapsed_ms: u128,
+    calls: u64,
+    usd: f64,
+    tokens: Option<RowTokens>,
+) -> Row {
     let result = &traced.result;
     let expected_rule_ids = q.ids(Weight::Decisive);
     let supporting_rule_ids = q.ids(Weight::Supporting);
@@ -559,6 +625,7 @@ fn score_row(q: &GoldQuestion, traced: &Traced, elapsed_ms: u128, calls: u64, us
         stubs_dropped: result
             .as_ref()
             .map_or(0, judge_core::Verdict::stubs_dropped),
+        tokens,
         grade: None,
     }
 }
@@ -860,6 +927,49 @@ pub fn show(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Resu
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_question_is_cold_when_its_first_synthesis_call_wrote_the_cache() {
+        let charge = |stage, read, write| judge_core::Charge {
+            stage,
+            provider: "anthropic".into(),
+            model: "m".into(),
+            tokens: Some(judge_core::Tokens {
+                input: 10,
+                output: 5,
+                cache_read: read,
+                cache_write: write,
+            }),
+            cost: judge_core::Cost::ZERO,
+        };
+        let cold = RowTokens::of(&[
+            charge(judge_core::Stage::Extraction, 100, 0),
+            charge(judge_core::Stage::Synthesis, 4000, 9000),
+            charge(judge_core::Stage::ToolRound, 13000, 0),
+        ]);
+        assert_eq!(
+            cold,
+            Some(RowTokens {
+                input: 30,
+                output: 15,
+                cache_read: 17100,
+                cache_write: 9000,
+                cold: Some(true),
+            })
+        );
+        let with_embedding = RowTokens::of(&[
+            charge(judge_core::Stage::Embedding, 0, 0),
+            charge(judge_core::Stage::Synthesis, 4000, 9000),
+        ]);
+        assert_eq!(
+            with_embedding.map(|t| t.input),
+            Some(10),
+            "embeddings left out"
+        );
+        let warm = RowTokens::of(&[charge(judge_core::Stage::Synthesis, 13000, 0)]);
+        assert_eq!(warm.and_then(|t| t.cold), Some(false));
+        assert_eq!(RowTokens::of(&[]), None);
+    }
+
     use super::*;
 
     /// Every key path in `v`, arrays folded to `[]`.
@@ -998,6 +1108,7 @@ mod tests {
             1,
             1,
             0.01,
+            None,
         );
         assert!(r.correct_shape && r.source_ok);
         let r = score_row(
@@ -1006,9 +1117,10 @@ mod tests {
             1,
             1,
             0.01,
+            None,
         );
         assert!(r.correct_shape && !r.source_ok);
-        let r = score_row(&q, &untraced(Err(JudgeError::LlmRefused)), 1, 1, 0.01);
+        let r = score_row(&q, &untraced(Err(JudgeError::LlmRefused)), 1, 1, 0.01, None);
         assert!(!r.correct_shape);
         let run = Run {
             label: "l".into(),
@@ -1093,7 +1205,7 @@ mod tests {
             Category::KeywordAbilities,
         )
         .validate(&ctx, AnswerableSource::Cr)?;
-        let r = score_row(&q, &untraced(Ok(v)), 1, 1, 0.01);
+        let r = score_row(&q, &untraced(Ok(v)), 1, 1, 0.01, None);
         assert!(r.any_expected_cited);
         assert_eq!((r.cites.n_rule_cites, r.cites.n_ruling_cites), (1, 0));
         assert_eq!(r.recall.missed, vec!["100.2".to_owned()]);
@@ -1178,6 +1290,7 @@ mod tests {
             1,
             1,
             0.01,
+            None,
         );
         assert_eq!(r.first_rejection, Some(first));
         assert_eq!(r.stubs_dropped, 1);

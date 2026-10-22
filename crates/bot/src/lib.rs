@@ -170,6 +170,11 @@ pub struct DepsConfig {
     pub synth: SynthConfig,
     /// Size caps for the synthesizer's user turn.
     pub budget: synth::Budget,
+    /// A line appended to the cached material block, so one evaluation run
+    /// cannot read another's cache of the same question's material (the eval
+    /// sets one per run; see [`synth::LlmSynthesizer::with_cache_marker`]).
+    /// `None` everywhere else, so the requests the bot sends are unchanged.
+    pub cache_marker: Option<String>,
 }
 
 /// Wire the Postgres adapters and the model adapters into [`Deps`] with
@@ -197,7 +202,8 @@ pub fn build_deps_with(
     let retriever: Arc<dyn Retriever> = Arc::new(retriever);
     let synthesizer =
         synth::LlmSynthesizer::new(models.synth(), cfg.synth.clone(), Arc::clone(&retriever))
-            .with_budget(cfg.budget);
+            .with_budget(cfg.budget)
+            .with_cache_marker(cfg.cache_marker.clone());
     Deps {
         extractor: Arc::new(extract::LlmExtractor::new(
             models.extract(),

@@ -1440,7 +1440,7 @@ fn print_summary(plan: &Plan, gold: &Gold, ids: &[String]) -> anyhow::Result<()>
         }
         let _ = writeln!(
             s,
-            "## {title}\n\nshape = answered or declined as gold says; errors = questions that ended in an error where gold expects an answer; recall = decisive rule ids cited; retried = first attempt rejected; graded = answers graded / questions gold expects an answer to; agree, partial and follows are shares of those questions (an error or an ungraded answer counts against them); supported = claims the quotes support, over graded answers.\n\n| cell | runs | shape | errors | recall | retried | graded | agree | partial | follows | supported | cost | grading | secs/q |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "## {title}\n\nshape = answered or declined as gold says; errors = questions that ended in an error where gold expects an answer; recall = decisive rule ids cited; retried = first attempt rejected; graded = answers graded / questions gold expects an answer to; agree, partial and follows are shares of those questions (an error or an ungraded answer counts against them); supported = claims the quotes support, over graded answers; cold = questions whose material the run wrote to the cache itself rather than reading another run's copy, as every production question does (`-` in run files from before it was recorded); cost is only comparable between cold runs.\n\n| cell | runs | shape | errors | recall | retried | graded | agree | partial | follows | supported | cold | cost | grading | secs/q |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         );
         for cell in cells {
             let runs: Vec<answer::Run> = runs_of(cell)
@@ -1468,7 +1468,7 @@ fn print_summary(plan: &Plan, gold: &Gold, ids: &[String]) -> anyhow::Result<()>
             };
             let _ = writeln!(
                 s,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 cell.describe(),
                 runs.len(),
                 spread(
@@ -1535,6 +1535,36 @@ fn print_summary(plan: &Plan, gold: &Gold, ids: &[String]) -> anyhow::Result<()>
                     }),
                     as_pct
                 ),
+                {
+                    let c: Vec<String> = runs
+                        .iter()
+                        .map(|r| {
+                            let known: Vec<bool> = r
+                                .rows
+                                .iter()
+                                .filter_map(|x| x.tokens.as_ref().and_then(|t| t.cold))
+                                .collect();
+                            // A provider that reports no cache writes says
+                            // nothing about warmth either way.
+                            let writes: u64 = r
+                                .rows
+                                .iter()
+                                .filter_map(|x| x.tokens.as_ref())
+                                .map(|t| t.cache_write)
+                                .sum();
+                            if known.is_empty() || writes == 0 {
+                                "-".to_owned()
+                            } else {
+                                format!("{}/{}", known.iter().filter(|c| **c).count(), known.len())
+                            }
+                        })
+                        .collect();
+                    if c.is_empty() {
+                        "-".to_owned()
+                    } else {
+                        c.join(", ")
+                    }
+                },
                 spread(&per(&|r| Some(r.total_usd)), as_usd),
                 spread(
                     &per(&|r| {

@@ -598,6 +598,7 @@ mod tests {
             calls: 0,
             first_rejection: None,
             stubs_dropped: 0,
+            tokens: None,
             usd: 0.0,
             grade: None,
         }

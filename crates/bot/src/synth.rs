@@ -152,6 +152,7 @@ pub struct LlmSynthesizer {
     retriever: Arc<dyn Retriever>,
     system_prompt: String,
     budget: Budget,
+    cache_marker: Option<String>,
 }
 
 impl LlmSynthesizer {
@@ -174,6 +175,7 @@ impl LlmSynthesizer {
             retriever,
             system_prompt: system_prompt(Harness::Tool),
             budget: Budget::default(),
+            cache_marker: None,
         }
     }
 
@@ -181,6 +183,18 @@ impl LlmSynthesizer {
     #[must_use]
     pub fn with_budget(mut self, budget: Budget) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// End the cached material block with `(eval run <marker>)`. The block is
+    /// cached by exact prefix for the model, whatever the effort, so without
+    /// it a repeat run of the gold set reads the material an earlier run
+    /// wrote minutes before and is billed as if warm; a production question's
+    /// material is new every time. The tool round and the retry still reread
+    /// their own question's cache, as in production.
+    #[must_use]
+    pub fn with_cache_marker(mut self, marker: Option<String>) -> Self {
+        self.cache_marker = marker;
         self
     }
 
@@ -256,7 +270,7 @@ impl LlmSynthesizer {
             fallbacks,
             ..self.cfg.clone()
         };
-        let mut user = user_turn(q, ctx, rejected, &self.budget);
+        let mut user = user_turn(q, ctx, rejected, &self.budget, self.cache_marker.as_deref());
         if needs_schema_in_prompt(caps) {
             user.push(schema_block(&OutputSchema::of::<Verdict>()));
         }
@@ -829,14 +843,19 @@ fn user_turn(
     ctx: &Context,
     rejected: Option<&RejectedAttempt>,
     budget: &Budget,
+    cache_marker: Option<&str>,
 ) -> Vec<TextBlock> {
     let pinned: &[RuleId] = if rejected.is_some() {
         &ctx.tool_round
     } else {
         &[]
     };
+    let mut material = render_material(ctx, pinned, budget);
+    if let Some(marker) = cache_marker {
+        let _ = write!(material, "\n(eval run {marker})\n");
+    }
     vec![
-        TextBlock::cached(render_material(ctx, pinned, budget)),
+        TextBlock::cached(material),
         TextBlock::plain(render_question(q, ctx, rejected)),
     ]
 }
@@ -977,6 +996,16 @@ mod tests {
 
         let plain = render_user_turn(&q(), &ctx, None, &[], &Budget::default());
         assert!(!plain.contains("rejected"), "{plain}");
+
+        // An eval run's marker ends the cached block, and only that block.
+        let marked = user_turn(&q(), &ctx, None, &Budget::default(), Some("abc"));
+        let unmarked = user_turn(&q(), &ctx, None, &Budget::default(), None);
+        let (Some(m), Some(u)) = (marked.first(), unmarked.first()) else {
+            return Err("no material block".into());
+        };
+        assert_eq!(m.text, format!("{}\n(eval run abc)\n", u.text));
+        assert_eq!(m.cache, u.cache);
+        assert_eq!(marked.get(1), unmarked.get(1));
 
         let missing = Rejection::BadCitation(Citation::Rule {
             id: rid("999.1")?,
@@ -1535,7 +1564,7 @@ mod tests {
             rules: vec![chunk("613.7", None, TIMESTAMP_RULE)?],
             ..Context::default()
         };
-        let blocks = user_turn(&q(), &ctx, None, &Budget::default());
+        let blocks = user_turn(&q(), &ctx, None, &Budget::default(), None);
         let v = serde_json::to_value(&blocks)?;
         assert_eq!(at(&v, "/0/cache"), "Short");
         assert!(
