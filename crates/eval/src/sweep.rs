@@ -824,6 +824,12 @@ fn read_ledger(dir: &Path) -> anyhow::Result<Vec<Entry>> {
     }
 }
 
+/// What the ledger's entries add up to; `0.0`, not the `-0.0` an empty
+/// float sum starts from.
+fn ledger_total(ledger: &[Entry]) -> f64 {
+    ledger.iter().fold(0.0, |sum, e| sum + e.usd)
+}
+
 fn record(dir: &Path, entry: &Entry) -> anyhow::Result<()> {
     use std::io::Write as _;
     let path = dir.join("ledger.jsonl");
@@ -1224,7 +1230,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<bool> {
             plan.parallel_runs,
             plan.concurrency,
             plan.max_usd,
-            ledger.iter().map(|e| e.usd).sum::<f64>(),
+            ledger_total(&ledger),
             plan.run_max_usd,
             plan.grader
                 .as_ref()
@@ -1246,7 +1252,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<bool> {
         concurrency: plan.concurrency,
         books: std::cell::RefCell::new(Books {
             max_usd: plan.max_usd,
-            spent: ledger.iter().map(|e| e.usd).sum(),
+            spent: ledger_total(&ledger),
             reserved: 0.0,
             in_flight: 0,
         }),
@@ -1440,7 +1446,7 @@ fn print_summary(plan: &Plan, gold: &Gold, ids: &[String]) -> anyhow::Result<()>
         }
         let _ = writeln!(
             s,
-            "## {title}\n\nshape = answered or declined as gold says; errors = questions that ended in an error where gold expects an answer; recall = decisive rule ids cited; retried = first attempt rejected; graded = answers graded / questions gold expects an answer to; agree, partial and follows are shares of those questions (an error or an ungraded answer counts against them); supported = claims the quotes support, over graded answers; cold = questions whose material the run wrote to the cache itself rather than reading another run's copy, as every production question does (`-` in run files from before it was recorded); cost is only comparable between cold runs.\n\n| cell | runs | shape | errors | recall | retried | graded | agree | partial | follows | supported | cold | cost | grading | secs/q |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "## {title}\n\nshape = answered or declined as gold says; errors = questions that ended in an error where gold expects an answer; recall = decisive rule ids cited; retried = first attempt rejected; graded = answers graded / questions gold expects an answer to; agree, partial and follows are shares of those questions (an error or an ungraded answer counts against them), then the count pooled over the runs: on 19 questions one answer is about 5 points of a run, so a gap of an answer or two is noise; supported = claims the quotes support, over graded answers; cold = questions whose material the run wrote to the cache itself rather than reading another run's copy, as every production question does (`-` in run files from before it was recorded); cost is only comparable between cold runs.\n\n| cell | runs | shape | errors | recall | retried | graded | agree | partial | follows | supported | cold | cost | grading | secs/q |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         );
         for cell in cells {
             let runs: Vec<answer::Run> = runs_of(cell)
@@ -1466,9 +1472,30 @@ fn print_summary(plan: &Plan, gold: &Gold, ids: &[String]) -> anyhow::Result<()>
                     ratio(g.iter().filter(|x| x.agreement == a).count(), expected(r))
                 }
             };
+            // Pooled over the cell's runs: "37/38" says how many answers a
+            // gap is, which a percentage over 19 questions hides.
+            let pooled = |hit: &dyn Fn(&answer::Run) -> usize| -> String {
+                let (n, d) = runs
+                    .iter()
+                    .fold((0, 0), |(n, d), r| (n + hit(r), d + expected(r)));
+                if d == 0 {
+                    String::new()
+                } else {
+                    format!(" · {n}/{d}")
+                }
+            };
+            let count_of = |a: grade::Agreement| {
+                move |r: &answer::Run| graded(r).iter().filter(|x| x.agreement == a).count()
+            };
+            let follows = |r: &answer::Run| {
+                graded(r)
+                    .iter()
+                    .filter(|x| x.grounding == grade::Grounding::Follows)
+                    .count()
+            };
             let _ = writeln!(
                 s,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {}{} | {}{} | {}{} | {} | {} | {} | {} | {} |",
                 cell.describe(),
                 runs.len(),
                 spread(
@@ -1512,19 +1539,11 @@ fn print_summary(plan: &Plan, gold: &Gold, ids: &[String]) -> anyhow::Result<()>
                     }
                 },
                 spread(&per(&agreement(grade::Agreement::Agrees)), as_pct),
+                pooled(&count_of(grade::Agreement::Agrees)),
                 spread(&per(&agreement(grade::Agreement::Partial)), as_pct),
-                spread(
-                    &per(&|r| {
-                        let g = graded(r);
-                        ratio(
-                            g.iter()
-                                .filter(|x| x.grounding == grade::Grounding::Follows)
-                                .count(),
-                            expected(r),
-                        )
-                    }),
-                    as_pct
-                ),
+                pooled(&count_of(grade::Agreement::Partial)),
+                spread(&per(&|r| ratio(follows(r), expected(r))), as_pct),
+                pooled(&follows),
                 spread(
                     &per(&|r| {
                         let g = graded(r);

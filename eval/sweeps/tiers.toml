@@ -1,0 +1,45 @@
+# The suggested configurations, end to end, priced per run of the gold set:
+# the tiers the docs offer by estimated cost. Opus at low extracts for every
+# tier but one: it costs about half a cent a question and keeps a cheaper
+# synthesis model from stopping on a card name. `default-medium-extract`
+# measures whether Opus at medium extracts more reliably than at low.
+# Run with `judge-eval sweep eval/sweeps/tiers.toml`; output in
+# eval/runs/sweep-tiers/.
+#
+# Estimated cost (22 questions, two repeats, grading included): about $17.
+
+label = "tiers"
+repeats = 2
+max_usd = 25.00
+run_max_usd = 6.00
+concurrency = 4
+parallel_runs = 3
+
+[grader]
+model = "claude-opus-5-5"
+max_usd = 1.50
+
+[[pipeline]]
+name = "thorough"
+extract = { model = "claude-opus-5-5", effort = "low" }
+synth = { model = "claude-opus-5-5", effort = "xhigh" }
+
+[[pipeline]]
+name = "default"
+extract = { model = "claude-opus-5-5", effort = "low" }
+synth = { model = "claude-opus-5-5", effort = "medium" }
+
+[[pipeline]]
+name = "default-medium-extract"
+extract = { model = "claude-opus-5-5", effort = "medium" }
+synth = { model = "claude-opus-5-5", effort = "medium" }
+
+[[pipeline]]
+name = "balanced"
+extract = { model = "claude-opus-5-5", effort = "low" }
+synth = { model = "claude-sonnet-5-5", effort = "low" }
+
+[[pipeline]]
+name = "economy"
+extract = { model = "claude-opus-5-5", effort = "low" }
+synth = { model = "claude-haiku-5-5", effort = "high" }
