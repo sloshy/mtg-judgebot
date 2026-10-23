@@ -15,6 +15,7 @@ pub mod locale;
 pub mod operator;
 pub mod origin;
 pub mod ports;
+pub mod preview;
 pub mod quote;
 pub mod release;
 pub mod run;
@@ -40,6 +41,7 @@ pub use origin::{Asker, HistoryScope, Interface, Origin, Visibility};
 pub use ports::{
     CallStore, Embedder, Extractor, InputKind, Rated, RatedNew, Resolver, Retriever, Synthesizer,
 };
+pub use preview::{CardStatus, Coverage, Gap, Release, Upcoming};
 pub use run::{FailedCallId, Left, Outcome, OutcomeGroup, RunRecord};
 pub use source::{About, Commit, CommitHash, RepositoryUrl, SourceOffer};
 pub use usage::{Bill, Charge, Cost, Stage, Tally, Tokens};

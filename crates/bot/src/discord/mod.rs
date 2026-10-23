@@ -2428,6 +2428,7 @@ mod tests {
                 mana_cost: String::new(),
                 type_line: String::new(),
             }),
+            release: judge_core::Release::Released,
         }
     }
 

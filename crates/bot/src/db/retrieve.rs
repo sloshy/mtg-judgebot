@@ -197,7 +197,11 @@ impl PgRetriever {
     /// (`session_id` set): their citations were validated but their answer
     /// text is an outside agent's, and nothing can rate them (no Discord
     /// message to vote on), so they serve as history for their own thread
-    /// and never as examples for other askers. Nearest-first when the
+    /// and never as examples for other askers. A call about a card that was
+    /// not out yet when it was answered (first printed after the call's day,
+    /// or noted as unreleased) is never an example either, even once the card
+    /// is out: the CR it was answered under may not have had the card's rules
+    /// (D42). Nearest-first when the
     /// question was embedded, else newest.
     async fn prior_calls(
         &self,
@@ -224,6 +228,11 @@ impl PgRetriever {
                       AND c.session_id IS NULL
                       AND NOT c.private
                       AND NOT (r.effective_score < 1.5 AND (r.n >= 5 OR r.judge_score IS NOT NULL))
+                      AND cardinality(c.unreleased_cards) = 0
+                      AND NOT EXISTS (
+                            SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS u(v)
+                            JOIN cards k ON k.oracle_id = u.v::uuid
+                            WHERE k.first_printed > c.created_at::date)
                       AND (cardinality($4::uuid[]) = 0 OR EXISTS (
                             SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)
                             WHERE x.v::uuid = ANY($4)))
@@ -251,6 +260,11 @@ impl PgRetriever {
                       AND c.session_id IS NULL
                       AND NOT c.private
                       AND NOT (r.effective_score < 1.5 AND (r.n >= 5 OR r.judge_score IS NOT NULL))
+                      AND cardinality(c.unreleased_cards) = 0
+                      AND NOT EXISTS (
+                            SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS u(v)
+                            JOIN cards k ON k.oracle_id = u.v::uuid
+                            WHERE k.first_printed > c.created_at::date)
                       AND (cardinality($3::uuid[]) = 0 OR EXISTS (
                             SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)
                             WHERE x.v::uuid = ANY($3)))

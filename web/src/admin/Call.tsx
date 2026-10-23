@@ -75,7 +75,7 @@ export function CallDetailView(props: { ctx: AdminContext; call: CallDetail }) {
           </p>
         </Message>
         <BotMessage m={props.ctx.pub}>
-          <Answer m={props.ctx.pub} answer={c()} />
+          <Answer m={props.ctx.pub} answer={c()} stored />
         </BotMessage>
       </article>
 

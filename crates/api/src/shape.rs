@@ -7,8 +7,8 @@
 use judge_bot::discord::{question, render};
 use judge_bot::feed::Names;
 use judge_core::{
-    Ambiguous, CardId, CardRef, Citation, Confidence, Context, JudgeError, Locale, RulingKey,
-    Source, Validated, Verdict,
+    Ambiguous, CardId, CardRef, CardStatus, Citation, Confidence, Context, JudgeError, Locale,
+    RulingKey, Source, Validated, Verdict,
 };
 
 use crate::catalog::{self, Messages};
@@ -198,6 +198,9 @@ pub struct CardView {
     pub name: String,
     /// Scryfall search by oracle id.
     pub url: String,
+    /// Out, previewed (not out, the loaded CR covers it) or unreleased (not
+    /// out, and the reply notes the CR may not cover it), as of the answer (D42).
+    pub status: CardStatus,
 }
 
 /// One ambiguous span with its candidate full names.
@@ -277,6 +280,7 @@ pub fn card_view(c: &CardRef) -> CardView {
     CardView {
         name: c.name.clone(),
         url: render::scryfall_url(c.id),
+        status: c.status,
     }
 }
 
@@ -498,6 +502,7 @@ mod tests {
                 mana_cost: String::new(),
                 type_line: "Creature".into(),
             }),
+            release: judge_core::Release::Released,
         }
     }
 

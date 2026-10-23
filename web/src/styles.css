@@ -1395,6 +1395,21 @@ code {
   white-space: pre-wrap;
 }
 
+/* Above an answer naming cards that are not out yet (D42): amber, the
+   caution colour, as wide as the answer's bubble may be. */
+.unreleased-note {
+  margin: 0 0 8px;
+  max-width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--notice);
+  border: 1px solid var(--notice-line);
+  border-left: 4px solid var(--amber);
+  font-size: 0.875rem;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
 .retired {
   margin: 8px 0 0;
   display: inline-block;

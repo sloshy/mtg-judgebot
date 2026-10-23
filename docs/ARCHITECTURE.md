@@ -82,6 +82,10 @@ Discord message (+ last N Q&A in the same thread)
     Fuzzy-ambiguous spans are never dropped: trigram neighbours are not
     names the user could have meant.
     Remaining Ambiguous ⇒ "did you mean…?" buttons and stop. Never guess.
+    Each loaded card carries its Release (D42): released, or upcoming (first
+    printed after today) and then covered or not by the loaded CR. Covered
+    means the CR is dated at most 21 days before the card's first printing
+    and mentions every type, subtype and rules keyword on it.
   │
   ▼
 [3] Classification (same LLM call as [1])
@@ -111,7 +115,8 @@ Discord message (+ last N Q&A in the same thread)
     - Glossary entries for terms in the oracle text
     - Prior calls: vector search filtered by (cards ∩ category), labeled with
       rating and CR version, shown as examples AFTER the CR material.
-      Retired calls are excluded. The refresh's retirement pass retires a call when a
+      Retired calls are excluded, and so is a call about a card that was not
+      out when it was answered (D42), for good. The refresh's retirement pass retires a call when a
       citation's source no longer contains its quote, or a context card's
       Oracle text changed. It restores the call when both hold again.
       Renumbered rules carry their calls with them.
@@ -132,8 +137,10 @@ Discord message (+ last N Q&A in the same thread)
       - source from the extraction, as AnswerableSource (by type, only
         Cr | Commander reach this step)
       - crVersion from the retrieved chunks
-      - the resolved cards (CardRef: id + name) from Context
-    Every interface then shows "Cards: …" from the verdict alone.
+      - the resolved cards (CardRef: id + name + status) from Context
+    Every interface then shows "Cards: …" from the verdict alone, and a note
+    above the answer naming any card not out yet that the loaded CR may not
+    cover (D42). The material says the same under that card's heading.
     Each citation = typed reference + quoted span. Validation:
       - first, citations that quote nothing (blank, a stock word, under 4
         chars) are dropped (D21). An answer with nothing else is a
@@ -613,7 +620,7 @@ pictures, from one set of names:
 
 | Source | Refresh | Storage |
 |---|---|---|
-| Scryfall bulk `oracle-cards.json` | daily (the scheduled refresh `judgebot --jobs` runs, `judge_bot::jobs`, every `JUDGE_REFRESH_HOURS` — DEPLOYMENT.md §7) | `cards` (oracle_id, name, layout, type_line, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
+| Scryfall bulk `oracle-cards.json` | daily (the scheduled refresh `judgebot --jobs` runs, `judge_bot::jobs`, every `JUDGE_REFRESH_HOURS` — DEPLOYMENT.md §7) | `cards` (oracle_id, name, layout, type_line, first_printed — the earliest printing's date from default-cards, D42 —, …) + `card_faces` (oracle_id, face_idx, name, oracle_text, mana_cost, …) |
 | Scryfall bulk `default-cards.json` (names only) | daily | `printed_names` (printed_name, oracle_id) — old names, errata'd names |
 | Scryfall bulk `rulings.json` | daily (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, key, published_at, text) — `key` = content hash (`judge_core::ruling_key`), so a reindexed ruling keeps its identity |
 | Comprehensive Rules txt | on CR release — detected daily from the `.txt` link on Wizards' rules page vs `max(cr_version)` | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
@@ -623,7 +630,7 @@ pictures, from one set of names:
 | Nightmare notes | hand-written markdown, likewise | `card_notes` (oracle_id, note) |
 | Curated list sources | written by each alias or note load, in its transaction | `curated_lists` (list, source `builtin`/`file`, digest, loaded_at): the refresh's `lists` step reloads only a `builtin` list whose digest is not the binary's (`judge_bot::ingest::lists`) |
 | Categories → subsections | YAML (single source of truth; the enum is generated from it) | `categories` |
-| Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity; deleted with their ratings past `JUDGE_CALL_RETENTION_DAYS` by the refresh's `prune` step (D34) | `calls` (id, thread_id, interface, asker_id, asker_name, private, locale, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding; a private call has no embedding) |
+| Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity; deleted with their ratings past `JUDGE_CALL_RETENTION_DAYS` by the refresh's `prune` step (D34) | `calls` (id, thread_id, interface, asker_id, asker_name, private, locale, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding, unreleased_cards — the cards its reply noted as unreleased, D42; a private call has no embedding) |
 | Failed calls | on each operator failure; pruned to 30 days / 500 rows on write | `failed_calls` (thread_id, interface, asker_id, asker_name, private, question, error, first_rejection, attempts) |
 | Judge runs | one row per built-in pipeline run, any outcome (D33) | `judge_runs` (started_at, finished_at, interface, private, outcome, retried, tool_round, call_id, failed_call_id) + `judge_run_charges` (run_id, seq, stage, provider, model, tokens, micro_usd, cost_estimated) |
 | Ratings | continuous; a web rating's address and user agent cleared past `FEEDBACK_IP_DAYS` by every rating write and the refresh's `sweep` step (D38) | `ratings` (call_id, user_id, score, is_judge, ts, rater_kind `discord`/`web`, category, what_wrong, right_answer, web_name, ip, user_agent) |
@@ -774,7 +781,7 @@ judge : Question -> IO[Either[JudgeError, Verdict]]
 The build was eval-first: retrieval was measured before any synthesis existed.
 
 1. A gold set of adversarially verified questions with expected rule ids
-   (`eval/gold.yaml`, 22 questions today, one of them a human correction).
+   (`eval/gold.yaml`, 24 questions today, one of them a human correction and two about unreleased cards).
 2. Ingest.
 3. Extraction and resolution, tested on the gold set's card mentions.
 4. Retrieval, behind a **gate of ≥ 90% of gold rule ids present in the Context**.

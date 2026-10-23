@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use judge_core::{
-    Ambiguous, Card, CardId, Citation, Context, DiscordOperator, EXAMPLE_PREFIX, Earlier,
+    Ambiguous, Card, CardId, CardRef, Citation, Context, DiscordOperator, EXAMPLE_PREFIX, Earlier,
     FeedbackCategory, Freshness, JudgeError, Locale, RuleChunk, RuleId, Ruling, Score, SourceOffer,
     Validated, Verdict, source,
 };
@@ -168,8 +168,12 @@ pub fn answer(
         .iter()
         .map(|c| citation_line(locale, c, ctx, symbols))
         .collect();
+    let body = match unreleased_note(locale, v.cards()) {
+        Some(note) => format!("{note}{SEPARATOR}{}", v.answer()),
+        None => v.answer().to_owned(),
+    };
     Answer {
-        content: with_header(locale, asker, question, v.answer(), symbols),
+        content: with_header(locale, asker, question, &body, symbols),
         citations: fit_lines(locale, &lines, EMBED_DESCRIPTION_LIMIT),
         footer: footer(locale, v),
     }
@@ -256,6 +260,27 @@ pub fn footer(locale: Locale, v: &Verdict<Validated>) -> String {
 /// Longest `Cards: …` footer line, in characters (Discord allows 2048 for the
 /// whole footer; a question naming many cards should not make it a wall).
 pub const CARDS_LINE_LIMIT: usize = 300;
+
+/// The note above an answer that names cards not out yet which the loaded CR
+/// may not cover (D42), or `None` when it names none. Names are joined by
+/// ` · ` as on the `Cards:` line and bounded by [`CARDS_LINE_LIMIT`], so the
+/// note never crowds out the answer it sits above.
+#[must_use]
+pub fn unreleased_note(locale: Locale, cards: &[CardRef]) -> Option<String> {
+    let names: Vec<&str> = cards
+        .iter()
+        .filter(|c| c.status.noted())
+        .map(|c| c.name.as_str())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let m = catalog::messages(locale);
+    Some((m.unreleased_note)(&fit(
+        &names.join(" · "),
+        CARDS_LINE_LIMIT,
+    )))
+}
 
 /// `Cards: A · B`, or `None` when the question named no card.
 fn cards_line(m: &Messages, v: &Verdict<Validated>) -> Option<String> {
@@ -1197,11 +1222,58 @@ mod tests {
                 mana_cost: String::new(),
                 type_line: "Land".into(),
             }),
+            release: judge_core::Release::Released,
         }
     }
 
     const LONG_ENOUGH: &str =
         "Trample assigns lethal damage to blockers first, and the rest to the player.";
+
+    #[test]
+    fn an_answer_naming_an_uncovered_card_opens_with_the_note() -> Res {
+        let body = "The controller of an attacking creature with trample first assigns the combat damage to the \
+                    creature(s) blocking it.";
+        let mut seven = card(1, "Seven of Nine");
+        seven.release = judge_core::Release::assess(
+            Some("2026-11-13".into()),
+            false,
+            vec!["Face a dilemma".into()],
+        );
+        let mut previewed = card(3, "Captain Pike");
+        previewed.release = judge_core::Release::assess(Some("2026-11-13".into()), false, vec![]);
+        let verdict = |cards: Vec<Card>| -> Result<Verdict<Validated>, Box<dyn std::error::Error>> {
+            let ctx = Context {
+                rules: vec![rule(body)?],
+                cards,
+                ..Context::default()
+            };
+            Ok(Verdict::new(
+                LONG_ENOUGH.into(),
+                Confidence::High,
+                vec![Citation::Rule {
+                    id: RuleId::try_new("702.19b".to_owned())?,
+                    quote: judge_core::Quote::try_new(body)?,
+                }],
+                Category::Combat,
+            )
+            .validate(&ctx, AnswerableSource::Cr)?)
+        };
+        let v = verdict(vec![seven, card(2, "Blood Moon"), previewed.clone()])?;
+        let a = answer(Locale::En, &v, None, ASKER, "dilemma?", &no_symbols());
+        let note = "**Note:** This question references unreleased cards. The Comprehensive Rules might not \
+                    have enough information to properly evaluate one or more of them (Seven of Nine).";
+        assert!(
+            a.content.contains(&format!("{note}\n\n{LONG_ENOUGH}")),
+            "{}",
+            a.content
+        );
+        // Released and previewed cards carry no note.
+        let v = verdict(vec![card(2, "Blood Moon"), previewed])?;
+        let a = answer(Locale::En, &v, None, ASKER, "dilemma?", &no_symbols());
+        assert!(!a.content.contains("**Note:**"), "{}", a.content);
+        assert_eq!(unreleased_note(Locale::En, v.cards()), None);
+        Ok(())
+    }
 
     #[test]
     fn fit_keeps_short_text_and_marks_cut_text() {
@@ -2258,6 +2330,7 @@ mod lookup_tests {
                     type_line: "Instant".into(),
                 }],
             )),
+            release: judge_core::Release::Released,
         }
     }
 

@@ -855,6 +855,7 @@ mod tests {
                 ),
                 vec![face("Back", "Nothing here.")],
             )),
+            release: crate::Release::Released,
         }
     }
 

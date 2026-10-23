@@ -10,6 +10,7 @@ use serde_json::Value;
 use std::{borrow::Cow, fmt, sync::LazyLock};
 use uuid::Uuid;
 
+use crate::preview::{CardStatus, Release};
 use crate::{Category, quote};
 
 /// Regex for `RuleId`: `702` | `702.19` | `702.19b` | `704.5aa` (the CR runs
@@ -319,6 +320,10 @@ pub struct CardRef {
     pub id: CardId,
     /// Full card name.
     pub name: String,
+    /// Whether it was out when the question was answered, and whether the
+    /// loaded CR covered it (D42). A reply notes the `Unreleased` ones.
+    #[serde(default)]
+    pub status: CardStatus,
 }
 
 impl From<&Card> for CardRef {
@@ -326,6 +331,7 @@ impl From<&Card> for CardRef {
         Self {
             id: c.id,
             name: c.name.clone(),
+            status: c.release.status(),
         }
     }
 }
@@ -345,6 +351,10 @@ pub struct Card {
     /// All faces; single-faced cards have exactly one.
     #[schemars(with = "Vec<Face>")]
     pub faces: NonEmpty<Face>,
+    /// Whether it is out yet, as of the day it was loaded (D42). Absent in
+    /// what older builds stored: released.
+    #[serde(default)]
+    pub release: Release,
 }
 
 /// Which rules body a question falls under.

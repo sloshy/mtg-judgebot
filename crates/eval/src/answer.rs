@@ -210,6 +210,55 @@ pub struct Row {
     /// A model's grade of the answer (`eval grade`, D28); absent until graded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<crate::grade::Grade>,
+    /// The unreleased-card note (D42): what the gold question expects and
+    /// what the answer noted. Absent when neither names a card, and in run
+    /// files from before the note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreleased: Option<UnreleasedCheck>,
+}
+
+/// The unreleased-card note against what a gold question expects.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnreleasedCheck {
+    /// The cards the gold question says the answer must note.
+    pub expected: Vec<String>,
+    /// The cards the answer noted.
+    pub noted: Vec<String>,
+    /// Expected cards the answer resolved as out, or as covered by the loaded
+    /// CR: the question needs re-authoring, not the bot fixing.
+    pub stale: Vec<String>,
+}
+
+impl UnreleasedCheck {
+    /// Compare the verdict's cards with the gold question's list.
+    fn of(q: &GoldQuestion, cards: &[judge_core::CardRef]) -> Option<Self> {
+        let noted: Vec<String> = cards
+            .iter()
+            .filter(|c| c.status.noted())
+            .map(|c| c.name.clone())
+            .collect();
+        let stale = q
+            .unreleased
+            .iter()
+            .filter(|name| cards.iter().any(|c| &c.name == *name && !c.status.noted()))
+            .cloned()
+            .collect();
+        (!q.unreleased.is_empty() || !noted.is_empty()).then(|| Self {
+            expected: q.unreleased.clone(),
+            noted,
+            stale,
+        })
+    }
+
+    /// The answer noted exactly the expected cards.
+    #[must_use]
+    pub fn as_expected(&self) -> bool {
+        let mut a = self.expected.clone();
+        let mut b = self.noted.clone();
+        a.sort();
+        b.sort();
+        a == b
+    }
 }
 
 /// The tokens one question's model calls used, as the provider reported them.
@@ -627,6 +676,10 @@ fn score_row(
             .map_or(0, judge_core::Verdict::stubs_dropped),
         tokens,
         grade: None,
+        unreleased: match result {
+            Ok(v) => UnreleasedCheck::of(q, v.cards()),
+            Err(_) => UnreleasedCheck::of(q, &[]),
+        },
     }
 }
 
@@ -748,10 +801,51 @@ pub fn table(run: &Run) -> String {
         "questions with ≥1 decisive id cited: {any}/{expecting}; supporting ids also cited: {supporting_cited}/{supporting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations"
     );
     let _ = writeln!(s, "{}", retries_line(run));
+    if let Some(line) = unreleased_line(run) {
+        let _ = writeln!(s, "{line}");
+    }
     if let Some(line) = crate::grade::totals_line(run) {
         let _ = writeln!(s, "{line}");
     }
     s
+}
+
+/// The unreleased-card note (D42) across the run, or `None` when no question
+/// expected one and no answer gave one: how many matched, which did not, and
+/// which questions are stale.
+fn unreleased_line(run: &Run) -> Option<String> {
+    use std::fmt::Write as _;
+    let checks: Vec<(&str, &UnreleasedCheck)> = run
+        .rows
+        .iter()
+        .filter_map(|r| r.unreleased.as_ref().map(|c| (r.id.as_str(), c)))
+        .collect();
+    if checks.is_empty() {
+        return None;
+    }
+    let ok = checks.iter().filter(|(_, c)| c.as_expected()).count();
+    let mut line = format!("unreleased-card note as expected: {ok}/{}", checks.len());
+    let wrong: Vec<&str> = checks
+        .iter()
+        .filter(|(_, c)| !c.as_expected() && c.stale.is_empty())
+        .map(|(id, _)| *id)
+        .collect();
+    if !wrong.is_empty() {
+        let _ = write!(line, "; wrong on {}", wrong.join(", "));
+    }
+    let stale: Vec<String> = checks
+        .iter()
+        .filter(|(_, c)| !c.stale.is_empty())
+        .map(|(id, c)| format!("{id} ({})", c.stale.join(", ")))
+        .collect();
+    if !stale.is_empty() {
+        let _ = write!(
+            line,
+            "; STALE, the card is out or the CR covers it now, re-author: {}",
+            stale.join(", ")
+        );
+    }
+    Some(line)
 }
 
 /// How many first attempts were rejected, by kind, and the stubs dropped.
@@ -1101,6 +1195,7 @@ mod tests {
             source: "Tournament".into(),
             expected: vec![],
             expected_answer: String::new(),
+            unreleased: Vec::new(),
         };
         let r = score_row(
             &q,
@@ -1182,6 +1277,7 @@ mod tests {
                 expected("100.1", Weight::Supporting)?,
             ],
             expected_answer: String::new(),
+            unreleased: Vec::new(),
         };
         let ctx = Context {
             rules: vec![RuleChunk {
@@ -1251,6 +1347,7 @@ mod tests {
             source: "CR".into(),
             expected: vec![expected("702.15", Weight::Decisive)?],
             expected_answer: String::new(),
+            unreleased: Vec::new(),
         };
         let long = "gain that much life ".repeat(20);
         let ctx = Context {

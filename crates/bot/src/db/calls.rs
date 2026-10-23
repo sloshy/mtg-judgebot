@@ -10,6 +10,7 @@ use judge_core::{
 };
 use pgvector::Vector;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use super::{CALLS_REWRITE_LOCK, Vectors, bad_row, bad_row_from, upstream};
 use crate::{
@@ -341,14 +342,22 @@ impl PgCallStore {
                 embedding = None;
             }
         }
+        // The cards the reply noted as unreleased (D42), so the stored call
+        // shows the note it was given.
+        let unreleased: Vec<Uuid> = v
+            .cards()
+            .iter()
+            .filter(|c| c.status.noted())
+            .map(|c| c.id.into_inner())
+            .collect();
         // `ON CONFLICT ... DO UPDATE` (a no-op set) rather than `DO NOTHING`
         // so that `RETURNING id` yields the existing row on conflict.
         let id = sqlx::query_scalar!(
             r#"
             INSERT INTO calls (thread_id, question, answer, category, source, confidence,
                                citations, context_ids, cr_version, embedding, session_id,
-                               interface, asker_id, asker_name, private)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                               interface, asker_id, asker_name, private, unreleased_cards)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (session_id) WHERE session_id IS NOT NULL
             DO UPDATE SET session_id = EXCLUDED.session_id
             RETURNING id
@@ -370,6 +379,7 @@ impl PgCallStore {
                 .and_then(|a| a.name.as_ref())
                 .map(AsRef::<str>::as_ref),
             origin.is_private(),
+            &unreleased,
         )
         .fetch_one(&mut *tx)
         .await

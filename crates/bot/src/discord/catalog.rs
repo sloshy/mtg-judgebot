@@ -153,6 +153,9 @@ pub struct Messages {
     pub footer_meta: fn(Confidence, &str) -> String,
     /// The footer's line naming the resolved cards, joined.
     pub cards_line: fn(&str) -> String,
+    /// Above the answer when it names cards that are not out yet and the
+    /// loaded CR may not cover (D42): their names, joined.
+    pub unreleased_note: fn(&str) -> String,
     /// A ruling citation's label: its date (with a leading space) and card
     /// name, either possibly absent.
     pub ruling_label: fn(&str, Option<&str>) -> String,
@@ -444,6 +447,12 @@ Press **Retry** to ask this again.",
         format!("Confidence: {level} · CR {cr}")
     },
     cards_line: |names| format!("Cards: {names}"),
+    unreleased_note: |names| {
+        format!(
+            "**Note:** This question references unreleased cards. The Comprehensive Rules might not \
+             have enough information to properly evaluate one or more of them ({names})."
+        )
+    },
     ruling_label: |date, name| match name {
         Some(name) => format!("Ruling{date} — {name}"),
         None => format!("Scryfall ruling{date}"),
@@ -650,6 +659,7 @@ pub const STUB: Messages = Messages {
 
     footer_meta: |confidence, cr| format!("⟦footer_meta {confidence:?} {cr}⟧"),
     cards_line: |names| format!("⟦cards_line {names}⟧"),
+    unreleased_note: |names| format!("⟦unreleased_note {names}⟧"),
     ruling_label: |date, name| format!("⟦ruling_label{date} {}⟧", name.unwrap_or_default()),
     oracle_label: |face, name| {
         format!(
@@ -845,6 +855,7 @@ mod tests {
                 m.edit_failed.to_owned(),
                 (m.footer_meta)(Confidence::High, "2026-08-19"),
                 (m.cards_line)("A · B"),
+                (m.unreleased_note)("A · B"),
                 (m.ruling_label)(" (2018-07-13)", Some("Blood Moon")),
                 (m.ruling_label)("", None),
                 (m.oracle_label)(Some(2), None),

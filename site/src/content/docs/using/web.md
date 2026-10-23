@@ -16,6 +16,10 @@ runs the same pipeline as the Discord bot and shows the same answer:
 - the cards the question was resolved to
 - the confidence and the CR version.
 
+An answer naming a card that is not out yet, and that the loaded Comprehensive Rules may
+not cover, opens with the same note as on Discord ([unreleased cards](../discord/#unreleased-cards)).
+The feed shows the note on a stored answer as it was when the answer was given.
+
 A reply that is not an answer (busy, rate limited, a card not found, an error, the
 maintenance notice) is a titled notice in the judge's message. The header links to this
 documentation and has a theme switch (Auto, Dark, Light). The footer names the source

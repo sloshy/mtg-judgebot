@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT c.id,\n               to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"asked_at!\",\n               c.interface, c.asker_id, c.asker_name, c.private, c.thread_id, c.locale,\n               c.session_id, c.question, c.answer, c.confidence, c.source, c.category,\n               c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS \"cards!\",\n               c.retired_reason\n        FROM calls c WHERE c.id = $1\n        ",
+  "query": "\n        SELECT c.id,\n               to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"asked_at!\",\n               c.interface, c.asker_id, c.asker_name, c.private, c.thread_id, c.locale,\n               c.session_id, c.question, c.answer, c.confidence, c.source, c.category,\n               c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS \"cards!\",\n               c.unreleased_cards, c.retired_reason\n        FROM calls c WHERE c.id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -182,6 +182,17 @@
       },
       {
         "ordinal": 17,
+        "name": "unreleased_cards",
+        "type_info": "UuidArray",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "unreleased_cards"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
         "name": "retired_reason",
         "type_info": "Text",
         "origin": {
@@ -215,8 +226,9 @@
       false,
       false,
       null,
+      false,
       true
     ]
   },
-  "hash": "630540ee1c2493cc012e72e7b54c3c41c275b10190692137b480816b0ef2c3e4"
+  "hash": "e708a88bfd35e1462a634668adc17dcf631a99445a3a58283f836187e7a94acd"
 }

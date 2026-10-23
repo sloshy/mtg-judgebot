@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT c.oracle_id, c.name, c.layout,\n               f.name AS face_name, f.oracle_text, f.mana_cost, f.type_line\n        FROM cards c\n        JOIN card_faces f ON f.oracle_id = c.oracle_id\n        WHERE c.oracle_id = ANY($1)\n        ORDER BY c.oracle_id, f.face_idx\n        ",
+  "query": "\n        SELECT c.oracle_id, c.name, c.layout, c.keywords,\n               CASE WHEN c.first_printed > current_date\n                    THEN to_char(c.first_printed, 'YYYY-MM-DD') END AS upcoming_on,\n               -- An uncorrelated subquery is an init plan, run only when a\n               -- row reaches it: never for a released card.\n               CASE WHEN c.first_printed > current_date\n                    THEN COALESCE((SELECT to_date(max(cr_version), 'YYYYMMDD') FROM rules)\n                                  < c.first_printed - $2::int, true)\n                    ELSE false END AS \"cr_predates!\",\n               f.name AS face_name, f.oracle_text, f.mana_cost, f.type_line\n        FROM cards c\n        JOIN card_faces f ON f.oracle_id = c.oracle_id\n        WHERE c.oracle_id = ANY($1)\n        ORDER BY c.oracle_id, f.face_idx\n        ",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,29 @@
       },
       {
         "ordinal": 3,
+        "name": "keywords",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "cards",
+            "name": "keywords"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "upcoming_on",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "cr_predates!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
         "name": "face_name",
         "type_info": "Text",
         "origin": {
@@ -48,7 +71,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 7,
         "name": "oracle_text",
         "type_info": "Text",
         "origin": {
@@ -59,7 +82,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 8,
         "name": "mana_cost",
         "type_info": "Text",
         "origin": {
@@ -70,7 +93,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 9,
         "name": "type_line",
         "type_info": "Text",
         "origin": {
@@ -83,7 +106,8 @@
     ],
     "parameters": {
       "Left": [
-        "UuidArray"
+        "UuidArray",
+        "Int4"
       ]
     },
     "nullable": [
@@ -91,10 +115,13 @@
       false,
       false,
       false,
+      null,
+      null,
+      false,
       false,
       false,
       false
     ]
   },
-  "hash": "a667ec6194d562c7ae3e04a66e897cacf0661c89473bdb2a2d483d49c80f5ee5"
+  "hash": "0f010d6e9d09d1e8231314f0c60c651f07a5ad69973dbe2df823164aeed5f549"
 }

@@ -118,6 +118,10 @@ pub struct Answer {
     pub citations: Vec<CitationView>,
     /// The cards the question's names were resolved to.
     pub cards: Vec<CardRef>,
+    /// Shown above the answer when it names cards not out yet that the
+    /// loaded CR may not cover (D42): relay it with the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Reply of `judge`.
@@ -1241,6 +1245,7 @@ pub fn answer(v: &Verdict<Validated>, ctx: Option<&Context>) -> Answer {
             .map(|c| citation_view(c, ctx))
             .collect(),
         cards: v.cards().to_vec(),
+        note: render::unreleased_note(AGENT_LOCALE, v.cards()),
     }
 }
 
@@ -1299,7 +1304,9 @@ mod tests {
             cards: vec![CardRef {
                 id: CardId::new(uuid::Uuid::from_u128(7)),
                 name: "Dark Confidant".into(),
+                status: judge_core::CardStatus::Released,
             }],
+            note: None,
         })
     }
 
@@ -1372,6 +1379,7 @@ mod tests {
                     mana_cost: String::new(),
                     type_line: String::new(),
                 }),
+                release: judge_core::Release::Released,
             })
             .collect();
         let Some(candidates) = NonEmpty::from_vec(cards) else {
@@ -1409,6 +1417,7 @@ mod tests {
                     mana_cost: "{2}{R}".into(),
                     type_line: "Enchantment".into(),
                 }),
+                release: judge_core::Release::Released,
             }],
             ..Context::default()
         };

@@ -33,7 +33,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   its timestamp (once per streak; a wrong host clock refuses them all). Alerts are written
   in `JUDGE_LOCALE` (`judge_bot::alert::catalog`). `judge-cli stats` reads the ledger and the period and cap the processes record in `budget_setting`. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop
-  against wiremock, not the live API. A full 22-question gold run costs ~$1.70.
+  against wiremock, not the live API. A full 24-question gold run costs ~$1.85.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
   Never commit `.env`, `.cache/`, or `eval/runs/`. A run worth publishing is copied to
   `eval/published/` on purpose, and the README's Results table and the site's Sample
@@ -69,7 +69,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D41),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D42),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -743,6 +743,18 @@ Key cross-file facts that aren't obvious from any one file:
   (`rater_kind`). A rating's reason (`judge_core::Rating`, `feedback_queue`) reaches the
   operator's queue (`judge_bot::feedback`, ops `queue_*`, `/admin/api/queue*`), never
   retrieval.
+- **Unreleased cards** (D42, `judge_core::preview`). `cards.first_printed` (the cards
+  step: earliest `released_at` over default-cards printings) after `current_date` makes
+  a card `Release::Upcoming`, read by `db::cards::load_cards` (the retirement pass uses
+  `load_card_text`, unassessed). It is covered only when the loaded CR is dated at most
+  `COVER_WINDOW_DAYS` (21) before it *and* every `rules_terms` entry (types, subtypes,
+  keywords less ability/flavor words and mode names) appears in `rules`/`glossary` as a
+  whole word. `CardRef::status` carries it onto the verdict: `Unreleased` gets the note
+  above the answer on every interface (`render::unreleased_note`, web `unreleasedNote`,
+  the agent's `note`), the material gets a line under the card's heading (released
+  cards' material is unchanged), `calls.unreleased_cards` keeps it for the feed. The
+  prior-call query skips a call with a noted card or about a card first printed after
+  the call's day, for good.
 - **A call is retired when its citations stop holding, not when the CR changes.**
   - `retire_unsupported` (`db/retire.rs`) is run by `ingest retire` and inside every
     refresh (both through `ingest::retire`, under the refresh lease). It re-runs `citation_supported` over every stored call against
@@ -828,8 +840,9 @@ Key cross-file facts that aren't obvious from any one file:
   `crates/core/build.rs` generates the `Category` enum from it, so taxonomy edits are
   recompiles and matches stay exhaustive. The extractor's schema makes the primary
   category a required field, so an empty classification is an API-level schema violation.
-- **Gold eval set** (`eval/gold.yaml`): 22 questions (21 adversarially verified, one a
-  human correction of a reported wrong answer) with `decisive_rule_ids` (what a correct
+- **Gold eval set** (`eval/gold.yaml`): 24 questions (21 adversarially verified, one a
+  human correction of a reported wrong answer, two about unreleased cards: `unreleased:
+  [card]`, checked by `UnreleasedCheck`, stale once the card is out or covered) with `decisive_rule_ids` (what a correct
   answer must cite; `answer` scores recall on these), `supporting_rule_ids` (background,
   reported when cited, never a miss; `recall` gates on both) and per-question
   `equivalent_rule_ids` (alternate rule ids stating the same fact). The loader builds a

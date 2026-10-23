@@ -261,7 +261,7 @@ async fn context_for(
     let call_ids: Vec<Uuid> = call_ids.into_iter().collect();
 
     let rules = rules::by_ids(&mut **tx, &[], &rule_ids).await?;
-    let cards = cards::load_cards(&mut **tx, &card_ids).await?;
+    let cards = cards::load_card_text(&mut **tx, &card_ids).await?;
     let rulings = retrieve::load_rulings(&mut **tx, &card_ids).await?;
     let (prior, stored) = prior_answers(&mut **tx, &call_ids).await?;
     let deleted = call_ids

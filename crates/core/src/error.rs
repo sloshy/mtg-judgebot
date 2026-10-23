@@ -94,6 +94,7 @@ mod tests {
                 mana_cost: String::new(),
                 type_line: "Instant".into(),
             }),
+            release: crate::Release::Released,
         }
     }
 

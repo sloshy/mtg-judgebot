@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT c.id, c.question, c.answer, c.category, c.citations, c.cr_version,\n                           r.effective_score AS \"rating!\", r.n AS \"n!\"\n                    FROM calls c\n                    JOIN calls_rated r ON r.call_id = c.id\n                    WHERE c.category = ANY($1)\n                      AND c.retired_at IS NULL\n                      AND c.session_id IS NULL\n                      AND NOT c.private\n                      AND NOT (r.effective_score < 1.5 AND (r.n >= 5 OR r.judge_score IS NOT NULL))\n                      AND (cardinality($3::uuid[]) = 0 OR EXISTS (\n                            SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)\n                            WHERE x.v::uuid = ANY($3)))\n                    ORDER BY c.created_at DESC\n                    LIMIT $2\n                    ",
+  "query": "\n                    SELECT c.id, c.question, c.answer, c.category, c.citations, c.cr_version,\n                           r.effective_score AS \"rating!\", r.n AS \"n!\"\n                    FROM calls c\n                    JOIN calls_rated r ON r.call_id = c.id\n                    WHERE c.category = ANY($1)\n                      AND c.retired_at IS NULL\n                      AND c.session_id IS NULL\n                      AND NOT c.private\n                      AND NOT (r.effective_score < 1.5 AND (r.n >= 5 OR r.judge_score IS NOT NULL))\n                      AND cardinality(c.unreleased_cards) = 0\n                      AND NOT EXISTS (\n                            SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS u(v)\n                            JOIN cards k ON k.oracle_id = u.v::uuid\n                            WHERE k.first_printed > c.created_at::date)\n                      AND (cardinality($4::uuid[]) = 0 OR EXISTS (\n                            SELECT 1 FROM jsonb_array_elements_text(c.context_ids->'cards') AS x(v)\n                            WHERE x.v::uuid = ANY($4)))\n                    ORDER BY c.embedding <=> $2, c.created_at DESC\n                    LIMIT $3\n                    ",
   "describe": {
     "columns": [
       {
@@ -95,6 +95,12 @@
     "parameters": {
       "Left": [
         "TextArray",
+        {
+          "Custom": {
+            "name": "vector",
+            "kind": "Simple"
+          }
+        },
         "Int8",
         "UuidArray"
       ]
@@ -110,5 +116,5 @@
       true
     ]
   },
-  "hash": "babef45f9e84e511b2560370e3e4e8c4e14c39d3c9d7d1f17f156dba325e86cb"
+  "hash": "4294d0e3a37b5ea36495a87ef42c17fdfbc1c65093bd49be2273002019ca9854"
 }

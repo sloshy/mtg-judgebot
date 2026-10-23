@@ -39,6 +39,13 @@ export type Messages = {
   /** A citation's verbatim quote, in the locale's quotation marks. */
   quoted: (quote: JSX.Element) => JSX.Element;
   cardsLabel: string;
+  /** Leads the unreleased-card note. */
+  noteLabel: string;
+  /** Above an answer naming cards that are not out yet and that the loaded
+   * Comprehensive Rules may not cover: their names, joined. */
+  unreleasedNote: (names: string) => string;
+  /** The same, on a stored answer: what it said when it was given. */
+  unreleasedNoteStored: (names: string) => string;
   /** Between two items of an inline list (the cards, the footer's data line). */
   separator: string;
   confidence: Record<"low" | "medium" | "high", string>;
@@ -327,6 +334,11 @@ export const en = {
 
   quoted: (quote) => ["“", quote, "”"],
   cardsLabel: "Cards:",
+  noteLabel: "Note:",
+  unreleasedNote: (names) =>
+    `This question references unreleased cards. The Comprehensive Rules might not have enough information to properly evaluate one or more of them (${names}).`,
+  unreleasedNoteStored: (names) =>
+    `When this was answered, it referenced unreleased cards. The Comprehensive Rules then loaded might not have had enough information to properly evaluate one or more of them (${names}).`,
   separator: " · ",
   confidence: { low: "Low", medium: "Medium", high: "High" },
   source: { cr: "Comprehensive Rules", commander: "Commander rules" },

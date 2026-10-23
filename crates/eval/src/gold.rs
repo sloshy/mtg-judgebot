@@ -62,6 +62,10 @@ pub struct GoldQuestion {
     pub expected: Vec<Expected>,
     /// The reference answer, for side-by-side human review.
     pub expected_answer: String,
+    /// Cards the answer must note as unreleased (D42), each one of `cards`.
+    /// The question was written while they were previewed and not covered by
+    /// the loaded CR; once one is out or covered, the question is stale.
+    pub unreleased: Vec<String>,
 }
 
 /// A gold question as written in YAML.
@@ -85,6 +89,9 @@ struct RawQuestion {
     supporting_rule_ids: Vec<YamlScalar>,
     #[serde(default)]
     expected_answer: String,
+    /// Cards the answer must note as unreleased (D42).
+    #[serde(default)]
+    unreleased: Vec<String>,
     /// Alternate rule ids that also satisfy an expected id: the same fact
     /// stated elsewhere in the CR (e.g. `"707.2": ["613.2c"]`). Keys must be
     /// quoted and name a decisive or supporting id.
@@ -156,7 +163,14 @@ impl TryFrom<RawQuestion> for GoldQuestion {
             );
             e.equivalents = alts;
         }
+        for name in &raw.unreleased {
+            anyhow::ensure!(
+                raw.cards.contains(name),
+                "question {q}: unreleased card {name:?} is not one of its cards"
+            );
+        }
         Ok(Self {
+            unreleased: raw.unreleased,
             id: raw.id,
             question: raw.question,
             cards: raw.cards,
@@ -354,6 +368,17 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn an_unreleased_card_must_be_one_of_the_questions_cards() -> anyhow::Result<()> {
+        let q = question("cards: [Seven of Nine]\nunreleased: [Seven of Nine]\n")?;
+        assert_eq!(q.unreleased, vec!["Seven of Nine"]);
+        assert!(
+            err("cards: [Seven of Nine]\nunreleased: [Borg Queen]\n")
+                .contains("is not one of its cards")
+        );
+        Ok(())
+    }
+
     /// The old single list, or a misspelled key, is an error rather than
     /// silently expecting nothing.
     #[test]
@@ -375,7 +400,7 @@ mod tests {
             .iter()
             .map(|q| q.ids(Weight::Supporting).len())
             .sum();
-        assert_eq!((decisive, supporting), (37, 33));
+        assert_eq!((decisive, supporting), (41, 37));
         Ok(())
     }
 }

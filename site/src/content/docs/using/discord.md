@@ -29,6 +29,20 @@ Rules. Rulings and Oracle text link to the card on Scryfall. The footer names th
 the question was resolved to, so you can check that "bob" was taken to mean Dark
 Confidant. It also gives the model's confidence and the CR version it answered from.
 
+### Unreleased cards
+
+Scryfall lists previewed cards weeks before their set comes out, and the judge answers
+questions about them. Until the set's Comprehensive Rules update is published (usually a
+week before release), the rules may not have the card's new keywords or creature types.
+An answer about such a card opens with a note naming it:
+
+> **Note:** This question references unreleased cards. The Comprehensive Rules might not
+> have enough information to properly evaluate one or more of them (Seven of Nine).
+
+During prerelease week, once the set's update is loaded and mentions every type and
+keyword on the card, the note is not shown. An answer about a card that was not out yet is
+never shown to the model as an example, even after the card's release.
+
 If a name could mean several cards ("Tibalt", "Emrakul") you get a **did you mean…?** row
 of up to five buttons instead of a guess. Only the person who asked can pick, once, within
 ten minutes. A pick still works after the bot restarts, because the message holds the
@@ -89,7 +103,8 @@ rating's score changes one thing: which past answers are shown to the model as
 *examples* when a similar question comes in. Scores are smoothed (a Bayesian mean with a
 prior of "partially correct" and a weight of three votes), so one early vote cannot
 swing an answer's standing. Answers rated below 1.5 with at least five votes are
-excluded, and so is one a judge rated *Incorrect* (see below).
+excluded, and so is one a judge rated *Incorrect* (see below) or one about a card that was
+not out yet when it was answered.
 
 - **Correct** is recorded at once.
 - **Partially correct** and **Incorrect** open a short form, which only you see:

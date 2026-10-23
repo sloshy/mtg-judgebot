@@ -2442,3 +2442,163 @@ async fn prune_deletes_old_calls_and_their_ratings_and_retires_no_citer(
     );
     Ok(())
 }
+
+/// D42: a card first printed after today is upcoming, covered only while the
+/// loaded CR is dated within the window before it and mentions every rules
+/// term on it; a released card is never assessed.
+#[sqlx::test(migrations = "./migrations")]
+async fn upcoming_cards_are_assessed_against_the_loaded_cr(pool: PgPool) -> anyhow::Result<()> {
+    use judge_core::{CardStatus, Coverage, Gap, Release};
+    seed(&pool).await?;
+    sqlx::query("UPDATE rules SET cr_version = to_char(current_date, 'YYYYMMDD')")
+        .execute(&pool)
+        .await?;
+    sqlx::query("UPDATE card_faces SET type_line = 'Creature — Human Wizard' WHERE oracle_id = $1")
+        .bind(BOB)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO glossary (term, text, cr_version) \
+         VALUES ('Creature', 'A card type. See Human and Wizard; also typecycling.', '20260819')",
+    )
+    .execute(&pool)
+    .await?;
+    let at = |days: i32, keywords: &'static [&'static str]| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "UPDATE cards SET first_printed = current_date + $2, keywords = $3 WHERE oracle_id = $1",
+            )
+            .bind(BOB)
+            .bind(days)
+            .bind(keywords)
+            .execute(&pool)
+            .await?;
+            let cards = super::cards::load_cards(&pool, &[BOB]).await?;
+            anyhow::Ok(cards.into_iter().next().map(|c| c.release))
+        }
+    };
+    let status = |r: &Option<Release>| r.as_ref().map(Release::status);
+
+    assert_eq!(at(0, &[]).await?, Some(Release::Released), "out today");
+    assert_eq!(status(&at(7, &[]).await?), Some(CardStatus::Previewed));
+    // A family member counts as mentioned through its family's word.
+    assert_eq!(
+        status(&at(7, &["Wizardcycling"]).await?),
+        Some(CardStatus::Previewed)
+    );
+    let unknown = at(7, &["Face a dilemma"]).await?;
+    assert_eq!(
+        unknown,
+        Some(Release::assess(
+            Some(upcoming_date(&pool, 7).await?),
+            false,
+            vec!["Face a dilemma".into()]
+        ))
+    );
+    let far = at(60, &[]).await?;
+    assert!(
+        matches!(
+            &far,
+            Some(Release::Upcoming(u))
+                if matches!(&u.coverage, Coverage::Uncovered { gaps }
+                    if gaps.iter().all(|g| *g == Gap::CrPredatesSet))
+        ),
+        "{far:?}"
+    );
+    // The retirement pass's loader never assesses.
+    let text = super::cards::load_card_text(&pool, &[BOB]).await?;
+    assert_eq!(text.first().map(|c| &c.release), Some(&Release::Released));
+    Ok(())
+}
+
+async fn upcoming_date(pool: &PgPool, days: i32) -> anyhow::Result<String> {
+    Ok(
+        sqlx::query_scalar("SELECT to_char(current_date + $1, 'YYYY-MM-DD')")
+            .bind(days)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// D42: a call whose reply noted an unreleased card stores which, and a call
+/// about a card that was not out when it was answered is never an example,
+/// whether the note was stored or the card's date says so.
+#[sqlx::test(migrations = "./migrations")]
+async fn calls_about_unreleased_cards_are_never_examples(pool: PgPool) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    sqlx::query("UPDATE cards SET first_printed = current_date + 60 WHERE oracle_id = $1")
+        .bind(BOB)
+        .execute(&pool)
+        .await?;
+    let retriever = PgRetriever::new(pool.clone());
+    let store = PgCallStore::new(pool.clone());
+    let q = question("how do layers work with bob?");
+    let cards = super::cards::load_cards(&pool, &[BOB]).await?;
+    let ctx = retriever
+        .retrieve(
+            &q,
+            &cards,
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
+        .await?;
+    let verdict = Verdict::new(
+        "Layer 4 is where type-changing effects apply, before colour and abilities.".into(),
+        Confidence::High,
+        cite_first_rule(&ctx)?,
+        Category::Layers,
+    )
+    .validate(&ctx, AnswerableSource::Cr)?;
+    assert!(verdict.cards().iter().all(|c| c.status.noted()));
+    let call = store
+        .persist(&q, &Origin::Web, &verdict, &ctx, &judge_core::Tally::new())
+        .await?;
+    let stored: Vec<Uuid> = sqlx::query_scalar("SELECT unreleased_cards FROM calls WHERE id = $1")
+        .bind(call.into_inner())
+        .fetch_one(&pool)
+        .await
+        .map(|v: Vec<Uuid>| v)?;
+    assert_eq!(stored, vec![BOB]);
+
+    let visible = || async {
+        let c = retriever
+            .retrieve(
+                &question("how do layers work?"),
+                &[],
+                &extraction(&[Category::Layers], &[]),
+                &judge_core::Tally::new(),
+            )
+            .await?;
+        anyhow::Ok(c.prior.iter().any(|p| p.id == call))
+    };
+    assert!(!visible().await?, "noted and not out");
+    // Out now, but the stored note keeps it out.
+    sqlx::query("UPDATE cards SET first_printed = current_date - 1 WHERE oracle_id = $1")
+        .bind(BOB)
+        .execute(&pool)
+        .await?;
+    assert!(!visible().await?, "the note outlives the release");
+    // A call stored before the note existed: its card's date decides.
+    sqlx::query("UPDATE calls SET unreleased_cards = '{}' WHERE id = $1")
+        .bind(call.into_inner())
+        .execute(&pool)
+        .await?;
+    assert!(
+        visible().await?,
+        "first printed before the call: an example"
+    );
+    sqlx::query(
+        "UPDATE cards SET first_printed = (SELECT created_at::date + 1 FROM calls WHERE id = $2) \
+         WHERE oracle_id = $1",
+    )
+    .bind(BOB)
+    .bind(call.into_inner())
+    .execute(&pool)
+    .await?;
+    assert!(
+        !visible().await?,
+        "first printed after the call: never an example"
+    );
+    Ok(())
+}

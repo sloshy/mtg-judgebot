@@ -276,6 +276,7 @@ mod tests {
                 mana_cost: String::new(),
                 type_line: "Creature".into(),
             }),
+            release: crate::Release::Released,
         }
     }
 

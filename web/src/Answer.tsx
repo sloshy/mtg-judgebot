@@ -35,6 +35,9 @@ export default function Answer(props: {
   answer: AnswerFacts;
   /** Fold a long answer to its first lines, with a button to unfold it. */
   clamp?: boolean;
+  /** A stored call rather than a question just asked: the unreleased-card
+   * note says what it was when the answer was given. */
+  stored?: boolean;
 }) {
   const [open, setOpen] = createSignal(false);
   const [overflows, setOverflows] = createSignal(false);
@@ -60,8 +63,23 @@ export default function Answer(props: {
       </For>
     </ul>
   );
+  const unreleased = () =>
+    props.answer.cards
+      .filter((c) => c.status === "unreleased")
+      .map((c) => c.name)
+      .join(props.m.separator);
   return (
     <>
+      <Show when={unreleased()}>
+        {(names) => (
+          <p class="unreleased-note" role="note">
+            <strong>{props.m.noteLabel}</strong>{" "}
+            {props.stored === true
+              ? props.m.unreleasedNoteStored(names())
+              : props.m.unreleasedNote(names())}
+          </p>
+        )}
+      </Show>
       <div
         ref={text}
         id={id}

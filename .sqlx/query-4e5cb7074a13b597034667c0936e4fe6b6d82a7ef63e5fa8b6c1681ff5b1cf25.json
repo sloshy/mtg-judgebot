@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.name AS \"name!\"\n        FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS t(name, pattern, n)\n        WHERE NOT EXISTS (SELECT 1 FROM rules r WHERE r.body ~* t.pattern)\n          AND NOT EXISTS (SELECT 1 FROM glossary g WHERE g.term ~* t.pattern OR g.text ~* t.pattern)\n        ORDER BY t.n\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4e5cb7074a13b597034667c0936e4fe6b6d82a7ef63e5fa8b6c1681ff5b1cf25"
+}

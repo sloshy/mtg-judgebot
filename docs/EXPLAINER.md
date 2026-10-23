@@ -571,7 +571,7 @@ synthesis user turn has its own breakpoint, so the tool-round continuation rerea
 the cache price. After a tool round the `tool_choice` stays `auto` rather than switching to
 `none`, because changing it would invalidate that cache.
 
-A full run of the 22-question gold evaluation set costs about $1.70. Development is done
+A full run of the 24-question gold evaluation set costs about $1.85. Development is done
 against a mocked HTTP server (`wiremock`), not the live API.
 
 ---
@@ -621,8 +621,8 @@ high.
 
 ## 12. Evaluation
 
-`eval/gold.yaml` holds 22 questions, 21 adversarially verified and one a human
-correction of a reported wrong answer. Each lists the rule ids a correct answer must cite
+`eval/gold.yaml` holds 24 questions: 21 adversarially verified, one a human correction of
+a reported wrong answer and two about unreleased cards (D42). Each lists the rule ids a correct answer must cite
 (decisive) and background rule ids it may leave out (supporting), plus equivalent ids that
 state the same fact. Two gates:
 

@@ -79,7 +79,10 @@ on it.
      submit once more.
    - `exhausted`: the retry failed too and the session is closed. Start a new session if
      you want another go.
-7. Give the user the accepted answer. Pass `persist: true` (or `persist_session
+7. Give the user the accepted answer, and its `note` first when there is one: a card in
+   the question is not out yet and the loaded CR may not cover it (D42). The material
+   says so under that card's heading; answer from its Oracle and reminder text and say
+   what the rules shown leave unsettled. Pass `persist: true` (or `persist_session
    {session}` / `judge-cli persist <session>`) when the user may ask a follow-up. A
    persisted call is the thread's history for the next `begin_session` with the same
    `thread`. It is never shown to other askers as an example.

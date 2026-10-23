@@ -17,8 +17,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 use judge_core::{
-    CallId, CardId, CardRef, Citation, Confidence, FeedbackCategory, Interface, JudgeError,
-    RaterKind, RulingKey, Score, Source,
+    CallId, CardId, CardRef, CardStatus, Citation, Confidence, FeedbackCategory, Interface,
+    JudgeError, RaterKind, RulingKey, Score, Source,
 };
 use regex::Regex;
 use schemars::JsonSchema;
@@ -499,6 +499,8 @@ struct Row {
     cr_version: String,
     citations: serde_json::Value,
     cards: serde_json::Value,
+    /// The cards the reply noted as unreleased (D42).
+    unreleased_cards: Vec<Uuid>,
     d_correct: i64,
     d_partial: i64,
     d_incorrect: i64,
@@ -540,6 +542,7 @@ pub async fn page(
                to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "asked_at!",
                c.interface, c.asker_name, c.question, c.answer, c.confidence, c.source,
                c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS "cards!",
+               c.unreleased_cards,
                rt.d_correct AS "d_correct!", rt.d_partial AS "d_partial!",
                rt.d_incorrect AS "d_incorrect!", rt.w_correct AS "w_correct!",
                rt.w_partial AS "w_partial!", rt.w_incorrect AS "w_incorrect!",
@@ -636,6 +639,7 @@ pub async fn call(
                to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "asked_at!",
                c.interface, c.asker_name, c.question, c.answer, c.confidence, c.source,
                c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS "cards!",
+               c.unreleased_cards,
                rt.d_correct AS "d_correct!", rt.d_partial AS "d_partial!",
                rt.d_incorrect AS "d_incorrect!", rt.w_correct AS "w_correct!",
                rt.w_partial AS "w_partial!", rt.w_incorrect AS "w_incorrect!",
@@ -730,6 +734,17 @@ fn readable(r: Row) -> Option<Entry> {
         .ok()
 }
 
+/// A stored call's card status: `Unreleased` for the cards its reply noted
+/// (D42), else `Released`. A stored call keeps only the note, so a card that
+/// was previewed and covered reads as released.
+pub(crate) fn stored_status(id: CardId, unreleased: &[Uuid]) -> CardStatus {
+    if unreleased.contains(&id.into_inner()) {
+        CardStatus::Unreleased
+    } else {
+        CardStatus::Released
+    }
+}
+
 fn entry(r: Row) -> Result<Entry, JudgeError> {
     let asked = Asked::parse(&r.interface)
         .ok_or_else(|| bad_row(format!("calls.interface {:?}", r.interface)))?;
@@ -749,6 +764,7 @@ fn entry(r: Row) -> Result<Entry, JudgeError> {
             .map(|id| CardRef {
                 id,
                 name: String::new(),
+                status: stored_status(id, &r.unreleased_cards),
             })
             .collect(),
         _ => vec![],
@@ -879,6 +895,7 @@ fn named(mut entry: Entry, names: &Names) -> Entry {
             names.card(c.id).map(|n| CardRef {
                 id: c.id,
                 name: n.to_owned(),
+                status: c.status,
             })
         })
         .collect();

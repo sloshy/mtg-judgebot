@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO calls (thread_id, question, answer, category, source, confidence,\n                               citations, context_ids, cr_version, embedding, session_id,\n                               interface, asker_id, asker_name, private)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)\n            ON CONFLICT (session_id) WHERE session_id IS NOT NULL\n            DO UPDATE SET session_id = EXCLUDED.session_id\n            RETURNING id\n            ",
+  "query": "\n            INSERT INTO calls (thread_id, question, answer, category, source, confidence,\n                               citations, context_ids, cr_version, embedding, session_id,\n                               interface, asker_id, asker_name, private, unreleased_cards)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)\n            ON CONFLICT (session_id) WHERE session_id IS NOT NULL\n            DO UPDATE SET session_id = EXCLUDED.session_id\n            RETURNING id\n            ",
   "describe": {
     "columns": [
       {
@@ -36,12 +36,13 @@
         "Text",
         "Text",
         "Text",
-        "Bool"
+        "Bool",
+        "UuidArray"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "b07a03cfadbbe21fd61f8dd4aae77ed3a4894e830af32ef27fb9fecbafea0833"
+  "hash": "e64fd5af9473f6d8493748867fbc781c1bfd37f6f037a0c777d90eaf3f78dbd8"
 }

@@ -30,8 +30,9 @@ use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    Card, CardId, Citation, Context, EmptyVerdict, JudgeError, Question, RejectedAttempt,
-    Rejection, Retriever, RuleChunk, RuleId, Synthesizer, Tally, ToolMisuse, Unvalidated, Verdict,
+    Card, CardId, Citation, Context, Coverage, EmptyVerdict, Gap, JudgeError, Question,
+    RejectedAttempt, Rejection, Release, Retriever, RuleChunk, RuleId, Synthesizer, Tally,
+    ToolMisuse, Unvalidated, Verdict,
 };
 use judge_llm::{
     ChatModel, Effort, OutputSchema, SendOutcome, Synth, SynthConfig, TextBlock, Truncated,
@@ -494,6 +495,9 @@ fn render_cards(s: &mut String, cards: &[Card]) {
     s.push_str("## Cards (current Oracle text; cite as oracle_text with the card uuid and face index from the face label; only the text under a label is citable, not the name, mana cost or type line on it)\n");
     for c in cards {
         let _ = writeln!(s, "### {} — card {} — layout {:?}", c.name, c.id, c.layout);
+        if let Some(line) = release_line(&c.release) {
+            let _ = writeln!(s, "{line}");
+        }
         for (i, f) in c.faces.iter().enumerate() {
             let cost = if f.mana_cost.is_empty() {
                 String::new()
@@ -507,6 +511,45 @@ fn render_cards(s: &mut String, cards: &[Card]) {
             );
         }
     }
+}
+
+/// What the material says under an upcoming card's heading (D42): that it is
+/// not out, and when the loaded CR may lack its rules, why and what to do
+/// about it. Nothing for a released card, so the material of every question
+/// about released cards is byte-for-byte what it was.
+fn release_line(release: &Release) -> Option<String> {
+    let Release::Upcoming(upcoming) = release else {
+        return None;
+    };
+    let on = &upcoming.on;
+    Some(match &upcoming.coverage {
+        Coverage::Covered => format!(
+            "(Not released yet: first printed {on}. The Comprehensive Rules below are the update for its set.)"
+        ),
+        Coverage::Uncovered { gaps } => {
+            let predates = gaps.iter().any(|g| matches!(g, Gap::CrPredatesSet));
+            let terms: Vec<&str> = gaps
+                .iter()
+                .filter_map(|g| match g {
+                    Gap::UnknownTerm { term } => Some(term.as_str()),
+                    Gap::CrPredatesSet => None,
+                })
+                .collect();
+            let mut why = Vec::new();
+            if predates {
+                why.push("they predate the update for its set".to_owned());
+            }
+            if !terms.is_empty() {
+                why.push(format!("they never mention {}", terms.join(", ")));
+            }
+            format!(
+                "(Not released yet: first printed {on}. The Comprehensive Rules below may not cover this card: {}. \
+                 Do not supply its missing rules from memory or by guessing. Answer from its Oracle text, \
+                 reminder text included, and the rules shown, and say in the answer what they leave unsettled.)",
+                why.join("; ")
+            )
+        }
+    })
 }
 
 fn render_rules(s: &mut String, ctx: &Context, pinned: &[RuleId], budget: &Budget) {
@@ -925,6 +968,7 @@ mod tests {
                 mana_cost: "{1}{B}".into(),
                 type_line: "Creature — Human Wizard".into(),
             }),
+            release: judge_core::Release::Released,
         }
     }
 
@@ -945,6 +989,43 @@ mod tests {
     }
 
     // ---- rendering ----
+
+    #[test]
+    fn an_upcoming_card_says_what_the_rules_may_lack_and_a_released_one_says_nothing() {
+        let mut s = String::new();
+        render_cards(&mut s, &[card(7, "Dark Confidant", "Draw.")]);
+        assert!(!s.contains("Not released yet"), "{s}");
+
+        let mut seven = card(
+            8,
+            "Seven of Nine",
+            "Whenever you face a dilemma, draw a card.",
+        );
+        seven.release = Release::assess(
+            Some("2026-11-13".into()),
+            true,
+            vec!["Face a dilemma".into(), "Borg".into()],
+        );
+        let mut s = String::new();
+        render_cards(&mut s, &[seven]);
+        assert!(
+            s.contains(
+                "### Seven of Nine — card 00000000-0000-0000-0000-000000000008 — layout Normal\n\
+                 (Not released yet: first printed 2026-11-13. The Comprehensive Rules below may not cover \
+                 this card: they predate the update for its set; they never mention Face a dilemma, Borg."
+            ),
+            "{s}"
+        );
+
+        let mut pike = card(9, "Captain Pike", "Draw.");
+        pike.release = Release::assess(Some("2026-11-13".into()), false, vec![]);
+        let mut s = String::new();
+        render_cards(&mut s, &[pike]);
+        assert!(
+            s.contains("(Not released yet: first printed 2026-11-13. The Comprehensive Rules below are the update for its set.)"),
+            "{s}"
+        );
+    }
 
     #[test]
     fn renders_cards_version_rulings_history_and_rejection() -> R {
@@ -1230,6 +1311,7 @@ mod tests {
                     mana_cost: "{2}{W}".into(),
                     type_line: "Instant".into(),
                 }),
+                release: judge_core::Release::Released,
             }],
             ..Context::default()
         };

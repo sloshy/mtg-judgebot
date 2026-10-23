@@ -1978,3 +1978,83 @@ What follows:
 - **The first deploy recreates `proxy` once,** for its new port mapping and grace
   period, and `edge` once where it already ran; each finishes its requests in flight
   first.
+
+## D42. Unreleased cards
+
+*Decided 2026-10-23.*
+
+Scryfall lists a card as soon as it is previewed, weeks before its set releases, and the
+daily refresh loads it. The Comprehensive Rules update for that set comes out about a week
+before the release (prerelease): the Hobbit CR is dated 2026-08-07 for a 2026-08-14
+release, Reality Fracture's 2026-09-25 for 2026-10-02. Until then the judge answers a
+question about the card from rules that may not have its keywords, creature types or
+mechanics. A question about such a card is still answered, with a note that the rules may
+not cover it, and the answer never becomes an example for later questions.
+
+- **A card's first printing is a date.** The cards step writes `cards.first_printed`, the
+  earliest `released_at` over the card's printings in the default-cards bulk file
+  (digital ones included: a card out on Arena is out). A reprint keeps its first set's
+  date. A card first printed after the database's `current_date` is upcoming, so the
+  note stops on release day by itself, with no refresh.
+- **Coverage is judged from two signals** (`judge_core::preview`), because the CR does not
+  name the sets it covers (it names no set at all, outside the trademark lines). An
+  upcoming card is covered only when both hold:
+  - The loaded CR is dated no more than `COVER_WINDOW_DAYS` (21) before the card's first
+    printing, so it is that set's update and not the previous one's.
+  - Every rules term on the card appears in the loaded CR's rules or glossary as a whole
+    word. The terms (`rules_terms`) are the card types, supertypes and subtypes on its
+    type lines and its Scryfall keywords, less ability words, flavor words and mode names
+    (a keyword the Oracle text uses only as a line's `Word — ` prefix: CR 207.2c and
+    207.2d give those no rules meaning, and a set's flavor words never reach the CR). A
+    keyword whose dash is followed by its cost (`Exhaust — {6}:`, `Ward—Pay 3 life.`) is
+    kept.
+    `Halflingcycling` also counts through `typecycling`, and `Desertwalk` through
+    `landwalk`.
+  The term check can only miss in one direction: a new keyword that is an ordinary word
+  (`Warp`, `Void`) is found in unrelated CR text, and a two-word subtype is looked up a
+  word at a time. The date check is what catches a set's cards before its update.
+  Against the CRs of August and September 2026, Reality Fracture's `Empower Jace` is in
+  September's and not August's, and none of Star Trek's terms (`Face a dilemma`,
+  `Vulcan`, `Klingon`, `Borg`, `Assimilate`) is in either.
+- **The status travels with the card.** `Card::release` (`Release::Released`, or
+  `Upcoming` boxed with its date and `Coverage`, `Uncovered` holding a `NonEmpty<Gap>`) is set by
+  the one loader that builds cards for a question (`db::cards::load_cards`), and
+  `CardRef::status` (`CardStatus::{Released, Previewed, Unreleased}`) follows it onto
+  the verdict. Only an upcoming card costs the term lookup.
+- **Every interface notes an `Unreleased` card** above the answer, naming it: Discord's
+  reply (`render::unreleased_note`, the catalog's `unreleased_note`), the web app
+  (`CardView::status`, `unreleasedNote`), and the agent toolbox's `note`. A `Previewed`
+  card, prerelease week with its set's CR loaded, gets none.
+- **The model is told.** The material puts a line under an upcoming card's heading: not
+  released yet, first printed on what date, and for an uncovered card the reasons and an
+  instruction to answer from its Oracle and reminder text and the rules shown, saying
+  what they leave unsettled. A released card's material is unchanged, so the pinned
+  prompts and golden fixtures are too.
+- **A stored call keeps its note.** `calls.unreleased_cards` lists the cards the reply
+  noted, and the feed and the admin view show the note worded for a past answer.
+- **Never an example.** The prior-call query skips a call with any noted card, and any call
+  about a card first printed after the call's day. That second test covers calls stored
+  before this change and survives the release: a call answered under the old CR stays
+  out once the card is out, since its answer may predate the rules it needed.
+- **The gold set gains two questions** (`unreleased: [card]` in `eval/gold.yaml`): one
+  needing an undefined keyword (the answer should hedge) and one using only existing
+  rules (it should not). The run records each answer's note against the list
+  (`UnreleasedCheck`), and reports a question whose card is out or covered as stale, to
+  be re-authored rather than scored.
+
+**Rejected:**
+
+- *Comparing the card's date with the CR's date alone.* The CR is dated about a week
+  before the set's release date, so every card of a new set would read as newer than the
+  CR covering it until the next CR, months later.
+- *Telling a set's CR by the cards it mentions.* The CR names no cards beyond its
+  examples, and new sets' cards are not among them.
+- *Noting released cards with unknown terms too.* A promo can come out before its set
+  (Star Trek's Spock on 2026-09-04, Borg Queen on 2026-10-08), and then the date says
+  released while the CR knows neither `Vulcan` nor `Borg`. But 164 released cards first
+  printed before September 2026 have terms the CR never mentions: digital-only actions
+  (`Conjure`, `Seek`), playtest cards' one-off creature types and a handful of
+  idiosyncratic keywords. A note on all of them would be noise. Released stays released.
+- *Storing the coverage on the card at ingest.* It depends on the CR loaded as well as
+  the card, and the refresh loads them in separate steps. Read at question time it is
+  always the pair that answers.

@@ -24,6 +24,13 @@
 //! user may ask about, and their presence costs nothing. The same rule filters
 //! `default_cards` for `printed_names`, and rulings are only stored for
 //! `oracle_id`s that exist in `cards` (foreign key).
+//!
+//! # First printing
+//!
+//! `cards.first_printed` is the earliest `released_at` over every printing of
+//! the oracle id that passes rules 1, 2 and 4 (digital printings included: a
+//! card out on Arena is out), so a reprint keeps its first set's date and a
+//! previewed card carries its set's (D42).
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead as _, Read as _, Seek as _, Write as _};
@@ -138,6 +145,9 @@ struct ScryfallCard {
     set_type: String,
     #[serde(default)]
     games: Option<Vec<String>>,
+    /// This printing's release date, `YYYY-MM-DD`.
+    #[serde(default)]
+    released_at: Option<String>,
 }
 
 /// One entry of the `rulings` bulk file.
@@ -164,6 +174,8 @@ struct CardRow {
     keywords: Vec<String>,
     scryfall_id: Option<Uuid>,
     legalities: serde_json::Value,
+    /// The earliest printing's `released_at`, `YYYY-MM-DD`; cast to `date` in SQL.
+    first_printed: Option<String>,
 }
 
 /// A `card_faces` row.
@@ -269,8 +281,14 @@ impl ScryfallCard {
             } else {
                 serde_json::json!({})
             },
+            first_printed: self.released_date().map(str::to_owned),
         };
         Some((card, faces))
+    }
+
+    /// This printing's `released_at`, when it is a `YYYY-MM-DD` date.
+    fn released_date(&self) -> Option<&str> {
+        self.released_at.as_deref().filter(|d| is_iso_date(d))
     }
 
     /// Every printed/flavor/face name of this printing, lowercased and deduplicated.
@@ -300,6 +318,15 @@ impl ScryfallCard {
         }
         out
     }
+}
+
+/// `YYYY-MM-DD`, digits where digits go (Postgres checks the calendar).
+fn is_iso_date(s: &str) -> bool {
+    s.len() == 10
+        && s.char_indices().all(|(i, c)| match i {
+            4 | 7 => c == '-',
+            _ => c.is_ascii_digit(),
+        })
 }
 
 /// Group raw rulings by oracle id, one row per distinct (`published_at`, text), keyed by content.
@@ -474,7 +501,7 @@ async fn insert_cards(pool: &PgPool, cards: &[CardRow], faces: &[FaceRow]) -> Re
     }
     let mut tx = pool.begin().await?;
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-        "INSERT INTO cards (oracle_id, name, layout, type_line, cmc, color_identity, keywords, scryfall_id, legalities) ",
+        "INSERT INTO cards (oracle_id, name, layout, type_line, cmc, color_identity, keywords, scryfall_id, legalities, first_printed) ",
     );
     qb.push_values(cards, |mut b, c| {
         b.push_bind(c.oracle_id)
@@ -485,13 +512,15 @@ async fn insert_cards(pool: &PgPool, cards: &[CardRow], faces: &[FaceRow]) -> Re
             .push_bind(&c.color_identity)
             .push_bind(&c.keywords)
             .push_bind(c.scryfall_id)
-            .push_bind(&c.legalities);
+            .push_bind(&c.legalities)
+            .push_bind(&c.first_printed)
+            .push_unseparated("::date");
     });
     qb.push(
         " ON CONFLICT (oracle_id) DO UPDATE SET name = EXCLUDED.name, layout = EXCLUDED.layout, \
          type_line = EXCLUDED.type_line, cmc = EXCLUDED.cmc, color_identity = EXCLUDED.color_identity, \
          keywords = EXCLUDED.keywords, scryfall_id = EXCLUDED.scryfall_id, legalities = EXCLUDED.legalities, \
-         updated_at = now()",
+         first_printed = EXCLUDED.first_printed, updated_at = now()",
     );
     qb.build()
         .execute(&mut *tx)
@@ -623,15 +652,30 @@ pub async fn run(lease: &mut RefreshLease, cache_dir: &Path) -> Result<()> {
     // `oracle_cards` holds one representative printing per oracle id, and for
     // ~1000 old cards that printing is MTGO-only; without this pass they would
     // be dropped by the digital-only rule.
+    // Each oracle id's first printing date comes from the same pass (module docs).
     let mut paper: HashSet<Uuid> = HashSet::new();
+    let mut first: HashMap<Uuid, String> = HashMap::new();
     for (i, card) in jsonl::<ScryfallCard>(&default_path)?.enumerate() {
         breathe(i).await;
         let card = card?;
-        if let Some(oracle_id) = card.effective_oracle_id()
-            && !card.is_skipped_shape()
-            && !card.is_digital_only()
-        {
+        let Some(oracle_id) = card.effective_oracle_id() else {
+            continue;
+        };
+        if card.is_skipped_shape() {
+            continue;
+        }
+        if !card.is_digital_only() {
             paper.insert(oracle_id);
+        }
+        if let Some(date) = card.released_date() {
+            first
+                .entry(oracle_id)
+                .and_modify(|d| {
+                    if date < d.as_str() {
+                        date.clone_into(d);
+                    }
+                })
+                .or_insert_with(|| date.to_owned());
         }
     }
     tracing::info!(oracle_ids = paper.len(), "oracle ids with a paper printing");
@@ -648,10 +692,13 @@ pub async fn run(lease: &mut RefreshLease, cache_dir: &Path) -> Result<()> {
         let has_paper = card
             .effective_oracle_id()
             .is_some_and(|id| paper.contains(&id));
-        let Some((row, fs)) = card.to_rows(has_paper) else {
+        let Some((mut row, fs)) = card.to_rows(has_paper) else {
             skipped += 1;
             continue;
         };
+        if let Some(date) = first.get(&row.oracle_id) {
+            row.first_printed = Some(date.clone());
+        }
         if !known.insert(row.oracle_id) {
             continue; // duplicate oracle_id in the file; first wins
         }
@@ -771,6 +818,14 @@ async fn remove_stale(pool: &PgPool, known: &HashSet<Uuid>, ruled: &HashSet<Uuid
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_release_date_is_read_only_when_it_is_a_date() {
+        assert!(is_iso_date("2026-11-13"));
+        for bad in ["", "2026-11-1", "2026/11/13", "20261113xx", "2026-11-1x"] {
+            assert!(!is_iso_date(bad), "{bad}");
+        }
+    }
 
     fn parse(json: &str) -> ScryfallCard {
         serde_json::from_str(json).expect("fixture parses")

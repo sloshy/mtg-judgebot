@@ -131,7 +131,7 @@ function JudgeReply(props: { m: Messages; entry: FeedEntry; clamp?: boolean }) {
   const [ratings, setRatings] = createSignal(props.entry.ratings);
   return (
     <BotMessage m={props.m}>
-      <Answer m={props.m} answer={props.entry} clamp={props.clamp} />
+      <Answer m={props.m} answer={props.entry} clamp={props.clamp} stored />
       <p class="msg-meta ratings">
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
           <path

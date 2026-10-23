@@ -738,6 +738,7 @@ mod tests {
                 mana_cost: "{W}".into(),
                 type_line: "Creature".into(),
             }),
+            release: judge_core::Release::Released,
         }
     }
 

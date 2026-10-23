@@ -585,7 +585,7 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
                c.interface, c.asker_id, c.asker_name, c.private, c.thread_id, c.locale,
                c.session_id, c.question, c.answer, c.confidence, c.source, c.category,
                c.cr_version, c.citations, coalesce(c.context_ids->'cards', '[]') AS "cards!",
-               c.retired_reason
+               c.unreleased_cards, c.retired_reason
         FROM calls c WHERE c.id = $1
         "#,
         id.into_inner(),
@@ -634,6 +634,7 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
             names.card(id).map(|n| CardRef {
                 id,
                 name: n.to_owned(),
+                status: crate::feed::stored_status(id, &r.unreleased_cards),
             })
         })
         .collect();

@@ -601,6 +601,7 @@ mod tests {
             tokens: None,
             usd: 0.0,
             grade: None,
+            unreleased: None,
         }
     }
 

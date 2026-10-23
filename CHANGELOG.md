@@ -23,6 +23,16 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Added
 
+- **Unreleased cards** (D42). An answer about a previewed card that is not out yet opens
+  with a note naming it when the loaded Comprehensive Rules may not cover it: on Discord,
+  the web app (and the feed, as the note stood when the answer was given) and the agent
+  toolbox's `note`. The note is left off during prerelease week once the set's rules
+  update is loaded and mentions every type and keyword on the card. The model is told the
+  same in its material. An answer about a card that was not out yet is never shown as an
+  example, even after the release. The cards step records each card's first printing
+  date, so the first refresh after the upgrade fills it in. The HTTP API's `cards` carry a
+  `status` (`released`, `previewed`, `unreleased`). The gold set gains two questions
+  about unreleased cards.
 - **Public feed.** The web app lists answered questions from every interface at `/feed`,
   newest first, with where each was asked and the Discord asker's username (anonymous
   otherwise), filterable by interface and searchable (`q`: the question, the answer or

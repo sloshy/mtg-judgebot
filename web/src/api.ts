@@ -24,6 +24,10 @@ export interface CitationView {
 export interface CardView {
   name: string;
   url: string;
+  /** Out, or not out yet: `unreleased` when the loaded Comprehensive Rules
+   * may not cover it, and the answer carries a note naming it. Absent from an
+   * older server. */
+  status?: "released" | "previewed" | "unreleased";
 }
 
 export interface AmbiguousView {

@@ -55,14 +55,14 @@ An answer takes twenty to forty-five seconds. Every reply to a `POST` is JSON ta
       "quote": "…"
     }
   ],
-  "cards": [{ "name": "Dark Confidant", "url": "https://scryfall.com/search?q=oracleid%3A…" }],
+  "cards": [{ "name": "Dark Confidant", "url": "https://scryfall.com/search?q=oracleid%3A…", "status": "released" }],
   "call": "0d3f…"
 }
 ```
 
 | `kind` | Status | Fields | Meaning |
 | --- | --- | --- | --- |
-| `answer` | 200 | `answer`, `confidence` (`low`/`medium`/`high`), `source` (`cr`/`commander`), `cr_version` (`YYYYMMDD`), `citations`, `cards`, `call` | A validated verdict. `call` is the stored call's id, to rate it or open `/calls/<id>`; `null` when the store failed to keep it. The other kinds store no call. Every citation's `quote` was checked verbatim against its source. A citation's `kind` is `rule`, `ruling`, `oracle_text` or `prior_call`; its `label` is for display and may be translated. `url` is `null` for a prior call, which has no public page. |
+| `answer` | 200 | `answer`, `confidence` (`low`/`medium`/`high`), `source` (`cr`/`commander`), `cr_version` (`YYYYMMDD`), `citations`, `cards`, `call` | A validated verdict. `call` is the stored call's id, to rate it or open `/calls/<id>`; `null` when the store failed to keep it. The other kinds store no call. Every citation's `quote` was checked verbatim against its source. A citation's `kind` is `rule`, `ruling`, `oracle_text` or `prior_call`; its `label` is for display and may be translated. `url` is `null` for a prior call, which has no public page. Each of `cards` is `{"name", "url", "status"}`: `status` is `released`, `previewed` (not out, and the loaded CR is its set's update) or `unreleased` (not out, and the CR may not cover it: show a note naming it). |
 | `ambiguous` | 200 | `spans`: `[{"query", "choices", "truncated"}]` | A name matched several cards. Ask again with the same `question` and a `pins` entry per span. At most five `choices` each; `truncated` says there were more. |
 | `not_found` | 200 | `names` | Card names that matched nothing. |
 | `error` | 200 or 4xx | `message` | 200 for a question the judge declined or could not answer: out of scope, no verified answer, the spend cap. 400 for a body that is not JSON or a request over the limits above, 413 for a body over 2 MB, 415 for a missing `Content-Type` or one that is not JSON (`application/json` or `application/*+json`), 422 for JSON of the wrong shape (a missing `question`, a `session_id` that is not a UUID). |
@@ -131,7 +131,7 @@ curl 'http://localhost:8787/api/feed?interface=discord'
 {"entries": [{"id": "…", "asked_at": "2026-10-18T12:00:00Z", "interface": "discord",
   "asker": "alice", "question": "…", "answer": "…", "confidence": "high", "source": "cr",
   "cr_version": "20260925", "citations": [{"kind": "rule", "label": "702.19b", "url": "…", "quote": "…"}],
-  "cards": [{"name": "…", "url": "…"}],
+  "cards": [{"name": "…", "url": "…", "status": "released"}],
   "ratings": {"discord": {"correct": 2, "partial": 0, "incorrect": 0},
               "web": {"correct": 1, "partial": 0, "incorrect": 3}, "judge": null},
   "retired": null}],
