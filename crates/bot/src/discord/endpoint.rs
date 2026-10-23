@@ -400,6 +400,15 @@ mod tests {
         unix_now().to_string()
     }
 
+    /// `body` received with a good signature over one timestamp, read once:
+    /// two reads can straddle a second and no longer match.
+    async fn signed(endpoint: &Interactions, body: &[u8]) -> Received {
+        let ts = now();
+        endpoint
+            .receive(Some(&sign(&ts, body)), Some(&ts), body)
+            .await
+    }
+
     fn sign(timestamp: &str, body: &[u8]) -> String {
         let message = [timestamp.as_bytes(), body].concat();
         hex(&key().sign(&message).to_bytes())
@@ -448,9 +457,7 @@ mod tests {
     async fn nothing_is_read_before_it_opens() {
         let body = command_body();
         let start = tokio::time::Instant::now();
-        let got = Interactions::new()
-            .receive(Some(&sign(&now(), &body)), Some(&now()), &body)
-            .await;
+        let got = signed(&Interactions::new(), &body).await;
         assert_eq!(got, Received::NotReady);
         assert_eq!(got.status(), 503);
         assert_eq!(
@@ -479,9 +486,7 @@ mod tests {
             }
         });
         let body = command_body();
-        let got = closed
-            .receive(Some(&sign(&now(), &body)), Some(&now()), &body)
-            .await;
+        let got = signed(&closed, &body).await;
         assert_eq!(got, Received::Accepted);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -524,16 +529,12 @@ mod tests {
         let body = json!({"id": "1", "application_id": "2", "type": 1, "token": "t", "version": 1})
             .to_string()
             .into_bytes();
-        let got = endpoint
-            .receive(Some(&sign(&now(), &body)), Some(&now()), &body)
-            .await;
+        let got = signed(&endpoint, &body).await;
         assert_eq!(got, Received::Pong);
         assert_eq!((got.status(), got.body()), (200, Some(r#"{"type":1}"#)));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let junk = b"not json";
-        let got = endpoint
-            .receive(Some(&sign(&now(), junk)), Some(&now()), junk)
-            .await;
+        let got = signed(&endpoint, junk).await;
         assert_eq!(got, Received::Malformed);
     }
 
@@ -545,9 +546,7 @@ mod tests {
         };
         let body = command_body();
         let start = tokio::time::Instant::now();
-        let got = endpoint
-            .receive(Some(&sign(&now(), &body)), Some(&now()), &body)
-            .await;
+        let got = signed(&endpoint, &body).await;
         assert_eq!(
             (got, got.status(), got.body()),
             (Received::Accepted, 202, None)
@@ -573,9 +572,7 @@ mod tests {
         };
         let body = command_body();
         let start = tokio::time::Instant::now();
-        let got = endpoint
-            .receive(Some(&sign(&now(), &body)), Some(&now()), &body)
-            .await;
+        let got = signed(&endpoint, &body).await;
         assert_eq!(got, Received::Accepted);
         assert_eq!(start.elapsed(), ACK_WAIT);
         // One that ends without acknowledging is answered when it ends.
@@ -583,9 +580,7 @@ mod tests {
             unreachable!("the test key is valid");
         };
         let start = tokio::time::Instant::now();
-        let got = quick
-            .receive(Some(&sign(&now(), &body)), Some(&now()), &body)
-            .await;
+        let got = signed(&quick, &body).await;
         assert_eq!(got, Received::Accepted);
         assert_eq!(start.elapsed(), Duration::from_millis(5));
     }
