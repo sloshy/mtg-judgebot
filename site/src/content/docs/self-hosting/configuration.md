@@ -59,7 +59,7 @@ In the tables, `judgebot` is the long-running process whatever its roles, and a 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DISCORD_TOKEN` | (required by `--discord`) | The bot token. Also read by `judgebot ingest emoji`, which uploads symbols to the same application. |
-| `GUILD_ID` | | Register commands in this one server only (instant). Other servers the bot is in, and DMs with it, get none. Unset: globally, in every server and in DMs for all but `/judge` (up to an hour). Switching leaves the other set registered until you [clear it](../discord-app/#4-command-registration). |
+| `GUILD_ID` | | Register commands in this one server only (instant). Other servers the bot is in, and DMs with it, get none. Unset: globally, in every server and in DMs for all but `/judge` and `/judge-private` (up to an hour). Switching leaves the other set registered until you [clear it](../discord-app/#4-command-registration). |
 | `JUDGE_ROLE` | `Judge` | Members holding a role with this exact name rate as judges: their rating overrides the crowd's. |
 | `DISCORD_INTERACTIONS` | `gateway` | How Discord delivers commands and button clicks. `gateway`: over the connection one `judgebot` holds. `http`: POSTed to `/discord/interactions` on `API_ADDR`, which must be reachable at a public HTTPS address saved as the application's Interactions Endpoint URL; no gateway connection is opened, and interactions keep being answered while a deploy switches containers. [Interactions over HTTP](../discord-app/#7-interactions-over-http). |
 

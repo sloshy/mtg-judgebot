@@ -250,28 +250,24 @@ pub struct License<'a> {
     pub revision: &'a str,
 }
 
-/// The six commands' descriptions and their options' (Discord allows 100
+/// The seven commands' descriptions and their options' (Discord allows 100
 /// characters each; a test holds every locale to it).
 #[derive(Clone, Copy, Debug)]
 pub struct Commands {
     /// `/judge`.
     pub judge: &'static str,
-    /// `/judge question:`.
+    /// `/judge question:` and `/judge-private question:`.
     pub judge_question: &'static str,
-    /// `/judge private:`.
+    /// `/judge-private`.
     pub judge_private: &'static str,
     /// `/card`.
     pub card: &'static str,
     /// `/card name:`.
     pub card_name: &'static str,
-    /// `/card private:`.
-    pub card_private: &'static str,
     /// `/rule`.
     pub rule: &'static str,
     /// `/rule id:`.
     pub rule_id: &'static str,
-    /// `/rule private:`.
-    pub rule_private: &'static str,
     /// `/help`.
     pub help: &'static str,
     /// `/license`.
@@ -469,7 +465,7 @@ Press **Retry** to ask this again.",
     quote_close: "”",
 
     unknown_command: "I don't recognise that command in this version. Please try again in a minute.",
-    server_only: "`/judge` works in a server only, not in direct messages.",
+    server_only: "`/judge` and `/judge-private` work in a server only, not in direct messages.",
     cooling_down: |max, window, wait| {
         format!(
             "You've asked {max} questions in the last {}, which is this bot's limit per person. Try \
@@ -485,9 +481,9 @@ citation is only shown after it has been checked against the source.\n\n\
 `[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the card with exactly that name, or the \
 one card a listed nickname stands for. If a \
 name could mean several cards you get a \"did you mean…?\" row instead of a guess, and every answer lists \
-the cards it took your question to be about. Tournament policy and card prices are out of scope. Add \
-`private: True` and only you see the answer. It reads no earlier questions and no later question reads \
-it. It is still stored, for the operator only.\n\n\
+the cards it took your question to be about. Tournament policy and card prices are out of scope. Ask \
+with `/judge-private` instead and only you see the answer. It reads no earlier questions and no later \
+question reads it. It is still stored, for the operator only.\n\n\
 **Looking things up.** `/card` shows a card's Oracle text and rulings and `/rule` shows rules text by \
 number. Both are free and instant.\n\n\
 **Rating.** The buttons under an answer record how right it was. *Partially correct* and *Incorrect* \
@@ -499,7 +495,7 @@ and your ratings with the reasons you give. A call that errored is kept for debu
 Nothing else is read: the bot sees only its slash commands. `/forget` deletes your ratings and their \
 reasons and removes your id and username from your questions; a private question's text, and a failed \
 one's, is removed too.",
-    help_feed: "**The feed.** A question not asked private may be listed with its answer on this \
+    help_feed: "**The feed.** A `/judge` question (not `/judge-private`) may be listed with its answer on this \
 instance's public web feed, with your username (anonymous once you use `/forget`). The channel and server \
 are never shown.",
     help_disclaimer: "Answers are AI-generated; verify anything important with a human judge. Unofficial \
@@ -548,13 +544,11 @@ the same licence. The source code of this instance is at <{}> ({}).",
     commands: Commands {
         judge: "Ask a Magic rules question; the answer cites the Comprehensive Rules.",
         judge_question: "Your rules question. Use brackets like [[Full Card Name]] to avoid ambiguity.",
-        judge_private: "Show the answer only to you. It reads no earlier questions here and is never shown publicly.",
+        judge_private: "Ask a rules question privately: only you see the answer, and it is never shown publicly.",
         card: "Look up a card: Oracle text and rulings. Free: no model is called.",
         card_name: "A card name or nickname.",
-        card_private: "Show the card only to you.",
         rule: "Look up Comprehensive Rules text by number. Free: no model is called.",
         rule_id: "A rule number such as 702.19, 702.19b or 702.",
-        rule_private: "Show the rule only to you.",
         help: "What the bot does, how to ask, what it stores, and where its source is.",
         license: "Where this bot's source code is, at which commit, and under which licence.",
         forget: "Delete your ratings and anonymize your failed calls; nothing else is stored about you.",
@@ -722,10 +716,8 @@ pub const STUB: Messages = Messages {
         judge_private: "⟦commands.judge_private⟧",
         card: "⟦commands.card⟧",
         card_name: "⟦commands.card_name⟧",
-        card_private: "⟦commands.card_private⟧",
         rule: "⟦commands.rule⟧",
         rule_id: "⟦commands.rule_id⟧",
-        rule_private: "⟦commands.rule_private⟧",
         help: "⟦commands.help⟧",
         license: "⟦commands.license⟧",
         forget: "⟦commands.forget⟧",
@@ -899,10 +891,8 @@ mod tests {
                 c.judge_private,
                 c.card,
                 c.card_name,
-                c.card_private,
                 c.rule,
                 c.rule_id,
-                c.rule_private,
                 c.help,
                 c.license,
                 c.forget,

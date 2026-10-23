@@ -135,7 +135,7 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   (Discord, web, MCP, `judge-cli` or an agent session) and, on Discord, the asker's user
   id and username at asking time. `judge-cli stats` counts questions by each interface
   and how many were private.
-- **Private calls are stored.** A `/judge private:True` answer is now kept, marked
+- **Private calls are stored.** A `/judge-private` answer is now kept, marked
   private, and has rating buttons. Only the operator sees it: it is never read as a
   later question's history, never used as an example, never embedded and never on the
   feed. The MCP `judge` tool and `begin_session` take `private`, and `judge-cli judge`
@@ -144,7 +144,7 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **Failed calls are kept for troubleshooting.** A call that fails for a reason the
   operator has to diagnose is stored in `failed_calls` with the question, the error and
   the answer text of each synthesis attempt (each cut to a fixed length; the newest 500
-  rows, 30 days), with its interface and asker. A question asked with `private: True`
+  rows, 30 days), with its interface and asker. A question asked with `/judge-private`
   is stored too, flagged. `judge-cli failures` prints `{"failures": [...]}`, each row
   with its `id`. `/forget` anonymizes a user's rows (id, question, error and text
   removed) as well as deleting their ratings.
@@ -337,6 +337,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **`/judge-private` replaces `/judge private: True`.** Asking privately is its own
+  command, next to `/judge` in Discord's command list, instead of a true/false option
+  people had to find and set. `/card` and `/rule` lose their `private` option and always
+  post in the channel (in a DM with the bot they are already private). A `/judge` sent
+  from an older registration with `private: True` is still answered privately.
 - **Measured efforts per stage.** A `judge.toml` stage that names no `effort` now runs at
   the level its model was measured at on the gold set, for extraction as well as synthesis.
   The default setup is Claude Opus 5.5 at medium on both stages: extraction at low now and
@@ -449,7 +454,7 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   button). A new `pick_claims` table makes each prompt answer one click (a second
   gets "A card has already been picked"). It stores the message id, when the prompt
   was shown and a short digest of the message, never the question, so a
-  `private: True` question still leaves no text in the database. Claims older than a
+  `/judge-private` question still leaves no text in the database. Claims older than a
   day are deleted as new ones are taken.
 - **A `/judge` question is at most 1300 characters.** Discord enforces the limit in its
   command box, so the whole question fits in a "did you mean…?" message. A question that
@@ -727,8 +732,11 @@ A bad value of any of these stops every binary that reads it, at startup.
 
 **What changes for clients and stored data**
 
+- **Discord members ask privately with `/judge-private`.** `/judge`, `/card` and `/rule`
+  no longer have a `private` option. The bot registers the new commands when it starts,
+  so there is nothing to do; tell your server if they used the option.
 - **More is stored about each question.** A Discord call stores the asker's user id and
-  username, and a `private: True` answer is stored (for the operator only). `/help`
+  username, and a `/judge-private` answer is stored (for the operator only). `/help`
   says so. Earlier calls are labelled by interface from their thread id, have no asker
   and stay public. An MCP or `judge-cli` call from before the upgrade is labelled
   `agent`, because the two could not be told apart.

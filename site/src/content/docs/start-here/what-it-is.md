@@ -46,7 +46,7 @@ For every question answered, an instance stores:
 - whether it was asked private
 - the ids of the rules, rulings and cards it was answered from.
 
-A Discord question asked with `private: True` is stored too, but only the operator can
+A Discord question asked with `/judge-private` is stored too, but only the operator can
 see it: it is never shown to anyone else, never read as another question's history and
 never used as an example. A failed call is kept with what the model sent, until a later
 failure finds it older than 30 days, so the operator can diagnose it. When someone

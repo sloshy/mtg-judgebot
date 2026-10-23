@@ -170,9 +170,9 @@ alone, so two suites on one cluster drop each other's databases mid-run.
 The hooks run on Claude's commits too. Don't bypass them with `--no-verify`. Fix the
 failure instead.
 
-Discord registers six commands: `/judge` (guild-only), `/card`, `/rule`, `/help`,
-`/license` and `/forget` (`discord::command`: `definitions` is the registration, pinned
-byte-for-byte by `tests/fixtures/discord/commands.json`, and `Command::parse` the typed
+Discord registers seven commands: `/judge` and `/judge-private` (guild-only), `/card`,
+`/rule`, `/help`, `/license` and `/forget` (`discord::command`: `definitions` is the
+registration, pinned byte-for-byte by `tests/fixtures/discord/commands.json`, and `Command::parse` the typed
 invocation; no poise, whose dispatch needs a live gateway connection; replies go
 through `discord::reply::Reply`, initial response then follow-ups, over REST). `/forget`
 deletes the caller's ratings with their reasons and feedback-queue items (`feedback` in
@@ -188,7 +188,8 @@ deletes the caller's ratings with their reasons and feedback-queue items (`feedb
   c.private`), never embedded, and never a public question's history. The agent
   toolbox's `Transport` (Cli | Mcp) gives its `judge` calls their interface; sessions
   store `private` in `agent_sessions`.
-- `/judge private:True` is `discord::Audience::Private`: ephemeral, no thread history
+- `/judge-private` is `discord::Audience::Private` (a `/judge` from an older
+  registration with `private: true` is still honoured): ephemeral, no thread history
   read, persisted private with rating buttons. A failed call goes to `failed_calls`
   (D27; capped, 30 days / 500 rows; `judge-cli failures`). The audience is carried in
   the "did you mean?" button's custom-id through a pick.

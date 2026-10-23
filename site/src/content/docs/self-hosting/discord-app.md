@@ -87,7 +87,7 @@ The bot registers its own slash commands when it starts. It registers them eithe
   the bot, get no commands. Or:
 - globally, in every server the bot is in, where they take up to an hour to appear.
   `/card`, `/rule`, `/help`, `/license` and `/forget` then work in a DM with the bot too.
-  `/judge` is server-only either way.
+  `/judge` and `/judge-private` are server-only either way.
 
 See [Registering a command](https://docs.discord.com/developers/interactions/application-commands#registering-a-command).
 For a bot in one or two servers, register in the server:
@@ -139,7 +139,7 @@ means another `judgebot --discord` on the same database is connected. That is us
 container left from a previous deploy; the line names it
 ([Deployment](../deployment/#gateway-holder)).
 
-The log line `registered /judge, /card, /rule, /help, /license and /forget in one guild` (or `… globally`)
+The log line `registered /judge, /judge-private, /card, /rule, /help, /license and /forget in one guild` (or `… globally`)
 confirms registration. A warning `registering the slash commands failed` instead means
 the bot is connected with whatever commands were registered before (none, on a first
 start); restarting it tries again. Running `/help` in the server confirms it end

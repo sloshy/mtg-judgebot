@@ -1,14 +1,14 @@
 ---
 title: Discord commands and ratings
-description: The six slash commands, how to phrase a question, what the buttons do, and what a rating changes.
+description: The seven slash commands, how to phrase a question, what the buttons do, and what a rating changes.
 sidebar:
   order: 1
 ---
 
 The commands work in the one server the operator registered them in, or in every server
 the bot is in when they are registered globally. Registered globally, `/card`, `/rule`,
-`/help`, `/license` and `/forget` also work in a DM with the bot. `/judge` works only in a
-server.
+`/help`, `/license` and `/forget` also work in a DM with the bot. `/judge` and
+`/judge-private` work only in a server.
 
 ## `/judge question:`
 
@@ -62,10 +62,10 @@ is left. A question turned away as "busy" or over the limit does not count. Any 
 question does, answered or not. Picking a card from a "did you mean…?" row does not count again, and
 `/card` and `/rule` are never limited.
 
-### `private: True`
+### `/judge-private question:`
 
-`/judge question: … private: True` shows the answer to you alone, as Discord's "Only you
-can see this" message. A private answer stands by itself:
+`/judge-private` asks the same way as `/judge` and shows the answer to you alone, as
+Discord's "Only you can see this" message. A private answer stands by itself:
 
 - It reads no channel history, so it cannot be a follow-up, and no later question in
   the channel reads it.
@@ -77,7 +77,7 @@ can see this" message. A private answer stands by itself:
 - "Did you mean…?" still works, privately.
 
 Discord fixes who sees a reply when the bot acknowledges the command, so a private answer
-cannot be made public afterwards. Ask again without the option.
+cannot be made public afterwards. Ask again with `/judge`.
 
 ## `/card name:` and `/rule id:`
 
@@ -92,7 +92,7 @@ Lookups from the bot's database. They call no model, cost nothing and answer at 
   links to the rule on the Yawgatog mirror, and the footer is the CR version. A rule
   longer than an embed is cut, with a note to ask for one sub-rule.
 
-Both post in the channel. Add `private: True` to see the result alone.
+Both post in the channel.
 
 ![The /card reply for Dark Confidant: the name as a link, the mana cost drawn as symbols, the type line, the Oracle text, and two rulings, each with its date.](../../../assets/screenshots/discord-card-lookup.png)
 

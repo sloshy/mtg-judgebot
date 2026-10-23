@@ -373,7 +373,7 @@ Three interfaces share this pipeline through the same composition root
     category in its id (`ids::FormId`). The submission defers, looks the role up and
     stores the rating with its reason (`Rating::faulted`). Every step's id carries the
     call and the score; maintenance answers each with the maintenance reply.
-  - `/judge private:True` is `Audience::Private`: acknowledged ephemerally, no history
+  - `/judge-private` is `Audience::Private`: acknowledged ephemerally, no history
     read, persisted private (with rating buttons), so it is never a prior call and
     never another question's history. A call that *fails* is recorded in
     `failed_calls` for any audience through `CallStore::record_failure` (D27). The

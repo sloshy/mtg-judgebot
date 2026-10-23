@@ -40,7 +40,7 @@
 //!   `[[Full Name]]` and re-runs `judge()`, editing the same message; another
 //!   ambiguous span simply starts the loop again. A question too long for the
 //!   message gets the choices listed and no buttons.
-//! * `/judge … private:True` → the same, shown to the asker alone
+//! * `/judge-private question:…` → the same, shown to the asker alone
 //!   ([`Audience::Private`]): no thread history read, and the call stored
 //!   private (with rating buttons), so it never reaches the channel's
 //!   follow-ups or the prior-call examples.
@@ -1547,8 +1547,8 @@ impl Data {
             Command::Judge { question, audience } => {
                 self.judge(&mut reply, c, locale, question, audience).await
             }
-            Command::Card { name, private } => self.card(&mut reply, locale, &name, private).await,
-            Command::Rule { id, private } => self.rule(&mut reply, locale, &id, private).await,
+            Command::Card { name } => self.card(&mut reply, locale, &name).await,
+            Command::Rule { id } => self.rule(&mut reply, locale, &id).await,
             Command::Help => self.help(&mut reply, locale).await,
             Command::License => self.license(&mut reply, locale).await,
             Command::Forget => self.forget(&mut reply, locale, c.user.id).await,
@@ -1615,22 +1615,16 @@ impl Data {
     }
 
     /// `/card`: look up a card's Oracle text and rulings. No model is called.
-    async fn card(
-        &self,
-        reply: &mut Reply<'_>,
-        locale: Locale,
-        name: &str,
-        private: bool,
-    ) -> anyhow::Result<()> {
+    async fn card(&self, reply: &mut Reply<'_>, locale: Locale, name: &str) -> anyhow::Result<()> {
         let m = catalog::messages(locale);
         let name = name.trim();
         if name.is_empty() || name.chars().count() > render::LOOKUP_INPUT_LIMIT {
             return say(reply, m.lookup_bad_name, true).await;
         }
         // The resolver's fuzzy step and a cold pool can outlast Discord's 3 s.
-        // Discord fixes the reply's visibility here, so what follows (the
-        // result, or "not found") is seen by whoever `private` says.
-        reply.defer(private).await?;
+        // Discord fixes the reply's visibility here: what follows (the
+        // result, or "not found") is in the channel.
+        reply.defer(false).await?;
         let resolution = match self.deps.resolver.resolve(name).await {
             Ok(r) => r,
             Err(e) => {
@@ -1645,8 +1639,7 @@ impl Data {
                     vec![]
                 });
                 let view = render::card(locale, &card, &rulings, &self.symbols.get());
-                let lookup = lookup_message(view).ephemeral(private);
-                reply.send(lookup).await?;
+                reply.send(lookup_message(view)).await?;
                 Ok(())
             }
             Resolution::Ambiguous { candidates, .. } => {
@@ -1661,18 +1654,12 @@ impl Data {
 
     /// `/rule`: look up Comprehensive Rules text by number. No model is
     /// called.
-    async fn rule(
-        &self,
-        reply: &mut Reply<'_>,
-        locale: Locale,
-        id: &str,
-        private: bool,
-    ) -> anyhow::Result<()> {
+    async fn rule(&self, reply: &mut Reply<'_>, locale: Locale, id: &str) -> anyhow::Result<()> {
         let m = catalog::messages(locale);
         let Ok(rule) = RuleId::try_new(id.trim().trim_end_matches('.')) else {
             return say(reply, m.lookup_bad_rule, true).await;
         };
-        reply.defer(private).await?;
+        reply.defer(false).await?;
         let chunks = match self
             .deps
             .retriever
@@ -1688,7 +1675,7 @@ impl Data {
         let Some(view) = render::rules(locale, &rule, &chunks, &self.symbols.get()) else {
             return say(reply, &render::rule_not_found(locale, &rule), true).await;
         };
-        reply.send(lookup_message(view).ephemeral(private)).await?;
+        reply.send(lookup_message(view)).await?;
         Ok(())
     }
 
@@ -2208,12 +2195,12 @@ async fn register(http: &Http, guild: Option<GuildId>, data: &Data) -> bool {
     match (done, guild) {
         (Ok(Ok(())), Some(g)) => {
             data.registered.store(true, Ordering::Release);
-            tracing::info!(guild = %g, "registered /judge, /card, /rule, /help, /license and /forget in one guild");
+            tracing::info!(guild = %g, "registered /judge, /judge-private, /card, /rule, /help, /license and /forget in one guild");
         }
         (Ok(Ok(())), None) => {
             data.registered.store(true, Ordering::Release);
             tracing::info!(
-                "registered /judge, /card, /rule, /help, /license and /forget globally (propagation can take up to an hour)"
+                "registered /judge, /judge-private, /card, /rule, /help, /license and /forget globally (propagation can take up to an hour)"
             );
         }
         (Ok(Err(e)), _) => tracing::warn!(

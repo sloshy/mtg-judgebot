@@ -78,7 +78,7 @@ when, the Discord username of whoever asked (anonymous for the web, the agent to
 from before 2.0.0 and anyone who used `/forget`), the question, the answer with its
 citations and cards, how it was rated, and a note when its citations no longer hold.
 
-- Only a question asked with `private: True` (or an agent call made private) stays off it.
+- Only a question asked with `/judge-private` (or an agent call made private) stays off it.
   A Discord question asked in a channel few people can see is still listed. Servers and
   channels are never shown, and a mention in a question shows as `@…` or `#…`.
 - `/feed?interface=discord` (or `web`, `mcp`, `cli`, `agent_session`) lists one

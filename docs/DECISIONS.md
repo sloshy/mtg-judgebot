@@ -1254,7 +1254,7 @@ The public feed, the feedback queue and the dashboard read these.
   and the server nickname are not stored. A value that is not a username by Discord's
   rule (a legacy `name#1234` tag) is stored as NULL and shown as anonymous. Web and agent
   calls have no asker.
-- **Private means not public-facing.** A `/judge private:True` call, and a `judge` or
+- **Private means not public-facing.** A `/judge-private` call, and a `judge` or
   `begin_session` call with `private`, is stored with its text and asker. On Discord it
   gets rating buttons. Only the operator's surfaces show it. It is never a prior-call
   example and is never embedded. Rejected: leaving answered private calls unstored, which
@@ -1542,7 +1542,7 @@ channel. `JUDGE_FEED=false` turns it off.
 
 - **Private is the only exclusion.** A Discord channel's visibility is not checked: the
   bot has no view of who can see a channel, and guessing would make "public" mean
-  something different per server. `private: True` (or an agent call's `private`) is the
+  something different per server. `/judge-private` (or an agent call's `private`) is the
   one way to keep a call off it, and `/help` says so.
 - **What is public is decided in SQL.** `judge_bot::feed` holds every public read, each
   with `publicly_visible` (not private, within the `JUDGE_FEED_DAYS` window; a SQL

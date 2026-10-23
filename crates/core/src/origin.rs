@@ -126,11 +126,11 @@ impl Asker {
 /// private option (it has no accounts to show a private answer to).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
-    /// `/judge`, by `asker`.
+    /// `/judge` or `/judge-private`, by `asker`.
     Discord {
         /// Who asked.
         asker: Asker,
-        /// `private:True` or not.
+        /// `/judge-private` or not.
         visibility: Visibility,
     },
     /// The web app or `POST /api/judge`: anonymous and public.

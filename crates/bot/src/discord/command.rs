@@ -25,6 +25,7 @@ const _: () = assert!(QUESTION_MAX_CHARS as usize <= render::RETRY_QUESTION_LIMI
 const _: () = assert!(QUESTION_MAX_CHARS as u32 * 4 <= u16::MAX as u32);
 
 const JUDGE: &str = "judge";
+const JUDGE_PRIVATE: &str = "judge-private";
 const CARD: &str = "card";
 const RULE: &str = "rule";
 const HELP: &str = "help";
@@ -32,33 +33,33 @@ const LICENSE: &str = "license";
 const FORGET: &str = "forget";
 
 const QUESTION: &str = "question";
-const PRIVATE: &str = "private";
+/// The boolean `/judge` took before `/judge-private` replaced it. Read
+/// only so an invocation from an older registration still asking for
+/// privacy is answered privately, never in the channel.
+const LEGACY_PRIVATE: &str = "private";
 const NAME: &str = "name";
 const ID: &str = "id";
 
 /// A slash command as invoked, its options read and typed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    /// `/judge`: a rules question, asked in a server.
+    /// `/judge` or `/judge-private`: a rules question, asked in a server.
     Judge {
         /// The question, as typed.
         question: String,
-        /// Who sees the answer.
+        /// Who sees the answer: the channel for `/judge`, the asker alone
+        /// for `/judge-private`.
         audience: Audience,
     },
     /// `/card`: Oracle text and rulings.
     Card {
         /// The card's name or nickname, as typed.
         name: String,
-        /// Whether the reply is shown to the asker alone.
-        private: bool,
     },
     /// `/rule`: Comprehensive Rules text.
     Rule {
         /// The rule number, as typed.
         id: String,
-        /// Whether the reply is shown to the asker alone.
-        private: bool,
     },
     /// `/help`.
     Help,
@@ -107,26 +108,32 @@ impl Command {
     ///
     /// # Errors
     /// [`Unparsed`]: an unknown name, a missing or mistyped option, or
-    /// `/judge` outside a server.
+    /// `/judge` or `/judge-private` outside a server.
     pub fn parse(data: &CommandData, in_guild: bool) -> Result<Self, Unparsed> {
         let options = Options(&data.options);
         match data.name.as_str() {
-            JUDGE => {
+            JUDGE | JUDGE_PRIVATE => {
                 if !in_guild {
                     return Err(Unparsed::NotInGuild);
                 }
+                let (command, audience) = if data.name == JUDGE_PRIVATE {
+                    (JUDGE_PRIVATE, Audience::Private)
+                } else {
+                    (
+                        JUDGE,
+                        Audience::from_option(options.flag(JUDGE, LEGACY_PRIVATE)?),
+                    )
+                };
                 Ok(Self::Judge {
-                    question: options.string(JUDGE, QUESTION)?,
-                    audience: Audience::from_option(options.flag(JUDGE, PRIVATE)?),
+                    question: options.string(command, QUESTION)?,
+                    audience,
                 })
             }
             CARD => Ok(Self::Card {
                 name: options.string(CARD, NAME)?,
-                private: options.flag(CARD, PRIVATE)? == Some(true),
             }),
             RULE => Ok(Self::Rule {
                 id: options.string(RULE, ID)?,
-                private: options.flag(RULE, PRIVATE)? == Some(true),
             }),
             HELP => Ok(Self::Help),
             LICENSE => Ok(Self::License),
@@ -139,7 +146,14 @@ impl Command {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
-            Self::Judge { .. } => JUDGE,
+            Self::Judge {
+                audience: Audience::Channel,
+                ..
+            } => JUDGE,
+            Self::Judge {
+                audience: Audience::Private,
+                ..
+            } => JUDGE_PRIVATE,
             Self::Card { .. } => CARD,
             Self::Rule { .. } => RULE,
             Self::Help => HELP,
@@ -228,10 +242,6 @@ fn option(
     )
 }
 
-fn private_option(text: fn(&Commands) -> &'static str) -> CreateCommandOption {
-    option(CommandOptionType::Boolean, PRIVATE, text).required(false)
-}
-
 fn text_option(name: &str, text: fn(&Commands) -> &'static str) -> CreateCommandOption {
     option(CommandOptionType::String, name, text).required(true)
 }
@@ -240,20 +250,18 @@ fn text_option(name: &str, text: fn(&Commands) -> &'static str) -> CreateCommand
 const BASE: &catalog::Messages = catalog::messages(Locale::En);
 const _: () = assert!(matches!(Locale::ALL[0], Locale::En));
 
-/// The six commands as they are registered with Discord, in order.
+/// The seven commands as they are registered with Discord, in order.
 #[must_use]
 pub fn definitions() -> Vec<CreateCommand> {
     vec![
         command(JUDGE, |c| c.judge)
             .add_option(text_option(QUESTION, |c| c.judge_question).max_length(QUESTION_MAX_CHARS))
-            .add_option(private_option(|c| c.judge_private))
             .contexts(vec![InteractionContext::Guild]),
-        command(CARD, |c| c.card)
-            .add_option(text_option(NAME, |c| c.card_name))
-            .add_option(private_option(|c| c.card_private)),
-        command(RULE, |c| c.rule)
-            .add_option(text_option(ID, |c| c.rule_id))
-            .add_option(private_option(|c| c.rule_private)),
+        command(JUDGE_PRIVATE, |c| c.judge_private)
+            .add_option(text_option(QUESTION, |c| c.judge_question).max_length(QUESTION_MAX_CHARS))
+            .contexts(vec![InteractionContext::Guild]),
+        command(CARD, |c| c.card).add_option(text_option(NAME, |c| c.card_name)),
+        command(RULE, |c| c.rule).add_option(text_option(ID, |c| c.rule_id)),
         command(HELP, |c| c.help),
         command(LICENSE, |c| c.license),
         command(FORGET, |c| c.forget),
@@ -275,8 +283,8 @@ mod tests {
         data(name, options).map(|d| Command::parse(&d, in_guild))
     }
 
-    /// The registration is the one poise 0.7 built from the attribute macros
-    /// this module replaced, captured before the switch.
+    /// The registration is pinned: a change to it is a change to what every
+    /// server's members see, made on purpose (re-capture the fixture).
     #[test]
     fn the_registration_is_unchanged() {
         let fixture: Value =
@@ -292,7 +300,7 @@ mod tests {
     fn every_registered_command_parses() {
         let built = serde_json::to_value(definitions()).unwrap_or_default();
         let commands = built.as_array().cloned().unwrap_or_default();
-        assert_eq!(commands.len(), 6);
+        assert_eq!(commands.len(), 7);
         for c in commands {
             let name = c.get("name").and_then(Value::as_str).unwrap_or_default();
             let options: Vec<Value> = c
@@ -314,55 +322,65 @@ mod tests {
     #[test]
     fn options_are_read_and_typed() {
         let q = json!({"name": "question", "type": 3, "value": "Does it die?"});
-        let private = |b: bool| json!({"name": "private", "type": 5, "value": b});
-        assert_eq!(
-            parse("judge", json!([q, private(true)]), true),
+        let asked = |audience| {
             Some(Ok(Command::Judge {
                 question: "Does it die?".into(),
-                audience: Audience::Private
+                audience,
             }))
-        );
+        };
+        assert_eq!(parse("judge", json!([q]), true), asked(Audience::Channel));
         assert_eq!(
-            parse("judge", json!([q, private(false)]), true),
-            Some(Ok(Command::Judge {
-                question: "Does it die?".into(),
-                audience: Audience::Channel
-            }))
+            parse("judge-private", json!([q]), true),
+            asked(Audience::Private)
         );
+        for name in ["judge", "judge-private"] {
+            assert_eq!(
+                parse(name, json!([q]), false),
+                Some(Err(Unparsed::NotInGuild))
+            );
+        }
         assert_eq!(
-            parse("judge", json!([q]), false),
-            Some(Err(Unparsed::NotInGuild))
-        );
-        assert_eq!(
-            parse("judge", json!([private(true)]), true),
+            parse("judge-private", json!([]), true),
             Some(Err(Unparsed::BadOption {
-                command: "judge",
+                command: "judge-private",
                 option: "question"
             }))
         );
         let name = json!({"name": "name", "type": 3, "value": "Bob"});
         assert_eq!(
-            parse("card", json!([name, private(true)]), false),
-            Some(Ok(Command::Card {
-                name: "Bob".into(),
-                private: true
-            }))
+            parse("card", json!([name]), false),
+            Some(Ok(Command::Card { name: "Bob".into() }))
         );
-        let wrong = json!({"name": "private", "type": 3, "value": "yes"});
         assert_eq!(
             parse(
                 "rule",
-                json!([{"name": "id", "type": 3, "value": "702.19"}, wrong]),
+                json!([{"name": "id", "type": 3, "value": "702.19"}]),
                 true
             ),
-            Some(Err(Unparsed::BadOption {
-                command: "rule",
-                option: "private"
+            Some(Ok(Command::Rule {
+                id: "702.19".into()
             }))
         );
         assert_eq!(
             parse("judgement", json!([]), true),
             Some(Err(Unparsed::Unknown("judgement".into())))
+        );
+    }
+
+    /// A `/judge` from an older registration that still carries the
+    /// `private` boolean is answered as it asked: privately when `true`.
+    #[test]
+    fn the_retired_private_option_still_keeps_an_answer_private() {
+        let q = json!({"name": "question", "type": 3, "value": "Does it die?"});
+        let private = |b: bool| json!({"name": "private", "type": 5, "value": b});
+        let audience = |options| match parse("judge", options, true) {
+            Some(Ok(Command::Judge { audience, .. })) => Some(audience),
+            _ => None,
+        };
+        assert_eq!(audience(json!([q, private(true)])), Some(Audience::Private));
+        assert_eq!(
+            audience(json!([q, private(false)])),
+            Some(Audience::Channel)
         );
     }
 
@@ -373,14 +391,14 @@ mod tests {
                 question: String::new(),
                 audience: Audience::Channel,
             },
+            Command::Judge {
+                question: String::new(),
+                audience: Audience::Private,
+            },
             Command::Card {
                 name: String::new(),
-                private: false,
             },
-            Command::Rule {
-                id: String::new(),
-                private: false,
-            },
+            Command::Rule { id: String::new() },
             Command::Help,
             Command::License,
             Command::Forget,
