@@ -20,6 +20,29 @@ pub struct Gold {
     pub questions: Vec<GoldQuestion>,
 }
 
+/// A card that exists only in the gold file (D42): invented, so no model has
+/// seen it, and first printed a fixed number of days after the run, so it is
+/// always upcoming. The eval resolves its name to it (`crate::fixtures`) and
+/// judges its release against the loaded CR as a stored card's would be.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureCard {
+    /// Its full name; one of the question's `cards`, and no real card's.
+    pub name: String,
+    /// Full type line.
+    pub type_line: String,
+    /// Mana cost in Scryfall notation.
+    #[serde(default)]
+    pub mana_cost: String,
+    /// Its Oracle text, reminder text included.
+    pub oracle_text: String,
+    /// Its keywords, as Scryfall would list them.
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    /// How many days after the run it is first printed (at least 1).
+    pub first_printed_in_days: i32,
+}
+
 /// How much an expected rule id counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Weight {
@@ -66,6 +89,8 @@ pub struct GoldQuestion {
     /// The question was written while they were previewed and not covered by
     /// the loaded CR; once one is out or covered, the question is stale.
     pub unreleased: Vec<String>,
+    /// Invented cards the question names (D42).
+    pub fixture_cards: Vec<FixtureCard>,
 }
 
 /// A gold question as written in YAML.
@@ -92,6 +117,9 @@ struct RawQuestion {
     /// Cards the answer must note as unreleased (D42).
     #[serde(default)]
     unreleased: Vec<String>,
+    /// Invented cards the question names (D42).
+    #[serde(default)]
+    fixture_cards: Vec<FixtureCard>,
     /// Alternate rule ids that also satisfy an expected id: the same fact
     /// stated elsewhere in the CR (e.g. `"707.2": ["613.2c"]`). Keys must be
     /// quoted and name a decisive or supporting id.
@@ -169,8 +197,26 @@ impl TryFrom<RawQuestion> for GoldQuestion {
                 "question {q}: unreleased card {name:?} is not one of its cards"
             );
         }
+        for f in &raw.fixture_cards {
+            anyhow::ensure!(
+                raw.cards.contains(&f.name),
+                "question {q}: fixture card {:?} is not one of its cards",
+                f.name
+            );
+            anyhow::ensure!(
+                f.first_printed_in_days >= 1,
+                "question {q}: fixture card {:?} must be first printed at least a day after the run",
+                f.name
+            );
+            anyhow::ensure!(
+                !f.type_line.trim().is_empty() && !f.oracle_text.trim().is_empty(),
+                "question {q}: fixture card {:?} needs a type line and Oracle text",
+                f.name
+            );
+        }
         Ok(Self {
             unreleased: raw.unreleased,
+            fixture_cards: raw.fixture_cards,
             id: raw.id,
             question: raw.question,
             cards: raw.cards,
@@ -364,6 +410,28 @@ mod tests {
         assert!(
             err("decisive_rule_ids: ['707.2']\nequivalent_rule_ids:\n  '707.2': [613.2c]\n  ' 707.2': [613.2a]\n")
                 .contains("is listed twice")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_fixture_card_is_one_of_the_questions_cards_and_always_upcoming() -> anyhow::Result<()> {
+        let card = "  - name: Quorbit Adept\n    type_line: Creature — Human Wizard\n    oracle_text: Draw.\n";
+        let q = question(&format!(
+            "cards: [Quorbit Adept]\nfixture_cards:\n{card}    first_printed_in_days: 60\n"
+        ))?;
+        assert_eq!(q.fixture_cards.len(), 1);
+        assert!(
+            err(&format!(
+                "cards: [Other]\nfixture_cards:\n{card}    first_printed_in_days: 60\n"
+            ))
+            .contains("is not one of its cards")
+        );
+        assert!(
+            err(&format!(
+                "cards: [Quorbit Adept]\nfixture_cards:\n{card}    first_printed_in_days: 0\n"
+            ))
+            .contains("at least a day")
         );
         Ok(())
     }

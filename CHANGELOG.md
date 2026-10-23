@@ -32,7 +32,7 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   example, even after the release. The cards step records each card's first printing
   date, so the first refresh after the upgrade fills it in. The HTTP API's `cards` carry a
   `status` (`released`, `previewed`, `unreleased`). The gold set gains two questions
-  about unreleased cards.
+  about unreleased cards, on invented cards (`fixture_cards`) that never go stale.
 - **Public feed.** The web app lists answered questions from every interface at `/feed`,
   newest first, with where each was asked and the Discord asker's username (anonymous
   otherwise), filterable by interface and searchable (`q`: the question, the answer or

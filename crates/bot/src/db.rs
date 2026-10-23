@@ -26,6 +26,7 @@ pub mod stats;
 pub(crate) mod tests;
 
 pub use calls::PgCallStore;
+pub use cards::assess_release;
 pub use library::{GLOSSARY_LIMIT, MAX_SEARCH, PgLibrary};
 pub use picks::{PickKey, claim_pick, release_pick};
 pub use resolve::PgResolver;

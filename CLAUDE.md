@@ -841,8 +841,9 @@ Key cross-file facts that aren't obvious from any one file:
   recompiles and matches stay exhaustive. The extractor's schema makes the primary
   category a required field, so an empty classification is an API-level schema violation.
 - **Gold eval set** (`eval/gold.yaml`): 24 questions (21 adversarially verified, one a
-  human correction of a reported wrong answer, two about unreleased cards: `unreleased:
-  [card]`, checked by `UnreleasedCheck`, stale once the card is out or covered) with `decisive_rule_ids` (what a correct
+  human correction of a reported wrong answer, two about invented unreleased cards: `fixture_cards`
+  resolved by `eval::fixtures`, never in the database, and `unreleased: [card]`, checked by
+  `UnreleasedCheck`) with `decisive_rule_ids` (what a correct
   answer must cite; `answer` scores recall on these), `supporting_rule_ids` (background,
   reported when cited, never a miss; `recall` gates on both) and per-question
   `equivalent_rule_ids` (alternate rule ids stating the same fact). The loader builds a

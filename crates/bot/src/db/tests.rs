@@ -2602,3 +2602,44 @@ async fn calls_about_unreleased_cards_are_never_examples(pool: PgPool) -> anyhow
     );
     Ok(())
 }
+
+/// D42: a card outside the database (an eval fixture) is judged as a stored
+/// one is: released at zero days, previewed when the CR is its set's and
+/// knows its terms, unreleased otherwise.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_fixture_card_is_assessed_like_a_stored_one(pool: PgPool) -> anyhow::Result<()> {
+    use judge_core::{CardStatus, Face, Release};
+    seed(&pool).await?;
+    sqlx::query("UPDATE rules SET cr_version = to_char(current_date, 'YYYYMMDD')")
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO glossary (term, text, cr_version) \
+         VALUES ('Creature', 'A card type. See Human and Wizard.', '20260819')",
+    )
+    .execute(&pool)
+    .await?;
+    let face = [Face {
+        name: "Quorbit Adept".into(),
+        oracle_text: "Whenever you quorbit, draw a card.".into(),
+        mana_cost: String::new(),
+        type_line: "Creature — Human Wizard".into(),
+    }];
+    let status = |r: Release| r.status();
+    let assess = |keywords: &'static [&'static str], days: i32| {
+        let pool = pool.clone();
+        let face = face.clone();
+        async move {
+            let keywords: Vec<String> = keywords.iter().map(|k| (*k).to_owned()).collect();
+            anyhow::Ok(super::assess_release(&pool, &face, &keywords, days).await?)
+        }
+    };
+    assert_eq!(assess(&[], 0).await?, Release::Released);
+    assert_eq!(status(assess(&[], 7).await?), CardStatus::Previewed);
+    assert_eq!(
+        status(assess(&["Quorbit"], 7).await?),
+        CardStatus::Unreleased
+    );
+    assert_eq!(status(assess(&[], 60).await?), CardStatus::Unreleased);
+    Ok(())
+}

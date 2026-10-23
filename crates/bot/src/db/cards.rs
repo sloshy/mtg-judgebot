@@ -61,6 +61,38 @@ pub(super) async fn load_cards(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Card>,
     Ok(out)
 }
 
+/// The [`Release`] of a card that is not in the database (an eval fixture),
+/// first printed `days` from today, judged exactly as [`load_cards`] judges a
+/// stored card: against the loaded CR's date and text.
+///
+/// # Errors
+/// `Upstream` from sqlx.
+pub async fn assess_release(
+    pool: &PgPool,
+    faces: &[Face],
+    keywords: &[String],
+    days: i32,
+) -> Result<Release, JudgeError> {
+    let r = sqlx::query!(
+        r#"
+        SELECT CASE WHEN $1::int > 0
+                    THEN to_char(current_date + $1::int, 'YYYY-MM-DD') END AS upcoming_on,
+               COALESCE((SELECT to_date(max(cr_version), 'YYYYMMDD') FROM rules)
+                        < current_date + $1::int - $2::int, true) AS "cr_predates!"
+        "#,
+        days,
+        COVER_WINDOW_DAYS,
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(upstream("assess a card's release"))?;
+    let Some(on) = r.upcoming_on else {
+        return Ok(Release::Released);
+    };
+    let unknown = unknown_terms(pool, &rules_terms(keywords, faces)).await?;
+    Ok(Release::assess(Some(on), r.cr_predates, unknown))
+}
+
 /// [`load_cards`] without the release assessment: every card is
 /// [`Release::Released`]. For the retirement pass, which reads Oracle text
 /// inside its own transaction and never shows a card.

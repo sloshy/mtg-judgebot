@@ -516,11 +516,11 @@ questions:
     No copy. Academy Manufactor's "instead" makes it a replacement effect (614.1a), and Shelob's trigger would create a Food token, so Manufactor applies. The replaced event never happens (614.6): instead of the Food that would be a copy of the creature, you create one Clue, one Food and one Treasure token. Those are predefined tokens with only their standard characteristics (111.10a, 111.10b, 111.10f). 111.10 lets the effect that creates a predefined token modify it, but Shelob's modifications belonged to the replaced event, and Manufactor's own effect modifies nothing. You end up with a plain Food, a plain Clue and a plain Treasure, and the creature is not copied.
   rationale: |-
     From a reported wrong answer: the bot read 111.10 and Manufactor's shorthand "one of each" as keeping Shelob's Food copy alongside a Clue and a Treasure. Neither card has a ruling on it, so data/notes.yaml carries an Academy Manufactor note giving the operator's ruling. Not adversarially verified like the rest of the set.
-- id: unreleased-seven-of-nine-dilemma
+- id: unreleased-quorbit-modes
   question: |-
-    i have [[Seven of Nine]] out and cast [[Kolaghan's Command]] choosing two modes. do i draw one card or two? and if i copy the command does seven trigger again?
+    i have [[Quorbit Adept]] out and cast [[Kolaghan's Command]] choosing two modes. do i draw one card or two? and if i copy the command does the adept trigger again?
   cards:
-  - Seven of Nine
+  - Quorbit Adept
   - Kolaghan's Command
   nicknames_used: []
   categories:
@@ -535,16 +535,25 @@ questions:
   - 601.2b
   - '603.2'
   unreleased:
-  - Seven of Nine
+  - Quorbit Adept
+  fixture_cards:
+  - name: Quorbit Adept
+    type_line: Creature — Human Wizard
+    mana_cost: '{1}{U}{B}'
+    oracle_text: |-
+      Whenever you quorbit, draw a card. (You quorbit as you choose one or more modes for a spell or ability.)
+    keywords:
+    - Quorbit
+    first_printed_in_days: 60
   expected_answer: |-
-    One card, and the copy does not trigger it, going by Seven of Nine's reminder text, because the loaded Comprehensive Rules do not define "face a dilemma" yet (the card is from a set whose rules update is not out). The reminder text says you face a dilemma as you choose one or more modes. You choose all of a modal spell's modes at once, as part of casting it (700.2a, 601.2b), so choosing two modes is one dilemma and one trigger (603.2): draw one card. A copy of a modal spell copies the modes chosen for it and its controller can't choose different ones (700.2g), so nobody chooses modes for the copy and Seven of Nine doesn't trigger. The set's rules update may define the term differently, so check it once it is published.
+    One card, and the copy does not trigger it, going by Quorbit Adept's reminder text, because the loaded Comprehensive Rules do not define "quorbit" (the card is from a set whose rules update is not out). The reminder text says you quorbit as you choose one or more modes. You choose all of a modal spell's modes at once, as part of casting it (700.2a, 601.2b), so choosing two modes is one quorbit and one trigger (603.2): draw one card. A copy of a modal spell copies the modes chosen for it and its controller can't choose different ones (700.2g), so nobody chooses modes for the copy and the Adept doesn't trigger. The set's rules update may define the term differently, so check it once it is published.
   rationale: |-
-    Unreleased-card check (D42): Seven of Nine's keyword is missing from the loaded CR. The answer must carry the unreleased-card note, read the keyword from its reminder text rather than inventing a rule for it, and say the loaded rules leave it unsettled. Written 2026-10-23 against CR 20260925, before the Star Trek release on 2026-11-13; stale (eval reports it) once the card is out or the CR covers it.
-- id: unreleased-captain-pike-land-drop
+    Unreleased-card check (D42), on an invented card (a fixture: never in the database, first printed 60 days after the run, so it is always unreleased and no model has seen it). Its keyword is in no CR. The answer must carry the unreleased-card note, read the keyword from its reminder text rather than inventing a rule for it, and say the loaded rules leave it unsettled.
+- id: unreleased-pathwright-land-drop
   question: |-
-    with [[Captain Pike, Fullness of Time]] out i play a land off the top of my library. does that use up my land drop for the turn? and does pike count the new land right away?
+    with [[Zelvane Pathwright]] out i play a land off the top of my library. does that use up my land drop for the turn? and does the pathwright count the new land right away?
   cards:
-  - Captain Pike, Fullness of Time
+  - Zelvane Pathwright
   nicknames_used: []
   categories:
   - lands
@@ -558,8 +567,17 @@ questions:
   - 116.2a
   - 613.4a
   unreleased:
-  - Captain Pike, Fullness of Time
+  - Zelvane Pathwright
+  fixture_cards:
+  - name: Zelvane Pathwright
+    type_line: Legendary Creature — Elf Scout
+    mana_cost: '{1}{G}{G}'
+    oracle_text: |-
+      Zelvane Pathwright's power and toughness are each equal to the number of differently named lands you control.
+      You may look at the top card of your library any time.
+      You may play lands from the top of your library.
+    first_printed_in_days: 60
   expected_answer: |-
-    Yes to both. Playing a land from the top of your library is still playing a land: it is the same special action from a different zone (116.2a), and every land you play counts against the lands you may play this turn, whatever zone it came from (305.2a). So without another effect granting extra land plays, that was your land for the turn. Captain Pike's power and toughness are a characteristic-defining ability (604.3), applied in layer 7a (613.4a) and always current, so the moment a land with a new name is on the battlefield Pike counts it. Nothing here depends on rules the Star Trek update will add: the card uses only existing mechanics.
+    Yes to both. Playing a land from the top of your library is still playing a land: it is the same special action from a different zone (116.2a), and every land you play counts against the lands you may play this turn, whatever zone it came from (305.2a). So without another effect granting extra land plays, that was your land for the turn. Zelvane Pathwright's power and toughness are a characteristic-defining ability (604.3), applied in layer 7a (613.4a) and always current, so the moment a land with a new name is on the battlefield the Pathwright counts it. Nothing here depends on rules a set update would add: the card uses only existing mechanics.
   rationale: |-
-    Unreleased-card check (D42), the other direction: the card is from a set whose rules update is not out (so the note is shown), but the question needs no new rule. The answer should be as direct as any other and not hedge on the existing rules. Written 2026-10-23 against CR 20260925, before the Star Trek release on 2026-11-13; stale (eval reports it) once the card is out or the CR covers it.
+    Unreleased-card check (D42), the other direction, on an invented card (a fixture, first printed 60 days after the run). The loaded CR predates its set, so the note is shown, but the question needs no new rule: the answer should be as direct as any other and not hedge on the existing rules.

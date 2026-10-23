@@ -485,7 +485,8 @@ pub async fn run(
         &deps_config,
         &gold,
         opts.gold_extraction,
-    );
+    )
+    .await?;
     let selected = select(&gold, opts);
 
     let mut rows = Vec::with_capacity(selected.len());
@@ -1196,6 +1197,7 @@ mod tests {
             expected: vec![],
             expected_answer: String::new(),
             unreleased: Vec::new(),
+            fixture_cards: Vec::new(),
         };
         let r = score_row(
             &q,
@@ -1278,6 +1280,7 @@ mod tests {
             ],
             expected_answer: String::new(),
             unreleased: Vec::new(),
+            fixture_cards: Vec::new(),
         };
         let ctx = Context {
             rules: vec![RuleChunk {
@@ -1348,6 +1351,7 @@ mod tests {
             expected: vec![expected("702.15", Weight::Decisive)?],
             expected_answer: String::new(),
             unreleased: Vec::new(),
+            fixture_cards: Vec::new(),
         };
         let long = "gain that much life ".repeat(20);
         let ctx = Context {

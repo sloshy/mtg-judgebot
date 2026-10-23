@@ -14,22 +14,28 @@ use judge_bot::{DepsConfig, Models, db::Vectors};
 use judge_core::{Deps, Extraction, Extractor, JudgeError, Qa, Question};
 use sqlx::PgPool;
 
-use crate::gold::Gold;
+use crate::{fixtures::Fixtures, gold::Gold};
 
-/// Wire the pipeline; see the module docs for `gold_extraction`.
-pub fn build(
+/// Wire the pipeline; see the module docs for `gold_extraction`. The gold
+/// file's fixture cards resolve by name (`crate::fixtures`).
+///
+/// # Errors
+/// A fixture card naming a real card, or a database failure.
+pub async fn build(
     pool: PgPool,
     models: &Models,
     vectors: Option<Arc<Vectors>>,
     cfg: &DepsConfig,
     gold: &Gold,
     gold_extraction: bool,
-) -> Deps {
-    let mut deps = judge_bot::build_deps_with(pool, models, vectors, cfg);
+) -> anyhow::Result<Deps> {
+    let mut deps = judge_bot::build_deps_with(pool.clone(), models, vectors, cfg);
     if gold_extraction {
         deps.extractor = Arc::new(GoldExtractor::new(gold));
     }
-    deps
+    let fixtures = Fixtures::build(&pool, deps.resolver.as_ref(), &gold.questions).await?;
+    deps.resolver = fixtures.resolver(deps.resolver);
+    Ok(deps)
 }
 
 struct GoldExtractor {

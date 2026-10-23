@@ -132,7 +132,9 @@ pub async fn run(
     gold: &Gold,
     vectors: Option<Arc<Vectors>>,
 ) -> anyhow::Result<Report> {
-    let resolver = PgResolver::new(pool.clone());
+    let real: Arc<dyn Resolver> = Arc::new(PgResolver::new(pool.clone()));
+    let fixtures = crate::fixtures::Fixtures::build(pool, real.as_ref(), &gold.questions).await?;
+    let resolver = fixtures.resolver(real);
     let retriever = match vectors {
         Some(v) => PgRetriever::new(pool.clone()).with_vectors(v),
         None => PgRetriever::new(pool.clone()),

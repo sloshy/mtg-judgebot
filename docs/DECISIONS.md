@@ -2038,12 +2038,22 @@ not cover it, and the answer never becomes an example for later questions.
   out once the card is out, since its answer may predate the rules it needed.
 - **The gold set gains two questions** (`unreleased: [card]` in `eval/gold.yaml`): one
   needing an undefined keyword (the answer should hedge) and one using only existing
-  rules (it should not). The run records each answer's note against the list
-  (`UnreleasedCheck`), and reports a question whose card is out or covered as stale, to
-  be re-authored rather than scored.
+  rules (it should not). Their cards are invented (`fixture_cards`): never in the
+  database, first printed 60 days after the run, so a question cannot go stale with a
+  release, and no model has seen the card. The eval's `fixtures::Fixtures` wraps the
+  resolver in `answer`, `sweep` and `recall` to answer their names, refuses a fixture
+  whose bracketed name a real card resolves to, and judges each one's release with
+  `db::assess_release`, the check a stored card gets. The run records each answer's
+  note against the list (`UnreleasedCheck`); a real card listed there that is out or
+  covered is reported stale.
 
 **Rejected:**
 
+- *Gold questions about real previewed cards.* They stop testing the note on release
+  day, and their reference answers ("the rules do not define it yet") turn wrong once
+  the set's CR is loaded.
+- *Fixture cards as rows in `cards`.* The cards step deletes oracle ids Scryfall no
+  longer lists, and the rows would reach `/card`, "did you mean?" and the dashboard.
 - *Comparing the card's date with the CR's date alone.* The CR is dated about a week
   before the set's release date, so every card of a new set would read as newer than the
   CR covering it until the next CR, months later.

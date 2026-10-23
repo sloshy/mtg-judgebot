@@ -37,6 +37,7 @@ mod answer;
 mod categories;
 mod concurrent;
 mod deps;
+mod fixtures;
 mod gold;
 mod grade;
 mod recall;

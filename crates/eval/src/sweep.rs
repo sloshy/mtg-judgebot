@@ -630,7 +630,12 @@ async fn run_extract(
         .extract()
         .ok_or_else(|| anyhow::anyhow!("no extraction stage configured"))?;
     let (model, effort) = (stage.label(), format!("{:?}", stage.effort).to_lowercase());
-    let deps = judge_bot::build_deps_with(pool, &models, vectors, &config.deps_config());
+    let mut deps =
+        judge_bot::build_deps_with(pool.clone(), &models, vectors, &config.deps_config());
+    let fixtures =
+        crate::fixtures::Fixtures::build(&pool, deps.resolver.as_ref(), questions.iter().copied())
+            .await?;
+    deps.resolver = fixtures.resolver(deps.resolver);
     let mut rows = Vec::with_capacity(questions.len());
     let mut capped_run = false;
     crate::concurrent::in_order(
