@@ -457,7 +457,7 @@ consequences:
   Docker. The containers see only the mounted file, and blank mounts the tracked example,
   which nothing reads.
 - Editing the mounted file's content is not a change `up -d` recreates for, so run
-  `docker compose restart judgebot`.
+  `scripts/deploy.sh`: its new container reads the file, with no downtime.
 
 `judge.toml` is gitignored (per host, not secret). So is `docker-compose.override.yml`,
 the documented home for cloud-credential mounts. `refresh` resolves all three stages of

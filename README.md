@@ -76,11 +76,11 @@ scripts/config.sh                  # the config editor: open the URL it prints, 
                                    # JUDGE_OPERATOR_EMAIL (a support address the app shows) and
                                    # JUDGE_ROLES to '--api --web --jobs' (no Discord yet), save, Ctrl-C.
                                    # VOYAGE_API_KEY turns on semantic search
-docker compose up -d db            # Postgres with pgvector, on localhost:5432
+scripts/deploy.sh --db             # starts Postgres with pgvector, on localhost:5432
 docker compose run --rm refresh init   # the first data load: schema, cards, rules, nicknames, notes and
                                        # embeddings if keyed. Safe to rerun. judgebot refreshes the data
                                        # daily after that (JUDGE_REFRESH_HOURS)
-docker compose up -d               # judgebot: the web app and the daily refresh
+scripts/deploy.sh                  # judgebot: the web app and the daily refresh
 ```
 
 Open <http://localhost:8787> and ask a question. Each address can ask 4 questions per 5
@@ -102,7 +102,7 @@ Every model call, embeddings included, counts against a hard cap, `JUDGE_MAX_USD
   there at those percentages of the cap first.
 
 `docker compose pull` fetches the image CI builds from upstream `main`. To run your own
-checkout instead, skip it and run `docker compose up -d --build` (takes minutes and about
+checkout instead, skip it and run `scripts/deploy.sh --build` (takes minutes and about
 4 GB of RAM). [CONTRIBUTING.md](CONTRIBUTING.md) covers working from source with Rust,
 where `docker compose run --rm refresh <command>` becomes
 `cargo run --release -p judgebot -- ingest <command>`.
@@ -128,13 +128,18 @@ walks through the portal). Then:
    everywhere, which can take up to an hour, and work in every server the bot joins and
    in DMs (all but `/judge`).
 4. Clear `JUDGE_ROLES` (unset, it runs the bot, the web app and the refresh) and run
-   `docker compose up -d`. The log line `registered /judge, /card, /rule, /help,
-   /license and /forget` means it worked. Try `/help` in your server.
+   `scripts/deploy.sh`. The log line `registered /judge, /judge-private, /card,
+   /rule, /help, /license and /forget` means it worked. Try `/help` in your server.
 
 Members with the role named by `JUDGE_ROLE` (default `Judge`) rate as judges, and their
 rating overrides everyone else's. Run `docker compose run --rm refresh emoji` once to
-upload the mana symbols, so answers show pictures instead of `{W}`. After code changes,
-`docker compose up -d --build judgebot` redeploys.
+upload the mana symbols, so answers show pictures instead of `{W}`.
+
+`scripts/deploy.sh` is how every change goes live: a new release, an edited `.env` or
+`judge.toml`, a `git pull`. It starts the new container beside the running one and
+switches once it is healthy, so nobody sees downtime. A change to the database's own
+service waits for `scripts/deploy.sh --db`, which takes it offline for a few seconds:
+the script refuses until you run it.
 [Run your own judgebot](https://mtg-judgebot.rpeters.dev/self-hosting/first-run/) has the
 long form.
 

@@ -5,17 +5,17 @@
 //! Two callers, one behaviour:
 //!
 //! * `judgebot` calls [`at_startup`] before anything else touches the
-//!   pool, so `docker compose pull && docker compose up -d` is a complete
+//!   pool, so starting the new image (`scripts/deploy.sh`) is a complete
 //!   deploy. A failure exits the process, which under `restart:
 //!   unless-stopped` is a crash-loop with the reason in the log — loud, where
 //!   the quiet alternative is a bot that answers but cannot persist.
 //!   `JUDGE_AUTO_MIGRATE=false` opts out for an operator who moves the schema
 //!   by hand. Only the long-lived services do this: the one-shot `refresh`
-//!   container runs whatever image `docker compose pull` last fetched, which
+//!   container runs whatever image was last pulled or built, which
 //!   may be newer than the running bot, and a tool (`judge-cli`, `judge-mcp`)
 //!   does not own the schema.
 //! * `judgebot ingest migrate` calls [`run`] with [`Ahead::Refuse`]: the
-//!   explicit form, for an empty database before the first `up -d` and for
+//!   explicit form, for an empty database before `judgebot` first starts and for
 //!   the opted-out operator.
 //!
 //! What `run` does is what `sqlx migrate run` does — apply every migration

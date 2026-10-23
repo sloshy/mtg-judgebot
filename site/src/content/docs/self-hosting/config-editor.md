@@ -111,10 +111,12 @@ The panel also warns about the files together:
 
 The binaries read both files only when they start.
 
-- Under Docker, after a `.env` change: `docker compose up -d`, which recreates the
-  containers whose environment changed.
-- After a `judge.toml` change: `docker compose restart judgebot`. The mounted file's
-  content is not a change `up -d` sees.
+- Under Docker, after either: `scripts/deploy.sh`. It starts a new `judgebot` container,
+  which reads both, beside the running one, and stops the old one once the new one is
+  healthy. It also brings `backup` and the tunnel's `cloudflared` up to date, and starts
+  a service whose profile was added to `COMPOSE_PROFILES`. A change to the `db`, `proxy`
+  or `edge` service (`DB_PORT`, say) it refuses, naming `--db` or `--proxy`, which replace
+  those with a short outage.
 - A `cargo run` binary picks up both on its next start.
 
 ## What it refuses

@@ -340,6 +340,15 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   when one is configured, and updates the extensions afterwards. A code deploy refuses
   while the `db` container runs another image than the compose file pins. A new Postgres major's
   dump-and-restore runbook is in `docs/DEPLOYMENT.md` §8, Database image.
+- **`scripts/deploy.sh --proxy`** replaces the `proxy` and `edge` (Caddy) containers when
+  their service changed (a new Caddy release, an edited service), at a moment you choose:
+  only one container can hold a host port, so new connections wait while one is
+  replaced. A plain deploy refuses until it has run. A Caddyfile edit still needs
+  neither.
+- **The tunnel's connector updates with no downtime.** A deploy starts the new
+  `cloudflared` beside the old one and stops the old one once the new one has
+  registered with Cloudflare. It no longer has a fixed container name
+  (`judgebot-tunnel`); `docker compose ps` and `docker compose logs cloudflared` find it.
 - **Extensions follow the database image.** Every migrating start (and
   `judgebot ingest migrate`) updates `vector` and `pg_trgm` to the version the database
   image carries. A new pgvector image used to leave the extension at the version that
@@ -513,6 +522,17 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   instead of the floating `pg16`, so the database changes only when the compose file
   does. Run `scripts/deploy.sh --db` once after upgrading to move onto it.
 - **Caddy 2.11.7** for `proxy` and `edge`, and **cloudflared 2026.10.3** for the tunnel.
+- **`scripts/deploy.sh` is the one way to apply a change**: a release, an edited `.env`,
+  `.env.deploy` or `judge.toml` (no more `docker compose restart judgebot`), a profile
+  added to `COMPOSE_PROFILES`, and the first start, where it starts the database too. It
+  brings the `backup` service and the tunnel's connector up to date with the rest. The
+  documentation no longer teaches a bare `docker compose up -d` or
+  `pull && up -d --remove-orphans`, which recreate the database and the proxies without
+  the checks. Downtime is always its own flag (`--db`, `--proxy`), and a plain deploy
+  refuses while the database's or a proxy's service differs from its container.
+- **`refresh` and `backup` no longer start the database.** A `docker compose run` of
+  either used to start or recreate `db`; now `db` must be running (`scripts/deploy.sh`
+  starts it), and `scripts/refresh-data.sh` says so when it is not.
 - **A running `judgebot` waits out a database outage.** It used to exit when the database
   was gone for more than about 30 s (its schema hold could not be taken again), and
   restart until the database answered. A database that comes back without this
@@ -637,7 +657,13 @@ A bad value of any of these stops every binary that reads it, at startup.
 
 **The deploy**
 
-- **Deploy with `scripts/deploy.sh`** (after `git pull`). It sees a major upgrade from
+- **Move the database onto the pinned image first**, at a quiet moment: `git pull`, move
+  a `JUDGE_IMAGE_TAG` pinned to a 1.x release to this one, then `scripts/deploy.sh --db`. This release pins the `db` image
+  (`pgvector/pgvector:0.8.7-pg16-bookworm` and its digest) in place of the floating
+  `pg16`, and `scripts/deploy.sh` refuses until the container runs it. The database is
+  offline for a few seconds while it is replaced; a backup is taken first when one is
+  configured.
+- **Deploy with `scripts/deploy.sh`**. It sees a major upgrade from
   1.x (`the new image's migrations: major-from-1.x`), takes the backup when one is
   configured, removes the 1.x `bot` and `api` containers, and starts `judgebot` alone.
   Discord gets a maintenance reply while it migrates; the web app, the API on
@@ -645,25 +671,14 @@ A bad value of any of these stops every binary that reads it, at startup.
   rest. The 1.x containers have no SIGTERM handler, so Docker stops them after 10
   seconds, and an answer still in progress then is cut off. Later deploys within 2.x
   keep serving throughout (blue-green), and a later major takes the same command.
-- **Or by hand, with `--remove-orphans`.** The compose file's `bot` and `api` services
-  are now one `judgebot` service, and `up -d` alone leaves the old `judgebot-bot` and
-  `judgebot-api` containers running. With `judgebot-api` running, the new container
-  cannot start because `judgebot-api` holds port 8787. With only `judgebot-bot` running
-  (a Discord-only deployment, or a stopped or crash-looping `api`), `up -d` exits 0 and
-  `judgebot-bot` keeps answering Discord beside the new container on the same token, so
-  every question is answered twice: the old image does not take the gateway lease.
-
-  ```sh
-  git pull && docker compose pull            # the new docker-compose.yml and its image
-  docker compose up -d --remove-orphans
-  docker ps -a --filter name=judgebot- --format '{{.Names}} {{.Status}}'
-  ```
-
-  The last command should list `judgebot-db` and `judgebot-proxy` (and
-  `judgebot-tunnel` with the tunnel) and no `judgebot-bot` or `judgebot-api`. If either
-  is there, `docker rm -f judgebot-bot judgebot-api` removes it. With the tunnel,
-  `cloudflared` waits for `judgebot` to be healthy, which it is not while it migrates:
-  if `judgebot-tunnel` is not running afterwards, run `docker compose up -d` again.
+- **Not with a bare `docker compose up -d`.** The compose file's `bot` and `api`
+  services are now one `judgebot` service, and `up -d` alone leaves the old
+  `judgebot-bot` and `judgebot-api` containers running: one holds port 8787, or the old
+  bot answers Discord beside the new one, every question twice. `scripts/deploy.sh`
+  removes them. Afterwards,
+  `docker ps -a --filter name=judgebot- --format '{{.Names}} {{.Status}}'` lists
+  `judgebot-db` and `judgebot-proxy` and no `judgebot-bot` or `judgebot-api`; if either
+  is there, `docker rm -f judgebot-bot judgebot-api` removes it.
 - **With `JUDGE_AUTO_MIGRATE=false`, migrate by hand before deploying.**
   `scripts/deploy.sh` refuses a major upgrade with the setting off, before it changes
   anything, because the new container would never migrate it; its message names these
@@ -694,8 +709,7 @@ A bad value of any of these stops every binary that reads it, at startup.
   "Discord over HTTP").
 - **Use the service name with Compose.** The `judgebot` container has no fixed name
   (Compose names it after the checkout's directory, such as `mtg-judgebot-judgebot-1`),
-  so `docker compose logs judgebot`, `docker compose restart judgebot` after a
-  `judge.toml` edit, and `docker compose run --rm --entrypoint judge-cli judgebot …` for
+  so `docker compose logs judgebot`, `scripts/deploy.sh` after a `judge.toml` edit, and `docker compose run --rm --entrypoint judge-cli judgebot …` for
   `judge-cli`, instead of `docker logs judgebot-bot`. `scripts/refresh-data.sh`, its
   cron entry and `docker compose run --rm refresh <command>` keep working.
 - **A compose file or script of your own** that runs `judge-bot`, `judge-api` or
@@ -724,8 +738,8 @@ A bad value of any of these stops every binary that reads it, at startup.
   On a deploy host, mount the file:
   `docker compose run --rm -v ./data:/data:ro refresh aliases /data/aliases.yaml`.
 - **To move the backup off cron**, add `backup` to `COMPOSE_PROFILES` in `.env`, add
-  `JUDGE_ALERT_WEBHOOK` to `.env.deploy` if you want its alerts, and
-  `docker compose up -d`. Then remove the cron entry for `scripts/backup-db.sh`, or keep
+  `JUDGE_ALERT_WEBHOOK` to `.env.deploy` if you want its alerts, and run
+  `scripts/deploy.sh`. Then remove the cron entry for `scripts/backup-db.sh`, or keep
   it: the service counts the script's backups, so the two can run side by side, and the
   script keeps working unchanged. A `BACKUP_KEEP_LOCAL` the script used is a host path,
   which the container does not see: mount a directory for the service

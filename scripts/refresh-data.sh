@@ -50,9 +50,12 @@ log "refresh start: ${*:-refresh}"
 # missing, so require every image `docker compose pull` fetches to be present.
 # (`run --pull missing` would say the same, but Compose v2.20, which Synology
 # ships, has no such flag.)
-images="$(docker compose --profile refresh config --images)"
+images="$(docker compose --profile refresh config --images refresh)"
 while read -r image; do
   docker image inspect "$image" >/dev/null 2>&1 || die "image $image is not present; run \`docker compose pull\` first"
 done <<<"$images"
+# The service does not start db (docker-compose.yml): only scripts/deploy.sh
+# starts or replaces it.
+[ -n "$(docker compose ps -q db)" ] || die "the db service is not running; start it with scripts/deploy.sh"
 docker compose run --rm refresh "$@"
 log "refresh done"

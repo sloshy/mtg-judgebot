@@ -187,7 +187,7 @@ async fn told(env: impl Fn(&str) -> Option<String> + Copy) -> Result<Settings, P
 /// at once would only have Docker restart the container with the same
 /// environment, since Compose reads `env_file` when it creates a container,
 /// not when it restarts one, and alert again on every restart. The fix is
-/// an edited `.env.deploy` and `docker compose up -d`, which recreates it.
+/// an edited `.env.deploy` and `scripts/deploy.sh`, which recreates it.
 async fn refuse_until_stopped(problems: Problems) -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate())?;
@@ -199,7 +199,7 @@ async fn refuse_until_stopped(problems: Problems) -> Result<()> {
             _ = int.recv() => break,
             _ = every.tick() => tracing::error!(
                 "{problems}\nNo backup is taken until .env.deploy is fixed and \
-                 `docker compose up -d` recreates this service."
+                 `scripts/deploy.sh` recreates this service."
             ),
         }
     }

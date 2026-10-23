@@ -353,13 +353,13 @@ pipeline*, not about how much to investigate.
    runs. Almost every report is reproducible here: a rejected citation, a wrong card
    resolution, a thin or missing context, an unhelpful retry notice. Start here and stay
    here. It needs Postgres and nothing else, so check `docker compose ps` first. If the
-   database is down, `docker compose up -d db` is enough. `judgebot` does not have to
+   database is down, `scripts/deploy.sh --db` starts it alone. `judgebot` does not have to
    be running.
 2. **MCP.** Use `judge-mcp` over `.mcp.json` locally when the tools are connected. Use
    `judgebot --mcp`'s `/mcp` (`MCP_TOKEN`) when the user is away from this machine
    and the local database is not reachable. The operations are the same as the CLI's, so
    prefer whichever transport is available.
-3. **A live instance** (`docker compose up -d judgebot`, `judge-cli judge`, `judge-eval
+3. **A live instance** (`scripts/deploy.sh --build`, `judge-cli judge`, `judge-eval
    answer`). Use it only when the deployed surface is what's in question (Discord
    rendering, buttons, rate limiting, startup/config, the spend cap) or when step 1 has
    ruled the pipeline out. This spends money on model calls, so say what it will cost
@@ -388,32 +388,41 @@ Docker on **localhost:5432**. `DB_PORT` in `.env` moves the published port. The
 containers always reach it at `db:5432`.
 
 ```sh
-docker compose up -d                 # db (pgvector/pg16) + judgebot (JUDGE_ROLES, default
-                                     # --discord --api --web --jobs) + proxy (127.0.0.1:8787);
-                                     # all restart with Docker
-docker compose up -d --build judgebot  # redeploy after code changes
-                                     # COMPOSE_PROFILES=public also starts edge (HTTPS on 80/443 for
-                                     # JUDGE_DOMAIN), `tunnel` cloudflared, `backup` the backup
-                                     # service (docs/DEPLOYMENT.md §3)
-scripts/deploy.sh [--build]          # blue-green deploy (D29): pull (or build), start a second
+scripts/deploy.sh [--build]          # THE way to start, upgrade or apply any change (.env,
+                                     # .env.deploy, judge.toml, docker-compose.yml, profiles); the
+                                     # docs teach no bare `docker compose up`. First start: db
+                                     # (pgvector/pg16) + judgebot (JUDGE_ROLES, default --discord
+                                     # --api --web --jobs) + proxy (127.0.0.1:8787); COMPOSE_PROFILES
+                                     # =public adds edge (HTTPS on 80/443 for JUDGE_DOMAIN), `tunnel`
+                                     # cloudflared, `backup` the backup service (DEPLOYMENT.md §3).
+                                     # Blue-green (D29): pull (or build), start a second
                                      # judgebot beside the running one, wait for healthy, stop
                                      # the old one (it drains); an unhealthy new one is removed.
                                      # A major (`judgebot ingest upgrade` says): backup if `BACKUP_S3_BUCKET` is
                                      # set, new beside old in maintenance, old stopped once the
                                      # new one listens, then wait for the migration (D32).
                                      # Every deploy first refuses a set R2_*, a BACKUP_S3_*
-                                     # set twice in .env.deploy or a db container not on the
-                                     # pinned image (run --db first), runs `judgebot backup check`
-                                     # with the new image under the backup profile, and ends
-                                     # with `up -d --no-deps backup`
+                                     # set twice in .env.deploy, a db container whose compose
+                                     # config hash or image differs (run --db first) or, with
+                                     # judgebot running, a differing proxy/edge (run --proxy
+                                     # first); starts db if it is not running; runs `judgebot
+                                     # backup check` with the new image under the backup
+                                     # profile; ends with `up -d --no-deps backup` and the
+                                     # tunnel's swap (a second cloudflared beside the old,
+                                     # old stopped once the new logs `Registered tunnel
+                                     # connection`; no container_name for that reason)
 scripts/deploy.sh --db               # the db's update (docs/DEPLOYMENT.md §8, Database image): pull
                                      # the pinned pgvector image, refuse another PG major or an
                                      # older pgvector, backup, recreate db (seconds of outage),
                                      # then `ingest migrate` in the running judgebot, which runs
                                      # ALTER EXTENSION … UPDATE (every migrating start does too)
-docker compose pull && docker compose up -d --remove-orphans  # stop-then-start deploy: pulls the
-                                     # CI-built GHCR image, never builds; --remove-orphans drops the
-                                     # pre-judgebot `bot`/`api` containers (D25)
+scripts/deploy.sh --proxy            # recreate proxy/edge when their container differs (a new
+                                     # Caddy): only one container can hold a host port, so new
+                                     # connections wait up to 70 s. A Caddyfile edit needs no
+                                     # flag (--watch, and deploy.sh reloads it). Downtime is
+                                     # always an explicit flag, never a side effect
+                                     # (`refresh` and `backup` have no depends_on db, so a
+                                     # `compose run` never recreates it either)
 docker compose run --rm backup run  # one backup now (judgebot backup; the service's command by hand)
 docker compose run --rm --no-deps backup check         # the settings and pg_dump, nothing sent
 docker compose run --rm --no-deps backup list          # --no-deps: works with db down
@@ -458,8 +467,8 @@ cargo run -r -p judgebot -- ingest reembed [--yes] [--clear]  # make the DB hold
                                                         # what the spend cap has left, exit≠0, changes nothing.
                                                         # Billed to JUDGE_MAX_USD: raise it for the run if
                                                         # the dry run says the re-embed may not fit.
-                                                        # `docker compose restart judgebot` after a switch
-                                                        # (`up -d` sees no change: the file is a mount).
+                                                        # `scripts/deploy.sh` after a switch
+                                                        # (the new container reads judge.toml).
 cargo run -r -p judgebot -- ingest emoji                # Scryfall card symbols -> the bot's Discord
                                                         # application emoji; idempotent, no DB needed
 cargo run -r -p judgebot -- ingest rules latest         # the CR linked from Wizards' rules page, only if
@@ -959,7 +968,7 @@ Key cross-file facts that aren't obvious from any one file:
   - So a `./judge.toml` in the repo root is read by `cargo run` but invisible to the
     containers until `JUDGE_CONFIG` names it.
   - Editing the mounted file's content is not a change `up -d` recreates for, so
-    `docker compose restart judgebot`.
+    `scripts/deploy.sh` (a new container reads it; no downtime).
   - The `api_key_env` of every provider a stage names lives in `.env` too. A table no
     stage names is parsed, but its key is never read.
   - The cloud endpoints' `AWS_*`/`GOOGLE_APPLICATION_CREDENTIALS` live in `.env` as well,
@@ -1025,10 +1034,10 @@ compose network. The image builds the web app and sets `WEB_DIST=/srv/web`. The
 `roles::compose_roles` is the same rule in Rust (judge-config's check uses it), and
 `roles_match_the_compose_file` holds the file to it. Its healthcheck probes
 `/api/health` only when `/proc/1/cmdline` (or `JUDGE_ROLES`) has an HTTP role, and
-passes otherwise. Upgrading from the two-service file needs `up -d --remove-orphans`.
-Without it, a running `judgebot-api` makes the new container fail on port 8787, and with
-only `judgebot-bot` running `up -d` exits 0 and leaves two bots on one token. The fix
-is `docker rm -f judgebot-bot judgebot-api`.
+passes otherwise. Upgrading from the two-service file needs `--remove-orphans`, which
+`scripts/deploy.sh` passes. Without it, a running `judgebot-api` makes the new container
+fail on port 8787, and with only `judgebot-bot` running `up -d` exits 0 and leaves two
+bots on one token. The fix is `docker rm -f judgebot-bot judgebot-api`.
 
 Deployment is self-hosted (D15, D41). `docs/DEPLOYMENT.md` is the runbook; §3 lists the
 routes: local only (default), public HTTPS (`COMPOSE_PROFILES=public`), an own reverse
@@ -1052,8 +1061,8 @@ old service name a tunnel may still point at) from the `cloudflared` service, wh
 `tunnel` compose profile starts. The host's `127.0.0.1:8787` is the proxy's `:8788`
 site. Both Caddyfiles set `grace_period 70s` (an answer takes up to a minute) and
 compose gives `proxy` and `edge` `stop_grace_period: 80s`, so a stop or recreation
-finishes requests in flight; `deploy.sh`'s `up -d --no-deps proxy` can take up to 70 s
-once when the definition changed. `edge`'s entrypoint is `proxy/edge-entrypoint.sh`,
+finishes requests in flight. Only `deploy.sh --proxy` recreates them (up to 70 s of
+refused new connections); a plain deploy refuses while either differs. `edge`'s entrypoint is `proxy/edge-entrypoint.sh`,
 which refuses a `JUDGE_DOMAIN` by the same rule as judge-config's `check::is_host_name`
 (a test runs the script against it; shellcheck covers `proxy/*.sh`). Deploy credentials live in
 `.env.deploy` (`TUNNEL_TOKEN`, `BACKUP_S3_*`, `BACKUP_*`; a set `R2_*` is refused with

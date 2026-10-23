@@ -338,7 +338,7 @@ resume{}.",
         format!(
             "judgebot backup: the backup settings are not usable, so no backup is taken until \
              they are fixed: {}. The log says what each must be (`docker compose logs \
-             backup`). Fix .env.deploy; `docker compose up -d` then recreates the service with \
+             backup`). Fix .env.deploy; `scripts/deploy.sh` then recreates the service with \
              it.",
             vars.join(", ")
         )

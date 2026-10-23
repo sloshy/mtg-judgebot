@@ -6,8 +6,19 @@
 #
 #   scripts/deploy.sh            pull the image JUDGE_IMAGE_TAG names, then switch
 #   scripts/deploy.sh --build    build it from this checkout instead (a dev host)
-#   scripts/deploy.sh --db       replace the db container with the image
-#                                docker-compose.yml pins (see the end)
+#   scripts/deploy.sh --db       replace the db container with the one
+#                                docker-compose.yml describes (see the end),
+#                                or start it when there is none
+#   scripts/deploy.sh --proxy    replace the proxy and edge (Caddy) containers
+#                                with the ones docker-compose.yml describes
+#
+# It is the one way to apply a change: a new release, an edited .env,
+# judge.toml or docker-compose.yml, a profile turned on in COMPOSE_PROFILES.
+# The new judgebot container reads them all, and every other service but db is
+# brought up to date with them at the end. A first start is `--db` (which
+# starts the database alone when there is none), `docker compose run --rm
+# refresh init` (the first data load), then this; it waits for judgebot to be
+# healthy as any deploy does.
 #
 # The new container migrates the schema as it starts. A release's migrations
 # keep the previous release working, so the old container goes on answering
@@ -41,7 +52,10 @@
 # when the `backup` profile is on, the new image's `judgebot backup check`.
 # Once the deploy has succeeded, the `backup` service is brought up to date
 # (`up -d --no-deps backup`: the new image and the current .env.deploy). It
-# holds no state but the bucket, and a backup cut short uploads nothing.
+# holds no state but the bucket, and a backup cut short uploads nothing. The
+# tunnel's connector (cloudflared, under the `tunnel` profile) is swapped the
+# way judgebot is: a new one beside the old, which stops once the new one has
+# registered with Cloudflare, so no request is dropped.
 #
 # --db is the database's update (docs/DEPLOYMENT.md §8, Database image): a new
 # Postgres minor or pgvector release, pinned in docker-compose.yml. It pulls
@@ -52,9 +66,18 @@
 # flight fail, and judgebot reconnects on its own. Then the running judgebot's
 # `judgebot ingest migrate` brings the extensions up to the image's version
 # (with JUDGE_AUTO_MIGRATE=false it prints that command instead). Nothing else
-# is touched; a db already on the pinned image only has its extensions checked.
-# A code deploy refuses while the db container runs another image than the
-# pinned one, since its `up` would recreate the db without these checks.
+# is touched; a db already as described only has its extensions checked.
+# Every other deploy refuses while the db container differs from the db
+# service docker-compose.yml and .env describe (its image, its port, any
+# setting), since an `up` would recreate the database without these checks.
+# Only --db ever recreates it.
+#
+# --proxy is the same for proxy and edge, whose host ports only one container
+# can hold: replacing one (a new Caddy release, an edited service) refuses new
+# connections until the old one has finished its requests (up to 70 s) and the
+# new one listens. Every other deploy refuses while either differs from what
+# docker-compose.yml and .env describe. A Caddyfile edit needs neither: Caddy
+# loads it in place.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -87,6 +110,14 @@ finish() {
     kept="the db container was being replaced, so nothing can answer until it is healthy; check docker compose ps db and docker compose logs db (the backup taken first, if one is configured, is the way back)"
   elif [ "$stage" = extensions ]; then
     kept="the new db container is healthy and serving, but updating its extensions failed; run docker compose exec judgebot judgebot ingest migrate"
+  elif [ "$stage" = first ]; then
+    kept="the services started, but $service did not become healthy (its log is above); fix what it names, then run this again"
+  elif [ "$stage" = proxy-swap ]; then
+    kept="proxy or edge was being replaced, so new connections may be refused until it listens; check docker compose ps proxy edge and docker compose logs proxy edge"
+  elif [ "$stage" = tunnel ]; then
+    kept="the new container is serving, but the tunnel's connector could not be swapped; the old connector keeps serving unless docker compose ps cloudflared says otherwise"
+  elif [ "$stage" = services ]; then
+    kept="the new container is serving, but another service could not be brought up to date; check docker compose ps"
   elif [ "$stage" = backup ]; then
     kept="the new container is serving, but the backup service could not be brought up to date; check docker compose ps backup and docker compose logs backup"
   elif [ "$stage" = proxy ]; then
@@ -144,13 +175,157 @@ fi
 backup=""
 docker compose config --services 2>/dev/null | grep -qx backup && backup=backup
 
+# Whether a service's container differs from the service as docker-compose.yml
+# and .env describe it now (compose's own config hash, which `up` compares),
+# or runs another image than the one the service names: what an `up` of it
+# would recreate. False with no container of it at all.
+service_differs() {
+  local c want have image
+  # A running container if there is one: a stopped leftover is not what `up`
+  # would compare against.
+  c="$(docker compose ps -q "$1" | head -n 1)"
+  [ -n "$c" ] || c="$(docker compose ps -a -q "$1" | head -n 1)"
+  [ -n "$c" ] || return 1
+  want="$(docker compose config --hash "$1" | awk '{print $2}')"
+  have="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$c")"
+  [ "$want" = "$have" ] || return 0
+  image="$(docker image inspect -f '{{.Id}}' "$(docker compose config --images "$1")" 2>/dev/null || true)"
+  [ -n "$image" ] && [ "$image" != "$(docker inspect -f '{{.Image}}' "$c")" ]
+}
+db_differs() { service_differs db; }
+
+# Ask a Caddy service to load its file as it is now. One started a moment ago
+# may not have opened its admin API yet, so a few tries; Caddy's own answer is
+# shown when none succeeds.
+reload() {
+  local reload_log try
+  reload_log="$(mktemp)"
+  for try in 1 2 3 4 5; do
+    if docker compose exec -T "$1" caddy reload --adapter caddyfile --config "/etc/caddy/$2" >"$reload_log" 2>&1; then
+      break
+    fi
+    [ "$try" -lt 5 ] || {
+      tail -n 20 "$reload_log" >&2
+      rm -f "$reload_log"
+      die "the $1 service did not load proxy/$2 (Caddy's answer is above): docker compose exec $1 caddy reload --adapter caddyfile --config /etc/caddy/$2"
+    }
+    sleep 2
+  done
+  rm -f "$reload_log"
+}
+
+# --proxy: replace proxy (and edge, under the public profile) when they
+# differ from the compose file, described at the top. Exits when done.
+deploy_proxy() {
+  local svc changed=()
+  local targets=(proxy)
+  [ -z "$edge" ] || targets+=(edge)
+  log "pulling the ${targets[*]} image"
+  docker compose pull "${targets[@]}"
+  for svc in "${targets[@]}"; do
+    if [ -z "$(docker compose ps -q "$svc")" ] || service_differs "$svc"; then changed+=("$svc"); fi
+  done
+  if [ "${#changed[@]}" -eq 0 ]; then
+    log "${targets[*]} already as docker-compose.yml describes"
+    exit 0
+  fi
+  stage=proxy-swap
+  log "replacing ${changed[*]}: new connections are refused until the old container has finished its requests (up to 70 s) and the new one listens"
+  docker compose up -d --no-deps "${changed[@]}"
+  stage=proxy
+  for svc in "${changed[@]}"; do
+    ! service_differs "$svc" ||
+      die "the new $svc container still differs from docker-compose.yml by this Docker Compose's own reckoning (its config hash does not match the label its \`up\` wrote), so every deploy would refuse; report the Compose version (docker compose version)"
+  done
+  reload proxy Caddyfile
+  [ -z "$edge" ] || reload edge edge.Caddyfile
+  log "replaced: $(docker compose ps --format '{{.Name}} {{.Image}}' "${changed[@]}" | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
+  exit 0
+}
+
+# The tunnel's connector onto the compose file and .env.deploy as they are,
+# without a gap: Cloudflare spreads a tunnel's requests over every connector
+# that has registered, so the new one starts beside the old, and the old one
+# stops (finishing its requests within its 70 s --grace-period) once the new
+# one has registered. A new one that does not register is removed and the old
+# one keeps serving. "Registered tunnel connection" is the line cloudflared
+# logs per connection (connection/observer.go); a release that rewords it fails
+# the swap that way, never the tunnel.
+swap_tunnel() {
+  local olds old tunnel_new started deadline
+  mapfile -t olds < <(docker compose ps -q cloudflared)
+  if [ "${#olds[@]}" -eq 0 ]; then
+    log "starting the tunnel's connector"
+    docker compose up -d --no-deps cloudflared
+    return
+  fi
+  [ "${#olds[@]}" -eq 1 ] || die "${#olds[@]} cloudflared containers are running, so an earlier deploy did not finish; stop all but one (docker ps), then deploy again"
+  service_differs cloudflared || return 0
+  old="${olds[0]}"
+  # A stopped connector left by an interrupted deploy would be started as the
+  # "new" one by --no-recreate.
+  docker compose rm -f cloudflared >/dev/null
+  log "starting a new tunnel connector beside the running one"
+  docker compose up -d --no-deps --no-recreate --scale cloudflared=2 cloudflared
+  tunnel_new="$(docker compose ps -q cloudflared | grep -vx "$old" || true)"
+  [ -n "$tunnel_new" ] || die "the new tunnel connector did not start; the old one keeps serving"
+  started=$SECONDS
+  deadline=$((SECONDS + wait_secs))
+  last_progress=0
+  until docker logs "$tunnel_new" 2>&1 | grep -q 'Registered tunnel connection'; do
+    progress "$started" "the new tunnel connector has not registered with Cloudflare"
+    if [ "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$tunnel_new" 2>/dev/null)" != "true 0" ] || [ "$SECONDS" -ge "$deadline" ]; then
+      docker logs --tail 20 "$tunnel_new" >&2 2>&1 || true
+      docker rm -f "$tunnel_new" >/dev/null 2>&1 || true
+      die "the new tunnel connector did not register with Cloudflare within ${wait_secs}s (its log is above); it was removed and the old one keeps serving"
+    fi
+    sleep 2
+  done
+  log "the new tunnel connector has registered; stopping the old one, which finishes its requests first"
+  docker stop --time 80 "$old" >/dev/null
+  docker rm "$old" >/dev/null
+}
+
+# Start the db service as the compose file describes it and wait until it is
+# healthy. Only for a db that is not running and that the compose file does
+# not describe differently (callers check), so it replaces nothing.
+start_db() {
+  local c started deadline
+  docker compose up -d --no-deps db
+  c="$(docker compose ps -q db)"
+  [ -n "$c" ] || die "the db container did not start"
+  started=$SECONDS
+  deadline=$((SECONDS + wait_secs))
+  last_progress=0
+  until [ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" 2>/dev/null)" = healthy ]; do
+    progress "$started" "the db container is not healthy yet"
+    [ "$SECONDS" -lt "$deadline" ] || die "the db container was not healthy within ${wait_secs}s: docker compose logs db"
+    sleep 2
+  done
+  log "the db container is healthy"
+}
+
 # --db: the database's update, described at the top. Exits when done.
 deploy_db() {
   local before image pulled running_id data_major image_major judge after deadline started out
   mapfile -t before < <(docker compose ps -q db)
+  if [ "${#before[@]}" -eq 0 ]; then
+    # A first start (no container), or a stopped db: nothing is served without
+    # it, so there is no outage to choose. A stopped one the compose file now
+    # describes differently is left alone: its data directory is not checked
+    # until it runs.
+    if service_differs db; then
+      stage=refused
+      die "the db container is stopped, and docker-compose.yml now describes it differently: start it as it was (docker compose start db), then run this again"
+    fi
+    log "the db service is not running: starting it"
+    docker compose pull db
+    start_db
+    exit 0
+  fi
   if [ "${#before[@]}" -ne 1 ]; then
     stage=refused
-    die "the db service is not running (docker compose ps db): start it with docker compose up -d db; there is nothing to replace"
+    die "${#before[@]} db containers are running: stop all but one (docker ps), then run this again"
   fi
   image="$(docker compose config --images db)"
   [ -n "$image" ] || die "docker-compose.yml names no image for db"
@@ -194,8 +369,8 @@ deploy_db() {
     die "${#judge[@]} $service containers are running, so an earlier deploy did not finish; stop all but one (docker ps), then run this again"
   fi
 
-  if [ "$pulled" = "$running_id" ]; then
-    log "the db container already runs the pinned image"
+  if [ "$pulled" = "$running_id" ] && ! db_differs; then
+    log "the db container is already as docker-compose.yml describes it"
   else
     # A refresh cut off by the outage fails, alerts and backs off for an
     # hour; waiting for it costs nothing.
@@ -211,7 +386,10 @@ deploy_db() {
     if [ "${DEPLOY_SKIP_BACKUP:-}" = 1 ]; then
       log "DEPLOY_SKIP_BACKUP=1: no backup taken first"
     elif [ -f .env.deploy ] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?BACKUP_S3_BUCKET=.+' .env.deploy; then
+      # The image JUDGE_IMAGE_TAG names, which carries `judgebot backup`: the
+      # local one may be an older release's (a 1.x image has no such command).
       log "taking a backup first"
+      docker compose pull backup
       docker compose run --rm --no-deps backup run ||
         die "the backup before replacing the db container failed; fix it, or run this with DEPLOY_SKIP_BACKUP=1 to go on without one"
     else
@@ -234,6 +412,9 @@ deploy_db() {
       sleep 2
     done
     log "the new db container is healthy"
+    if db_differs; then
+      die "the new db container still differs from docker-compose.yml by this Docker Compose's own reckoning (its config hash does not match the label its \`up\` wrote), so every deploy would refuse; report the Compose version (docker compose version)"
+    fi
   fi
 
   stage=extensions
@@ -280,6 +461,7 @@ progress() {
 
 case "${1:-}" in
   --db) deploy_db ;;
+  --proxy) deploy_proxy ;;
   "")
     log "pulling the $service image"
     docker compose pull "$service"
@@ -295,16 +477,22 @@ case "${1:-}" in
     sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
     exit 0
     ;;
-  *) die "unknown argument '$1' (scripts/deploy.sh [--build | --db])" ;;
+  *) die "unknown argument '$1' (scripts/deploy.sh [--build | --db | --proxy])" ;;
 esac
 
-# A db line changed in docker-compose.yml (a merged Dependabot pull request)
-# is applied by --db alone, with its checks: any `up` here would recreate the
-# db with none of them.
-db_container="$(docker compose ps -a -q db | head -n 1)"
-if [ -n "$db_container" ] && [ "$(docker inspect -f '{{.Config.Image}}' "$db_container")" != "$(docker compose config --images db)" ]; then
+# A changed db service (a merged Dependabot pull request, DB_PORT in .env) is
+# applied by --db alone, with its checks: any `up` here would recreate the db
+# with none of them.
+if db_differs; then
   stage=refused
-  die "docker-compose.yml pins a db image the db container does not run yet ($(docker compose config --images db)): run scripts/deploy.sh --db first, then this again"
+  die "the db service in docker-compose.yml or .env (its image, port or settings) differs from the running db container (a merged update, an edited setting, or a Docker Compose upgrade that changed how it compares): run scripts/deploy.sh --db first (a few seconds' outage), then this again"
+fi
+# A first start (no db container yet) or a stopped db: started as the
+# compose file describes it, which the check above has just compared, and
+# waited for. Nothing is serving without it, so there is no outage to choose.
+if [ -z "$(docker compose ps -q db)" ]; then
+  log "the db service is not running: starting it"
+  start_db
 fi
 
 mapfile -t running < <(docker compose ps -q "$service")
@@ -313,6 +501,19 @@ case "${#running[@]}" in
   1) old="${running[0]}" ;;
   *) die "${#running[@]} $service containers are running, so an earlier deploy did not finish; stop all but one (docker ps), then deploy again" ;;
 esac
+
+# A changed proxy or edge (a merged Caddy update) is applied by --proxy alone,
+# at a moment of the operator's choosing: replacing one drops new connections
+# for a while. With no judgebot running nothing is being served, so the
+# services' start below may as well replace them.
+if [ -n "$old" ]; then
+  for svc in proxy $edge; do
+    if service_differs "$svc"; then
+      stage=refused
+      die "the $svc service in docker-compose.yml or .env differs from its running container (a new Caddy release, an edited setting such as JUDGE_DOMAIN, or a Docker Compose upgrade): run scripts/deploy.sh --proxy first (new connections wait while it is replaced), then this again"
+    fi
+  done
+fi
 
 # What the new image's migrations are; it changes nothing. A one-off
 # container that reads the migration ledger: seconds, unless the database
@@ -379,7 +580,7 @@ fi
 # The old container may come from a compose file older than its
 # stop_grace_period, so the current file's is passed (read from the new
 # container once there is one; the service's own value until then).
-grace_period="$(docker compose config --format json 2>/dev/null | sed -n 's/.*"stop_grace_period": *"\([^"]*\)".*/\1/p' | head -n 1)"
+grace_period="$(docker compose config --format json "$service" 2>/dev/null | sed -n 's/.*"stop_grace_period": *"\([^"]*\)".*/\1/p' | head -n 1)"
 grace=""
 if [[ "$grace_period" =~ ^(([0-9]+)m)?(([0-9]+)s)?$ ]] && [ -n "$grace_period" ]; then
   grace=$((${BASH_REMATCH[2]:-0} * 60 + ${BASH_REMATCH[4]:-0}))
@@ -468,8 +669,17 @@ if [ -z "$old" ]; then
     wait_migrated
     wait_healthy
   fi
-  stage=proxy
+  # Nothing was serving, so nothing is kept. A judgebot that cannot start (a
+  # missing variable) is reported here rather than left crash-looping; under
+  # the tunnel profile `up` itself fails then, since cloudflared waits for it.
+  stage=first
   docker compose up -d
+  if [ "$upgrade" = in-place ]; then
+    new="$(docker compose ps -q "$service" | head -n 1)"
+    [ -n "$new" ] || die "the $service container did not start"
+    log "waiting up to ${wait_secs}s for the $service container to be healthy"
+    wait_healthy
+  fi
   log "deployed: $(docker compose ps --format '{{.Name}} {{.Image}}' "$service")"
   exit 0
 fi
@@ -516,13 +726,10 @@ else
   fi
 fi
 
-# The proxy is brought up to date while the old container still serves, so
-# a proxy whose definition changed is recreated with the old container and
-# the new one both behind it. It cannot start while an old judgebot that
+# The proxy is started if it is not running (a proxy that differs was refused
+# above: --proxy replaces it). It cannot start while an old judgebot that
 # publishes 8787 itself holds the port; the call after the stop starts it.
-# A recreated proxy first finishes the requests it is serving (up to 70 s,
-# its grace_period), so this can take that long once.
-log "bringing the proxy up to date"
+log "making sure the proxy runs"
 docker compose up -d --no-deps proxy ||
   log "the proxy did not start yet; trying again once the old container has stopped"
 case "$upgrade" in
@@ -550,24 +757,6 @@ esac
 stage=proxy
 docker compose up -d --no-deps proxy
 [ -z "$edge" ] || docker compose up -d --no-deps edge
-# One started a moment ago may not have opened its admin API yet, so a few
-# tries; Caddy's own answer is shown when none succeeds.
-reload() {
-  local reload_log try
-  reload_log="$(mktemp)"
-  for try in 1 2 3 4 5; do
-    if docker compose exec -T "$1" caddy reload --adapter caddyfile --config "/etc/caddy/$2" >"$reload_log" 2>&1; then
-      break
-    fi
-    [ "$try" -lt 5 ] || {
-      tail -n 20 "$reload_log" >&2
-      rm -f "$reload_log"
-      die "the $1 service did not load proxy/$2 (Caddy's answer is above): docker compose exec $1 caddy reload --adapter caddyfile --config /etc/caddy/$2"
-    }
-    sleep 2
-  done
-  rm -f "$reload_log"
-}
 reload proxy Caddyfile
 [ -z "$edge" ] || reload edge edge.Caddyfile
 # The backup service onto the new image and the current .env.deploy, checked
@@ -575,5 +764,17 @@ reload proxy Caddyfile
 if [ -n "$backup" ]; then
   stage=backup
   docker compose up -d --no-deps backup
+fi
+if docker compose config --services | grep -qx cloudflared; then
+  stage=tunnel
+  swap_tunnel
+fi
+# Any other service of the active profiles onto the current compose file and
+# .env; nothing happens to one that is already current. db is --db's alone,
+# proxy and edge --proxy's.
+mapfile -t others < <(docker compose config --services | grep -vxE 'db|judgebot|proxy|edge|backup|cloudflared' || true)
+if [ "${#others[@]}" -gt 0 ]; then
+  stage=services
+  docker compose up -d --no-deps "${others[@]}"
 fi
 log "deployed: $(docker inspect -f '{{.Name}} {{.Config.Image}}' "$new")"

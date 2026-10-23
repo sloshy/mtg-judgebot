@@ -127,7 +127,7 @@ The web app is the `--web` role of `judgebot`. `--api` serves `POST /api/judge`,
 the web app asks its questions through, and the MCP transport is `--mcp`. Any of the three
 also serves `GET /api/health` and `GET /api/about`. The compose service runs
 `--discord --api --web --jobs` unless `JUDGE_ROLES` in `.env` says otherwise, so
-`docker compose up -d` serves the web app. `JUDGE_ROLES='--discord --api --jobs'`, for
+a `scripts/deploy.sh` deployment serves the web app. `JUDGE_ROLES='--discord --api --jobs'`, for
 example, is a deployment with no public page.
 
 While the instance migrates its database for a major release, a question gets a short

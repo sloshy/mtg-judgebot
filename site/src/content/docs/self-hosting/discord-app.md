@@ -126,7 +126,7 @@ again at every start.
 ## 5. Start it
 
 ```sh
-docker compose up -d               # or: cargo run --release -p judgebot -- --discord --jobs
+scripts/deploy.sh                  # or: cargo run --release -p judgebot -- --discord --jobs
 ```
 
 The compose service runs `--discord` unless `JUDGE_ROLES` in `.env` leaves it out. If you
@@ -142,10 +142,10 @@ container left from a previous deploy; the line names it
 The log line `registered /judge, /judge-private, /card, /rule, /help, /license and /forget in one guild` (or `… globally`)
 confirms registration. A warning `registering the slash commands failed` instead means
 the bot is connected with whatever commands were registered before (none, on a first
-start); restarting it tries again. Running `/help` in the server confirms it end
-to end. Another
-bot's `/judge` in the same server does not conflict with yours: Discord's command picker
-shows each bot's icon beside its commands.
+start); the next start, such as the next `scripts/deploy.sh`, tries again. Running
+`/help` in the server confirms it end to end. Another bot's `/judge` in the same server
+does not conflict with yours: Discord's command picker shows each bot's icon beside its
+commands.
 
 ## 6. Card symbol emoji
 
@@ -172,8 +172,7 @@ public site, or your own proxy's or the tunnel's hostname
 ([Exposure](../deployment/#3-exposure); [Deployment](../deployment/#discord-over-http)
 has the steps).
 
-1. Set `DISCORD_INTERACTIONS=http` in `.env` and deploy (`scripts/deploy.sh`, or
-   `docker compose up -d`; a `restart` keeps the old environment). Commands go
+1. Set `DISCORD_INTERACTIONS=http` in `.env` and deploy (`scripts/deploy.sh`). Commands go
    unanswered until step 2.
 2. In the Developer Portal, open *General Information* and set *Interactions Endpoint
    URL* to `https://<your public host>/discord/interactions`: with the bundled public

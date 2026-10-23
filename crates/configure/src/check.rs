@@ -55,7 +55,7 @@ pub enum Surface {
 /// serves and gets a certificate for. Read by Caddy alone, so checked here.
 pub const DOMAIN_ENV: &str = "JUDGE_DOMAIN";
 
-/// The compose profiles `docker compose up -d` starts.
+/// The compose profiles `scripts/deploy.sh` starts.
 pub const PROFILES_ENV: &str = "COMPOSE_PROFILES";
 
 /// The profiles of `COMPOSE_PROFILES` that open the instance beyond this

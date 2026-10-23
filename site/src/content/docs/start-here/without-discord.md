@@ -15,13 +15,14 @@ other two sources: the rules for the question's category, and full-text search. 
 
 ```sh
 git clone https://github.com/sloshy/mtg-judgebot && cd mtg-judgebot
-docker compose pull                     # the published image
+docker compose pull                     # the published images (the config editor's among them)
 scripts/config.sh                       # the config editor: open the URL it prints, set ANTHROPIC_API_KEY
                                         # (and VOYAGE_API_KEY if you have one), JUDGE_OPERATOR_EMAIL,
                                         # which the web app requires, and JUDGE_ROLES to '--api --web --jobs'
                                         # (no Discord); save, then Ctrl-C
-docker compose up -d db                 # pgvector Postgres on localhost:5432
+scripts/deploy.sh --db                  # starts pgvector Postgres on localhost:5432
 docker compose run --rm refresh init    # the whole first load, in one command
+scripts/deploy.sh                       # starts judgebot and waits until it is healthy
 ```
 
 `init` runs seven steps and logs each with its time:
@@ -38,24 +39,25 @@ Scryfall download. It stops at the first failure. Every step is idempotent, so t
 failed `init` is to run it again.
 
 If port 5432 is already taken on your machine, set `DB_PORT` and change the port in
-`DATABASE_URL` to match before starting the database.
+`DATABASE_URL` to match before running `scripts/deploy.sh --db`.
 
 The [config editor](../../self-hosting/config-editor/) checks each change with the
 binaries' own loaders. To edit by hand instead, `cp .env.example .env` and fill it in.
 
 ## The web app
 
-```sh
-docker compose up -d
-```
+`scripts/deploy.sh` started `judgebot` with the roles `JUDGE_ROLES` names: the web app,
+the question route and the daily data refresh. Without `JUDGE_ROLES` it would also start
+the Discord bot, and refuse to start for want of a `DISCORD_TOKEN`; the script then says
+so instead of reporting a deploy.
 
-This starts `judgebot` with the roles `JUDGE_ROLES` names: the web app, the question route
-and the daily data refresh. Without `JUDGE_ROLES` it would also start the Discord bot, and
-refuse to start for want of a `DISCORD_TOKEN`.
+`scripts/deploy.sh` is also how a later change goes live: an edited `.env` or
+`judge.toml`, or a new release. It starts the new container beside the running one and
+stops the old one once the new one is healthy.
 
-The image you pulled is CI's build of upstream `main`, not of your checkout. To run what
-you cloned or changed, use `docker compose up -d --build` instead (minutes, about
-4 GB of RAM).
+The image it pulls is CI's build of upstream `main`, not of your checkout. To run what
+you cloned or changed, use `scripts/deploy.sh --build` instead (minutes, about 4 GB of
+RAM).
 
 Open <http://localhost:8787>. The web app runs the same pipeline as the bot. Its ratings
 are anonymous, so they never shape later answers, and the reasons given with them reach

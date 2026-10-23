@@ -230,7 +230,7 @@ pub async fn init(
     result?;
     tracing::info!(
         secs = started.elapsed().as_secs(),
-        "init done: start judgebot (`docker compose up -d`) and ask a question"
+        "init done: ask a question (if judgebot is not running, start it with `scripts/deploy.sh`)"
     );
     Ok(())
 }
@@ -453,8 +453,8 @@ fn has_discord_token() -> bool {
 /// * its lease is lost ([`RefreshLease::check`]): another run may already be
 ///   writing. The steps are failed.
 /// * the schema is not this binary's ([`crate::db::migrate::skew`]): ahead
-///   (a newer release migrated the database, as between `docker compose pull`
-///   and `up -d`) or behind (migrations pending, `judgebot ingest migrate`). The
+///   (a newer release migrated the database, as while `scripts/deploy.sh`
+///   starts it beside an older one) or behind (migrations pending, `judgebot ingest migrate`). The
 ///   steps are skipped ([`Skip::SchemaAhead`], [`Skip::SchemaBehind`]) and the
 ///   run is [`runs::RunOutcome::Stopped`]: neither a success nor a failure.
 /// * it has run for [`RUN_TIMEOUT`]: the step in progress is abandoned (its

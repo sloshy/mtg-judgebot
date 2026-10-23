@@ -7,13 +7,13 @@ x-bounded-logs: &bounded-logs
     max-size: "10m"
     max-file: "3"
 
-# A local `docker compose build` (the deploy host never builds) stamps the
-# binaries with the commit for the source offer the interfaces make; the
-# context carries no .git, so it has to be passed in, together with whether
-# the tree matches it (an image built from edited files must not claim a
-# clean commit):
+# A local build (the deploy host never builds) stamps the binaries with the
+# commit for the source offer the interfaces make; the context carries no
+# .git, so it has to be passed in, together with whether the tree matches it
+# (an image built from edited files must not claim a clean commit).
+# `scripts/deploy.sh --build` passes both:
 #   JUDGE_COMMIT=$(git rev-parse HEAD) JUDGE_DIRTY=$(git diff-index --quiet HEAD || echo 1) \
-#     docker compose up -d --build judgebot
+#     docker compose build judgebot
 # Blank builds an image whose offer says "commit unknown".
 x-build: &build
   context: .
@@ -52,8 +52,7 @@ services:
   judgebot:
     build: *build
     # The one image, named after the GHCR package so a low-powered host pulls
-    # a CI-built image instead of building:
-    # `docker compose pull && docker compose up -d --remove-orphans`.
+    # a CI-built image instead of building: `scripts/deploy.sh` pulls it.
     # JUDGE_IMAGE defaults to the upstream package; a fork whose CI publishes
     # its own sets it in .env. Pin JUDGE_IMAGE_TAG to a release version or a
     # `sha-<short>` tag to roll back (an image older than the judgebot binary
@@ -111,8 +110,8 @@ services:
     # stages of the file (the api_key_env of each provider a stage names must
     # be set in .env, including for `refresh`, which only embeds), and
     # `refresh`'s `embed` step writes the vector space judgebot queries, so
-    # the two must agree. Editing the file's content changes nothing here,
-    # so `up -d` will not recreate: `docker compose restart judgebot`.
+    # the two must agree. Editing the file's content changes nothing here;
+    # `scripts/deploy.sh` puts it live, since the new container reads it.
     # /api/health answers 503 until Postgres does, and with
     # DISCORD_INTERACTIONS=http until the interactions endpoint can verify
     # requests. The slim image has no curl, so this is bash's /dev/tcp —
@@ -165,7 +164,7 @@ services:
   # tunnel's site and the admin site. Answers take up to a minute, and Caddy's
   # proxy has no read timeout by default.
   proxy:
-    image: caddy:2.11.7-alpine
+    image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
     container_name: judgebot-proxy
     restart: unless-stopped
     logging: *bounded-logs
@@ -220,7 +219,7 @@ services:
   # API_CLIENT_IP=proxy. Its configuration is mounted and watched as the
   # proxy's is.
   edge:
-    image: caddy:2.11.7-alpine
+    image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
     container_name: judgebot-edge
     restart: unless-stopped
     profiles: ["public"]
@@ -275,9 +274,8 @@ services:
         source: ${JUDGE_CONFIG:-./judge.example.toml}
         target: /etc/judgebot/judge.toml
         read_only: true
-    depends_on:
-      db:
-        condition: service_healthy
+    # No depends_on db: `docker compose run` would recreate a db whose service
+    # changed, outside `scripts/deploy.sh --db`. The db must be running.
 
   # judge-config, the config editor: a page on localhost for .env and
   # judge.toml (site: self-hosting/config-editor). Run `scripts/config.sh`,
@@ -346,9 +344,8 @@ services:
       # .env.deploy also holds the tunnel's token, which is not this
       # container's business; `environment` overrides `env_file`.
       TUNNEL_TOKEN: ""
-    depends_on:
-      db:
-        condition: service_healthy
+    # No depends_on db, as for refresh: a `run` of it must never recreate the
+    # database. A backup attempted while db is down fails and is retried.
 
   # The Cloudflare Tunnel, the alternative to `edge` (docs/DEPLOYMENT.md §3).
   # Dials out to Cloudflare's edge, so the host needs no open inbound port, no
@@ -356,10 +353,16 @@ services:
   # COMPOSE_PROFILES=tunnel in .env, and API_CLIENT_IP=cloudflare.
   cloudflared:
     image: cloudflare/cloudflared:2026.10.3
-    container_name: judgebot-tunnel
+    # No container_name: `scripts/deploy.sh` starts the new connector beside the
+    # old one (one tunnel takes several) and stops the old one once the new one
+    # has registered, so an update drops no request.
     restart: unless-stopped
+    # cloudflared finishes its requests for up to 70 s (--grace-period, as the
+    # proxies' grace_period: an answer takes up to a minute) after SIGTERM,
+    # while Cloudflare sends new ones to the other connector.
+    stop_grace_period: 80s
     profiles: ["tunnel"]
-    command: tunnel --no-autoupdate run
+    command: tunnel --no-autoupdate --grace-period 70s run
     # Deploy credentials live in their own file so they never enter the env of
     # judgebot, which is internet-facing and reads neither. Short-form
     # string on purpose: the `path:`/`required:` long form needs Compose 2.24+,

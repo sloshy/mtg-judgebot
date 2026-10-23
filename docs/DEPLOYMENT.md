@@ -57,7 +57,8 @@ Hostnames, paths and the image name below are placeholders (`judge.example.com`,
 ## 2. Data migration
 
 This section is for moving an instance that already has data to another host.
-**A new instance has nothing to migrate.** Skip to §3, and load the data in §4 with
+**A new instance has nothing to migrate.** Skip to §3, and load the data in §4:
+`scripts/deploy.sh --db` starts the database alone, then
 `docker compose run --rm refresh init` (the documentation site's "Requirements and first
 run" page is the walkthrough).
 
@@ -71,7 +72,7 @@ all: they are lost.
 docker exec judgebot-db pg_dump -U judgebot -Fc judgebot > judgebot.dump
 
 # new host
-docker compose up -d db
+scripts/deploy.sh --db              # starts the database alone
 docker exec -i judgebot-db pg_restore -U judgebot -d judgebot --clean --if-exists \
   < judgebot.dump
 ```
@@ -116,7 +117,7 @@ Cloudflare's rules in front of them.
 
 ### Local only
 
-Nothing to set. `docker compose up -d` starts `db`, `judgebot` and `proxy`, and the web
+Nothing to set. `scripts/deploy.sh` starts `db`, `judgebot` and `proxy`, and the web
 app and the API answer at `http://127.0.0.1:8787` on the host. A Discord bot over its
 gateway connection (the default) dials out to Discord and needs no inbound connection at
 all. From another machine, forward the port over SSH:
@@ -170,19 +171,19 @@ never restarts it.
        enable_ipv6: true
    ```
 
-   then `docker compose down && docker compose up -d`, since a network is not changed
-   in place. Each visitor's address then reaches `edge`, and the limit counts an IPv6
+   then `docker compose down && scripts/deploy.sh`, since a network is not changed in
+   place. Everything is offline between the two. Each visitor's address then reaches `edge`, and the limit counts an IPv6
    visitor by its /64 prefix, the block one subscriber is given, so picking another
    address in it buys no fresh allowance.
 2. Set in `.env` (§4):
 
    ```ini
-   COMPOSE_PROFILES=public          # `docker compose up -d` now includes edge
+   COMPOSE_PROFILES=public          # scripts/deploy.sh now starts edge
    JUDGE_DOMAIN=judge.example.com   # the name alone: no scheme, port, path or trailing dot
    API_CLIENT_IP=proxy              # rate-limit on the address edge saw (Client address)
    ```
 
-3. `docker compose up -d`, then `curl -s https://judge.example.com/api/health`. The
+3. `scripts/deploy.sh`, then `curl -s https://judge.example.com/api/health`. The
    first request waits a few seconds for the certificate; `docker compose logs edge`
    shows Caddy getting it.
 
@@ -291,7 +292,7 @@ change it to `http://proxy:8787`. Cloudflare creates the
 Copy the connector token into `.env.deploy` as `TUNNEL_TOKEN`, and set in `.env` (§4):
 
 ```ini
-COMPOSE_PROFILES=tunnel     # `docker compose up -d` now includes cloudflared
+COMPOSE_PROFILES=tunnel     # scripts/deploy.sh now starts cloudflared
 API_CLIENT_IP=cloudflare    # rate-limit on CF-Connecting-IP
 ```
 
@@ -393,13 +394,18 @@ what each day cost.
 If `COMPOSE_PROFILES` in `.env` doesn't take effect on an older Compose, pass
 `--profile public` (or `--profile tunnel`) instead.
 
-Then bring it up. A restored database (§2) already carries the schema and the
-migration ledger, so there is nothing to migrate:
+Then bring it up. A new instance loads its data first; a restored database (§2) already
+carries it, with the schema and the migration ledger, and skips the first two lines:
 
 ```sh
-docker compose up -d
+scripts/deploy.sh --db                    # the database alone
+docker compose run --rm refresh init      # the first data load (§7)
+scripts/deploy.sh                         # judgebot and the rest; waits until it is healthy
 curl -s localhost:8787/api/health
 ```
+
+`scripts/deploy.sh` is how every later change goes live as well: a new release, an
+edited `.env`, `.env.deploy` or `judge.toml`, a profile added to `COMPOSE_PROFILES` (§8).
 
 Port 8787 on the host is the `proxy` service, which forwards to `judgebot`. The
 `judgebot` container publishes nothing itself, so that a deploy can run two of them
@@ -414,10 +420,10 @@ unhealthy forever. The Discord gateway is not visible from outside the process; 
 fatal disconnect exits it, and `restart: unless-stopped` brings it back. A process
 standing by for the gateway (§8, Gateway holder) is healthy: it is waiting by design.
 
-An *empty* database also needs only `docker compose up -d`: `judgebot` creates the
-schema at startup. Use the explicit form below to see what is about to be applied, or
-when `JUDGE_AUTO_MIGRATE=false`. It runs from the same image and needs nothing but
-Docker (`run` starts `db` if it is not up):
+An *empty* database also needs only `scripts/deploy.sh`: `judgebot` creates the schema
+at startup. Use the explicit form below to see what is about to be applied, or when
+`JUDGE_AUTO_MIGRATE=false`. It runs from the same image and needs nothing but Docker,
+with `db` running (`refresh` never starts or replaces it; `scripts/deploy.sh` does):
 
 ```sh
 docker compose pull
@@ -430,9 +436,9 @@ same checksums. It skips the refresh-job lock and the "database is ahead" check,
 records no release in `instance_release`, so a `judge-cli` or `judge-mcp` stops against
 the result until `judgebot` next migrates. Prefer the container form on a live host.
 
-Use a full `docker compose up -d` whenever the compose file's `db` service changes.
-`up -d --build judgebot` leaves `db` alone, so it would keep the old port binding or
-healthcheck.
+A change to the compose file's `db` service (its image, its port, its healthcheck, a
+`DB_PORT` in `.env`) waits for `scripts/deploy.sh --db`, and a plain deploy refuses
+until it has run (§8, Database image).
 
 ### Other model providers
 
@@ -496,12 +502,10 @@ the setup stays the `.env` one. Three consequences:
     draft with the same loader (site: The config editor, for the `docker compose run`
     line that runs it here).
 
-After editing `judge.toml`, run `docker compose restart judgebot`, not `up -d`. The file
-is read only at startup. Compose recreates a container only when its configuration or
-image changed, and a bind-mounted file's content is neither, so `up -d` prints `Running`
-and keeps the old configuration. (Changing `JUDGE_CONFIG` itself in `.env` does change
-the configuration, and `up -d` recreates.) A refresh run, scheduled or from `refresh`,
-reads the file afresh, so it picks the edit up on its own. Changing `[models.embed]` is the one edit that needs the database
+After editing `judge.toml`, run `scripts/deploy.sh`. The file is read only at startup,
+and the deploy's new container reads it before the old one stops, so the edit goes live
+with no downtime. A refresh run, scheduled or from `refresh`, reads the file afresh, so
+it picks the edit up on its own. Changing `[models.embed]` is the one edit that needs the database
 moved too (§7).
 
 An older Compose may reject the `${JUDGE_CONFIG:+…}` interpolation in
@@ -539,7 +543,7 @@ Behind the public site, a reverse proxy or the tunnel, `MCP_ALLOWED_HOSTS` must 
 public hostname. The MCP transport accepts only the `Host` values on its list, which
 defaults to loopback (a guard against DNS rebinding), and each of them forwards the
 hostname the client used. Without it, every `/mcp` request gets a 403
-while `/api/judge` keeps working. Then run `docker compose up -d` and, from a workstation:
+while `/api/judge` keeps working. Then run `scripts/deploy.sh` and, from a workstation:
 
 ```sh
 claude mcp add --transport http judge https://judge.example.com/mcp   --header "Authorization: Bearer <MCP_TOKEN>"
@@ -555,8 +559,8 @@ Sessions and lookups make no chat-model call. They do embed the question or sear
 text with the configured embedder, if there is one. That costs fractions of a cent, and
 it is the only paid upstream call with no cap.
 
-To rotate a leaked token, change it in `.env` and run `docker compose up -d`, which
-recreates `judgebot` because its environment changed. Two optional extra
+To rotate a leaked token, change it in `.env` and run `scripts/deploy.sh`: the new
+container reads the new token, and the old one stops once it is healthy. Two optional extra
 layers:
 
 - Behind Cloudflare, extend §5's rate-limiting rule to `/mcp`. It costs nothing.
@@ -594,7 +598,7 @@ JUDGE_ROLES='--discord --api --web --admin --jobs'   # the default roles plus --
 ADMIN_TOKEN=<openssl rand -base64 32>                 # at least 24 characters
 ```
 
-Then `docker compose up -d`, and print the page's address with the token in it:
+Then `scripts/deploy.sh`, and print the page's address with the token in it:
 
 ```sh
 docker compose exec judgebot judge-cli admin-url
@@ -626,8 +630,9 @@ services:
       - "192.168.1.50:8789:8789" # the host's LAN address : the port to open : 8789
 ```
 
-`docker compose up -d proxy` applies it. The proxy is recreated, so `127.0.0.1:8787` is
-down for a few seconds, or until the answers in flight finish (up to 70 s). Open the address `judge-cli admin-url` prints, with the host's
+`scripts/deploy.sh --proxy` applies it (a plain deploy refuses until it has). The proxy
+is recreated, so `127.0.0.1:8787` is down for a few seconds, or until the answers in
+flight finish (up to 70 s). Open the address `judge-cli admin-url` prints, with the host's
 LAN address in place of `127.0.0.1`.
 
 - The page is plain HTTP. The token crosses the network unencrypted and is the only
@@ -655,8 +660,9 @@ LAN address in place of `127.0.0.1`.
   container's 8788.
 
 The proxy publishes this port whether `--admin` runs or not. When something else on
-the host already has 8789, set `ADMIN_PORT` to a free port before `docker compose up`,
-or the proxy cannot bind it and `127.0.0.1:8787` goes down with it.
+the host already has 8789, set `ADMIN_PORT` to a free port before the first
+`scripts/deploy.sh` (later, `scripts/deploy.sh --proxy` applies a change), or the proxy
+cannot bind it and `127.0.0.1:8787` goes down with it.
 
 cloudflared shares the compose network and could reach `judgebot:8789` directly. The
 token is the guard on that path, which is one reason it must be long and its own.
@@ -766,8 +772,8 @@ configure it (nginx's `limit_req`, say). Behind them, the cap is the backstop an
 limit the first line.
 
 With a budget period set, a capped instance comes back by itself when the period turns.
-To resume sooner, raise `JUDGE_MAX_USD` and `docker compose up -d`. The period's spend is
-in the database, so the restart does not reset it.
+To resume sooner, raise `JUDGE_MAX_USD` and run `scripts/deploy.sh`. The period's spend
+is in the database, so the new container does not reset it.
 
 The cap covers embeddings as well as the chat calls: each question's query embedding, a
 stored call's vector, the scheduled refresh's embed step and every `judgebot ingest`
@@ -830,7 +836,7 @@ COMPOSE_PROFILES=public,backup    # or tunnel,backup
 ```
 
 ```sh
-docker compose up -d
+scripts/deploy.sh                   # starts the backup service with the rest
 docker compose logs backup          # the settings it read, then each check
 ```
 
@@ -918,7 +924,7 @@ takes no backup: it logs a line naming each, posts the variables' names (never t
 values) to `JUDGE_ALERT_WEBHOOK` once, when that variable is itself usable, and stays up
 refusing, repeating the log line hourly. Restarting would not help, because a restarted
 container keeps the environment it was created with. After editing `.env.deploy`,
-`docker compose up -d` recreates it. `docker compose run --rm --no-deps backup check`
+`scripts/deploy.sh` recreates it. `docker compose run --rm --no-deps backup check`
 reads the settings and finds `pg_dump` without sending anything, and
 `scripts/deploy.sh` runs it with the new image before a deploy changes anything.
 
@@ -1136,8 +1142,8 @@ the last success and the stored CR version. A run logs `refresh starting` and
 `JUDGE_REFRESH_HOURS` takes 1 to 720 hours, and `0` turns the schedule off. A typo or a
 negative value stops every binary that loads the configuration (`judgebot`,
 `judge-cli`, `judge-mcp`, `judge-eval`) at startup, naming the
-variable, as `JUDGE_BUDGET_PERIOD` does. After changing it, `docker compose up -d`
-recreates `judgebot`.
+variable, as `JUDGE_BUDGET_PERIOD` does. After changing it, `scripts/deploy.sh` puts it
+into effect.
 
 With `JUDGE_ALERT_WEBHOOK` set, a scheduled run posts there:
 
@@ -1323,8 +1329,8 @@ scripts/refresh-data.sh reembed               # dry run: what is stored, what wo
 scripts/refresh-data.sh reembed --yes         # one transaction: retype vector(N), rebuild the
                                               # HNSW indexes, clear every vector, rewrite the
                                               # row — then the ordinary embed loop
-docker compose restart judgebot               # judgebot reads judge.toml once, at startup;
-                                              # `up -d` would see nothing to do (§4)
+scripts/deploy.sh                             # judgebot reads judge.toml once, at startup:
+                                              # the new container reads the new model
 ```
 
 The running `judgebot` keeps the `[models.embed]` it started with, so it must be
@@ -1379,7 +1385,7 @@ docker compose run --rm -e JUDGE_MAX_USD=20 refresh reembed --yes
 Under `day` or `month` that run spends the period's budget. Its spend reaches the ledger,
 so once the bot's own cap (still the `.env` value) sees the period total, the bot may
 refuse questions for the rest of the day or month. Run a large re-embed early in a
-period, or raise `JUDGE_MAX_USD` in `.env` too and `docker compose up -d` until it turns.
+period, or raise `JUDGE_MAX_USD` in `.env` too and run `scripts/deploy.sh` until it turns.
 
 A refill of rows already empty is not refused up front: it stops with `stopped at the
 spend cap`, keeping every row it embedded, and the same command with room resumes it.
@@ -1403,14 +1409,9 @@ is running. The AGPL asks this of anyone serving a modified version.
 
 The workflow stamps the image with the commit it built, so the offer names the
 revision. It does this with `JUDGE_COMMIT`, a Docker build argument the Dockerfile
-hands to `crates/bot/build.rs`. A local `docker compose build` has no `.git` in its
-context, so it must pass the commit and whether the tree matches it. Otherwise the offer
-reads "commit unknown":
-
-```sh
-JUDGE_COMMIT=$(git rev-parse HEAD) JUDGE_DIRTY=$(git diff-index --quiet HEAD || echo 1) \
-  docker compose up -d --build judgebot
-```
+hands to `crates/bot/build.rs`. A local build has no `.git` in its context, so it must be
+given the commit and whether the tree matches it, or the offer reads "commit unknown".
+`scripts/deploy.sh --build` passes both.
 
 A `JUDGE_COMMIT` that is not a commit id (a branch name, a tag) fails the build rather
 than becoming "commit unknown" on every interface.
@@ -1473,15 +1474,16 @@ over the gateway) passes its healthcheck at once, so the script switches to it b
 anything shows that it can connect to Discord. Check its log for the gateway connection
 after the deploy.
 
-The deploy that stops the old container first,
-`docker compose pull && docker compose up -d --remove-orphans`, still works for every
-release, with a gap while the new container starts. `scripts/deploy.sh` covers the two
-cases that once needed it: the upgrade to one `judgebot` service below (it finds no
-`judgebot` container and runs that same `up -d --remove-orphans`, after a backup when
-one is configured), and a major release (Releases with a migration, below).
+Deploy every change through `scripts/deploy.sh`. A bare `docker compose pull &&
+docker compose up -d` also starts a new release, but with a gap while the new container
+starts, and it recreates every other service whose definition changed, `db`, `proxy` and
+`edge` included, without the checks and the timing `--db` and `--proxy` give them. The
+script covers every case that once needed the bare form: the upgrade to one `judgebot`
+service below (it finds no `judgebot` container and runs `up -d --remove-orphans`, after
+a backup when one is configured), and a major release (Releases with a migration, below).
 
 **`--remove-orphans` is required on the upgrade that replaced the `bot` and `api`
-services with `judgebot`.** Without it the old `judgebot-bot` and `judgebot-api`
+services with `judgebot`.** `scripts/deploy.sh` passes it. Without it the old `judgebot-bot` and `judgebot-api`
 containers keep running, because they belong to services the compose file no longer
 names. What happens next depends on what was running:
 
@@ -1504,10 +1506,10 @@ Check afterwards:
 docker ps -a --filter name=judgebot- --format '{{.Names}} {{.Status}}'
 ```
 
-It should list `judgebot-db`, `judgebot-proxy` (and `judgebot-edge` or `judgebot-tunnel`
-with their profile)
+It should list `judgebot-db`, `judgebot-proxy` (and `judgebot-edge` with its profile)
 and the service's own container, which Compose names after the checkout's directory
-(`mtg-judgebot-judgebot-1`). A `judgebot-bot` or `judgebot-api` is left over. If either
+(`mtg-judgebot-judgebot-1`). The tunnel's connector is named the same way
+(`mtg-judgebot-cloudflared-1`), so `docker compose ps` lists it. A `judgebot-bot` or `judgebot-api` is left over. If either
 is still there, `docker rm -f judgebot-bot judgebot-api` removes it.
 
 What else that upgrade changes:
@@ -1517,7 +1519,7 @@ What else that upgrade changes:
   to start while `API_INTERFACES` is set: replace it with `JUDGE_ROLES` set to
   `--discord --jobs` plus its value (the error names the line).
 - **A deployment without Discord** (one that ran only `api`, with no `DISCORD_TOKEN`)
-  adds this line to `.env` before `up -d`, or `judgebot` restarts forever with
+  adds this line to `.env` before deploying, or `judgebot` restarts forever with
   `DISCORD_TOKEN is not set`:
 
   ```ini
@@ -1525,9 +1527,10 @@ What else that upgrade changes:
   ```
 - **The image tag.** The new compose file runs the `judgebot` binary, which older images
   do not have. A `JUDGE_IMAGE_TAG` pinned to an earlier release moves to this one in the
-  same deploy, or `up -d` fails with `judgebot` not found. For the same reason, run
-  `docker compose pull` straight after `git pull`: a cron'd `scripts/refresh-data.sh`
-  between the two runs the new compose file on the old local image and fails.
+  same deploy, or the deploy fails with `judgebot` not found. For the same reason, run
+  `scripts/deploy.sh` (which pulls) straight after `git pull`: a cron'd
+  `scripts/refresh-data.sh` between the two runs the new compose file on the old local
+  image and fails.
 - **The tunnel.** `api` on the compose network is the `proxy` service, which forwards to
   `judgebot`, so a public hostname pointing at `http://api:8787` needs no edit.
 - **The host port.** `127.0.0.1:8787` is the `proxy` service. The `judgebot` container
@@ -1535,11 +1538,10 @@ What else that upgrade changes:
   judgebot`, `docker compose exec judgebot …`) rather than `docker logs judgebot`.
 - **Commands.** `scripts/refresh-data.sh`, its cron entry and
   `docker compose run --rm refresh <command>` work as before. The logs are
-  `docker compose logs judgebot`, and a `judge.toml` edit takes
-  `docker compose restart judgebot`.
+  `docker compose logs judgebot`, and a `judge.toml` edit takes `scripts/deploy.sh`.
 
-`docker compose up -d --build` still works on a machine with the CPU and RAM for it.
-The compose file keeps `build: .` for local development.
+`scripts/deploy.sh --build` builds from the checkout on a machine with the CPU and RAM
+for it. The compose file keeps `build: .` for local development.
 
 ### Gateway holder
 
@@ -1647,8 +1649,7 @@ upsert takes no lock and needs none: it commits in batches of whole cards and to
 `calls` rows.) A deploy during a refresh therefore waits at startup until the CR load
 finishes, which is minutes on a NAS. It logs one warning line,
 `another job holds the calls rewrite lock ... waiting`, in `docker compose logs judgebot`.
-That is a wait, not a hang. A stop-then-start deploy (`docker compose up -d`) does not
-wait: the old container cuts the load off as it stops.
+That is a wait, not a hang.
 
 `scripts/deploy.sh` starts the new container while the old one still answers, so the
 old binary runs against the new schema for a minute or two. Within a major release,
@@ -1677,9 +1678,7 @@ which path it takes (`the new image's migrations: major`):
 
 Questions get the maintenance reply for the drain and the migration, usually a minute
 or two. From a 1.x release, whose processes hold no lock the new one could wait for,
-the old container is stopped before the new one starts. `docker compose pull &&
-docker compose up -d` also works: it stops the old container first, and the new one
-answers with the maintenance reply while it migrates.
+the old container is stopped before the new one starts.
 
 Nothing stops another process on the same database. A `judgebot` of the previous
 release on another machine holds the lock too, so the new one waits for it: stop it.
@@ -1687,13 +1686,14 @@ A `judge-cli` or `judge-mcp` of the previous major stops by itself and says what
 update. `ALTER TABLE` also waits on any in-flight query.
 
 To migrate by hand instead, set `JUDGE_AUTO_MIGRATE=false` in `.env`. `judgebot`
-picks it up when next recreated, which `up -d` does because the env file changed. Then run the explicit form from the *new* image:
+picks it up at the next `scripts/deploy.sh`. Then run the explicit form from the *new*
+image:
 
 ```sh
-docker compose pull
+docker compose pull judgebot
 docker compose stop judgebot              # only when the migration rewrites rows
 docker compose run --rm refresh migrate   # prints what it applies; refuses a changed file
-docker compose up -d
+scripts/deploy.sh
 ```
 
 Until the migrations are applied, a `judgebot` whose code reads a new table or function
@@ -1711,11 +1711,12 @@ and names these steps. Run it again once `migrate` has run: it then deploys in p
 The `db` service's image is pinned in `docker-compose.yml` to a pgvector release, a
 Postgres major, a Debian release and the digest those tags pointed at
 (`pgvector/pgvector:0.8.7-pg16-bookworm@sha256:…`). The database changes only when that
-line does, and `scripts/deploy.sh --db` is what applies a changed line. A code deploy
-(`scripts/deploy.sh`) refuses while the `db` container runs another image than the line
-names, because its `docker compose up` would recreate the database without `--db`'s
-checks. The stop-then-start deploy (`docker compose pull && docker compose up -d`) does
-recreate it, with none of them.
+line does, and `scripts/deploy.sh --db` is what applies a changed line. Every other
+deploy refuses while the `db` container differs from the service as
+`docker-compose.yml` and `.env` describe it (its image, its port, any setting), because
+its `docker compose up` would recreate the database without `--db`'s checks. `refresh`
+and `backup` do not depend on `db`, so a `docker compose run` of them never starts or
+replaces it either.
 
 **Minor updates.** A Postgres minor (16.x, security fixes, about quarterly) or a pgvector
 release reaches the repository as a Dependabot pull request that changes the line. CI runs
@@ -1737,14 +1738,6 @@ older SQL objects, but its new functions and fixes need the update. Every startu
 migrates does the same, and an update that fails (a role that does not own the
 extension) is a WARN, not a failed start. With `JUDGE_AUTO_MIGRATE=false` the script
 prints the command instead of running it.
-
-Without the script, the same steps by hand:
-
-```sh
-docker compose run --rm --no-deps backup run   # or scripts/backup-db.sh
-docker compose pull db && docker compose up -d --no-deps db
-docker compose exec judgebot judgebot ingest migrate
-```
 
 pgvector has no update path down. Going back to an older pgvector image after its
 extension has been updated means restoring the backup taken before it. A Postgres minor
@@ -1789,18 +1782,50 @@ November 2028. The upgrade is a dump and a restore into a new data volume, with
 
    ```sh
    git pull && docker compose pull db judgebot
-   docker compose up -d db                  # wait for docker compose ps db: healthy
+   scripts/deploy.sh --db                   # starts the new major on the empty volume
    docker compose exec -T db pg_restore -U judgebot -d judgebot --exit-on-error < pre-major.dump
    docker compose exec -T db psql -U judgebot -c "select count(*) from cards;"
    ```
 
-6. Start the rest (`docker compose up -d`) and run the restore drill (§6) once, which
+6. Start the rest (`scripts/deploy.sh`) and run the restore drill (§6) once, which
    proves the new `pg_dump` can dump the new server.
 
 To go back before anything new is written, stop `db`, remove the new volume, copy
 `$vol-old` back into a fresh `$vol` the same way, and check out the previous
 `docker-compose.yml` and `Dockerfile`. Remove `$vol-old` and `pre-major.dump` once the
 new major has run for a while.
+
+### Proxy image
+
+`proxy` and `edge` (Caddy) hold host ports (`127.0.0.1:8787` and the admin port; 80 and
+443), and only one container can hold a host port. Replacing one therefore refuses new
+connections until the old container has finished its requests (up to 70 s, its
+`grace_period`) and the new one listens. `scripts/deploy.sh` never does that on its own:
+it refuses while either container differs from the service as `docker-compose.yml` and
+`.env` describe it, and
+
+```sh
+scripts/deploy.sh --proxy
+```
+
+replaces them at a moment you choose: pull the image, recreate the one that changed
+(`edge` only under the `public` profile), and load its file. A new Caddy release reaches
+the repository as a Dependabot pull request, and an edited `proxy` or `edge` service
+(an override publishing the admin port, §4, or a new `JUDGE_DOMAIN` for `edge`) is the
+other cause. A Caddyfile edit is
+neither: Caddy watches the mounted file and loads it in place, with no dropped
+connection.
+
+The tunnel's connector (`cloudflared`) has no host port and needs no flag. Cloudflare
+spreads a tunnel's requests over every connector registered for it, so a deploy starts
+the new connector beside the old one and stops the old one once the new one has
+registered; the old one finishes its requests first (70 s, its `--grace-period`). A new
+cloudflared release, or an edited `.env.deploy`, goes live with the next
+`scripts/deploy.sh`.
+
+A profile taken out of `COMPOSE_PROFILES` is not stopped by a deploy, since the service
+is then no longer part of the project's configuration. Stop it by name:
+`docker compose --profile tunnel stop cloudflared`, or `--profile public stop edge`.
 
 ### Private package pulls
 
@@ -1827,14 +1852,15 @@ JUDGE_IMAGE_TAG=sha-abc1234    # in .env; or a release, e.g. 1.2.0
 ```
 
 ```sh
-docker compose pull && docker compose up -d --remove-orphans
+scripts/deploy.sh
 ```
 
-Clear `JUDGE_IMAGE_TAG` to return to `latest`.
+Clear `JUDGE_IMAGE_TAG` and deploy again to return to `latest`.
 
 An image from before `judgebot` (the release that ran `bot` and `api` as two services)
 has no `judgebot` binary, so the current `docker-compose.yml` cannot start it. Rolling
-back that far takes that release's compose file as well as its image:
+back that far takes that release's compose file as well as its image, and that file's
+own deploy, the one exception to `scripts/deploy.sh`:
 
 ```sh
 git checkout <previous release tag or commit> -- docker-compose.yml
@@ -1910,35 +1936,35 @@ image, above).
 | `127.0.0.1:8789` answers 502 | `--admin` is not in `JUDGE_ROLES`, or `judgebot` is restarting |
 | The `proxy` will not start: `port is already allocated` for 8789 | something else on the host has 8789; set `ADMIN_PORT` in `.env` to a free port |
 | `judgebot` exits saying `ADMIN_ADDR` and `API_ADDR` name the same port | the two listeners need ports of their own |
-| The admin page does not load from another machine through the override | the mapping names `0.0.0.0` or the wrong address (`docker compose ps proxy` lists what is published), or `docker compose up -d proxy` was not run after adding it |
+| The admin page does not load from another machine through the override | the mapping names `0.0.0.0` or the wrong address (`docker compose ps proxy` lists what is published), or `scripts/deploy.sh --proxy` was not run after adding it |
 | `ssh -L` prints `channel N: open failed: administratively prohibited` | the host's sshd forbids forwarding (`AllowTcpForwarding no`, `DisableForwarding yes`, or `restrict` / `no-port-forwarding` on the key in `authorized_keys`). Check with `sudo sshd -T \| grep -i forwarding`, then allow it, e.g. `AllowTcpForwarding local` and `PermitOpen 127.0.0.1:8789` (add `127.0.0.1:8790` for the config editor) in `/etc/ssh/sshd_config.d/`, and reload sshd |
 | The admin page says "Token refused" | `ADMIN_TOKEN` changed since the address was printed; print it again with `judge-cli admin-url` |
 | The admin tools are missing from `/mcp` | the client sends `MCP_TOKEN`; the admin tools need `MCP_ADMIN_TOKEN` |
 | `judgebot` exits naming `--web` and `index.html` | `--web` with no built page at `WEB_DIST`; drop `--web` or rebuild the image |
 | The page 404s but `/api/health` is fine | `--web` is not in `JUDGE_ROLES`; the `judgebot roles` startup line lists what is on and what is off |
-| `judgebot` restarts with `DISCORD_TOKEN is not set` on a deployment without Discord (often right after the upgrade to one service) | the default roles include `--discord`; add `JUDGE_ROLES='--api --web --jobs'` to `.env` and `docker compose up -d` |
+| `judgebot` restarts with `DISCORD_TOKEN is not set` on a deployment without Discord (often right after the upgrade to one service) | the default roles include `--discord`; add `JUDGE_ROLES='--api --web --jobs'` to `.env` and run `scripts/deploy.sh` |
 | `judgebot` restarts with `API_INTERFACES: no longer read` | replace it in `.env` with the `JUDGE_ROLES` line the error names |
 | Every Discord question is answered twice | a second process uses the same token without the gateway lease: the old `judgebot-bot` container left by an upgrade without `--remove-orphans` (§8; `docker rm -f judgebot-bot judgebot-api`), or a `judgebot` on another host with a database of its own |
 | The bot is offline and the log says `standing by: another instance holds the Discord gateway` | another `judgebot --discord` on the same database holds the gateway lease; the line names its pid and `application_name` (§8, Gateway holder). Stop that process (`docker rm -f` a leftover container), and this one connects 15 seconds later |
 | `scripts/deploy.sh` stops with `2 judgebot containers are running` | an earlier deploy was interrupted between starting the new container and removing the old one. `docker compose ps judgebot` lists both; `docker stop` the older one (it drains first) and `docker rm` it |
 | `scripts/deploy.sh` removed the new container | it was not healthy in time or it restarted; the script printed its last log lines (a failed migration, a missing variable). The old container kept serving |
 | `localhost:8787` answers 502 while the tunnel works | the `proxy` service is up and `judgebot` runs no network role, or is restarting (`docker compose ps`) |
-| `up -d` fails with `port is already allocated` for 8787 | something else on the host listens on 8787: a `judgebot` from `cargo run`, or a container from before the `proxy` service that is not part of this compose project |
+| A deploy fails with `port is already allocated` for 8787 | something else on the host listens on 8787: a `judgebot` from `cargo run`, or a container from before the `proxy` service that is not part of this compose project |
 | `judgebot` reads healthy but nothing answers on 8787 | the roles have no `--api`, `--web` or `--mcp`, so the healthcheck passes without probing (§4) |
 | Everyone shares one rate-limit bucket | `API_CLIENT_IP=peer` behind the public site, a proxy or the tunnel, where every request comes from the proxy; or `proxy` with the tunnel, or `cloudflare` with the public site (§3, Client address) |
 | Rate limiting never triggers | `API_CLIENT_IP=cloudflare` while something other than Cloudflare can reach the origin, so `CF-Connecting-IP` is caller-supplied; or `proxy` while a route that does not remove `X-Judgebot-Client-IP` is public (a tunnel to `judgebot:8787`, or 8788 published beyond loopback) |
-| `judgebot` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact a role must show is unset or malformed in `.env` (`--discord` needs the first, `--api`/`--web`/`--mcp` the second); set it and `docker compose up -d` |
+| `judgebot` restart-loops naming `JUDGE_OPERATOR_DISCORD` / `JUDGE_OPERATOR_EMAIL` | the contact a role must show is unset or malformed in `.env` (`--discord` needs the first, `--api`/`--web`/`--mcp` the second); set it and run `scripts/deploy.sh` |
 | `cloudflared` restart-loops on startup | `COMPOSE_PROFILES=tunnel` with `TUNNEL_TOKEN` empty or stale in `.env.deploy` |
-| Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and `docker compose up -d`, or wait for the period to turn |
+| Members are told the bot "hit its spending cap" | `JUDGE_MAX_USD` is spent for the process or the period (`judge-cli stats` shows the days); raise it and run `scripts/deploy.sh`, or wait for the period to turn |
 | `embedding refused by the spend cap`, or a refresh's `embed` step failing with `stopped at the spend cap` | The cap covers embeddings too. Questions are answered without vector search meanwhile. Raise `JUDGE_MAX_USD` or wait for the period, then `scripts/refresh-data.sh embed` fills the vectors it skipped |
 | A refresh or backup failed and nobody noticed | set `JUDGE_ALERT_WEBHOOK` in `.env`, and in `.env.deploy` for the `backup` service, which reads only that file (and `.env`'s `JUDGE_LOCALE`, the language of its alerts, which Compose passes it). A scheduled refresh and the service post there on the first failure of a streak and on recovery; both scripts post on a non-zero exit |
 | When was the data last refreshed? | `/help`, the web footer or `GET /api/about` (`freshness`) for the age of the last success; `judge-cli stats` for the last five runs (§7) |
 | The data is days old and `refresh_runs` has no recent row | `JUDGE_REFRESH_HOURS=0` with no cron entry, or the `judgebot` log says `scheduled refresh paused` (a container on an older image than the schema, migrations pending with `JUDGE_AUTO_MIGRATE=false`, or no rules loaded yet: `docker compose run --rm refresh init`). `docker compose logs judgebot \| grep 'scheduled'` shows which |
 | `refresh step skipped` for `embed`, `rows to embed, over the 800` | the spend guard: a scheduled run found more empty vectors than a CR release leaves. Run `scripts/refresh-data.sh embed` if that spend is expected (§7) |
 | Backup cron silently never runs | log path not writable by your user, or `.env.deploy` missing |
-| `docker compose up -d` stops at `env file .env.deploy not found` | the `backup` or `tunnel` profile is in `COMPOSE_PROFILES` and `.env.deploy` does not exist (`cp .env.deploy.example .env.deploy`) |
+| `scripts/deploy.sh` (or any `docker compose` command) stops at `env file .env.deploy not found` | the `backup` or `tunnel` profile is in `COMPOSE_PROFILES` and `.env.deploy` does not exist (`cp .env.deploy.example .env.deploy`) |
 | `backup` keeps restarting | it could not start: no `pg_dump` in the image, or `BACKUP_KEEP_LOCAL` is not a directory the container can write. `docker compose logs backup` says which |
-| No new backups, and the webhook or `docker compose logs backup` says the backup settings are not usable | a setting in `.env.deploy` is missing or malformed, or still has a pre-2.0.0 `R2_*` name. The log names each one (`BACKUP_S3_*`, `BACKUP_*`, `JUDGE_ALERT_WEBHOOK`) and the line that replaces an `R2_*`. Fix the file, then `docker compose up -d`: the running container keeps the environment it was created with |
+| No new backups, and the webhook or `docker compose logs backup` says the backup settings are not usable | a setting in `.env.deploy` is missing or malformed, or still has a pre-2.0.0 `R2_*` name. The log names each one (`BACKUP_S3_*`, `BACKUP_*`, `JUDGE_ALERT_WEBHOOK`) and the line that replaces an `R2_*`. Fix the file, then run `scripts/deploy.sh`: the running container keeps the environment it was created with |
 | `scripts/deploy.sh` refuses, naming `R2_*` or the backup service's settings | `.env.deploy` still names the store with the pre-2.0.0 `R2_*`, sets a `BACKUP_S3_*` twice, or fails the new image's `judgebot backup check`. Nothing was changed: fix the file and deploy again (§6, Providers) |
 | The backup alert says `pg_dump` is older than the server | `db` runs a newer PostgreSQL major than the image's `pg_dump` (16); the image needs a newer client (§6) |
 | No backup in the bucket for over a week, and no alert | the `backup` profile is not in `COMPOSE_PROFILES` (`docker compose ps backup` lists nothing) and there is no cron entry; or `JUDGE_ALERT_WEBHOOK` is not in `.env.deploy` |
@@ -1947,7 +1973,9 @@ image, above).
 | Refresh runs but the bot still cites the old CR | it does not: retrieval reads the database live; check the run actually finished (`refresh step ok` for `rules` and `embed`) |
 | `JUDGE_CONFIG=/etc/judgebot/judge.toml: file not found` at startup | `JUDGE_CONFIG` in `.env` names a host file that does not exist; Docker mounted an empty directory in its place (and created a root-owned one on the host — `sudo rmdir` it) |
 | `providers.X: NAME (api_key_env) is not set` at startup | the key was exported in the shell that ran `cargo run` but never written to `.env`, which is all the containers read; or, from `refresh` alone, only the embed provider's key was set because "refresh only embeds" — `refresh` resolves the chat stages too, so the extract/synth providers' keys must be in `.env` as well |
-| Edited `judge.toml`, `docker compose up -d`, nothing changed | `up -d` recreates only on a configuration or image change and a bind-mounted file's content is neither; `docker compose restart judgebot` (§4) |
+| Edited `judge.toml` and nothing changed | the file is read at startup; `scripts/deploy.sh` starts a container that reads it. A bare `docker compose up -d` sees no change, since a bind-mounted file's content is not part of the configuration (§4) |
+| `scripts/deploy.sh` refuses: the db service differs from the running db container | the `db` line in `docker-compose.yml` changed (a merged update) or `DB_PORT` did; `scripts/deploy.sh --db` at a quiet moment applies it (a few seconds' outage), then deploy again (§8, Database image) |
+| `scripts/deploy.sh` refuses: the proxy (or edge) service differs from its running container | a new Caddy release or an edited `proxy`/`edge` service; `scripts/deploy.sh --proxy` at a quiet moment applies it (new connections wait while it is replaced), then deploy again. A Caddyfile edit needs neither |
 | `providers.X (...): no credentials` at startup | a cloud endpoint with an empty chain: no `AWS_*` in `.env`, no mounted credentials file, or a mounted file the `nobody` user cannot read |
 | `embedding space mismatch; vector search off` | `[models.embed]` names a model or width other than the one the database holds; `reembed` (§7) to move the data, or change the file back |
 | `no price for X/Y` at startup | a model on an `openai` provider without `[models.<stage>.pricing]`; add one (USD per million tokens) or `pricing = "free"` on the provider |

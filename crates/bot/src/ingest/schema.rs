@@ -1,7 +1,7 @@
 //! `ingest migrate` — apply the schema migrations the binary carries, the
 //! explicit form of what `judgebot` does at startup
-//! ([`crate::db::migrate`]): for an empty database before the first
-//! `docker compose up -d`, and for an operator who set
+//! ([`crate::db::migrate`]): for an empty database before `judgebot` first
+//! starts, and for an operator who set
 //! `JUDGE_AUTO_MIGRATE=false`. Reports on stdout, so a terminal shows it
 //! without `RUST_LOG`; a database ahead of this binary is an error here,
 //! where startup would only warn. A major upgrade's migrations

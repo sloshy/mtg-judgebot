@@ -23,8 +23,9 @@ web app and never touch Discord. The bot is the last thing to add.
 ## Requirements
 
 - A host that stays on, with Docker and the compose plugin. Running takes about 200 MB of
-  RAM across the two containers. **Building** the image takes ~4 GB and a lot of CPU. A
-  low-powered host pulls the CI-built image instead (`docker compose pull`).
+  RAM across the two containers. `scripts/deploy.sh` pulls the CI-built image.
+  **Building** it from the checkout (`scripts/deploy.sh --build`) takes ~4 GB and a lot
+  of CPU.
 - No Rust. The image carries `judgebot ingest` as its `refresh` service, so the data loads
   run in a container. To work from source, see [Development setup](../../contributing/development/).
   A binary run on the host checks HTTPS against the system's CA certificates
@@ -56,24 +57,26 @@ web app and never touch Discord. The bot is the last thing to add.
    To edit by hand instead, `cp .env.example .env` and fill it in. Every variable is
    documented in the file and in the
    [configuration reference](../../self-hosting/configuration/).
-2. `docker compose up -d db`. Postgres publishes on **localhost:5432** (loopback only). If
-   something on the host already has that port, set `DB_PORT` and change the port in
-   `DATABASE_URL` to match.
+2. `scripts/deploy.sh --db` starts the database alone. Postgres publishes on
+   **localhost:5432** (loopback only). If something on the host already has that port,
+   set `DB_PORT` and change the port in `DATABASE_URL` to match.
 3. `docker compose run --rm refresh init` loads everything: the schema, the cards, the
    current rules, the alias and note lists, embeddings if you have an embedder, and the
    emoji if `DISCORD_TOKEN` is already set. `init` is safe to run again. It counts as a
    refresh, so the first scheduled one comes a day later.
    The first embed pays the embedder once for every rule and glossary entry, a few cents
    on Voyage. After that, only changed rules are re-embedded.
-4. `docker compose up -d`. Open <http://localhost:8787> and ask a question. This runs
-   the full pipeline, so it checks the model setup before Discord is involved.
-   `judgebot` applies pending migrations at startup unless `JUDGE_AUTO_MIGRATE=false`.
+4. `scripts/deploy.sh` starts `judgebot` and `proxy`, and waits until `judgebot` is
+   healthy. It applies pending migrations at startup unless `JUDGE_AUTO_MIGRATE=false`.
+   Open <http://localhost:8787> and ask a question. This runs the full pipeline, so it
+   checks the model setup before Discord is involved.
 5. [Create the Discord app](../../self-hosting/discord-app/), clear `JUDGE_ROLES` (or
-   add `--discord` to it), then `docker compose up -d`. Then run
-   `docker compose run --rm refresh emoji` once, so answers show mana symbols as pictures
-   instead of `{W}`.
+   add `--discord` to it), then `scripts/deploy.sh`, which puts the edited `.env` live
+   without downtime. Then run `docker compose run --rm refresh emoji` once, so answers
+   show mana symbols as pictures instead of `{W}`.
 6. Turn on the weekly backup to an S3-compatible bucket (Cloudflare R2, AWS S3, Backblaze
-   B2, MinIO): add `backup` to `COMPOSE_PROFILES` and fill in `.env.deploy`. The
+   B2, MinIO): add `backup` to `COMPOSE_PROFILES`, fill in `.env.deploy`, then
+   `scripts/deploy.sh`, which starts the `backup` service. The
    [deployment runbook](../../self-hosting/deployment/) has each provider's settings, the
    steps, the restore drill, and the cron line for `scripts/backup-db.sh` instead. The data
    refresh needs no schedule of yours: `judgebot`'s `--jobs` role runs it every
@@ -134,8 +137,8 @@ enough for Discord over its gateway connection, which dials out. To publish the 
    API_CLIENT_IP=proxy
    ```
 
-3. `docker compose up -d`. The bundled Caddy (`edge`) gets a Let's Encrypt certificate
-   and serves `https://judge.example.com`.
+3. `scripts/deploy.sh`. It starts the bundled Caddy (`edge`), which gets a Let's Encrypt
+   certificate and serves `https://judge.example.com`.
 
 A reverse proxy of your own, or a Cloudflare Tunnel with no open port, works instead.
 The [deployment runbook](../deployment/#3-exposure) has all three. `API_CLIENT_IP` must

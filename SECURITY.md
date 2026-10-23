@@ -45,7 +45,7 @@ Operators should know these properties. The reasoning behind each is in
   The flag alone is refused at startup, and the token alone serves nothing. The token is
   compared in constant time. Its own `judge` quota (`MCP_JUDGE_LIMIT`) bounds what a
   leaked token can spend. `MCP_ALLOWED_HOSTS` must name the public hostname. To rotate
-  the token, change the variable and recreate `judgebot` (`docker compose up -d`).
+  the token, change the variable and deploy (`scripts/deploy.sh`), which replaces `judgebot`.
 - **The operator's reads have their own credentials and their own listener.** Private
   calls, askers' Discord ids, raters and failed questions are readable only by the
   operator (D37):

@@ -135,9 +135,9 @@ const EN = {
   confirmSaveErrors: "Some parts would refuse to start with these files. Save anyway?",
   savedApply: "Saved. To apply it:",
   savedEnv:
-    "Docker, `.env` changed: `docker compose up -d` (recreates the containers whose environment changed)",
+    "Docker, `.env` changed: `scripts/deploy.sh` (a new judgebot container reads it, with no downtime)",
   savedToml:
-    "Docker, `judge.toml` changed: `docker compose restart judgebot` (`up -d` does not see a mounted file's edit)",
+    "Docker, `judge.toml` changed: `scripts/deploy.sh` (a new judgebot container reads the mounted file; one run applies both files)",
   savedCargo: "`cargo run`: restart the binaries; they read both files at startup",
 };
 
