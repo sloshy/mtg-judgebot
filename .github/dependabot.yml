@@ -33,6 +33,18 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+  # The Dockerfile's base images. A rust or node bump here must also change
+  # the copies `check.sh lint` holds equal to it (check_toolchains): edit them
+  # on the PR's branch before merging.
   - package-ecosystem: docker
     directory: /
     schedule: { interval: weekly }
+  # docker-compose.yml's third-party images (caddy, cloudflared); the
+  # judgebot image is a variable and is skipped.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule: { interval: weekly }
+    ignore:
+      # The db's major must equal the Dockerfile's PG_MAJOR (check_pg_major), and a
+      # major upgrade needs a dump and restore, so it is bumped by hand.
+      - dependency-name: pgvector/pgvector

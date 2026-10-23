@@ -6,8 +6,9 @@ works end to end. `docs/ARCHITECTURE.md` is the design reference.
 
 ## Development setup
 
-You need Docker (with the compose plugin), Rust 1.99 (`rust-toolchain.toml` pins it,
-so `rustup` installs it on first use) and Node 26 for the web app.
+You need Docker (with the compose plugin), the Rust release
+`rust-toolchain.toml` pins (`rustup` installs it on first use) and the Node major the
+`Dockerfile`'s `node:` image names, for the web app.
 
 ```sh
 cp .env.example .env            # DATABASE_URL already points at the compose database
@@ -62,7 +63,8 @@ your development one.
   the build and a link check for the docs site. It always runs the repository lints:
   `cargo deny` (against the advisory database already fetched, so it works offline),
   `cargo machete`, `taplo`, `typos`, `shellcheck`, `actionlint`, `hadolint`, a check
-  that the icon's copies match, and the compose file. It takes seconds unless clippy has
+  that the icon's copies match, a check that every Rust and Node version agrees with the
+  `Dockerfile`'s, and the compose file. It takes seconds unless clippy has
   a lot to recompile.
 - **pre-push** checks the tip of each ref being pushed against the remote's commit. It
   runs the repository lints, and, when Rust, compiled-in data, `eval/` or the compose

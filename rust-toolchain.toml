@@ -1,4 +1,4 @@
-# The toolchain the image builds with (Dockerfile: rust:1.99-slim-bookworm) and
+# The toolchain the image builds with (the Dockerfile's rust image) and
 # Cargo.toml's rust-version. Pinning it here makes a contributor's rustfmt and
 # clippy agree with CI's, so formatting and lint results do not drift by host.
 [toolchain]

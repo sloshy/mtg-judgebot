@@ -28,7 +28,8 @@
 #   lint   cargo deny, cargo machete, taplo, typos, shellcheck, actionlint,
 #          hadolint, the icon's copies, pg_dump's major vs the db image's,
 #          web/ and site/'s versions vs the crates', the stub locale only in
-#          dev-dependencies, docker compose config
+#          dev-dependencies, the Rust and Node versions vs the Dockerfile's,
+#          docker compose config
 # sqlx and test need Postgres (DATABASE_URL, else the one in .env), and take
 # turns with any other sqlx or test run on the same server (one_run_per_cluster).
 #
@@ -341,10 +342,6 @@ png_size() {
     awk '{ printf "%dx%d\n", $1*16777216 + $2*65536 + $3*256 + $4, $5*16777216 + $6*65536 + $7*256 + $8 }'
 }
 
-# The icon's copies (CLAUDE.md, "The icon"): each is a PNG, and each set is
-# byte-identical and of the size it is meant to be. Whether a copy was scaled from the original by
-# whole multiples is left to the regeneration procedure; checking it needs a
-# PNG decoder.
 # The image's pg_dump (Dockerfile ARG PG_MAJOR) must be the major of the
 # compose `db` image (pgvector/pgvector:pgNN): pg_dump refuses a newer server,
 # so a db bumped alone makes every backup fail, and the backup service only
@@ -389,6 +386,48 @@ check_stub_locale() {
   fi
 }
 
+# The Rust and Node versions the image builds with (Dockerfile) are the ones
+# CI checks with and contributors pin: rust-toolchain.toml, Cargo.toml's
+# rust-version and every workflow toolchain / node-version line. Dependabot's
+# docker updates bump the Dockerfile alone, so a bump that missed a copy would
+# pass CI on the old version while the image shipped the new one.
+check_toolchains() {
+  local ok=0 rust node v found
+  rust="$(sed -nE 's/^FROM rust:([0-9]+\.[0-9]+)-.*/\1/p' Dockerfile)"
+  node="$(sed -nE 's/^FROM node:([0-9]+)-.*/\1/p' Dockerfile)"
+  if [ -z "$rust" ] || [ -z "$node" ]; then
+    echo "the rust (${rust:-not found}) or node (${node:-not found}) image in Dockerfile is missing" >&2
+    return 1
+  fi
+  v="$(sed -nE 's/^channel = "([^"]*)"$/\1/p' rust-toolchain.toml)"
+  if [ "$v" != "$rust" ]; then
+    echo "rust-toolchain.toml channel is ${v:-not found}, but Dockerfile builds with rust:$rust" >&2
+    ok=1
+  fi
+  v="$(sed -nE 's/^rust-version = "([^"]*)"$/\1/p' Cargo.toml)"
+  if [ "$v" != "$rust" ]; then
+    echo "Cargo.toml rust-version is ${v:-not found}, but Dockerfile builds with rust:$rust" >&2
+    ok=1
+  fi
+  found="$(grep -nE '^ *toolchain: ' .github/workflows/*.yml | grep -vE "toolchain: [\"']${rust}[\"'] *(#.*)?$" || true)"
+  if [ -n "$found" ]; then
+    echo "a workflow toolchain is not \"$rust\", quoted (YAML reads an unquoted 1.100 as 1.1; Dockerfile's rust:$rust):" >&2
+    echo "$found" >&2
+    ok=1
+  fi
+  found="$(grep -nE '^ *node-version: ' .github/workflows/*.yml | grep -vE "node-version: ([\"']?)${node}\\1 *(#.*)?$" || true)"
+  if [ -n "$found" ]; then
+    echo "a workflow node-version is not $node (Dockerfile's node:$node):" >&2
+    echo "$found" >&2
+    ok=1
+  fi
+  return "$ok"
+}
+
+# The icon's copies (CLAUDE.md, "The icon"): each is a PNG, and each set is
+# byte-identical and of the size it is meant to be. Whether a copy was scaled from the original by
+# whole multiples is left to the regeneration procedure; checking it needs a
+# PNG decoder.
 check_icons() {
   local ok=0 set size files first f
   for set in \
@@ -434,6 +473,7 @@ group_lint() {
   step "icons" check_icons
   step "stub locale" check_stub_locale
   step "pg_dump major" check_pg_major
+  step "toolchains" check_toolchains
   step "versions" scripts/release-version.sh
   # docker-compose.yml names .env as an env_file, and the tunnel and backup
   # profiles .env.deploy. The --at worktree has the examples there, as CI's

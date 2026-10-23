@@ -12,7 +12,7 @@
 # npm lockfiles, sqlx-cli from `cargo install` (CONTRIBUTING.md).
 set -euo pipefail
 
-TYPOS=1.50.2
+TYPOS=1.51.1
 TAPLO=0.10.0
 CARGO_DENY=0.20.2
 CARGO_MACHETE=0.9.2

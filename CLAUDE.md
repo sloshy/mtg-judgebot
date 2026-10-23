@@ -140,7 +140,10 @@ byte-identical and the right size) and `check_pg_major` (the `Dockerfile`'s `PG_
 equals the compose `db` image's major, so the backup's `pg_dump` can dump it),
 `check_stub_locale` (the workspace's feature graph without dev-dependencies,
 `cargo tree -e features,no-dev -i judge-core`, has no `stub-locale`, and neither
-`Dockerfile` nor a workflow names it or `--all-features`) and
+`Dockerfile` nor a workflow names it or `--all-features`), `check_toolchains` (the
+`Dockerfile`'s `rust:` and `node:` versions equal `rust-toolchain.toml`, `Cargo.toml`'s
+`rust-version` and every workflow `toolchain:` / `node-version:`; Dependabot's docker
+bump changes the `Dockerfile` alone, so finish its PR by hand) and
 `scripts/release-version.sh` (web/ and site/'s `package.json` versions equal the crates'
 one `[workspace.package]` version; `publish-image.yml` runs it with the release tag,
 which must match, and its `## [X.Y.Z]` changelog heading). Every tool's config records why each

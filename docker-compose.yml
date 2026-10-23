@@ -160,7 +160,7 @@ services:
   # tunnel's site and the admin site. Answers take up to a minute, and Caddy's
   # proxy has no read timeout by default.
   proxy:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.11.7-alpine
     container_name: judgebot-proxy
     restart: unless-stopped
     logging: *bounded-logs
@@ -215,7 +215,7 @@ services:
   # API_CLIENT_IP=proxy. Its configuration is mounted and watched as the
   # proxy's is.
   edge:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.11.7-alpine
     container_name: judgebot-edge
     restart: unless-stopped
     profiles: ["public"]
@@ -350,7 +350,7 @@ services:
   # public IPv4 and no dynamic DNS. Off by default; deployments opt in with
   # COMPOSE_PROFILES=tunnel in .env, and API_CLIENT_IP=cloudflare.
   cloudflared:
-    image: cloudflare/cloudflared:2026.9.1
+    image: cloudflare/cloudflared:2026.10.3
     container_name: judgebot-tunnel
     restart: unless-stopped
     profiles: ["tunnel"]
