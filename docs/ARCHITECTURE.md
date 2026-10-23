@@ -293,7 +293,9 @@ process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, 
   so `scripts/deploy.sh` can read a `maintenance:` answer as "up"). Every process with a
   role holds the shared side of `SCHEMA_LOCK` before it reads the schema, and
   `SchemaHold::keep` checks it every 10 s beside the roles (retaken only while the
-  ledger holds nothing unknown, else the process exits). The upgrade waits for the
+  ledger holds nothing unknown and no major holds the exclusive side, else the process
+  exits; a database that does not answer, as while `deploy.sh --db` replaces it, is
+  tried again every check). The upgrade waits for the
   exclusive side (`lease::SchemaHold::exclusive`, in 5 s attempts that give up once
   another process of its release has migrated), which it gets once every older process has exited, migrates,
   downgrades to shared, opens, and only then starts the scheduler. A process starting

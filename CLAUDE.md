@@ -310,7 +310,9 @@ a plain `Operator` and need neither. A set-but-malformed value fails `Config` lo
 everywhere. `About` carries both as `operator_discord` / `operator_email`.
 
 **Release check.** `migrate::run` records the binary's release and commit in
-`instance_release`. A migrating startup decides under the migration lock (`apply`'s
+`instance_release`, and updates `migrate::EXTENSIONS` (`vector`, `pg_trgm`) to the
+server's default version (a failure is a WARN). The pinned `db` image's updates are
+`docs/DEPLOYMENT.md` §8, Database image. A migrating startup decides under the migration lock (`apply`'s
 `Ahead::Skip` branch; `check_startup` when `JUDGE_AUTO_MIGRATE=false`) whether unknown
 migrations are a rollback it can run (`rollback_refusal`, `Error::Rollback`): within a
 major yes, across one, between builds of a new major's pre-release (`X.0.0-*`,
@@ -399,10 +401,16 @@ scripts/deploy.sh [--build]          # blue-green deploy (D29): pull (or build),
                                      # A major (`judgebot ingest upgrade` says): backup if `BACKUP_S3_BUCKET` is
                                      # set, new beside old in maintenance, old stopped once the
                                      # new one listens, then wait for the migration (D32).
-                                     # Every deploy first refuses a set R2_* or a BACKUP_S3_*
-                                     # set twice in .env.deploy, runs `judgebot backup check`
+                                     # Every deploy first refuses a set R2_*, a BACKUP_S3_*
+                                     # set twice in .env.deploy or a db container not on the
+                                     # pinned image (run --db first), runs `judgebot backup check`
                                      # with the new image under the backup profile, and ends
                                      # with `up -d --no-deps backup`
+scripts/deploy.sh --db               # the db's update (docs/DEPLOYMENT.md §8, Database image): pull
+                                     # the pinned pgvector image, refuse another PG major or an
+                                     # older pgvector, backup, recreate db (seconds of outage),
+                                     # then `ingest migrate` in the running judgebot, which runs
+                                     # ALTER EXTENSION … UPDATE (every migrating start does too)
 docker compose pull && docker compose up -d --remove-orphans  # stop-then-start deploy: pulls the
                                      # CI-built GHCR image, never builds; --remove-orphans drops the
                                      # pre-judgebot `bot`/`api` containers (D25)

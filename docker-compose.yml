@@ -23,7 +23,12 @@ x-build: &build
 
 services:
   db:
-    image: pgvector/pgvector:pg16
+    # Pinned to a pgvector release, Postgres major and Debian release, and to
+    # the digest those tags pointed at, so the database changes only when this
+    # line does: Dependabot proposes a new tag or digest (never another
+    # -pgNN), and `scripts/deploy.sh --db` applies it (docs/DEPLOYMENT.md §8,
+    # Database image). The major is the Dockerfile's PG_MAJOR (check.sh lint).
+    image: pgvector/pgvector:0.8.7-pg16-bookworm@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
     container_name: judgebot-db
     restart: unless-stopped
     logging: *bounded-logs

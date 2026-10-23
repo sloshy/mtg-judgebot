@@ -797,6 +797,10 @@ const SCHEMA_WAIT_REPORT: Duration = Duration::from_secs(15);
 /// How often [`SchemaHold::keep`] checks that its session still holds the lock.
 const SCHEMA_CHECK: Duration = Duration::from_secs(10);
 
+/// How often [`SchemaHold::keep`] tries again while the database does not
+/// answer.
+const SCHEMA_OUTAGE_CHECK: Duration = Duration::from_secs(1);
+
 /// How long one attempt at [`SchemaHold::exclusive`] waits in Postgres's queue.
 const SCHEMA_ATTEMPT: Duration = Duration::from_secs(5);
 
@@ -939,20 +943,53 @@ impl SchemaHold {
     /// shared side can be taken again at once and the schema is still one
     /// this binary knows; otherwise a major upgrade may have migrated in the
     /// gap, and the error returned ends the process, whose restart then
-    /// refuses the newer schema. Returns only that error.
+    /// refuses the newer schema. While the database does not answer at all
+    /// (a `db` container being replaced) it tries again every
+    /// [`SCHEMA_OUTAGE_CHECK`] (or as long as the pool takes to give up on a
+    /// connection): nothing can migrate a database nobody reaches, and the
+    /// first answer is checked the same way. A database that answers with an
+    /// error ends the process as a refusal does. Returns only that error.
     pub async fn keep(mut self, pool: &PgPool, process: &'static str) -> anyhow::Error {
+        let mut outage = false;
+        // Migrations pending when the process started (JUDGE_AUTO_MIGRATE=false
+        // allows it) are not a reason to end it; others gone missing are.
+        let pending = match crate::db::migrate::skew(pool).await {
+            Ok(skew) => Some(skew.behind),
+            Err(e) => {
+                tracing::warn!(error = %e, "reading the migration ledger for the schema hold; a database that comes back behind this binary will not be noticed");
+                None
+            }
+        };
         loop {
-            tokio::time::sleep(SCHEMA_CHECK).await;
+            tokio::time::sleep(if outage {
+                SCHEMA_OUTAGE_CHECK
+            } else {
+                SCHEMA_CHECK
+            })
+            .await;
             if self.holds().await {
                 continue;
             }
-            tracing::error!("the schema hold's session is gone; taking the hold again");
-            match Self::retake(pool, process).await {
+            if !outage {
+                tracing::error!("the schema hold's session is gone; taking the hold again");
+            }
+            match Self::retake(pool, process, pending.as_deref()).await {
                 Ok(hold) => {
                     tracing::info!("schema hold taken again; the schema is this release's");
                     self = hold;
+                    outage = false;
                 }
-                Err(e) => {
+                Err(Retake::Unreachable(e)) => {
+                    if !outage {
+                        tracing::warn!(
+                            error = %format!("{e:#}"),
+                            "the database does not answer; trying the schema hold again every {}s",
+                            SCHEMA_OUTAGE_CHECK.as_secs()
+                        );
+                    }
+                    outage = true;
+                }
+                Err(Retake::Refused(e)) => {
                     return e.context(
                         "lost the schema hold, and could not take it again on this release's schema",
                     );
@@ -977,23 +1014,53 @@ impl SchemaHold {
     }
 
     /// The shared side on a fresh session, taken without waiting, and only
-    /// while the database holds no migration this binary does not know.
-    async fn retake(pool: &PgPool, process: &'static str) -> Result<Self> {
-        let mut conn = Self::session(pool).await?;
+    /// while the database's ledger is exactly this binary's: nothing it does
+    /// not know (a newer release migrated it) and nothing it lacks (another
+    /// data volume, or a restore of an older backup, came back in its place).
+    /// `pending` is what the ledger lacked when the process started, which
+    /// is allowed to be missing still (`None`: not checked).
+    async fn retake(
+        pool: &PgPool,
+        process: &'static str,
+        pending: Option<&[i64]>,
+    ) -> Result<Self, Retake> {
+        let mut conn = Self::session(pool).await.map_err(Retake::from)?;
         let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock_shared($1)")
             .bind(SCHEMA_LOCK)
             .fetch_one(&mut conn)
             .await
-            .context("trying the schema hold")?;
-        anyhow::ensure!(free, "a major upgrade holds the schema");
+            .context("trying the schema hold")
+            .map_err(Retake::from)?;
+        if !free {
+            return Err(Retake::Refused(anyhow::anyhow!(
+                "a major upgrade holds the schema"
+            )));
+        }
         let skew = crate::db::migrate::skew(pool)
             .await
-            .context("reading the migration ledger")?;
-        anyhow::ensure!(
-            skew.ahead.is_empty(),
-            "the database now holds migrations this binary does not know ({:?})",
-            skew.ahead
-        );
+            .context("reading the migration ledger")
+            .map_err(Retake::from)?;
+        if !skew.ahead.is_empty() {
+            return Err(Retake::Refused(anyhow::anyhow!(
+                "the database now holds migrations this binary does not know ({:?})",
+                skew.ahead
+            )));
+        }
+        let lost: Vec<i64> = match pending {
+            Some(pending) => skew
+                .behind
+                .iter()
+                .copied()
+                .filter(|v| !pending.contains(v))
+                .collect(),
+            None => Vec::new(),
+        };
+        if !lost.is_empty() {
+            return Err(Retake::Refused(anyhow::anyhow!(
+                "the database now lacks migrations it had ({lost:?}): another data volume or an \
+                 older backup is in its place"
+            )));
+        }
         label::<Schema>(&mut conn, process, Label::Holding).await;
         Ok(Self {
             conn,
@@ -1009,6 +1076,60 @@ impl SchemaHold {
             .detach();
         harden::<Schema>(&mut conn).await?;
         Ok(conn)
+    }
+}
+
+/// Why [`SchemaHold::retake`] did not take the hold.
+#[derive(Debug)]
+enum Retake {
+    /// The database did not answer: try again.
+    Unreachable(anyhow::Error),
+    /// It answered, and the schema may no longer be this binary's, or it
+    /// answered with an error: end.
+    Refused(anyhow::Error),
+}
+
+impl From<anyhow::Error> for Retake {
+    /// [`Self::Unreachable`] when the cause is no answer at all (no
+    /// connection, a dropped one, no pool connection in time, a [`QUICK`]
+    /// bound run out) or the server going away mid-query (SQLSTATE classes
+    /// 57P, shutting down, and 08, connection); [`Self::Refused`] for
+    /// anything else the database said.
+    fn from(e: anyhow::Error) -> Self {
+        let unanswered = e.chain().any(|cause| {
+            if cause.is::<tokio::time::error::Elapsed>() {
+                return true;
+            }
+            let sqlx_error = cause.downcast_ref::<sqlx::Error>().or_else(|| {
+                match cause.downcast_ref::<crate::db::migrate::Error>() {
+                    Some(
+                        crate::db::migrate::Error::Db { error, .. }
+                        | crate::db::migrate::Error::Migrate(sqlx::migrate::MigrateError::Execute(
+                            error,
+                        )),
+                    ) => Some(error),
+                    _ => None,
+                }
+            });
+            match sqlx_error {
+                Some(
+                    sqlx::Error::Io(_)
+                    | sqlx::Error::Tls(_)
+                    | sqlx::Error::PoolTimedOut
+                    | sqlx::Error::PoolClosed
+                    | sqlx::Error::WorkerCrashed,
+                ) => true,
+                Some(sqlx::Error::Database(db)) => db
+                    .code()
+                    .is_some_and(|c| c.starts_with("57P") || c.starts_with("08")),
+                _ => false,
+            }
+        });
+        if unanswered {
+            Self::Unreachable(e)
+        } else {
+            Self::Refused(e)
+        }
     }
 }
 
@@ -1705,6 +1826,51 @@ mod tests {
         terminate(&pool, again).await?;
         let lost = tokio::time::timeout(SCHEMA_CHECK * 3, kept).await??;
         assert!(format!("{lost:#}").contains("does not know"), "{lost:#}");
+        Ok(())
+    }
+
+    /// A database that does not answer is tried again (the process goes on,
+    /// as through a `db` container's replacement); one that answers with a
+    /// major upgrade holding the schema ends it.
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_retake_waits_out_an_unreachable_database_only(pool: PgPool) -> Result<()> {
+        let nowhere = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(2))
+            .connect_lazy("postgres://judgebot@127.0.0.1:1/judgebot")?;
+        assert!(
+            matches!(
+                SchemaHold::retake(&nowhere, "keeper", Some(&[])).await,
+                Err(Retake::Unreachable(_))
+            ),
+            "an unreachable database is tried again"
+        );
+        let major = SchemaHold::exclusive(&pool, "new", || async { true })
+            .await?
+            .context("the exclusive side, with nobody else holding")?;
+        assert!(
+            matches!(
+                SchemaHold::retake(&pool, "keeper", Some(&[])).await,
+                Err(Retake::Refused(_))
+            ),
+            "a major upgrade holding the schema ends the process"
+        );
+        drop(major);
+        // Another data volume, or an older backup, in the database's place.
+        let last: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await?;
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+            .bind(last)
+            .execute(&pool)
+            .await?;
+        match SchemaHold::retake(&pool, "keeper", Some(&[])).await {
+            Err(Retake::Refused(e)) => assert!(format!("{e:#}").contains("lacks"), "{e:#}"),
+            other => anyhow::bail!("a ledger behind this binary ends the process, got {other:?}"),
+        }
+        // A migration pending since the process started (JUDGE_AUTO_MIGRATE=false)
+        // is no reason to end it.
+        let kept = SchemaHold::retake(&pool, "keeper", Some(&[last])).await;
+        assert!(kept.is_ok(), "{kept:?}");
         Ok(())
     }
 }

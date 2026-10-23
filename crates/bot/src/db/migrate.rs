@@ -26,6 +26,12 @@
 //! startup skips with a warning so the rollback still boots (the runbook says
 //! when an older binary cannot run against a newer schema at all).
 //!
+//! After the migrations it brings each extension they create ([`EXTENSIONS`])
+//! up to the version the server's files carry (`ALTER EXTENSION … UPDATE`): a
+//! new `db` image ships a new pgvector library, but the extension's SQL objects
+//! stay at the version that created them until updated. A failure there is a
+//! WARN, never a failed run: the old objects keep working with the new library.
+//!
 //! For the whole run it holds the exclusive side of [`CALLS_REWRITE_LOCK`]
 //! on a dedicated connection, the key the CR loader, the retirement pass,
 //! `reembed` and every vector write take, so a refresh that fires
@@ -76,6 +82,27 @@ pub struct Report {
     /// Versions in the ledger this binary does not know (non-empty only with
     /// [`Ahead::Skip`], and then nothing was applied).
     pub ahead: Vec<i64>,
+    /// Extensions this run updated, in [`EXTENSIONS`] order.
+    pub extensions: Vec<ExtensionUpdate>,
+}
+
+/// The extensions the migrations create, which [`run`] keeps at the version
+/// the server's files carry, each with its update (an identifier cannot be a
+/// bind parameter, so the statement is a constant).
+pub const EXTENSIONS: [(&str, &str); 2] = [
+    ("vector", "ALTER EXTENSION vector UPDATE"),
+    ("pg_trgm", "ALTER EXTENSION pg_trgm UPDATE"),
+];
+
+/// One extension moved to the version the server's files carry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionUpdate {
+    /// Its name, one of [`EXTENSIONS`].
+    pub name: &'static str,
+    /// The version it was at.
+    pub from: String,
+    /// The version it is at now.
+    pub to: String,
 }
 
 /// Why a run failed, spelled out for the operator reading a crash log.
@@ -212,6 +239,7 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
                     applied: Vec::new(),
                     already: before.len(),
                     ahead: unknown,
+                    extensions: Vec::new(),
                 });
             }
         }
@@ -238,6 +266,7 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
     } else {
         tracing::info!(?applied, in_place = after.len(), "schema migrated");
     }
+    let extensions = update_extensions(conn).await;
     // The binary carries every migration in the ledger, so the database is
     // now this release's (`instance_release`, which client tools compare with).
     let release = Release::this_build().to_string();
@@ -257,7 +286,94 @@ async fn apply(conn: &mut PgConnection, ahead: Ahead) -> Result<Report, Error> {
         applied,
         already: before.len(),
         ahead: Vec::new(),
+        extensions,
     })
+}
+
+/// `ALTER EXTENSION … UPDATE` for each of [`EXTENSIONS`] whose installed
+/// version is not the server's default (the one its files carry). Never fails
+/// the run, but says what it found:
+///
+/// * an extension the server has no files for (a `db` image without
+///   pgvector): ERROR, since every query that uses it fails;
+/// * no update path from the installed version to the server's (an image
+///   older than the extension, which has no path down): ERROR, since the
+///   older library may lack what the newer SQL objects call. The path, not
+///   the versions the server lists: pgvector ships install scripts for its
+///   current version only, with update scripts from every earlier one;
+/// * an update that fails (a role that does not own the extension, as on a
+///   managed server): WARN, since the older objects keep working with the
+///   newer library.
+async fn update_extensions(conn: &mut PgConnection) -> Vec<ExtensionUpdate> {
+    let rows: Vec<(String, String, Option<String>, bool)> = match sqlx::query_as(
+        // pg_extension_update_paths raises for an extension with no control
+        // file, so it is asked only about one the server has files for.
+        "SELECT e.extname::text, e.extversion, a.default_version, \
+                CASE WHEN a.default_version IS NULL THEN false ELSE \
+                  EXISTS (SELECT 1 FROM pg_extension_update_paths(e.extname) p \
+                          WHERE p.source = e.extversion AND p.target = a.default_version \
+                            AND p.path IS NOT NULL) END \
+         FROM pg_extension e LEFT JOIN pg_available_extensions a ON a.name = e.extname \
+         WHERE e.extname = ANY($1)",
+    )
+    .bind(EXTENSIONS.map(|(name, _)| name))
+    .fetch_all(&mut *conn)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "reading the extensions' versions; not updating them");
+            return Vec::new();
+        }
+    };
+    let mut updated = Vec::new();
+    for (name, update) in EXTENSIONS {
+        let Some((_, from, available, has_path)) = rows.iter().find(|(n, ..)| n == name) else {
+            continue;
+        };
+        let Some(to) = available else {
+            tracing::error!(
+                extension = name,
+                installed = %from,
+                "the database image has no files for this extension, so every query using it fails: \
+                 run the pgvector image docker-compose.yml pins (docs/DEPLOYMENT.md §8, Database image)"
+            );
+            continue;
+        };
+        if from == to {
+            continue;
+        }
+        if !has_path {
+            tracing::error!(
+                extension = name,
+                installed = %from,
+                available = %to,
+                "the database image is older than the extension, which has no way back down, and its \
+                 library may lack what the extension calls: run an image carrying the installed version \
+                 or newer, or restore the backup taken before the update (docs/DEPLOYMENT.md §8, Database image)"
+            );
+            continue;
+        }
+        match sqlx::query(update).execute(&mut *conn).await {
+            Ok(_) => {
+                tracing::info!(extension = name, %from, %to, "extension updated");
+                updated.push(ExtensionUpdate {
+                    name,
+                    from: from.clone(),
+                    to: to.clone(),
+                });
+            }
+            Err(e) => tracing::warn!(
+                extension = name,
+                installed = %from,
+                available = %to,
+                error = %e,
+                "could not update the extension to the version the database image carries; \
+                 it keeps working at the installed one (docs/DEPLOYMENT.md §8, Database image)"
+            ),
+        }
+    }
+    updated
 }
 
 /// The ledger's versions this binary does not carry: the database was
@@ -654,6 +770,44 @@ mod tests {
         MIGRATOR.iter().map(|m| m.version).collect()
     }
 
+    /// An extension created at an older version than the server's files carry
+    /// (what a new `db` image leaves) is updated by the next run, once; the
+    /// migration's `CREATE EXTENSION IF NOT EXISTS` alone would leave it.
+    #[sqlx::test(migrations = false)]
+    async fn a_run_updates_an_extension_behind_the_servers_files(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let default: String = sqlx::query_scalar(
+            "SELECT default_version FROM pg_available_extensions WHERE name = 'pg_trgm'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        // pg_trgm installs at 1.3 and updates from there on every supported server.
+        anyhow::ensure!(default != "1.3", "the server's pg_trgm is 1.3 already");
+        sqlx::query("CREATE EXTENSION pg_trgm VERSION '1.3'")
+            .execute(&pool)
+            .await?;
+
+        let first = run(&pool, Ahead::Refuse).await?;
+        assert_eq!(
+            first.extensions,
+            vec![ExtensionUpdate {
+                name: "pg_trgm",
+                from: "1.3".to_owned(),
+                to: default.clone(),
+            }]
+        );
+        let now: String =
+            sqlx::query_scalar("SELECT extversion FROM pg_extension WHERE extname = 'pg_trgm'")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(now, default);
+
+        let second = run(&pool, Ahead::Refuse).await?;
+        assert!(second.extensions.is_empty(), "{:?}", second.extensions);
+        Ok(())
+    }
+
     /// The read-only check: no ledger is behind everything, a migrated one
     /// is current, and an unknown version is ahead. It creates nothing.
     #[sqlx::test(migrations = false)]
@@ -709,7 +863,8 @@ mod tests {
             Report {
                 applied: Vec::new(),
                 already: all_versions().len(),
-                ahead: Vec::new()
+                ahead: Vec::new(),
+                extensions: Vec::new(),
             }
         );
         Ok(())

@@ -343,20 +343,20 @@ png_size() {
 }
 
 # The image's pg_dump (Dockerfile ARG PG_MAJOR) must be the major of the
-# compose `db` image (pgvector/pgvector:pgNN): pg_dump refuses a newer server,
+# compose `db` image (pgvector/pgvector:<release>-pgNN-<debian>@<digest>): pg_dump refuses a newer server,
 # so a db bumped alone makes every backup fail, and the backup service only
 # finds out at runtime, on the operator's host. Equal rather than "at least",
 # so the two are bumped together on purpose.
 check_pg_major() {
   local built served
   built="$(sed -nE 's/^ARG PG_MAJOR=([0-9]+)$/\1/p' Dockerfile)"
-  served="$(sed -nE 's#^ *image: pgvector/pgvector:pg([0-9]+)$#\1#p' docker-compose.yml)"
+  served="$(sed -nE 's#^ *image: pgvector/pgvector:([0-9.]+-)?pg([0-9]+)(-[a-z]+)?(@sha256:[0-9a-f]{64})?$#\2#p' docker-compose.yml)"
   if [ -z "$built" ] || [ -z "$served" ]; then
     echo "PG_MAJOR in Dockerfile (${built:-not found}) or the db image in docker-compose.yml (${served:-not found}) is missing" >&2
     return 1
   fi
   if [ "$built" != "$served" ]; then
-    echo "Dockerfile PG_MAJOR=$built, but docker-compose.yml's db is pgvector/pgvector:pg$served: bump them together" >&2
+    echo "Dockerfile PG_MAJOR=$built, but docker-compose.yml's db is Postgres $served: bump them together" >&2
     return 1
   fi
 }

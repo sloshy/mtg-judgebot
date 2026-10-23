@@ -53,5 +53,8 @@ pub async fn migrate(pool: &PgPool) -> Result<Report> {
             r.already + r.applied.len()
         );
     }
+    for e in &r.extensions {
+        println!("updated extension {} from {} to {}", e.name, e.from, e.to);
+    }
     Ok(r)
 }

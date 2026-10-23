@@ -39,12 +39,12 @@ updates:
   - package-ecosystem: docker
     directory: /
     schedule: { interval: weekly }
-  # docker-compose.yml's third-party images (caddy, cloudflared); the
-  # judgebot image is a variable and is skipped.
+  # docker-compose.yml's third-party images: caddy, cloudflared and the db
+  # (pgvector/pgvector:<release>-pg16-bookworm@<digest>). Dependabot moves a
+  # tag only to one with the same suffix, so the db's PRs stay on Postgres 16
+  # and bookworm; a major is a dump and restore, by hand (docs/DEPLOYMENT.md §8,
+  # Database image). A merged db PR takes `scripts/deploy.sh --db` on the host.
+  # The judgebot image is a variable and is skipped.
   - package-ecosystem: docker-compose
     directory: /
     schedule: { interval: weekly }
-    ignore:
-      # The db's major must equal the Dockerfile's PG_MAJOR (check_pg_major), and a
-      # major upgrade needs a dump and restore, so it is bumped by hand.
-      - dependency-name: pgvector/pgvector

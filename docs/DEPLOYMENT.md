@@ -1706,6 +1706,102 @@ A major release's migrations wait for the previous release to stop, so with
 setting off before it changes anything, since the new container would never migrate,
 and names these steps. Run it again once `migrate` has run: it then deploys in place.
 
+### Database image
+
+The `db` service's image is pinned in `docker-compose.yml` to a pgvector release, a
+Postgres major, a Debian release and the digest those tags pointed at
+(`pgvector/pgvector:0.8.7-pg16-bookworm@sha256:…`). The database changes only when that
+line does, and `scripts/deploy.sh --db` is what applies a changed line. A code deploy
+(`scripts/deploy.sh`) refuses while the `db` container runs another image than the line
+names, because its `docker compose up` would recreate the database without `--db`'s
+checks. The stop-then-start deploy (`docker compose pull && docker compose up -d`) does
+recreate it, with none of them.
+
+**Minor updates.** A Postgres minor (16.x, security fixes, about quarterly) or a pgvector
+release reaches the repository as a Dependabot pull request that changes the line. CI runs
+the tests on the new image. Once it is merged, on the host:
+
+```sh
+git pull
+scripts/deploy.sh --db
+```
+
+`--db` pulls the pinned image and refuses it before changing anything when it is another
+Postgres major than the data directory, or carries an older pgvector than the database's
+`vector` extension. It takes a backup when one is configured (`DEPLOY_SKIP_BACKUP=1`
+skips it), recreates the `db` container and waits for it to be healthy. There is one
+database, so this is an outage of a few seconds: answers in flight fail, and `judgebot`
+reconnects on its own. Last, the running `judgebot`'s `judgebot ingest migrate` updates
+the extensions (`ALTER EXTENSION … UPDATE`). A new pgvector library runs the extension's
+older SQL objects, but its new functions and fixes need the update. Every startup that
+migrates does the same, and an update that fails (a role that does not own the
+extension) is a WARN, not a failed start. With `JUDGE_AUTO_MIGRATE=false` the script
+prints the command instead of running it.
+
+Without the script, the same steps by hand:
+
+```sh
+docker compose run --rm --no-deps backup run   # or scripts/backup-db.sh
+docker compose pull db && docker compose up -d --no-deps db
+docker compose exec judgebot judgebot ingest migrate
+```
+
+pgvector has no update path down. Going back to an older pgvector image after its
+extension has been updated means restoring the backup taken before it. A Postgres minor
+can go back by reverting the line and running `--db` again.
+
+**A new Postgres major** (16 to 17, say) cannot open the old major's data directory.
+`--db` refuses it, and Dependabot never proposes one. Postgres 16 is supported until
+November 2028. The upgrade is a dump and a restore into a new data volume, with
+`judgebot` stopped:
+
+1. Read the new major's release notes, and check that the pgvector image publishes a tag
+   for it. Postgres 18's images keep their data in `/var/lib/postgresql/18/docker` and
+   expect the volume on `/var/lib/postgresql`, so the `db` service's volume line moves
+   with it.
+2. In the repository, change the `db` image to the new major's pinned tag and digest,
+   and the `Dockerfile`'s `ARG PG_MAJOR` to the same major (`scripts/check.sh lint`
+   fails while they differ). The image's `pg_dump` is that major's, and it refuses to
+   dump a newer server, so the new `judgebot` image must be built (CI publishes it on
+   push) before anything backs up the new database.
+3. On the host, take a backup, stop everything that writes to the database, then take
+   the local dump, so that nothing written after it is lost:
+
+   ```sh
+   docker compose run --rm --no-deps backup run
+   docker compose stop judgebot backup
+   docker compose exec -T db pg_dump -U judgebot -Fc judgebot > pre-major.dump
+   docker compose stop db
+   ```
+
+4. Copy the old data volume aside, so the way back needs no restore, then remove the
+   original:
+
+   ```sh
+   vol="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' judgebot-db)"
+   docker volume create "$vol-old"
+   docker run --rm -v "$vol":/from -v "$vol-old":/to alpine cp -a /from/. /to/
+   docker compose rm -f db && docker volume rm "$vol"
+   ```
+
+5. Pull the new images, start the new major on an empty volume and restore the dump into
+   it. The restore recreates the extensions at the image's versions:
+
+   ```sh
+   git pull && docker compose pull db judgebot
+   docker compose up -d db                  # wait for docker compose ps db: healthy
+   docker compose exec -T db pg_restore -U judgebot -d judgebot --exit-on-error < pre-major.dump
+   docker compose exec -T db psql -U judgebot -c "select count(*) from cards;"
+   ```
+
+6. Start the rest (`docker compose up -d`) and run the restore drill (§6) once, which
+   proves the new `pg_dump` can dump the new server.
+
+To go back before anything new is written, stop `db`, remove the new volume, copy
+`$vol-old` back into a fresh `$vol` the same way, and check out the previous
+`docker-compose.yml` and `Dockerfile`. Remove `$vol-old` and `pre-major.dump` once the
+new major has run for a while.
+
 ### Private package pulls
 
 The upstream package is public and needs no login. A fork's package has the
@@ -1790,8 +1886,10 @@ scheduled refresh stays paused while it is (§7): the data is not refreshed unti
 image and the schema match again. An image from before the built-in schedule refreshes
 nothing by itself, so a rollback that far needs the cron entry of §7 until you upgrade.
 
-`edge`, `cloudflared` and `db` are untouched by a code deploy. The tunnel reconnects
-on its own if the connector restarts.
+`edge` and `cloudflared` are untouched by a code deploy. The tunnel reconnects on its own
+if the connector restarts. `db` is too, unless its line in `docker-compose.yml` changed:
+`scripts/deploy.sh` then refuses until `scripts/deploy.sh --db` has applied it (Database
+image, above).
 
 ## 9. Troubleshooting
 

@@ -50,12 +50,15 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # The migrations create the `vector` and `pg_trgm` extensions, so this
-      # must be the pgvector image, not stock postgres. #[sqlx::test] creates a
-      # throwaway database per test off DATABASE_URL.
+      # must be the pgvector image, not stock postgres: the one docker-compose.yml's
+      # `db` runs, pinned there. #[sqlx::test] creates a throwaway database per
+      # test off DATABASE_URL.
       - name: Start Postgres with pgvector
         run: |
+          image="$(sed -nE 's#^ *image: (pgvector/pgvector:[^ ]+)$#\1#p' docker-compose.yml)"
+          [ -n "$image" ] || { echo "no pgvector image in docker-compose.yml" >&2; exit 1; }
           for attempt in 1 2 3; do
-            docker pull pgvector/pgvector:pg16 && break
+            docker pull "$image" && break
             [ "$attempt" = 3 ] && exit 1
             sleep $((attempt * 15))
           done
@@ -63,7 +66,7 @@ jobs:
             -e POSTGRES_USER=judgebot -e POSTGRES_PASSWORD=judgebot -e POSTGRES_DB=judgebot \
             --health-cmd "pg_isready -U judgebot" --health-interval 5s \
             --health-timeout 5s --health-retries 20 \
-            pgvector/pgvector:pg16
+            "$image"
           for _ in $(seq 40); do
             [ "$(docker inspect -f '{{.State.Health.Status}}' postgres)" = healthy ] && exit 0
             sleep 3

@@ -6,6 +6,8 @@
 #
 #   scripts/deploy.sh            pull the image JUDGE_IMAGE_TAG names, then switch
 #   scripts/deploy.sh --build    build it from this checkout instead (a dev host)
+#   scripts/deploy.sh --db       replace the db container with the image
+#                                docker-compose.yml pins (see the end)
 #
 # The new container migrates the schema as it starts. A release's migrations
 # keep the previous release working, so the old container goes on answering
@@ -40,6 +42,19 @@
 # Once the deploy has succeeded, the `backup` service is brought up to date
 # (`up -d --no-deps backup`: the new image and the current .env.deploy). It
 # holds no state but the bucket, and a backup cut short uploads nothing.
+#
+# --db is the database's update (docs/DEPLOYMENT.md §8, Database image): a new
+# Postgres minor or pgvector release, pinned in docker-compose.yml. It pulls
+# that image, refuses one of another Postgres major than the data directory
+# (that is a dump and restore), takes a backup when one is configured
+# (DEPLOY_SKIP_BACKUP=1 skips it), recreates the db container and waits for it
+# to be healthy. There is one database, so this is a short outage: answers in
+# flight fail, and judgebot reconnects on its own. Then the running judgebot's
+# `judgebot ingest migrate` brings the extensions up to the image's version
+# (with JUDGE_AUTO_MIGRATE=false it prints that command instead). Nothing else
+# is touched; a db already on the pinned image only has its extensions checked.
+# A code deploy refuses while the db container runs another image than the
+# pinned one, since its `up` would recreate the db without these checks.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -68,6 +83,10 @@ finish() {
     kept="the old container was being stopped and the new one is serving; check docker compose ps"
   elif [ "$stage" = major ]; then
     kept="this was a major upgrade and the old container has stopped, so nothing is serving questions; the database may be partly migrated. Check docker compose logs $service; to go back, restore the backup taken before it and deploy the previous release (docs/DEPLOYMENT.md, Rolling back)"
+  elif [ "$stage" = db ]; then
+    kept="the db container was being replaced, so nothing can answer until it is healthy; check docker compose ps db and docker compose logs db (the backup taken first, if one is configured, is the way back)"
+  elif [ "$stage" = extensions ]; then
+    kept="the new db container is healthy and serving, but updating its extensions failed; run docker compose exec judgebot judgebot ingest migrate"
   elif [ "$stage" = backup ]; then
     kept="the new container is serving, but the backup service could not be brought up to date; check docker compose ps backup and docker compose logs backup"
   elif [ "$stage" = proxy ]; then
@@ -125,7 +144,142 @@ fi
 backup=""
 docker compose config --services 2>/dev/null | grep -qx backup && backup=backup
 
+# --db: the database's update, described at the top. Exits when done.
+deploy_db() {
+  local before image pulled running_id data_major image_major judge after deadline started out
+  mapfile -t before < <(docker compose ps -q db)
+  if [ "${#before[@]}" -ne 1 ]; then
+    stage=refused
+    die "the db service is not running (docker compose ps db): start it with docker compose up -d db; there is nothing to replace"
+  fi
+  image="$(docker compose config --images db)"
+  [ -n "$image" ] || die "docker-compose.yml names no image for db"
+  log "pulling the db image ($image)"
+  docker compose pull db
+  pulled="$(docker image inspect -f '{{.Id}}' "$image")"
+  running_id="$(docker inspect -f '{{.Image}}' "${before[0]}")"
+  # A new major cannot open the old one's data directory: it would refuse to
+  # start, with the old container already gone.
+  # shellcheck disable=SC2016 # $PGDATA is the container's
+  data_major="$(docker exec "${before[0]}" sh -c 'cat "$PGDATA/PG_VERSION"' 2>/dev/null || true)"
+  image_major="$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$image" | sed -n 's/^PG_MAJOR=//p')"
+  if [ -z "$data_major" ] || [ -z "$image_major" ]; then
+    stage=refused
+    die "could not read the data directory's Postgres major (${data_major:-unknown}) or the image's (${image_major:-unknown}); nothing was changed"
+  fi
+  if [ "$data_major" != "$image_major" ]; then
+    stage=refused
+    die "the pinned db image is Postgres $image_major and the data directory is Postgres $data_major: a major upgrade is a dump and restore (docs/DEPLOYMENT.md §8, Database image); nothing was changed"
+  fi
+
+  # pgvector has no update path down: an extension already updated past the
+  # image's release would not load. Read from the tag; a tag without a
+  # release (a floating pgNN) is not checked.
+  local tag_vector installed_vector
+  tag_vector="$(sed -nE 's#^pgvector/pgvector:([0-9]+(\.[0-9]+)*)-.*#\1#p' <<<"$image")"
+  installed_vector="$(docker exec "${before[0]}" psql -U judgebot -d judgebot -tAc \
+    "SELECT extversion FROM pg_extension WHERE extname = 'vector'" 2>/dev/null || true)"
+  if [ -n "$tag_vector" ] && [ -n "$installed_vector" ] && [ "$tag_vector" != "$installed_vector" ] &&
+    [ "$(printf '%s\n%s\n' "$tag_vector" "$installed_vector" | sort -V | head -n 1)" = "$tag_vector" ]; then
+    stage=refused
+    die "the pinned db image carries pgvector $tag_vector, older than the database's vector extension ($installed_vector), which has no way back down: pin $installed_vector or newer, or restore the backup taken before the update (docs/DEPLOYMENT.md §8, Database image); nothing was changed"
+  fi
+  if [ -z "$tag_vector" ] || [ -z "$installed_vector" ]; then
+    log "not checking the image's pgvector against the database's (image release ${tag_vector:-not in the tag}, extension ${installed_vector:-not read})"
+  fi
+
+  mapfile -t judge < <(docker compose ps -q "$service")
+  if [ "${#judge[@]}" -gt 1 ]; then
+    stage=refused
+    die "${#judge[@]} $service containers are running, so an earlier deploy did not finish; stop all but one (docker ps), then run this again"
+  fi
+
+  if [ "$pulled" = "$running_id" ]; then
+    log "the db container already runs the pinned image"
+  else
+    # A refresh cut off by the outage fails, alerts and backs off for an
+    # hour; waiting for it costs nothing.
+    local refreshing
+    # The lease's lock (judge_bot::lease::REFRESH_LOCK, as pg_locks splits
+    # it), named by its session's label when it has one.
+    refreshing="$(docker exec "${before[0]}" psql -U judgebot -d judgebot -tAc \
+      "SELECT string_agg(coalesce(nullif(a.application_name, ''), 'pid ' || l.pid), ', ') FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 1 AND l.classid = 1786078311 AND l.objid = 1701995878" 2>/dev/null || true)"
+    if [ -n "$refreshing" ]; then
+      stage=refused
+      die "a data refresh is running ($refreshing); run this again once it has finished (docker compose logs $service); nothing was changed"
+    fi
+    if [ "${DEPLOY_SKIP_BACKUP:-}" = 1 ]; then
+      log "DEPLOY_SKIP_BACKUP=1: no backup taken first"
+    elif [ -f .env.deploy ] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?BACKUP_S3_BUCKET=.+' .env.deploy; then
+      log "taking a backup first"
+      docker compose run --rm --no-deps backup run ||
+        die "the backup before replacing the db container failed; fix it, or run this with DEPLOY_SKIP_BACKUP=1 to go on without one"
+    else
+      log "no backup configured (.env.deploy BACKUP_S3_BUCKET): going on without one (docs/DEPLOYMENT.md §6)"
+    fi
+    stage=db
+    log "replacing the db container (answers in flight fail; judgebot reconnects)"
+    docker compose up -d --no-deps db
+    after="$(docker compose ps -q db)"
+    [ -n "$after" ] || die "the new db container did not start"
+    started=$SECONDS
+    deadline=$((SECONDS + wait_secs))
+    last_progress=0
+    until [ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$after" 2>/dev/null)" = healthy ]; do
+      progress "$started" "the new db container is not healthy yet"
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        docker logs --tail 40 "$after" >&2 2>&1 || true
+        die "the new db container was not healthy within ${wait_secs}s (its log is above)"
+      fi
+      sleep 2
+    done
+    log "the new db container is healthy"
+  fi
+
+  stage=extensions
+  if [ "${#judge[@]}" -eq 0 ]; then
+    # Its next start updates them (the startup migration does).
+    log "no $service container is running: its next start updates the extensions"
+  else
+    # A process that lost the Discord gateway too slowly may have exited and
+    # be restarting; its startup migration updates them too, but wait for it.
+    started=$SECONDS
+    deadline=$((SECONDS + wait_secs))
+    last_progress=0
+    until [ "$(docker inspect -f '{{.State.Running}} {{.State.Restarting}}' "${judge[0]}" 2>/dev/null)" = "true false" ]; do
+      progress "$started" "the $service container is not running"
+      [ "$SECONDS" -lt "$deadline" ] || die "the $service container was not running within ${wait_secs}s of the database's replacement: docker compose ps $service"
+      sleep 2
+    done
+    out="$(docker exec "${judge[0]}" judgebot ingest upgrade </dev/null 2>/dev/null || true)"
+    if ! grep -q '^upgrade: ' <<<"$out"; then
+      die "the $service container did not say whether it migrates (judgebot ingest upgrade), so its extensions were not updated: docker compose exec $service judgebot ingest migrate, unless JUDGE_AUTO_MIGRATE=false"
+    elif grep -qx 'auto-migrate: off' <<<"$out"; then
+      log "JUDGE_AUTO_MIGRATE=false: update the extensions with your migrations, docker compose exec $service judgebot ingest migrate"
+    else
+      log "updating the extensions to the image's version"
+      docker exec "${judge[0]}" judgebot ingest migrate </dev/null
+    fi
+  fi
+  stage=after
+  log "the database: $(docker compose exec -T db psql -U judgebot -d judgebot -tAc \
+    "SELECT current_setting('server_version') || ', ' || string_agg(extname || ' ' || extversion, ', ' ORDER BY extname) FROM pg_extension WHERE extname IN ('vector', 'pg_trgm')" 2>/dev/null || echo unknown)"
+  exit 0
+}
+
+# A line every 30 s while a wait goes on, so a long one is not mistaken for
+# a hang: `progress <started> <what>`.
+progress() {
+  local waited=$((SECONDS - $1)) bucket
+  bucket=$((waited / 30))
+  if [ "$bucket" -gt 0 ] && [ "$bucket" != "${last_progress:-0}" ]; then
+    last_progress=$bucket
+    log "still waiting (${waited}s): $2"
+  fi
+}
+
 case "${1:-}" in
+  --db) deploy_db ;;
   "")
     log "pulling the $service image"
     docker compose pull "$service"
@@ -138,11 +292,20 @@ case "${1:-}" in
       docker compose build "$service"
     ;;
   -h | --help)
-    sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
     exit 0
     ;;
-  *) die "unknown argument '$1' (scripts/deploy.sh [--build])" ;;
+  *) die "unknown argument '$1' (scripts/deploy.sh [--build | --db])" ;;
 esac
+
+# A db line changed in docker-compose.yml (a merged Dependabot pull request)
+# is applied by --db alone, with its checks: any `up` here would recreate the
+# db with none of them.
+db_container="$(docker compose ps -a -q db | head -n 1)"
+if [ -n "$db_container" ] && [ "$(docker inspect -f '{{.Config.Image}}' "$db_container")" != "$(docker compose config --images db)" ]; then
+  stage=refused
+  die "docker-compose.yml pins a db image the db container does not run yet ($(docker compose config --images db)): run scripts/deploy.sh --db first, then this again"
+fi
 
 mapfile -t running < <(docker compose ps -q "$service")
 case "${#running[@]}" in
@@ -206,7 +369,7 @@ if [ "$upgrade" != in-place ]; then
     log "a major upgrade, and DEPLOY_SKIP_BACKUP=1: no backup taken first"
   elif [ -f .env.deploy ] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?BACKUP_S3_BUCKET=.+' .env.deploy; then
     log "a major upgrade: taking a backup first"
-    docker compose run --rm backup run ||
+    docker compose run --rm --no-deps backup run ||
       die "the backup before a major upgrade failed; fix it, or deploy with DEPLOY_SKIP_BACKUP=1 to go on without one"
   else
     log "a major upgrade and no backup configured (.env.deploy BACKUP_S3_BUCKET): it cannot be rolled back without one (docs/DEPLOYMENT.md §6)"
@@ -229,16 +392,6 @@ abandon() {
   exit 1
 }
 
-# A line every 30 s while a wait goes on, so a long one is not mistaken for
-# a hang: `progress <started> <what>`.
-progress() {
-  local waited=$((SECONDS - $1)) bucket
-  bucket=$((waited / 30))
-  if [ "$bucket" -gt 0 ] && [ "$bucket" != "${last_progress:-0}" ]; then
-    last_progress=$bucket
-    log "still waiting (${waited}s): $2"
-  fi
-}
 
 # The new container's state, or abandon when it has exited or restarted.
 inspect() {

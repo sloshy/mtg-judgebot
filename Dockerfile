@@ -69,7 +69,7 @@ RUN cargo build --release -p judgebot -p judge-agent -p judge-configure --featur
 # pg_dump for `judgebot backup` (the `backup` compose service), from the
 # PostgreSQL project's own Debian repository (PGDG): bookworm's own client is
 # 15, and pg_dump refuses a server newer than itself. PG_MAJOR is the major of
-# docker-compose.yml's `db` image (pgvector/pgvector:pg16); `scripts/check.sh
+# docker-compose.yml's `db` image (pgvector/pgvector:…-pg16-…); `scripts/check.sh
 # lint` fails when the two differ.
 # The repository's signing key is pinned by checksum, so a key swapped on
 # the server (or in transit) fails the build instead of being trusted. It is

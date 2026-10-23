@@ -334,6 +334,16 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   the tunnel, and `scripts/deploy.sh` checks and starts `edge` when the profile is on.
   Every rate limit now counts an IPv6 visitor by its /64 rather than the full address.
   Caddy finishes the requests in flight for up to 70 s when `proxy` or `edge` stops.
+- **`scripts/deploy.sh --db`** updates the database to the image `docker-compose.yml`
+  pins: a Postgres minor or a pgvector release, with a few seconds' outage. It refuses
+  another Postgres major or an older pgvector before changing anything, takes a backup
+  when one is configured, and updates the extensions afterwards. A code deploy refuses
+  while the `db` container runs another image than the compose file pins. A new Postgres major's
+  dump-and-restore runbook is in `docs/DEPLOYMENT.md` §8, Database image.
+- **Extensions follow the database image.** Every migrating start (and
+  `judgebot ingest migrate`) updates `vector` and `pg_trgm` to the version the database
+  image carries. A new pgvector image used to leave the extension at the version that
+  created it.
 
 ### Changed
 
@@ -499,6 +509,14 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   used to log `refresh step ok`. `emoji` with no `DISCORD_TOKEN` was already logged as
   skipped.
 - **Building from source needs Rust 1.99** (`rust-toolchain.toml`, the `Dockerfile`).
+- **The `db` image is pinned** to `pgvector/pgvector:0.8.7-pg16-bookworm` and its digest,
+  instead of the floating `pg16`, so the database changes only when the compose file
+  does. Run `scripts/deploy.sh --db` once after upgrading to move onto it.
+- **Caddy 2.11.7** for `proxy` and `edge`, and **cloudflared 2026.10.3** for the tunnel.
+- **A running `judgebot` waits out a database outage.** It used to exit when the database
+  was gone for more than about 30 s (its schema hold could not be taken again), and
+  restart until the database answered. A database that comes back without this
+  release's migrations (another data volume, an older backup) now ends it.
 
 ### Fixed
 
