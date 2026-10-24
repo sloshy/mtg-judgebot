@@ -540,6 +540,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Fixed
 
+- **Newly spoiled cards load.** Scryfall lists a fresh preview with an empty `games`
+  list until it knows where the card will be played, and the card step read that as
+  digital-only and dropped it, so the newest spoilers could not be asked about however
+  often the data refreshed. An empty list now counts as paper unless Scryfall marks
+  the printing digital.
 - **A card's epithet names it.** The words after the comma in a legendary card's name now
   resolve on their own when they are two words or more: "Nimble Pilferer" is Ragavan.
   When another card's name holds the same words, the bot asks: "Grand Arbiter" offers

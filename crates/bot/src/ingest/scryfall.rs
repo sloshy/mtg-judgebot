@@ -11,13 +11,15 @@
 //!    objects, and Un-set augment/host cards whose text is not self-contained);
 //! 2. its `set_type` is one of `token`, `memorabilia`, `minigame`, `alchemy`
 //!    (Alchemy sets only contain rebalanced `A-` digital cards);
-//! 3. its `games` list is present and does not contain `"paper"` **and** no
+//! 3. its `games` list names a platform but not `"paper"` **and** no
 //!    printing in `default_cards` is on paper either (digital-only cards:
 //!    Arena/MTGO exclusives and rebalanced `A-` cards). The representative
 //!    printing in `oracle_cards` is often an MTGO Masters Edition one for cards
 //!    that exist on paper (Black Lotus, Tundra, ...), so paper availability is
-//!    decided per oracle id, not per printing. A missing `games` list is
-//!    treated as paper;
+//!    decided per oracle id, not per printing. A missing or empty `games` list
+//!    is treated as paper, unless the printing's `digital` flag is set:
+//!    Scryfall leaves the list empty on a newly previewed card until it knows
+//!    where the card will be played;
 //! 4. it has no `oracle_id` (neither top-level nor on any face).
 //!
 //! Everything else is kept, including `funny` sets: acorn cards are real cards a
@@ -145,6 +147,10 @@ struct ScryfallCard {
     set_type: String,
     #[serde(default)]
     games: Option<Vec<String>>,
+    /// Scryfall's own "this printing is digital" flag, read when `games` is
+    /// empty (a fresh preview's).
+    #[serde(default)]
+    digital: bool,
     /// This printing's release date, `YYYY-MM-DD`.
     #[serde(default)]
     released_at: Option<String>,
@@ -214,11 +220,15 @@ impl ScryfallCard {
             || self.effective_oracle_id().is_none()
     }
 
-    /// Skip-rule part 3: this *printing* is not available on paper.
+    /// Skip-rule part 3: this *printing* is not available on paper. An empty
+    /// list is not a platform (a fresh preview's, before Scryfall fills it
+    /// in), so then the printing's `digital` flag decides.
     fn is_digital_only(&self) -> bool {
-        self.games
-            .as_ref()
-            .is_some_and(|g| !g.iter().any(|x| x == "paper"))
+        match self.games.as_deref() {
+            Some([]) => self.digital,
+            Some(games) => !games.iter().any(|x| x == "paper"),
+            None => false,
+        }
     }
 
     /// Module-level skip rule for a card whose oracle id is known to have a
@@ -988,6 +998,16 @@ mod tests {
         };
         assert!(base("").to_rows(false).is_some());
         assert!(base(r#","games":["paper"]"#).to_rows(false).is_some());
+        assert!(
+            base(r#","games":[]"#).to_rows(false).is_some(),
+            "a fresh preview, whose platforms Scryfall has not filled in"
+        );
+        assert!(
+            base(r#","games":[],"digital":true"#)
+                .to_rows(false)
+                .is_none(),
+            "a fresh digital-only preview"
+        );
         assert!(
             base(r#","games":["arena"]"#).to_rows(false).is_none(),
             "digital-only"
