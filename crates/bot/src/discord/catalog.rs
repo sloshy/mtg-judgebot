@@ -130,9 +130,6 @@ pub struct Messages {
     pub form_right_hint: &'static str,
     /// Its hint when reasons are shown publicly (at most 100 characters).
     pub form_right_hint_public: &'static str,
-    /// Above the category menu shown before the form when interactions
-    /// arrive over the gateway, given the rating's label.
-    pub category_prompt: fn(&str) -> String,
     /// A form that came back without its category: nothing was recorded.
     pub form_incomplete: &'static str,
     /// A form field over its limit, given the limit: nothing was recorded.
@@ -412,12 +409,6 @@ replacing it."
     form_right: "The right answer",
     form_right_hint: "Optional. What should it have said?",
     form_right_hint_public: "Optional. Also shown publicly, without your name.",
-    category_prompt: |label| {
-        format!(
-            "You rated this answer **{label}**. What kind of problem is it? Choose one, then add \
-details in the form."
-        )
-    },
     form_incomplete: "That form came back without a category, so nothing was recorded. Please rate the \
 answer again.",
     form_bad_text: "A field held a character that isn't text, so nothing was recorded. Please rate the \
@@ -642,7 +633,6 @@ pub const STUB: Messages = Messages {
     form_right: "⟦form_right⟧",
     form_right_hint: "⟦form_right_hint⟧",
     form_right_hint_public: "⟦form_right_hint_public⟧",
-    category_prompt: |label| format!("⟦category_prompt {label}⟧"),
     form_incomplete: "⟦form_incomplete⟧",
     form_bad_text: "⟦form_bad_text⟧",
     form_too_long: |limit| format!("⟦form_too_long {limit}⟧"),
@@ -833,7 +823,6 @@ mod tests {
                 m.keep_label.to_owned(),
                 (m.on_record)("Incorrect", Some("Wrong card")),
                 m.no_rating.to_owned(),
-                (m.category_prompt)("Incorrect"),
                 m.form_incomplete.to_owned(),
                 (m.form_too_long)(1000),
                 m.form_bad_text.to_owned(),

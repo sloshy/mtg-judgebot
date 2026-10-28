@@ -23,8 +23,10 @@ use std::{
 use anyhow::{Context as _, Result};
 use base64::Engine as _;
 use judge_core::symbol;
+use judge_llm::ApiKey;
 use serde::{Deserialize, Serialize};
-use serenity::http::Http;
+
+use crate::discord::rest::{Rest, RestError};
 
 /// Every card symbol Magic uses, with a link to its SVG.
 const SYMBOLOGY_URL: &str = "https://api.scryfall.com/symbology";
@@ -41,12 +43,11 @@ const USER_AGENT: &str = concat!(
 ///
 /// Scryfall asks for 50–100 ms between requests.
 const SCRYFALL_DELAY: Duration = Duration::from_millis(100);
-/// The longest one Discord call may take. serenity's HTTP client sets no
-/// timeout of its own (and is built on another `reqwest` major than ours, so
-/// [`super::http_client`] cannot be handed to it), and a hung call would hold
-/// the refresh lease for good.
-const DISCORD_TIMEOUT: Duration = Duration::from_mins(2);
-/// Breathing room between uploads, on top of serenity's rate limiter.
+/// The longest one Discord call may take, its 429 waits included (each up
+/// to [`crate::discord::rest::PATIENT_RETRY_WAIT`], three of them): a hung
+/// call would hold the refresh lease for good.
+const DISCORD_TIMEOUT: Duration = Duration::from_mins(6);
+/// Breathing room between uploads, on top of the waits a 429 asks for.
 const UPLOAD_DELAY: Duration = Duration::from_millis(250);
 /// Pixels per side of the uploaded PNG. Discord displays emoji far smaller and
 /// caps the upload at 256 KB; these symbols come out around 2–6 KB.
@@ -175,7 +176,7 @@ async fn cached_get(client: &reqwest::Client, url: &str, path: &Path) -> Result<
 /// A Discord call, failed after [`DISCORD_TIMEOUT`].
 async fn bounded<T>(
     what: &'static str,
-    call: impl Future<Output = serenity::Result<T>>,
+    call: impl Future<Output = Result<T, RestError>>,
 ) -> Result<T> {
     tokio::time::timeout(DISCORD_TIMEOUT, call)
         .await
@@ -184,17 +185,17 @@ async fn bounded<T>(
 }
 
 /// An authenticated Discord client that knows its own application id, which
-/// the emoji routes need and `Http::new` cannot know on its own.
-async fn discord(token: &str) -> Result<Http> {
-    let http = Http::new(token);
+/// the emoji routes need and a token alone does not say.
+async fn discord(token: &str) -> Result<Rest> {
+    // Uploads run in a batch: a long rate-limit wait is waited out.
+    let rest = Rest::new(&ApiKey::from(token.to_owned()))?.patient();
     let app = bounded(
         "asking Discord which application this token belongs to",
-        http.get_current_application_info(),
+        rest.application(),
     )
     .await?;
     tracing::info!(application = %app.name, id = %app.id, "authenticated");
-    http.set_application_id(app.id);
-    Ok(http)
+    Ok(rest)
 }
 
 /// Upload every Scryfall symbol that this application does not already have.
@@ -208,18 +209,16 @@ async fn discord(token: &str) -> Result<Http> {
 pub async fn run(cache_dir: &Path) -> Result<Summary> {
     let token = std::env::var("DISCORD_TOKEN")
         .ok()
-        .map(|t| t.trim().to_owned())
+        .map(|t| crate::discord::wire::bare_token(&t).to_owned())
         .filter(|t| !t.is_empty())
         .context("DISCORD_TOKEN is not set: the emoji belong to the bot's own application")?;
     let http = discord(&token).await?;
-    let mut existing: HashSet<String> = bounded(
-        "listing the application's emoji",
-        http.get_application_emojis(),
-    )
-    .await?
-    .into_iter()
-    .map(|e| e.name)
-    .collect();
+    let mut existing: HashSet<String> =
+        bounded("listing the application's emoji", http.application_emojis())
+            .await?
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
     tracing::info!(existing = existing.len(), "current application emoji");
 
     let client = super::http_client(USER_AGENT)?;
@@ -289,7 +288,7 @@ fn plan(symbols: &[Symbol], summary: &mut Summary) -> Result<Vec<(String, String
 
 /// Fetch, draw and upload one symbol; the PNG's size on success.
 async fn upload(
-    http: &Http,
+    http: &Rest,
     client: &reqwest::Client,
     dir: &Path,
     name: &str,
@@ -308,7 +307,7 @@ async fn upload(
     );
     bounded(
         "creating the emoji",
-        http.create_application_emoji(&serde_json::json!({ "name": name, "image": image })),
+        http.create_application_emoji(name, &image),
     )
     .await?;
     Ok(png.len())

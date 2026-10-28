@@ -98,7 +98,7 @@ failed calls, and the dashboard with usage and spend
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `INGEST_CACHE_DIR` | `.cache` (image: `/var/cache/judgebot`) | Where Scryfall bulk files and the CR text are cached. |
-| `RUST_LOG` | `info` in compose | Tracing filter. The containers use `info,sqlx=warn` (`serenity=warn` for the bot). |
+| `RUST_LOG` | `info` in compose | Tracing filter. The containers use `info,sqlx=warn`. |
 | `JUDGE_IMAGE`, `JUDGE_IMAGE_TAG` | upstream package, `latest` | Which image `judgebot`, `refresh` and `backup` run (amd64 and arm64). A fork sets its own package. A release version (`1`, `1.2`, `1.2.0`) or a `sha-<short>` tag pins or rolls back. |
 | `COMPOSE_PROFILES` | | The optional services `scripts/deploy.sh` also starts, comma-separated. `public`: `edge`, the HTTPS site at `JUDGE_DOMAIN` on ports 80 and 443 (with `API_CLIENT_IP=proxy`). `tunnel`: `cloudflared`, a Cloudflare Tunnel (with `API_CLIENT_IP=cloudflare`). `backup`: the weekly database backup. Empty: `127.0.0.1:8787` on the host only. [Exposure](../deployment/#3-exposure). |
 | `JUDGE_DOMAIN` | | The public host name `edge` serves and gets a Let's Encrypt certificate for, e.g. `judge.example.com`: two or more dot-separated labels of letters, digits and inner hyphens, the last not all digits (not `localhost` or an IP address), with no scheme, port, path or trailing dot. A DNS record must point it at the host, with ports 80 and 443 forwarded. Read only by `edge`, which refuses to start under `public` without it; the config editor checks it. |

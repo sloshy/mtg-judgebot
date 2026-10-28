@@ -249,8 +249,8 @@ process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, 
   release at shutdown within 5 s (`gateway_handover`), checks it still holds it, and
   connects. The holder
   checks every 5 s (4 s timeout). A failed or unanswered check closes the gateway
-  (serenity's `ShardManager::shutdown_all`, asked again until a still-connecting shard
-  registers) and, if it closed within 1 s, stands by again inside the role; otherwise the
+  (`discord::shard`'s stop: a close frame with 1000, no event after it) and, if it
+  closed within 1 s, stands by again inside the role; otherwise the
   role ends with an error and the process exits. The grace exceeds the check interval,
   the check's timeout and the shutdown limit together (10 s), a relation checked at
   compile time, so an old and a new holder never answer side by side. A holder in a
@@ -272,9 +272,8 @@ process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, 
   and releases the lease the moment the connection is closed, recorded as clean
   (`gateway_handover`) when it closed within `Timing::shutdown_limit`, so the next holder
   connects without the grace; a standby stops waiting.
-  `discord::Handler`, the gateway's event handler, holds a `Work` guard for each
-  interaction serenity dispatches (each on its own task) while its handler runs, and the role returns
-  once they are all dropped. Everything is bounded by `DRAIN_LIMIT` (120 s) from the
+  `discord::run` takes a `Work` guard for each interaction as the gateway delivers it,
+  held by the task that answers it, and the role returns once they are all dropped. Everything is bounded by `DRAIN_LIMIT` (120 s) from the
   request; compose's `stop_grace_period` is that plus `EXIT_MARGIN` (a test). With both
   kinds of role, `main` waits for both rather than the first, then flushes the spend
   ledger (bounded by `FLUSH_LIMIT`, 5 s) and exits 0. A gateway slow to close keeps the
@@ -343,6 +342,12 @@ Three interfaces share this pipeline through the same composition root
 
 - **Discord adapter** (`crates/bot`, the `--discord` role): `/judge` slash command, rating buttons,
   "did you mean…?" buttons, thread history.
+  - No Discord library (D43): `discord::wire` is Discord's JSON as our types (only
+    the fields used; a modal's components kept as sent), `discord::rest` the REST
+    calls (a 429 waited out within a bound, nothing else retried, no token in an
+    error), `discord::shard` the gateway connection (zero intents, `READY` and
+    `INTERACTION_CREATE` only; rustls 0.23 with an explicit `ring` provider), and
+    `endpoint::Verifier` the Ed25519 check over `ed25519-dalek`.
   - Every interface hands the store an `Origin` (`judge_core::origin`, D31): the
     interface, the Discord asker (id and username) and whether the call is private.
     `CallStore::persist` and `record_failure` store it; `Origin::history_scope` says
@@ -367,12 +372,11 @@ Three interfaces share this pipeline through the same composition root
     `judge_core::feedback::next_step` decides: the same Correct again is "already
     recorded", any other earlier rating gets a private Replace / Keep prompt, else
     Correct is recorded (deferred, then the judge-role lookup and `CallStore::rate`) and
-    a fault asks its reason. Over HTTP that is one modal, written as JSON
-    (`discord::feedback::modal`: the category menu and both texts in Label components),
-    its values read from the request body (`feedback::submitted`), because serenity
-    0.12.5 reads a Label as an empty action row. Over the gateway a private category
-    menu (`rate-cat:`) comes first and the modal holds the texts in action rows, the
-    category in its id (`ids::FormId`). The submission defers, looks the role up and
+    a fault asks its reason: one modal, written as JSON (`discord::feedback::modal`:
+    the category menu and both texts in Label components), its values read from the
+    interaction's components as Discord sent them, however it was delivered (D43). A
+    category menu (`rate-cat:`) an older build sent over the gateway still opens a
+    modal of the texts in action rows, the category in its id (`ids::FormId`). The submission defers, looks the role up and
     stores the rating with its reason (`Rating::faulted`). Every step's id carries the
     call and the score; maintenance answers each with the maintenance reply.
   - `/judge-private` is `Audience::Private`: acknowledged ephemerally, no history

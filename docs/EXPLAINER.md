@@ -685,8 +685,10 @@ without a measurement extracts at low and synthesizes at high. Prompt caching
 matters for the large synthesis turn. The provider seam means this is a default, not a
 lock-in.
 
-**serenity** for Discord, **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite**
-for the web app. All conventional, well-maintained choices for their niches.
+**axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite** for the web app: conventional,
+well-maintained choices for their niches. Discord has no library: the bot uses a sliver
+of its API (zero gateway intents, two events, nine REST calls), so it writes those itself
+(D43).
 
 **Docker Compose on one host.** A CI-built image run as one `judgebot` service whose
 roles are launch options (D25), reached through a bundled Caddy: on the host's loopback

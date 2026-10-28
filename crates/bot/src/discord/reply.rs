@@ -1,10 +1,9 @@
 //! Replying to a slash command: the initial response, then follow-ups, all
 //! over Discord's REST API, which needs no gateway connection.
 
-use serenity::all::{
-    CommandInteraction, CreateActionRow, CreateAllowedMentions, CreateEmbed,
-    CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
-    Http,
+use super::{
+    rest::{Rest, RestError},
+    wire::{AllowedMentions, Body, CommandInteraction, Embed, Response, Row},
 };
 
 /// A message for a command's reply. A follow-up after a deferred response
@@ -13,10 +12,10 @@ use serenity::all::{
 #[derive(Clone, Debug, Default)]
 pub struct Message {
     content: Option<String>,
-    embeds: Vec<CreateEmbed>,
-    components: Option<Vec<CreateActionRow>>,
+    embeds: Vec<Embed>,
+    components: Option<Vec<Row>>,
     ephemeral: Option<bool>,
-    allowed_mentions: Option<CreateAllowedMentions>,
+    allowed_mentions: Option<AllowedMentions>,
 }
 
 impl Message {
@@ -35,14 +34,14 @@ impl Message {
 
     /// Add an embed.
     #[must_use]
-    pub fn embed(mut self, embed: CreateEmbed) -> Self {
+    pub fn embed(mut self, embed: Embed) -> Self {
         self.embeds.push(embed);
         self
     }
 
     /// The message's button rows.
     #[must_use]
-    pub fn components(mut self, rows: Vec<CreateActionRow>) -> Self {
+    pub fn components(mut self, rows: Vec<Row>) -> Self {
         self.components = Some(rows);
         self
     }
@@ -58,8 +57,8 @@ impl Message {
     /// Allowed-mentions with an empty parse list: a mention in the text
     /// renders but pings nobody.
     #[must_use]
-    pub fn no_pings(mut self) -> Self {
-        self.allowed_mentions = Some(CreateAllowedMentions::new());
+    pub const fn no_pings(mut self) -> Self {
+        self.allowed_mentions = Some(AllowedMentions::NONE);
         self
     }
 
@@ -68,46 +67,21 @@ impl Message {
     fn defaults(self, ephemeral: bool) -> Self {
         Self {
             ephemeral: self.ephemeral.or(Some(ephemeral)),
-            allowed_mentions: self
-                .allowed_mentions
-                .or_else(|| Some(CreateAllowedMentions::new())),
+            allowed_mentions: self.allowed_mentions.or(Some(AllowedMentions::NONE)),
             ..self
         }
     }
 
-    fn initial(self) -> CreateInteractionResponseMessage {
-        let mut b = CreateInteractionResponseMessage::new();
-        if let Some(c) = self.content {
-            b = b.content(c);
+    /// The message as sent, an initial response's or a follow-up's alike.
+    fn body(self) -> Body {
+        let mut b = Body::default().embeds(self.embeds);
+        b.content = self.content;
+        b.components = self.components;
+        b.allowed_mentions = self.allowed_mentions;
+        match self.ephemeral {
+            Some(e) => b.ephemeral(e),
+            None => b,
         }
-        if let Some(m) = self.allowed_mentions {
-            b = b.allowed_mentions(m);
-        }
-        if let Some(rows) = self.components {
-            b = b.components(rows);
-        }
-        if let Some(e) = self.ephemeral {
-            b = b.ephemeral(e);
-        }
-        b.embeds(self.embeds)
-    }
-
-    fn followup(self) -> CreateInteractionResponseFollowup {
-        let mut b = CreateInteractionResponseFollowup::new();
-        if let Some(c) = self.content {
-            b = b.content(c);
-        }
-        b = b.embeds(self.embeds);
-        if let Some(rows) = self.components {
-            b = b.components(rows);
-        }
-        if let Some(m) = self.allowed_mentions {
-            b = b.allowed_mentions(m);
-        }
-        if let Some(e) = self.ephemeral {
-            b = b.ephemeral(e);
-        }
-        b
     }
 }
 
@@ -170,7 +144,7 @@ impl Ack {
 
 /// The replies to one slash command invocation.
 pub struct Reply<'a> {
-    http: &'a Http,
+    rest: &'a Rest,
     interaction: &'a CommandInteraction,
     ack: &'a Ack,
     /// The visibility of a reply that does not set its own.
@@ -185,13 +159,13 @@ impl<'a> Reply<'a> {
     /// hears of the initial response.
     #[must_use]
     pub const fn new(
-        http: &'a Http,
+        rest: &'a Rest,
         interaction: &'a CommandInteraction,
         ephemeral: bool,
         ack: &'a Ack,
     ) -> Self {
         Self {
-            http,
+            rest,
             interaction,
             ack,
             ephemeral,
@@ -206,21 +180,25 @@ impl<'a> Reply<'a> {
         self.responded = true;
     }
 
+    /// The initial response, told to the [`Ack`] whether or not it was sent.
+    async fn initial(&mut self, response: &Response) -> Result<(), RestError> {
+        let base = &self.interaction.base;
+        let sent = self.rest.respond(base.id, &base.token, response).await;
+        self.ack.sent();
+        sent?;
+        self.responded = true;
+        Ok(())
+    }
+
     /// Acknowledge the command, showing "thinking…" until the first
     /// [`send`](Self::send), to the asker alone when `ephemeral`. Does nothing
     /// once a response has been sent.
     ///
     /// # Errors
     /// Discord refused the acknowledgement or could not be reached.
-    pub async fn defer(&mut self, ephemeral: bool) -> serenity::Result<()> {
+    pub async fn defer(&mut self, ephemeral: bool) -> Result<(), RestError> {
         if !self.responded {
-            let defer = CreateInteractionResponse::Defer(
-                CreateInteractionResponseMessage::new().ephemeral(ephemeral),
-            );
-            let sent = self.interaction.create_response(self.http, defer).await;
-            self.ack.sent();
-            sent?;
-            self.responded = true;
+            self.initial(&Response::Defer { ephemeral }).await?;
         }
         Ok(())
     }
@@ -230,25 +208,16 @@ impl<'a> Reply<'a> {
     ///
     /// # Errors
     /// Discord refused the message or could not be reached.
-    pub async fn send(&mut self, message: Message) -> serenity::Result<()> {
-        let message = message.defaults(self.ephemeral);
+    pub async fn send(&mut self, message: Message) -> Result<(), RestError> {
+        let body = message.defaults(self.ephemeral).body();
         if self.responded {
-            self.interaction
-                .create_followup(self.http, message.followup())
-                .await?;
+            let base = &self.interaction.base;
+            self.rest
+                .followup(base.application_id, &base.token, &body)
+                .await
         } else {
-            let sent = self
-                .interaction
-                .create_response(
-                    self.http,
-                    CreateInteractionResponse::Message(message.initial()),
-                )
-                .await;
-            self.ack.sent();
-            sent?;
-            self.responded = true;
+            self.initial(&Response::Message(body)).await
         }
-        Ok(())
     }
 }
 
@@ -261,58 +230,38 @@ mod tests {
         serde_json::to_value(v).unwrap_or_default()
     }
 
-    /// The shapes poise 0.7's `CreateReply` produced for the same settings
-    /// (compared across every combination of them before the switch). One
-    /// difference is on purpose: [`Reply::send`] makes a message that sets
-    /// no mention rule ping nobody, where poise allowed user mentions.
+    /// A message sends what it was given, and a [`Reply`] makes one that
+    /// sets no mention rule ping nobody.
     #[test]
     fn a_message_sets_only_what_it_was_given() {
-        let m = Message::text("hi").ephemeral(true);
         let none = json!({"parse": [], "users": [], "roles": []});
+        let m = Message::text("hi").ephemeral(true);
         assert_eq!(
-            to_json(&CreateInteractionResponse::Message(m.clone().initial())),
+            to_json(&Response::Message(m.body())),
             json!({"type": 4, "data": {
-                "content": "hi",
-                "embeds": [],
-                "allowed_mentions": none,
-                "flags": 64,
-                "attachments": []
+                "content": "hi", "embeds": [], "allowed_mentions": none, "flags": 64
             }})
-        );
-        assert_eq!(
-            to_json(&m.followup()),
-            json!({
-                "content": "hi",
-                "embeds": [],
-                "allowed_mentions": none,
-                "flags": 64,
-                "attachments": []
-            })
         );
         let bare = Message::default().content("hi").ephemeral(false);
         assert_eq!(
-            to_json(&bare.followup()),
-            json!({"content": "hi", "embeds": [], "flags": 0, "attachments": []})
+            to_json(&bare.body()),
+            json!({"content": "hi", "embeds": [], "flags": 0})
         );
     }
 
     #[test]
     fn a_reply_fills_in_visibility_and_no_pings() {
-        let sent = Message::default().content("hi").defaults(true).followup();
+        let sent = Message::default().content("hi").defaults(true).body();
         assert_eq!(
             to_json(&sent),
             json!({
                 "content": "hi",
                 "embeds": [],
                 "allowed_mentions": {"parse": [], "users": [], "roles": []},
-                "flags": 64,
-                "attachments": []
+                "flags": 64
             })
         );
-        let public = Message::default()
-            .ephemeral(false)
-            .defaults(true)
-            .followup();
+        let public = Message::default().ephemeral(false).defaults(true).body();
         assert_eq!(to_json(&public).get("flags"), Some(&json!(0)));
     }
 }

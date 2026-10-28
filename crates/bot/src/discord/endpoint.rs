@@ -37,10 +37,10 @@ use std::{
     time::Duration,
 };
 
+use ed25519_dalek::{Signature, VerifyingKey};
 use judge_core::Locale;
-use serenity::all::{Http, Interaction, Verifier};
 
-use super::{Data, Delivery, reply::Ack};
+use super::{Data, Delivery, reply::Ack, rest::Rest, wire::Interaction};
 use crate::{alert::catalog as alert, shutdown::Shutdown};
 
 /// Where the endpoint is served.
@@ -105,10 +105,40 @@ impl Received {
 }
 
 type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
-/// The handler: the interaction, a submitted form's raw `data.components`
-/// (serenity drops what a Label holds, [`super::feedback`]), and the
-/// acknowledgement to tell.
-type Run = Arc<dyn Fn(Interaction, Option<serde_json::Value>, Ack) -> Task + Send + Sync>;
+/// The handler: the interaction and the acknowledgement to tell.
+type Run = Arc<dyn Fn(Interaction, Ack) -> Task + Send + Sync>;
+
+/// The check that a request was signed by the application's key: Ed25519
+/// over the timestamp header and the body, strictly verified.
+#[derive(Clone, Debug)]
+pub struct Verifier(VerifyingKey);
+
+impl Verifier {
+    /// `signature` (128 hex digits) is the key's over `timestamp` then `body`.
+    #[must_use]
+    pub fn verify(&self, signature: &str, timestamp: &str, body: &[u8]) -> bool {
+        let Some(bytes) = hex::<64>(signature) else {
+            return false;
+        };
+        let message = [timestamp.as_bytes(), body].concat();
+        self.0
+            .verify_strict(&message, &Signature::from_bytes(&bytes))
+            .is_ok()
+    }
+}
+
+/// `N` bytes from `2N` hex digits (either case); `None` for anything else.
+fn hex<const N: usize>(digits: &str) -> Option<[u8; N]> {
+    let digits = digits.trim().as_bytes();
+    if digits.len() != N * 2 {
+        return None;
+    }
+    let mut out = [0u8; N];
+    for (byte, pair) in out.iter_mut().zip(digits.as_chunks::<2>().0) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
+}
 
 struct Endpoint {
     verifier: Verifier,
@@ -158,24 +188,23 @@ impl Interactions {
     }
 
     /// Open it: requests signed by `verifier`'s key go to `data`, answered
-    /// over `http`, counted as work for `shutdown`. A second open is ignored.
+    /// over `rest`, counted as work for `shutdown`. A second open is ignored.
     pub(crate) fn open(
         &self,
         verifier: Verifier,
         data: Arc<Data>,
-        http: Arc<Http>,
+        rest: Arc<Rest>,
         shutdown: Shutdown,
         alert: Option<crate::alert::AlertWebhook>,
     ) {
         if let Some(hook) = alert {
             let _ = self.0.alert.set(hook);
         }
-        let run: Run = Arc::new(move |interaction, form, ack| {
+        let run: Run = Arc::new(move |interaction, ack| {
             Box::pin(super::dispatch_guarded(
                 Arc::clone(&data),
-                Arc::clone(&http),
+                Arc::clone(&rest),
                 interaction,
-                form,
                 ack,
             ))
         });
@@ -269,11 +298,7 @@ impl Interactions {
         let (Some(signature), Some(timestamp)) = (signature, timestamp) else {
             return Received::Unauthorized;
         };
-        if endpoint
-            .verifier
-            .verify(signature, timestamp, body)
-            .is_err()
-        {
+        if !endpoint.verifier.verify(signature, timestamp, body) {
             return Received::Unauthorized;
         }
         match skew(timestamp, unix_now()) {
@@ -287,25 +312,21 @@ impl Interactions {
                 return Received::Unauthorized;
             }
         }
-        let interaction = match serde_json::from_slice::<Interaction>(body) {
+        let interaction = match Interaction::from_slice(body) {
             Ok(i) => i,
             Err(e) => {
                 tracing::warn!(error = %e, "a signed request to the interactions endpoint is no interaction this bot reads");
                 return Received::Malformed;
             }
         };
-        if matches!(interaction, Interaction::Ping(_)) {
+        if matches!(interaction, Interaction::Ping) {
             return Received::Pong;
         }
-        let form = match interaction {
-            Interaction::Modal(_) => super::feedback::submitted(body),
-            _ => None,
-        };
         let ack = Ack::arrived_at(arrived);
         // Taken here, before the spawn, so the drain counts the interaction
         // from the moment it was accepted.
         let work = endpoint.shutdown.work();
-        let handler = (endpoint.run)(interaction, form, ack.clone());
+        let handler = (endpoint.run)(interaction, ack.clone());
         let mut task = tokio::spawn(async move {
             let _work = work;
             handler.await;
@@ -345,19 +366,11 @@ fn skew(timestamp: &str, now: u64) -> Option<u64> {
 /// # Errors
 /// Anything that is not an Ed25519 public key in hex.
 pub fn verifier(verify_key: &str) -> anyhow::Result<Verifier> {
-    let digits = verify_key.trim().as_bytes();
-    let mut key = [0u8; 32];
-    let pairs = digits.chunks(2);
-    anyhow::ensure!(
-        digits.len() == key.len() * 2,
-        "the application's public key is not 64 hex digits"
-    );
-    for (byte, pair) in key.iter_mut().zip(pairs) {
-        let pair = std::str::from_utf8(pair)?;
-        *byte = u8::from_str_radix(pair, 16)
-            .map_err(|_| anyhow::anyhow!("the application's public key is not hex"))?;
-    }
-    Verifier::try_new(key).map_err(|e| anyhow::anyhow!("the application's public key: {e}"))
+    let key = hex::<32>(verify_key)
+        .ok_or_else(|| anyhow::anyhow!("the application's public key is not 64 hex digits"))?;
+    VerifyingKey::from_bytes(&key)
+        .map(Verifier)
+        .map_err(|e| anyhow::anyhow!("the application's public key: {e}"))
 }
 
 /// What is wrong when `mode` meets the application's Interactions Endpoint
@@ -414,8 +427,8 @@ mod tests {
         hex(&key().sign(&message).to_bytes())
     }
 
-    fn test_verifier() -> Option<Verifier> {
-        Verifier::try_new(key().verifying_key().to_bytes()).ok()
+    fn test_verifier() -> Verifier {
+        Verifier(key().verifying_key())
     }
 
     fn command_body() -> Vec<u8> {
@@ -432,14 +445,10 @@ mod tests {
 
     /// An endpoint whose handler runs `then` after counting the call, and
     /// acknowledges when `acks`.
-    fn open(
-        acks: bool,
-        then: Duration,
-        shutdown: &Shutdown,
-    ) -> Option<(Interactions, Arc<AtomicUsize>)> {
+    fn open(acks: bool, then: Duration, shutdown: &Shutdown) -> (Interactions, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&calls);
-        let run: Run = Arc::new(move |_, _, ack: Ack| {
+        let run: Run = Arc::new(move |_, ack: Ack| {
             counted.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 if acks {
@@ -449,8 +458,8 @@ mod tests {
             })
         });
         let endpoint = Interactions::new();
-        endpoint.open_with(test_verifier()?, run, shutdown.clone());
-        Some((endpoint, calls))
+        endpoint.open_with(test_verifier(), run, shutdown.clone());
+        (endpoint, calls)
     }
 
     #[tokio::test(start_paused = true)]
@@ -470,9 +479,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_request_that_arrives_just_before_it_opens_is_served() {
         let shutdown = Shutdown::new(Duration::from_secs(1));
-        let Some((donor, calls)) = open(true, Duration::ZERO, &shutdown) else {
-            unreachable!("the test key is valid");
-        };
+        let (donor, calls) = open(true, Duration::ZERO, &shutdown);
         let Some(endpoint) = donor.0.endpoint.get() else {
             unreachable!("just opened");
         };
@@ -481,9 +488,7 @@ mod tests {
         let opener = closed.clone();
         tokio::spawn(async move {
             tokio::time::sleep(OPEN_WAIT / 2).await;
-            if let Some(v) = test_verifier() {
-                opener.open_with(v, run, Shutdown::new(Duration::from_secs(1)));
-            }
+            opener.open_with(test_verifier(), run, Shutdown::new(Duration::from_secs(1)));
         });
         let body = command_body();
         let got = signed(&closed, &body).await;
@@ -494,9 +499,7 @@ mod tests {
     #[tokio::test]
     async fn an_unsigned_or_missigned_request_is_refused_unread() {
         let shutdown = Shutdown::new(Duration::from_secs(1));
-        let Some((endpoint, calls)) = open(true, Duration::ZERO, &shutdown) else {
-            unreachable!("the test key is valid");
-        };
+        let (endpoint, calls) = open(true, Duration::ZERO, &shutdown);
         let body = command_body();
         let ts = now();
         let good = sign(&ts, &body);
@@ -523,10 +526,8 @@ mod tests {
     #[tokio::test]
     async fn a_ping_is_answered_in_the_body() {
         let shutdown = Shutdown::new(Duration::from_secs(1));
-        let Some((endpoint, calls)) = open(true, Duration::ZERO, &shutdown) else {
-            unreachable!("the test key is valid");
-        };
-        let body = json!({"id": "1", "application_id": "2", "type": 1, "token": "t", "version": 1})
+        let (endpoint, calls) = open(true, Duration::ZERO, &shutdown);
+        let body = json!({"type": 1, "id": "1", "application_id": "2", "token": "t", "version": 1})
             .to_string()
             .into_bytes();
         let got = signed(&endpoint, &body).await;
@@ -541,9 +542,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_command_is_answered_once_its_initial_response_is_sent() {
         let shutdown = Shutdown::new(Duration::from_mins(2));
-        let Some((endpoint, calls)) = open(true, Duration::from_secs(40), &shutdown) else {
-            unreachable!("the test key is valid");
-        };
+        let (endpoint, calls) = open(true, Duration::from_secs(40), &shutdown);
         let body = command_body();
         let start = tokio::time::Instant::now();
         let got = signed(&endpoint, &body).await;
@@ -567,18 +566,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_handler_that_never_acknowledges_is_answered_at_the_wait() {
         let shutdown = Shutdown::new(Duration::from_mins(2));
-        let Some((endpoint, _)) = open(false, Duration::from_secs(40), &shutdown) else {
-            unreachable!("the test key is valid");
-        };
+        let (endpoint, _) = open(false, Duration::from_secs(40), &shutdown);
         let body = command_body();
         let start = tokio::time::Instant::now();
         let got = signed(&endpoint, &body).await;
         assert_eq!(got, Received::Accepted);
         assert_eq!(start.elapsed(), ACK_WAIT);
         // One that ends without acknowledging is answered when it ends.
-        let Some((quick, _)) = open(false, Duration::from_millis(5), &shutdown) else {
-            unreachable!("the test key is valid");
-        };
+        let (quick, _) = open(false, Duration::from_millis(5), &shutdown);
         let start = tokio::time::Instant::now();
         let got = signed(&quick, &body).await;
         assert_eq!(got, Received::Accepted);

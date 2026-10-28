@@ -89,7 +89,7 @@ services:
       # An ADMIN_ADDR in .env is for a process outside compose; this wins.
       ADMIN_ADDR: 0.0.0.0:8789
       INGEST_CACHE_DIR: /var/cache/judgebot
-      RUST_LOG: info,sqlx=warn,serenity=warn
+      RUST_LOG: info,sqlx=warn
       # JUDGE_CONFIG in .env is a *host* path (./judge.toml, as `cargo run`
       # reads it). The file is bind-mounted below and the container is told the
       # path it sees it at; blank/unset means no file, and the loader builds

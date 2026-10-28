@@ -3,24 +3,15 @@
 //!
 //! The form holds the category (a required menu) and two optional texts,
 //! "What's wrong" and "The right answer". Discord takes a menu in a modal
-//! only inside a Label component (type 18), which serenity 0.12.5 can
-//! neither build nor read: [`modal`] writes the response's JSON itself, and
-//! [`fields`] reads the submitted values from the interaction's own JSON.
+//! only inside a Label component (type 18): [`modal`] writes it
+//! ([`Layout::Labels`]), and [`fields`] reads the submitted values from the
+//! interaction's components as Discord sent them, however it was delivered.
 //!
-//! How the values come back depends on how the interaction arrives:
-//!
-//! * Over HTTP (`DISCORD_INTERACTIONS=http`) the endpoint has the raw body
-//!   ([`submitted`]), so the form is one modal with the menu in it
-//!   ([`Layout::Labels`]).
-//! * Over the gateway serenity parses the event before the bot sees it, and
-//!   it reads a Label as an empty action row: the values inside are gone.
-//!   There the category is chosen first, from a menu in a private message,
-//!   and travels in the form's id ([`FormId::category`]); the form then
-//!   holds the two texts in action rows, which serenity does read
-//!   ([`Layout::Rows`]).
-//!
-//! [`fields`] reads both shapes, so a form answered either way is read the
-//! same way.
+//! Builds before D43 sent the gateway's raters a private category menu
+//! first (their Discord library read a Label back as an empty row), with
+//! the category in the form's id ([`FormId::category`]) and the texts in
+//! action rows ([`Layout::Rows`]). A menu still showing on a private message
+//! opens that form, and [`fields`] reads both shapes.
 
 use judge_core::{Fault, FeedbackCategory, FeedbackText, Locale, Reason, feedback::BadText};
 use serde_json::{Value, json};
@@ -47,11 +38,10 @@ const PARAGRAPH: u8 = 2;
 /// How a form lays out its fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
-    /// The category menu and both texts, each in a Label: the one-form
-    /// flow, for interactions delivered over HTTP.
+    /// The category menu and both texts, each in a Label: the form.
     Labels,
-    /// The two texts in action rows, the category already chosen: what
-    /// serenity reads back over the gateway.
+    /// The two texts in action rows, the category already chosen from an
+    /// earlier build's menu.
     Rows,
 }
 
@@ -188,15 +178,6 @@ pub fn fields(components: &Value) -> Fields {
     out
 }
 
-/// The `data.components` of a modal submission's raw JSON body, when it is
-/// one. The HTTP endpoint keeps them, since serenity drops what a Label
-/// holds.
-#[must_use]
-pub fn submitted(body: &[u8]) -> Option<Value> {
-    let mut v: Value = serde_json::from_slice(body).ok()?;
-    v.get_mut("data")?.get_mut("components").map(Value::take)
-}
-
 /// Why a submitted form records nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormProblem {
@@ -287,20 +268,29 @@ mod tests {
         Ok(())
     }
 
-    /// A submission in Discord's documented Label shape, as the HTTP
-    /// endpoint receives it whole.
+    /// A submitted modal, read as the bot reads any interaction.
+    fn submission(
+        name: &str,
+    ) -> Result<super::super::wire::ModalInteraction, Box<dyn std::error::Error>> {
+        match super::super::wire::Interaction::from_value(fixture(name)?)? {
+            super::super::wire::Interaction::Modal(m) => Ok(m),
+            _ => Err("not a modal submit".into()),
+        }
+    }
+
+    /// A submission in Discord's documented Label shape: its values arrive
+    /// whole.
     #[test]
-    fn a_label_submission_is_read_from_the_raw_body() -> Result<(), Box<dyn std::error::Error>> {
-        let body = serde_json::to_vec(&fixture("rating_form_submit.json")?)?;
-        let components = submitted(&body).ok_or("no components")?;
-        let f = fields(&components);
+    fn a_label_submission_is_read_whole() -> Result<(), Box<dyn std::error::Error>> {
+        let m = submission("rating_form_submit.json")?;
+        let f = fields(&m.data.components);
         assert_eq!(f.category.as_deref(), Some("wrong_card"));
         assert_eq!(
             f.wrong.as_deref(),
             Some("  It read Bob as the wrong card.  ")
         );
         assert_eq!(f.right.as_deref(), Some(""));
-        let form = FormId::parse("rate-form:00000000-0000-0000-0000-000000000000:1")?;
+        let form = FormId::parse(&m.data.custom_id)?;
         let r = reason(form, &f).map_err(|e| format!("{e:?}"))?;
         assert_eq!(r.category, FeedbackCategory::WrongCard);
         assert_eq!(
@@ -311,42 +301,13 @@ mod tests {
         Ok(())
     }
 
-    /// serenity 0.12.5 parses that same submission without an error, as an
-    /// action row of nothing: over the gateway the Label's values are lost,
-    /// which is why the gateway chooses the category before the form.
+    /// The rows form (its category chosen before it opened) reads too; its
+    /// category is the id's.
     #[test]
-    fn serenity_loses_what_a_label_holds() -> Result<(), Box<dyn std::error::Error>> {
-        let interaction: serenity::all::Interaction =
-            serde_json::from_value(fixture("rating_form_submit.json")?)?;
-        let serenity::all::Interaction::Modal(m) = interaction else {
-            return Err("not a modal submit".into());
-        };
-        assert_eq!(
-            m.data.custom_id,
-            "rate-form:00000000-0000-0000-0000-000000000000:1"
-        );
-        assert!(
-            m.data
-                .components
-                .iter()
-                .all(|row| row.components.is_empty())
-        );
-        let f = fields(&serde_json::to_value(&m.data.components)?);
-        assert_eq!(f, Fields::default());
-        Ok(())
-    }
-
-    /// The gateway's form comes back in action rows, which serenity reads;
-    /// its category is the id's.
-    #[test]
-    fn a_rows_submission_is_read_through_serenity() -> Result<(), Box<dyn std::error::Error>> {
-        let interaction: serenity::all::Interaction =
-            serde_json::from_value(fixture("rating_form_rows_submit.json")?)?;
-        let serenity::all::Interaction::Modal(m) = interaction else {
-            return Err("not a modal submit".into());
-        };
+    fn a_rows_submission_is_read() -> Result<(), Box<dyn std::error::Error>> {
+        let m = submission("rating_form_rows_submit.json")?;
         let form = FormId::parse(&m.data.custom_id)?;
-        let f = fields(&serde_json::to_value(&m.data.components)?);
+        let f = fields(&m.data.components);
         assert_eq!(f.category, None);
         let r = reason(form, &f).map_err(|e| format!("{e:?}"))?;
         assert_eq!(r.category, FeedbackCategory::WrongCard);

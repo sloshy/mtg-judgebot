@@ -365,9 +365,8 @@ where
 }
 
 /// Leave the gateway on a requested shutdown: stop it, then release the
-/// lease once it has closed. A gateway slow to close (serenity waits for
-/// Discord's reply to its close frame) is waited for, still polled so a
-/// shard that was connecting is asked to close again, and keeps the lease
+/// lease once it has closed. A gateway slow to close (it waits for
+/// Discord's reply to its close frame) is waited for, and keeps the lease
 /// meanwhile. One still open at the drain's limit ends the role with an
 /// error: the lease goes then, and the process exits within
 /// [`FLUSH_LIMIT`](crate::shutdown::FLUSH_LIMIT), inside the grace a standby
@@ -388,8 +387,7 @@ where
         tracing::debug!("the gateway had already ended");
     }
     // Closed within the limit, the gateway is known to be gone, and the
-    // release is recorded as clean. A slow close (serenity's own shutdown
-    // timed out, and a shard it was starting may connect after it) is not.
+    // release is recorded as clean. A slow close is not.
     let (ended, prompt) = if let Ok(ended) =
         clock.timeout(timing.shutdown_limit(), run.as_mut()).await
     {

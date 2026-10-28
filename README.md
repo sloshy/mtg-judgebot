@@ -326,7 +326,7 @@ crates/
   openai     OpenAI-compatible chat completions as a judge-llm backend: strict-schema transform, dialect knobs
   embed      Voyage and OpenAI-compatible embeddings, each tagged with its vector Space
   bot        Postgres adapters (resolver / retriever / call store), the Scryfall + Comprehensive Rules loaders
-             and embedder, the refresh schedule, judge.toml loader, prompts, Discord (serenity)
+             and embedder, the refresh schedule, judge.toml loader, prompts, Discord (own wire types, REST, gateway)
   api        HTTP adapter (axum): the JSON API, the web app, the /mcp transport and the admin listener
   judgebot   the one long-running binary: --discord --api --web --mcp --admin --jobs as launch-time roles, and
              `judgebot ingest` (init, refresh, cards, rules, embed, …) over the loaders (bin)

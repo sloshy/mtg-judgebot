@@ -11,23 +11,10 @@ all-features = true
 # only: a transitive one is not ours to replace.
 unmaintained = "workspace"
 yanked = "deny"
-# An advisory we have read and accepted goes here, with the reason.
-#
-# rustls-webpki 0.102 is reached only through serenity 0.12 (tokio-tungstenite
-# 0.21 → rustls 0.22), i.e. the Discord gateway websocket. The fixes shipped in
-# 0.103 alone, and serenity 0.12.5 is the newest release. Drop these entries
-# when a serenity release moves to rustls 0.23 (`cargo deny check` then warns
-# that they no longer match anything).
-ignore = [
-  { id = "RUSTSEC-2026-0049", reason = "CRL matching; rustls 0.22 is never given CRLs here. No 0.102 fix; via serenity." },
-  { id = "RUSTSEC-2026-0104", reason = "CRL parsing panic; no CRLs are parsed here. No 0.102 fix; via serenity." },
-  { id = "RUSTSEC-2026-0098", reason = "URI name constraints; only the Discord gateway connection is exposed. No 0.102 fix; via serenity." },
-  { id = "RUSTSEC-2026-0099", reason = "Wildcard name constraints; only the Discord gateway connection is exposed. No 0.102 fix; via serenity." },
-  { id = "RUSTSEC-2026-0346", reason = "Debug of client session values; only a custom ClientSessionStore formats them, and none is used. rustls 0.22 has no fix; via serenity." },
-  { id = "RUSTSEC-2026-0349", reason = "Key-share prediction downgrades post-quantum key exchange; rustls 0.22 offers none to lose. No 0.22 fix; via serenity." },
-  { id = "RUSTSEC-2026-0381", reason = "Flags webpki-roots 0.26.11 by number; it is a shim over the locked 1.0.10, which drops the emSign root. Via serenity." },
-  { id = "RUSTSEC-2026-0382", reason = "Needs a trust anchor that allows emSign intermediates; the gateway trusts webpki-roots 1.0.10, which dropped it. No 0.102 fix; via serenity." },
-]
+# An advisory we have read and accepted goes here, with the reason. None
+# today: the last ones (rustls 0.22 / rustls-webpki 0.102, through serenity's
+# gateway) left with serenity (D43).
+ignore = []
 
 [licenses]
 # Every licence here is compatible with distributing the image under
@@ -57,8 +44,8 @@ confidence-threshold = 0.9
 ignore = false
 
 [bans]
-# Two versions of one crate (e.g. rustls 0.22 via serenity and 0.23 via
-# reqwest) are normal in a graph this size and mostly outside our control.
+# Two versions of one crate (two majors pulled in by different dependencies)
+# are normal in a graph this size and mostly outside our control.
 multiple-versions = "allow"
 wildcards = "deny"
 # Path dependencies inside the workspace carry no version.

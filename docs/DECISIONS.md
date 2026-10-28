@@ -88,8 +88,9 @@ into.
 - **sqlx with compile-time checked queries** and a committed `.sqlx` offline cache (I6),
   over Diesel or a query builder. `cargo sqlx prepare --check` in CI keeps the cache
   current.
-- **serenity** for Discord (slash commands, buttons and threads were all verified
-  before the choice), **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite** for the
+- **serenity** for Discord at first (slash commands, buttons and threads were all
+  verified before the choice), replaced by the bot's own wire types, REST client and
+  gateway connection in D43. **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite** for the
   page. These are conventional, maintained choices where nothing in the invariants pushed
   one way.
   The slash commands are the adapter's own (`discord::command`) rather than poise's: poise
@@ -1062,7 +1063,7 @@ load does not need it (D16), and the per-user and per-address limits stay per pr
   The process takes no new work: the HTTP listener closes and the Discord role closes
   its gateway connection. It then finishes what is in flight within two minutes
   (`DRAIN_LIMIT`), writes the spend ledger once more and exits 0. Each Discord event
-  holds a `Work` guard for as long as serenity's task runs its handler, and an answer
+  holds a `Work` guard from its arrival until its handler ends, and an answer
   already deferred is sent over the REST API, which needs no gateway. The compose
   `stop_grace_period` (130 s) is the limit plus ten seconds, a relation a test holds,
   and the last ledger write is bounded by five. A signal during startup, before the
@@ -1160,8 +1161,8 @@ Developer Portal.
   member list with no status dot.
 - **One dispatch for both routes.** The commands are the adapter's own
   (`discord::command`, `Data::dispatch`) rather than poise's, whose dispatch needs a
-  live gateway connection. The gateway feeds the same dispatch from serenity's event
-  handler.
+  live gateway connection. The gateway feeds the same dispatch from its connection's
+  events (D43).
 - **Verify, then answer.** A request without a valid Ed25519 signature over the
   timestamp and the body, or signed more than five minutes from the host's clock,
   gets `401` before anything else is read. Discord sends invalid
@@ -1681,7 +1682,9 @@ It never reaches the model (D10).
   category menu, whose choice opens a modal holding the two texts in action rows, the
   category carried in its id. Rejected: vendoring a patched serenity, a fork to carry
   for one struct; the menu-first flow everywhere, which costs the HTTP deployment a
-  step.
+  step. *Superseded by D43:* the gateway delivers the raw JSON too, so both deliveries
+  get the one form; a menu still showing on an older build's private message opens the
+  rows form.
 - **Stateless steps.** Every id carries the call and the score (`rate-replace:`,
   `rate-keep:`, `rate-cat:`, and the form's `rate-form:<call>:<1|2>[:<category>]`), so
   any process answers any step after any restart. An old `rate:<call>:<n>` button gets
@@ -2070,3 +2073,47 @@ not cover it, and the answer never becomes an example for later questions.
 - *Storing the coverage on the card at ingest.* It depends on the CR loaded as well as
   the card, and the refresh loads them in separate steps. Read at question time it is
   always the pair that answers.
+
+## D43. Discord without a library
+
+*Decided 2026-10-28.*
+
+The Discord adapter speaks Discord's API itself: `discord::wire` (the JSON of
+interactions, responses, messages and the command registration, as our types),
+`discord::rest` (the nine REST calls, over the workspace's reqwest) and
+`discord::shard` (one gateway connection), with `ed25519-dalek` for the endpoint's
+signature check. serenity 0.12 is gone.
+
+- **Why.** serenity 0.12 pinned tokio-tungstenite 0.21 and so rustls 0.22 and
+  rustls-webpki 0.102, which carried eight advisories (`deny.toml` ignored them) with no
+  fix on that line. Its maintainers froze the 0.12 branch and declined the bump, because
+  tungstenite's types are in its public API; the next major is unreleased, with no date.
+  The bot used a sliver of it: zero intents, two dispatches, nine routes, a handful of
+  builders. It also could not read a Label component, which cost the gateway's raters a
+  step (D38).
+- **The wire types read only what is used.** An unknown field is ignored, never an
+  error. A modal's `data.components` stays Discord's JSON, so both deliveries read a
+  Label whole and get the one rating form. Ids are snowflake newtypes; an interaction
+  token is redacted in `Debug`.
+- **REST retries only a 429** (refused unprocessed), within a bound: a reply that may
+  have been processed is never sent twice. The interaction routes send no bot token.
+  reqwest's errors are stripped of their URL and redirects are off, so no token reaches
+  an error or a log.
+- **The gateway connection** (`shard::run`) identifies with zero intents, heartbeats
+  with jitter and treats a missed ACK as a dead connection, resumes on
+  `resume_gateway_url`, re-identifies after an invalid session, stops on the fatal close
+  codes and waits out the session-start limit. Its TLS is rustls 0.23 with an explicit
+  `ring` provider and the webpki roots, since two providers are in the graph. A stop
+  closes with 1000 and no event is delivered after it; each interaction takes its
+  `Work` as it arrives. The lease (D29) is unchanged around it.
+- **A `Bot ` prefix on `DISCORD_TOKEN` is dropped**, as serenity accepted it.
+
+**Rejected:**
+
+- *serenity's next major from git.* It is still changing its API, and pinning a
+  commit trades the advisories for an unreleased dependency.
+- *twilight.* Modular and on rustls 0.23, but a full port to another library's types
+  whose model lacks the Label too, with no faster release pace.
+- *A build without the gateway.* serenity's REST client needed the feature that pulls
+  the old tungstenite in, and the gateway is the default delivery: only the HTTP
+  deployments would have lost the advisories.

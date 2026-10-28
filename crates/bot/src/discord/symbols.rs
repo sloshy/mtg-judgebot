@@ -23,7 +23,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use serenity::all as serenity;
+use super::rest::Rest;
 use sqlx::PgPool;
 
 use super::mana::{SharedSymbols, SymbolTable};
@@ -34,8 +34,8 @@ pub const CHECK_EVERY: Duration = Duration::from_mins(10);
 /// After this many checks without a listing, [`watch`] lists the emoji
 /// whatever the record says: hourly.
 pub const RELIST_EVERY: u32 = 6;
-/// The longest one listing of the application's emoji may take: serenity's
-/// HTTP client sets no timeout of its own.
+/// The longest one listing of the application's emoji may take, the
+/// application's id read first if it is not known yet.
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest one read of the run record may take.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -43,8 +43,12 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// The application's card-symbol emoji, or `None` (logged) when Discord could
 /// not list them. An application with none uploaded is an empty table, and
 /// symbols then render as the literal `{W}` Scryfall writes.
-async fn load(http: &serenity::Http) -> Option<SymbolTable> {
-    match tokio::time::timeout(LIST_TIMEOUT, http.get_application_emojis()).await {
+async fn load(rest: &Rest) -> Option<SymbolTable> {
+    let listed = async {
+        rest.ensure_application_id().await?;
+        rest.application_emojis().await
+    };
+    match tokio::time::timeout(LIST_TIMEOUT, listed).await {
         Ok(Ok(emojis)) => Some(SymbolTable::new(
             emojis.into_iter().map(|e| (e.name, e.id.get())),
         )),
@@ -180,7 +184,7 @@ impl Watch {
 /// The bot's emoji for its whole life: read the record's mark, list the
 /// emoji, then every [`CHECK_EVERY`] list them again when [`Watch::check`]
 /// says to, replacing `symbols` with what Discord answers.
-pub async fn watch(http: Arc<serenity::Http>, pool: PgPool, symbols: Arc<SharedSymbols>) {
+pub async fn watch(rest: Arc<Rest>, pool: PgPool, symbols: Arc<SharedSymbols>) {
     // The mark first: a run finishing after it is caught by the first check.
     // `None` (no run, or unreadable) makes the first check read every run.
     let seen = read(&pool, None).await.and_then(|c| c.latest);
@@ -192,7 +196,7 @@ pub async fn watch(http: Arc<serenity::Http>, pool: PgPool, symbols: Arc<SharedS
     let mut why = Some(Why::Stale);
     loop {
         if why.is_some() {
-            if let Some(table) = load(&http).await {
+            if let Some(table) = load(&rest).await {
                 // A table that stayed empty was warned about once already.
                 if !(why == Some(Why::Empty) && table.is_empty()) {
                     report(&table, before);

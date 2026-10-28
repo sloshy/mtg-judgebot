@@ -69,7 +69,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D42),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D43),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -173,11 +173,27 @@ alone, so two suites on one cluster drop each other's databases mid-run.
 The hooks run on Claude's commits too. Don't bypass them with `--no-verify`. Fix the
 failure instead.
 
+**No Discord library** (D43; serenity is gone, and with it rustls 0.22 and every
+`deny.toml` ignore). `discord::wire` is Discord's JSON as our types: only the fields
+used, unknown ones ignored, a modal's `data.components` kept as sent, ids as snowflake
+newtypes, the interaction `Token` redacted in `Debug`. `discord::rest::Rest` makes the
+REST calls over the workspace's reqwest: interaction routes send no bot token, a 429 is
+waited out (`MAX_RETRY_WAIT` 10 s, `patient()` 90 s for the emoji upload) and nothing
+else is retried, errors are `without_url` and redirects are off, and the bot routes
+learn the application id (`ensure_application_id`). `discord::shard::run` is the
+gateway connection: zero intents, `READY` and `INTERACTION_CREATE` only, heartbeat with
+jitter (a missed ACK closes 4000 and resumes), resume on `resume_gateway_url`, op 9 /
+4007 / 4009 re-identify, 4004 and 4010–4014 fatal, the session-start limit waited out,
+rustls 0.23 with an explicit `ring` provider and webpki roots (two providers are in the
+graph, so the process default would panic). A stop closes 1000 and no event is
+delivered after it. `endpoint::Verifier` is `ed25519-dalek`'s `verify_strict`.
+`DISCORD_TOKEN` drops a `Bot ` prefix (`wire::bare_token`).
+
 Discord registers seven commands: `/judge` and `/judge-private` (guild-only), `/card`,
 `/rule`, `/help`, `/license` and `/forget` (`discord::command`: `definitions` is the
 registration, pinned byte-for-byte by `tests/fixtures/discord/commands.json`, and `Command::parse` the typed
-invocation; no poise, whose dispatch needs a live gateway connection; replies go
-through `discord::reply::Reply`, initial response then follow-ups, over REST). `/forget`
+invocation; replies go through `discord::reply::Reply`, initial response then
+follow-ups, over REST). `/forget`
 deletes the caller's ratings with their reasons and feedback-queue items (`feedback` in
 `Forgotten`) and removes their id and username from their calls and
 `failed_calls` rows (a private call's text too) through `CallStore::forget_user`
@@ -219,12 +235,11 @@ deletes the caller's ratings with their reasons and feedback-queue items (`feedb
   `EARLIER_BUDGET` (1.5 s from the interaction's arrival, `Ack::deadline`; no defer), then `judge_core::feedback::next_step`: the same Correct
   is already recorded; another earlier rating gets Replace/Keep (`rate-replace:` /
   `rate-keep:`, which reads the rating back and says what is on record); Correct is recorded; Partial/Incorrect open the form
-  (`discord::feedback`). Over HTTP the form is one modal written as JSON (Label + string
-  select + text inputs), its values read from the raw body (`feedback::submitted`),
-  because serenity 0.12.5 parses a Label as an empty action row and the gateway gives
-  no raw payload. Over the gateway a `rate-cat:` menu comes first, then a rows modal,
-  the category in `ids::FormId`. Every initial response goes through `respond`,
-  `respond_modal` or `respond_raw` (`ack.sent()`).
+  (`discord::feedback`): one modal written as JSON (Label + string select + text
+  inputs) on both deliveries, its values read from the interaction's components. A
+  `rate-cat:` menu an older build sent over the gateway still opens a rows modal, the
+  category in `ids::FormId`. Every initial response goes through `respond` or
+  `Reply` (`ack.sent()`).
 - **Interactions over HTTP** (`DISCORD_INTERACTIONS=http`, `discord::Delivery`, D30):
   no gateway, no lease. `serve` reads the application (`GET /applications/@me`,
   retried) for its id and `verify_key`, registers, starts `symbols::watch` and opens
@@ -245,12 +260,13 @@ deletes the caller's ratings with their reasons and feedback-queue items (`feedb
   `standing by: …` naming the holder, reconnecting with backoff if the waiting
   connection drops; the process's HTTP roles serve meanwhile), wait `Timing::grace`,
   check, connect. The holder checks every `CHECK_INTERVAL` (5 s, `check_timeout` 4 s);
-  a lost lease sends `Stop` (`run` repeats `ShardManager::shutdown_all` until `start`
-  returns, since it is a no-op before a shard registers) and waits `shutdown_limit`
-  (1 s). Closed in time: stand by again. Not: return an error so the process exits.
+  a lost lease sends `Stop` (`shard::run` closes 1000 within `CLOSE_WAIT`) and waits
+  `shutdown_limit` (1 s). Closed in time: stand by again. Not: return an error so the process exits.
   `grace` (15 s) > `worst_disconnect` (10 s) is a `const` assertion. The gateway is an
   `FnMut(Stop)`, called per connection over one `Arc<Data>`; `symbols::watch` is
-  spawned on the connection's first `Ready` and aborted with it (`AbortOnDrop`). Commands
+  spawned on the first `Ready` of a `shard::run` (after the registration; one per lease,
+  across its resumes) and aborted when it returns (an `AbortTask` the event callback
+  holds). Three failed connects to the resume URL drop the session for a fresh identify. Commands
   register once per role (`Data::registered`), bounded by `REGISTER_TIMEOUT`, and a
   failure is a WARN. A loss within
   `Timing::healthy_hold` (30 min) of the last connection pauses before standing by
@@ -266,8 +282,8 @@ deletes the caller's ratings with their reasons and feedback-queue items (`feedb
   `shutdown_limit` releases with `GatewayLease::release_closed`, which writes
   `gateway_handover.released_at`; every holder's `take_over` clears it before connecting
   and skips the grace (`Handover::Clean`) only for a release under
-  `Timing::handover_window` (5 s, `const` < grace) old. `discord::Handler` holds a `Work` guard for each
-  interaction serenity dispatches, and `serve` returns after `Shutdown::drained`. `serve_on` is
+  `Timing::handover_window` (5 s, `const` < grace) old. `discord::run` takes a `Work` guard
+  for each interaction as it arrives, and `serve` returns after `Shutdown::drained`. `serve_on` is
   axum's graceful shutdown, bounded. All of it is within `DRAIN_LIMIT` (120 s) of the
   request. `main::run` waits for both roles on a requested stop (otherwise the first to
   stop still ends the process), waits for the scheduler to stop its run and end
@@ -591,7 +607,8 @@ and `bot` ← the other bins):
   questions-refused alert stay chat-only. A dropped `Reservation` keeps its worst case.
 - `bot` (lib `judge_bot`): sqlx adapters, `config.rs` (the `judge.toml` loader),
   `extract.rs`/`synth.rs` over `judge-llm` only, prompts in `crates/bot/src/prompts/`,
-  the serenity Discord layer with pure `render.rs` (`discord::serve`, the
+  the Discord layer (`discord::{wire, rest, shard}`, no Discord library) with pure
+  `render.rs` (`discord::serve`, the
   `--discord` role), `serving.rs` (`Serving`: what the serving roles of one process
   share), and `ingest.rs`, the data steps (Scryfall, CR, curated lists, embedding, emoji,
   `init`, `refresh`), which `jobs.rs` schedules, and `backup.rs`, the database backup

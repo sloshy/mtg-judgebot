@@ -1,5 +1,7 @@
 //! The Discord adapter (build-order step 6): the `/judge` slash command,
-//! rating buttons and the "did you mean…?" flow, on serenity 0.12.
+//! rating buttons and the "did you mean…?" flow, on Discord's API directly:
+//! [`wire`] (its JSON, as our types), [`rest`] (the REST calls) and
+//! [`shard`] (the gateway connection), no Discord library (D43).
 //!
 //! Everything that does not need the gateway lives in a pure submodule:
 //! [`command`] (the slash commands: registration and parsing), [`render`]
@@ -9,7 +11,7 @@
 //! command over the REST API. [`symbols`] lists the
 //! card-symbol emoji and keeps the table current while the bot runs.
 //! [`gateway`] keeps the gateway connection to one process of all those
-//! running `--discord` on a database. This file is the glue: serenity types
+//! running `--discord` on a database. This file is the glue: [`wire`] types
 //! in, those modules out.
 //!
 //! Flows:
@@ -60,7 +62,10 @@ pub mod pick;
 pub mod question;
 pub mod render;
 pub mod reply;
+pub mod rest;
+pub mod shard;
 pub mod symbols;
+pub mod wire;
 
 use std::{
     num::{NonZeroU32, NonZeroU64},
@@ -80,14 +85,6 @@ use judge_core::{
 };
 use judge_llm::ApiKey;
 use nonempty::NonEmpty;
-use serenity::all::{
-    ButtonStyle, CommandInteraction, ComponentInteraction, ComponentInteractionDataKind,
-    CreateActionRow, CreateAllowedMentions, CreateButton, CreateEmbed, CreateEmbedFooter,
-    CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
-    GatewayIntents, GuildId, Http, Interaction, InteractionId, Member, MessageFlags,
-    ModalInteraction, Ready, User, UserId,
-};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::{
@@ -108,6 +105,11 @@ use mana::{SharedSymbols, SymbolTable};
 use pick::Digest;
 use render::{PickPrompt, RetryPrompt};
 use reply::{Ack, Message, Reply};
+use rest::{Rest, RestError};
+use wire::{
+    Base, Body, Button, CommandInteraction, ComponentInteraction, Embed, Footer, GuildId,
+    Interaction, Member, ModalInteraction, Response, Row, Style, User, UserId,
+};
 
 /// How long a `/judge` (or a card pick) waits for a free slot before replying
 /// "busy". Under Discord's 3 s initial-response deadline, so short bursts queue
@@ -231,7 +233,11 @@ impl Config {
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())
         };
-        let token = var("DISCORD_TOKEN").map(ApiKey::from).ok_or_else(|| {
+        let token = var("DISCORD_TOKEN")
+            .map(|t| wire::bare_token(&t).to_owned())
+            .filter(|t| !t.is_empty())
+            .map(ApiKey::from)
+            .ok_or_else(|| {
             anyhow::anyhow!(
                 "DISCORD_TOKEN is not set: put the bot token in the environment (or .env) and retry"
             )
@@ -329,9 +335,6 @@ pub struct Data {
     /// Whether raters' reasons are shown on the public pages
     /// (`JUDGE_PUBLIC_FEEDBACK`), which the form and its confirmation say.
     public_feedback: bool,
-    /// How interactions arrive, which decides how a rating form is laid out
-    /// ([`feedback::Layout`]).
-    delivery: Delivery,
 }
 
 impl std::fmt::Debug for Data {
@@ -379,7 +382,6 @@ impl Data {
             locale,
             feed,
             public_feedback,
-            delivery: cfg.interactions,
         }
     }
 
@@ -508,7 +510,7 @@ impl Data {
 
     async fn on_component(
         &self,
-        http: &Http,
+        http: &Rest,
         c: &ComponentInteraction,
         ack: &Ack,
     ) -> anyhow::Result<()> {
@@ -558,7 +560,7 @@ impl Data {
     /// read is bounded by [`EARLIER_BUDGET`], inside Discord's 3 s.
     async fn on_rate(
         &self,
-        http: &Http,
+        http: &Rest,
         c: &ComponentInteraction,
         ack: &Ack,
         locale: Locale,
@@ -572,11 +574,11 @@ impl Data {
         match next_step(score, earlier) {
             Next::AlreadyRecorded => ephemeral(http, c, ack, m.already_rated).await,
             Next::Confirm(earlier) => {
-                let prompt = CreateInteractionResponseMessage::new()
+                let prompt = Body::default()
                     .content(render::replace_prompt(locale, earlier, score))
                     .components(vec![replace_row(locale, call, score)])
                     .ephemeral(true);
-                respond(http, c, ack, CreateInteractionResponse::Message(prompt))
+                respond(http, c, ack, Response::Message(prompt))
                     .await
                     .context("ask before replacing a rating")
             }
@@ -584,10 +586,7 @@ impl Data {
                 self.record_correct(http, c, ack, locale, call, Shown::New)
                     .await
             }
-            Next::Form(fault) => {
-                self.ask_reason(http, c, ack, locale, call, fault, Shown::New)
-                    .await
-            }
+            Next::Form(fault) => self.ask_reason(http, c, ack, locale, call, fault).await,
         }
     }
 
@@ -626,7 +625,7 @@ impl Data {
     /// so "kept" is read back rather than assumed.
     async fn on_keep(
         &self,
-        http: &Http,
+        http: &Rest,
         c: &ComponentInteraction,
         ack: &Ack,
         locale: Locale,
@@ -638,10 +637,8 @@ impl Data {
             Ok(None) => m.no_rating.to_owned(),
             Err(()) => m.rate_failed.to_owned(),
         };
-        let kept = CreateInteractionResponseMessage::new()
-            .content(text)
-            .components(vec![]);
-        respond(http, c, ack, CreateInteractionResponse::UpdateMessage(kept))
+        let kept = Body::default().content(text).components(vec![]);
+        respond(http, c, ack, Response::Update(kept))
             .await
             .context("keep the earlier rating")
     }
@@ -650,7 +647,7 @@ impl Data {
     /// place of the prompt.
     async fn on_replace(
         &self,
-        http: &Http,
+        http: &Rest,
         c: &ComponentInteraction,
         ack: &Ack,
         locale: Locale,
@@ -658,10 +655,7 @@ impl Data {
         score: Score,
     ) -> anyhow::Result<()> {
         match replace_step(score) {
-            Next::Form(fault) => {
-                self.ask_reason(http, c, ack, locale, call, fault, Shown::Update)
-                    .await
-            }
+            Next::Form(fault) => self.ask_reason(http, c, ack, locale, call, fault).await,
             // `replace_step` never confirms; record whatever is not a form.
             Next::Record | Next::AlreadyRecorded | Next::Confirm(_) => {
                 self.record_correct(http, c, ack, locale, call, Shown::Update)
@@ -675,7 +669,7 @@ impl Data {
     /// message or in place of the prompt the click was on.
     async fn record_correct(
         &self,
-        http: &Http,
+        http: &Rest,
         c: &ComponentInteraction,
         ack: &Ack,
         locale: Locale,
@@ -683,10 +677,8 @@ impl Data {
         shown: Shown,
     ) -> anyhow::Result<()> {
         let acknowledge = match shown {
-            Shown::New => CreateInteractionResponse::Defer(
-                CreateInteractionResponseMessage::new().ephemeral(true),
-            ),
-            Shown::Update => CreateInteractionResponse::Acknowledge,
+            Shown::New => Response::Defer { ephemeral: true },
+            Shown::Update => Response::Acknowledge,
         };
         respond(http, c, ack, acknowledge)
             .await
@@ -699,81 +691,52 @@ impl Data {
         let text = self.rate(locale, call, &rater, &Rating::Correct).await;
         match shown {
             Shown::New => ephemeral_followup(http, c, &text).await,
-            Shown::Update => c
-                .edit_response(
-                    http,
-                    EditInteractionResponse::new()
-                        .content(text)
-                        .components(vec![]),
+            Shown::Update => http
+                .edit_original(
+                    c.application_id,
+                    &c.token,
+                    &Body::default().content(text).components(vec![]),
                 )
                 .await
-                .map(drop)
                 .context("confirm the replaced rating"),
         }
     }
 
-    /// Ask the reason for `fault`: over HTTP the one form, over the gateway
-    /// the category menu that leads to it ([`feedback`] says why).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the interaction, its acknowledgement, and the rating step"
-    )]
+    /// Ask the reason for `fault`: the one form, with its category menu,
+    /// in place of a click on a private prompt or as the click's reply.
     async fn ask_reason(
         &self,
-        http: &Http,
+        http: &Rest,
         c: &ComponentInteraction,
         ack: &Ack,
         locale: Locale,
         call: CallId,
         fault: Fault,
-        shown: Shown,
     ) -> anyhow::Result<()> {
-        match self.delivery {
-            Delivery::Http => {
-                let form =
-                    feedback::modal(locale, feedback::form(call, fault), self.public_feedback);
-                respond_raw(http, c.id, &c.token, ack, &form)
-                    .await
-                    .context("open the rating form")
-            }
-            Delivery::Gateway => {
-                let m = catalog::messages(locale);
-                let menu = CreateInteractionResponseMessage::new()
-                    .content((m.category_prompt)(render::rating_label(
-                        locale,
-                        fault.score(),
-                    )))
-                    .components(vec![category_row(locale, call, fault)]);
-                // The flag belongs on a new message only: an update keeps
-                // the private prompt private.
-                let response = match shown {
-                    Shown::New => CreateInteractionResponse::Message(menu.ephemeral(true)),
-                    Shown::Update => CreateInteractionResponse::UpdateMessage(menu),
-                };
-                respond(http, c, ack, response)
-                    .await
-                    .context("ask the rating's category")
-            }
-        }
+        let form = feedback::modal(locale, feedback::form(call, fault), self.public_feedback);
+        respond(http, c, ack, Response::Modal(form))
+            .await
+            .context("open the rating form")
     }
 
-    /// The category chosen from the menu (over the gateway): open the form
-    /// for the texts, the category in its id.
+    /// A category chosen from the menu earlier builds sent over the gateway
+    /// before the form: open the form for the texts, the category in its id.
+    /// Nothing sends that menu now; a private message still showing one
+    /// keeps working.
     async fn on_category(
         &self,
-        http: &Http,
+        http: &Rest,
         c: &ComponentInteraction,
         ack: &Ack,
         locale: Locale,
         call: CallId,
         fault: Fault,
     ) -> anyhow::Result<()> {
-        let chosen = match &c.data.kind {
-            ComponentInteractionDataKind::StringSelect { values } => {
-                values.first().and_then(|v| FeedbackCategory::parse(v))
-            }
-            _ => None,
-        };
+        // A string menu (component type 3) sends its choice.
+        let chosen = (c.data.component_type == 3)
+            .then(|| c.data.values.first())
+            .flatten()
+            .and_then(|v| FeedbackCategory::parse(v));
         let Some(category) = chosen else {
             tracing::warn!(custom_id = %c.data.custom_id, "a category menu without a category");
             return ephemeral(http, c, ack, catalog::messages(locale).unknown_button).await;
@@ -784,24 +747,16 @@ impl Data {
             category: Some(category),
         };
         let modal = feedback::modal(locale, form, self.public_feedback);
-        respond_raw(http, c.id, &c.token, ack, &modal)
+        respond(http, c, ack, Response::Modal(modal))
             .await
             .context("open the rating form")
     }
 
-    /// A submitted rating form: the reason read from it, then, acknowledged
-    /// (the role lookup and the upsert can outlast Discord's 3 s), the
-    /// rating stored with it and confirmed privately. `raw` is the
-    /// submission's own `data.components` when the HTTP endpoint kept them;
-    /// over the gateway they are read from serenity's parse, which holds
-    /// what an action row holds.
-    async fn on_form(
-        &self,
-        http: &Http,
-        f: &ModalInteraction,
-        raw: Option<&serde_json::Value>,
-        ack: &Ack,
-    ) -> anyhow::Result<()> {
+    /// A submitted rating form: the reason read from it (its components as
+    /// Discord sent them), then, acknowledged (the role lookup and the
+    /// upsert can outlast Discord's 3 s), the rating stored with it and
+    /// confirmed privately.
+    async fn on_form(&self, http: &Rest, f: &ModalInteraction, ack: &Ack) -> anyhow::Result<()> {
         let locale = self.locale_of(&f.locale);
         let m = catalog::messages(locale);
         let form = match FormId::parse(&f.data.custom_id) {
@@ -814,11 +769,7 @@ impl Data {
         if !self.availability.is_open() {
             return modal_ephemeral(http, f, ack, m.maintenance).await;
         }
-        let components = match raw {
-            Some(v) => v.clone(),
-            None => serde_json::to_value(&f.data.components).unwrap_or_default(),
-        };
-        let reason = match feedback::reason(form, &feedback::fields(&components)) {
+        let reason = match feedback::reason(form, &feedback::fields(&f.data.components)) {
             Ok(reason) => reason,
             Err(FormProblem::NoCategory) => {
                 tracing::warn!(call = %form.call, "a rating form came back without its category");
@@ -831,10 +782,7 @@ impl Data {
                 return modal_ephemeral(http, f, ack, m.form_bad_text).await;
             }
         };
-        let defer = CreateInteractionResponse::Defer(
-            CreateInteractionResponseMessage::new().ephemeral(true),
-        );
-        respond_modal(http, f, ack, defer)
+        respond(http, f, ack, Response::Defer { ephemeral: true })
             .await
             .context("acknowledge the rating form")?;
         let judge = self.is_judge(http, f.guild_id, f.member.as_ref()).await;
@@ -844,17 +792,14 @@ impl Data {
         };
         let rating = Rating::faulted(form.fault, reason);
         let text = self.rate(locale, form.call, &rater, &rating).await;
-        let msg = CreateInteractionResponseFollowup::new()
-            .content(text)
-            .ephemeral(true);
-        f.create_followup(http, msg)
+        let msg = Body::default().content(text).ephemeral(true);
+        http.followup(f.application_id, &f.token, &msg)
             .await
-            .map(drop)
             .context("confirm the rating")
     }
 
     /// Whether the member holds the judge role, looked up over HTTP.
-    async fn is_judge(&self, http: &Http, guild: Option<GuildId>, member: Option<&Member>) -> bool {
+    async fn is_judge(&self, http: &Rest, guild: Option<GuildId>, member: Option<&Member>) -> bool {
         match (guild, member) {
             (Some(guild), Some(member)) => has_role(http, guild, member, &self.judge_role).await,
             _ => false,
@@ -904,7 +849,7 @@ impl Data {
     /// the same reason.
     async fn on_pick(
         &self,
-        http: &Http,
+        http: &Rest,
         c: &ComponentInteraction,
         ack: &Ack,
         clicker: Locale,
@@ -915,10 +860,7 @@ impl Data {
             return ephemeral(http, c, ack, m.not_yours).await;
         }
         let message = &c.message;
-        let shown = pick::shown_ms(
-            message.id.get(),
-            message.edited_timestamp.map(|t| t.timestamp_millis()),
-        );
+        let shown = pick::shown_ms(message.id.get(), message.edited_ms());
         if pick::expired(shown, pick::now_ms(), self.pick_ttl) {
             return ephemeral(http, c, ack, m.expired).await;
         }
@@ -944,7 +886,7 @@ impl Data {
         };
         // The answer goes where the message is: a private button on a channel
         // message, or the reverse, is refused.
-        let ephemeral_flag = message.flags.map(|f| f.contains(MessageFlags::EPHEMERAL));
+        let ephemeral_flag = message.ephemeral();
         let Some(audience) = pick::audience(pick.audience, ephemeral_flag) else {
             tracing::warn!(
                 button = ?pick.audience,
@@ -989,17 +931,11 @@ impl Data {
             }
         }
         // Replace the "did you mean…?" in place, then edit it again with the verdict.
-        let working = CreateInteractionResponseMessage::new()
+        let working = Body::default()
             .content(render::working(pick.locale, &name))
             .components(vec![])
             .embeds(vec![]);
-        let sent = respond(
-            http,
-            c,
-            ack,
-            CreateInteractionResponse::UpdateMessage(working),
-        )
-        .await;
+        let sent = respond(http, c, ack, Response::Update(working)).await;
         if let Err(e) = sent {
             // The buttons are most likely still there: give the claim back so
             // the next click is not told the card was already picked.
@@ -1012,11 +948,14 @@ impl Data {
             return Err(anyhow::Error::from(e).context("acknowledge pick"));
         }
         let q = Question {
-            thread_id: c.channel_id.to_string(),
+            thread_id: c.thread_id(),
             text,
         };
         let out = self.answer(pick.locale, &q, &c.user, audience).await;
-        if let Err(e) = c.edit_response(http, out.into_edit()).await {
+        if let Err(e) = http
+            .edit_original(c.application_id, &c.token, &out.into_edit())
+            .await
+        {
             // The pick is claimed and the message shows "Working on it…" with
             // no buttons: tell the asker (ephemerally) to ask again rather
             // than leave them waiting on a message that will never change.
@@ -1078,7 +1017,7 @@ impl Data {
     /// so a second click asks nothing.
     async fn on_retry(
         &self,
-        http: &Http,
+        http: &Rest,
         c: &ComponentInteraction,
         ack: &Ack,
         clicker: Locale,
@@ -1098,7 +1037,7 @@ impl Data {
             tracing::warn!(message = %message.id, "a retry's message does not hold the reply it was made for");
             return ephemeral(http, c, ack, m.expired).await;
         };
-        let ephemeral_flag = message.flags.map(|f| f.contains(MessageFlags::EPHEMERAL));
+        let ephemeral_flag = message.ephemeral();
         let Some(audience) = pick::audience(retry.audience, ephemeral_flag) else {
             return ephemeral(http, c, ack, m.expired).await;
         };
@@ -1110,10 +1049,7 @@ impl Data {
         };
         let key = PickKey {
             message_id: message.id.get(),
-            shown_ms: pick::shown_ms(
-                message.id.get(),
-                message.edited_timestamp.map(|t| t.timestamp_millis()),
-            ),
+            shown_ms: pick::shown_ms(message.id.get(), message.edited_ms()),
             digest: digest.as_i64(),
         };
         let pool = self.library.pool();
@@ -1138,18 +1074,11 @@ impl Data {
             let text = render::cooling_down(clicker, cooldowns.limit(), wait);
             return ephemeral(http, c, ack, &text).await;
         }
-        let working = CreateInteractionResponseMessage::new()
+        let working = Body::default()
             .content(catalog::messages(retry.locale).retrying)
             .components(vec![])
             .embeds(vec![]);
-        if let Err(e) = respond(
-            http,
-            c,
-            ack,
-            CreateInteractionResponse::UpdateMessage(working),
-        )
-        .await
-        {
+        if let Err(e) = respond(http, c, ack, Response::Update(working)).await {
             if let Err(released) = release_pick(pool, key).await {
                 tracing::error!(
                     error = format_args!("{released:#}"),
@@ -1159,11 +1088,14 @@ impl Data {
             return Err(anyhow::Error::from(e).context("acknowledge retry"));
         }
         let q = Question {
-            thread_id: c.channel_id.to_string(),
+            thread_id: c.thread_id(),
             text: prompt.question().to_owned(),
         };
         let out = self.answer(retry.locale, &q, &c.user, audience).await;
-        if let Err(e) = c.edit_response(http, out.into_edit()).await {
+        if let Err(e) = http
+            .edit_original(c.application_id, &c.token, &out.into_edit())
+            .await
+        {
             tracing::error!(error = %e, "edit retried reply failed; asking the user to re-ask");
             ephemeral_followup(http, c, m.edit_failed)
                 .await
@@ -1174,12 +1106,12 @@ impl Data {
     }
 }
 
-fn retry_row(retry: Retry) -> CreateActionRow {
-    CreateActionRow::Buttons(vec![
-        CreateButton::new(ButtonAction::Retry(retry).to_custom_id())
-            .label(catalog::messages(retry.locale).retry_label)
-            .style(ButtonStyle::Primary),
-    ])
+fn retry_row(retry: Retry) -> Row {
+    Row::Buttons(vec![Button::new(
+        ButtonAction::Retry(retry).to_custom_id(),
+        catalog::messages(retry.locale).retry_label,
+        Style::Primary,
+    )])
 }
 
 /// Why a "did you mean…?" goes out without buttons.
@@ -1204,18 +1136,11 @@ impl NoPick {
 }
 
 /// A reply before it is shaped as a command's [`Message`] or a pick's
-/// [`EditInteractionResponse`].
+/// edit.
 struct Outgoing {
     content: String,
-    embed: Option<CreateEmbed>,
-    components: Vec<CreateActionRow>,
-}
-
-/// Allowed-mentions with an empty parse list and no explicit users/roles:
-/// the `<@asker>` in the restated question renders as a mention but pings
-/// nobody.
-fn no_pings() -> CreateAllowedMentions {
-    CreateAllowedMentions::new()
+    embed: Option<Embed>,
+    components: Vec<Row>,
 }
 
 impl Outgoing {
@@ -1229,10 +1154,11 @@ impl Outgoing {
         symbols: &SymbolTable,
     ) -> Self {
         let a = render::answer(locale, v, ctx, asker.get(), question, symbols);
-        let mut embed = CreateEmbed::new().footer(CreateEmbedFooter::new(a.footer));
-        if !a.citations.is_empty() {
-            embed = embed.description(a.citations);
-        }
+        let embed = Embed {
+            description: (!a.citations.is_empty()).then_some(a.citations),
+            footer: Some(Footer { text: a.footer }),
+            ..Embed::default()
+        };
         Self {
             content: a.content,
             embed: Some(embed),
@@ -1291,57 +1217,47 @@ impl Outgoing {
         m
     }
 
-    fn into_edit(self) -> EditInteractionResponse {
-        EditInteractionResponse::new()
+    /// The `<@asker>` in the restated question renders as a mention but
+    /// pings nobody.
+    fn into_edit(self) -> Body {
+        Body::default()
             .content(self.content)
             .components(self.components)
             .embeds(self.embed.into_iter().collect())
-            .allowed_mentions(no_pings())
+            .no_pings()
     }
 }
 
-fn rating_row(locale: Locale, call: CallId) -> CreateActionRow {
-    let button = |score: Score, style: ButtonStyle| {
-        CreateButton::new(ButtonAction::Rate { call, score }.to_custom_id())
-            .label(render::rating_label(locale, score))
-            .style(style)
+fn rating_row(locale: Locale, call: CallId) -> Row {
+    let button = |score: Score, style: Style| {
+        Button::new(
+            ButtonAction::Rate { call, score }.to_custom_id(),
+            render::rating_label(locale, score),
+            style,
+        )
     };
-    CreateActionRow::Buttons(vec![
-        button(Score::Incorrect, ButtonStyle::Danger),
-        button(Score::Partial, ButtonStyle::Secondary),
-        button(Score::Correct, ButtonStyle::Success),
+    Row::Buttons(vec![
+        button(Score::Incorrect, Style::Danger),
+        button(Score::Partial, Style::Secondary),
+        button(Score::Correct, Style::Success),
     ])
 }
 
 /// Replace and Keep, under "you already rated this…".
-fn replace_row(locale: Locale, call: CallId, score: Score) -> CreateActionRow {
+fn replace_row(locale: Locale, call: CallId, score: Score) -> Row {
     let m = catalog::messages(locale);
-    CreateActionRow::Buttons(vec![
-        CreateButton::new(ButtonAction::Replace { call, score }.to_custom_id())
-            .label(m.replace_label)
-            .style(ButtonStyle::Primary),
-        CreateButton::new(ButtonAction::Keep { call }.to_custom_id())
-            .label(m.keep_label)
-            .style(ButtonStyle::Secondary),
+    Row::Buttons(vec![
+        Button::new(
+            ButtonAction::Replace { call, score }.to_custom_id(),
+            m.replace_label,
+            Style::Primary,
+        ),
+        Button::new(
+            ButtonAction::Keep { call }.to_custom_id(),
+            m.keep_label,
+            Style::Secondary,
+        ),
     ])
-}
-
-/// The category menu shown before the form over the gateway.
-fn category_row(locale: Locale, call: CallId, fault: Fault) -> CreateActionRow {
-    let m = catalog::messages(locale);
-    let options = FeedbackCategory::ALL
-        .into_iter()
-        .map(|c| CreateSelectMenuOption::new((m.category_label)(c), c.id()))
-        .collect();
-    CreateActionRow::SelectMenu(
-        CreateSelectMenu::new(
-            ButtonAction::Category { call, fault }.to_custom_id(),
-            CreateSelectMenuKind::String { options },
-        )
-        .placeholder(m.form_category_placeholder)
-        .min_values(1)
-        .max_values(1),
-    )
 }
 
 /// Where a rating step's reply goes.
@@ -1364,7 +1280,7 @@ const _: () = assert!(EARLIER_BUDGET.as_millis() + 1_000 <= endpoint::ACK_WAIT.a
 
 /// One button per candidate, the first [`render::MAX_CHOICES`]: `base` with
 /// each one's card.
-fn pick_row(base: Pick, candidates: &NonEmpty<Card>) -> CreateActionRow {
+fn pick_row(base: Pick, candidates: &NonEmpty<Card>) -> Row {
     let buttons = candidates
         .iter()
         .take(render::MAX_CHOICES)
@@ -1373,65 +1289,39 @@ fn pick_row(base: Pick, candidates: &NonEmpty<Card>) -> CreateActionRow {
                 card: card.id,
                 ..base
             };
-            CreateButton::new(ButtonAction::Pick(pick).to_custom_id())
-                .label(render::button_label(&card.name))
-                .style(ButtonStyle::Primary)
+            Button::new(
+                ButtonAction::Pick(pick).to_custom_id(),
+                render::button_label(&card.name),
+                Style::Primary,
+            )
         })
         .collect();
-    CreateActionRow::Buttons(buttons)
+    Row::Buttons(buttons)
 }
 
 async fn ephemeral(
-    http: &Http,
+    http: &Rest,
     c: &ComponentInteraction,
     ack: &Ack,
     text: &str,
 ) -> anyhow::Result<()> {
-    let msg = CreateInteractionResponseMessage::new()
-        .content(text)
-        .ephemeral(true);
-    respond(http, c, ack, CreateInteractionResponse::Message(msg))
+    let msg = Body::default().content(text).ephemeral(true);
+    respond(http, c, ack, Response::Message(msg))
         .await
         .context("respond to button")
 }
 
-/// A button's initial response, told to `ack` whether or not it was sent.
-/// The only way a button handler sends one: the interactions endpoint
-/// answers Discord's request when it hears of it.
+/// A button's or a submitted form's initial response, told to `ack`
+/// whether or not it was sent. The only way a handler here sends one: the
+/// interactions endpoint answers Discord's request when it hears of it.
 async fn respond(
-    http: &Http,
-    c: &ComponentInteraction,
+    http: &Rest,
+    interaction: &Base,
     ack: &Ack,
-    response: CreateInteractionResponse,
-) -> serenity::Result<()> {
-    let sent = c.create_response(http, response).await;
-    ack.sent();
-    sent
-}
-
-/// A modal submission's initial response, told to `ack` as [`respond`] is.
-async fn respond_modal(
-    http: &Http,
-    f: &ModalInteraction,
-    ack: &Ack,
-    response: CreateInteractionResponse,
-) -> serenity::Result<()> {
-    let sent = f.create_response(http, response).await;
-    ack.sent();
-    sent
-}
-
-/// An initial response serenity has no builder for (the rating form's
-/// modal), sent as JSON and told to `ack` as [`respond`] is.
-async fn respond_raw(
-    http: &Http,
-    id: InteractionId,
-    token: &str,
-    ack: &Ack,
-    response: &serde_json::Value,
-) -> serenity::Result<()> {
+    response: Response,
+) -> Result<(), RestError> {
     let sent = http
-        .create_interaction_response(id, token, response, vec![])
+        .respond(interaction.id, &interaction.token, &response)
         .await;
     ack.sent();
     sent
@@ -1439,41 +1329,36 @@ async fn respond_raw(
 
 /// A private message as a modal submission's initial response.
 async fn modal_ephemeral(
-    http: &Http,
+    http: &Rest,
     f: &ModalInteraction,
     ack: &Ack,
     text: &str,
 ) -> anyhow::Result<()> {
-    let msg = CreateInteractionResponseMessage::new()
-        .content(text)
-        .ephemeral(true);
-    respond_modal(http, f, ack, CreateInteractionResponse::Message(msg))
+    let msg = Body::default().content(text).ephemeral(true);
+    respond(http, f, ack, Response::Message(msg))
         .await
         .context("respond to the rating form")
 }
 
 /// An ephemeral follow-up after a deferred acknowledgement.
 async fn ephemeral_followup(
-    http: &Http,
+    http: &Rest,
     c: &ComponentInteraction,
     text: &str,
 ) -> anyhow::Result<()> {
-    let msg = CreateInteractionResponseFollowup::new()
-        .content(text)
-        .ephemeral(true);
-    c.create_followup(http, msg)
+    let msg = Body::default().content(text).ephemeral(true);
+    http.followup(c.application_id, &c.token, &msg)
         .await
-        .map(drop)
         .context("follow up on button")
 }
 
 /// Whether `member` holds a role named `role_name` in `guild`. Looked up over
 /// HTTP each time (the gateway runs with no intents, so the cache is empty);
 /// a lookup failure counts as "not a judge" and is logged.
-async fn has_role(http: &Http, guild: GuildId, member: &Member, role_name: &str) -> bool {
-    match guild.roles(http).await {
+async fn has_role(http: &Rest, guild: GuildId, member: &Member, role_name: &str) -> bool {
+    match http.guild_roles(guild).await {
         Ok(roles) => roles
-            .values()
+            .iter()
             .any(|r| r.name == role_name && member.roles.contains(&r.id)),
         Err(e) => {
             tracing::warn!(%guild, error = %e, "could not fetch guild roles; treating rater as non-judge");
@@ -1484,17 +1369,10 @@ async fn has_role(http: &Http, guild: GuildId, member: &Member, role_name: &str)
 
 impl Data {
     /// Answer an interaction, however it arrived: a slash command, a
-    /// button or menu, or a submitted rating form (`form`: its raw
-    /// `data.components`, when the HTTP endpoint kept them). Autocomplete is
-    /// not registered, so none arrives. Never fails: a handler's error is
+    /// button or menu, or a submitted rating form. Autocomplete is not
+    /// registered, so none arrives. Never fails: a handler's error is
     /// logged here, and a command's is reported to the user.
-    async fn dispatch(
-        &self,
-        http: &Http,
-        interaction: &Interaction,
-        form: Option<&serde_json::Value>,
-        ack: &Ack,
-    ) {
+    async fn dispatch(&self, http: &Rest, interaction: &Interaction, ack: &Ack) {
         match interaction {
             Interaction::Command(c) => self.on_command(http, c, ack).await,
             Interaction::Component(c) => {
@@ -1503,19 +1381,22 @@ impl Data {
                 }
             }
             Interaction::Modal(f) => {
-                if let Err(e) = self.on_form(http, f, form, ack).await {
+                if let Err(e) = self.on_form(http, f, ack).await {
                     tracing::error!(error = format_args!("{e:#}"), "rating form handler failed");
                 }
             }
-            other => {
-                tracing::warn!(kind = ?other.kind(), "an interaction of a kind this bot does not register");
+            Interaction::Ping => {
+                tracing::warn!("a PING outside the interactions endpoint");
+            }
+            Interaction::Other(kind) => {
+                tracing::warn!(kind, "an interaction of a kind this bot does not register");
             }
         }
     }
 
     /// A slash command: parsed, run, and on an error answered with the
     /// catalog's `failed`.
-    async fn on_command(&self, http: &Http, c: &CommandInteraction, ack: &Ack) {
+    async fn on_command(&self, http: &Rest, c: &CommandInteraction, ack: &Ack) {
         let locale = self.locale_of(&c.locale);
         let m = catalog::messages(locale);
         let command = match Command::parse(&c.data, c.guild_id.is_some()) {
@@ -1604,7 +1485,7 @@ impl Data {
         // acknowledgement is also where Discord fixes who sees the reply.
         reply.defer(audience.is_private()).await?;
         let q = Question {
-            thread_id: c.channel_id.to_string(),
+            thread_id: c.thread_id(),
             text: question,
         };
         let out = self.answer(locale, &q, &c.user, audience).await;
@@ -1741,13 +1622,11 @@ impl Data {
 
 /// A lookup's embed, pinging nobody.
 fn lookup_message(view: render::Lookup) -> Message {
-    let embed = CreateEmbed::new()
-        .title(view.title)
-        .url(view.url)
-        .description(view.description);
-    let embed = match view.footer {
-        Some(f) => embed.footer(CreateEmbedFooter::new(f)),
-        None => embed,
+    let embed = Embed {
+        title: Some(view.title),
+        url: Some(view.url),
+        description: Some(view.description),
+        footer: view.footer.map(|text| Footer { text }),
     };
     Message::default().embed(embed).no_pings()
 }
@@ -1805,7 +1684,7 @@ pub async fn serve(
     );
     let shutdown = serving.shutdown();
     let alert = judge.budget().alert.clone();
-    let http = Arc::new(Http::new(cfg.token.expose()));
+    let http = Arc::new(Rest::new(&cfg.token)?);
     match cfg.interactions {
         Delivery::Gateway => {
             // The URL check, on a task of its own: the gateway does not wait
@@ -1824,7 +1703,15 @@ pub async fn serve(
                 serving.process(),
                 gateway::Timing::DEFAULT,
                 shutdown,
-                |stop| run(cfg.clone(), Arc::clone(&data), shutdown.clone(), stop),
+                |stop| {
+                    run(
+                        cfg.clone(),
+                        Arc::clone(&data),
+                        Arc::clone(&http),
+                        shutdown.clone(),
+                        stop,
+                    )
+                },
             )
             .await?;
             // A connection that ended by itself with no error: as before, the
@@ -1833,18 +1720,14 @@ pub async fn serve(
                 return Ok(());
             }
             // Left on the shutdown, with the gateway closed: no event is
-            // dispatched after this point. An event dispatched before it holds
-            // its `Work` from the first poll of the task serenity spawned for
-            // it, which in practice has happened during the close and the
-            // lease release's round trip; nothing can count it at the spawn
-            // itself.
+            // dispatched after this point, and each one dispatched before it
+            // took its `Work` as it arrived.
         }
         Delivery::Http => {
             // Nothing to drain if the shutdown came first.
             let Some(app) = application(&http, shutdown).await else {
                 return Ok(());
             };
-            http.set_application_id(app.id);
             let verifier = endpoint::verifier(&app.verify_key)?;
             let url = app.interactions_endpoint_url.clone();
             // Off the path to opening: an alert webhook may take its time.
@@ -1906,13 +1789,10 @@ const APPLICATION_RETRY_MAX: Duration = Duration::from_mins(1);
 /// The application's details from the REST API (`GET /applications/@me`),
 /// asked again with a growing pause until they come, or `None` once the
 /// process's shutdown is requested.
-async fn application(
-    http: &Http,
-    shutdown: &Shutdown,
-) -> Option<serenity::all::CurrentApplicationInfo> {
+async fn application(http: &Rest, shutdown: &Shutdown) -> Option<rest::Application> {
     let mut pause = APPLICATION_RETRY;
     loop {
-        let asked = tokio::time::timeout(APPLICATION_TIMEOUT, http.get_current_application_info());
+        let asked = tokio::time::timeout(APPLICATION_TIMEOUT, http.application());
         let failed = tokio::select! {
             biased;
             () = shutdown.requested() => return None,
@@ -1973,61 +1853,6 @@ impl Drop for AbortTask {
     }
 }
 
-/// One gateway connection's event handler: interactions go to
-/// [`Data::dispatch`], each counted as in-flight work for the process's
-/// [`Shutdown`] (serenity dispatches every event on a task of its own, and
-/// this holds the [`Work`](crate::shutdown::Work) for as long as that task
-/// runs the handler, a `/judge` answer included).
-struct Handler {
-    data: Arc<Data>,
-    shutdown: Shutdown,
-    guild: Option<GuildId>,
-    /// Where the first `Ready` hands the symbol watcher's abort handle. Taken
-    /// by that `Ready`, so a later one (a new session on the same
-    /// connection) starts no second watcher.
-    watcher: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<tokio::task::AbortHandle>>>,
-}
-
-#[serenity::all::async_trait]
-impl serenity::all::EventHandler for Handler {
-    async fn ready(&self, ctx: serenity::all::Context, ready: Ready) {
-        tracing::info!(user = %ready.user.name, guilds = ready.guilds.len(), "connected to Discord");
-        let Some(watcher_tx) = self.watcher.lock().ok().and_then(|mut w| w.take()) else {
-            return;
-        };
-        // Nothing in here fails or waits long: registration is bounded and
-        // only logged on failure, and the watcher is a task of its own.
-        register(&ctx.http, self.guild, &self.data).await;
-        // The application id arrives with `Ready`, so `ctx.http` can list the
-        // emoji now. The watcher does it as a task of its own, so a slow
-        // database or Discord never delays the bot's readiness: symbols
-        // render as text until its first listing lands.
-        let watcher = tokio::spawn(symbols::watch(
-            Arc::clone(&ctx.http),
-            self.data.library.pool().clone(),
-            Arc::clone(&self.data.symbols),
-        ));
-        if watcher_tx.send(watcher.abort_handle()).is_err() {
-            // The connection is already over.
-            watcher.abort();
-        }
-    }
-
-    async fn interaction_create(&self, ctx: serenity::all::Context, interaction: Interaction) {
-        let _work = self.shutdown.work();
-        // Over the gateway serenity has already parsed the event: a form's
-        // values are read from that parse (`Data::on_form`).
-        dispatch_guarded(
-            Arc::clone(&self.data),
-            Arc::clone(&ctx.http),
-            interaction,
-            None,
-            Ack::none(),
-        )
-        .await;
-    }
-}
-
 /// The language to answer a user whose Discord client reports `user` in,
 /// on an instance whose `JUDGE_LOCALE` is `instance` ([`Data::locale_of`]).
 fn answer_locale(user: &str, instance: Locale) -> Locale {
@@ -2037,13 +1862,7 @@ fn answer_locale(user: &str, instance: Locale) -> Locale {
 /// [`Data::dispatch`] on a task of its own, so a panic in a handler is
 /// caught: it is logged, and a command is told the catalog's `failed`, as
 /// it is after an error.
-async fn dispatch_guarded(
-    data: Arc<Data>,
-    http: Arc<Http>,
-    interaction: Interaction,
-    form: Option<serde_json::Value>,
-    ack: Ack,
-) {
+async fn dispatch_guarded(data: Arc<Data>, http: Arc<Rest>, interaction: Interaction, ack: Ack) {
     let command = match &interaction {
         Interaction::Command(c) => Some(c.clone()),
         _ => None,
@@ -2055,7 +1874,7 @@ async fn dispatch_guarded(
         .map_or(data.locale, |c| data.locale_of(&c.locale));
     let (h, a) = (Arc::clone(&http), ack.clone());
     let ran = tokio::spawn(async move {
-        data.dispatch(&h, &interaction, form.as_ref(), &a).await;
+        data.dispatch(&h, &interaction, &a).await;
     })
     .await;
     let Err(e) = ran else { return };
@@ -2080,74 +1899,68 @@ async fn dispatch_guarded(
     }
 }
 
-/// Connect to the gateway and serve until the connection ends, or until
-/// `stop` resolves, which closes it. Called once per connection: the lease
-/// hand-off ([`gateway::hold`]) calls it again after a lost lease.
+/// Connect to the gateway and serve until the connection ends for good, or
+/// until `stop` resolves, which closes it ([`shard::run`]). Called once per
+/// lease: the hand-off ([`gateway::hold`]) calls it again after a lost lease.
 ///
-/// On a stop it returns only once serenity says every shard is shut down.
-/// The wait is not bounded here: [`gateway::hold`] gives it
-/// [`gateway::Timing::shutdown_limit`], then ends the role, and the process
-/// exits, which closes any shard still open.
-///
-/// Every interaction it dispatches is counted as in-flight work for
-/// `shutdown` ([`Handler`]).
+/// The first `READY` registers the commands (once per role) and starts the
+/// symbol watcher, which ends with the connection. Each interaction is
+/// counted as in-flight work for `shutdown` from the moment it arrives, and
+/// answered on a task of its own.
 ///
 /// # Errors
-/// Building the client (bad token) or a fatal gateway error.
+/// A fatal close code (a bad token, intents refused) or a gateway that could
+/// not be set up.
 pub async fn run(
     cfg: Config,
     data: Arc<Data>,
+    rest: Arc<Rest>,
     shutdown: Shutdown,
     mut stop: gateway::Stop,
 ) -> anyhow::Result<()> {
-    // The symbol watcher this connection starts, aborted when the connection
-    // ends (however `run` returns, or is dropped), so reconnects never stack
-    // watchers.
-    let (watcher_tx, watcher_rx) = tokio::sync::oneshot::channel();
-    let _watcher = AbortOnDrop(watcher_rx);
-    let handler = Handler {
-        data,
-        shutdown,
-        guild: cfg.guild_id,
-        watcher: std::sync::Mutex::new(Some(watcher_tx)),
-    };
-    // Slash commands and button presses arrive without any gateway intent.
-    let building = serenity::all::ClientBuilder::new(cfg.token.expose(), GatewayIntents::empty())
-        .event_handler(handler);
-    // `biased`: a stop that came first wins, so nothing starts after it.
-    let mut client = tokio::select! {
-        biased;
-        () = stop.requested() => return Ok(()),
-        built = building => built.context("build Discord client")?,
-    };
-    let shards = Arc::clone(&client.shard_manager);
-    // One case the loop below cannot see: when a shard's shutdown reports a
-    // stray id, serenity queues a restart, and `start` can return before the
-    // queued start is processed. That costs at worst one IDENTIFY that
-    // dispatches nothing: the stray runner reads the queued shutdown before
-    // it dispatches an event. After a lost lease it falls inside the slack
-    // between the shutdown limit and the grace; after a clean release at
-    // shutdown the next holder may already be connected, and still nothing
-    // is answered twice.
-    let mut connected = std::pin::pin!(client.start());
-    tokio::select! {
-        biased;
-        () = stop.requested() => {}
-        ended = &mut connected => return ended.context("Discord gateway"),
-    }
-    tracing::info!("closing the Discord gateway connection");
-    // `shutdown_all` closes the shards registered so far and then makes
-    // `start` return. It returns at once, doing nothing, while none is
-    // registered (the shard is still connecting), so it is asked again until
-    // `start` returns: a shard that registers later is closed on the next
-    // round.
-    loop {
-        shards.shutdown_all().await;
-        tokio::select! {
-            ended = &mut connected => return ended.context("Discord gateway"),
-            () = tokio::time::sleep(SHUTDOWN_RETRY) => {}
+    // The connection's watcher, aborted when the connection ends (with the
+    // callback that holds it), so reconnects never stack watchers.
+    let mut watcher: Option<AbortTask> = None;
+    let guild = cfg.guild_id;
+    let on_event = move |event| match event {
+        shard::Event::Ready { user, guilds } => {
+            tracing::info!(%user, guilds, "connected to Discord");
+            if watcher.is_some() {
+                return;
+            }
+            let (data, rest) = (Arc::clone(&data), Arc::clone(&rest));
+            // Off the gateway's loop: registration is bounded and only
+            // logged on failure, and symbols render as text until the
+            // watcher's first listing lands.
+            watcher = Some(AbortTask(tokio::spawn(async move {
+                register(&rest, guild, &data).await;
+                symbols::watch(rest, data.library.pool().clone(), Arc::clone(&data.symbols)).await;
+            })));
         }
-    }
+        shard::Event::Interaction(raw) => {
+            let work = shutdown.work();
+            match Interaction::from_value(raw) {
+                Ok(interaction) => {
+                    let (data, rest) = (Arc::clone(&data), Arc::clone(&rest));
+                    tokio::spawn(async move {
+                        let _work = work;
+                        dispatch_guarded(data, rest, interaction, Ack::none()).await;
+                    });
+                }
+                Err(e) => tracing::warn!(error = %e, "a gateway interaction does not read"),
+            }
+        }
+    };
+    let config = shard::Config {
+        token: cfg.token.clone(),
+        connect: shard::Connect::Discover {
+            api_base: rest::API_BASE.to_owned(),
+        },
+    };
+    // Boxed: the connection's state is large, and lives as long as it does.
+    Box::pin(shard::run(config, on_event, stop.requested()))
+        .await
+        .context("Discord gateway")
 }
 
 /// How long registering the slash commands may take on a connection before
@@ -2162,7 +1975,7 @@ const REGISTER_RETRY_MAX: Duration = Duration::from_mins(10);
 
 /// [`register`] until it succeeds, for `http` mode, where no next
 /// connection would try again.
-async fn register_until_done(http: &Http, guild: Option<GuildId>, data: &Data) {
+async fn register_until_done(http: &Rest, guild: Option<GuildId>, data: &Data) {
     let mut pause = REGISTER_RETRY;
     while !register(http, guild, data).await {
         tokio::time::sleep(pause).await;
@@ -2175,23 +1988,17 @@ async fn register_until_done(http: &Http, guild: Option<GuildId>, data: &Data) {
 /// the commands registered earlier, so a failure (or no answer in
 /// [`REGISTER_TIMEOUT`]) is a warning, and it is tried again (on the next
 /// gateway connection, or after a pause over HTTP).
-async fn register(http: &Http, guild: Option<GuildId>, data: &Data) -> bool {
+async fn register(http: &Rest, guild: Option<GuildId>, data: &Data) -> bool {
     if data.registered.load(Ordering::Acquire) {
         tracing::debug!("slash commands already registered by this process");
         return true;
     }
     let commands = command::definitions();
-    let done = match guild {
-        Some(g) => tokio::time::timeout(REGISTER_TIMEOUT, g.set_commands(http, commands))
-            .await
-            .map(|r| r.map(drop)),
-        None => tokio::time::timeout(
-            REGISTER_TIMEOUT,
-            serenity::all::Command::set_global_commands(http, commands),
-        )
-        .await
-        .map(|r| r.map(drop)),
+    let registering = async {
+        http.ensure_application_id().await?;
+        http.set_commands(guild, &commands).await
     };
+    let done = tokio::time::timeout(REGISTER_TIMEOUT, registering).await;
     match (done, guild) {
         (Ok(Ok(())), Some(g)) => {
             data.registered.store(true, Ordering::Release);
@@ -2213,24 +2020,6 @@ async fn register(http: &Http, guild: Option<GuildId>, data: &Data) -> bool {
         ),
     }
     data.registered.load(Ordering::Acquire)
-}
-
-/// How often [`run`] asks serenity again to shut its shards down while a
-/// shard is still connecting.
-const SHUTDOWN_RETRY: Duration = Duration::from_millis(50);
-
-/// Aborts the task whose handle arrives on the channel, when dropped.
-struct AbortOnDrop(tokio::sync::oneshot::Receiver<tokio::task::AbortHandle>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        // Closed first, so a handle sent from now on fails to send and its
-        // sender aborts the task itself.
-        self.0.close();
-        if let Ok(handle) = self.0.try_recv() {
-            handle.abort();
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2419,10 +2208,8 @@ mod tests {
         }
     }
 
-    fn custom_ids(row: CreateActionRow) -> Vec<ButtonAction> {
-        let CreateActionRow::Buttons(buttons) = row else {
-            unreachable!("the rows here are button rows");
-        };
+    fn custom_ids(row: Row) -> Vec<ButtonAction> {
+        let Row::Buttons(buttons) = row;
         serde_json::to_value(&buttons)
             .unwrap_or_default()
             .as_array()
@@ -2475,7 +2262,7 @@ mod tests {
 
     #[test]
     fn a_pick_carries_the_span_the_click_pins() {
-        let asker = UserId::new(42);
+        let asker = UserId::new(NonZeroU64::new(42).unwrap_or(NonZeroU64::MIN));
         let question = "Does BOB die to bob?";
         let out = Outgoing::pick(
             Locale::En,
@@ -2491,7 +2278,7 @@ mod tests {
             out.components
                 .into_iter()
                 .next()
-                .unwrap_or_else(|| CreateActionRow::Buttons(vec![])),
+                .unwrap_or_else(|| Row::Buttons(vec![])),
         );
         let Some(ButtonAction::Pick(p)) = ids.first().copied() else {
             unreachable!("the first button is a pick");
@@ -2550,12 +2337,8 @@ mod tests {
     /// [`endpoint::ACK_WAIT`].
     #[test]
     fn initial_responses_go_through_respond() {
-        let call = concat!(".create", "_response(");
-        // `respond` (a button) and `respond_modal` (a submitted form).
-        assert_eq!(include_str!("mod.rs").matches(call).count(), 2);
-        assert_eq!(include_str!("reply.rs").matches(call).count(), 2);
-        // `respond_raw`: the rating form's modal, sent as JSON.
-        let raw = concat!(".create_interaction", "_response(");
-        assert_eq!(include_str!("mod.rs").matches(raw).count(), 1);
+        let call = concat!(".res", "pond(");
+        assert_eq!(include_str!("mod.rs").matches(call).count(), 1);
+        assert_eq!(include_str!("reply.rs").matches(call).count(), 1);
     }
 }

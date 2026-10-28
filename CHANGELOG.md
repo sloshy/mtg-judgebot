@@ -58,8 +58,7 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   a form with the kind of problem (wrong conclusion, missed part of the question, a
   citation doesn't support it, wrong card, misread the question, shouldn't have
   refused, outdated, other) and, optionally, what's wrong and the right answer, up to
-  1000 characters each. With `DISCORD_INTERACTIONS=http` it is one form; over the
-  gateway the kind of problem is a menu first, then the form. *Correct* is recorded at
+  1000 characters each, in one form however interactions arrive. *Correct* is recorded at
   once, as before. Rating an answer you already rated asks first (**Replace** or
   **Keep**), and pressing *Correct* again says it is already recorded. Rating buttons on
   answers posted before the upgrade get the new flow. The reasons go to the operator,
@@ -356,6 +355,12 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **No Discord library.** The bot speaks Discord's API itself (its own wire types, REST
+  client and gateway connection, D43) instead of through serenity 0.12, whose rustls
+  0.22 carried security advisories that will not be fixed on its line. Nothing to
+  configure: commands, replies and buttons are the same, a `Bot ` prefix on
+  `DISCORD_TOKEN` is still accepted, and the containers' `RUST_LOG` no longer names
+  `serenity`. A rating's reason is one form over the gateway too.
 - **`/judge-private` replaces `/judge private: True`.** Asking privately is its own
   command, next to `/judge` in Discord's command list, instead of a true/false option
   people had to find and set. `/card` and `/rule` lose their `private` option and always

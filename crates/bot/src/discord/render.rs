@@ -1,5 +1,5 @@
 //! Pure rendering: a validated verdict or a [`JudgeError`] → the text of a
-//! Discord reply. No serenity types here, so every branch is unit-testable
+//! Discord reply. No wire types here, so every branch is unit-testable
 //! and Discord's size limits are enforced by construction (`fit`).
 //!
 //! Anything that can carry Magic's card symbols — the answer body and the

@@ -2,10 +2,7 @@
 //! what an invocation parses into ([`Command::parse`]). Pure: both are built
 //! from the names below, so a registered command always parses.
 
-use serenity::all::{
-    CommandData, CommandDataOption, CommandDataOptionValue, CommandOptionType, CreateCommand,
-    CreateCommandOption, InteractionContext,
-};
+use std::collections::BTreeMap;
 
 use judge_core::Locale;
 
@@ -13,6 +10,7 @@ use super::{
     Audience,
     catalog::{self, Commands},
     render,
+    wire::{CommandData, CommandDef, CommandOption, OptionDef, OptionValue},
 };
 
 /// The longest `/judge` question, in characters: the `max_length` of its
@@ -181,17 +179,17 @@ impl Command {
 }
 
 /// A command's options, by name.
-struct Options<'a>(&'a [CommandDataOption]);
+struct Options<'a>(&'a [CommandOption]);
 
 impl Options<'_> {
-    fn get(&self, name: &str) -> Option<&CommandDataOptionValue> {
+    fn get(&self, name: &str) -> Option<&OptionValue> {
         self.0.iter().find(|o| o.name == name).map(|o| &o.value)
     }
 
     /// A required string option.
     fn string(&self, command: &'static str, option: &'static str) -> Result<String, Unparsed> {
         match self.get(option) {
-            Some(CommandDataOptionValue::String(s)) => Ok(s.clone()),
+            Some(OptionValue::String(s)) => Ok(s.clone()),
             _ => Err(Unparsed::BadOption { command, option }),
         }
     }
@@ -200,7 +198,7 @@ impl Options<'_> {
     fn flag(&self, command: &'static str, option: &'static str) -> Result<Option<bool>, Unparsed> {
         match self.get(option) {
             None => Ok(None),
-            Some(CommandDataOptionValue::Boolean(b)) => Ok(Some(*b)),
+            Some(OptionValue::Boolean(b)) => Ok(Some(*b)),
             Some(_) => Err(Unparsed::BadOption { command, option }),
         }
     }
@@ -209,7 +207,7 @@ impl Options<'_> {
 /// The description of every locale but the default, under each of its
 /// Discord tags: Discord shows a user the one for their client's language,
 /// and the base description (the default locale's) otherwise.
-fn localized(text: fn(&Commands) -> &'static str) -> Vec<(&'static str, &'static str)> {
+fn localized(text: fn(&Commands) -> &'static str) -> BTreeMap<&'static str, &'static str> {
     Locale::ALL
         .into_iter()
         .filter(|l| *l != Locale::default())
@@ -222,29 +220,57 @@ fn localized(text: fn(&Commands) -> &'static str) -> Vec<(&'static str, &'static
         .collect()
 }
 
-/// A command with its description in every locale.
-fn command(name: &str, text: fn(&Commands) -> &'static str) -> CreateCommand {
-    localized(text).into_iter().fold(
-        CreateCommand::new(name).description(text(&BASE.commands)),
-        |c, (tag, d)| c.description_localized(tag, d),
-    )
+/// A command with its description in every locale, and no options yet.
+fn command(name: &'static str, text: fn(&Commands) -> &'static str) -> CommandDef {
+    CommandDef {
+        name,
+        name_localizations: BTreeMap::new(),
+        description: text(&BASE.commands),
+        description_localizations: localized(text),
+        options: vec![],
+        contexts: None,
+        nsfw: false,
+    }
 }
 
-/// An option with its description in every locale.
-fn option(
-    kind: CommandOptionType,
-    name: &str,
+/// A required string option with its description in every locale, as long
+/// as `max_length` allows (`None`: Discord's own limit).
+fn text_option(
+    name: &'static str,
     text: fn(&Commands) -> &'static str,
-) -> CreateCommandOption {
-    localized(text).into_iter().fold(
-        CreateCommandOption::new(kind, name, text(&BASE.commands)),
-        |o, (tag, d)| o.description_localized(tag, d),
-    )
+    max_length: Option<u16>,
+) -> OptionDef {
+    OptionDef {
+        kind: 3,
+        name,
+        description: text(&BASE.commands),
+        description_localizations: localized(text),
+        required: true,
+        choices: [],
+        options: [],
+        channel_types: [],
+        min_value: None,
+        max_value: None,
+        min_length: None,
+        max_length,
+        autocomplete: false,
+    }
 }
 
-fn text_option(name: &str, text: fn(&Commands) -> &'static str) -> CreateCommandOption {
-    option(CommandOptionType::String, name, text).required(true)
+/// `command`, taking `option`.
+fn with(mut command: CommandDef, option: OptionDef) -> CommandDef {
+    command.options.push(option);
+    command
 }
+
+/// `command`, invoked only in a server.
+fn guild_only(mut command: CommandDef) -> CommandDef {
+    command.contexts = Some(vec![GUILD_CONTEXT]);
+    command
+}
+
+/// The interaction context "a server".
+const GUILD_CONTEXT: u8 = 0;
 
 /// The default locale's text: the descriptions Discord falls back to.
 const BASE: &catalog::Messages = catalog::messages(Locale::En);
@@ -252,16 +278,22 @@ const _: () = assert!(matches!(Locale::ALL[0], Locale::En));
 
 /// The seven commands as they are registered with Discord, in order.
 #[must_use]
-pub fn definitions() -> Vec<CreateCommand> {
+pub fn definitions() -> Vec<CommandDef> {
+    let question = || text_option(QUESTION, |c| c.judge_question, Some(QUESTION_MAX_CHARS));
     vec![
-        command(JUDGE, |c| c.judge)
-            .add_option(text_option(QUESTION, |c| c.judge_question).max_length(QUESTION_MAX_CHARS))
-            .contexts(vec![InteractionContext::Guild]),
-        command(JUDGE_PRIVATE, |c| c.judge_private)
-            .add_option(text_option(QUESTION, |c| c.judge_question).max_length(QUESTION_MAX_CHARS))
-            .contexts(vec![InteractionContext::Guild]),
-        command(CARD, |c| c.card).add_option(text_option(NAME, |c| c.card_name)),
-        command(RULE, |c| c.rule).add_option(text_option(ID, |c| c.rule_id)),
+        guild_only(with(command(JUDGE, |c| c.judge), question())),
+        guild_only(with(
+            command(JUDGE_PRIVATE, |c| c.judge_private),
+            question(),
+        )),
+        with(
+            command(CARD, |c| c.card),
+            text_option(NAME, |c| c.card_name, None),
+        ),
+        with(
+            command(RULE, |c| c.rule),
+            text_option(ID, |c| c.rule_id, None),
+        ),
         command(HELP, |c| c.help),
         command(LICENSE, |c| c.license),
         command(FORGET, |c| c.forget),

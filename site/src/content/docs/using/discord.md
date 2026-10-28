@@ -114,9 +114,6 @@ not out yet when it was answered.
   - *What's wrong* and *The right answer* (both optional, up to 1000 characters each).
 
   Submitting it records the rating with its reason. Closing the form records nothing.
-  On a bot whose interactions arrive over the gateway (the default), the kind of
-  problem is a menu in a private message first, and choosing it opens the form for the
-  two texts.
 - The reason goes to the operator's feedback queue, beside the question, the answer,
   its citations and cards, so they can fix what went wrong (a card note, a nickname, a
   prompt). The model never reads it. When the operator sets
