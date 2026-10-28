@@ -1934,8 +1934,11 @@ async fn forget_user_deletes_only_that_users_ratings_and_anonymizes_their_calls(
     assert_eq!(left, vec!["22".to_owned()]);
     // Every call stays. The public one keeps its text, the private one loses
     // it, and neither keeps who asked; the other user's is untouched.
+    // Ordered by what the test set, not by created_at: persists can share a
+    // microsecond, and a tie broken on the question sorts by the collation.
     let calls: Vec<ForgottenRow> = sqlx::query_as(
-        "SELECT asker_id, asker_name, question, answer, private FROM calls ORDER BY created_at, question",
+        "SELECT asker_id, asker_name, question, answer, private FROM calls \
+         ORDER BY asker_id NULLS FIRST, private",
     )
     .fetch_all(&pool)
     .await?;

@@ -281,7 +281,7 @@ async fn a_session_through_the_ops_layer(pool: PgPool) -> anyhow::Result<()> {
         anyhow::bail!("expected a stored call");
     };
     let private: Vec<(String, bool)> =
-        sqlx::query_as("SELECT question, private FROM calls ORDER BY created_at")
+        sqlx::query_as("SELECT question, private FROM calls ORDER BY private")
             .fetch_all(&pool)
             .await?;
     assert_eq!(
