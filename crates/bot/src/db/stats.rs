@@ -735,7 +735,12 @@ async fn dashboard(
               AND c.created_at >= $3::text::date::timestamp AT TIME ZONE 'utc'
               AND c.created_at < ($4::text::date + 1)::timestamp AT TIME ZONE 'utc'
               AND ($5::text IS NULL OR c.interface = $5)
-              AND ($6::text IS NULL OR c.asker_name = $6)
+              -- The name's current holder, as the feed's user page reads it
+              -- (`feed::page`).
+              AND ($6::text IS NULL OR (c.asker_name = $6 AND c.asker_id = (
+                    SELECT h.asker_id FROM calls h
+                    WHERE h.asker_name = $6 AND publicly_visible(h.private, h.created_at, $2::int)
+                    ORDER BY h.created_at DESC, h.id DESC LIMIT 1)))
               AND ($8::text IS NULL OR EXISTS (
                     SELECT 1 FROM judge_runs r JOIN judge_run_charges ch ON ch.run_id = r.id
                     WHERE r.call_id = c.id AND ch.model = $8 AND ch.stage <> 'embedding'))

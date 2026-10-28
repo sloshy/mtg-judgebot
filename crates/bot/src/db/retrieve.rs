@@ -305,19 +305,25 @@ impl PriorRow {
         let category = match self.category.parse::<Category>() {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(call = %id, error = %e, "skipping prior call with unknown category");
+                if crate::unread::first(crate::unread::Site::PriorCall, self.id) {
+                    tracing::warn!(call = %id, error = %e, "skipping prior call with unknown category (logged once)");
+                }
                 return None;
             }
         };
         let cr_version = match CrVersion::try_new(self.cr_version) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(call = %id, error = %e, "skipping prior call with bad cr_version");
+                if crate::unread::first(crate::unread::Site::PriorCall, self.id) {
+                    tracing::warn!(call = %id, error = %e, "skipping prior call with bad cr_version (logged once)");
+                }
                 return None;
             }
         };
         let citations = serde_json::from_value(self.citations).unwrap_or_else(|e| {
-            tracing::warn!(call = %id, error = %e, "prior call has undecodable citations; using none");
+            if crate::unread::first(crate::unread::Site::PriorCall, id.into_inner()) {
+                tracing::warn!(call = %id, error = %e, "prior call has undecodable citations; using none (logged once)");
+            }
             Vec::new()
         });
         Some(PriorCall {

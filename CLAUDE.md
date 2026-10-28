@@ -272,7 +272,10 @@ deletes the caller's ratings with their reasons and feedback-queue items (`feedb
   request. `main::run` waits for both roles on a requested stop (otherwise the first to
   stop still ends the process), waits for the scheduler to stop its run and end
   (`Scheduler::stopped`, within the drain deadline), then `Serving::flush` writes the
-  ledger, exit 0.
+  ledger, exit 0. A role that ends unasked requests the shutdown itself
+  (`main::wind_down`), so the scheduler and the ledger are stopped and written the same
+  way before the non-zero exit; a lost schema hold exits at once (a newer release may be
+  migrating).
   Compose's `stop_grace_period` is `DRAIN_LIMIT + EXIT_MARGIN` (a test).
 
 **The source offer** (`judge_core::source`, AGPL §13). Every remote interface names the
@@ -664,7 +667,10 @@ Also true of `api`:
 - **The public feed** (D36, #26): `judge_bot::feed` is every public read of `calls`
   (`page`, `call`, `rateable`), each through `publicly_visible(private, at, window_days)`
   (one SQL function, migration `20261020000002`, inlined by the planner),
-  username only (never `asker_id`); missing, private and too old are one `None`.
+  username only (never `asker_id`); missing, private and too old are one `None`. A
+  user filter (feed and public `/api/stats`) means the `asker_id` behind the name's
+  newest public call, so a reassigned username never lists its earlier holder's calls.
+  `rateable` reads the call as `call` does: what the feed cannot read cannot be rated.
   `judge_api::feed` serves `GET /api/feed` (cursor `<µs>.<id>`, 20 a page) and
   `GET /api/calls/{id}` under `--web` unless `JUDGE_FEED=false` (`Config::feed`),
   with their own read limiter (`feed::READ_LIMIT`). `/api/about` carries `feed`, and

@@ -1855,9 +1855,11 @@ Every step is safe to cut off at any await point:
 | `emoji` | An upload already sent may have been created; the SVG cache is written then renamed | The next run lists the application's emoji and skips those that exist. `runs::emoji_since` counts an `interrupted` emoji step as one that may have uploaded, so the bot reloads its table |
 
 **Not covered:** a crash or SIGKILL still leaves an open row, which the record counts as
-failed after 3 h 10 min (D24). A process that exits because a role failed, not on a
-signal, does not stop its scheduler first. `scripts/refresh-data.sh` runs in its own
-container and is stopped by whoever stops it.
+failed after 3 h 10 min (D24). `scripts/refresh-data.sh` runs in its own container and is
+stopped by whoever stops it. A process that exits because a role failed, not on a signal,
+requests the same shutdown first, so its run is closed as stopped and its spend written
+before the non-zero exit. A lost schema hold exits at once: a newer release may be
+migrating, and nothing of the old one writes beside it.
 
 **Rejected:**
 

@@ -88,7 +88,8 @@ citations and cards, how it was rated, and a note when its citations no longer h
 - **Compact** (the default) shows one line per question, which opens in place to the
   whole exchange; **Expanded** shows every exchange in full.
 - `/calls/<id>` is one answer's own page, and `/users/<name>` one Discord user's public
-  questions.
+  questions. A username someone gave up and another took lists only the newer holder's
+  questions once they ask one publicly; the earlier holder's stay in the feed.
 - `JUDGE_FEED=false` removes the pages and their endpoints. `JUDGE_FEED_DAYS` hides calls
   older than that many days from all of them, without deleting anything
   (`JUDGE_CALL_RETENTION_DAYS` deletes).

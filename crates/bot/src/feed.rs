@@ -573,7 +573,14 @@ pub async fn page(
         ) rt
         WHERE publicly_visible(c.private, c.created_at, $1)
           AND ($2::text IS NULL OR c.interface = $2)
-          AND ($3::text IS NULL OR c.asker_name = $3)
+          -- A username is reassigned when its holder changes it, and each
+          -- call keeps the name it was asked under: the name's calls are
+          -- those of whoever asked under it last, as far as the public can
+          -- see, so an earlier holder's are not listed as the new one's.
+          AND ($3::text IS NULL OR (c.asker_name = $3 AND c.asker_id = (
+                SELECT h.asker_id FROM calls h
+                WHERE h.asker_name = $3 AND publicly_visible(h.private, h.created_at, $1)
+                ORDER BY h.created_at DESC, h.id DESC LIMIT 1)))
           -- The text exactly as the feed shows it (`without_mentions`: each
           -- mention as `@…` or `#…`), so no part of a mention's id is ever
           -- searched and nobody can find who was mentioned by trying ids.
@@ -631,6 +638,20 @@ pub async fn call(
     reasons: Reasons,
     id: CallId,
 ) -> Result<Option<(Entry, Names)>, JudgeError> {
+    let Some(entry) = read_call(pool, window, reasons, id).await? else {
+        return Ok(None);
+    };
+    let names = names(pool, std::slice::from_ref(&entry)).await?;
+    Ok(Some((named(entry, &names), names)))
+}
+
+/// [`call`]'s entry before its names are read.
+async fn read_call(
+    pool: &PgPool,
+    window: Option<Days>,
+    reasons: Reasons,
+    id: CallId,
+) -> Result<Option<Entry>, JudgeError> {
     let row = sqlx::query_as!(
         Row,
         r#"
@@ -678,33 +699,20 @@ pub async fn call(
     .fetch_optional(pool)
     .await
     .map_err(upstream("read a public call"))?;
-    let Some(entry) = row.and_then(readable) else {
-        return Ok(None);
-    };
-    let names = names(pool, std::slice::from_ref(&entry)).await?;
-    Ok(Some((named(entry, &names), names)))
+    Ok(row.and_then(readable))
 }
 
-/// Whether the public may rate call `id` from the web: it exists, was not
-/// asked private, and is within `window` (the feed's reach). A missing,
-/// private and too-old call are the same `false`, as the feed's `None`.
+/// Whether the public may rate call `id` from the web: exactly when
+/// [`call`] shows it (it exists, was not asked private, is within `window`
+/// and reads in this build). A call the feed cannot show cannot be rated, so
+/// a rating never lands on a call nobody can see.
 ///
 /// # Errors
 /// `Upstream` from sqlx.
 pub async fn rateable(pool: &PgPool, window: Option<Days>, id: CallId) -> Result<bool, JudgeError> {
-    sqlx::query_scalar!(
-        r#"
-        SELECT EXISTS (
-            SELECT 1 FROM calls c
-            WHERE c.id = $2 AND publicly_visible(c.private, c.created_at, $1)
-        ) AS "rateable!"
-        "#,
-        window_days(window),
-        id.into_inner(),
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(upstream("check a call is rateable"))
+    Ok(read_call(pool, window, Reasons::Hidden, id)
+        .await?
+        .is_some())
 }
 
 /// A unit-variant enum from its stored serde name.
@@ -729,7 +737,9 @@ fn readable(r: Row) -> Option<Entry> {
     let id = r.id;
     entry(r)
         .inspect_err(|e| {
-            tracing::warn!(call = %id, error = %format_args!("{e:#}"), "a public call does not read; left out of the feed");
+            if crate::unread::first(crate::unread::Site::Feed, id) {
+                tracing::warn!(call = %id, error = %format_args!("{e:#}"), "a public call does not read; left out of the feed (logged once)");
+            }
         })
         .ok()
 }
@@ -1250,6 +1260,43 @@ mod tests {
     /// left out of its page and has no page of its own; the rest of the
     /// feed reads, and a page whose last row is left out still has a next.
     #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_reassigned_username_lists_only_its_current_holder(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        // Discord user 1 asked as "bob", renamed, and user 2 took "bob";
+        // then user 3, also "bob" later, asked only in private.
+        let asked = |id: &'static str, secs: i32, private: bool| {
+            let pool = pool.clone();
+            async move {
+                let call = call_at(&pool, 0, secs, "discord", Some("bob"), private).await?;
+                sqlx::query("UPDATE calls SET asker_id = $2 WHERE id = $1")
+                    .bind(call)
+                    .bind(id)
+                    .execute(&pool)
+                    .await?;
+                anyhow::Ok(call)
+            }
+        };
+        let earlier = asked("1", 30, false).await?;
+        let current = asked("2", 20, false).await?;
+        asked("3", 10, true).await?;
+        let bob = Filter {
+            user: judge_core::DiscordUsername::try_new("bob".to_owned()).ok(),
+            ..Filter::default()
+        };
+        // The private call does not make user 3 the holder: the public cannot
+        // see it, so it cannot tell it exists.
+        assert_eq!(
+            ids(&page(&pool, None, Reasons::Hidden, &bob, None).await?),
+            vec![current]
+        );
+        // The earlier holder's call is still in the feed, under its name.
+        let all = ids(&page(&pool, None, Reasons::Hidden, &Filter::default(), None).await?);
+        assert!(all.contains(&earlier) && all.contains(&current));
+        Ok(())
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn an_unreadable_call_is_left_out_not_fatal(pool: PgPool) -> anyhow::Result<()> {
         // What a newer build's migration could relax.
         sqlx::query("ALTER TABLE calls DROP CONSTRAINT calls_interface_check")
@@ -1310,6 +1357,8 @@ mod tests {
                     .await?
                     .is_none()
             );
+            // What the feed cannot show cannot be rated.
+            assert!(!rateable(&pool, None, CallId::new(id)).await?);
         }
         let good = *asked.get(1).ok_or_else(|| anyhow::anyhow!("calls"))?;
         assert!(
@@ -1317,6 +1366,7 @@ mod tests {
                 .await?
                 .is_some()
         );
+        assert!(rateable(&pool, None, CallId::new(good)).await?);
         Ok(())
     }
 

@@ -547,7 +547,9 @@ pub async fn calls(
             };
             row()
                 .inspect_err(|e| {
-                    tracing::warn!(call = %id, error = %format_args!("{e:#}"), "a stored call does not read; left out of the admin list");
+                    if crate::unread::first(crate::unread::Site::AdminList, id) {
+                        tracing::warn!(call = %id, error = %format_args!("{e:#}"), "a stored call does not read; left out of the admin list (logged once)");
+                    }
                 })
                 .ok()
         })
@@ -606,7 +608,9 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
     let (interface, confidence, source) = match decoded() {
         Ok(fields) => fields,
         Err(e) => {
-            tracing::warn!(call = %r.id, error = %format_args!("{e:#}"), "a stored call does not read; answered as not found");
+            if crate::unread::first(crate::unread::Site::AdminCall, r.id) {
+                tracing::warn!(call = %r.id, error = %format_args!("{e:#}"), "a stored call does not read; answered as not found (logged once)");
+            }
             return Ok(None);
         }
     };
@@ -675,7 +679,9 @@ pub async fn call(pool: &PgPool, id: CallId) -> Result<Option<(CallDetail, Names
         };
         row()
             .inspect_err(|e| {
-                tracing::warn!(call = %id.into_inner(), rater = %user, error = %format_args!("{e:#}"), "a rating does not read; left out of the call");
+                if crate::unread::first(crate::unread::Site::AdminRating, id.into_inner()) {
+                    tracing::warn!(call = %id.into_inner(), rater = %user, error = %format_args!("{e:#}"), "a rating does not read; left out of the call (logged once per call)");
+                }
             })
             .ok()
     })

@@ -426,7 +426,11 @@ Three interfaces share this pipeline through the same composition root
     `judge_bot::feed`, whose queries are the only public reads of `calls` (no private
     call, nothing older than `JUDGE_FEED_DAYS`). They have their own per-address read
     limit. The page routes `/feed`, `/calls/<id>` and `/users/<name>` client-side
-    (`web/src/router.ts`); an unrouted `/api/` path is a JSON 404.
+    (`web/src/router.ts`); an unrouted `/api/` path is a JSON 404. A user filter (the
+    feed's and the public dashboard's) lists the calls of the Discord id behind the
+    name's newest public call, so a reassigned username does not list its earlier
+    holder's. A call the feed cannot read in this build is neither shown nor rateable
+    (`feed::rateable` reads it the way `feed::call` does).
     `publicly_visible(private, at, window_days)`, a SQL function the migrations define
     once and the planner inlines, is the "not private, within the window" predicate of
     every public read, so the feed's partial indexes still serve them.

@@ -283,7 +283,9 @@ impl Row {
         let (id, call) = (self.id, self.call_id);
         self.item()
             .inspect_err(|e| {
-                tracing::warn!(item = %id, call = %call, error = %format_args!("{e:#}"), "a feedback item does not read; left out of the queue");
+                if crate::unread::first(crate::unread::Site::Queue, id) {
+                    tracing::warn!(item = %id, call = %call, error = %format_args!("{e:#}"), "a feedback item does not read; left out of the queue (logged once)");
+                }
             })
             .ok()
     }
