@@ -352,7 +352,7 @@ services:
   # public IPv4 and no dynamic DNS. Off by default; deployments opt in with
   # COMPOSE_PROFILES=tunnel in .env, and API_CLIENT_IP=cloudflare.
   cloudflared:
-    image: cloudflare/cloudflared:2026.10.3
+    image: cloudflare/cloudflared:2026.10.7
     # No container_name: `scripts/deploy.sh` starts the new connector beside the
     # old one (one tunnel takes several) and stops the old one once the new one
     # has registered, so an update drops no request.
