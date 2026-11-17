@@ -68,18 +68,17 @@ and Azure OpenAI work by setting knobs, with no code changes.
 
 Some backends cannot enforce the output schema on the server (`json_object`, `prompt`,
 Bedrock). They get the schema in the prompt instead. That can mean more citation retries,
-but the guarantees are the same: the judge always decodes the answer and validates its
-citations itself.
+but the judge still decodes the answer and validates its citations itself.
 
-**The spend cap must be able to price every model.** `JUDGE_MAX_USD` reserves each call's
-worst case before sending, so it needs a price per token.
+**Pricing.** `JUDGE_MAX_USD` reserves each call's worst case before sending, so it needs a
+price per token for every model.
 
 - The built-in table knows Anthropic's current first-party models. It prices any other
   Anthropic model as the default, `claude-opus-5-5`, so a model that costs more needs a
   price of its own (below).
-- An `openai` provider has no safe guess. A model there needs a `[models.<stage>.pricing]`
-  table (USD per million tokens), or the provider must say `pricing = "free"`. Otherwise
-  startup fails with an error naming the stage.
+- An `openai` provider has no default price. A model there needs a
+  `[models.<stage>.pricing]` table (USD per million tokens), or the provider must say
+  `pricing = "free"`. Otherwise startup fails with an error naming the stage.
 - A price you write overrides the table, and the cap charges exactly that price.
 
 Embeddings are chosen the same way: `[models.embed]` on a `voyage` provider or on any
@@ -109,7 +108,7 @@ At the cap a question is still answered, without vector search, and its call is 
 without a vector for the next `ingest embed` to fill.
 
 A fresh database is created 1024 wide, Voyage's width. For an embedder of another width
-(OpenAI's `text-embedding-3-small` is 1536), run `ingest reembed --yes` *instead of*
+(OpenAI's `text-embedding-3-small` is 1536), run `ingest reembed --yes` instead of
 `ingest embed` the first time. It retypes the columns before it fills them. `ingest init`
 does this by itself on a database that holds no vectors.
 
@@ -127,7 +126,7 @@ search. To switch models:
    (`JUDGE_MAX_USD=20 … reembed --yes`).
 
 Run with the switch already made, `reembed` only fills rows that are still empty.
-`--clear` clears and re-pays every row on purpose.
+`--clear` clears and re-pays every row.
 
 `judge-cli config` prints the resolved setup with secrets redacted. Every binary logs the
 same summary line at startup.

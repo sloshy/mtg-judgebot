@@ -66,7 +66,7 @@ Operators should know these properties. The reasoning behind each is in
 - **Public calls are published.** Under `--web`, unless `JUDGE_FEED=false`, the feed
   (`/feed`, `GET /api/feed`, `GET /api/calls/{id}`) and the dashboard (`GET /api/stats`)
   show every call not asked private, within `JUDGE_FEED_DAYS` when set, with the Discord
-  asker's username. Never the asker's id, the server or the channel. Raters' reasons
+  asker's username, and never the asker's id, the server or the channel. Raters' reasons
   (without who gave them), the cost and the models are added only by
   `JUDGE_PUBLIC_FEEDBACK`, `JUDGE_PUBLIC_COST` and `JUDGE_PUBLIC_MODELS`, all off by
   default.

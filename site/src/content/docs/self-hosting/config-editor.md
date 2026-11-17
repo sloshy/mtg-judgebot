@@ -6,24 +6,22 @@ sidebar:
 ---
 
 `judge-config` serves a page on `127.0.0.1` for editing [`judge.toml`](../models/) and
-`.env`, and is the way to set a judgebot's configuration.
-
-- Both files stay plain text, so editing them by hand remains possible.
-- The editor writes them the way you would: only the lines you change.
+`.env`, and is the way to set a judgebot's configuration. Both files stay plain text, so
+editing them by hand remains possible.
 
 - **Forms from the loader's types.** The `judge.toml` form is generated from the types the
   loader parses into, and the help text is their documentation. A setting's help is its
   comment in `.env.example`. A knob added in a release appears in the editor without
   any change to it.
-- **Each draft is checked by the binaries' own code.** On every change, the draft runs
-  through the same loaders the binaries use at startup. The side panel says whether the
+- **Draft checks.** On every change, the draft runs through the same loaders the binaries
+  use at startup. The side panel says whether the
   database settings, the model configuration and the roles would start (the Discord bot,
   the HTTP API and the admin interface, each when `JUDGE_ROLES` runs it), how the
   instance is reached, and which key or variable to fix if not.
-- **Only the lines you change are written.** Comments, blank lines, key order and the
-  spelling of every unchanged value survive. The Review tab shows the diff of both
-  files before anything is written.
-- **Secrets are write-only.** API keys, `DISCORD_TOKEN`, `MCP_TOKEN`, `MCP_ADMIN_TOKEN`,
+- **Line-level writes.** Only the lines you change are written. Comments, blank lines,
+  key order and the spelling of every unchanged value survive. The Review tab shows the
+  diff of both files before anything is written.
+- **Write-only secrets.** API keys, `DISCORD_TOKEN`, `MCP_TOKEN`, `MCP_ADMIN_TOKEN`,
   `ADMIN_TOKEN`,
   `JUDGE_ALERT_WEBHOOK`, `DATABASE_URL` and any variable the editor does not know are
   never shown. The page says whether each is set.

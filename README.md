@@ -6,13 +6,11 @@
 
 <img src="assets/icon.png" alt="" width="96" align="right">
 
-A Discord bot and web app that answers Magic: The Gathering rules questions like a judge.
-Ask in plain language. Nicknames such as "bob", "goyf" and "snappy" work. Every claim in
-the answer is **backed by a checked, clickable citation**: a Comprehensive Rules section,
-an official Scryfall ruling, the card's current Oracle text, or a past answer. On Discord,
-members rate answers as correct, partially correct or incorrect, and ratings decide which
-past answers new ones draw on as examples. A rating that finds fault says why, and the
-reason goes to the operator's feedback queue to be fixed.
+A Discord bot and web app that answers Magic: The Gathering rules questions asked in plain language.
+Answers are **backed by checked, clickable citations**: direct from the Comprehensive Rules,
+Scryfall-sourced rulings, the card's current Oracle text, or relevant past answers. Members of your Discord server
+can rate the correctness of each answer, and ratings decide which
+past answers it will cite in the future.
 
 <img src="site/src/assets/screenshots/discord-answer-citations.png" width="720" alt="A Discord reply to /judge about revealing an X-cost spell to Dark Confidant: a two-paragraph ruling with a rule number inline and mana symbols drawn as pictures, an embed quoting a dated ruling, the card's Oracle text and rule 107.3g, the card the question resolved to, the confidence and CR version, and three rating buttons.">
 
@@ -33,8 +31,8 @@ More answers, copied verbatim from a published evaluation run, are on the
    are declined here, before the expensive step.
 2. **Find the cards.** Nicknames and possessives, exact names, old printed names, short
    names ("Ragavan"), then fuzzy matching. `[[Full Card Name]]` in brackets matches that
-   exact name (or a listed nickname) only. Answers show which cards they used. The bot
-   **never guesses**: an ambiguous name ("Tibalt") gets a "Did you mean…?" prompt.
+   exact name (or a listed nickname) only. Answers show which cards they used. An
+   ambiguous name ("Tibalt") gets a "Did you mean…?" prompt instead of a guess.
 3. **Gather the material.** The rules sections for the question's categories, plus
    full-text and semantic search over the Comprehensive Rules. Then the cards' rulings,
    glossary entries, hand-written notes for notoriously tricky cards (Humility, Blood
@@ -51,7 +49,7 @@ More answers, copied verbatim from a published evaluation run, are on the
 ## What it takes
 
 Each community runs its own judgebot: one compose file, a model API key, and a Discord
-application you create in a few minutes.
+application of your own.
 
 | | |
 | --- | --- |
@@ -62,8 +60,8 @@ application you create in a few minutes.
 | **Setup** | Six commands. The first data load downloads about 110 MB from Scryfall and takes about a minute on a fast connection. |
 
 You don't need Discord to start: the web app and the command line work without a bot
-token. The documentation site, <https://mtg-judgebot.rpeters.dev/>, has the long form of
-everything below and explains how the judge works.
+token. The documentation site, <https://mtg-judgebot.rpeters.dev/>, covers everything
+below in more detail and explains how the judge works.
 
 ## Running it
 
@@ -137,11 +135,11 @@ upload the mana symbols, so answers show pictures instead of `{W}`.
 
 `scripts/deploy.sh` is how every change goes live: a new release, an edited `.env` or
 `judge.toml`, a `git pull`. It starts the new container beside the running one and
-switches once it is healthy, so nobody sees downtime. A change to the database's own
+switches once it is healthy, so there is no downtime. A change to the database's own
 service waits for `scripts/deploy.sh --db`, which takes it offline for a few seconds:
 the script refuses until you run it.
 [Run your own judgebot](https://mtg-judgebot.rpeters.dev/self-hosting/first-run/) has the
-long form.
+details.
 
 ### Choosing a model
 
@@ -177,8 +175,8 @@ and `--jobs` (the data refresh). `JUDGE_ROLES` in `.env` lists them, and unset i
 ### Hosting
 
 The intended setup is a machine you own running the compose stack, with no cloud bill.
-Out of the box it answers on `127.0.0.1:8787` only, which is enough for a Discord bot
-over its gateway connection. To publish the web app, set `COMPOSE_PROFILES=public` and
+By default it answers on `127.0.0.1:8787` only, which is enough for a Discord bot over
+its gateway connection. To publish the web app, set `COMPOSE_PROFILES=public` and
 `JUDGE_DOMAIN` in `.env`: the bundled Caddy then serves `https://<JUDGE_DOMAIN>` on ports
 80 and 443 with a Let's Encrypt certificate. A reverse proxy of your own, or a [Cloudflare
 Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/)
@@ -307,11 +305,11 @@ stay in `eval/published/` as `v1-*`.
 ## Design
 
 Rust was chosen so the compiler enforces correctness. `docs/DECISIONS.md` records that
-choice and the other main design decisions, with the alternatives rejected. In practice:
+choice and the other main design decisions, with the alternatives rejected. In the code:
 
 - Closed enums wherever a value has a fixed set of cases, and validated newtypes for ids.
 - `Verdict<Unvalidated> → validate() → Verdict<Validated>`, so an unchecked answer
-  *cannot* be stored or shown.
+  cannot be stored or shown.
 - A typestate on the answer loop, so the extra-rules lookup cannot repeat.
 - SQL checked at compile time (sqlx + committed offline data).
 - The model's output schema is generated from the same structs its responses parse into.
@@ -337,13 +335,13 @@ web/         SolidJS + TypeScript web app (Vite)
 site/        the documentation site (Astro + Starlight); docs/ is its source
 data/        categories.yaml (generates the Category enum), aliases.yaml, notes.yaml
 eval/        gold.yaml, published/ (graded runs), runs/ (yours, gitignored)
-docs/        EXPLAINER.md (the tour), ARCHITECTURE.md (the reference), DECISIONS.md (why),
+docs/        EXPLAINER.md (the walkthrough), ARCHITECTURE.md (the reference), DECISIONS.md (why),
              PROVIDERS.md (the model-provider reference), DEPLOYMENT.md (the runbook)
 ```
 
-One process is one spend cap, one judge role and one Discord application, by design
-(`docs/DECISIONS.md` D16). Tournament policy (MTR/IPG) is not covered: the bot declines
-those questions rather than guessing.
+One process is one spend cap, one judge role and one Discord application
+(`docs/DECISIONS.md` D16). Tournament policy (MTR/IPG) is not covered, and the bot
+declines those questions.
 
 ## License and attribution
 

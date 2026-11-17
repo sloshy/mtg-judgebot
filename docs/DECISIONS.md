@@ -2,9 +2,9 @@
 
 The decisions that shaped this codebase, and why each was made. A new reader or a future
 maintainer can use it to tell a deliberate choice from an accident.
-`docs/ARCHITECTURE.md` describes *what* exists and is kept current with the code.
-`docs/EXPLAINER.md` is the narrative tour. This file records *why*. Each entry names the
-alternative that was rejected. Dates are when the decision was made.
+`docs/ARCHITECTURE.md` describes what exists and is kept current with the code.
+`docs/EXPLAINER.md` explains the system in narrative form. This file records why. Each
+entry names the alternative that was rejected. Dates are when the decision was made.
 
 ## D1. Compiler-enforced correctness
 
@@ -20,7 +20,7 @@ a priority order:
 Code volume and build time were declared non-criteria. Nine invariants were written down
 first. The language, the libraries and most of the type design follow from them:
 
-| # | Invariant | Where it bites |
+| # | Invariant | Effect |
 |---|---|---|
 | I1 | `Resolution`, `Citation`, `JudgeError`, `Source` are closed sums; every consumer handles every case | "Ambiguous" can never be silently treated as "resolved" |
 | I2 | `Card.faces` is non-empty; `RuleId` matches `^[0-9]{3}(\.[0-9]+[a-z]{0,2})?$`; a rating is 1, 2 or 3 | Invalid data is unconstructible |
@@ -35,14 +35,14 @@ first. The language, the libraries and most of the type design follow from them:
 **Rule that follows.** When adding an invariant, make the bad state unrepresentable
 (exhaustive enums, `nutype` newtypes with validators, `NonEmpty`, typestates). A runtime
 check is the fallback. A test is the fallback to that. `CONTRIBUTING.md` restates the
-ones a change is most likely to bump into.
+ones a change is most likely to affect.
 
 ## D2. Rust
 
 *Decided 2026-08-29.*
 
-Eight languages were scored against I1–I9. Three cleared the bar, and the gap between
-them was small. The gap from third to fourth was not.
+Eight languages were scored against I1–I9. Three met the criteria with small differences
+between them, and the fourth was well behind the third.
 
 - **Haskell** scored highest on paper. It is the only language enforcing I5, I7, I8 and
   I9 at once: autodocodec derives schema and parser from one codec, and effect systems
@@ -53,17 +53,17 @@ them was small. The gap from third to fourth was not.
   boundary) that must be fenced by convention and tests rather than by the compiler.
   Scala.js was a net correctness loss: the two things you would import arrive as
   unchecked facades.
-- **Rust** enforces I1–I6, I8 and I9 at compile time and is the *most* idiomatic home for
-  I3 and I4 (typestate). Its one structural gap is I7: an `async fn` can do anything and
-  the compiler will not object. That gap is accepted and fenced by the dependency graph.
-  `crates/core` has no reqwest, sqlx or tokio-net, so I/O there is a build failure by
-  *dependency* rather than by *type*. The other accepted cost is owning the model-API
+- **Rust** enforces I1–I6, I8 and I9 at compile time and is the most idiomatic language
+  for I3 and I4 (typestate). Its one structural gap is I7: an `async fn` can do anything
+  and the compiler will not object. That gap is accepted and fenced by the dependency
+  graph. `crates/core` has no reqwest, sqlx or tokio-net, so I/O there is a build failure
+  by dependency rather than by type. The other accepted cost is owning the model-API
   clients, because there is no official Rust SDK (see D3).
 
 The rest fell short:
 
-- F# was ecosystem-safe but bought little beyond Kotlin with discriminated unions.
-- TypeScript, Kotlin and Go were below the bar for "compiler over test suite".
+- F# was ecosystem-safe but added little beyond Kotlin with discriminated unions.
+- TypeScript, Kotlin and Go did not meet the "compiler over test suite" criterion.
 - OCaml, Gleam, Elixir, Swift and the research languages lacked a viable Discord library
   or exhaustiveness.
 
@@ -79,7 +79,7 @@ into.
   fixtures. The community Anthropic crates were either framework-sized or unmaintained,
   and the wire surface is one endpoint per provider. Every call is non-streaming. Every
   request keeps `max_tokens` ≤ 16k, inside the non-streaming guidance. Streaming would
-  buy nothing the judge needs.
+  add nothing the judge needs.
 - **schemars from the serde struct** (I5). One transform per backend reduces the schema
   to what that backend accepts: `additionalProperties:false`, `oneOf→anyOf` and stripped
   constraints, plus strict-mode `required`/`anyOf [T, null]` for OpenAI. serde and
@@ -97,8 +97,7 @@ into.
   dispatches only from a live gateway connection, which an interaction received over HTTP
   (#29) does not have.
 - **Workspace lints** deny `unwrap`, `expect`, indexing and `panic!` in every crate, and
-  warn on the pedantic group and missing docs. I8 is a lint failure, not a review
-  comment.
+  warn on the pedantic group and missing docs, so a breach of I8 fails the lint.
 
 ## D4. Entity-first hybrid retrieval
 
@@ -141,7 +140,7 @@ questions have the shape "card A + card B + rule concept C", so:
 Citations are validated client-side, and the answer's lifecycle is a type.
 
 - Every `Citation` carries a verbatim `quote`, checked as a substring of its source in the
-  retrieved `Context`. The stored quote is the *source's* span, not the model's string.
+  retrieved `Context`. The stored quote is the source's span, not the model's string.
   A persisted quote is therefore byte-exact, and the retirement pass (D11) stays a strict
   check.
 - The comparison folds typographic punctuation one character to one character: curly
@@ -153,8 +152,8 @@ Citations are validated client-side, and the answer's lifecycle is a type.
 - **One retry**, with the rejection rendered into the prompt and the rejected answer quoted
   back as a blockquote, then an error the user sees. Retries live in `judge()`, not in the
   Discord layer, so every interface gets the same behaviour.
-- The bot **declines tournament policy** (MTR/IPG) after the cheap classification call
-  rather than answering it badly. That material is not ingested.
+- The bot **declines tournament policy** (MTR/IPG) after the cheap classification call.
+  That material is not ingested.
 
 ## D6. Providers as configuration
 
@@ -229,7 +228,7 @@ bot have them. D19 makes the cap a budget over time without changing any of this
 
 Bedrock and Vertex were already reachable through LiteLLM or their OpenAI-compatible
 endpoints with no new dependencies. Native SigV4 and ADC support was added anyway, for the
-operator who wants Claude on their own cloud account *without* running a proxy. The cost
+operator who wants Claude on their own cloud account without running a proxy. The cost
 is two auth crates behind the `aws`/`gcp` Cargo features. The features are on by default
 and named in the Dockerfile. A lean build without them cannot name these endpoints, and the
 loader says "not built".
@@ -273,9 +272,8 @@ why the weekly backup exists (D26).
 *Revised 2026-10-21:* a judge's low rating excludes a call at once. The five-vote floor
 had applied to it too, so a call only a judge had rated Incorrect stayed an example.
 
-Ratings shape retrieval and nothing else. Answers can be rated 1–3 on Discord. A rating's
-score changes one thing: which prior calls are shown to the model as *examples* for a
-similar question.
+Answers can be rated 1–3 on Discord. A rating's score changes only which prior calls are
+shown to the model as examples for a similar question.
 
 - Scores are a Bayesian mean (prior 2.0, weight 3), so one early vote cannot swing a
   call's standing.
@@ -285,27 +283,27 @@ similar question.
   rating is not noise.
 - Only Discord ratings count. `calls_rated` reads `rater_kind = 'discord'`, so a rating
   with no identity behind it (a web browser session's, D38) never moves a call's
-  standing: it is noise.
-- A rating's reason (a category, what is wrong, the right answer) goes to the operator's
-  feedback queue and nowhere else. The model never reads a rater's words.
+  standing.
+- A rating's reason (a category, what is wrong, the right answer) goes only to the
+  operator's feedback queue. The model never reads a rater's words.
 
-Prior calls are always rendered *after* the CR material and labelled as precedent, never
-authority. The CR outranks anything the community has said. A Discord call records who
-asked (D31). `/forget` deletes a user's ratings with their reasons and feedback-queue
-items, and removes them from their calls and failed calls.
+Prior calls are always rendered after the CR material and labelled as precedent, because
+the CR outranks anything the community has said. A Discord call records who asked (D31).
+`/forget` deletes a user's ratings with their reasons and feedback-queue items, and
+removes them from their calls and failed calls.
 
 ## D11. Call retirement
 
 *Decided 2026-09-01.*
 
 A stored answer is retired when its citations stop holding, not when the CR changes. The
-alternative, retiring every call on a new CR release, would discard almost everything for
-nothing: most rules do not change.
+alternative, retiring every call on a new CR release, would discard almost every call
+although most rules do not change.
 
 The retirement pass re-runs `citation_supported` over every stored call against today's
 rules, rulings and Oracle text. It sets `retired_at` both ways, so restored text brings a
 call back. Each call also carries an Oracle-text fingerprint per context card, so an
-erratum retires calls *about* the card even when they cited only the CR. Rulings are keyed
+erratum retires calls about the card even when they cited only the CR. Rulings are keyed
 by content, so a re-indexed ruling is the same ruling.
 
 A **renumbered rule keeps its calls**. Inside the CR load transaction, old and new rules
@@ -323,9 +321,9 @@ One Postgres holds everything: relational storage, full-text search (`tsvector`)
 fuzzy matching (`pg_trgm`), vector search (pgvector, HNSW) and advisory locks. All of it
 is joinable in one query and covered by one transaction and one backup. A separate vector
 database at a few thousand rows would add an operational component and a consistency
-problem for nothing. A separate rate-limit or session store would turn single-process
+problem with no benefit. A separate rate-limit or session store would turn single-process
 in-memory values into distributed state. The spend cap, the concurrency semaphore and the
-rate limiter are per process by design (see D16).
+rate limiter are per process (see D16).
 
 ## D13. Eval first
 
@@ -367,8 +365,8 @@ exists to prevent.
 - A session-persisted call is thread history only, because nothing can rate it.
 
 The operations are one list (`crates/agent/src/ops.rs`). The CLI and the MCP server only
-transport. This is also the cheapest way to reproduce a reported bad answer: no API spend,
-same code paths.
+transport. This is also the cheapest way to reproduce a reported bad answer, with no API
+spend and the same code paths.
 
 ## D15. Single self-hosted machine
 
@@ -391,7 +389,7 @@ an opt-in container of its own (D26).
 
 **Rate limiting buckets on an address the caller cannot choose.** `API_CLIENT_IP` is
 `peer` or `cloudflare` (`CF-Connecting-IP`), and since D41 `proxy`, never
-`X-Forwarded-For`. Cloudflare *appends*
+`X-Forwarded-For`. Cloudflare appends
 to a caller-supplied header instead of replacing it, which would hand every request a
 fresh allowance against a paid endpoint. Any other `API_CLIENT_IP` value fails at
 startup rather than falling back. Deploy credentials live in their own env file that the
@@ -406,13 +404,13 @@ servers of whoever runs it, and the project is offered as something to **run you
 not as a bot to invite. A per-server tenancy layer (admission lists, per-guild quotas and
 judge roles, an admin command) was sketched and rejected:
 
-- Everything tenancy would have to partition is *already per process*: the spend cap, the
+- Everything tenancy would have to partition is already per process: the spend cap, the
   concurrency limit, the judge role name and the Discord token. When the process is
   yours, that is the behaviour you want, and it needs no new table.
 - The knowledge is global. The Comprehensive Rules, rulings, card text and the rated prior
   calls apply to every server alike, so nothing in retrieval or persistence needs a tenant
-  boundary. Tenancy would have lived only in the Discord adapter and bought the maintainer an
-  admission and billing problem.
+  boundary. Tenancy would have lived only in the Discord adapter and given the maintainer
+  an admission and billing problem.
 - The model calls cost money per question. A shared instance means one operator paying
   for strangers' questions, or a billing system. Both are out of scope for a hobby
   project. Running your own puts the bill with the person who chose the model.
@@ -551,8 +549,8 @@ passes, and a rule number is not covered by citing a prior call that mentions it
 - *A second model call that judges whether the prose follows from the citations.* It is
   the check one actually wants. It also costs a quarter to three-quarters of an answer
   again, adds seconds, and is itself a model that can be wrong. A probabilistic opinion
-  does not belong among gates that are otherwise exact. It belongs in `judge-eval` as a
-  score, not in the path of every answer, and D28 put it there.
+  does not belong among gates that are otherwise exact, so D28 put it in `judge-eval` as
+  a score.
 - *Accepting a number that is in the material but not cited.* Looser, and it would let the
   prose lean on text no quote was checked against.
 - *Leaving the model to find out from the retry.* The prompt asks for rule numbers inline
@@ -580,13 +578,13 @@ away from the answer. So `validate` sets stubs aside and validates what is left 
 as before. A stub is an entry whose `quote` is present and is blank, a stock word or
 fewer than four characters, whether or not the rest of the entry parses.
 
-What keeps this honest:
+What is still checked:
 
 - Every citation that is shown was still checked verbatim against its source.
 - At least one real citation is still required. An answer with nothing but stubs is
   rejected for them, with the notice that names the habit.
 - D20 catches an answer whose prose leaned on a dropped rule by number.
-- An unreadable entry that *does* quote something is a citation the model meant, and is
+- An unreadable entry that does quote something is a citation the model meant, and is
   still a rejection. So is one with no `quote` key or a `quote` that is not a string (a
   misspelt key, from a backend that does not constrain the output). So is a real quote
   under a wrong id.
@@ -594,8 +592,8 @@ What keeps this honest:
 What it does not catch: prose that still says "a ruling on this card says…" after the
 ruling stub behind it was dropped. D20 ties rule numbers to citations, but rulings and
 Oracle text have no identifier in prose to tie. The same sentence could be written today
-with no stub at all. The prompt keeps its stern paragraph against stubs on purpose. It is
-still true when nothing else is cited, and it costs nothing as a deterrent.
+with no stub at all. The prompt keeps its paragraph against stubs, which is still true
+when nothing else is cited and costs nothing as a deterrent.
 
 **Rejected:**
 
@@ -719,7 +717,7 @@ one lease. The run has its own OS thread, current-thread runtime and small pool,
 blocking file I/O, a CR parse and its queries cannot take a worker or a pooled
 connection from the request path. The database is not partitioned: while the CR load or
 the retirement pass holds the calls lock, persisting an answer's vector waits, and the
-reply with it, exactly as under a cron run. Every run, whatever started it, checks before
+reply with it, as under a cron run. Every run, whatever started it, checks before
 each step that the migration ledger matches its binary, ahead or behind, and stops after
 three hours, so neither a stale container nor a hung download can write or hold the
 lease indefinitely. A run stopped by a schema change, or by its process shutting down
@@ -735,7 +733,7 @@ manual run has no ceiling, because someone decided to pay. That includes a cron'
 `scripts/refresh-data.sh`, which is unattended but was installed by an operator who
 chose cron over the schedule.
 
-The webhook hears the first failure of a streak and the recovery, never each retry.
+The webhook is sent the first failure of a streak and the recovery, not each retry.
 
 **Rejected:**
 
@@ -795,7 +793,7 @@ The reasons:
 
 - *Separate `bot`, `api` and `jobs` containers.* Three processes, three pools and three
   spend meters that `JUDGE_BUDGET_PERIOD=process` capped separately. The isolation they
-  bought was between components that share one database and one model budget anyway.
+  gave was between components that share one database and one model budget anyway.
 - *A jobs-only container* beside `bot` and `api`. D24 rejects it: the refresh thread
   already isolates the work, and a container is one more thing to keep running.
 
@@ -827,9 +825,9 @@ What follows:
   session-level, so it covers processes sharing one database over direct connections,
   and the old `bot` image never takes it: the upgrade to `judgebot` still needs
   `--remove-orphans`.
-- **Several replicas are not a goal** (D29). Safe is not supported: the per-user and
-  per-IP limits are per process. An instance runs one `judgebot`, and a second is a
-  deploy's overlap or a standby. A "did you mean?" pick
+- **Several replicas are not a goal** (D29). Running two is safe but not supported,
+  because the per-user and per-IP limits are per process. An instance runs one
+  `judgebot`, and a second is a deploy's overlap or a standby. A "did you mean?" pick
   is no longer one of the obstacles: it is answered from the message its buttons are
   on (the question) and the button's custom-id (asker, audience, span, a digest of
   the prompt, card), so a standby that takes the gateway answers the picks the old
@@ -850,7 +848,7 @@ needs neither the socket nor a host scheduler.
 - **The schedule is the bucket.** A backup is due when the newest object named like
   one (`judgebot-<UTC stamp>.dump.gz`) is `BACKUP_EVERY_DAYS` old. Nothing else is
   recorded, so a restart does not reset it and a backup the script took counts.
-  Failures back off in memory (an hour, doubling, at most a day). The webhook hears the
+  Failures back off in memory (an hour, doubling, at most a day). The webhook is sent the
   first failure of a streak, a failure at a different step than the last (so a
   pruning failure that recurs weekly cannot hide a dump that starts failing), and the
   recovery. A listing that works again ends a streak of listing failures.
@@ -940,7 +938,7 @@ store became configuration, with R2 one documented provider:
   deploy (`export` lines included). The scripts also refuse a `BACKUP_S3_*` set twice
   in `.env.deploy`, since a pasted blank example line after a renamed one would unset
   it; `judgebot` sees only the environment, so it cannot tell.
-- **A refusal is heard, once.** Settings that are not usable stop `run` and `serve`
+- **One alert for a refusal.** Settings that are not usable stop `run` and `serve`
   before anything else, and with them the alert webhook they hold. So
   `settings::alert_from_env` reads `JUDGE_ALERT_WEBHOOK` (and `JUDGE_LOCALE`) on its
   own, and the variables' names, never their values, are posted
@@ -956,7 +954,7 @@ store became configuration, with R2 one documented provider:
   it changes anything, and ends with `up -d --no-deps backup`. The service holds no
   state but the bucket, and an upload cut short leaves no object. The object names and prefix are unchanged, so a bucket's backups
   keep listing, fetching and setting the schedule.
-- **The script follows.** It passes the region and addressing to rclone
+- **`scripts/backup-db.sh`.** It passes the region and addressing to rclone
   (`force_path_style`), and picks rclone's provider from the endpoint (`Cloudflare`,
   `AWS`, else `Other`), which tunes only rclone's own quirks.
 
@@ -1059,9 +1057,9 @@ reports it healthy, then stops the old one (`scripts/deploy.sh`). The two overla
 minute or two. Running several instances all the time is not a goal: one community's
 load does not need it (D16), and the per-user and per-address limits stay per process.
 
-- **SIGTERM drains** (`judge_bot::shutdown`). `docker stop` asks; it no longer kills.
-  The process takes no new work: the HTTP listener closes and the Discord role closes
-  its gateway connection. It then finishes what is in flight within two minutes
+- **SIGTERM drains** (`judge_bot::shutdown`). On `docker stop` the process takes no new
+  work: the HTTP listener closes and the Discord role closes its gateway connection. It
+  then finishes what is in flight within two minutes
   (`DRAIN_LIMIT`), writes the spend ledger once more and exits 0. Each Discord event
   holds a `Work` guard from its arrival until its handler ends, and an answer
   already deferred is sent over the REST API, which needs no gateway. The compose
@@ -1073,7 +1071,7 @@ load does not need it (D16), and the per-user and per-address limits stay per pr
   closed within a second is recorded as a clean release (`gateway_handover`), and a
   standby that takes the lease within 5 s of it connects without the grace (15 s), which
   covers only a holder that may still be connected. Every holder clears the record as it
-  takes the lease, before it connects, so the record speaks of the last holder only. A
+  takes the lease, before it connects, so the record describes the last holder only. A
   holder that never wrote it (an older release) connects no sooner than the grace after
   taking the lease, longer than the 5 s window (a `const` relation), so a stale release
   never skips the grace. A gateway slow to close keeps
@@ -1088,8 +1086,8 @@ load does not need it (D16), and the per-user and per-address limits stay per pr
   on to the other address. The proxy dials afresh for every request: a kept-alive
   connection to the draining container can be closed under a request already written,
   which a POST cannot repeat (a drill with two backends swapped under load lost 4 of
-  12 000 requests with keep-alive). What remains: closing the listener resets a
-  connection the kernel had queued for the old container but the process had not
+  12 000 requests with keep-alive). The remaining loss is that closing the listener
+  resets a connection the kernel had queued for the old container but the process had not
   accepted. A drill of real deploys under about 2 000 requests a second hit it twice in
   17 000; at a community's traffic it is unlikely. Caddy cannot save such a request,
   because it resends no POST body, and pointing the proxy at the new container alone
@@ -1216,8 +1214,8 @@ The reasons:
   handler would need a second code path. The callback keeps the code identical for
   both routes.
 - *Keeping the gateway as a fallback in `http` mode* until the URL is saved. It would
-  make the switch seamless, but needs a second way to start and stop the gateway for a
-  one-time step.
+  remove the gap during the switch, but needs a second way to start and stop the gateway
+  for a one-time step.
 
 What follows:
 
@@ -1290,9 +1288,9 @@ migrates, during which questions get a maintenance reply rather than an error.
   older `judge-cli` or `judge-mcp` keeps working against the new schema, and rolling back
   to an older release of the major works. Dropping, renaming and rewriting rows wait for
   the next major, made during its `X.0.0-dev` cycle.
-- **Versions say which is which.** `main` carries `X.Y.Z-dev` between releases, and each
+- **Version scheme.** `main` carries `X.Y.Z-dev` between releases, and each
   migration run records the release and commit that ran it (`instance_release`). A new
-  major's pre-release (`X.0.0-*`) works only with the very build that migrated the
+  major's pre-release (`X.0.0-*`) works only with the build that migrated the
   database; any other pre-release orders among its major's releases
   (`judge_core::release`). The version comes from the tree, not from the tag, because a
   release retags the image CI already built and tested; the release check holds the tag
@@ -1745,8 +1743,8 @@ every call, with the spend and the private detail. Both, `judge-cli stats` and t
   `GET /api/stats` is not routed (the JSON 404 of any unserved `/api/` path) and the page
   has no tab. `/api/about` carries `stats: {cost, models}`, or null. Rejected: a setting of
   its own, a second switch for the same exposure.
-- **Private is never counted.** Not in a total, an outcome, a rating, a category, a card, a
-  user's figures, a cost or a model. Every public count reads calls and runs through
+- **Private is never counted.** That holds for every total, outcome, rating, category,
+  card, user's figures, cost and model. Every public count reads calls and runs through
   `publicly_visible`, the predicate the feed reads through, defined once as a SQL function
   the planner inlines. The query keeps the public and operator scopes as two branches
   of a `UNION ALL`, each switched on or off as a whole, so the public branch states the
@@ -2069,7 +2067,8 @@ not cover it, and the answer never becomes an example for later questions.
   released while the CR knows neither `Vulcan` nor `Borg`. But 164 released cards first
   printed before September 2026 have terms the CR never mentions: digital-only actions
   (`Conjure`, `Seek`), playtest cards' one-off creature types and a handful of
-  idiosyncratic keywords. A note on all of them would be noise. Released stays released.
+  idiosyncratic keywords. A note on all of them would be noise, so a released card is
+  never noted.
 - *Storing the coverage on the card at ingest.* It depends on the CR loaded as well as
   the card, and the refresh loads them in separate steps. Read at question time it is
   always the pair that answers.
@@ -2088,7 +2087,7 @@ signature check. serenity 0.12 is gone.
   rustls-webpki 0.102, which carried eight advisories (`deny.toml` ignored them) with no
   fix on that line. Its maintainers froze the 0.12 branch and declined the bump, because
   tungstenite's types are in its public API; the next major is unreleased, with no date.
-  The bot used a sliver of it: zero intents, two dispatches, nine routes, a handful of
+  The bot used a small part of it: zero intents, two dispatches, nine routes, a handful of
   builders. It also could not read a Label component, which cost the gateway's raters a
   step (D38).
 - **The wire types read only what is used.** An unknown field is ignored, never an

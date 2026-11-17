@@ -1,9 +1,9 @@
 ---
 title: MTG Judgebot
-description: A Discord bot and web app that answers Magic rules questions like a judge, with every claim backed by a validated citation.
+description: A Discord bot and web app that answers Magic rules questions asked in plain language, with answers backed by validated citations.
 template: splash
 hero:
-  tagline: Rules questions answered like a judge. Every claim cites the Comprehensive Rules, an official ruling or the card's Oracle text, and the citation is checked before you see it.
+  tagline: Magic rules questions answered with citations from the Comprehensive Rules, Scryfall rulings or the card's Oracle text, each checked against its source before the answer is shown.
   actions:
     - text: Run your own judgebot
       link: ./self-hosting/first-run/
@@ -21,14 +21,14 @@ hero:
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid stagger>
-  <Card title="Never guesses" icon="approve-check">
+  <Card title="Ambiguous names are asked about" icon="approve-check">
     Nicknames like "bob" and "goyf" resolve to cards through a fixed order of lookups. A name
-    that could mean several cards becomes a "did you mean…?" prompt, never a guess.
+    that could mean several cards becomes a "did you mean…?" prompt instead of a guess.
   </Card>
   <Card title="Citations are validated" icon="magnifier">
     A quote has to appear verbatim in the rule, ruling or Oracle text it names. A citation
-    that fails is rejected and the model is asked again. An answer with no citation never
-    ships.
+    that fails is rejected and the model is asked again, and an answer with no citation is
+    not shown.
   </Card>
   <Card title="Spend is capped" icon="seti:lock">
     Every model call is metered against a spend cap, per process or per day or month. The

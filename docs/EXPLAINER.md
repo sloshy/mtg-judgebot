@@ -6,8 +6,8 @@ application does and walks one question through it. It then explains each techni
 what goes wrong in a system like this and how this one handles it, and closes with the
 technology choices and the reasons behind them.
 
-`docs/ARCHITECTURE.md` is the terse, kept-current reference. This document is the tour.
-Where the two disagree, the code wins, then ARCHITECTURE.md.
+`docs/ARCHITECTURE.md` is the terse, kept-current reference, and this document is the
+walkthrough. Where the two disagree, the code wins, then ARCHITECTURE.md.
 
 ---
 
@@ -18,7 +18,7 @@ Magic: The Gathering rules question:
 
 > Does bob's trigger still happen if he dies in response to it?
 
-The bot answers like a judge would: ruling first, then the reasoning, with rule numbers.
+The bot answers with the ruling first, then the reasoning, with rule numbers.
 Every answer carries **citations**. Each citation is a short verbatim quote from one of
 four kinds of source:
 
@@ -57,12 +57,9 @@ RAG systems skip:
 
 - **Citation validation.** The model must quote its sources, and the program checks that
   every quote is a substring of the source it names. A failed check rejects the answer.
-  So the answer is not just told to rest on the sources: it is checked against them.
 - **Card lookup before search** (entity resolution). Card names are looked up in a table,
   not searched for by meaning. "bob" must become one card, *Dark Confidant*, or the user
   must be asked.
-
-Most of this document is about how those two ideas play out.
 
 ---
 
@@ -129,9 +126,9 @@ Confidant from the same question. A near miss like `[[Dark Confidnt]]` offers th
 spellings. Answers name the cards they resolved to ("Cards: …"), so the reader can see
 what a nickname was taken to mean.
 
-The important property: **it never guesses.** If two or more cards remain, the result is
-`Ambiguous` and Discord shows "Did you mean…?" buttons. If nothing matches, the result is
-`NotFound`. The type system forces every consumer to handle all three outcomes.
+The resolver never guesses. If two or more cards remain, the result is `Ambiguous` and
+Discord shows "Did you mean…?" buttons. If nothing matches, the result is `NotFound`. The
+type system forces every consumer to handle all three outcomes.
 
 Fuzzy matching uses Postgres's `pg_trgm` extension. A trigram is a three-letter window.
 "bolt" is `{" b","bo","ol","lt","t "}`. Two strings are similar when they share many
@@ -148,8 +145,8 @@ seven queries concurrently and unions the results into a `Context`:
   categories, a full-text keyword search, and a vector similarity search.
 - **Scryfall rulings** for every face of every resolved card.
 - **Glossary** entries whose term appears in the cards' Oracle text.
-- **Nightmare-card notes**: hand-written explanations for cards like Humility that break
-  everyone's intuition.
+- **Nightmare-card notes**: hand-written explanations for cards like Humility whose
+  interactions are counterintuitive.
 - **Prior calls**: up to five earlier well-rated answers in the same categories about one of
   the same cards (any card, if none resolved).
 
@@ -226,8 +223,8 @@ columns and indexes) and `pg_trgm` (trigram similarity). Migrations are in
 | `embedding_space` | `ingest embed` | on switch | one row: which embedding model the vectors came from |
 | `agent_sessions` | the agent surface | continuous | state for the step-by-step agent mode |
 
-Scale is small: ~30k cards, ~2k rule chunks, well under 10k calls. This matters for
-technology choices. Nothing here needs a dedicated vector database.
+Scale is small: ~30k cards, ~2k rule chunks, well under 10k calls, so nothing here needs
+a dedicated vector database.
 
 ### How the CR is chunked
 
@@ -253,8 +250,7 @@ three-digit sections. Asking for `702` expands to every rule in it.
 
 ## 5. Retrieval
 
-This section holds most of the vector-database material. The bot combines three search
-techniques because each fails differently.
+The bot combines three search techniques because each fails differently.
 
 ### Source A: category map
 
@@ -264,10 +260,10 @@ rule in those sections goes into the context. Rules that share a word with the q
 come first, ranked by the same relevance score as source B. The secondary categories' rules
 are added the same way, after the other sources.
 
-This is simple and reliable. It costs nothing and never misses when the classifier is right.
-It gives the model the surrounding rules it needs even when the "obvious" rule alone is not
-enough. It fails when the classifier is wrong or when the answer lives in a section nobody
-would file the question under.
+It costs nothing and never misses when the classifier is right. It gives the model the
+surrounding rules it needs even when the "obvious" rule alone is not enough. It fails when
+the classifier is wrong or when the answer lives in a section nobody would file the
+question under.
 
 ### Source B: full-text search
 
@@ -286,8 +282,7 @@ graveyard from the battlefield"). Common words also distract it.
 
 ### Source C: vector similarity
 
-This source matches meaning. It is the piece most people are new to, so it gets the most
-detail.
+This source matches meaning.
 
 **Embeddings.** An embedding model is a neural network that turns a piece of text into a
 list of numbers, a vector, typically 512 to 3072 floats long. This bot uses Voyage AI's
@@ -327,10 +322,10 @@ question as a query.
 release re-embeds only the rules whose text changed. The loader nulls those embeddings and
 the next refresh's `embed` step fills them. Each question costs one small embedding call.
 
-The vector search's failures are instructive too. It is fuzzy by design, so it returns rules
-that are *about* the same theme without being the one that decides the question. It cannot
-tell `702.19` from `702.20` if their wording is similar. It also has a class of operational
-problems that get their own section (§7).
+The vector search has failures of its own. It matches by meaning, so it returns rules that
+are *about* the same theme without being the one that decides the question. It cannot tell
+`702.19` from `702.20` if their wording is similar. Its operational problems are listed in
+§7.
 
 ### Source order
 
@@ -348,8 +343,8 @@ categories are trimmed first. The retrieval gate in the eval suite (`judge-eval 
 90% of the gold set's expected rule ids appear in the context, and at least 75% in the part
 the budget shows.
 
-The safety net for whatever all three miss is the one `lookup_rules` tool round in
-synthesis. Having read the material, the model can ask for rules by number once.
+Whatever all three miss is left to the one `lookup_rules` tool round in synthesis. Having
+read the material, the model can ask for rules by number once.
 
 ### Prior calls
 
@@ -363,8 +358,8 @@ call look perfect, and one 1 does not bury it. The latest rating from someone wi
 Judge role overrides the crowd. Calls scoring under 1.5 are excluded: with five or more
 votes on the crowd's score, at once on a judge's.
 
-Prior calls are rendered *after* all CR material, and the prompt says they never outrank
-it. They are examples of how a question was answered, not authorities.
+Prior calls are rendered after all CR material, as examples of how a question was
+answered, and the prompt says they never outrank it.
 
 ---
 
@@ -380,7 +375,7 @@ from the `Verdict` struct. The `lookup_rules` tool round is bounded to one by a
 - `Synth<ToolRequested>` can fulfil the request and become `Synth<Final>`.
 - `Synth<Final>` has no method that requests tools.
 
-A runaway loop is not a bug for a test to catch. It is code that does not compile.
+A second tool round is therefore code that does not compile.
 
 The model can still *ask* for a second round, or send ids that are not rule ids. Neither
 is fetched. Each is a typed rejection (`ToolMisuse`) and gets the one retry, with a notice
@@ -400,22 +395,21 @@ apostrophes (`doesn’t`) and em dashes. Models reliably retype them as ASCII (`
 even when told not to. Rejecting a correct citation over one character wastes the only
 retry. So the comparison (`crates/core/src/quote.rs`) maps each character to one plain
 equivalent: curly quotes to straight, every dash to a hyphen, a non-breaking space to a
-space. What gets stored is the **source's** span, not the model's. The leniency applies
-only while matching. What lands in the database is byte-exact, so later strict checks stay
-strict. Case, word order and line breaks must still match, so a paraphrase is still
-rejected.
+space. The leniency applies only while matching. What gets stored is the source's span,
+not the model's string, so the database is byte-exact and later strict checks stay strict.
+Case, word order and line breaks must still match, so a paraphrase is still rejected.
 
 A verdict with no citations, or an answer under 40 characters, is rejected as empty. Two
-fields the model might be tempted to lie about, `source` and `cr_version`, are not in the
-model's schema. The program stamps them from the extraction and the retrieved chunks.
+fields the model could misreport, `source` and `cr_version`, are not in the model's
+schema. The program stamps them from the extraction and the retrieved chunks.
 
 ### The validated type
 
 `Verdict<Unvalidated>` is what JSON decodes into. `Verdict<Validated>` is the only type
 `CallStore::persist` and the Discord renderer accept, and the only way to make one is
 `validate()`. Serde's `Deserialize` is implemented for the unvalidated state only, so
-decoding straight into the validated one does not compile. Deleting the check is a type
-error, not a silent regression.
+decoding straight into the validated one does not compile, and deleting the check is a
+type error.
 
 ### The retry
 
@@ -510,18 +504,18 @@ Stored answers are an asset (examples for future questions) and a liability (the
 stale). Two mechanisms keep them current without a human curator, and a third hands the
 rest to one.
 
-**Retirement.** Every call's citations are its declared dependencies on the world. The
-refresh's retirement pass re-runs the same substring check that admitted each citation, against today's
-rules, rulings and Oracle text. If any check fails, the call is retired and leaves the
-prior-call query. If the text comes back, the call is restored. Each call also stores a
-fingerprint of the Oracle text of every card in its context, so an erratum retires calls
-*about* a card even when they cited only the CR. This replaced an earlier rule that retired
-every call on every CR release. That rule threw away many still-correct answers and kept
-wrong ones after an erratum.
+**Retirement.** Every call's citations name the text it depends on. The refresh's
+retirement pass re-runs the same substring check that admitted each citation, against
+today's rules, rulings and Oracle text. If any check fails, the call is retired and leaves
+the prior-call query. If the text comes back, the call is restored. Each call also stores
+a fingerprint of the Oracle text of every card in its context, so an erratum retires calls
+*about* a card even when they cited only the CR. This replaced an earlier rule that
+retired every call on every CR release. That rule threw away many still-correct answers
+and kept wrong ones after an erratum.
 
 **Renumbering.** When Wizards inserts a keyword at `702.20`, every later rule shifts by one.
-Their bodies change too, because the cross-references inside them shift as well. So
-comparing the raw text fails on exactly the release it is meant to handle. Instead, the CR
+Their bodies change too, because the cross-references inside them shift as well, so
+comparing the raw text fails on the release it is meant to handle. Instead, the CR
 loader:
 
 1. masks every rule id out of every rule's text,
@@ -532,8 +526,8 @@ loader:
 
 Step 3 rejects a cross-reference that was pointed at a different rule rather than
 renumbered. Matched calls get their citation ids, quoted ids and answer text rewritten in
-one pass. Anything ambiguous is left for the retirement pass to judge. The principle is the
-same as card resolution: never guess.
+one pass. Anything ambiguous is left for the retirement pass to judge. As in card
+resolution, the loader does not guess.
 
 **The feedback queue.** Some wrong answers are not stale, just wrong: the card was
 misread, the right rule never retrieved. A *Partially correct* or *Incorrect* rating
@@ -662,7 +656,7 @@ invariants, D2 the languages it was weighed against). In this codebase that mean
 - Compile-time checked SQL (`sqlx`): every query is checked against the schema at build
   time, including pgvector columns, so a renamed column is a build failure.
 - A crate graph as an effect fence: `crates/core` has no I/O dependencies, so pure logic
-  (resolution rules, context assembly, validation) cannot sneak in a network call.
+  (resolution rules, context assembly, validation) cannot make a network call.
 
 The cost accepted: the HTTP clients for the model APIs are hand-written and pinned against
 golden request fixtures.
@@ -682,13 +676,13 @@ call for extraction and a call with tool use and structured outputs for synthesi
 gold set, medium extraction never wrote a card's name in part, which low occasionally
 did, and medium synthesis agreed with the reference as often as high, for less. A model
 without a measurement extracts at low and synthesizes at high. Prompt caching
-matters for the large synthesis turn. The provider seam means this is a default, not a
-lock-in.
+matters for the large synthesis turn. This is a default that `judge.toml` can change
+(§11).
 
 **axum** for HTTP, **rmcp** for MCP, **SolidJS + Vite** for the web app: conventional,
-well-maintained choices for their niches. Discord has no library: the bot uses a sliver
-of its API (zero gateway intents, two events, nine REST calls), so it writes those itself
-(D43).
+well-maintained choices for their niches. Discord has no library: the bot uses a small
+part of its API (zero gateway intents, two events, nine REST calls), so it writes those
+itself (D43).
 
 **Docker Compose on one host.** A CI-built image run as one `judgebot` service whose
 roles are launch options (D25), reached through a bundled Caddy: on the host's loopback

@@ -3,9 +3,8 @@
 The reference for how the judge reaches its models. It covers the provider-neutral seam
 (`crates/llm`), the two chat backends (`crates/anthropic`, `crates/openai`), the two
 embedding backends (`crates/embed`), and the `judge.toml` file that chooses among them.
-The seam exists so that the pipeline, the prompts, the validation and the typestates
-never know which provider is on the other end of the HTTP connection.
-`docs/DECISIONS.md` (D6–D9) records the reasoning. This file describes what exists.
+The seam keeps the pipeline, the prompts, the validation and the typestates independent
+of the provider. `docs/DECISIONS.md` (D6–D9) records the reasoning.
 
 ## 1. Goal and non-goals
 
@@ -20,7 +19,7 @@ never know which provider is on the other end of the HTTP connection.
 - Embeddings from Voyage or any OpenAI-compatible `/v1/embeddings` endpoint.
 - A **different model per stage**: a cheap model for extraction, a strong one for synthesis,
   possibly on different providers.
-- A spend cap that still means something when the price table does not know the model.
+- A spend cap that still holds when the price table does not know the model.
 
 **Non-goals.**
 
@@ -34,7 +33,7 @@ never know which provider is on the other end of the HTTP connection.
 ## 2. Request shapes
 
 The pipeline sends four request shapes, all non-streaming. serde decodes each answer into
-a type that *is* the schema (invariant I5 in `docs/DECISIONS.md`).
+the type its schema is generated from (invariant I5 in `docs/DECISIONS.md`).
 
 | # | Call | System | Tools | Tool choice | Structured output | Effort |
 |---|---|---|---|---|---|---|
@@ -48,17 +47,17 @@ The pipeline also needs:
 - Refusal detection (`stop_reason: refusal` → `JudgeError::LlmRefused`).
 - Truncation detection (`max_tokens` → `Truncated`, retried once at lower effort).
 - Usage for the spend cap.
-- The model's *own* assistant turn echoed back verbatim in call 3. That is thinking blocks
+- The model's own assistant turn echoed back verbatim in call 3. That is thinking blocks
   with signatures on Anthropic, `reasoning_content` on DeepSeek-style servers and
   `tool_calls` on OpenAI.
 
 Embeddings need `embed(texts, kind) -> Vec<Vec<f32>>` at a fixed width.
 
-Everything that makes the judge trustworthy is **client-side**. Citations are validated
-against `Context` (I3), the typestate bounds the tool round (I4), and decoding enforces
-the schema (I5). Structured-output enforcement on the server is an *optimisation* that
-lowers the retry rate. A backend without it degrades to more retries, not to weaker
-guarantees. That is what makes providers configurable without touching `core`.
+The judge's guarantees are enforced client-side. Citations are validated against
+`Context` (I3), the typestate bounds the tool round (I4), and decoding enforces the
+schema (I5). Structured-output enforcement on the server is an optimisation that lowers
+the retry rate, so a backend without it makes more retries and keeps the same
+guarantees. Providers are therefore configurable without touching `core`.
 
 `crates/bot/tests/anthropic_golden.rs` pins the four Anthropic request shapes
 byte-for-byte against captured fixtures. `UPDATE_GOLDEN=1` re-captures them after an
@@ -81,10 +80,10 @@ bot  ← llm, embed                          (adapters + build_deps; picks backe
 - The shared HTTP retry loop (408/409/429/5xx honouring `retry-after`, identical for every
   backend).
 
-`crates/anthropic` and `crates/openai` are its *backends*. Each owns its wire types and
+`crates/anthropic` and `crates/openai` are its backends. Each owns its wire types and
 its schema-subset transform. `crates/bot`'s `extract.rs` and `synth.rs` (prompts,
 rendering, budget, hydration, truncation retry) depend on `judge-llm` only. `crates/core`
-knows nothing about any of this.
+depends on none of it.
 
 ### 3.1 Neutral chat types
 
@@ -137,9 +136,9 @@ pub struct ChatResponse {
   another backend's name returns `LlmError::ForeignTurn` rather than guessing.
 - **`CacheHint` is a hint.** Anthropic emits `cache_control`. OpenAI ignores it and
   caches by prefix on its own. LiteLLM forwards `cache_control` when the upstream is
-  Anthropic. Placement rules (stable content first) are the adapters' business.
-- **`OutputSchema` carries the schemars schema untransformed.** Each backend applies *its*
-  subset transform. Anthropic's sets `additionalProperties:false`, rewrites `oneOf→anyOf`
+  Anthropic. Placement rules (stable content first) are left to the adapters.
+- **`OutputSchema` carries the schemars schema untransformed.** Each backend applies its
+  own subset transform. Anthropic's sets `additionalProperties:false`, rewrites `oneOf→anyOf`
   and strips constraints outside the subset. OpenAI strict mode's additionally lists every
   property in `required`, turns optional fields into `anyOf [T, null]`, and drops `format`
   and `default`. Both are pure functions with walk-and-assert tests. Decoding is
@@ -152,7 +151,7 @@ pub struct ChatResponse {
 - **`Effort` maps per backend.** Anthropic gets `output_config.effort`. OpenAI gets
   `reasoning_effort` (`low|medium|high`, `xhigh|max → high`), and only when the provider's
   `reasoning_effort = true`. Asking for effort on a provider that cannot send it is a
-  *load error*, not a silent drop. A stage that names no effort gets the effort the
+  load error, not a silent drop. A stage that names no effort gets the effort the
   model's gold runs chose for it: for extraction `judge_llm::EXTRACT_EFFORTS`
   (`claude-opus-5-5` medium, `claude-sonnet-5-5` low, `claude-haiku-5-5` high), else
   `low`; for synthesis `judge_llm::SYNTH_EFFORTS` (`claude-opus-5-5` medium,
@@ -335,7 +334,7 @@ provider *kind* (`voyage | openai`, not the operator's table name), model and di
   differs (`db/space.rs` `column_width`). It never relabels vectors it did not write.
 - The adapters hold no bare `Embedder`. `PgRetriever`, `PgLibrary` and `PgCallStore` take
   `Arc<db::Vectors>` (`Config::vectors(pool)`, one per process), which embeds nothing until
-  the stored space equals its own. The row is re-read on **every use**, and once at
+  the stored space equals its own. The row is re-read on every use, and once at
   startup so the verdict sits beside the config summary. A running bot therefore picks up
   the first `ingest embed`. A `reembed` under it turns vector search off, with an
   error-level log naming both spaces, instead of erroring or mixing.
@@ -363,15 +362,14 @@ provider *kind* (`voyage | openai`, not the operator's table name), model and di
 
 ## 5. Configuration
 
-**Zero config works.** With no `judge.toml`, the binaries build the default setup
-from `.env`: Anthropic direct with `ANTHROPIC_API_KEY`, `claude-opus-5-5` for both stages,
+**Default setup.** With no `judge.toml`, the binaries build their setup from `.env`:
+Anthropic direct with `ANTHROPIC_API_KEY`, `claude-opus-5-5` for both stages,
 Voyage if `VOYAGE_API_KEY` is set. The eval numbers were measured on that setup.
 
 A `judge.toml` (path from `JUDGE_CONFIG`, else `./judge.toml` if present) selects
 providers and models. `judge.example.toml` documents every knob with its default. Two
 tests in `config.rs` pin it: one loads it as shipped, the other with every commented table
-uncommented and each endpoint named by a stage. A renamed knob fails the gate, not the
-operator.
+uncommented and each endpoint named by a stage, so a renamed knob fails the tests.
 
 ```toml
 # Secrets are named by environment variable, never written here.
@@ -469,7 +467,7 @@ the file as the others do, so every named provider's key must be in `.env` for i
   reaches it.
 - The synthesis and extraction prompts, the `Harness` enum and the pinned SHA-256 of the
   system prompt. An OpenAI backend gets the same `Harness::Tool` prompt. The tool is still
-  named `lookup_rules`, and the wire format is the backend's business.
+  named `lookup_rules`, and the wire format is left to the backend.
 - The agent surface (`crates/agent`, sessions, MCP, CLI, the skill). The calling agent is
   the model there, so providers do not apply. The built-in `judge` tool reports which
   model it is running in its replies, nothing more.

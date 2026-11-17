@@ -1,11 +1,11 @@
 # Deployment
 
 judgebot runs on a machine you own, with Docker Compose: Postgres, the `judgebot`
-process and a small Caddy proxy in front of it. Out of the box it answers on
-`127.0.0.1:8787` on that machine and nowhere else. That is all a trial, or a Discord bot
-over its gateway connection, needs. To put the web app, the API or Discord's
-interactions endpoint on the internet, choose a public route (§3): the bundled HTTPS site, a
-reverse proxy of your own, or a Cloudflare Tunnel.
+process and a small Caddy proxy in front of it. By default it answers only on
+`127.0.0.1:8787` on that machine, which is enough for a trial or a Discord bot over its
+gateway connection. To put the web app, the API or Discord's interactions endpoint on the
+internet, choose a public route (§3): the bundled HTTPS site, a reverse proxy of your own,
+or a Cloudflare Tunnel.
 
 ```
 Browser ──https──> host :443 ──> edge (Caddy, Let's Encrypt) ──> judgebot:8787 ──> db:5432
@@ -14,7 +14,7 @@ Browser on the host ──> 127.0.0.1:8787 ──> proxy ──> judgebot:8787
 Operator (loopback or SSH) ──> 127.0.0.1:8789 ──> proxy:8789 ──> judgebot:8789   [--admin]
 ```
 
-With a Cloudflare Tunnel instead, `cloudflared` dials *out* to Cloudflare and the
+With a Cloudflare Tunnel instead, `cloudflared` dials out to Cloudflare and the
 public hostname reaches `proxy:8787` over the compose network, with no inbound port.
 
 One host keeps two properties that a serverless split would lose:
@@ -23,7 +23,7 @@ One host keeps two properties that a serverless split would lose:
   needing a public endpoint ([Discord over HTTP](#discord-over-http) is the option).
 - The spend cap, concurrency semaphore and rate limiter stay in-memory values in one
   process rather than becoming distributed state. A budget period adds one small table
-  beside the cap, not a service.
+  beside the cap.
 
 See `docs/ARCHITECTURE.md` for the pipeline itself.
 
@@ -32,11 +32,11 @@ Hostnames, paths and the image name below are placeholders (`judge.example.com`,
 
 ## 1. Prerequisites
 
-- A host that stays on, with Docker and the compose plugin. The stack *runs* in about
-  200 MB RSS (Postgres ~157 MB, judgebot a few MB), so 2 GB of RAM is ample.
-  The host never *builds*: CI publishes the image and the host pulls it (§8). A build
-  (`cargo build --release` across ten crates plus a Vite build) wants ~4 GB and a CPU
-  that a NAS does not have.
+- A host that stays on, with Docker and the compose plugin. The stack runs in about
+  200 MB RSS (Postgres ~157 MB, judgebot a few MB), so 2 GB of RAM is enough. The host
+  does not build the image: CI publishes it and the host pulls it (§8). A build
+  (`cargo build --release` across ten crates plus a Vite build) needs ~4 GB and more CPU
+  than a NAS has.
 - The compose file uses only syntax that older bundled Compose versions accept.
   Synology's Container Manager ships v2.20, which predates the `env_file` long form.
   As a result, `.env.deploy` must exist on any machine running the `tunnel` or
@@ -45,7 +45,7 @@ Hostnames, paths and the image name below are placeholders (`judge.example.com`,
   `judgebot` applies pending ones at startup (`JUDGE_AUTO_MIGRATE`, on by default).
   `docker compose run --rm refresh migrate` is the explicit form, for an empty
   database or an operator who opted out. Restoring a dump (§2) brings the schema
-  *and* the `_sqlx_migrations` ledger with it.
+  and the `_sqlx_migrations` ledger with it.
 - For a public address, a domain name, and one of:
   - for the bundled HTTPS site, a DNS record for it pointing at the host, and ports 80
     and 443 reachable from the internet (forwarded by the router at home);
@@ -64,8 +64,8 @@ run" page is the walkthrough).
 
 When moving, do this before anything else. Restore a dump rather than re-ingesting. A
 cold rebuild re-parses the CR and the Scryfall bulk file and pays the embedding provider
-again for every rule and glossary entry. Stored calls and ratings cannot be re-ingested at
-all: they are lost.
+again for every rule and glossary entry, and stored calls and ratings cannot be
+re-ingested, so without the dump they are lost.
 
 ```sh
 # old host
@@ -87,13 +87,13 @@ docker compose exec -T db psql -U judgebot -d judgebot \
              (select provider||'/'||model||'/'||dimensions from embedding_space) space;"
 ```
 
-If `embedded` is 0, the vector search is off. Run `scripts/refresh-data.sh embed`
-rather than shipping a degraded retriever.
+If `embedded` is 0, the vector search is off until `scripts/refresh-data.sh embed` has
+filled the vectors, so run it now.
 
-The vector search is also off when `space` is empty or names a model other than the one
-the bot is configured with. The bot's vector search stays off until the row and the
-configuration agree. It logs an error-level line at startup and when the row changes,
-and it never mixes vectors from two models in one column. The fix depends on the cause:
+The vector search is also off while `space` is empty or names a model other than the one
+the bot is configured with. The bot logs an error-level line at startup and when the row
+changes, and it never mixes vectors from two models in one column. The fix depends on the
+cause:
 
 - The row is mislabelled: `UPDATE embedding_space SET model = ...`.
 - The model is changing: `scripts/refresh-data.sh reembed --yes`. This costs money,
@@ -119,8 +119,8 @@ Cloudflare's rules in front of them.
 
 Nothing to set. `scripts/deploy.sh` starts `db`, `judgebot` and `proxy`, and the web
 app and the API answer at `http://127.0.0.1:8787` on the host. A Discord bot over its
-gateway connection (the default) dials out to Discord and needs no inbound connection at
-all. From another machine, forward the port over SSH:
+gateway connection (the default) dials out to Discord and needs no inbound connection.
+From another machine, forward the port over SSH:
 `ssh -N -L 8787:127.0.0.1:8787 <host>`.
 
 On a trusted network the proxy can publish the port on the host's LAN address as well,
@@ -147,8 +147,8 @@ host that publishes 8787 beyond loopback.
 The `edge` service (the `public` profile) is a second Caddy, on ports 80 and 443 of
 every address of the host. It serves `https://<JUDGE_DOMAIN>` with a certificate it gets
 from Let's Encrypt and renews itself, and redirects plain HTTP there. It forwards to
-`judgebot:8787` the way `proxy` does, so a deploy (§8) hands over without a gap and
-never restarts it.
+`judgebot:8787` the way `proxy` does, so requests keep being answered through a deploy
+(§8), which does not restart it.
 
 1. Point a DNS `A` record for the name at the host's public IPv4 address. Behind a
    router, forward TCP ports 80 and 443 to the host (and UDP 443, for HTTP/3). A home
@@ -172,9 +172,9 @@ never restarts it.
    ```
 
    then `docker compose down && scripts/deploy.sh`, since a network is not changed in
-   place. Everything is offline between the two. Each visitor's address then reaches `edge`, and the limit counts an IPv6
-   visitor by its /64 prefix, the block one subscriber is given, so picking another
-   address in it buys no fresh allowance.
+   place. Everything is offline between the two. Each visitor's address then reaches
+   `edge`, and the limit counts an IPv6 visitor by its /64 prefix, the block one
+   subscriber is given, so another address in it gets no fresh allowance.
 2. Set in `.env` (§4):
 
    ```ini
@@ -310,7 +310,7 @@ where it comes from:
 | `proxy` | `X-Judgebot-Client-IP` | the bundled site, or your own proxy, is the only public route |
 | `cloudflare` | `CF-Connecting-IP` | Cloudflare is the only public route |
 
-**`X-Forwarded-For` is not that address.** Cloudflare *appends* the connecting address
+**`X-Forwarded-For`** is not that address. Cloudflare *appends* the connecting address
 to a caller-supplied `X-Forwarded-For` rather than replacing it, so its first hop is
 whatever the caller wrote. A client could send `X-Forwarded-For: 1.2.3.4`, increment it
 on each request, and get a fresh rate-limit allowance every time. Binding to loopback
@@ -326,9 +326,9 @@ nothing on that network may be pointed there. `judgebot` publishes no port, so w
 remains is another container on the compose network dialling `judgebot:8787` or
 `proxy:8788` itself, such as a tunnel whose service names either. As a last check,
 `judgebot` reads the header only from a peer on a loopback or private address and only
-when exactly one copy arrived; otherwise it counts the peer. That check keeps out a
-caller connecting from a public address of its own, nothing more: where Docker rewrites
-the source, every caller is a private address.
+when exactly one copy arrived; otherwise it counts the peer. That check keeps out only a
+caller connecting from a public address of its own, because where Docker rewrites the
+source, every caller is a private address.
 
 The limit counts an IPv4 address by itself and an IPv6 address by its /64 prefix.
 Docker hands `edge` the visitor's IPv4 address. An IPv6 visitor reaches it through
@@ -411,16 +411,17 @@ Port 8787 on the host is the `proxy` service, which forwards to `judgebot`. The
 `judgebot` container publishes nothing itself, so that a deploy can run two of them
 side by side (§8).
 
-The container's healthcheck asks `/api/health` the same question, and `cloudflared`
-waits for it to pass. It probes only when the roles include `--api`, `--web` or
-`--mcp`, or `--discord` with `DISCORD_INTERACTIONS=http`: it reads them from the
-process's command line, or from `JUDGE_ROLES` when the command line names none. With
-no HTTP role over the gateway (`JUDGE_ROLES='--discord --jobs'`) nothing listens, so the check passes without probing rather than marking the container
-unhealthy forever. The Discord gateway is not visible from outside the process; a
-fatal disconnect exits it, and `restart: unless-stopped` brings it back. A process
-standing by for the gateway (§8, Gateway holder) is healthy: it is waiting by design.
+The container's healthcheck probes `/api/health` as well, and `cloudflared` waits for
+it to pass. It probes only when the roles include `--api`, `--web` or `--mcp`, or
+`--discord` with `DISCORD_INTERACTIONS=http`: it reads them from the process's command
+line, or from `JUDGE_ROLES` when the command line names none. With no HTTP role over the
+gateway (`JUDGE_ROLES='--discord --jobs'`) nothing listens, so the check passes without
+probing rather than marking the container unhealthy forever. The Discord gateway is not
+visible from outside the process; a fatal disconnect exits it, and
+`restart: unless-stopped` brings it back. A process standing by for the gateway (§8,
+Gateway holder) counts as healthy.
 
-An *empty* database also needs only `scripts/deploy.sh`: `judgebot` creates the schema
+An empty database also needs only `scripts/deploy.sh`: `judgebot` creates the schema
 at startup. Use the explicit form below to see what is about to be applied, or when
 `JUDGE_AUTO_MIGRATE=false`. It runs from the same image and needs nothing but Docker,
 with `db` running (`refresh` never starts or replaces it; `scripts/deploy.sh` does):
@@ -462,10 +463,10 @@ the setup stays the `.env` one. Three consequences:
 - **The `api_key_env` of every provider a stage names must be set in `.env`**, including
   for `refresh`. Each binary resolves all three stages (`[models.extract]`,
   `[models.synth]`, `[models.embed]`) at load. A missing chat key therefore fails
-  `refresh`'s `embed` step, even though `refresh` never uses it. That is deliberate:
-  it fails rather than run half a configuration. A provider
-  table no stage names is parsed but its key is never read. `.env` is the `env_file` for
-  both services, so one line there covers them.
+  `refresh`'s `embed` step, even though `refresh` never uses it, because a binary does
+  not start on a `judge.toml` it cannot fully resolve. A provider table no stage names
+  is parsed but its key is never read. `.env` is the `env_file` for both services, so
+  one line there covers them.
 - **The cloud endpoints take credentials from the platform chain, not the file.** For
   `claude-platform-on-aws` and `bedrock`, either put `AWS_ACCESS_KEY_ID`,
   `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`) in `.env`, or mount a credentials
@@ -553,7 +554,7 @@ The per-IP rate limit of `/api/judge` does not apply to `/mcp`, where the token 
 identity. Instead, `judge` runs through `/mcp` are capped per window
 (`MCP_JUDGE_LIMIT` per `MCP_JUDGE_WINDOW_SECS`, default 20 an hour). The shared
 `JUDGE_CONCURRENCY` slots and `JUDGE_MAX_USD` cap apply as well. This window limits
-what a leaked token can spend: about `MCP_JUDGE_LIMIT × $0.10` an hour, and no faster.
+what a leaked token can spend to about `MCP_JUDGE_LIMIT × $0.10` an hour.
 
 Sessions and lookups make no chat-model call. They do embed the question or search
 text with the configured embedder, if there is one. That costs fractions of a cent, and
@@ -568,7 +569,7 @@ layers:
   unauthenticated traffic off the origin, and the bearer check stays as a second layer.
 
 A verdict an agent persists through a session is kept only as history for that agent's
-own thread. It is **never** shown to Discord or web askers as a prior-call example.
+own thread. It is never shown to Discord or web askers as a prior-call example.
 Nobody can rate it, because there is no Discord message to vote on. The answer text is
 the outside agent's, and only its citations were validated.
 
@@ -708,12 +709,12 @@ The refresh (§7) runs the same upload. A running bot lists the emoji again:
 ### Discord over HTTP
 
 By default the bot receives slash commands and button clicks over its gateway
-connection, which one container holds at a time. A deploy hands that connection to the
-new container, and Discord is quiet while it logs in. With `DISCORD_INTERACTIONS=http`
-Discord POSTs each interaction to `/discord/interactions` instead, through the public
-address (§3) like any other request, and they keep being answered while a deploy
-switches containers (D30). The bot then
-opens no gateway connection.
+connection, which one container holds at a time. A deploy moves that connection to the
+new container, and commands go unanswered while it logs in. With
+`DISCORD_INTERACTIONS=http` Discord POSTs each interaction to `/discord/interactions`
+instead, through the public address (§3) like any other request, and they keep being
+answered while a deploy switches containers (D30). The bot then opens no gateway
+connection.
 
 It needs a public HTTPS address that reaches the container (§3): `https://<JUDGE_DOMAIN>`
 with the bundled site, or your proxy's or the tunnel's hostname, the one that already
@@ -771,7 +772,8 @@ The bundled HTTPS site and your own reverse proxy add nothing to these unless yo
 configure it (nginx's `limit_req`, say). Behind them, the cap is the backstop and the
 limit the first line.
 
-With a budget period set, a capped instance comes back by itself when the period turns.
+With a budget period set, a capped instance resumes answering by itself when the next
+period starts.
 To resume sooner, raise `JUDGE_MAX_USD` and run `scripts/deploy.sh`. The period's spend
 is in the database, so the new container does not reset it.
 
@@ -840,7 +842,7 @@ scripts/deploy.sh                   # starts the backup service with the rest
 docker compose logs backup          # the settings it read, then each check
 ```
 
-Then **do a restore drill** (below). An untested backup is not a backup.
+Then **do a restore drill** (below), which is the only check that a backup restores.
 
 ### Providers
 
@@ -893,7 +895,8 @@ the schedule.
 
 `judgebot backup serve` lists the bucket a few minutes after it starts, then hourly. A
 backup is due when the newest `judgebot-<stamp>.dump.gz` under `BACKUP_PREFIX` is
-`BACKUP_EVERY_DAYS` old (default 7), or there is none. The schedule is the bucket, so a
+`BACKUP_EVERY_DAYS` old (default 7), or there is none. The schedule is read from the
+bucket, so a
 fresh install takes its first backup within minutes, a restart does not reset it, and a
 backup the cron'd script took counts as that week's. Each backup works in this order:
 
@@ -912,12 +915,13 @@ Weekly backups at the default 60 days keep about eight restore points, a few hun
 MB, inside R2's and B2's free tiers.
 
 A failed attempt is retried after an hour, then less often while it keeps failing, at
-least once a day. `JUDGE_ALERT_WEBHOOK` hears the first failure of a streak, a failure
+least once a day. `JUDGE_ALERT_WEBHOOK` is sent the first failure of a streak, a failure
 at a different step than the one before (pruning failing every week does not hide a dump
-that starts failing), and the recovery, never each retry. A streak of listing failures
-ends, with a note, when the bucket can be listed again and no backup is due. The container reads `.env.deploy` and not `.env`, so the
-webhook goes in `.env.deploy` for the backup's alerts and in `.env` for `judgebot`'s:
-set it in both to hear from both.
+that starts failing), and the recovery, but not each retry. A streak of listing failures
+ends, with a note, when the bucket can be listed again and no backup is due. The
+container reads `.env.deploy` and not `.env`, so the webhook goes in `.env.deploy` for
+the backup's alerts and in `.env` for `judgebot`'s: set it in both to get alerts from
+both.
 
 The settings are read once, at start. When one is missing or malformed, the service
 takes no backup: it logs a line naming each, posts the variables' names (never their
@@ -981,7 +985,7 @@ the scheduler runs with a minimal environment:
 ```
 
 If `docker` isn't found, prefix the task with `PATH=/usr/local/bin:$PATH`. Tick the
-task's email-on-error option so a failing backup is noisy rather than silent.
+task's email-on-error option so a failing backup sends an email.
 
 The script works in the service's order: dump, size check, upload, prune past
 `BACKUP_KEEP_DAYS`, local copy. Its pruning (`rclone delete --min-age`) removes every
@@ -1048,7 +1052,7 @@ Each step runs even if an earlier one failed. A step that cannot run for want of
 configuration (`prune` with no retention, `embed` with no embedder, `emoji` with no
 `DISCORD_TOKEN`) logs
 `refresh step skipped` with the reason and does not count as a failure. Most days a run
-costs one Scryfall download and nothing else. It takes a few minutes on a NAS, mostly
+costs only one Scryfall download. It takes a few minutes on a NAS, mostly
 parsing the `default_cards` file. The CR load is one transaction, so retrieval sees the
 old rules or the new, never a mix. The `cards` step commits in batches: each card
 changes together with its faces, and the rulings change in one transaction after the
@@ -1062,15 +1066,15 @@ unset or `0` to keep every call (the default). 90 is a sensible choice. The refr
 `prune` step deletes calls past it with their ratings, as does `judgebot ingest prune`
 by hand. With `JUDGE_REFRESH_HOURS=0`, cron one of the two.
 
-- **Usage survives.** Each run's usage record (`judge_runs`: outcome, models, tokens,
+- **Usage.** Each run's usage record (`judge_runs`: outcome, models, tokens,
   cost) stays, unlinked from the deleted call, and so does the daily spend ledger.
   `judge-cli stats` counts questions and ratings from the stored calls, so for days past
   the retention it shows the spend and fewer (or no) questions.
-- **Examples go.** A deleted call is no longer a prior-call example or part of a
+- **Examples.** A deleted call is no longer a prior-call example or part of a
   thread's history, so a well-rated old answer stops guiding new ones.
-- **Citations stay.** A newer call that cited a deleted one keeps that citation, and
+- **Citations.** A newer call that cited a deleted one keeps that citation, and
   the retirement pass does not retire it for it.
-- **Ratings stop.** A rating button on a deleted answer replies that it is no longer
+- **Ratings.** A rating button on a deleted answer replies that it is no longer
   stored.
 - **Failed calls** have their own bound: 30 days or the newest 500.
 
@@ -1078,8 +1082,8 @@ A value out of range stops every binary that loads the configuration.
 
 ### Schedule
 
-The schedule lives in the database, so every process with `--jobs`, a restart and a cron
-job all agree on it:
+The schedule is kept in the database, so every process with `--jobs`, a restart and a
+cron job all agree on it:
 
 - A run is due when the last *successful* run finished more than `JUDGE_REFRESH_HOURS`
   ago (or none ever has), and the last attempt started long enough ago: an hour after
@@ -1238,9 +1242,10 @@ Downloads are cached in the `judgebot-ingest-cache` volume, which `judgebot` and
 
 ### Call retirement
 
-Prior calls follow the data they cite. The `retire` step re-runs the check that
-admitted each stored call: does each cited rule, ruling or Oracle text still exist and
-still contain the quote? A call that fails is retired (`calls.retired_at`, with the
+A prior call stays in use only while the data it cites still holds. The `retire` step
+re-runs the check that admitted each stored call: does each cited rule, ruling or Oracle
+text still exist and still contain the quote? A call that fails is retired
+(`calls.retired_at`, with the
 failing citation in `retired_reason`) and drops out of retrieval. A call whose
 citations hold again later is restored. The effects:
 
@@ -1249,8 +1254,9 @@ citations hold again later is restored. The effects:
   fingerprint of its context cards' text.
 - A reworded ruling retires the calls that quoted it.
 
-Calls follow a rule that was only renumbered, as when Wizards inserts a keyword and
-the rest of the section shifts by one. The `rules` step matches old and new rules by
+A call stays live when a rule it cites was only renumbered, as when Wizards inserts a
+keyword and the rest of the section shifts by one. The `rules` step matches old and new
+rules by
 text, with rule numbers masked out. Before the retirement check runs, it rewrites the
 citations and answers of the calls that cite the rule, so those calls stay live.
 Every `rule renumbered` and `call relocated` is logged. To see what a run did:
@@ -1350,7 +1356,8 @@ Retrieval degrades to the other sources for the rows not yet embedded. `reembed 
 resumes too: with the row already switched it has nothing to switch, so it fills the
 empty rows and pays for nothing twice.
 
-`--clear` clears and re-buys every vector in the same space. The row does not change,
+`--clear` clears every vector and pays to embed each again in the same space. The row
+does not change,
 so the running bot logs no mismatch, and its vector search finds nothing until the refill
 finishes.
 
@@ -1364,8 +1371,8 @@ pay for them all again.
 
 `--yes` probes the new model before it clears anything. A wrong key, URL or model
 name, or a model whose width is not the configured `dimensions`, fails at that point.
-This matters because after the switch the only ways back are paying for the old space
-again or restoring a backup (the restore drill, §6).
+After the switch the only ways back are paying for the old space again or restoring a
+backup (the restore drill, §6).
 
 `reembed` needs the new `judge.toml` (`JUDGE_CONFIG` in `.env`) and the new provider's
 `api_key_env` in `.env`. `refresh-data.sh` passes its arguments through to
@@ -1385,7 +1392,8 @@ docker compose run --rm -e JUDGE_MAX_USD=20 refresh reembed --yes
 Under `day` or `month` that run spends the period's budget. Its spend reaches the ledger,
 so once the bot's own cap (still the `.env` value) sees the period total, the bot may
 refuse questions for the rest of the day or month. Run a large re-embed early in a
-period, or raise `JUDGE_MAX_USD` in `.env` too and run `scripts/deploy.sh` until it turns.
+period, or raise `JUDGE_MAX_USD` in `.env` as well, until the next period starts, and
+run `scripts/deploy.sh`.
 
 A refill of rows already empty is not refused up front: it stops with `stopped at the
 spend cap`, keeping every row it embedded, and the same command with room resumes it.
@@ -1418,7 +1426,7 @@ than becoming "commit unknown" on every interface.
 
 A GitHub release tagged `vX.Y.Z` adds version tags to the image already built for that
 commit, without rebuilding it: `X.Y.Z`, `X.Y` and, from 1.0 on, `X`. The release is
-exactly the image that has been running as `latest`, down to the platform digests. To
+the image that has been running as `latest`, with the same platform digests. To
 update on releases rather than on every push, pin one:
 
 ```ini
@@ -1450,10 +1458,10 @@ beside the running one:
    that a takeover after a crash waits. Questions asked on Discord during the new
    container's login, a few seconds, get Discord's "The application did not respond".
    An old container from a release before this record (the first deploy onto it)
-   leaves none, and the new one waits out the grace. The web app and the API see no
-   gap: the `proxy` service, `edge` and the tunnel reach whichever container is
-   listening.
-   Neither does Discord with `DISCORD_INTERACTIONS=http` ([Discord over HTTP](#discord-over-http)).
+   leaves none, and the new one waits out the grace. The web app and the API keep
+   answering throughout, because the `proxy` service, `edge` and the tunnel reach
+   whichever container is listening, and so does Discord with
+   `DISCORD_INTERACTIONS=http` ([Discord over HTTP](#discord-over-http)).
 
 If the new container is not healthy within five minutes (`DEPLOY_WAIT_SECS`), or
 restarts, the script removes it, prints its last log lines and exits non-zero. The old
@@ -1606,13 +1614,13 @@ standing by: another instance holds the Discord gateway; this one connects when 
   within the check timeout plus the shutdown (5 seconds) of it, and stands by. Postgres frees its lock
   when the keepalives give up on the session, so the standby takes over about 25
   seconds plus the grace later, never earlier.
-- **One database.** The lease lives in the database, so it protects only processes
-  that share one. Two instances with separate databases and one token both answer.
+- **One database.** The lease is a lock in one database, so it protects only processes
+  that share it. Two instances with separate databases and one token both answer.
 - **Older images.** An image from before the single `judgebot` service never takes the
   lease, so the upgrade to it still needs `--remove-orphans` (above), and so does a
   rollback that far. Any number of `--discord` processes on this image or later are safe.
 - **A direct connection.** The gateway and refresh leases are session-level advisory
-  locks, held by one database connection for as long as it lives. `DATABASE_URL` must
+  locks, held by one database connection for as long as it is open. `DATABASE_URL` must
   reach Postgres directly, or through a pooler in session mode. A pooler in transaction
   mode (PgBouncer's `pool_mode = transaction`) hands that connection to other clients
   between statements, and the lock with it. Each lease session turns off
@@ -1639,9 +1647,8 @@ running beside a refresh's CR load, and sqlx's own migrator lock is a second lay
 against a concurrent `sqlx migrate run`. The log says `schema migrated` with the versions.
 
 A failed migration exits the process. Under `restart: unless-stopped` that is a
-crash-loop, with the reason in `docker compose logs judgebot`. This is loud on purpose:
-a bot running against the wrong schema would answer questions and quietly fail to save
-them.
+crash-loop, with the reason in `docker compose logs judgebot`. The process exits because
+a bot running against the wrong schema would answer questions and fail to save them.
 
 The refresh job's CR load, retirement pass and embedding writes take the same advisory
 lock, so the migration and those steps wait for each other. (The Scryfall card/rulings
@@ -1868,8 +1875,8 @@ git checkout <previous release tag or commit> -- docker-compose.yml
 docker compose pull && docker compose up -d --remove-orphans
 ```
 
-`--remove-orphans` matters here too: the `judgebot` container is an orphan of the old
-file, and left running it answers Discord beside the restored `bot`.
+`--remove-orphans` is required here too: the `judgebot` container is an orphan of the
+old file, and left running it answers Discord beside the restored `bot`.
 `git checkout HEAD -- docker-compose.yml` undoes it when you upgrade again.
 
 An older tag starting against a newer schema depends on how far back it goes:
@@ -1907,9 +1914,9 @@ compose file and the image go back, and 1.x has no `backup` service, so the chec
 `scripts/backup-db.sh` stays the backup and reads them. A whole 1.x checkout's script
 reads the `R2_*` names instead (§6, Providers).
 
-`judgebot ingest migrate` refuses a database that is ahead rather than guessing, and the
-scheduled refresh stays paused while it is (§7): the data is not refreshed until the
-image and the schema match again. An image from before the built-in schedule refreshes
+`judgebot ingest migrate` refuses a database that is ahead, and the scheduled refresh
+stays paused while it is (§7): the data is not refreshed until the image and the schema
+match again. An image from before the built-in schedule refreshes
 nothing by itself, so a rollback that far needs the cron entry of §7 until you upgrade.
 
 `edge` and `cloudflared` are untouched by a code deploy. The tunnel reconnects on its own

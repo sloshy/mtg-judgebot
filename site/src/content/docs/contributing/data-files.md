@@ -6,7 +6,7 @@ sidebar:
 ---
 
 Four files in the repository are data the bot depends on. Pull requests that improve them
-are the easiest way to make the bot better.
+are welcome.
 
 | File | What it is | How it is used |
 | --- | --- | --- |
@@ -23,8 +23,7 @@ A flat mapping of nickname to canonical card name: `bob: Dark Confidant`,
 - Aliases are lowercased on load. Each must match a current card name or face name,
   ignoring case.
 - Nicknames that could mean several cards (the Tron lands, "karn", "emrakul",
-  "sheoldred") are left out on purpose. Ambiguity goes to the user as a "did you mean…?"
-  prompt, never to a guess.
+  "sheoldred") are left out, so the user gets a "did you mean…?" prompt.
 - The resolver also tries an alias with a trailing possessive stripped ("bob's"), and as
   a suffix.
 

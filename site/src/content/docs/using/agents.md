@@ -20,8 +20,7 @@ available three ways:
 citation validation, one retry. It spends model budget under the process's `JUDGE_MAX_USD`
 and, over `/mcp`, counts against `MCP_JUDGE_LIMIT`.
 
-**Sessions** turn the pipeline inside out: the agent is the model, and the judge makes
-no model call.
+In a **session** the agent is the model, and the judge makes no model call.
 
 1. The agent asks for a session, receives the extraction prompt and answers it itself.
 2. It receives the synthesis prompt, rendered from the same retrieved context the bot

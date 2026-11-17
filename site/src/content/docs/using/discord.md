@@ -44,12 +44,11 @@ keyword on the card, the note is not shown. An answer about a card that was not 
 never shown to the model as an example, even after the card's release.
 
 If a name could mean several cards ("Tibalt", "Emrakul") you get a **did you mean…?** row
-of up to five buttons instead of a guess. Only the person who asked can pick, once, within
-ten minutes. A pick still works after the bot restarts, because the message holds the
-question. That is also why a question is at most 1300 characters. If a name
-matches nothing, the reply says which and suggests `[[Full Card Name]]`. Tournament-policy and
-price questions are declined after the cheap classification step, before the expensive
-synthesis call.
+of up to five buttons. Only the person who asked can pick, once, within ten minutes. A
+pick still works after the bot restarts, because the message holds the question. That is
+also why a question is at most 1300 characters. If a name matches nothing, the reply says
+which and suggests `[[Full Card Name]]`. Tournament-policy and price questions are
+declined after the cheap classification step, before the expensive synthesis call.
 
 ![A Discord reply asking which Tibalt was meant: a numbered list of three cards, and a button for each.](../../../assets/screenshots/discord-did-you-mean.png)
 
@@ -86,7 +85,7 @@ Lookups from the bot's database. They call no model, cost nothing and answer at 
 - `/card` takes a name or nickname, resolved as `/judge` resolves it, and shows every
   face's mana cost, type line and current Oracle text, then the card's rulings, newest
   first. The title links to the card on Scryfall. A name that could mean several cards
-  lists them instead of guessing.
+  lists them.
 - `/rule` takes a rule number: `702.19` (the rule with its sub-rules and examples),
   `702.19b` (one sub-rule) or `702` (the section, as many whole rules as fit). The title
   links to the rule on the Yawgatog mirror, and the footer is the CR version. A rule
@@ -99,8 +98,8 @@ Both post in the channel.
 ## Rating buttons
 
 Every answer has three buttons: **Incorrect**, **Partially correct**, **Correct**. A
-rating's score changes one thing: which past answers are shown to the model as
-*examples* when a similar question comes in. Scores are smoothed (a Bayesian mean with a
+rating's score changes only which past answers are shown to the model as examples when
+a similar question comes in. Scores are smoothed (a Bayesian mean with a
 prior of "partially correct" and a weight of three votes), so one early vote cannot
 swing an answer's standing. Answers rated below 1.5 with at least five votes are
 excluded, and so is one a judge rated *Incorrect* (see below) or one about a card that was

@@ -5,23 +5,23 @@ sidebar:
   order: 1
 ---
 
-A judgebot answers Magic: The Gathering rules questions the way a judge would. It gives a
-short ruling. Every claim in it is backed by a quote from the Comprehensive Rules, an
-official Scryfall ruling or the card's current Oracle text. The quote is checked against
-its source before the answer is shown, so a rule number the model invented never reaches
-you. Ask from Discord with `/judge`, from a web app, or from the command line. Use
-brackets like `[[Full Card Name]]` when a nickname could mean several things.
+A judgebot answers Magic: The Gathering rules questions asked in plain language. It gives
+a short ruling backed by quotes from the Comprehensive Rules, Scryfall rulings or the
+card's current Oracle text. Each quote is checked against its source before the answer is
+shown, so an answer cannot cite a rule number the model invented. Ask from Discord with
+`/judge`, from a web app, or from the command line. Use brackets like
+`[[Full Card Name]]` when a nickname could mean several things.
 
 ## One bot per community
 
 Every judgebot is its own Discord application, run by the community that uses it. Each
-has its own spend cap, judge role and bot token. The person who chose the model pays for
-the questions, and nobody shares a budget with strangers. The
+has its own spend cap, judge role and bot token, so the person who chose the model pays
+for the questions. The
 [design decisions](../../how-it-works/decisions/#d16-one-judgebot-per-community)
 page has the reasoning.
 
 Setting one up takes a compose file, a model API key, and a Discord application you
-create in the developer portal in a few minutes:
+create in the developer portal:
 
 1. [Requirements and first run](../../self-hosting/first-run/): the database, the data
    loads, and the web app on your own machine.
@@ -71,8 +71,8 @@ has no user id.
 
 ## AI-generated answers
 
-Every citation is checked against its source before it is shown. Every rule number named
-in the answer's text must also be cited. That rules out invented rule numbers and
-misquoted text. It does not rule out a wrong conclusion drawn from correct quotes. Verify anything that matters at a tournament with a human judge. The bot declines
-tournament-policy questions (the Magic Tournament Rules and Infraction Procedure Guide)
-rather than answering them badly.
+Every citation is checked against its source before it is shown, and every rule number
+named in the answer's text must also be cited. That rules out invented rule numbers and
+misquoted text, but not a wrong conclusion drawn from correct quotes. Verify anything that
+matters at a tournament with a human judge. The bot declines tournament-policy questions
+(the Magic Tournament Rules and Infraction Procedure Guide).

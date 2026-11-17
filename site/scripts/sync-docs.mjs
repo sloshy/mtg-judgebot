@@ -35,7 +35,7 @@ const manifest = [
     sections: [1, 3],
     description:
       "What the judge does, why a bare model is not enough, and one question end to end.",
-    lead: "The first of four parts of `docs/EXPLAINER.md`, an end-to-end tour for a programmer new to retrieval-augmented systems.",
+    lead: "The first of four parts of `docs/EXPLAINER.md`, an end-to-end explanation for a programmer new to retrieval-augmented systems.",
   },
   {
     src: "docs/EXPLAINER.md",
@@ -64,7 +64,7 @@ const manifest = [
     order: 4,
     sections: [11, 15],
     description:
-      "Models as configuration, the gold-set evaluation, what each technology buys, and a glossary.",
+      "Models as configuration, the gold-set evaluation, what each technology is for, and a glossary.",
     lead: "The last part of the explainer.",
   },
   {

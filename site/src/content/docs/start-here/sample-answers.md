@@ -9,7 +9,7 @@ The following are sample answers given by the bot so you can see how it works wi
 
 ![The web app answering a question about Dark Confidant and Tarmogoyf: the ruling, six linked citations, the cards the question was resolved to, and the confidence.](../../../assets/screenshots/web-answer-light.png)
 
-A nickname that could mean several cards gets a question back instead of a guess:
+A nickname that could mean several cards gets a question back:
 
 ![The web app asking which Tibalt was meant, with three cards to choose from.](../../../assets/screenshots/web-did-you-mean.png)
 

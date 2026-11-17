@@ -5,15 +5,16 @@ sidebar:
   order: 2
 ---
 
-Every judgebot is its own Discord application, owned by whoever runs it. This page takes
-you from nothing to `/judge` answering in your server. Discord's walkthrough,
+Every judgebot is its own Discord application, owned by whoever runs it. This page covers
+the steps from creating the application to `/judge` answering in your server. Discord's
+walkthrough,
 [Building your first Discord Bot](https://docs.discord.com/developers/quick-start/getting-started),
 covers the same portal screens in general terms. The steps below say what to choose for
 this bot.
 
-The bot uses slash commands only. It needs **no privileged gateway intents** and **no
-channel permissions**. It receives only its own commands and button presses, and replies
-through the interaction. You never grant it the ability to read messages.
+The bot uses slash commands only. It needs no privileged gateway intents and no channel
+permissions. It receives only its own commands and button presses, and replies through
+the interaction, so it is never granted the ability to read messages.
 
 ## Before you start
 
@@ -53,7 +54,7 @@ Under **Bot**:
    ([Gateway Intents](https://docs.discord.com/developers/events/gateway#privileged-intents)
    explains what they are). Turning one on changes nothing in the bot. Past 100 servers it
    would trigger Discord's verification process for nothing.
-3. **Public Bot** can be off. It controls whether *other* people can use your install link,
+3. **Public Bot** can be off. It controls whether other people can use your install link,
    which a bot for your own servers does not need.
 
 ## 3. The install link
@@ -220,8 +221,8 @@ The role needs no permissions of its own.
 
 One application can be in every server you administer. Reuse the install link from step 3
 and register commands globally. The servers then share one process, with one spend cap
-(`JUDGE_MAX_USD`), one concurrency limit and one judge role name. That is by design
-([D16](../../how-it-works/decisions/#d16-one-judgebot-per-community)).
+(`JUDGE_MAX_USD`), one concurrency limit and one judge role name
+([D16](../../how-it-works/decisions/#d16-one-judgebot-per-community) has the reasoning).
 A community that wants its own budget runs its own instance: a second copy of the same
 compose file, with a second application's token.
 

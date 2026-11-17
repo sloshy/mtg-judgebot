@@ -143,7 +143,7 @@ A released migration is never edited.
 
 **Prompt and schema changes.** Two tests pin the bytes the bot sends. If you edit a
 prompt template under `crates/bot/src/prompts/` or a struct that feeds the model's output
-schema, both fail on purpose:
+schema, both fail until you update them:
 
 - `crates/bot/tests/anthropic_golden.rs` compares four request bodies to fixtures. Run
   it with `UPDATE_GOLDEN=1` to re-capture them, then read the diff of the fixtures as
@@ -172,7 +172,7 @@ them in `summary.md`. `--dry-run` first.
 ## Design rules
 
 The full statement is `docs/DECISIONS.md` D1. These are the ones a change is most
-likely to bump into.
+likely to break.
 
 - **Make the bad state unrepresentable.** Invariants live in types: closed enums,
   validated newtypes, `NonEmpty`, and typestates such as `Verdict<Unvalidated>` →
@@ -184,8 +184,8 @@ likely to bump into.
   `judge_llm::Metered`, which reserves the worst-case cost against `JUDGE_MAX_USD`
   first, or, for an embedding, `judge_embed::MeteredEmbedder` on the same meter. Do not
   add a second path to a provider.
-- **Citations are validated, never trusted.** A quote must be a substring of its source in the
-  retrieved context. Only a `Verdict<Validated>` can be persisted or shown.
+- **Citations are validated.** A quote must be a substring of its source in the retrieved
+  context. Only a `Verdict<Validated>` can be persisted or shown.
 - **The resolver never guesses.** Ambiguity in a card name becomes a "did you mean"
   prompt, not a best effort.
 - **Secrets are `ApiKey`.** Anything that authenticates (provider keys, the Discord
@@ -235,12 +235,12 @@ Adding a language:
 ## Debugging a wrong answer
 
 The cheapest way to reproduce a bad ruling is the agent session. It runs the bot's
-extraction, retrieval and citation validation with *you* as the model, and it spends
+extraction, retrieval and citation validation with you as the model, and it spends
 nothing. Build `judge-cli` (`cargo build --release -p judge-agent`), bring up the
 database, and step through `judge-cli begin | extract | rules | verdict` as
 `.claude/skills/judge/SKILL.md` describes. `judge-cli card`, `search`, `get-rules` and
-`glossary` query the database directly. Reach for `judge-cli judge` or a live bot only
-when the deployed surface is in question. Those calls cost money.
+`glossary` query the database directly. Use `judge-cli judge` or a live bot only when
+the deployed surface is in question, because those calls cost money.
 
 ## Pull requests
 
@@ -265,7 +265,7 @@ migration records the release and commit that ran it in `instance_release`, and
   together in either direction. An older tool prints a note, and an older `judgebot`
   (a rollback) starts.
 - **A new major's pre-release** (`3.0.0-dev`, `3.0.0-rc.1`) is where its breaking
-  migrations are made, so it works only with the very build that migrated the
+  migrations are made, so it works only with the build that migrated the
   database. While `main` is on one, switching a checkout back to an earlier commit
   means a fresh development database (or a backup of one): `judgebot` refuses the one
   a later build migrated.

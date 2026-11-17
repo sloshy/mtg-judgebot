@@ -3,7 +3,7 @@
 The design reference, kept current with the code. It was written stack-independent, before
 the language was chosen (Rust, 2026-08-29).
 `docs/DECISIONS.md` records why each choice was made. `docs/EXPLAINER.md` is the narrative
-version for someone new to the ideas. This file is the terse one.
+version for someone new to the ideas.
 
 ## 1. Goal
 
@@ -12,12 +12,13 @@ cards by full name, partial name, or nickname ("bob" → Dark Confidant). Every
 answer cites its sources: Comprehensive Rules (CR) sections, Scryfall rulings,
 and/or prior rated calls. Answers and user-submitted calls are rated 1–3
 (incorrect / partially correct / correct), the two that find fault with a reason for the
-operator's feedback queue. Ratings feed back into retrieval as *examples*, never as
-authorities over the CR; reasons never reach the model.
+operator's feedback queue. Ratings feed back into retrieval as examples and never
+outrank the CR; reasons never reach the model.
 
 ## 2. Entity-first hybrid retrieval
 
-The design principle. Rules questions have the shape "card A + card B + rule concept C":
+Rules questions have the shape "card A + card B + rule concept C", and the design follows
+from that:
 
 - **Card names are entities** → extraction + lookup, not embeddings.
 - **CR is a numbered hierarchy** → chunk at the *rule* level (e.g. `702.19` with
@@ -204,7 +205,7 @@ environment-variable name, and a price for every model the cap must reserve for.
 embeddings it also reads the vector `Space` (provider kind, model, width). The database
 records that space in `embedding_space`, and every vector reader and writer checks it
 before touching a column. Two models' vectors are therefore never mixed, and switching is
-one explicit, transactional `ingest reembed`. Nothing in `crates/core` knows any of this exists.
+one explicit, transactional `ingest reembed`. `crates/core` depends on none of it.
 
 One binary, `judgebot` (`crates/judgebot`), runs the long-lived interfaces. What a
 process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, `--mcp`,
@@ -323,7 +324,8 @@ process does is a set of roles chosen at launch: `--discord`, `--api`, `--web`, 
   container listens, on a new connection per request with dial retries for 5 s: a
   draining container closes its listener, so a refused dial goes on to the other, and
   no kept-alive connection to it can be closed under a POST. A connection the kernel
-  had queued for it as it closes its listener is reset, the one loss left. Its
+  had queued for it as it closes its listener is reset, which is the only loss that
+  remains. Its
   `:8787` site (the tunnel's) and its admin site remove `X-Judgebot-Client-IP`; the
   host's `127.0.0.1:8787` is its `:8788` site, which passes it on from a reverse proxy
   on the host (any container on the compose network can dial it too, so nothing there
@@ -381,7 +383,7 @@ Three interfaces share this pipeline through the same composition root
     call and the score; maintenance answers each with the maintenance reply.
   - `/judge-private` is `Audience::Private`: acknowledged ephemerally, no history
     read, persisted private (with rating buttons), so it is never a prior call and
-    never another question's history. A call that *fails* is recorded in
+    never another question's history. A call that fails is recorded in
     `failed_calls` for any audience through `CallStore::record_failure` (D27). The
     audience rides in the pick button's custom-id through a card pick.
   - A card pick is answered from Discord alone, so any process holding the gateway
@@ -531,7 +533,7 @@ Three interfaces share this pipeline through the same composition root
     to fix.
   - Writes go through `toml_edit` and a line-preserving `.env` writer, so only
     changed lines move. They are refused when a file changed since it was read.
-- **Agent adapter** (`crates/agent`): the judge as a tool surface for *other*
+- **Agent adapter** (`crates/agent`): the judge as a tool surface for other
   agents.
   - Over MCP, `judge-mcp` serves a local client on stdio. For a remote one,
     `judgebot --mcp` mounts the same handler at `/mcp` behind `MCP_TOKEN`. The
@@ -556,7 +558,7 @@ Three interfaces share this pipeline through the same composition root
       spend-capped, shares the web route's concurrency semaphore, and is
       offered only when a model is configured (`ANTHROPIC_API_KEY` or a
       `judge.toml`).
-    - A **session** runs it in pull mode, where the calling agent *is* the
+    - A **session** runs it in pull mode, where the calling agent is the
       model.
   - `judge_bot::session` is that state machine.
     1. `begin` returns the extraction prompt (steps 1 + 3 as text, plus the
@@ -585,7 +587,7 @@ Three interfaces share this pipeline through the same composition root
   - Over HTTP, `judge` runs are also capped per window (`MCP_JUDGE_LIMIT`) so a
     leaked token cannot take the public web app's slots and spend cap with it.
   - Read-only lookups (resolve a card, rules by id or search, rulings, notes,
-    glossary) round the surface out (`PgLibrary`).
+    glossary) are the rest of the surface (`PgLibrary`).
 
 The Discord and web interfaces draw Magic's card symbols (`{W}`, `{2/U}`, `{T}`) as
 pictures, from one set of names:
@@ -709,10 +711,10 @@ is older than `JUDGE_REFRESH_HOURS` and the last attempt older than `jobs::backo
 doubling per failure in a row, capped at the interval). When due it tries the lease
 without waiting, re-reads the record under it and runs `ingest::refresh` with
 `Trigger::Schedule`. That trigger also caps `embed` at `embed::UNATTENDED_CEILING` rows
-(`Skip::EmbedCeiling`), so no timer pays for a mass re-embed. The webhook
-(`judge_bot::alert`, shared with the spend cap) hears the first failure of a streak, the
-recovery, a new ceiling skip and a panicking check. D24 records why the schedule is in
-the process and not in cron.
+(`Skip::EmbedCeiling`), so an unattended run cannot pay for a mass re-embed. The webhook
+(`judge_bot::alert`, shared with the spend cap) is sent the first failure of a streak,
+the recovery, a new ceiling skip and a panicking check. D24 records why the schedule is
+in the process and not in cron.
 
 `jobs::start` takes the process's `Shutdown`. On the request the scheduler starts no
 check, every wait outside a step is dropped (`ingest::unless_stopped`), the run in
@@ -752,7 +754,7 @@ database in one transaction after probing the new embedder (`docs/PROVIDERS.md` 
 Rating aggregation: Bayesian-smoothed mean (prior 2.0, weight 3) over Discord ratings
 only (`calls_rated` reads `rater_kind = 'discord'`). A rating with
 `is_judge = true` (operator-assigned role) dominates crowd votes. It is used for
-labeling and ordering *among* prior calls, and for exclusion (< 1.5, with ≥ 5
+labeling and ordering among prior calls, and for exclusion (< 1.5, with ≥ 5
 votes unless a judge rated it). It never ranks prior calls above CR chunks. A rating's reason is read by the
 operator's queue alone.
 
@@ -803,11 +805,11 @@ The build was eval-first: retrieval was measured before any synthesis existed.
 
 ## 7. Non-goals
 
-- Tournament policy (MTR/IPG). The bot declines those questions rather than winging them.
+- Tournament policy (MTR/IPG). The bot declines those questions.
 - Accounts on the web app. Its visitors are anonymous, so a rating from it would never
   count toward retrieval (D10).
 - Retraining of any kind.
 - Automatic detection of "nightmare" cards (the notes are curated by hand).
 - Multi-server tenancy. The bot is meant to be run by each community for itself
   (`docs/DECISIONS.md` D16), so one process has one spend cap, one judge role and one
-  token by design.
+  token.

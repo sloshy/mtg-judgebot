@@ -17,8 +17,8 @@ What `judgebot` runs is a set of roles, `JUDGE_ROLES` in `.env`: `--discord`, `-
 runs every role but `--mcp` and `--admin`, which each need a token of their own. A
 further service, `refresh`, runs the data loads on demand. Two optional ones put the
 instance on the internet: `edge` serves it over HTTPS on ports 80 and 443, and
-`cloudflared` through a Cloudflare Tunnel without opening a port. You can stop at the
-web app and never touch Discord. The bot is the last thing to add.
+`cloudflared` through a Cloudflare Tunnel without opening a port. The web app works
+without Discord, and the bot is the last thing to add.
 
 ## Requirements
 

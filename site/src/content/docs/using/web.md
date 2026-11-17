@@ -6,8 +6,8 @@ sidebar:
 ---
 
 The web app is a SolidJS single-page app, built into the image and served by `judgebot` at
-<http://localhost:8787>. It reads like a conversation with the judge: your questions on
-one side, the judge's answers on the other, and the question box docked at the bottom. It
+<http://localhost:8787>. It is laid out as a conversation: your questions on one side,
+the judge's answers on the other, and the question box docked at the bottom. It
 runs the same pipeline as the Discord bot and shows the same answer:
 
 - the ruling
@@ -29,7 +29,8 @@ the Comprehensive Rules release loaded and how long ago the data was last refres
 example `Comprehensive Rules 2026-09-25 · refreshed 3 hours ago`.
 
 Answers are written in the light Markdown Discord renders (bold card names, rule numbers
-in backticks). The web app renders the same three marks and nothing else.
+in backticks, occasional italics). The web app renders those three marks and nothing
+else.
 
 A name that could mean several cards gets a "did you mean…?" choice. Questions asked in
 one browser session share history, so a follow-up works. Before the first question the
