@@ -526,7 +526,7 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 - **The `db` image is pinned** to `pgvector/pgvector:0.8.7-pg16-bookworm` and its digest,
   instead of the floating `pg16`, so the database changes only when the compose file
   does. Run `scripts/deploy.sh --db` once after upgrading to move onto it.
-- **Caddy 2.11.7** for `proxy` and `edge`, and **cloudflared 2026.10.3** for the tunnel.
+- **Caddy 2.11.8** for `proxy` and `edge`, and **cloudflared 2026.10.7** for the tunnel.
 - **`scripts/deploy.sh` is the one way to apply a change**: a release, an edited `.env`,
   `.env.deploy` or `judge.toml` (no more `docker compose restart judgebot`), a profile
   added to `COMPOSE_PROFILES`, and the first start, where it starts the database too. It
