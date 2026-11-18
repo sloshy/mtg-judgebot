@@ -1490,6 +1490,23 @@ script covers every case that once needed the bare form: the upgrade to one `jud
 service below (it finds no `judgebot` container and runs `up -d --remove-orphans`, after
 a backup when one is configured), and a major release (Releases with a migration, below).
 
+**Full redeploy.** The flags combine into one command that runs each step in turn and
+waits for it to finish:
+
+```sh
+scripts/deploy.sh --db --proxy --pull   # or --build in place of --pull
+```
+
+The steps always run in the same order, whatever order the flags are written in: `--db`
+([Database image](#database-image)), then `--proxy` ([Proxy image](#proxy-image)), then
+the deploy above (`--pull` is the same as no flag). The first step that fails stops the
+rest, and the script names the steps it skipped. `--db` and `--proxy` each still cause a
+short outage when they replace a container. When their containers already match
+`docker-compose.yml` they replace nothing, so the full command can be run after any
+update. `--db` still updates the extensions through the running `judgebot`, so a
+`judgebot` that is not running stops the command there; a plain `scripts/deploy.sh`
+deploys without that step. Leave out a flag to skip its step.
+
 **`--remove-orphans` is required on the upgrade that replaced the `bot` and `api`
 services with `judgebot`.** `scripts/deploy.sh` passes it. Without it the old `judgebot-bot` and `judgebot-api`
 containers keep running, because they belong to services the compose file no longer

@@ -348,6 +348,9 @@ migration is not supported. Restore the backup taken before the upgrade instead.
   `cloudflared` beside the old one and stops the old one once the new one has
   registered with Cloudflare. It no longer has a fixed container name
   (`judgebot-tunnel`); `docker compose ps` and `docker compose logs cloudflared` find it.
+- **Full redeploy in one command.** `scripts/deploy.sh --db --proxy --pull` (or `--build`)
+  runs `--db`, `--proxy` and the deploy in that order, each waiting for the one before it,
+  and stops at the first failure. `--pull` is a new name for the plain deploy.
 - **Extensions follow the database image.** Every migrating start (and
   `judgebot ingest migrate`) updates `vector` and `pg_trgm` to the version the database
   image carries. A new pgvector image used to leave the extension at the version that

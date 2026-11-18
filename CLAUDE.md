@@ -407,7 +407,7 @@ Docker on **localhost:5432**. `DB_PORT` in `.env` moves the published port. The
 containers always reach it at `db:5432`.
 
 ```sh
-scripts/deploy.sh [--build]          # THE way to start, upgrade or apply any change (.env,
+scripts/deploy.sh [--pull|--build]  # THE way to start, upgrade or apply any change (.env,
                                      # .env.deploy, judge.toml, docker-compose.yml, profiles); the
                                      # docs teach no bare `docker compose up`. First start: db
                                      # (pgvector/pg16) + judgebot (JUDGE_ROLES, default --discord
@@ -442,6 +442,10 @@ scripts/deploy.sh --proxy            # recreate proxy/edge when their container 
                                      # always an explicit flag, never a side effect
                                      # (`refresh` and `backup` have no depends_on db, so a
                                      # `compose run` never recreates it either)
+scripts/deploy.sh --db --proxy --pull   # the flags combine: each step in turn (db, proxy, then
+                                     # the deploy; --build for --pull), the first failure stops
+                                     # the rest; --db replaces nothing when current but still
+                                     # migrates extensions in the running judgebot
 docker compose run --rm backup run  # one backup now (judgebot backup; the service's command by hand)
 docker compose run --rm --no-deps backup check         # the settings and pg_dump, nothing sent
 docker compose run --rm --no-deps backup list          # --no-deps: works with db down

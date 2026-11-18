@@ -5,12 +5,22 @@
 # with a short downtime: see below.
 #
 #   scripts/deploy.sh            pull the image JUDGE_IMAGE_TAG names, then switch
+#                                (--pull says the same)
 #   scripts/deploy.sh --build    build it from this checkout instead (a dev host)
 #   scripts/deploy.sh --db       replace the db container with the one
 #                                docker-compose.yml describes (see the end),
 #                                or start it when there is none
 #   scripts/deploy.sh --proxy    replace the proxy and edge (Caddy) containers
 #                                with the ones docker-compose.yml describes
+#
+# The flags combine into one redeploy that runs the steps in turn, waiting for
+# each: `scripts/deploy.sh --db --proxy --pull` (or `--build`) is --db, then
+# --proxy, then the judgebot deploy, in that order whatever order they are
+# written in. The first step that fails stops the rest. Each of --db and
+# --proxy still has its own short outage when it replaces a container, and
+# replaces nothing when its containers already match docker-compose.yml
+# (--db still checks the extensions through the running judgebot, so it needs
+# that container up), so the full command can be run after any update.
 #
 # It is the one way to apply a change: a new release, an edited .env,
 # judge.toml or docker-compose.yml, a profile turned on in COMPOSE_PROFILES.
@@ -85,6 +95,45 @@ cd "$root"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
+
+usage="scripts/deploy.sh [--db] [--proxy] [--pull | --build]"
+# Several steps in one command: each runs as its own deploy.sh, in the order
+# --db, --proxy, then the judgebot deploy (--pull or --build), whatever order
+# they are given in, and a step that fails stops the rest. Each step alerts
+# on its own failure.
+if [ "$#" -gt 1 ]; then
+  want_db="" want_proxy="" want_deploy=""
+  for arg in "$@"; do
+    case "$arg" in
+      --db) [ -z "$want_db" ] || die "--db is given twice ($usage)"; want_db=--db ;;
+      --proxy) [ -z "$want_proxy" ] || die "--proxy is given twice ($usage)"; want_proxy=--proxy ;;
+      --pull | --build)
+        [ "$want_deploy" != "$arg" ] || die "$arg is given twice ($usage)"
+        [ -z "$want_deploy" ] || die "$want_deploy and $arg are both given: the judgebot deploy is one or the other ($usage)"
+        want_deploy="$arg"
+        ;;
+      *) die "unknown argument '$arg' ($usage)" ;;
+    esac
+  done
+  steps=()
+  for step in "$want_db" "$want_proxy" "$want_deploy"; do [ -z "$step" ] || steps+=("$step"); done
+  for i in "${!steps[@]}"; do
+    log "step $((i + 1)) of ${#steps[@]}: scripts/deploy.sh ${steps[$i]}"
+    # By its path from the root (the cwd now), under this bash: a relative
+    # path the script was called by no longer holds after the cd above.
+    status=0
+    "$BASH" "$root/scripts/deploy.sh" "${steps[$i]}" || status=$?
+    if [ "$status" -ne 0 ]; then
+      rest=("${steps[@]:$((i + 1))}")
+      skipped=""
+      [ "${#rest[@]}" -eq 0 ] || skipped=", so ${rest[*]} did not run"
+      log "ERROR: scripts/deploy.sh ${steps[$i]} failed (above)$skipped" >&2
+      exit "$status"
+    fi
+  done
+  log "all ${#steps[@]} steps done: ${steps[*]}"
+  exit 0
+fi
 
 # shellcheck source=scripts/alert.sh
 source "$root/scripts/alert.sh"
@@ -462,7 +511,7 @@ progress() {
 case "${1:-}" in
   --db) deploy_db ;;
   --proxy) deploy_proxy ;;
-  "")
+  "" | --pull)
     log "pulling the $service image"
     docker compose pull "$service"
     ;;
@@ -477,7 +526,7 @@ case "${1:-}" in
     sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
     exit 0
     ;;
-  *) die "unknown argument '$1' (scripts/deploy.sh [--build | --db | --proxy])" ;;
+  *) die "unknown argument '$1' ($usage)" ;;
 esac
 
 # A changed db service (a merged Dependabot pull request, DB_PORT in .env) is
