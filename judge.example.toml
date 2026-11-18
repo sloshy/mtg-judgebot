@@ -9,8 +9,8 @@
 # in the containers. With no file at all, the binaries build the default
 # setup from .env: Anthropic direct with ANTHROPIC_API_KEY, claude-opus-5-5 for
 # both stages, Voyage if VOYAGE_API_KEY is set. This file does not change the
-# pipeline, the prompts, the citation validation or the spend cap. It changes only
-# who is on the other end of the HTTP connection.
+# pipeline, the prompts, the citation validation or the spend cap. It changes
+# only which provider and model each request is sent to.
 #
 # Rules the loader enforces (docs/PROVIDERS.md §5):
 #   - Secrets are named by environment variable (api_key_env), never written
@@ -21,7 +21,7 @@
 #     file loads with only ANTHROPIC_API_KEY and VOYAGE_API_KEY set, and
 #     LITELLM_KEY below is not needed until a stage names `litellm`.
 #   - Unknown keys are errors naming the key, so a typo cannot be ignored.
-#   - A knob that would be silently ignored is an error naming both keys
+#   - An option that would be silently ignored is an error naming both keys
 #     (`auth` without api_key_env, `effort` on an openai provider with
 #     reasoning_effort = false, a stage price on a pricing = "free" provider,
 #     a cloud-endpoint key on a keyed endpoint and vice versa).
@@ -88,7 +88,7 @@ api_key_env = "ANTHROPIC_API_KEY"  # direct and proxy only, required there
 
 # Any OpenAI-compatible chat completions server: LiteLLM, OpenRouter, Ollama,
 # vLLM, llama.cpp, Azure OpenAI, Bedrock's and Vertex's OpenAI-compatible
-# endpoints, OpenAI itself. The dialect knobs are all optional. The defaults
+# endpoints, OpenAI itself. The dialect settings are all optional. The defaults
 # are right for OpenAI and LiteLLM.
 [providers.litellm]
 kind = "openai"
