@@ -12,6 +12,8 @@
 #                                or start it when there is none
 #   scripts/deploy.sh --proxy    replace the proxy and edge (Caddy) containers
 #                                with the ones docker-compose.yml describes
+#   scripts/deploy.sh --full     the full redeploy: --db --proxy --pull (with
+#                                --build: --db --proxy --build)
 #
 # The flags combine into one redeploy that runs the steps in turn, waiting for
 # each: `scripts/deploy.sh --db --proxy --pull` (or `--build`) is --db, then
@@ -21,6 +23,8 @@
 # replaces nothing when its containers already match docker-compose.yml
 # (--db still checks the extensions through the running judgebot, so it needs
 # that container up), so the full command can be run after any update.
+# --full names that command; it logs the outages --db and --proxy may cause
+# before it starts, and takes no --db or --proxy beside it.
 #
 # It is the one way to apply a change: a new release, an edited .env,
 # judge.toml or docker-compose.yml, a profile turned on in COMPOSE_PROFILES.
@@ -96,15 +100,16 @@ cd "$root"
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
 
-usage="scripts/deploy.sh [--db] [--proxy] [--pull | --build]"
+usage="scripts/deploy.sh [--full | [--db] [--proxy]] [--pull | --build]"
 # Several steps in one command: each runs as its own deploy.sh, in the order
 # --db, --proxy, then the judgebot deploy (--pull or --build), whatever order
 # they are given in, and a step that fails stops the rest. Each step alerts
 # on its own failure.
-if [ "$#" -gt 1 ]; then
-  want_db="" want_proxy="" want_deploy=""
+if [ "$#" -gt 1 ] || [ "${1:-}" = --full ]; then
+  want_db="" want_proxy="" want_deploy="" full=""
   for arg in "$@"; do
     case "$arg" in
+      --full) [ -z "$full" ] || die "--full is given twice ($usage)"; full=--full ;;
       --db) [ -z "$want_db" ] || die "--db is given twice ($usage)"; want_db=--db ;;
       --proxy) [ -z "$want_proxy" ] || die "--proxy is given twice ($usage)"; want_proxy=--proxy ;;
       --pull | --build)
@@ -115,6 +120,12 @@ if [ "$#" -gt 1 ]; then
       *) die "unknown argument '$arg' ($usage)" ;;
     esac
   done
+  if [ -n "$full" ]; then
+    [ -z "$want_db$want_proxy" ] || die "--full already runs --db and --proxy: give it alone, or with --pull or --build ($usage)"
+    want_db=--db want_proxy=--proxy
+    [ -n "$want_deploy" ] || want_deploy=--pull
+    log "full redeploy: --db, then --proxy, then $want_deploy. --db takes the database offline for a few seconds if it replaces it; --proxy makes new connections wait up to 70 s if it replaces proxy or edge"
+  fi
   steps=()
   for step in "$want_db" "$want_proxy" "$want_deploy"; do [ -z "$step" ] || steps+=("$step"); done
   for i in "${!steps[@]}"; do

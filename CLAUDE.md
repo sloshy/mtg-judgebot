@@ -446,6 +446,8 @@ scripts/deploy.sh --db --proxy --pull   # the flags combine: each step in turn (
                                      # the deploy; --build for --pull), the first failure stops
                                      # the rest; --db replaces nothing when current but still
                                      # migrates extensions in the running judgebot
+scripts/deploy.sh --full [--build]   # the same as --db --proxy --pull (or --build); logs the
+                                     # outages first, takes no --db/--proxy beside it
 docker compose run --rm backup run  # one backup now (judgebot backup; the service's command by hand)
 docker compose run --rm --no-deps backup check         # the settings and pg_dump, nothing sent
 docker compose run --rm --no-deps backup list          # --no-deps: works with db down

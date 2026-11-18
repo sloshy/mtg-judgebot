@@ -1507,6 +1507,10 @@ update. `--db` still updates the extensions through the running `judgebot`, so a
 `judgebot` that is not running stops the command there; a plain `scripts/deploy.sh`
 deploys without that step. Leave out a flag to skip its step.
 
+`scripts/deploy.sh --full` is the same command as `--db --proxy --pull`, and
+`--full --build` is `--db --proxy --build`. It logs the outages `--db` and `--proxy` may
+cause before it starts. It takes no `--db` or `--proxy` beside it.
+
 **`--remove-orphans` is required on the upgrade that replaced the `bot` and `api`
 services with `judgebot`.** `scripts/deploy.sh` passes it. Without it the old `judgebot-bot` and `judgebot-api`
 containers keep running, because they belong to services the compose file no longer
