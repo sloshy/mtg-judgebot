@@ -26,9 +26,9 @@ of the provider. `docs/DECISIONS.md` (D6–D9) records the reasoning.
 - Streaming. Every request keeps `max_tokens` ≤ 16k, inside the non-streaming guidance.
 - A plugin system. Providers are Rust crates in this workspace, chosen by configuration.
 - Every quirk of every OpenAI-compatible server. The OpenAI backend has a small set of
-  dialect knobs and otherwise follows OpenAI's documented API.
+  dialect settings and otherwise follows OpenAI's documented API.
 - The Responses API (`/v1/responses`). A Responses-only model would be a third backend,
-  not a knob.
+  not an option.
 
 ## 2. Request shapes
 
@@ -266,14 +266,14 @@ no SDK.
 | `ToolSpec` | `tools: [{type: function, function: {name, description, parameters, strict}}]` |
 | `ToolChoice::Auto { parallel: false }` | `tool_choice: "auto"`, `parallel_tool_calls: false` |
 | `ToolChoice::None` | `tool_choice: "none"` |
-| `OutputSchema` | `response_format: {type: json_schema, json_schema: {name, schema, strict: true}}`, or `{type: json_object}` + schema in the user turn, or prompt only. The `structured_output` knob chooses. |
+| `OutputSchema` | `response_format: {type: json_schema, json_schema: {name, schema, strict: true}}`, or `{type: json_object}` + schema in the user turn, or prompt only. The `structured_output` option chooses. |
 | `Effort` | `reasoning_effort` when `reasoning_effort = true` |
-| `max_tokens` | `max_completion_tokens` (OpenAI) or `max_tokens` (most compatible servers), by the `max_tokens_param` knob |
+| `max_tokens` | `max_completion_tokens` (OpenAI) or `max_tokens` (most compatible servers), by the `max_tokens_param` option |
 | `stop` | `finish_reason`: `stop`→EndTurn, `length`→MaxTokens, `tool_calls`→ToolUse, `content_filter`→Refusal. A non-null `message.refusal` is also a Refusal. |
 | `usage` | `prompt_tokens − prompt_tokens_details.cached_tokens` → input, `cached_tokens` → cache_read, `completion_tokens` → output |
 | tool call arguments | `function.arguments` is a **string**. It is parsed with serde, then validated against `LookupRulesInput` as on Anthropic. |
 
-Dialect knobs live on the provider table (§5) with defaults that are right for OpenAI and
+Dialect settings live on the provider table (§5) with defaults that are right for OpenAI and
 LiteLLM. `auth = "bearer" | "api-key"` covers Azure's header. `base_url` can carry Azure's
 `?api-version=` query.
 
@@ -367,9 +367,9 @@ Anthropic direct with `ANTHROPIC_API_KEY`, `claude-opus-5-5` for both stages,
 Voyage if `VOYAGE_API_KEY` is set. The eval numbers were measured on that setup.
 
 A `judge.toml` (path from `JUDGE_CONFIG`, else `./judge.toml` if present) selects
-providers and models. `judge.example.toml` documents every knob with its default. Two
+providers and models. `judge.example.toml` documents every option with its default. Two
 tests in `config.rs` pin it: one loads it as shipped, the other with every commented table
-uncommented and each endpoint named by a stage, so a renamed knob fails the tests.
+uncommented and each endpoint named by a stage, so a renamed option fails the tests.
 
 ```toml
 # Secrets are named by environment variable, never written here.
@@ -383,7 +383,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 kind = "openai"
 base_url = "http://litellm:4000/v1"
 api_key_env = "LITELLM_KEY"
-# dialect knobs, all optional, shown with defaults
+# dialect settings, all optional, shown with defaults
 structured_output = "json_schema"  # json_schema | json_object | prompt
 strict_tools = true
 reasoning_effort = false
@@ -430,7 +430,7 @@ The loader enforces these rules at load time, each with a message naming the key
   `WorkspaceId` (the shapes the platforms document) and `Dimensions`.
 - Every `api_key_env` a stage names must be present and non-blank. It is read once into a
   redacted `ApiKey`. A table no stage names is parsed, and its key is never read.
-- A knob that would be silently ignored is an error naming both keys: `auth` without
+- An option that would be silently ignored is an error naming both keys: `auth` without
   `api_key_env`, `effort` on an `openai` provider with `reasoning_effort = false`, a stage
   price on a `pricing = "free"` provider, a cloud-endpoint key on a keyed endpoint.
 - A model on an `openai` provider must be priced or its provider `pricing = "free"`, an

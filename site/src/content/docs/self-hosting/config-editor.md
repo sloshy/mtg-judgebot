@@ -11,7 +11,7 @@ editing them by hand remains possible.
 
 - **Forms from the loader's types.** The `judge.toml` form is generated from the types the
   loader parses into, and the help text is their documentation. A setting's help is its
-  comment in `.env.example`. A knob added in a release appears in the editor without
+  comment in `.env.example`. An option added in a release appears in the editor without
   any change to it.
 - **Draft checks.** On every change, the draft runs through the same loaders the binaries
   use at startup. The side panel says whether the

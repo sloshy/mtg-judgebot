@@ -162,13 +162,13 @@ Citations are validated client-side, and the answer's lifecycle is a type.
 Providers are configuration: a TOML file, with env-only as the zero-config default. An
 operator should be able to run the judge on any model they can reach. The alternative
 was a dozen `JUDGE_*_MODEL` / `_PROVIDER` / `_BASE_URL` variables. That fits Docker's
-`env_file` better, but it cannot express per-provider dialect knobs or pricing without
+`env_file` better, but it cannot express per-provider dialect settings or pricing without
 becoming a naming scheme of its own.
 
 So there is `judge.toml`: typed structs, `deny_unknown_fields`, `nutype` validators, and
 secrets named by environment variable and never written in the file. With no file, the
 binaries build the default setup from `.env`: Anthropic direct, `claude-opus-5-5` for both
-stages, Voyage if keyed. The eval numbers were measured on that setup. A knob that would
+stages, Voyage if keyed. The eval numbers were measured on that setup. An option that would
 be silently ignored is a load error naming both keys.
 `docs/PROVIDERS.md` is the reference.
 
@@ -638,12 +638,12 @@ no rules answer means those two characters.
 *Decided 2026-10-07.*
 
 `judge.toml` and `.env` are documented by their example files, but which keys apply where
-(an endpoint's keys, a stage's provider kinds, which knob makes another an error) was learned
+(an endpoint's keys, a stage's provider kinds, which option makes another an error) was learned
 by loading the file and reading the error. `judge-config` is an optional page for editing
 both. Three choices make it hold to the loader rather than drift from it.
 
 - **The form is the loader's types.** `file_schema()` is schemars over the same serde
-  structs `Config::from_toml` parses, so a new knob is a field with no editor change, and
+  structs `Config::from_toml` parses, so a new option is a field with no editor change, and
   the structs' doc comments are written as the operator's help text. What types cannot
   say comes from the tables the loader checks against: which endpoint takes which key is one
   `EndpointKey::on` table, read by the misplaced-key check and emitted as `x-endpoints`.

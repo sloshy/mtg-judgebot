@@ -59,7 +59,7 @@ const EN = {
     "Voyage embeddings, when `VOYAGE_API_KEY` is set",
   ],
   zeroConfigKnobs:
-    "Its knobs (`ANTHROPIC_BASE_URL`, `VOYAGE_MODEL`, `VOYAGE_DIMENSIONS`) are in Settings. To choose providers and models per stage:",
+    "Its variables (`ANTHROPIC_BASE_URL`, `VOYAGE_MODEL`, `VOYAGE_DIMENSIONS`) are in Settings. To choose providers and models per stage:",
   createToml: "Create judge.toml",
   startFromExample: "Start from judge.example.toml as text",
   modeForm: "Form",

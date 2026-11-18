@@ -472,7 +472,7 @@ handling lives, so you can read further.
 | Switching models is expensive (re-pays every row) | `ingest reembed --yes` is explicit, probes the new embedder first, and prints a rough cost without `--yes` |
 | A switch races an in-flight write | advisory lock: writers take the shared side, the switch takes the exclusive side |
 | No embedding key configured | vector search off, and the other sources still work |
-| Voyage free-tier token limits | batch size knob `VOYAGE_MAX_BATCH` |
+| Voyage free-tier token limits | batch size setting `VOYAGE_MAX_BATCH` |
 | HNSW post-filtering shrinking results | partial index over the rows that are searched and no others |
 
 ### Money and abuse
@@ -494,7 +494,7 @@ handling lives, so you can read further.
 | Scryfall data drift | daily bulk re-sync, with content-hashed ruling keys that keep identity |
 | Prompt or schema drift breaking the wire format | golden request fixtures pinned byte-for-byte, and the system prompt SHA pinned |
 | Losing the database (re-embedding costs money) | weekly `pg_dump` to an S3-compatible bucket with a restore drill |
-| Unknown config keys silently ignored | `deny_unknown_fields` and "this knob would be ignored" errors at load |
+| Unknown config keys silently ignored | `deny_unknown_fields` and "this option would be ignored" errors at load |
 
 ---
 

@@ -11,7 +11,7 @@ at medium effort for both LLM stages, and Voyage `voyage-3.5` for embeddings if
 
 A `judge.toml` picks something else, such as a different model per stage on different
 providers. The file is the one `JUDGE_CONFIG` names, else `./judge.toml` if present.
-`judge.example.toml` shows every knob with its default. The file names secrets by
+`judge.example.toml` shows every option with its default. The file names secrets by
 environment variable and never holds one.
 
 The [config editor](../config-editor/) (`scripts/config.sh`, Models tab) is the way to
@@ -61,10 +61,10 @@ Credentials for the three cloud endpoints come from the platform's own credentia
 checked once at startup, so a host with none fails there rather than on the first
 question.
 
-`kind = "openai"` is chat completions as OpenAI documents it. A few dialect knobs adjust
+`kind = "openai"` is chat completions as OpenAI documents it. A few dialect settings adjust
 it: `structured_output`, `strict_tools`, `reasoning_effort`, `max_tokens_param`,
 `cache_hints`. Their defaults suit OpenAI and LiteLLM. Ollama, vLLM, llama.cpp, OpenRouter
-and Azure OpenAI work by setting knobs, with no code changes.
+and Azure OpenAI work by changing those settings, with no code changes.
 
 Some backends cannot enforce the output schema on the server (`json_object`, `prompt`,
 Bedrock). They get the schema in the prompt instead. That can mean more citation retries,

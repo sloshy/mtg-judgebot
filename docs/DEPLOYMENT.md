@@ -447,7 +447,7 @@ This step is optional. Without a `judge.toml` the containers use Anthropic direc
 with `ANTHROPIC_API_KEY`, and Voyage with `VOYAGE_API_KEY`, as set in `.env`. A
 `judge.toml` runs the judge on other providers: a cheap model for extraction, Claude
 through your own cloud account, a local Ollama, an OpenAI-compatible gateway.
-`judge.example.toml` documents every knob, and the README's "Choosing a model" is the
+`judge.example.toml` documents every option, and the README's "Choosing a model" is the
 short version. Write the file and name it in `.env`:
 
 ```ini

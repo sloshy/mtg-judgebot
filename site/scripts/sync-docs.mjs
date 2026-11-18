@@ -87,7 +87,7 @@ const manifest = [
     title: "Model providers",
     order: 7,
     description:
-      "The judge.toml provider model, covering the seam, the backends and their endpoints, dialect knobs, pricing and the embedding space.",
+      "The judge.toml provider model, covering the seam, the backends and their endpoints, dialect settings, pricing and the embedding space.",
   },
   {
     src: "README.md",
