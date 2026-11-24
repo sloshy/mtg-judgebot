@@ -301,7 +301,7 @@ pub const fn discord_tags(locale: Locale) -> &'static [&'static str] {
 
 /// English.
 pub const EN: Messages = Messages {
-    busy: "I'm answering as many questions as I can right now; please try again in a minute.",
+    busy: "I'm answering as many questions as I can right now. Please try again in a minute.",
     out_of_scope: "I only answer Comprehensive Rules and Commander rules questions. Tournament policy \
                    (MTR/IPG) and questions that aren't about the rules are out of my scope: for \
                    policy, see the Magic Tournament Rules or ask a tournament judge.",
@@ -422,7 +422,7 @@ answer again."
     retry_body: "Judgebot is being upgraded and will be back in a minute or two. \
 Press **Retry** to ask this again.",
     retry_label: "Retry",
-    still_upgrading: "Still upgrading. Press **Retry** again in a minute; your question is kept on the message.",
+    still_upgrading: "Still upgrading. Press **Retry** again in a minute.",
     edit_failed: "I worked out an answer but couldn't update the message. Please ask the question again.",
 
     footer_meta: |confidence, cr| {
@@ -489,7 +489,7 @@ one's, is removed too.",
     help_feed: "**The feed.** A `/judge` question (not `/judge-private`) may be listed with its answer on this \
 instance's public web feed, with your username (anonymous once you use `/forget`). The channel and server \
 are never shown.",
-    help_disclaimer: "Answers are AI-generated; verify anything important with a human judge. Unofficial \
+    help_disclaimer: "Answers are AI-generated, so verify anything important with a human judge. Unofficial \
 Fan Content under the Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.",
     data_heading: "**Data.**",
     data_unknown: "**Data.** Unknown: the database did not answer.",
@@ -533,7 +533,7 @@ the same licence. The source code of this instance is at <{}> ({}).",
     more_lines: |n| format!("… and {n} more"),
 
     commands: Commands {
-        judge: "Ask a Magic rules question; the answer cites the Comprehensive Rules.",
+        judge: "Ask a Magic rules question and get an answer that cites the Comprehensive Rules.",
         judge_question: "Your rules question. Use brackets like [[Full Card Name]] to avoid ambiguity.",
         judge_private: "Ask a rules question privately: only you see the answer, and it is never shown publicly.",
         card: "Look up a card: Oracle text and rulings. Free: no model is called.",
@@ -542,7 +542,7 @@ the same licence. The source code of this instance is at <{}> ({}).",
         rule_id: "A rule number such as 702.19, 702.19b or 702.",
         help: "What the bot does, how to ask, what it stores, and where its source is.",
         license: "Where this bot's source code is, at which commit, and under which licence.",
-        forget: "Delete your ratings and anonymize your failed calls; nothing else is stored about you.",
+        forget: "Delete your ratings and anonymize your failed calls.",
     },
 };
 

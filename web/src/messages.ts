@@ -316,7 +316,7 @@ function enShortDay(day: string, year: boolean): string {
 
 export const en = {
   title: "MTG Judgebot",
-  tagline: "Ask a Magic: The Gathering rules question; the answer cites the Comprehensive Rules.",
+  tagline: "Ask a Magic: The Gathering rules question and get an answer that cites the Comprehensive Rules.",
   thinking: "Consulting the rules… this usually takes 20–45 seconds.",
   examplesTitle: "Try one",
   // Each is a common ruling with a short, unambiguous answer, and between
@@ -358,7 +358,7 @@ export const en = {
   strangeReply: (status) => `The judge answered strangely (HTTP ${status}). Please try again.`,
 
   notRated:
-    "Ratings here are anonymous and never shape later answers. Answers are AI-generated; verify anything important with a human judge.",
+    "Ratings here are anonymous and never shape later answers. Answers are AI-generated, so verify anything important with a human judge.",
   // Keep in step with site/src/components/Footer.astro.
   fanContent: (policy) => [
     "MTG Judgebot is unofficial Fan Content permitted under the ",

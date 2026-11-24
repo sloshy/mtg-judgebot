@@ -2,7 +2,7 @@
   {
     "name": "judge",
     "name_localizations": {},
-    "description": "Ask a Magic rules question; the answer cites the Comprehensive Rules.",
+    "description": "Ask a Magic rules question and get an answer that cites the Comprehensive Rules.",
     "description_localizations": {},
     "options": [
       {
@@ -116,7 +116,7 @@
   {
     "name": "forget",
     "name_localizations": {},
-    "description": "Delete your ratings and anonymize your failed calls; nothing else is stored about you.",
+    "description": "Delete your ratings and anonymize your failed calls.",
     "description_localizations": {},
     "options": [],
     "nsfw": false

@@ -1446,8 +1446,8 @@ impl Data {
         }
     }
 
-    /// `/judge`: ask a Magic rules question; the answer cites the
-    /// Comprehensive Rules.
+    /// `/judge`: ask a Magic rules question and get an answer that cites
+    /// the Comprehensive Rules.
     async fn judge(
         &self,
         reply: &mut Reply<'_>,
