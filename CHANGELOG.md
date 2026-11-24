@@ -549,6 +549,10 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Fixed
 
+- **A deploy's Caddyfile check shows why it failed.** `scripts/deploy.sh` hid the
+  output of `caddy validate` and reported every failure as a Caddyfile that does not
+  load, including a proxy or edge image that could not be pulled on a host's first
+  deploy. It now prints the last 20 lines of the output before refusing.
 - **Newly spoiled cards load.** Scryfall lists a fresh preview with an empty `games`
   list until it knows where the card will be played, and the card step read that as
   digital-only and dropped it, so the newest spoilers could not be asked about however

@@ -199,8 +199,12 @@ case "$wait_secs" in '' | *[!0-9]*) die "DEPLOY_WAIT_SECS must be a number of se
 # once the old container is gone. Checked before anything changes.
 [ -f proxy/Caddyfile ] || die "proxy/Caddyfile is missing: run this from a full checkout (git pull)"
 log "checking that proxy/Caddyfile loads"
-docker compose run --rm --no-deps -T proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 ||
-  die "proxy/Caddyfile does not load: docker compose run --rm --no-deps proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+# Its output is shown only on a failure, which may be the image's pull (a
+# first deploy on a host has none) rather than the file.
+if ! out=$(docker compose run --rm --no-deps -T proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1); then
+  printf '%s\n' "$out" | tail -n 20 >&2
+  die "proxy/Caddyfile does not load, or the proxy image could not be pulled (output above): docker compose run --rm --no-deps proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+fi
 # The public profile's site (`edge`, COMPOSE_PROFILES=public) mounts the same
 # directory and is checked the same way, with the JUDGE_DOMAIN it will serve.
 # Without the profile it is none of this deploy's business.
@@ -209,8 +213,10 @@ if docker compose config --services 2>/dev/null | grep -qx edge; then
   edge=edge
   [ -f proxy/edge.Caddyfile ] || die "proxy/edge.Caddyfile is missing: run this from a full checkout (git pull)"
   log "checking that proxy/edge.Caddyfile loads"
-  docker compose run --rm --no-deps -T edge caddy validate --config /etc/caddy/edge.Caddyfile --adapter caddyfile >/dev/null 2>&1 ||
-    die "proxy/edge.Caddyfile does not load, or JUDGE_DOMAIN in .env is not a host name: docker compose run --rm --no-deps edge caddy validate --config /etc/caddy/edge.Caddyfile --adapter caddyfile"
+  if ! out=$(docker compose run --rm --no-deps -T edge caddy validate --config /etc/caddy/edge.Caddyfile --adapter caddyfile 2>&1); then
+    printf '%s\n' "$out" | tail -n 20 >&2
+    die "proxy/edge.Caddyfile does not load, JUDGE_DOMAIN in .env is not a host name, or the edge image could not be pulled (output above): docker compose run --rm --no-deps edge caddy validate --config /etc/caddy/edge.Caddyfile --adapter caddyfile"
+  fi
 fi
 
 # The backup's settings in .env.deploy, for every kind of deploy: a refused
