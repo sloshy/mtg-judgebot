@@ -37,6 +37,16 @@ Hostnames, paths and the image name below are placeholders (`judge.example.com`,
   does not build the image: CI publishes it and the host pulls it (§8). A build
   (`cargo build --release` across ten crates plus a Vite build) needs ~4 GB and more CPU
   than a NAS has.
+- A Mac works as a host with Docker Desktop (the image is published for arm64 too):
+  - A sleeping Mac answers nothing. Prevent automatic sleeping when the display is
+    off (System Settings, Energy; on a laptop, Battery, Options).
+  - Docker Desktop starts only when a user logs in. Set it to start at login, and
+    turn on automatic login so the stack comes back after a power cut.
+  - Docker Desktop hides visitors' addresses from `edge`, so every visitor shares one
+    rate-limit bucket (§3, Client address).
+  - The scripts run under macOS's own `/bin/bash` 3.2 and BSD tools. `deploy.sh`
+    also needs a `timeout` command, which recent macOS ships in `/usr/bin`
+    (`command -v timeout` says).
 - The compose file uses only syntax that older bundled Compose versions accept.
   Synology's Container Manager ships v2.20, which predates the `env_file` long form.
   As a result, `.env.deploy` must exist on any machine running the `tunnel` or
@@ -67,8 +77,53 @@ cold rebuild re-parses the CR and the Scryfall bulk file and pays the embedding 
 again for every rule and glossary entry, and stored calls and ratings cannot be
 re-ingested, so without the dump they are lost.
 
+Nearly all of an instance's state is in the database: calls, ratings, the feedback
+queue, the spend ledger, refresh runs, the curated lists' records. Outside it, copy
+these files from the old checkout to the new one:
+
+- `.env`, and `.env.deploy` when the `tunnel` or `backup` profile is on.
+- The file `JUDGE_CONFIG` names, if any. It is a host path, so correct it in `.env`
+  when the new checkout is elsewhere.
+- `docker-compose.override.yml` and any edits to `proxy/`, if you made them.
+
+Outside the checkout, move what the host itself does for the instance:
+
+- Host cron entries for `scripts/refresh-data.sh` or `scripts/backup-db.sh`. Remove
+  them on the old host. A cron'd backup there keeps uploading the old database to the
+  bucket, and the new host's `backup` service skips its own backup while the newest
+  object is recent.
+- An own reverse proxy's configuration (§3) and the router's port forwards for
+  `edge`.
+- Local backup copies (`BACKUP_KEEP_LOCAL`), if you keep them.
+
+The `judgebot-ingest-cache` volume is a download cache and refills itself. The card
+emoji live in the Discord application. `edge`'s certificates are issued again on its
+first start.
+
+Run the build the old host runs, and upgrade afterwards as its own deploy (§8). A
+newer image on the new host would make the move an upgrade too, possibly a major one.
+`latest`, the default tag, follows `main`, so the new host's `latest` may already be
+another build. Read the old host's commit before stopping it:
+
 ```sh
-# old host
+docker compose exec judgebot judge-cli about     # "commit": the build it runs
+docker compose exec judgebot judge-cli stats     # figures to compare after the move
+```
+
+Then pin that build in the new `.env`: `JUDGE_IMAGE_TAG=sha-<first 7 characters>`, or
+the release's version when it runs a release. Check out the same commit in the new
+checkout, so `docker-compose.yml` matches the image.
+
+Stop the old instance's writers before the dump, and leave its database running.
+Anything written after the dump is lost. Two instances running at once also conflict:
+
+- Two tunnel connectors with one token share the traffic between the hosts.
+- Over the gateway, both hosts connect with one bot token.
+- Both `--jobs` schedulers refresh, and both `backup` services upload.
+
+```sh
+# old host: judgebot, then cloudflared and backup when their profile is on
+docker compose stop judgebot cloudflared backup
 docker exec judgebot-db pg_dump -U judgebot -Fc judgebot > judgebot.dump
 
 # new host
@@ -76,6 +131,26 @@ scripts/deploy.sh --db              # starts the database alone
 docker exec -i judgebot-db pg_restore -U judgebot -d judgebot --clean --if-exists \
   < judgebot.dump
 ```
+
+`pg_dump` and `pg_restore` run inside the `db` container, so neither host needs a
+Postgres client. On a NAS, `docker` may need `sudo`. Never
+pass `-t` to `docker exec` here: a terminal would mangle the binary dump. The dump can
+also go straight from one host to the other over SSH, with no file left on the old
+one:
+
+```sh
+# on the new host
+ssh <old host> 'docker exec judgebot-db pg_dump -U judgebot -Fc judgebot' > judgebot.dump
+```
+
+A command run over SSH gets a short `PATH` that may not hold `docker` (Docker Desktop
+and Synology install it in `/usr/local/bin`), so give its full path when the command
+is not found. With `sudo` on the old host this works only when it asks for no
+password; otherwise dump to a file there and copy it with `scp`.
+
+With the `backup` profile on, the bucket can carry the dump instead:
+`docker compose run --rm backup run` on the old host, then `backup fetch` on the new
+one and `gunzip` before `pg_restore` (Restore drill, §6).
 
 Check the restore before moving on:
 
@@ -99,6 +174,17 @@ cause:
 - The model is changing: `scripts/refresh-data.sh reembed --yes`. This costs money,
   because it embeds every row again.
 - The row is already right: the same command only fills whatever is still empty.
+
+Then start the rest with `scripts/deploy.sh --pull`. A tunnel moves with
+`.env.deploy`, so its hostname, and Discord's Interactions Endpoint URL on it, stay
+as they were. With `edge`, point the DNS record at the new host first. Check
+`/api/health`, `/help` in Discord, and `docker compose exec judgebot judge-cli stats`
+against the figures taken on the old host.
+
+Keep the old stack stopped, not removed with `down -v`, until the new one has run for
+a while. To go back, stop the new stack, then `scripts/deploy.sh` on the old host.
+Whatever the new host stored in the meantime (calls, ratings, spend) stays behind
+unless you move it the same way.
 
 ## 3. Exposure
 
