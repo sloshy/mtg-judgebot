@@ -153,7 +153,7 @@ case "$mode" in
     docker compose exec -T db \
       pg_dump -U judgebot -Fc judgebot | gzip -9 > "$tmp/$name"
 
-    size="$(stat -c %s "$tmp/$name")"
+    size="$(wc -c < "$tmp/$name" | tr -d ' ')"   # stat -c is GNU-only
     [ "$size" -ge "$min_bytes" ] \
       || die "dump is ${size} bytes, below the ${min_bytes} floor — refusing to upload"
     log "dump ok: $name (${size} bytes)"

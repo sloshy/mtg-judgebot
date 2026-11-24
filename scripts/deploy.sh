@@ -99,6 +99,8 @@ cd "$root"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
+# macOS runs this under bash 3.2: no mapfile, so arrays of lines are read
+# with while-read loops into _line.
 
 usage="scripts/deploy.sh [--full | [--db] [--proxy]] [--pull | --build]"
 # Several steps in one command: each runs as its own deploy.sh, in the order
@@ -227,7 +229,7 @@ if [ -f .env.deploy ]; then
     sed -E 's/^[[:space:]]*(export[[:space:]]+)?(R2_[A-Z_]+)=.*/\2/' | sort -u | tr '\n' ' ' || true)"
   if [ -n "$retired" ]; then
     stage=refused
-    die ".env.deploy names the backup's store with ${retired% }, which 2.0.0 no longer reads. Rename each line, keeping its value (sed -i 's/^R2_/BACKUP_S3_/' .env.deploy does all four): R2_ENDPOINT= to BACKUP_S3_ENDPOINT=, R2_BUCKET= to BACKUP_S3_BUCKET=, R2_ACCESS_KEY_ID= to BACKUP_S3_ACCESS_KEY_ID=, R2_SECRET_ACCESS_KEY= to BACKUP_S3_SECRET_ACCESS_KEY= (docs/DEPLOYMENT.md §6)"
+    die ".env.deploy names the backup's store with ${retired% }, which 2.0.0 no longer reads. Rename each line, keeping its value (sed -i.bak 's/^R2_/BACKUP_S3_/' .env.deploy && rm .env.deploy.bak does all four, with GNU or BSD sed): R2_ENDPOINT= to BACKUP_S3_ENDPOINT=, R2_BUCKET= to BACKUP_S3_BUCKET=, R2_ACCESS_KEY_ID= to BACKUP_S3_ACCESS_KEY_ID=, R2_SECRET_ACCESS_KEY= to BACKUP_S3_SECRET_ACCESS_KEY= (docs/DEPLOYMENT.md §6)"
   fi
   # A later line wins, a blank one too: a pasted example line would unset
   # what the line above it set.
@@ -319,7 +321,8 @@ deploy_proxy() {
 # the swap that way, never the tunnel.
 swap_tunnel() {
   local olds old tunnel_new started deadline
-  mapfile -t olds < <(docker compose ps -q cloudflared)
+  olds=()
+  while IFS= read -r _line || [ -n "$_line" ]; do olds+=("$_line"); done < <(docker compose ps -q cloudflared)
   if [ "${#olds[@]}" -eq 0 ]; then
     log "starting the tunnel's connector"
     docker compose up -d --no-deps cloudflared
@@ -374,7 +377,8 @@ start_db() {
 # --db: the database's update, described at the top. Exits when done.
 deploy_db() {
   local before image pulled running_id data_major image_major judge after deadline started out
-  mapfile -t before < <(docker compose ps -q db)
+  before=()
+  while IFS= read -r _line || [ -n "$_line" ]; do before+=("$_line"); done < <(docker compose ps -q db)
   if [ "${#before[@]}" -eq 0 ]; then
     # A first start (no container), or a stopped db: nothing is served without
     # it, so there is no outage to choose. A stopped one the compose file now
@@ -429,7 +433,8 @@ deploy_db() {
     log "not checking the image's pgvector against the database's (image release ${tag_vector:-not in the tag}, extension ${installed_vector:-not read})"
   fi
 
-  mapfile -t judge < <(docker compose ps -q "$service")
+  judge=()
+  while IFS= read -r _line || [ -n "$_line" ]; do judge+=("$_line"); done < <(docker compose ps -q "$service")
   if [ "${#judge[@]}" -gt 1 ]; then
     stage=refused
     die "${#judge[@]} $service containers are running, so an earlier deploy did not finish; stop all but one (docker ps), then run this again"
@@ -561,7 +566,8 @@ if [ -z "$(docker compose ps -q db)" ]; then
   start_db
 fi
 
-mapfile -t running < <(docker compose ps -q "$service")
+running=()
+while IFS= read -r _line || [ -n "$_line" ]; do running+=("$_line"); done < <(docker compose ps -q "$service")
 case "${#running[@]}" in
   0) old="" ;;
   1) old="${running[0]}" ;;
@@ -838,7 +844,8 @@ fi
 # Any other service of the active profiles onto the current compose file and
 # .env; nothing happens to one that is already current. db is --db's alone,
 # proxy and edge --proxy's.
-mapfile -t others < <(docker compose config --services | grep -vxE 'db|judgebot|proxy|edge|backup|cloudflared' || true)
+others=()
+while IFS= read -r _line || [ -n "$_line" ]; do others+=("$_line"); done < <(docker compose config --services | grep -vxE 'db|judgebot|proxy|edge|backup|cloudflared' || true)
 if [ "${#others[@]}" -gt 0 ]; then
   stage=services
   docker compose up -d --no-deps "${others[@]}"

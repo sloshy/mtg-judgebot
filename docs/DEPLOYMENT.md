@@ -875,7 +875,8 @@ Each provider needs the endpoint, and some a region or the addressing style:
 
 Before 2.0.0 the store was always R2 and its settings were `R2_*`. A set `R2_*` now
 stops the service, the script and every `scripts/deploy.sh` run, naming each line to
-rename, keeping its value (`sed -i 's/^R2_/BACKUP_S3_/' .env.deploy` does all four):
+rename, keeping its value (`sed -i.bak 's/^R2_/BACKUP_S3_/' .env.deploy && rm .env.deploy.bak` does all four,
+with GNU or BSD sed):
 
 | Before 2.0.0 | Now |
 | --- | --- |
