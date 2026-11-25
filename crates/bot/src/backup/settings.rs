@@ -63,9 +63,9 @@ pub const DEFAULT_REGION: &str = "auto";
 pub const DEFAULT_PREFIX: &str = "db";
 /// The script's default retention.
 pub const DEFAULT_KEEP_DAYS: Days = Days(NonZeroU16::MIN.saturating_add(59));
-/// The script's default size floor: a stub dump is far smaller, the live
-/// database's tens of MB.
-pub const DEFAULT_MIN_BYTES: u64 = 20_000_000;
+/// The script's default size floor: a stub dump is far smaller, and a loaded
+/// database's is about 13 MB without embeddings (24 MB with them).
+pub const DEFAULT_MIN_BYTES: u64 = 5_000_000;
 /// The default interval: weekly, as the script's cron line.
 pub const DEFAULT_EVERY_DAYS: Days = Days(NonZeroU16::MIN.saturating_add(6));
 /// The longest `BACKUP_KEEP_DAYS` (ten years).
@@ -882,7 +882,7 @@ mod tests {
         assert_eq!(s.store.prefix.as_str(), "db");
         assert_eq!(s.policy.keep_days.get(), 60);
         assert_eq!(s.policy.every.get(), 7);
-        assert_eq!(s.policy.min_bytes, 20_000_000);
+        assert_eq!(s.policy.min_bytes, 5_000_000);
         assert_eq!(s.policy.keep_local, None);
         assert_eq!(s.alert, None);
 

@@ -359,6 +359,13 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **`BACKUP_MIN_BYTES` defaults to 5 MB**, down from 20 MB. A loaded database with no
+  embeddings dumps to about 13 MB, so the old default refused every backup of an
+  instance that runs without vector search, and stopped its `scripts/deploy.sh --db`
+  and its major upgrade at the backup step. A `.env.deploy` copied from the example
+  sets the variable to 20 MB itself and keeps that value: on an instance without
+  embeddings, lower the line to `BACKUP_MIN_BYTES=5000000` or delete it before the
+  upgrade.
 - **No Discord library.** The bot speaks Discord's API itself (its own wire types, REST
   client and gateway connection, D43) instead of through serenity 0.12, whose rustls
   0.22 carried security advisories that will not be fixed on its line. Nothing to

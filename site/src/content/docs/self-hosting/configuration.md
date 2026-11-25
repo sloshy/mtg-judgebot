@@ -117,7 +117,7 @@ These live in `.env.deploy`, beside `TUNNEL_TOKEN`. The `backup` service and `sc
 | `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | | Retired in 2.0.0: a set one stops the backup, naming the `BACKUP_S3_*` line that replaces it. |
 | `BACKUP_PREFIX` | `db` | The key prefix the backups live under. |
 | `BACKUP_KEEP_DAYS` | `60` | Backups older than this are pruned after a successful upload. The service never prunes the two newest. |
-| `BACKUP_MIN_BYTES` | `20000000` | A smaller dump is refused, never uploaded. |
+| `BACKUP_MIN_BYTES` | `5000000` | A smaller dump is refused, never uploaded. |
 | `BACKUP_KEEP_LOCAL` | | A directory to copy each dump into. For the service, a path inside its container (mount one there). |
 | `BACKUP_EVERY_DAYS` | `7` | The service takes a backup whenever the newest in the bucket is this many days old (1 to 365). The script's schedule is cron. |
 | `DATABASE_URL` | set by compose | The service reaches `db:5432` over the compose network; compose sets it, as for `judgebot`. |

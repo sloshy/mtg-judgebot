@@ -102,7 +102,7 @@ case "$BACKUP_S3_ENDPOINT" in
   *) provider=Other ;;
 esac
 
-min_bytes="${BACKUP_MIN_BYTES:-20000000}"
+min_bytes="${BACKUP_MIN_BYTES:-5000000}"
 keep_days="${BACKUP_KEEP_DAYS:-60}"
 prefix="${BACKUP_PREFIX:-db}"
 keep_local="${BACKUP_KEEP_LOCAL:-}"
