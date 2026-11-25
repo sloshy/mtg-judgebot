@@ -16,7 +16,7 @@ use tokio::sync::watch;
 
 /// What a question gets while the process is closed.
 pub const MESSAGE: &str = "Judgebot is being upgraded and will be back in a minute or two. \
-Your question was not answered; please try again shortly.";
+Your question was not answered, so please try again shortly.";
 
 /// How long a client is told to wait before retrying (`Retry-After`).
 pub const RETRY_AFTER: Duration = Duration::from_secs(30);

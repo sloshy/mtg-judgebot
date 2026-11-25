@@ -57,18 +57,18 @@ JUDGE_ROLES (the same flags separated by spaces).
   --api      POST /api/judge, the anonymous question route
   --web      the built web app, from WEB_DIST (requires its index.html)
   --mcp      the MCP transport at /mcp (requires MCP_TOKEN)
-  --admin    the operator's pages and reads on ADMIN_ADDR (default
-             127.0.0.1:8789; requires ADMIN_TOKEN and the built web app)
-  --jobs     the scheduled data refresh (JUDGE_REFRESH_HOURS; 0 turns it off)
+  --admin    the operator's pages and reads on ADMIN_ADDR, default
+             127.0.0.1:8789 (requires ADMIN_TOKEN and the built web app)
+  --jobs     the scheduled data refresh (JUDGE_REFRESH_HOURS, where 0 is off)
 
 --api, --web and --mcp require JUDGE_OPERATOR_EMAIL and listen on API_ADDR,
 where GET /api/health and GET /api/about are served whichever of them is on.
 `judge-cli admin-url` prints the admin page's address with its token.
-Everything else is configured through the environment; see .env.example.";
+Everything else is configured through the environment (see .env.example).";
 
 const INGEST: &str = "usage: judgebot ingest <init | cards | rules <path-or-url | latest> | aliases [yaml] | notes [yaml] | embed | reembed [--yes] [--clear] | emoji | retire | prune | migrate | refresh | upgrade>\n\
-init: the whole first load (migrate, cards, rules latest, aliases, notes, embed, emoji); safe to run again.\n\
-aliases, notes: with no file, the lists this binary was built with (data/*.yaml), which refresh then keeps current; a file is yours, and refresh leaves it alone.";
+init: the whole first load (migrate, cards, rules latest, aliases, notes, embed, emoji). It is safe to run again.\n\
+aliases, notes: with no file, the lists this binary was built with (data/*.yaml), which refresh then keeps current. A file is yours, and refresh leaves it alone.";
 
 const BACKUP: &str = "\
 usage: judgebot backup <run | list | fetch <name> [file] | serve | check>

@@ -221,7 +221,7 @@ resume{}.",
     },
     refresh_abandoned: |process, started| {
         format!(
-            "judgebot: a data refresh started at {started} never finished; its process may have \
+            "judgebot: a data refresh started at {started} never finished. Its process may have \
              died (out of memory?) or lost the database. `{process}` is running the next one."
         )
     },
@@ -234,7 +234,7 @@ resume{}.",
     refresh_failed: |process, failure| {
         let timed_out = |hours: Option<u64>| {
             hours
-                .map(|h| format!(", timing out after {h} h; the steps after it were not run"))
+                .map(|h| format!(", timing out after {h} h, so the steps after it were not run"))
                 .unwrap_or_default()
         };
         let what = match failure {
@@ -256,7 +256,7 @@ resume{}.",
         };
         format!(
             "judgebot `{process}`: a scheduled data refresh {what}. It is retried after an \
-             hour, then less often while it keeps failing; the log has each error \
+             hour, then less often while it keeps failing. The log has each error \
              (`refresh step failed`). You will be told again when it succeeds, not on each \
              retry."
         )
@@ -266,14 +266,14 @@ resume{}.",
             "judgebot `{process}`: a scheduled data refresh did not embed {rows} rows, \
              more than the {ceiling} it embeds unattended. If that spend is expected (a \
              new embedder, an interrupted reembed), run `judgebot ingest embed` \
-             (`docker compose run --rm refresh embed`); vector search misses those rows \
+             (`docker compose run --rm refresh embed`). Vector search misses those rows \
              until then."
         )
     },
     refresh_panicked: |process| {
         format!(
-            "judgebot `{process}`: the scheduled data refresh check crashed (a panic; the log has \
-             it). It is tried again at every check; you will not be told again until a refresh \
+            "judgebot `{process}`: the scheduled data refresh check crashed (a panic, recorded in the \
+             log). It is tried again at every check. You will not be told again until a refresh \
              succeeds."
         )
     },
@@ -309,7 +309,7 @@ resume{}.",
             ),
         };
         let tail = if f.scheduled {
-            " It is retried after an hour, then less often while it keeps failing; \
+            " It is retried after an hour, then less often while it keeps failing. \
              `docker compose logs backup` has the error. You will be told again when a backup \
              succeeds or fails at another step, not on each retry."
         } else {
@@ -338,7 +338,7 @@ resume{}.",
         format!(
             "judgebot backup: the backup settings are not usable, so no backup is taken until \
              they are fixed: {}. The log says what each must be (`docker compose logs \
-             backup`). Fix .env.deploy; `scripts/deploy.sh` then recreates the service with \
+             backup`). Fix .env.deploy, then run `scripts/deploy.sh`, which recreates the service with \
              it.",
             vars.join(", ")
         )
@@ -346,7 +346,7 @@ resume{}.",
     discord_clock: |skew, allowed| {
         format!(
             "Discord interaction refused: its signed timestamp is {} from this host's clock \
-             (allowed: {allowed} s). One is a replay; every interaction refused means this host's \
+             (allowed: {allowed} s). A single one is a replay. Every interaction refused means this host's \
              clock is wrong, and Discord's commands get no answer until it is fixed.",
             skew.map_or_else(|| "unreadable".to_owned(), |s| format!("{s} s")),
         )

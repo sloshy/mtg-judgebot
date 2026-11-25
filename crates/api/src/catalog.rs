@@ -144,7 +144,7 @@ pub const EN: Messages = Messages {
     busy: discord::EN.busy,
     rate_limited: "You've asked several questions in a short time. Please wait a few minutes and ask again.",
     maintenance: "Judgebot is being upgraded and will be back in a minute or two. \
-Your question was not answered; please try again shortly.",
+Your question was not answered, so please try again shortly.",
     unreadable: str::to_owned,
     question_empty: "question must not be empty",
     question_too_long: |n| format!("question must be at most {n} characters"),

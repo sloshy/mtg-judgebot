@@ -94,7 +94,7 @@ const EN = {
   settingsCreates: (path) => `${path} does not exist yet: saving creates it from \`.env.example\``,
   settingsPoints: [
     "Secrets (API keys, tokens, `DATABASE_URL`, the alert webhook) are never shown",
-    "Replace… writes a new value you type or paste; Cancel drops it before saving",
+    "Replace… writes a new value you type or paste, and Cancel drops it before saving",
     "Blank means the default",
   ],
   envUneditable: (error) => `This .env cannot be edited as it stands: ${error}`,
@@ -137,8 +137,8 @@ const EN = {
   savedEnv:
     "Docker, `.env` changed: `scripts/deploy.sh` (a new judgebot container reads it, with no downtime)",
   savedToml:
-    "Docker, `judge.toml` changed: `scripts/deploy.sh` (a new judgebot container reads the mounted file; one run applies both files)",
-  savedCargo: "`cargo run`: restart the binaries; they read both files at startup",
+    "Docker, `judge.toml` changed: `scripts/deploy.sh` (a new judgebot container reads the mounted file, and one run applies both files)",
+  savedCargo: "`cargo run`: restart the binaries, which read both files at startup",
 };
 
 /** Every locale the page has text for, by id. */

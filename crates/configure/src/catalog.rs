@@ -193,16 +193,16 @@ whether each is set, and can replace one with a value you type.
 
     wrong_host: "judge-config answers on localhost only (pass --allow-host NAME to add one)",
     wrong_token: "missing or wrong token: open the URL judge-config printed",
-    changed_on_disk: "a file changed on disk since this page read it; reload to see it",
+    changed_on_disk: "a file changed on disk since this page read it, so reload to see it",
     saved_before: |saved| format!(" ({saved} was saved)"),
 
     never_deletes: |path| {
         format!(
-            "{path} exists; this editor never deletes it (remove it yourself for the zero-config \
+            "{path} exists, and this editor never deletes it (remove it yourself for the zero-config \
              setup)"
         )
     },
-    not_toml_on_disk: |e| format!("the file on disk is not TOML ({e}); edit it as text"),
+    not_toml_on_disk: |e| format!("the file on disk is not TOML ({e}), so edit it as text"),
     bad_draft: |d| match d {
         BadDraft::NotATable => "the draft must be a JSON object".to_owned(),
         BadDraft::Number(path) => format!("{path}: not a TOML number"),
@@ -217,10 +217,10 @@ whether each is set, and can replace one with a value you type.
         }
         BadValue::RoundTrip(n) => format!("{n}: the value would not read back unchanged from .env"),
         BadValue::Hidden(n) => {
-            format!("{n} is set to a value this editor does not show; replace it instead")
+            format!("{n} is set to a value this editor does not show, so replace it instead")
         }
         BadValue::Empty(n) => {
-            format!("{n}: an empty replacement; cancel it to keep the current value")
+            format!("{n}: an empty replacement (cancel it to keep the current value)")
         }
     },
     bad_env: |b| match b {
@@ -229,9 +229,11 @@ whether each is set, and can replace one with a value you type.
              binaries would refuse it too",
             line.map(|n| format!(" line {n}")).unwrap_or_default()
         ),
-        BadEnv::Duplicate(n) => format!(".env assigns {n} more than once; keep one line"),
+        BadEnv::Duplicate(n) => format!(".env assigns {n} more than once, so keep one line"),
         BadEnv::Unplaced(n) => {
-            format!(".env assigns {n} on a line this editor cannot rewrite; write it as {n}=value")
+            format!(
+                ".env assigns {n} on a line this editor cannot rewrite, so write it as {n}=value"
+            )
         }
     },
     replaced_line: |name| format!("{name}: new value (not shown)"),
@@ -260,7 +262,7 @@ whether each is set, and can replace one with a value you type.
         format!("{flags} (from {from})")
     },
     admin_listens: |container, published| {
-        format!("the container listens on {container}; the proxy publishes it on {published}")
+        format!("the container listens on {container}, and the proxy publishes it on {published}")
     },
     serving: |flags| format!("serving {flags}"),
     roles_unparsed: "the roles do not parse",
@@ -272,7 +274,7 @@ whether each is set, and can replace one with a value you type.
         };
         format!("{what} among the roles ({flags})")
     },
-    models_fail: "its own settings pass; the model configuration does not load",
+    models_fail: "its own settings pass, but the model configuration does not load",
     bad_db_port: |port| format!("DB_PORT must be a port number 1..=65535, got {port:?}"),
     domain_missing: "COMPOSE_PROFILES includes public, which serves https://JUDGE_DOMAIN: set \
                      JUDGE_DOMAIN to the instance's public host name, such as judge.example.com",

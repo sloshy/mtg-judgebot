@@ -484,7 +484,7 @@ rules themselves always outrank them. Members with the server's judge role rate 
     help_stored: "**What is stored.** Each question and answer, the channel it was asked in, your user id and username, \
 and your ratings with the reasons you give. A call that errored is kept for debugging, with its question. \
 Nothing else is read: the bot sees only its slash commands. `/forget` deletes your ratings and their \
-reasons and removes your id and username from your questions; a private question's text, and a failed \
+reasons and removes your id and username from your questions. A private question's text, and a failed \
 one's, is removed too.",
     help_feed: "**The feed.** A `/judge` question (not `/judge-private`) may be listed with its answer on this \
 instance's public web feed, with your username (anonymous once you use `/forget`). The channel and server \
@@ -535,10 +535,10 @@ the same licence. The source code of this instance is at <{}> ({}).",
     commands: Commands {
         judge: "Ask a Magic rules question and get an answer that cites the Comprehensive Rules.",
         judge_question: "Your rules question. Use brackets like [[Full Card Name]] to avoid ambiguity.",
-        judge_private: "Ask a rules question privately: only you see the answer, and it is never shown publicly.",
-        card: "Look up a card: Oracle text and rulings. Free: no model is called.",
+        judge_private: "Ask a rules question privately. Only you see the answer, and it is never shown publicly.",
+        card: "Look up a card's Oracle text and rulings. This is free because no model is called.",
         card_name: "A card name or nickname.",
-        rule: "Look up Comprehensive Rules text by number. Free: no model is called.",
+        rule: "Look up Comprehensive Rules text by number. This is free because no model is called.",
         rule_id: "A rule number such as 702.19, 702.19b or 702.",
         help: "What the bot does, how to ask, what it stores, and where its source is.",
         license: "Where this bot's source code is, at which commit, and under which licence.",
@@ -761,9 +761,7 @@ fn en_forgotten(f: Forgotten) -> String {
         ));
     }
     let Some((last, rest)) = done.split_last() else {
-        return "You had no ratings, questions or failed calls on record; there is nothing else \
-                stored about you."
-            .to_owned();
+        return "You had no ratings, questions or failed calls on record.".to_owned();
     };
     let joined = if rest.is_empty() {
         last.clone()
@@ -775,7 +773,7 @@ fn en_forgotten(f: Forgotten) -> String {
         .next()
         .map(|c| c.to_uppercase().chain(chars).collect())
         .unwrap_or_default();
-    format!("{capitalized}. Nothing else is stored about you.")
+    format!("{capitalized}.")
 }
 
 #[cfg(test)]

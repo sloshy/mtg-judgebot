@@ -2127,7 +2127,7 @@ mod info_tests {
         );
         assert_eq!(
             f(0, 0, 0),
-            "You had no ratings, questions or failed calls on record; there is nothing else stored about you."
+            "You had no ratings, questions or failed calls on record."
         );
         assert!(f(1, 0, 0).starts_with("Deleted your 1 rating."));
         assert!(f(7, 0, 0).starts_with("Deleted your 7 ratings."));
@@ -2139,7 +2139,7 @@ mod info_tests {
         assert_eq!(
             f(2, 3, 1),
             "Deleted your 2 ratings, removed your id and username from 3 questions you asked and \
-             anonymized 1 failed call of yours. Nothing else is stored about you."
+             anonymized 1 failed call of yours."
         );
     }
 }
