@@ -2202,7 +2202,7 @@ mod lookup_tests {
             true,
         );
         assert!(
-            public.contains("public web page, without your name"),
+            public.contains("public web page without your name"),
             "{public}"
         );
         assert!(

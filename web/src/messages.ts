@@ -356,7 +356,8 @@ export const en = {
   tryAgain: "Try again",
 
   unreachable: "The judge is unreachable. Is the server running?",
-  strangeReply: (status) => `The judge answered strangely (HTTP ${status}). Please try again.`,
+  strangeReply: (status) =>
+    `The judge sent an unexpected reply (HTTP ${status}). Please try again.`,
 
   notRated:
     "Ratings here are anonymous and never shape later answers. Answers are AI-generated, so verify anything important with a human judge.",

@@ -168,9 +168,9 @@ Your question was not answered, so please try again shortly.",
     stats_busy: "The dashboard is busy just now. Please try again in a few seconds.",
     stats_too_slow: "That report took too long to count. Try a shorter range or a filter.",
     before_window: |n| {
-        format!("This instance shows only the last {n} days: the range must end within them.")
+        format!("This instance shows only the last {n} days, so the range must end within them.")
     },
-    admin_unauthorized: "This needs the admin token: open the address `judge-cli admin-url` prints.",
+    admin_unauthorized: "This needs the admin token. Open the address `judge-cli admin-url` prints.",
     bad_private: "private must be true or false",
     bad_filter: |name, n| format!("{name} must be at most {n} characters"),
     admin_call_not_found: "There is no call with that id, or it holds a value this version cannot read (the log names it).",

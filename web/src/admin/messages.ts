@@ -235,11 +235,12 @@ export const en = {
     "These pages need the admin token. Open the address this command prints, on the machine that runs judgebot:",
   badTokenTitle: "Token refused",
   badToken:
-    "The server did not accept this token: it may have changed. Open the address this command prints:",
+    "The server refused this token, which may have changed. Open the address this command prints:",
   adminUrlCommand: "judge-cli admin-url",
 
   unreachable: "The server is unreachable. Is judgebot running with --admin?",
-  strangeReply: (status) => `The server answered strangely (HTTP ${status}). Please try again.`,
+  strangeReply: (status) =>
+    `The server sent an unexpected reply (HTTP ${status}). Please try again.`,
   errorTitle: "Error",
   maintenanceTitle: "Maintenance",
   missingTitle: "Page not found",
@@ -289,7 +290,7 @@ export const en = {
 
   backToCalls: "Calls",
   callMissingTitle: "Call not found",
-  factsTitle: "Stored with it",
+  factsTitle: "Details",
   factAsked: "Asked",
   factInterface: "Interface",
   factAsker: "Asker",
@@ -306,13 +307,13 @@ export const en = {
     `${user}: ${{ correct: "correct", partial: "partially correct", incorrect: "incorrect" }[score]}${judge ? " (judge)" : ""}`,
   runsTitle: "Run",
   runsEmpty:
-    "No run recorded: an agent session (its model is the agent), or a call from before runs were recorded.",
+    "No run is recorded. Agent sessions have none, and neither do calls from before runs were recorded.",
   runLine: (outcome, ms, retried, toolRound) =>
     [
       outcome.replaceAll("_", " "),
       `${(ms / 1000).toFixed(1)} s`,
       ...(retried ? ["retried"] : []),
-      ...(toolRound ? ["looked rules up"] : []),
+      ...(toolRound ? ["looked up rules"] : []),
     ].join(" · "),
   stageName: {
     extraction: "Extraction",
@@ -326,8 +327,7 @@ export const en = {
       : `${count.format(input)} in · ${count.format(output)} out`,
 
   feedbackTitle: "Feedback",
-  feedbackIntro:
-    "Every Partially correct or Incorrect rating given a reason, newest first: what to look into, and what was done.",
+  feedbackIntro: "Partially correct and Incorrect ratings that were given a reason, newest first.",
   feedbackEmpty: "No feedback matches.",
   loadMoreFeedback: "Show older feedback",
   filterStatus: "Status",
@@ -358,7 +358,7 @@ export const en = {
   reasonWrong: "What's wrong",
   reasonRight: "The right answer",
   reasonNoText: "No details given.",
-  itemTitle: "The item",
+  itemTitle: "Item",
   factStatus: "Status",
   factRating: "Rating now",
   factRater: "Rater",
@@ -369,10 +369,9 @@ export const en = {
   factFixedBy: "Fixed by",
   factAddress: "Address",
   factUserAgent: "Browser",
-  openCall: "The call's page",
-  closeTitle: "Close it",
-  closeIntro:
-    "Say what you found and did. A rater who replaces their reason reopens the item, with this note kept.",
+  openCall: "Open the call",
+  closeTitle: "Close this item",
+  closeIntro: "Note what you found and what you changed.",
   closeNote: "Note",
   closeNotePlaceholder: "What was wrong, and what was done",
   closeFixedBy: "Fixed by",
@@ -387,15 +386,14 @@ export const en = {
 
   failuresTitle: "Failures",
   failuresIntro:
-    "Calls that failed for a reason to look into, kept 30 days: the question, the error and what the model sent.",
+    "Failed calls that need looking into, kept for 30 days, with the question, the error and what the model sent.",
   failuresEmpty: "No failed calls.",
   failureError: "Error",
   failureRejection: "First attempt rejected",
   failureAttempt: (n) => `Attempt ${n}`,
 
   usageTitle: "Dashboard",
-  usageIntro:
-    "Every question counted, private ones included, with what it cost: the public dashboard's figures and the operator's.",
+  usageIntro: "Every question, private ones included, and what it cost.",
   windowLabel: "Window",
   lastDays: (days) => (days >= 365 ? "A year" : `${days} days`),
   statQuestions: "Questions",
@@ -415,7 +413,7 @@ export const en = {
   budgetProcess:
     "Each process counts its own spend against the cap from its start, so there is no shared figure to show.",
   budgetUnknown:
-    "No serving process has recorded its budget settings yet: they appear once judgebot has run with this release.",
+    "No budget settings are recorded yet. They appear once judgebot has run on this release.",
   chartTitle: "Spend per day (USD)",
   chartBar: (day, usd, calls) =>
     `${day}: ${usd} · ${calls} model ${calls === 1 ? "call" : "calls"}`,
@@ -433,14 +431,14 @@ export const en = {
     `${usd} · ${count.format(calls)} model ${calls === 1 ? "call" : "calls"}`,
   usageRunsTitle: "Runs",
   runsPerAsker:
-    "Runs are not counted per asker: a question that was not answered records no asker. Clear the asker to see them.",
+    "Runs are not counted per asker, because a question that was not answered records no asker. Clear the asker filter to see them.",
   refusedAtCap: (n) =>
     n === 0
       ? "The spend cap refused no run."
       : `The spend cap refused ${count.format(n)} ${n === 1 ? "run" : "runs"}.`,
   byModelTitle: "By model",
   modelLine: (requests, tokens, estimated) =>
-    `${requests} ${requests === 1 ? "request" : "requests"} · ${tokens}${estimated > 0 ? ` · ${estimated} at the worst case` : ""}`,
+    `${requests} ${requests === 1 ? "request" : "requests"} · ${tokens}${estimated > 0 ? ` · ${estimated} priced at worst case` : ""}`,
   outcomesTitle: "By outcome",
   byInterfaceTitle: "By interface",
   byStageTitle: "By stage",
@@ -448,7 +446,7 @@ export const en = {
   latencyTitle: "Time to answer",
   latencyLine: (l) =>
     `median ${(l.p50_ms / 1000).toFixed(1)} s · 90th percentile ${(l.p90_ms / 1000).toFixed(1)} s · slowest ${(l.max_ms / 1000).toFixed(1)} s · ${count.format(l.runs)} answered`,
-  expensiveTitle: "Dearest runs",
+  expensiveTitle: "Most expensive runs",
   expensiveLine: (iface, outcome, when) => `${iface} · ${outcome.replaceAll("_", " ")} · ${when}`,
   noQuestion: "No question kept",
   retiredCalls: (n) => `${n} ${n === 1 ? "call is" : "calls are"} retired.`,

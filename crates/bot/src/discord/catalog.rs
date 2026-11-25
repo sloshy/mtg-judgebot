@@ -302,9 +302,8 @@ pub const fn discord_tags(locale: Locale) -> &'static [&'static str] {
 /// English.
 pub const EN: Messages = Messages {
     busy: "I'm answering as many questions as I can right now. Please try again in a minute.",
-    out_of_scope: "I only answer Comprehensive Rules and Commander rules questions. Tournament policy \
-                   (MTR/IPG) and questions that aren't about the rules are out of my scope: for \
-                   policy, see the Magic Tournament Rules or ask a tournament judge.",
+    out_of_scope: "I only answer Magic rules questions. For tournament policy (MTR/IPG), see the Magic \
+                   Tournament Rules or ask a tournament judge.",
     failed: "Sorry, I couldn't produce a verified answer this time. Please try again, or rephrase the question.",
     spend_cap: "I've hit my spending cap for now, so I can't answer until the operator raises it.",
     cards_not_found: |listed| {
@@ -329,8 +328,7 @@ Please try again shortly.",
     pick_later_head: "After that I'll ask about ",
     pick_later_tail: " more names.",
 
-    expired: "That choice has expired, or the message no longer holds the question. \
-              Please ask it again.",
+    expired: "That choice has expired. Please ask the question again.",
     already_picked: "A card has already been picked for that question.",
     pick_failed: "Sorry, I couldn't take that pick just now. Please try again.",
     not_yours: "Only the person who asked can pick a card for that question.",
@@ -338,7 +336,7 @@ Please try again shortly.",
     already_retried: "That question has already been asked again.",
     retrying: "Asking again. Working on it…",
     working: |card| format!("Got it: **{card}**. Working on it…"),
-    unknown_button: "I don't recognise that button any more.",
+    unknown_button: "That button no longer works.",
     rating_label: |score| match score {
         Score::Incorrect => "Incorrect",
         Score::Partial => "Partially correct",
@@ -349,12 +347,10 @@ Please try again shortly.",
         match category {
             Some(category) => format!(
                 "Recorded your rating{who}: {label} ({category}). The operator sees your reason \
-beside the answer. Rating again asks before replacing it."
+beside the answer."
             ),
             None => {
-                format!(
-                    "Recorded your rating{who}: {label}. Rating again asks before replacing it."
-                )
+                format!("Recorded your rating{who}: {label}.")
             }
         }
     },
@@ -363,16 +359,11 @@ beside the answer. Rating again asks before replacing it."
         let category = category.map(|c| format!(" ({c})")).unwrap_or_default();
         format!(
             "Recorded your rating{who}: {label}{category}. The operator sees your reason beside the \
-answer, and it is shown on the answer's public web page, without your name. Rating again asks before \
-replacing it."
+answer, and it is shown on the answer's public web page without your name."
         )
     },
     report_wrong: |username| format!("`@{username}` runs this bot and reads every reason given."),
-    report_link: |url| {
-        format!(
-            " If the rules themselves are answered wrong, you can also [report it to the project](<{url}>)."
-        )
-    },
+    report_link: |url| format!(" You can also [report a wrong answer to the project](<{url}>)."),
     rate_failed: "Sorry, I couldn't record that rating. Please try again.",
     call_gone: "This answer is no longer stored, so it can't be rated.",
     already_rated: "You already rated this answer **Correct**. Nothing changed.",
@@ -411,7 +402,7 @@ replacing it."
     form_right_hint_public: "Optional. Also shown publicly, without your name.",
     form_incomplete: "That form came back without a category, so nothing was recorded. Please rate the \
 answer again.",
-    form_bad_text: "A field held a character that isn't text, so nothing was recorded. Please rate the \
+    form_bad_text: "A field contained a control character, so nothing was recorded. Please rate the \
 answer again.",
     form_too_long: |limit| {
         format!(
@@ -456,7 +447,7 @@ Press **Retry** to ask this again.",
     quote_close: "”",
 
     unknown_command: "I don't recognise that command in this version. Please try again in a minute.",
-    server_only: "`/judge` and `/judge-private` work in a server only, not in direct messages.",
+    server_only: "`/judge` and `/judge-private` only work in a server.",
     cooling_down: |max, window, wait| {
         format!(
             "You've asked {max} questions in the last {}, which is this bot's limit per person. Try \
@@ -465,30 +456,36 @@ again in {}. `/card` and `/rule` lookups are not limited.",
             en_span(wait)
         )
     },
-    help_body: "**MTG Judgebot** answers Magic: The Gathering rules questions like a judge: every \
-claim carries a citation to the Comprehensive Rules, an official ruling, or a card's Oracle text, and a \
-citation is only shown after it has been checked against the source.\n\n\
-**Asking.** `/judge question: <your question>`. Nicknames work (\"bob\", \"goyf\"). Use brackets like \
-`[[Full Card Name]]` to avoid ambiguity: a bracketed name matches only the card with exactly that name, or the \
-one card a listed nickname stands for. If a \
-name could mean several cards you get a \"did you mean…?\" row instead of a guess, and every answer lists \
-the cards it took your question to be about. Tournament policy and card prices are out of scope. Ask \
-with `/judge-private` instead and only you see the answer. It reads no earlier questions and no later \
-question reads it. It is still stored, for the operator only.\n\n\
-**Looking things up.** `/card` shows a card's Oracle text and rulings and `/rule` shows rules text by \
-number. Both are free and instant.\n\n\
-**Rating.** The buttons under an answer record how right it was. *Partially correct* and *Incorrect* \
-open a short form (what kind of problem, what's wrong, the right answer) that goes to the operator. Rating \
-again asks before it replaces yours. Ratings decide which past answers are shown as examples later — the \
-rules themselves always outrank them. Members with the server's judge role rate with an override.",
-    help_stored: "**What is stored.** Each question and answer, the channel it was asked in, your user id and username, \
-and your ratings with the reasons you give. A call that errored is kept for debugging, with its question. \
-Nothing else is read: the bot sees only its slash commands. `/forget` deletes your ratings and their \
-reasons and removes your id and username from your questions. A private question's text, and a failed \
-one's, is removed too.",
-    help_feed: "**The feed.** A `/judge` question (not `/judge-private`) may be listed with its answer on this \
-instance's public web feed, with your username (anonymous once you use `/forget`). The channel and server \
-are never shown.",
+    help_body: "**MTG Judgebot** answers Magic: The Gathering rules questions. Each answer cites the \
+Comprehensive Rules, an official ruling or a card's Oracle text, and each citation is checked against its \
+source before it is shown.\n\n\
+**Asking.**\n\
+- `/judge question: <your question>` asks a question. Tournament policy and card prices are out of scope.\n\
+- Nicknames work (\"bob\", \"goyf\"). `[[Full Card Name]]` matches only the card with exactly that name, \
+or the one card a listed nickname stands for.\n\
+- A name that could mean several cards gets a \"did you mean…?\" row. Every answer lists the cards it \
+took your question to be about.\n\
+- `/judge-private` shows the answer only to you. It reads no earlier questions, no later question reads \
+it, and it is stored for the operator only.\n\n\
+**Looking things up.**\n\
+- `/card` shows a card's Oracle text and rulings.\n\
+- `/rule` shows rules text by number.\n\n\
+**Rating.**\n\
+- The buttons under an answer record how right it was.\n\
+- *Partially correct* and *Incorrect* open a short form that goes to the operator.\n\
+- Rating again asks before it replaces your earlier rating.\n\
+- Ratings decide which past answers are shown as examples later. The rules always take priority over them.\n\
+- A rating from a member with the server's judge role overrides the others.",
+    help_stored: "**What is stored.**\n\
+- Each question and answer, the channel it was asked in, and your user id and username.\n\
+- Your ratings and the reasons you give.\n\
+- A question whose answer failed, kept for debugging.\n\
+- The bot reads nothing else. It receives only its own commands, buttons and forms.\n\
+- `/forget` deletes your ratings and their reasons and removes your id and username from your questions. \
+It also removes the text of your private and failed questions.",
+    help_feed: "**The feed.** A `/judge` question may be listed with its answer on this instance's public \
+web feed, with your username or as anonymous once you use `/forget`. `/judge-private` questions are never \
+listed, and the channel and server are never shown.",
     help_disclaimer: "Answers are AI-generated, so verify anything important with a human judge. Unofficial \
 Fan Content under the Fan Content Policy, not endorsed by Wizards of the Coast. Card data from Scryfall.",
     data_heading: "**Data.**",
@@ -496,8 +493,8 @@ Fan Content under the Fan Content Policy, not endorsed by Wizards of the Coast. 
     contact: |username, email| {
         let email = email.map(|e| format!(" or `{e}`")).unwrap_or_default();
         format!(
-            "**Who runs this bot.** `@{username}` on Discord{email}. Tell them about problems with this \
-instance."
+            "**Who runs this bot.** `@{username}` on Discord{email}. Contact them about problems with \
+this bot."
         )
     },
     license_heading: "**Source and licence.**",
