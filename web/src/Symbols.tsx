@@ -14,7 +14,7 @@
 
 import { createSignal, Show } from "solid-js";
 
-import { SYMBOLS, type SymbolInfo } from "./symbols";
+import { SYMBOLS, type SymbolInfo } from "./symbolTable";
 
 /** Where Scryfall serves the symbol SVGs. */
 const SYMBOL_CDN = "https://svgs.scryfall.io/card-symbols";

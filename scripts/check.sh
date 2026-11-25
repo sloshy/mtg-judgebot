@@ -339,7 +339,7 @@ is_png() {
 # A PNG's width and height from its IHDR chunk, as `WxH`.
 png_size() {
   od -An -j16 -N8 -tu1 "$1" |
-    awk '{ printf "%dx%d\n", $1*16777216 + $2*65536 + $3*256 + $4, $5*16777216 + $6*65536 + $7*256 + $8 }'
+    awk 'NF { printf "%dx%d\n", $1*16777216 + $2*65536 + $3*256 + $4, $5*16777216 + $6*65536 + $7*256 + $8 }'
 }
 
 # The image's pg_dump (Dockerfile ARG PG_MAJOR) must be the major of the

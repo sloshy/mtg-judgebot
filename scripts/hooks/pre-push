@@ -6,7 +6,25 @@
 # or a remote commit
 # this clone lacks (fetch first), gets every group. Skip once with
 # `git push --no-verify`.
+#
+# `git config judgebot.scratchdb true` in a clone runs the hook against a
+# throwaway Postgres container instead of the database .env or the shell's
+# DATABASE_URL names (scripts/with-scratch-db.sh): for a host where that one
+# serves an instance. A value git cannot read as a boolean refuses the push.
 root="$(git rev-parse --show-toplevel)"
+if [ -z "${JUDGEBOT_SCRATCH_DB:-}" ]; then
+  scratch="$(git config --bool judgebot.scratchdb)"
+  case $? in
+    0 | 1) ;;
+    *)
+      echo "judgebot.scratchdb is not a boolean: fix it with \`git config judgebot.scratchdb true\`" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$scratch" = true ]; then
+    exec "$root/scripts/with-scratch-db.sh" "$0" "$@"
+  fi
+fi
 zero="0000000000000000000000000000000000000000"
 checked=" "
 status=0

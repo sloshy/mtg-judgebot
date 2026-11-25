@@ -70,7 +70,10 @@ your development one.
   runs the repository lints, and, when Rust, compiled-in data, `eval/` or the compose
   file changed, `cargo test`, the migrations and the `.sqlx` freshness check
   (fmt, clippy, web and site already ran at commit). These need the database up
-  (`docker compose up -d db`) and `sqlx-cli`. A change to `scripts/check.sh`,
+  (`docker compose up -d db`) and `sqlx-cli`. On a host whose `.env` names a database that
+  serves an instance, `git config judgebot.scratchdb true` makes the hook start a
+  throwaway Postgres container for them instead (`scripts/with-scratch-db.sh`, which
+  also wraps any command: `scripts/with-scratch-db.sh scripts/check.sh test`). A change to `scripts/check.sh`,
   `scripts/tools.sh` or a workflow, a new branch, or a remote commit your clone has
   not fetched gets every group. CI runs the same script. Commits that skipped
   pre-commit (`--no-verify`, or replayed by a rebase or cherry-pick) get their fmt,

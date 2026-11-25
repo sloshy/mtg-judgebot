@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-version="$(sed -n '/^\[workspace.package\]$/,/^\[/{s/^version = "\(.*\)"$/\1/p}' Cargo.toml)"
+version="$(sed -n '/^\[workspace.package\]$/,/^\[/{s/^version = "\(.*\)"$/\1/p;}' Cargo.toml)"
 if [ -z "$version" ]; then
   echo "Cargo.toml has no [workspace.package] version" >&2
   exit 1

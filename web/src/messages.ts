@@ -316,7 +316,8 @@ function enShortDay(day: string, year: boolean): string {
 
 export const en = {
   title: "MTG Judgebot",
-  tagline: "Ask a Magic: The Gathering rules question and get an answer that cites the Comprehensive Rules.",
+  tagline:
+    "Ask a Magic: The Gathering rules question and get an answer that cites the Comprehensive Rules.",
   thinking: "Consulting the rules… this usually takes 20–45 seconds.",
   examplesTitle: "Try one",
   // Each is a common ruling with a short, unambiguous answer, and between

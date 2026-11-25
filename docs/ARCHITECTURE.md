@@ -616,7 +616,7 @@ pictures, from one set of names:
     catches uploads and deletions the record does not show. So a refresh by
     any process (a `--jobs` role, a cron'd or manual `judgebot ingest`) or an
     upload by hand reaches a running bot without a restart.
-- **Web** renders Scryfall's SVGs inline from their CDN (`web/src/symbols.ts`
+- **Web** renders Scryfall's SVGs inline from their CDN (`web/src/symbolTable.ts`
   is the generated table, `Symbols.tsx` the component).
   - A symbol the table does not know, or an image that fails to load, falls
     back to the literal text.
@@ -637,7 +637,7 @@ pictures, from one set of names:
 | Scryfall bulk `rulings.json` | daily (bulk-loaded, keyed by oracle_id) | `rulings` (oracle_id, key, published_at, text) — `key` = content hash (`judge_core::ruling_key`), so a reindexed ruling keeps its identity |
 | Comprehensive Rules txt | on CR release — detected daily from the `.txt` link on Wizards' rules page vs `max(cr_version)` | `rules` (id, parent_id, subsection, heading, body, examples, embedding, cr_version) |
 | CR Glossary | same | `glossary` (term, text, embedding) |
-| Scryfall `/symbology` (84 card symbols) | daily (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web app (`web/src/symbols.ts`) |
+| Scryfall `/symbology` (84 card symbols) | daily (idempotent, uploads only missing symbols) | not stored: uploaded as Discord application emoji (`ingest emoji`) and hard-coded for the web app (`web/src/symbolTable.ts`) |
 | Nicknames | hand-curated YAML, compiled in; the refresh reloads a built-in copy an upgrade changed | `card_aliases` (alias, oracle_id) |
 | Nightmare notes | hand-written markdown, likewise | `card_notes` (oracle_id, note) |
 | Curated list sources | written by each alias or note load, in its transaction | `curated_lists` (list, source `builtin`/`file`, digest, loaded_at): the refresh's `lists` step reloads only a `builtin` list whose digest is not the binary's (`judge_bot::ingest::lists`) |
