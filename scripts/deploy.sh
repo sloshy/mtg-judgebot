@@ -103,6 +103,58 @@ die() { log "ERROR: $*" >&2; exit 1; }
 # with while-read loops into _line.
 
 usage="scripts/deploy.sh [--full | [--db] [--proxy]] [--pull | --build]"
+
+# --help, wherever it is written, before anything is checked or changed. The
+# comment at the top of this file is the long description; this is the
+# summary.
+help() {
+  cat <<EOF
+Usage: $usage
+
+Deploys judgebot with Docker Compose. Run it after any change: a new release,
+or an edit to .env, .env.deploy, judge.toml, docker-compose.yml or
+COMPOSE_PROFILES.
+
+Options:
+  (none), --pull  Pull the image JUDGE_IMAGE_TAG names and switch to it.
+                  No downtime, except for a major upgrade.
+  --build         Build the image from this checkout instead of pulling it.
+  --db            Replace the db container with the one docker-compose.yml
+                  describes, or start it when there is none. A few seconds
+                  of downtime.
+  --proxy         Replace the proxy and edge (Caddy) containers. New
+                  connections are refused for up to 70 s.
+  --full          The same as --db --proxy --pull. With --build, the same
+                  as --db --proxy --build.
+  -h, --help      Show this help.
+
+Combined flags run in the order --db, --proxy, deploy. The first step that
+fails stops the rest.
+
+Environment:
+  DEPLOY_WAIT_SECS    Seconds to wait for the new container to be healthy
+                      (default 300). One that is not is removed. The old
+                      container keeps serving, except in a major upgrade,
+                      where it has already stopped.
+  DEPLOY_SKIP_BACKUP  Set to 1 to skip the backup taken before --db and
+                      before a major upgrade.
+
+First start:
+  scripts/deploy.sh --db
+  docker compose run --rm refresh init
+  scripts/deploy.sh
+
+More: docs/DEPLOYMENT.md, and the comment at the top of this script.
+EOF
+}
+for arg in "$@"; do
+  case "$arg" in
+    -h | --help)
+      help
+      exit 0
+      ;;
+  esac
+done
 # Several steps in one command: each runs as its own deploy.sh, in the order
 # --db, --proxy, then the judgebot deploy (--pull or --build), whatever order
 # they are given in, and a step that fails stops the rest. Each step alerts
@@ -543,10 +595,6 @@ case "${1:-}" in
     JUDGE_COMMIT="$(git rev-parse HEAD)" \
       JUDGE_DIRTY="$(git diff-index --quiet HEAD -- || echo 1)" \
       docker compose build "$service"
-    ;;
-  -h | --help)
-    sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
-    exit 0
     ;;
   *) die "unknown argument '$1' ($usage)" ;;
 esac
