@@ -1798,6 +1798,7 @@ dependencies = [
  "judge-embed",
  "judge-llm",
  "judge-openai",
+ "log",
  "nonempty",
  "nutype",
  "percent-encoding",

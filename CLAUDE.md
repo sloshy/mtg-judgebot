@@ -1204,7 +1204,9 @@ no cards loaded.
   bounded by `lease::QUICK`. Session-level locks need a direct connection, never a
   transaction-mode pooler.
 - `RefreshLease` holds the session-level advisory lock `REFRESH_LOCK` on a connection
-  detached from the pool, labelled `judgebot refresh lease (<process>) since <UTC minute>` in
+  of its own (detached from the pool, or for a wait opened by `lease::waiting_session`,
+  whose sqlx slow-statement threshold is the wait's bound plus `STANDBY_SLACK`, so a lock
+  wait is not logged as a slow statement), labelled `judgebot refresh lease (<process>) since <UTC minute>` in
   `pg_stat_activity`. Only `ingest::try_lease` (no wait; a miss keeps the pooled
   connection) and `ingest::lease` (`Lease::try_acquire`, `RefreshLease::acquire`) make
   one. `lease` waits at most `LEASE_WAIT` (1 h), then fails naming the holder.

@@ -75,7 +75,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
-use sqlx::{Connection as _, PgConnection, PgPool};
+use sqlx::{ConnectOptions as _, Connection as _, PgConnection, PgPool};
 
 /// Advisory lock key for the refresh lease.
 pub const REFRESH_LOCK: i64 = 0x6a75_6467_6572_6566; // "judgeref"
@@ -429,13 +429,11 @@ impl Lease<Refresh> {
         if let Some(l) = Self::try_acquire(pool, process).await? {
             return Ok(l);
         }
-        // Detached before waiting: a cancelled wait must not hand the pool a
-        // session still queued for the lock.
-        let mut conn = pool
-            .acquire()
+        // Never a pooled connection: a cancelled wait must not hand the pool
+        // a session still queued for the lock.
+        let mut conn = waiting_session(pool, wait)
             .await
-            .context("connecting for the refresh lease")?
-            .detach();
+            .context("connecting for the refresh lease")?;
         harden::<Refresh>(&mut conn).await?;
         label::<Refresh>(&mut conn, process, Label::Waiting).await;
         let held_by = holder::<Refresh>(&mut conn).await;
@@ -578,13 +576,11 @@ impl Lease<Gateway> {
     /// One connection's worth of standby: the lease, or the error that ended
     /// the connection.
     async fn wait_once(pool: &PgPool, process: &'static str, round: Duration) -> Result<Self> {
-        // Detached at once: the session either holds the lock or waits for it,
-        // and neither may go back to the pool.
-        let mut conn = pool
-            .acquire()
+        // Never a pooled connection: the session either holds the lock or
+        // waits for it, and neither may go back to the pool.
+        let mut conn = waiting_session(pool, round)
             .await
-            .context("connecting for the gateway lease")?
-            .detach();
+            .context("connecting for the gateway lease")?;
         // Every query before the wait is bounded, so a standby on a link
         // that died without a word reconnects instead of hanging on it.
         harden::<Gateway>(&mut conn).await?;
@@ -625,6 +621,35 @@ impl Lease<Gateway> {
             .context("resetting lock_timeout on the gateway lease")?;
         Ok(Self::holding(conn, pool, process).await)
     }
+}
+
+/// A session of its own for a wait on an advisory lock, opened with `pool`'s
+/// options rather than taken from it.
+///
+/// sqlx warns about a statement slower than a threshold (1 s by default)
+/// that is fixed when a connection opens. `SELECT pg_advisory_lock` is as
+/// slow as the wait it is, so on a pooled connection every wait is reported
+/// as a slow statement. This session's threshold is `longest_wait` (the
+/// `lock_timeout` its waits run under) plus [`STANDBY_SLACK`]: a wait within
+/// its bound is not reported, and a statement the server did not end at the
+/// bound still is. The session's other statements are bounded by [`QUICK`]
+/// and reported by their callers.
+///
+/// A pool's `after_connect` does not run here: [`harden`] gives the session
+/// its settings.
+///
+/// # Errors
+/// When the database cannot be reached within the pool's acquire timeout.
+async fn waiting_session(pool: &PgPool, longest_wait: Duration) -> Result<PgConnection> {
+    let options = (*pool.connect_options()).clone().log_slow_statements(
+        log::LevelFilter::Warn,
+        longest_wait.saturating_add(STANDBY_SLACK),
+    );
+    let limit = pool.options().get_acquire_timeout();
+    tokio::time::timeout(limit, PgConnection::connect_with(&options))
+        .await
+        .with_context(|| format!("no connection to the database in {} s", limit.as_secs()))?
+        .context("connecting to the database")
 }
 
 /// `query`, or an error once it has gone [`QUICK`] without an answer.
@@ -870,7 +895,10 @@ impl SchemaHold {
         F: FnMut() -> Fut,
         Fut: Future<Output = bool>,
     {
-        let mut conn = Self::session(pool).await?;
+        let mut conn = waiting_session(pool, SCHEMA_ATTEMPT)
+            .await
+            .context("connecting for the schema hold")?;
+        harden::<Schema>(&mut conn).await?;
         label::<Schema>(&mut conn, process, Label::Waiting).await;
         quick(set_lock_timeout(&mut conn, SCHEMA_ATTEMPT))
             .await?
