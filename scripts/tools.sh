@@ -84,7 +84,7 @@ install_one() {
       bin) mv "$tmp/download" "$tmp/$name" ;;
     esac
     # Archives put the binary at the top or one directory down.
-    found="$(find "$tmp" -type f -name "$name" | head -n1)"
+    found="$(find "$tmp" -type f -name "$name" | sed -n 1p)"
     if [ -z "$found" ]; then
       echo "tools.sh: no $name binary in $url" >&2
       rm -rf "$tmp"

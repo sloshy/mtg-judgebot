@@ -46,7 +46,7 @@ until docker exec "$name" pg_isready -q -h 127.0.0.1 -U judgebot 2> /dev/null; d
   waited=$((waited + 1))
 done
 
-port="$(docker port "$name" 5432/tcp | sed -nE 's/^127\.0\.0\.1:([0-9]+)$/\1/p' | head -n 1)"
+port="$(docker port "$name" 5432/tcp | sed -nE 's/^127\.0\.0\.1:([0-9]+)$/\1/p' | sed -n 1p)"
 if [ -z "$port" ]; then
   echo "the scratch database has no published port" >&2
   exit 1

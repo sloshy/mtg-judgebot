@@ -262,8 +262,16 @@ fi
 # The public profile's site (`edge`, COMPOSE_PROFILES=public) mounts the same
 # directory and is checked the same way, with the JUDGE_DOMAIN it will serve.
 # Without the profile it is none of this deploy's business.
+# The services of the active profiles, read whole before it is searched:
+# under pipefail, `docker compose config --services | grep -q` fails whenever
+# grep finds its line and exits while compose is still writing the rest, and
+# the service then counts as off (one deploy in six skipped the backup
+# service that way). No pipeline in this script ends in a reader that stops
+# early (`grep -q`, `head`), for the same reason.
+services="$(docker compose config --services 2>/dev/null || true)"
+has_service() { grep -qx "$1" <<<"$services"; }
 edge=""
-if docker compose config --services 2>/dev/null | grep -qx edge; then
+if has_service edge; then
   edge=edge
   [ -f proxy/edge.Caddyfile ] || die "proxy/edge.Caddyfile is missing: run this from a full checkout (git pull)"
   log "checking that proxy/edge.Caddyfile loads"
@@ -293,7 +301,7 @@ if [ -f .env.deploy ]; then
   fi
 fi
 backup=""
-docker compose config --services 2>/dev/null | grep -qx backup && backup=backup
+if has_service backup; then backup=backup; fi
 
 # Whether a service's container differs from the service as docker-compose.yml
 # and .env describe it now (compose's own config hash, which `up` compares),
@@ -303,8 +311,8 @@ service_differs() {
   local c want have image
   # A running container if there is one: a stopped leftover is not what `up`
   # would compare against.
-  c="$(docker compose ps -q "$1" | head -n 1)"
-  [ -n "$c" ] || c="$(docker compose ps -a -q "$1" | head -n 1)"
+  c="$(docker compose ps -q "$1" | sed -n 1p)"
+  [ -n "$c" ] || c="$(docker compose ps -a -q "$1" | sed -n 1p)"
   [ -n "$c" ] || return 1
   want="$(docker compose config --hash "$1" | awk '{print $2}')"
   have="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$c")"
@@ -393,7 +401,7 @@ swap_tunnel() {
   started=$SECONDS
   deadline=$((SECONDS + wait_secs))
   last_progress=0
-  until docker logs "$tunnel_new" 2>&1 | grep -q 'Registered tunnel connection'; do
+  until docker logs "$tunnel_new" 2>&1 | grep 'Registered tunnel connection' >/dev/null; do
     progress "$started" "the new tunnel connector has not registered with Cloudflare"
     if [ "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$tunnel_new" 2>/dev/null)" != "true 0" ] || [ "$SECONDS" -ge "$deadline" ]; then
       docker logs --tail 20 "$tunnel_new" >&2 2>&1 || true
@@ -477,7 +485,7 @@ deploy_db() {
   installed_vector="$(docker exec "${before[0]}" psql -U judgebot -d judgebot -tAc \
     "SELECT extversion FROM pg_extension WHERE extname = 'vector'" 2>/dev/null || true)"
   if [ -n "$tag_vector" ] && [ -n "$installed_vector" ] && [ "$tag_vector" != "$installed_vector" ] &&
-    [ "$(printf '%s\n%s\n' "$tag_vector" "$installed_vector" | sort -V | head -n 1)" = "$tag_vector" ]; then
+    [ "$(printf '%s\n%s\n' "$tag_vector" "$installed_vector" | sort -V | sed -n 1p)" = "$tag_vector" ]; then
     stage=refused
     die "the pinned db image carries pgvector $tag_vector, older than the database's vector extension ($installed_vector), which has no way back down: pin $installed_vector or newer, or restore the backup taken before the update (docs/DEPLOYMENT.md §8, Database image); nothing was changed"
   fi
@@ -700,7 +708,7 @@ fi
 # The old container may come from a compose file older than its
 # stop_grace_period, so the current file's is passed (read from the new
 # container once there is one; the service's own value until then).
-grace_period="$(docker compose config --format json "$service" 2>/dev/null | sed -n 's/.*"stop_grace_period": *"\([^"]*\)".*/\1/p' | head -n 1)"
+grace_period="$(docker compose config --format json "$service" 2>/dev/null | sed -n 's/.*"stop_grace_period": *"\([^"]*\)".*/\1/p' | sed -n 1p)"
 grace=""
 if [[ "$grace_period" =~ ^(([0-9]+)m)?(([0-9]+)s)?$ ]] && [ -n "$grace_period" ]; then
   grace=$((${BASH_REMATCH[2]:-0} * 60 + ${BASH_REMATCH[4]:-0}))
@@ -748,7 +756,7 @@ wait_healthy() {
 maintenance_up() {
   docker exec "$new" bash -c 'exec 3<>/dev/tcp/127.0.0.1/8787 &&
     printf "GET /api/health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && cat <&3' 2>/dev/null |
-    grep -q -e '^HTTP/[0-9.]* 200 ' -e '^maintenance:'
+    grep -e '^HTTP/[0-9.]* 200 ' -e '^maintenance:' >/dev/null
 }
 
 # With no listener (the gateway with no HTTP role) the healthcheck passes
@@ -756,7 +764,7 @@ maintenance_up() {
 wait_migrated() {
   local started=$SECONDS deadline=$((SECONDS + wait_secs))
   last_progress=0
-  until docker logs "$new" 2>&1 | grep -q -e 'schema migrated; answering questions' -e 'migrated the schema; joining it'; do
+  until docker logs "$new" 2>&1 | grep -e 'schema migrated; answering questions' -e 'migrated the schema; joining it' >/dev/null; do
     inspect
     progress "$started" "the new container has not finished migrating (docker compose logs $service)"
     [ "$SECONDS" -lt "$deadline" ] || abandon "the new container did not migrate within ${wait_secs}s"
@@ -783,7 +791,7 @@ if [ -z "$old" ]; then
     # (cloudflared) is not given up on during the migration.
     stage=major
     docker compose up -d --no-deps "$service"
-    new="$(docker compose ps -q "$service" | head -n 1)"
+    new="$(docker compose ps -q "$service" | sed -n 1p)"
     [ -n "$new" ] || die "the new $service container did not start"
     log "waiting up to ${wait_secs}s for the new container to migrate and be healthy"
     wait_migrated
@@ -795,7 +803,7 @@ if [ -z "$old" ]; then
   stage=first
   docker compose up -d
   if [ "$upgrade" = in-place ]; then
-    new="$(docker compose ps -q "$service" | head -n 1)"
+    new="$(docker compose ps -q "$service" | sed -n 1p)"
     [ -n "$new" ] || die "the $service container did not start"
     log "waiting up to ${wait_secs}s for the $service container to be healthy"
     wait_healthy
@@ -810,7 +818,7 @@ if [ "$upgrade" = major-from-1.x ]; then
   stage=major
   stop_old
   docker compose up -d --no-deps --remove-orphans "$service"
-  new="$(docker compose ps -q "$service" | head -n 1)"
+  new="$(docker compose ps -q "$service" | sed -n 1p)"
   [ -n "$new" ] || die "the new $service container did not start"
   log "waiting up to ${wait_secs}s for the new container to migrate and be healthy"
   wait_migrated
@@ -885,7 +893,7 @@ if [ -n "$backup" ]; then
   stage=backup
   docker compose up -d --no-deps backup
 fi
-if docker compose config --services | grep -qx cloudflared; then
+if has_service cloudflared; then
   stage=tunnel
   swap_tunnel
 fi
@@ -893,7 +901,7 @@ fi
 # .env; nothing happens to one that is already current. db is --db's alone,
 # proxy and edge --proxy's.
 others=()
-while IFS= read -r _line || [ -n "$_line" ]; do others+=("$_line"); done < <(docker compose config --services | grep -vxE 'db|judgebot|proxy|edge|backup|cloudflared' || true)
+while IFS= read -r _line || [ -n "$_line" ]; do others+=("$_line"); done < <(grep -vxE '(db|judgebot|proxy|edge|backup|cloudflared)?' <<<"$services" || true)
 if [ "${#others[@]}" -gt 0 ]; then
   stage=services
   docker compose up -d --no-deps "${others[@]}"
