@@ -145,7 +145,7 @@ Confidence: High · CR 2026-09-25 · 14 s · 2 model calls · $0.10
 
 **Answered**
 
-> I only answer Comprehensive Rules and Commander rules questions. Tournament policy (MTR/IPG) and questions that aren't about the rules are out of my scope: for policy, see the Magic Tournament Rules or ask a tournament judge.
+> I only answer Magic rules questions. For tournament policy (MTR/IPG), see the Magic Tournament Rules or ask a tournament judge.
 
 (The run file records this outcome as `OutOfScope`. The sentence above is what Discord
 and the web app show for it.)
