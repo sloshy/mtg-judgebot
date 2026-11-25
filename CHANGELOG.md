@@ -17,6 +17,8 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-25
+
 2.0.0 is a major release. Its migrations cannot run beside 1.x, its compose file runs one
 `judgebot` service in place of `bot` and `api`, and some JSON shapes change. Read
 **Upgrading** before deploying it.
@@ -1096,7 +1098,8 @@ The first release. `docs/ARCHITECTURE.md` describes everything below as it stand
 - **The documentation site**, organised around running your own judgebot, from the
   canonical files in `docs/`.
 
-[Unreleased]: https://github.com/sloshy/mtg-judgebot/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/sloshy/mtg-judgebot/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/sloshy/mtg-judgebot/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/sloshy/mtg-judgebot/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/sloshy/mtg-judgebot/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/sloshy/mtg-judgebot/releases/tag/v1.0.0

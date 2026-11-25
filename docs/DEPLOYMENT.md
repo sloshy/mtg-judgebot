@@ -1517,7 +1517,7 @@ the image that has been running as `latest`, with the same platform digests. To
 update on releases rather than on every push, pin one:
 
 ```ini
-JUDGE_IMAGE_TAG=1.2    # in .env: follows 1.2.x patch releases; 1.2.0 pins one exactly
+JUDGE_IMAGE_TAG=2.0    # in .env: follows 2.0.x patch releases; 2.0.0 pins one exactly
 ```
 
 `CONTRIBUTING.md` says how a release is cut. The ordinary deploy has no downtime
@@ -1963,7 +1963,7 @@ within a major release (below). Take the
 `sha-<short>` from the workflow run summary, or the version of the last good release:
 
 ```ini
-JUDGE_IMAGE_TAG=sha-abc1234    # in .env; or a release, e.g. 1.2.0
+JUDGE_IMAGE_TAG=sha-abc1234    # in .env; or a release, e.g. 2.0.0
 ```
 
 ```sh
