@@ -125,13 +125,16 @@ postgres,rustls` if you do not have it.
 **Within a major version, migrations only add.** A deploy starts the new container,
 which migrates, while the old one is still answering (`scripts/deploy.sh`,
 `docs/DECISIONS.md` D29), and a `judge-cli` or `judge-mcp` of an older minor keeps
-working against the new schema (`judge_core::release`). So every earlier release of the
-same major must still work against it:
+working against the new schema (`judge_core::release`). So the queries of every earlier
+release of the same major must still run against it:
 
-- **Fine in a minor or patch release:** a new table; a new column that is nullable or
+- **Fine in a minor release:** a new table; a new column that is nullable or
   has a default; a new index; a new constraint that earlier releases' writes already
   satisfy. A rename or a type change is a new column the release writes beside the old
   one (or reads with a fallback), and the old one stays.
+- **Not in a patch release:** any migration, and any new shape of stored data (a new
+  citation kind, a new value in a stored enum). A patch release is fixes and dependency
+  updates, which is what makes it safe to roll back (Releases, below).
 - **Only in a major release:** dropping or renaming a column or table, changing a
   column's type, making a column `NOT NULL` without a default, and rewriting rows that
   earlier releases read or write (moving stored citations to a new key, say). This is
@@ -264,9 +267,10 @@ migration records the release and commit that ran it in `instance_release`, and
 `judge-cli`, `judge-mcp` and `judgebot` itself compare their own release with it
 (`judge_core::release`):
 
-- **Within a major** (`2.1.0-dev` included), migrations only add, so builds work
-  together in either direction. An older tool prints a note, and an older `judgebot`
-  (a rollback) starts.
+- **Within a major** (`2.1.0-dev` included), migrations only add, so the previous
+  build keeps answering beside the new one during a deploy, and an older tool runs and
+  prints a note. An older `judgebot` starts too. Neither is a promise that the older
+  build reads everything the newer one stored (Rolling back, below).
 - **A new major's pre-release** (`3.0.0-dev`, `3.0.0-rc.1`) is where its breaking
   migrations are made, so it works only with the build that migrated the
   database. While `main` is on one, switching a checkout back to an earlier commit
@@ -274,6 +278,24 @@ migration records the release and commit that ran it in `instance_release`, and
   a later build migrated.
 - **Across a major**, or against a database missing one of their migrations, the
   tools stop and `judgebot` refuses to start, each saying what to update.
+
+**Rolling back.** An instance is guaranteed to work rolling forward. Going back is
+guaranteed only between patch releases of one minor:
+
+- **A patch release** (`2.1.0` to `2.1.1`) is fixes and dependency updates. It has no
+  migration and stores nothing the previous patch cannot read, so either can run after
+  the other.
+- **A minor release** may add migrations and store data in a shape the previous minor
+  does not know. Once it has migrated or written data, the previous minor still starts,
+  but nothing promises it reads everything: it shows an answer whose citation kind it
+  does not know without its citations, and when no migration pauses its refresh, that
+  refresh retires the answer until the newer release's next one. The way back that is
+  guaranteed is the backup taken before the upgrade.
+- **A major release** cannot be rolled back at all without that backup: `judgebot`
+  refuses to start.
+
+So a change that stores a new shape belongs in a minor, and its changelog entry says
+what an older build does with it.
 
 1. Move the *Unreleased* changelog section under a `## [X.Y.Z]` heading, and set that
    version in `[workspace.package]` in the root `Cargo.toml` (then

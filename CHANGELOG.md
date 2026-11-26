@@ -12,8 +12,11 @@ loaded cards and rules survive every upgrade, major versions included. Schema ch
 as forward migrations, and a released migration is never edited. Embeddings survive too,
 unless a release's notes ask for a `reembed`. That pays the embedder again and never
 touches calls. A release that needs more than `docker compose pull && docker compose up -d`
-(a re-embed, a new required variable) says so under its own heading. Downgrading across a
-migration is not supported. Restore the backup taken before the upgrade instead.
+(a re-embed, a new required variable) says so under its own heading. An instance is
+guaranteed to work rolling forward. Going back is guaranteed only between patch releases
+of one minor version (2.1.1 to 2.1.0): a minor or major release may migrate the database
+or store what an older release cannot read. Restore the backup taken before the upgrade
+instead.
 
 ## [Unreleased]
 
@@ -30,6 +33,13 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ### Changed
 
+- **Rolling back is guaranteed only between patch releases.** A patch release is fixes
+  and dependency updates, with no migration and nothing new stored. A minor release may
+  migrate or store what the previous minor cannot read, so going back from one is not
+  guaranteed without the backup taken before the upgrade. A 2.0 build started after 2.1
+  has run still starts. It shows an answer cited from format legality without its
+  citations and under the category's id, and its refresh retires that answer. 2.1
+  restores it at its next refresh.
 - **Building from source needs Rust 1.100** (`rust-toolchain.toml`, the `Dockerfile`).
 - **cloudflared 2026.11.1** for the tunnel.
 

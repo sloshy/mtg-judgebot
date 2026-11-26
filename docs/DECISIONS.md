@@ -1285,8 +1285,8 @@ migrates, during which questions get a maintenance reply rather than an error.
 
 - **Within a major, migrations only add** (CONTRIBUTING). A new table, a nullable
   column, an index: the previous release keeps working beside the new one (D29), an
-  older `judge-cli` or `judge-mcp` keeps working against the new schema, and rolling back
-  to an older release of the major works. Dropping, renaming and rewriting rows wait for
+  older `judge-cli` or `judge-mcp` keeps working against the new schema, and an older
+  release of the major still starts (what that promises is D45). Dropping, renaming and rewriting rows wait for
   the next major, made during its `X.0.0-dev` cycle.
 - **Version scheme.** `main` carries `X.Y.Z-dev` between releases, and each
   migration run records the release and commit that ran it (`instance_release`). A new
@@ -2180,3 +2180,42 @@ still not answered.
   same claim in that shape, with one validation path.
 - *A substring quote, as for rules.* It admits `legal` from `not legal`.
 - *An enum of formats.* A new format would be invisible until a release named it.
+
+## D45. Roll-forward only
+
+*Decided 2026-11-25.*
+
+D32 said that rolling back to an older release of the same major works, because its
+migrations only add. That is true of the schema and not of the data. 2.1.0 stores a kind of
+citation (D44) in a column 2.0 already has, with no migration at all, and a 2.0 build
+reads such an answer without its citations and retires it at its next refresh. An
+instance is now guaranteed to work rolling forward, and a rollback is guaranteed only
+where nothing can have changed underneath it.
+
+- **A patch release is safe to roll back.** It is fixes and dependency updates: no
+  migration, and no new shape of stored data. `CONTRIBUTING.md` holds a patch release to
+  that.
+- **A minor release is not.** It may migrate and may store what the previous minor does
+  not know. The previous minor still starts against its database, since the schema only
+  grew, but nothing promises it reads everything in it. The guaranteed way back is the
+  backup taken before the upgrade.
+- **A major release** is unchanged: `judgebot` refuses the rollback (D32).
+- **Within a major, migrations still only add.** That rule was never only about
+  rollbacks. A deploy runs the previous build beside the new one until it has drained
+  (D29), and an older `judge-cli` or `judge-mcp` keeps working against a newer instance.
+- **An older minor is not refused.** It starts, as before. What it cannot read degrades
+  and none of it is lost. An answer with a citation kind it does not know is shown
+  without its citations. Against a migration it does not know, it logs that the database
+  is ahead and its refresh stays paused. With no such migration its refresh runs and
+  retires that answer, and the newer release restores it at its own next refresh.
+
+**Rejected:**
+
+- *Refusing an older minor at startup, as for a major.* It turns a rollback that mostly
+  works, taken in an emergency, into an outage.
+- *Keeping the guarantee, and holding every minor to storing nothing an older build
+  cannot read.* A new citation kind would then wait for a major, or be stored twice in
+  two shapes.
+- *Writing new shapes so that an older build skips them silently.* The older build's
+  readers are already released: what they do with an unknown kind cannot be changed
+  from here.

@@ -69,7 +69,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D44),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D45),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -344,6 +344,11 @@ failing closed. The ports live in `gated::Db`, reachable only as `Checked` from
 Same major, newer instance: a note; otherwise a stop. `main` carries `X.Y.Z-dev` between
 releases. Within a major, migrations only add (CONTRIBUTING); dropping, renaming and
 rewriting rows wait for a major, made during its `X.0.0-dev` cycle.
+**Roll-forward only** (D45): a rollback is guaranteed only between patch releases of one
+minor. A patch release has no migration and stores no new shape of data (a new citation
+kind, a new stored enum value); those belong in a minor, whose changelog entry says what
+an older build does with them. An older minor still starts against a newer minor's
+database, by design, with no promise that it reads everything.
 
 **Maintenance during a major upgrade** (D32). `migrate::upgrade` is `InPlace` (migrate,
 then open) or `Major` (another major, a new major's pre-release, or no recorded

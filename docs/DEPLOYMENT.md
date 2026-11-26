@@ -1958,8 +1958,8 @@ visibility) removes the login step.
 
 ### Rolling back
 
-Every build leaves an immutable tag, so reverting a bad deploy is a one-line change,
-within a major release (below). Take the
+Every build leaves an immutable tag, so reverting a bad deploy is a one-line change.
+How far back is guaranteed to work is below. Take the
 `sha-<short>` from the workflow run summary, or the version of the last good release:
 
 ```ini
@@ -1989,9 +1989,20 @@ old file, and left running it answers Discord beside the restored `bot`.
 
 An older tag starting against a newer schema depends on how far back it goes:
 
-- **Within its major release** (a `latest` build of the next minor included), it logs
-  `database is ahead of this binary`, does not migrate, and runs: migrations within a
-  major only add (`CONTRIBUTING.md`), so its queries still find what they need.
+- **Another patch of its minor release** (2.1.1 back to 2.1.0): it runs as before. A
+  patch release has no migration and stores nothing new, and this is the only rollback
+  that is guaranteed.
+- **An earlier minor of its major release** (a `latest` build of the next minor
+  included): it runs. Migrations within a major only add (`CONTRIBUTING.md`), so its
+  queries still find what they need, but it is not guaranteed to read what the newer
+  release stored. An answer with a kind of citation it does not know is shown without
+  its citations. What its refresh does depends on the newer release:
+  - With a migration it does not know, it logs `database is ahead of this binary`, does
+    not migrate, and its scheduled refresh stays paused.
+  - With none (2.1.0 adds none), its refresh runs and retires such an answer. The newer
+    release restores it at its own next refresh.
+
+  For a rollback that is guaranteed, restore the backup taken before the upgrade.
 - **Across a major release**, or from one build of a new major's pre-release to another
   (`latest` while `main` is on `3.0.0-dev`, say), it refuses to start and exits, naming
   the build that migrated the database and its own. From 2.0 on: a 1.x image has no
