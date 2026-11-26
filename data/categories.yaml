@@ -142,9 +142,10 @@ categories:
   # no other category includes them: a question about one filed here gets its
   # whole section, and filed elsewhere gets a rule or two from search. The
   # sections are ranked against the question, so one that is not asked about
-  # falls outside the synthesis budget.
+  # falls outside the synthesis budget. The extractor files a question by the
+  # label, so a layout the label does not name is mostly filed elsewhere (D46).
   - id: multi_faced_cards
-    label: Double-faced, modal DFC, split, flip, adventure and meld cards
+    label: "Special card layouts: double-faced, modal DFC, split, flip, adventure, omen, prototype, preparation, meld, leveler and class cards"
     sections:
       - Split Cards
       - Flip Cards

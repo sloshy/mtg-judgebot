@@ -46,7 +46,9 @@ instead.
 - **Questions about Omen, Prototype and Preparation cards get their rules.** The
   multi-faced category did not include those three sections, and its other sections
   filled the material, so such a question filed under that category was answered
-  without its own card layout's rules. They are included now. They reach the database at the first refresh after the
+  without its own card layout's rules. They are included now, and the category's
+  description names them, with Leveler and Class cards, so the model files such a
+  question under it. The sections reach the database at the first refresh after the
   upgrade.
 - **Questions about adventure and meld cards get their rules again.** The Comprehensive
   Rules of 2026-11-06 gave meld cards their own section and moved every later one up, so

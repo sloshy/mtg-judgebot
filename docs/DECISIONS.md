@@ -2281,6 +2281,21 @@ retrieve the same rules under every membership tried, so a gold question about a
 card (`faces-006`) was added: none of its four rules were shown before, and three are
 now.
 
+**The label.** The extractor files a question by the category's label, and the label
+named none of these layouts. Two extraction runs of the gold set and seven probe
+questions (Opus 5.5 at its extraction effort) were made under each label. Under the old
+one `faces-006` was filed under the category in one run of two, and the probes in 2 of
+their 14 extractions: a Prototype question went to keyword abilities, an Omen copy to
+copying. The label now lists the layouts ("Special card layouts: … omen, prototype,
+preparation, meld, leveler and class cards"). Under it `faces-006` was filed there both
+times with all four rules shown (the model's own extraction, where the retrieval gate
+above uses the gold file's), and the probes in 12 of 14: a Leveler card under Humility
+was filed under layers in both runs. No other gold question had different
+rules shown. An out-of-scope question moved from triggered abilities to other. The
+label's opening words could also draw a question about a layout the category does not
+include (Saga, Case); no gold question tests that. The id
+stays `multi_faced_cards`: stored calls carry it.
+
 **Rejected:**
 
 - *Assigning a new section to a category automatically.* Whether Case cards belong with
