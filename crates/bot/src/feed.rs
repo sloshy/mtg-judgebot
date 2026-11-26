@@ -848,7 +848,7 @@ pub(crate) async fn names_for(
                 wanted.insert(card.into_inner());
                 rulings.insert((card.into_inner(), ruling.to_string()));
             }
-            Citation::OracleText { card, .. } => {
+            Citation::OracleText { card, .. } | Citation::Legality { card, .. } => {
                 wanted.insert(card.into_inner());
             }
             Citation::Rule { .. } | Citation::PriorCall { .. } => {}

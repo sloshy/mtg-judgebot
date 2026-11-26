@@ -11,7 +11,7 @@ export interface Pin {
 }
 
 /** What a citation quotes (crates/api/src/shape.rs). */
-export type CitationKind = "rule" | "ruling" | "oracle_text" | "prior_call";
+export type CitationKind = "rule" | "ruling" | "oracle_text" | "legality" | "prior_call";
 
 export interface CitationView {
   /** Absent from an older server. */

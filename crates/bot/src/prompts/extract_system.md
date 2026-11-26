@@ -31,8 +31,8 @@ Up to two further categories that also apply, best first, in the same shape. Do 
 
 Which rules body the question falls under:
 
-- cr: how the game works, answered by the Comprehensive Rules. A vague or badly worded rules question is still cr.
-- commander: Commander format rules (command zone, commander damage, commander tax, colour identity, the Commander banned list or Rules Committee policy).
+- cr: how the game works, answered by the Comprehensive Rules. A vague or badly worded rules question is still cr. So is whether a named card is legal, banned or restricted in a format (category format_legality), for any format but Commander.
+- commander: Commander format rules (command zone, commander damage, commander tax, colour identity, the Commander banned list or Rules Committee policy), and whether a named card is legal or banned in Commander (category format_legality).
 - tournament: tournament policy (Magic Tournament Rules, Infraction Procedure Guide, penalties, judge calls at events, deck registration, time extensions).
 - out_of_scope: not a Magic rules question at all (deck-building advice, card prices, lore, digital-client bugs, chit-chat).
 

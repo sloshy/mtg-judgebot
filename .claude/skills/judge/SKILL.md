@@ -118,6 +118,10 @@ the JSON only. Do it promptly, because the session clock is running.
 - Oracle text: `{"kind":"oracle_text","card":"<uuid>","face":0,"quote":...}` from the
   `[oracle <uuid>#<face>]` label on the face in the Cards section.
 - Prior calls: `{"kind":"prior_call","id":"<uuid>","quote":...}` from `[call <uuid>]`.
+- Format legality: `{"kind":"legality","card":"<uuid>","quote":"Modern: banned"}` from the
+  `[legality <uuid>]` line. The material has that section only when the extraction's
+  categories include `format_legality`, so file a "is this legal / banned in <format>"
+  question under it. The quote is one whole entry, never part of one.
 - Never emit a placeholder or empty citation. Every answer must cite at least one thing.
 - Every rule number you write in the answer text must be one of your rule citations (the
   id, its rule, or one of its sub-rules). Cite it or do not name it.

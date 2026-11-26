@@ -585,6 +585,17 @@ pub enum Citation {
         /// Verbatim span of that face's Oracle text.
         quote: Quote,
     },
+    /// `card`'s status in one format, from the material's Format legality
+    /// section, which is there only for a question about legality. The quote
+    /// is one whole entry of the card's `[legality <uuid>]` line, such as
+    /// `Modern: banned`; a part of an entry is refused.
+    // This comment is the schema's description, so the model reads it.
+    Legality {
+        /// The card.
+        card: CardId,
+        /// The whole `Format: status` entry.
+        quote: Quote,
+    },
 }
 
 /// Moves `kind` to the front of every variant's `properties`.
@@ -619,7 +630,8 @@ impl Citation {
             Citation::Rule { quote, .. }
             | Citation::ScryfallRuling { quote, .. }
             | Citation::PriorCall { quote, .. }
-            | Citation::OracleText { quote, .. } => quote.as_ref(),
+            | Citation::OracleText { quote, .. }
+            | Citation::Legality { quote, .. } => quote.as_ref(),
         }
     }
 
@@ -641,6 +653,7 @@ impl Citation {
                 face,
                 quote: span,
             },
+            Citation::Legality { card, .. } => Citation::Legality { card, quote: span },
         }
     }
 }
@@ -738,6 +751,9 @@ impl fmt::Display for Citation {
             }
             Citation::OracleText { card, face, quote } => {
                 write!(f, "oracle {card}#{face}: {}", shown(quote.as_ref(), whole))
+            }
+            Citation::Legality { card, quote } => {
+                write!(f, "legality {card}: {}", shown(quote.as_ref(), whole))
             }
         }
     }
@@ -1255,6 +1271,10 @@ pub struct Context {
     pub prior: Vec<PriorCall>,
     /// Nightmare-card notes.
     pub notes: Vec<CardNote>,
+    /// The cards' format legality, loaded only for a question classified as
+    /// about it, so every other question's material is unchanged.
+    #[serde(default)]
+    pub legality: Vec<crate::CardLegality>,
     /// Last N Q&A in the same thread.
     pub history: Vec<Qa>,
     /// Ids of the chunks appended by the synthesizer's `lookup_rules` round;
@@ -1298,6 +1318,12 @@ impl Context {
         self.rulings
             .iter()
             .find(|r| r.card == card && &r.key == key)
+    }
+
+    /// The format legality of `card`, if it was loaded.
+    #[must_use]
+    pub fn legality(&self, card: CardId) -> Option<&crate::CardLegality> {
+        self.legality.iter().find(|l| l.card == card)
     }
 
     /// The prior call with this id, if present.
@@ -1440,6 +1466,7 @@ mod tests {
                 vec!["kind", "card", "ruling", "quote"],
                 vec!["kind", "id", "quote"],
                 vec!["kind", "card", "face", "quote"],
+                vec!["kind", "card", "quote"],
             ]
         );
     }

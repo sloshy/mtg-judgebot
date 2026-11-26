@@ -1270,6 +1270,13 @@ fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
             };
             (label, Some(render::scryfall_url(*card)))
         }
+        Citation::Legality { card, .. } => {
+            let label = match card_name(*card) {
+                Some(name) => format!("Format legality — {name}"),
+                None => format!("Format legality — card {card}"),
+            };
+            (label, Some(render::scryfall_url(*card)))
+        }
         Citation::PriorCall { id, .. } => (format!("Prior call {id}"), None),
     };
     CitationView {

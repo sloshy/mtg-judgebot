@@ -181,8 +181,10 @@ missed ("I need 603.10"). Then it must answer with a JSON verdict:
 }
 ```
 
-The other two citation kinds are `scryfall_ruling` (`card`, `ruling`, `quote`) and
-`prior_call` (`id`, `quote`).
+The other citation kinds are `scryfall_ruling` (`card`, `ruling`, `quote`),
+`prior_call` (`id`, `quote`) and `legality` (`card`, `quote`): a card's status in a
+format, quoted as one whole entry such as `Modern: banned`, for a question about whether a
+card is legal in a format (D44).
 
 ### Step 5: Validation
 
@@ -506,7 +508,7 @@ rest to one.
 
 **Retirement.** Every call's citations name the text it depends on. The refresh's
 retirement pass re-runs the same substring check that admitted each citation, against
-today's rules, rulings and Oracle text. If any check fails, the call is retired and leaves
+today's rules, rulings, Oracle text and format legality. If any check fails, the call is retired and leaves
 the prior-call query. If the text comes back, the call is restored. Each call also stores
 a fingerprint of the Oracle text of every card in its context, so an erratum retires calls
 *about* a card even when they cited only the CR. This replaced an earlier rule that
@@ -565,7 +567,7 @@ synthesis user turn has its own breakpoint, so the tool-round continuation rerea
 the cache price. After a tool round the `tool_choice` stays `auto` rather than switching to
 `none`, because changing it would invalidate that cache.
 
-A full run of the 24-question gold evaluation set costs about $1.85. Development is done
+A full run of the 26-question gold evaluation set costs about $2.10. Development is done
 against a mocked HTTP server (`wiremock`), not the live API.
 
 ---
@@ -615,10 +617,11 @@ high.
 
 ## 12. Evaluation
 
-`eval/gold.yaml` holds 24 questions: 21 adversarially verified, one a human correction of
-a reported wrong answer and two about unreleased cards (D42). Each lists the rule ids a correct answer must cite
-(decisive) and background rule ids it may leave out (supporting), plus equivalent ids that
-state the same fact. Two gates:
+`eval/gold.yaml` holds 26 questions: 21 adversarially verified, one a human correction of
+a reported wrong answer, two about unreleased cards (D42) and two about format legality
+(D44). Each lists the rule ids a correct answer must cite (decisive) and background rule
+ids it may leave out (supporting), plus equivalent ids that state the same fact. The two
+legality questions list the legality entries to cite instead. Two gates:
 
 - `judge-eval recall` runs card resolution and retrieval, taking the extraction from the
   gold file instead of a model call. It fails below 90% of expected rule ids (decisive

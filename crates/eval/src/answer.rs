@@ -214,6 +214,48 @@ pub struct Row {
     /// files from before the note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unreleased: Option<UnreleasedCheck>,
+    /// The legality citations (D44): the entries the gold question expects
+    /// and the ones the answer cited. Absent when neither has any, and in run
+    /// files from before the kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legality: Option<LegalityCheck>,
+}
+
+/// The legality entries an answer cited against what a gold question expects.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegalityCheck {
+    /// The entries the gold question says the answer must cite.
+    pub expected: Vec<String>,
+    /// The entries the answer cited. Each was checked against the card's
+    /// stored legality when the verdict was validated.
+    pub cited: Vec<String>,
+}
+
+impl LegalityCheck {
+    /// Compare the verdict's legality citations with the gold question's list.
+    fn of(q: &GoldQuestion, citations: &[judge_core::Citation]) -> Option<Self> {
+        let cited: Vec<String> = citations
+            .iter()
+            .filter_map(|c| match c {
+                judge_core::Citation::Legality { quote, .. } => Some(quote.as_ref().to_owned()),
+                judge_core::Citation::Rule { .. }
+                | judge_core::Citation::ScryfallRuling { .. }
+                | judge_core::Citation::OracleText { .. }
+                | judge_core::Citation::PriorCall { .. } => None,
+            })
+            .collect();
+        (!q.legality.is_empty() || !cited.is_empty()).then(|| Self {
+            expected: q.legality.clone(),
+            cited,
+        })
+    }
+
+    /// Every expected entry was cited. A validated citation of an entry the
+    /// question does not list is true of the card, so it is not a miss.
+    #[must_use]
+    pub fn as_expected(&self) -> bool {
+        self.expected.iter().all(|e| self.cited.contains(e))
+    }
 }
 
 /// The unreleased-card note against what a gold question expects.
@@ -678,6 +720,10 @@ fn score_row(
             Ok(v) => UnreleasedCheck::of(q, v.cards()),
             Err(_) => UnreleasedCheck::of(q, &[]),
         },
+        legality: match result {
+            Ok(v) => LegalityCheck::of(q, v.citations()),
+            Err(_) => LegalityCheck::of(q, &[]),
+        },
     }
 }
 
@@ -781,6 +827,7 @@ pub fn table(run: &Run) -> String {
     let n_rules: usize = run.rows.iter().map(|r| r.cites.n_rule_cites).sum();
     let n_rulings: usize = run.rows.iter().map(|r| r.cites.n_ruling_cites).sum();
     let n_oracle: usize = run.rows.iter().map(|r| r.cites.n_oracle_cites).sum();
+    let n_legality: usize = run.rows.iter().map(|r| r.cites.n_legality_cites).sum();
     let supporting: usize = run.rows.iter().map(|r| r.supporting_rule_ids.len()).sum();
     let supporting_cited: usize = run.rows.iter().map(|r| r.supporting_cited.len()).sum();
     let _ = writeln!(
@@ -796,10 +843,13 @@ pub fn table(run: &Run) -> String {
     );
     let _ = writeln!(
         s,
-        "questions with ≥1 decisive id cited: {any}/{expecting}; supporting ids also cited: {supporting_cited}/{supporting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations"
+        "questions with ≥1 decisive id cited: {any}/{expecting}; supporting ids also cited: {supporting_cited}/{supporting}; {n_rules} rule citations, {n_rulings} ruling citations, {n_oracle} oracle citations, {n_legality} legality citations"
     );
     let _ = writeln!(s, "{}", retries_line(run));
     if let Some(line) = unreleased_line(run) {
+        let _ = writeln!(s, "{line}");
+    }
+    if let Some(line) = legality_line(run) {
         let _ = writeln!(s, "{line}");
     }
     if let Some(line) = crate::grade::totals_line(run) {
@@ -842,6 +892,35 @@ fn unreleased_line(run: &Run) -> Option<String> {
             "; STALE, the card is out or the CR covers it now, re-author: {}",
             stale.join(", ")
         );
+    }
+    Some(line)
+}
+
+/// The legality citations (D44) across the run, or `None` when no question
+/// expected one and no answer gave one: how many cited every expected entry,
+/// and which did not. A miss on a question whose answer was otherwise right
+/// usually means a banned list changed: check the entry before the bot.
+fn legality_line(run: &Run) -> Option<String> {
+    use std::fmt::Write as _;
+    let checks: Vec<(&str, &LegalityCheck)> = run
+        .rows
+        .iter()
+        .filter_map(|r| r.legality.as_ref().map(|c| (r.id.as_str(), c)))
+        .collect();
+    if checks.is_empty() {
+        return None;
+    }
+    let ok = checks.iter().filter(|(_, c)| c.as_expected()).count();
+    let mut line = format!("legality entries cited as expected: {ok}/{}", checks.len());
+    // Said in the line, since whoever reads a miss needs it then.
+    let hint = " (check the cards' entries first: a banned-list change makes the question stale)";
+    let wrong: Vec<&str> = checks
+        .iter()
+        .filter(|(_, c)| !c.as_expected())
+        .map(|(id, _)| *id)
+        .collect();
+    if !wrong.is_empty() {
+        let _ = write!(line, "; not on {}{hint}", wrong.join(", "));
     }
     Some(line)
 }
@@ -1195,6 +1274,7 @@ mod tests {
             expected_answer: String::new(),
             unreleased: Vec::new(),
             fixture_cards: Vec::new(),
+            legality: vec![],
         };
         let r = score_row(
             &q,
@@ -1278,6 +1358,7 @@ mod tests {
             expected_answer: String::new(),
             unreleased: Vec::new(),
             fixture_cards: Vec::new(),
+            legality: vec![],
         };
         let ctx = Context {
             rules: vec![RuleChunk {
@@ -1318,7 +1399,7 @@ mod tests {
         };
         assert_eq!(run.any_expected_cited(), (1, 1));
         let t = table(&run);
-        assert!(t.contains("questions with ≥1 decisive id cited: 1/1; supporting ids also cited: 1/2; 1 rule citations, 0 ruling citations, 0 oracle citations"), "{t}");
+        assert!(t.contains("questions with ≥1 decisive id cited: 1/1; supporting ids also cited: 1/2; 1 rule citations, 0 ruling citations, 0 oracle citations, 0 legality citations"), "{t}");
         // Old run files without the new fields still load.
         let json = serde_json::to_string(&run)?
             .replace(",\"any_expected_cited\":true", "")
@@ -1349,6 +1430,7 @@ mod tests {
             expected_answer: String::new(),
             unreleased: Vec::new(),
             fixture_cards: Vec::new(),
+            legality: vec![],
         };
         let long = "gain that much life ".repeat(20);
         let ctx = Context {

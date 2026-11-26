@@ -33,7 +33,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   its timestamp (once per streak; a wrong host clock refuses them all). Alerts are written
   in `JUDGE_LOCALE` (`judge_bot::alert::catalog`). `judge-cli stats` reads the ledger and the period and cap the processes record in `budget_setting`. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop
-  against wiremock, not the live API. A full 24-question gold run costs ~$1.85.
+  against wiremock, not the live API. A full 26-question gold run costs ~$2.10.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
   Never commit `.env`, `.cache/`, or `eval/runs/`. A run worth publishing is copied to
   `eval/published/` on purpose, and the README's Results table and the site's Sample
@@ -69,7 +69,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D43),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D44),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -540,7 +540,7 @@ judge-mcp                                               # the MCP server on stdi
 cargo run -p judge-eval -- recall [--vectors]           # retrieval gate, no API keys (--vectors: the configured
                                                         # embedder, ~$0.001), exit≠0 below 90% retrieved or 75%
                                                         # shown under the synthesis budget
-cargo run -p judge-eval -- answer --label L --limit 22 --max-usd 6.00   # full live gold run (~$1.70)
+cargo run -p judge-eval -- answer --label L --limit 26 --max-usd 6.00   # full live gold run (~$2.10)
                                                         # --config judge.toml runs it on other providers
 cargo run -p judge-eval -- grade eval/runs/<run>.json   # the synthesis model grades each answer: follows from
                                                         # its quotes? agrees with the reference? (~$0.40, D28;
@@ -577,7 +577,8 @@ Pipeline (`docs/ARCHITECTURE.md` §3 is kept current):
    subsections ranked by text relevance, tsvector BM25, pgvector cosine, then the
    secondary categories. Primary subsections sharing no word with the question go after
    the next two sources. The synthesis budget renders a prefix, so this order is what the
-   model reads. Retrieval also adds rulings for all faces, glossary, nightmare-card notes
+   model reads. Retrieval also adds rulings for all faces, glossary, nightmare-card notes, format
+   legality for a `format_legality` question (D44)
    and rated prior calls.
 4. **Synthesis.** At the model's measured effort (`judge_llm::SYNTH_EFFORTS`: Opus 5.5
    medium, Sonnet 5.5 low, Haiku 5.5 medium, unlisted high; a truncated answer reruns at medium, or low from medium),
@@ -738,8 +739,21 @@ Also true of `api`:
 Key cross-file facts that aren't obvious from any one file:
 
 - **Citations are typed and validated.** `Citation::{Rule, ScryfallRuling, OracleText,
-  PriorCall}` each carry a verbatim `quote` checked as a substring of the source in
-  `Context`.
+  PriorCall, Legality}` each carry a verbatim `quote` checked as a substring of the source in
+  `Context` (a `Legality` quote must be one whole entry, below).
+  - **Format legality** (D44, `judge_core::legality`). A question whose categories include
+    `format_legality` gets each resolved card's Scryfall legality in `Context::legality`
+    (`db::cards::load_legality`, from `cards.legalities`) and a `## Format legality`
+    section in the material: `[legality <uuid>] **Name** — Standard: not legal · Modern:
+    banned · …`. Every other question's material is unchanged. The section's heading
+    carries the citing instruction, so `prompts/synth_system.md` and its digest do not
+    mention the kind. `Citation::Legality { card, quote }` is admitted only when the quote
+    equals one whole entry (`CardLegality::locate_entry`): `legal` must not pass as part
+    of `not legal`. Formats are Scryfall's keys with names from `legality::LABELS`, an
+    unknown key shown as the key, an unknown status left out. The retirement pass loads
+    legality for the cards such citations name, so a banned-list change retires the call.
+    The doc comment on the `Legality` variant is the schema's description: the model
+    reads it.
   - Key order in the schema is the order the model writes. With structured output enforced,
     the model emits keys in the schema's property order, so schemars runs with
     `preserve_order` (declaration order) and `Citation`'s `kind_first` transform moves the
@@ -808,7 +822,7 @@ Key cross-file facts that aren't obvious from any one file:
 - **A call is retired when its citations stop holding, not when the CR changes.**
   - `retire_unsupported` (`db/retire.rs`) is run by `ingest retire` and inside every
     refresh (both through `ingest::retire`, under the refresh lease). It re-runs `citation_supported` over every stored call against
-    today's rules, rulings and Oracle text. It sets `calls.retired_at`/`retired_reason`
+    today's rules, rulings, Oracle text and legality. It sets `calls.retired_at`/`retired_reason`
     both ways, so restored text brings a call back.
   - Each call also carries `context_ids.card_text` (an `oracle_fingerprint` per context
     card), so an erratum retires calls *about* the card even when they cited only the CR.
@@ -890,10 +904,12 @@ Key cross-file facts that aren't obvious from any one file:
   `crates/core/build.rs` generates the `Category` enum from it, so taxonomy edits are
   recompiles and matches stay exhaustive. The extractor's schema makes the primary
   category a required field, so an empty classification is an API-level schema violation.
-- **Gold eval set** (`eval/gold.yaml`): 24 questions (21 adversarially verified, one a
+- **Gold eval set** (`eval/gold.yaml`): 26 questions (21 adversarially verified, one a
   human correction of a reported wrong answer, two about invented unreleased cards: `fixture_cards`
   resolved by `eval::fixtures`, never in the database, and `unreleased: [card]`, checked by
-  `UnreleasedCheck`) with `decisive_rule_ids` (what a correct
+  `UnreleasedCheck`; two about format legality: `legality: ['Format: status']`, the
+  entries a correct answer cites, checked by `LegalityCheck`, about real cards, so a
+  banned-list change makes one stale) with `decisive_rule_ids` (what a correct
   answer must cite; `answer` scores recall on these), `supporting_rule_ids` (background,
   reported when cited, never a miss; `recall` gates on both) and per-question
   `equivalent_rule_ids` (alternate rule ids stating the same fact). The loader builds a

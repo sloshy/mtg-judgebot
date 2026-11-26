@@ -186,14 +186,15 @@ three routes, protecting the model bill, and weekly backups to S3-compatible sto
 
 ## Evaluation
 
-`eval/gold.yaml` holds 24 questions chosen to be hard (layers, multi-faced cards, errata traps,
-Commander, out-of-scope questions, unreleased cards, and one ruling corrected after a wrong
+`eval/gold.yaml` holds 26 questions chosen to be hard (layers, multi-faced cards, errata traps,
+Commander, out-of-scope questions, unreleased cards, format legality, and one ruling corrected after a wrong
 answer was reported) with the rules a correct answer cites and a reference answer. All but
-the corrected one and the two about unreleased cards were checked adversarially.
+the corrected one, the two about unreleased cards and the two about format legality were
+checked adversarially.
 
 ```sh
 cargo run -p judge-eval -- recall            # are the expected rules in the material? (free)
-cargo run -p judge-eval -- answer --label x --limit 22 --max-usd 6   # full live run (~$1.70)
+cargo run -p judge-eval -- answer --label x --limit 26 --max-usd 6   # full live run (~$2.10)
 cargo run -p judge-eval -- grade eval/runs/x.json                    # a model grades each answer (~$0.40)
 cargo run -p judge-eval -- rescore eval/runs/x.json                  # re-score a stored run (free)
 cargo run -p judge-eval -- show eval/runs/x.json                     # bot vs. reference, side by side

@@ -47,9 +47,11 @@ pub struct CiteCounts {
     pub n_ruling_cites: usize,
     /// `Citation::OracleText` entries.
     pub n_oracle_cites: usize,
+    /// `Citation::Legality` entries.
+    pub n_legality_cites: usize,
 }
 
-/// Count rule, ruling and Oracle-text citations (prior-call citations are none of these).
+/// Count rule, ruling, Oracle-text and legality citations (prior-call citations are none of these).
 #[must_use]
 pub fn cite_counts(citations: &[Citation]) -> CiteCounts {
     citations.iter().fold(CiteCounts::default(), |mut n, c| {
@@ -57,6 +59,7 @@ pub fn cite_counts(citations: &[Citation]) -> CiteCounts {
             Citation::Rule { .. } => n.n_rule_cites += 1,
             Citation::ScryfallRuling { .. } => n.n_ruling_cites += 1,
             Citation::OracleText { .. } => n.n_oracle_cites += 1,
+            Citation::Legality { .. } => n.n_legality_cites += 1,
             Citation::PriorCall { .. } => {}
         }
         n
@@ -241,7 +244,8 @@ mod tests {
             CiteCounts {
                 n_rule_cites: 1,
                 n_ruling_cites: 2,
-                n_oracle_cites: 1
+                n_oracle_cites: 1,
+                n_legality_cites: 0,
             }
         );
         assert_eq!(cite_counts(&[]), CiteCounts::default());

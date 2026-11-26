@@ -40,6 +40,8 @@ pub struct Messages {
     /// An Oracle-text citation's label: the face (from 2, when not the
     /// first) and card name.
     pub oracle_label: fn(Option<usize>, Option<&str>) -> String,
+    /// A legality citation's label: the card name.
+    pub legality_label: fn(Option<&str>) -> String,
     /// A prior call citation's label.
     pub prior_call_label: &'static str,
     /// An `/api/` path this listener does not serve.
@@ -153,6 +155,7 @@ Your question was not answered, so please try again shortly.",
     pin_too_long: |n| format!("pin spans and names must be at most {n} characters"),
     ruling_label: discord::EN.ruling_label,
     oracle_label: discord::EN.oracle_label,
+    legality_label: discord::EN.legality_label,
     prior_call_label: "Prior call",
     not_routed: "Nothing is served at this path.",
     bad_cursor: "cursor must be the `next` of an earlier page",
@@ -227,6 +230,7 @@ pub const STUB: Messages = Messages {
     pin_too_long: |n| format!("⟦pin_too_long {n}⟧"),
     ruling_label: discord::STUB.ruling_label,
     oracle_label: discord::STUB.oracle_label,
+    legality_label: discord::STUB.legality_label,
     prior_call_label: "⟦prior_call_label⟧",
     not_routed: "⟦not_routed⟧",
     bad_cursor: "⟦bad_cursor⟧",
@@ -293,6 +297,7 @@ mod tests {
                 (m.pin_too_long)(200),
                 (m.ruling_label)("", Some("Blood Moon")),
                 (m.oracle_label)(None, None),
+                (m.legality_label)(None),
                 m.prior_call_label.to_owned(),
                 m.not_routed.to_owned(),
                 m.bad_cursor.to_owned(),

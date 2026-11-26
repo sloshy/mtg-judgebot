@@ -332,6 +332,10 @@ pub fn citation_line(
             let label = (m.oracle_label)(face, card_name(*card).as_deref());
             format!("[{label}]({}) {open}", scryfall_url(*card))
         }
+        Citation::Legality { card, .. } => {
+            let label = (m.legality_label)(card_name(*card).as_deref());
+            format!("[{label}]({}) {open}", scryfall_url(*card))
+        }
     };
     // The label and the URL are counted too, so CITATION_LINE_LIMIT bounds the
     // whole line rather than just the quote inside it.

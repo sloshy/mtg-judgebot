@@ -30,9 +30,9 @@ use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 
 use async_trait::async_trait;
 use judge_core::{
-    Card, CardId, Citation, Context, Coverage, EmptyVerdict, Gap, JudgeError, Question,
-    RejectedAttempt, Rejection, Release, Retriever, RuleChunk, RuleId, Synthesizer, Tally,
-    ToolMisuse, Unvalidated, Verdict,
+    Card, CardId, Citation, Context, Coverage, EmptyVerdict, FormatStanding, Gap, JudgeError,
+    Question, RejectedAttempt, Rejection, Release, Retriever, RuleChunk, RuleId, Synthesizer,
+    Tally, ToolMisuse, Unvalidated, Verdict,
 };
 use judge_llm::{
     ChatModel, Effort, OutputSchema, SendOutcome, Synth, SynthConfig, TextBlock, Truncated,
@@ -513,6 +513,42 @@ fn render_cards(s: &mut String, cards: &[Card]) {
     }
 }
 
+/// The cards' format legality, when the question was classified as about it
+/// (`Context::legality`); nothing otherwise, so the material of every other
+/// question is byte-for-byte what it was. The heading carries the whole
+/// instruction for the `legality` citation kind, which is why the system
+/// prompt does not mention it.
+fn render_legality(s: &mut String, ctx: &Context) {
+    if ctx.legality.is_empty() {
+        return;
+    }
+    s.push_str(
+        "## Format legality (Scryfall's data as of the last card refresh: whether each card may be in a deck for a \
+         format. It does not say why, or since when. Cite a card's status as \
+         {\"kind\": \"legality\", \"card\": \"<uuid>\", \"quote\": \"<entry>\"}: `card` is the uuid in the \
+         label `[legality <uuid>]`, and `quote` is one whole entry copied exactly, such as `Modern: banned`. Never \
+         part of an entry, and never two entries in one quote: one citation per entry. An entry settles what it \
+         states, so a question about a card's status in a format is answered from its entry. `restricted` is the \
+         format's own restriction (one copy in Vintage): state it as restricted. A format with no entry is one \
+         this data does not cover: say so rather than infer it.)\n",
+    );
+    for l in &ctx.legality {
+        let name = ctx.card(l.card).map_or("", |c| c.name.as_str());
+        let entries: Vec<String> = l.formats.iter().map(FormatStanding::entry).collect();
+        let entries = if entries.is_empty() {
+            NO_LEGALITY.to_owned()
+        } else {
+            entries.join(" · ")
+        };
+        let _ = writeln!(s, "[legality {}] **{name}** — {entries}", l.card);
+    }
+}
+
+/// Shown for a card Scryfall lists no format for, so the model reads a stated
+/// absence, not a blank line it might fill in.
+const NO_LEGALITY: &str =
+    "(no legality data for this card, so nothing about its legality can be cited)";
+
 /// What the material says under an upcoming card's heading (D42): that it is
 /// not out, and when the loaded CR may lack its rules, why and what to do
 /// about it. Nothing for a released card, so the material of every question
@@ -722,6 +758,33 @@ fn render_rejection(s: &mut String, ctx: &Context, rejected: &RejectedAttempt) {
                         part.describe()
                     )
                 }
+                Citation::Legality { .. } if ctx.legality.is_empty() => {
+                    format!(
+                        "the material has no Format legality section, so there is no legality to cite. Say that \
+                         you have no legality data for this question rather than state a status.{INVENTED}"
+                    )
+                }
+                Citation::Legality { card, .. } if ctx.legality(*card).is_none() => {
+                    format!("there is no line labelled [legality {card}] in the material.{INVENTED}")
+                }
+                // The format is right and the quote is not a whole entry, or
+                // states another status. Name the entry: it is the source's.
+                Citation::Legality { card, quote } if let Some(entry) = ctx.legality(*card).and_then(|l| l.near_entry(quote.as_ref())) => {
+                    format!(
+                        "a legality citation quotes one whole entry of the [legality {card}] line, and that is not \
+                         one. That card's entry for the format is `{entry}`. If that is the card you meant, cite it \
+                         as {{\"kind\": \"legality\", \"card\": \"{card}\", \"quote\": \"{entry}\"}} and make sure the \
+                         answer says what the entry says; if you meant another card, cite the entry on its own \
+                         [legality <uuid>] line"
+                    )
+                }
+                Citation::Legality { card, .. } => {
+                    format!(
+                        "the quote is not an entry of the [legality {card}] line. Copy one whole `Format: status` \
+                         entry exactly, one entry per citation; if the line has no entry for the format, say the \
+                         data does not cover it and drop the citation"
+                    )
+                }
                 // Listed rather than `_`: a new citation kind must say here how
                 // it can be missing from the material, not fall through to this.
                 Citation::Rule { .. }
@@ -859,6 +922,7 @@ fn render_rejected_answer(s: &mut String, answer: &str) {
 pub fn render_material(ctx: &Context, pinned: &[RuleId], budget: &Budget) -> String {
     let mut s = String::from("# Material\n");
     render_cards(&mut s, &ctx.cards);
+    render_legality(&mut s, ctx);
     render_rules(&mut s, ctx, pinned, budget);
     render_rulings(&mut s, ctx, budget);
     render_aids(&mut s, ctx);
@@ -982,6 +1046,105 @@ mod tests {
             thread_id: "thread-1".into(),
             text: "does trample work with deathtouch?".into(),
         }
+    }
+
+    /// The legality section is in the material only when the context holds
+    /// legality, and a rejected legality citation is told what an entry is.
+    #[test]
+    fn legality_is_rendered_when_loaded_and_its_rejections_say_why() -> R {
+        let id = CardId::new(Uuid::from_u128(7));
+        let label = "[legality 00000000-0000-0000-0000-000000000007]";
+        let mut ctx = Context {
+            cards: vec![
+                card(7, "Dark Confidant", "Draw."),
+                card(8, "Shahrazad", "Play."),
+            ],
+            ..Context::default()
+        };
+        let plain = render_user_turn(&q(), &ctx, None, &[], &Budget::default());
+        assert!(!plain.contains("legality"), "{plain}");
+        let cite = |quote: &str| -> Result<Rejection, Box<dyn std::error::Error>> {
+            Ok(Rejection::BadCitation(Citation::Legality {
+                card: id,
+                quote: judge_core::Quote::try_new(quote)?,
+            }))
+        };
+        let notice = |ctx: &Context, r: Rejection| {
+            render_user_turn(&q(), ctx, Some(&attempt(r)), &[], &Budget::default())
+        };
+        let s = notice(&ctx, cite("Modern: legal")?);
+        assert!(
+            s.contains("the material has no Format legality section"),
+            "{s}"
+        );
+
+        ctx.legality = vec![
+            judge_core::CardLegality::from_scryfall(
+                id,
+                &serde_json::json!({"modern": "legal", "standard": "not_legal", "vintage": "legal"}),
+            ),
+            judge_core::CardLegality::from_scryfall(
+                CardId::new(Uuid::from_u128(8)),
+                &serde_json::json!({}),
+            ),
+        ];
+        let s = render_user_turn(&q(), &ctx, None, &[], &Budget::default());
+        assert!(
+            s.contains("\n## Format legality (Scryfall's data as of the last card refresh"),
+            "{s}"
+        );
+        assert!(
+            s.contains(&format!(
+                "{label} **Dark Confidant** — Standard: not legal · Modern: legal · Vintage: legal\n"
+            )),
+            "{s}"
+        );
+        assert!(
+            s.contains("[legality 00000000-0000-0000-0000-000000000008] **Shahrazad** — (no legality data for this card"),
+            "{s}"
+        );
+        // The section follows the cards and precedes the rulings.
+        let (cards, legality, rulings) = (
+            s.find("## Cards"),
+            s.find("## Format legality"),
+            s.find("## Scryfall rulings"),
+        );
+        assert!(cards < legality && legality < rulings, "{s}");
+
+        // Another card's uuid.
+        let elsewhere = Rejection::BadCitation(Citation::Legality {
+            card: CardId::new(Uuid::from_u128(9)),
+            quote: judge_core::Quote::try_new("Modern: legal")?,
+        });
+        let s = notice(&ctx, elsewhere);
+        assert!(
+            s.contains("there is no line labelled [legality 00000000-0000-0000-0000-000000000009]"),
+            "{s}"
+        );
+        // The format is named, but the quote is not its entry.
+        for near in ["Modern", "Standard: legal", "modern: banned"] {
+            let s = notice(&ctx, cite(near)?);
+            assert!(s.contains("quotes one whole entry of the"), "{near}: {s}");
+        }
+        // A looser mention names no entry: the notice must not guess one.
+        let s = notice(&ctx, cite("legal in Modern")?);
+        assert!(
+            s.contains("one entry per citation") && !s.contains("That card's entry"),
+            "{s}"
+        );
+        let s = notice(&ctx, cite("Standard: legal")?);
+        assert!(
+            s.contains("That card's entry for the format is `Standard: not legal`")
+                && s.contains("\"quote\": \"Standard: not legal\"}"),
+            "{s}"
+        );
+        // A format the line has no entry for.
+        let s = notice(&ctx, cite("Legacy: banned")?);
+        assert!(
+            s.contains(&format!("the quote is not an entry of the {label} line")),
+            "{s}"
+        );
+        Ok(())
     }
 
     fn at<'a>(v: &'a Value, p: &str) -> &'a Value {

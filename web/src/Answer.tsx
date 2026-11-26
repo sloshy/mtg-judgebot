@@ -26,7 +26,7 @@ function kindOf(c: CitationView): CitationKind {
   return RULE_ID.test(c.label) ? "rule" : "oracle_text";
 }
 
-const KINDS: readonly CitationKind[] = ["rule", "ruling", "oracle_text", "prior_call"];
+const KINDS: readonly CitationKind[] = ["rule", "ruling", "oracle_text", "legality", "prior_call"];
 
 /** An answer as the judge's message: the text in a bubble, then its
  * citations as attachments, the cards it was about and the line under it. */
@@ -151,7 +151,7 @@ function Citation(props: { m: Messages; citation: CitationView }) {
       <span class={`kind kind-${kind()}`}>
         <Switch>
           <Match when={kind() === "rule"}>{props.m.ruleBadge}</Match>
-          <Match when={kind() === "oracle_text"}>
+          <Match when={kind() === "oracle_text" || kind() === "legality"}>
             <CardGlyph />
           </Match>
           <Match when={kind() === "ruling"}>

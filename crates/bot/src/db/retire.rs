@@ -238,6 +238,7 @@ async fn context_for(
     let mut rule_ids: BTreeSet<String> = BTreeSet::new();
     let mut card_ids: BTreeSet<Uuid> = BTreeSet::new();
     let mut call_ids: BTreeSet<Uuid> = BTreeSet::new();
+    let mut legality_ids: BTreeSet<Uuid> = BTreeSet::new();
     card_ids.extend(calls.iter().flat_map(|c| c.card_text.keys().copied()));
     for c in calls
         .iter()
@@ -254,15 +255,22 @@ async fn context_for(
             Citation::PriorCall { id, .. } => {
                 call_ids.insert(id.into_inner());
             }
+            // A banned-list change reaches a call through here: the entry it
+            // quoted is no longer the card's.
+            Citation::Legality { card, .. } => {
+                legality_ids.insert(card.into_inner());
+            }
         }
     }
     let rule_ids: Vec<String> = rule_ids.into_iter().collect();
     let card_ids: Vec<Uuid> = card_ids.into_iter().collect();
     let call_ids: Vec<Uuid> = call_ids.into_iter().collect();
+    let legality_ids: Vec<Uuid> = legality_ids.into_iter().collect();
 
     let rules = rules::by_ids(&mut **tx, &[], &rule_ids).await?;
     let cards = cards::load_card_text(&mut **tx, &card_ids).await?;
     let rulings = retrieve::load_rulings(&mut **tx, &card_ids).await?;
+    let legality = cards::load_legality(&mut **tx, &legality_ids).await?;
     let (prior, stored) = prior_answers(&mut **tx, &call_ids).await?;
     let deleted = call_ids
         .iter()
@@ -275,6 +283,7 @@ async fn context_for(
             rules,
             rulings,
             prior,
+            legality,
             ..Context::default()
         },
         deleted,

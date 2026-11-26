@@ -614,6 +614,7 @@ code {
 }
 
 .kind-oracle_text,
+.kind-legality,
 .kind-ruling {
   background: var(--green-soft);
   color: var(--green);

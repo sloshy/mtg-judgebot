@@ -91,6 +91,10 @@ pub struct GoldQuestion {
     pub unreleased: Vec<String>,
     /// Invented cards the question names (D42).
     pub fixture_cards: Vec<FixtureCard>,
+    /// Legality entries the answer must cite (D44), each written as the
+    /// material prints it: `Commander: banned`. They are of real cards, so a
+    /// banned-list change makes the question stale.
+    pub legality: Vec<String>,
 }
 
 /// A gold question as written in YAML.
@@ -120,6 +124,9 @@ struct RawQuestion {
     /// Invented cards the question names (D42).
     #[serde(default)]
     fixture_cards: Vec<FixtureCard>,
+    /// Legality entries the answer must cite (D44), `Format: status`.
+    #[serde(default)]
+    legality: Vec<String>,
     /// Alternate rule ids that also satisfy an expected id: the same fact
     /// stated elsewhere in the CR (e.g. `"707.2": ["613.2c"]`). Keys must be
     /// quoted and name a decisive or supporting id.
@@ -214,9 +221,21 @@ impl TryFrom<RawQuestion> for GoldQuestion {
                 f.name
             );
         }
+        for entry in &raw.legality {
+            let status = entry.split_once(": ").map(|(_, status)| status);
+            anyhow::ensure!(
+                matches!(
+                    status,
+                    Some("legal" | "not legal" | "banned" | "restricted")
+                ),
+                "question {q}: legality entry {entry:?} is not `Format: status`, with a status of \
+                 legal, not legal, banned or restricted"
+            );
+        }
         Ok(Self {
             unreleased: raw.unreleased,
             fixture_cards: raw.fixture_cards,
+            legality: raw.legality,
             id: raw.id,
             question: raw.question,
             cards: raw.cards,
@@ -430,6 +449,27 @@ mod tests {
             ))
             .contains("at least a day")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_legality_entry_is_a_format_and_a_status() -> anyhow::Result<()> {
+        let q = question("legality: ['Vintage: restricted', 'Pauper Commander: not legal']\n")?;
+        assert_eq!(
+            q.legality,
+            ["Vintage: restricted", "Pauper Commander: not legal"]
+        );
+        for bad in [
+            "banned",
+            "Modern banned",
+            "Modern: suspended",
+            "Modern:banned",
+        ] {
+            assert!(
+                err(&format!("legality: ['{bad}']\n")).contains("is not `Format: status`"),
+                "{bad}"
+            );
+        }
         Ok(())
     }
 

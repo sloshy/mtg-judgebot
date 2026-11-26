@@ -173,6 +173,8 @@ pub enum CitationKind {
     Ruling,
     /// A card's current Oracle text.
     OracleText,
+    /// A card's status in a format, from Scryfall's legality data.
+    Legality,
     /// An earlier answer.
     PriorCall,
 }
@@ -394,6 +396,12 @@ pub fn citation_view(m: &Messages, c: &Citation, labels: &impl Labels) -> Citati
                 quote,
             }
         }
+        Citation::Legality { card, .. } => CitationView {
+            kind: CitationKind::Legality,
+            label: (m.legality_label)(card_name(*card).as_deref()),
+            url: Some(render::scryfall_url(*card)),
+            quote,
+        },
     }
 }
 

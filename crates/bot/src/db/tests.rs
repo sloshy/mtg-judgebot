@@ -2643,3 +2643,88 @@ async fn a_fixture_card_is_assessed_like_a_stored_one(pool: PgPool) -> anyhow::R
     assert_eq!(status(assess(&[], 60).await?), CardStatus::Unreleased);
     Ok(())
 }
+
+/// Format legality is material only for a question classified as about it,
+/// and a call that cites an entry is live exactly while the card's entry is
+/// what it quoted: a banned-list change retires it, and its undoing restores it.
+#[sqlx::test(migrations = "./migrations")]
+async fn legality_is_loaded_for_its_category_and_retires_on_a_change(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    seed(&pool).await?;
+    let set_legality = async |legalities: serde_json::Value| {
+        sqlx::query("UPDATE cards SET legalities = $2 WHERE oracle_id = $1")
+            .bind(BONECRUSHER)
+            .bind(legalities)
+            .execute(&pool)
+            .await
+    };
+    set_legality(serde_json::json!({"modern": "legal", "standard": "banned"})).await?;
+    let retriever = PgRetriever::new(pool.clone());
+    let store = PgCallStore::new(pool.clone());
+    let bonecrusher = judge_core::CardId::new(BONECRUSHER);
+    let q = question("is Bonecrusher Giant legal in Standard?");
+    let card = super::cards::load_cards(&pool, &[BONECRUSHER]).await?;
+
+    // Any other classification reads no legality at all.
+    let other = retriever
+        .retrieve(
+            &q,
+            &card,
+            &extraction(&[Category::Layers], &[]),
+            &judge_core::Tally::new(),
+        )
+        .await?;
+    assert!(other.legality.is_empty());
+
+    // A secondary category is enough.
+    let ctx = retriever
+        .retrieve(
+            &q,
+            &card,
+            &extraction(&[Category::Layers, Category::FormatLegality], &[]),
+            &judge_core::Tally::new(),
+        )
+        .await?;
+    let entries: Vec<String> = ctx
+        .legality(bonecrusher)
+        .ok_or_else(|| anyhow::anyhow!("legality not loaded"))?
+        .formats
+        .iter()
+        .map(judge_core::FormatStanding::entry)
+        .collect();
+    assert_eq!(entries, ["Standard: banned", "Modern: legal"]);
+
+    let cite = judge_core::Citation::Legality {
+        card: bonecrusher,
+        quote: judge_core::Quote::try_new("Standard: banned")?,
+    };
+    let verdict = Verdict::new(
+        "No: Bonecrusher Giant is banned in Standard.".into(),
+        Confidence::High,
+        vec![cite],
+        Category::FormatLegality,
+    )
+    .validate(&ctx, AnswerableSource::Cr)?;
+    let call = store
+        .persist(&q, &Origin::Web, &verdict, &ctx, &judge_core::Tally::new())
+        .await?;
+    assert_eq!(retire_unsupported(&pool).await?.retired, 0);
+
+    // Unbanned: the entry the call quoted is no longer the card's.
+    set_legality(serde_json::json!({"modern": "legal", "standard": "legal"})).await?;
+    assert_eq!(retire_unsupported(&pool).await?.retired, 1);
+    let (retired, reason) = retirement_state(&pool, call).await?;
+    assert!(
+        retired
+            && reason
+                .as_deref()
+                .is_some_and(|r| r.starts_with("unsupported citation: legality")),
+        "{reason:?}"
+    );
+
+    // Banned again: the same entry, so the call is back.
+    set_legality(serde_json::json!({"standard": "banned"})).await?;
+    assert_eq!(retire_unsupported(&pool).await?.restored, 1);
+    Ok(())
+}

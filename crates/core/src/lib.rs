@@ -11,6 +11,7 @@ pub mod error;
 pub mod feedback;
 pub mod freshness;
 pub mod judge;
+pub mod legality;
 pub mod locale;
 pub mod operator;
 pub mod origin;
@@ -33,6 +34,7 @@ pub use feedback::{
 };
 pub use freshness::Freshness;
 pub use judge::{Deps, Traced, judge, judge_traced};
+pub use legality::{CardLegality, FormatStanding, Standing};
 pub use locale::Locale;
 pub use operator::{
     DiscordOperator, DiscordUsername, MissingContact, NetworkOperator, Operator, SupportEmail,

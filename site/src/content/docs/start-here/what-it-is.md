@@ -12,6 +12,10 @@ shown, so an answer cannot cite a rule number the model invented. Ask from Disco
 `/judge`, from a web app, or from the command line. Use brackets like
 `[[Full Card Name]]` when a nickname could mean several things.
 
+It also answers whether a card is legal, banned or restricted in a format, from
+Scryfall's legality data as of the instance's last data refresh. Tournament policy and
+deck-building advice are outside what it answers.
+
 ## One bot per community
 
 Every judgebot is its own Discord application, run by the community that uses it. Each

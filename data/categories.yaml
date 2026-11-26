@@ -81,6 +81,12 @@ categories:
   - id: multiplayer
     label: Multiplayer rules and variants
     subsections: ["800", "801", "802", "805", "806"]
+  # A question under this category gets each card's legality line in the material
+  # (judge_core::legality). 100 holds the deck-construction rules and what the CR
+  # says of banned cards; 903.5 the Commander deck's.
+  - id: format_legality
+    label: Format legality (a card legal, banned or restricted in a format)
+    subsections: ["100", "903.5"]
   - id: other
     label: Other or unclear
     subsections: []

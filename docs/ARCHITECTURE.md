@@ -122,6 +122,8 @@ Discord message (+ last N Q&A in the same thread)
       Oracle text changed. It restores the call when both hold again.
       Renumbered rules carry their calls with them.
     - Nightmare notes
+    - Format legality of each resolved card (Scryfall's, as stored by the cards
+      step), only when one of the question's categories is `format_legality` (D44)
     - Thread history (last N Q&A)
   │
   ▼
@@ -774,7 +776,8 @@ Resolution    Resolved(card, matchedVia) | Ambiguous(query, candidates) | NotFou
 Quote         non-blank text; compared to its source with typographic punctuation folded
 Citation      Rule(id, quote) | ScryfallRuling(card, rulingKey, quote)
               | OracleText(card, quote) | PriorCall(id, quote)
-Context       { cards, rules, rulings, glossary, prior, notes, history }
+              | Legality(card, quote)   one whole "Format: status" entry (D44)
+Context       { cards, rules, rulings, glossary, prior, notes, legality, history }
 Verdict<S>    { answer, confidence, citations, category, source, crVersion, cards }
               S = Unvalidated | Validated; only Verdict<Validated> can be stored or shown
 Rejection     BadCitation(citation) | Malformed(what) | Empty(why) | Uncited(rule ids)
@@ -793,7 +796,7 @@ judge : Question -> IO[Either[JudgeError, Verdict]]
 The build was eval-first: retrieval was measured before any synthesis existed.
 
 1. A gold set of adversarially verified questions with expected rule ids
-   (`eval/gold.yaml`, 24 questions today, one of them a human correction and two about unreleased cards).
+   (`eval/gold.yaml`, 26 questions today, one of them a human correction, two about unreleased cards and two about format legality).
 2. Ingest.
 3. Extraction and resolution, tested on the gold set's card mentions.
 4. Retrieval, behind a **gate of ≥ 90% of gold rule ids present in the Context**.

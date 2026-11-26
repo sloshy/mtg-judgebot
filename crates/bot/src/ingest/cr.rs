@@ -132,6 +132,11 @@ pub async fn run_latest(lease: &mut RefreshLease, cache_dir: &Path) -> anyhow::R
     match (published, current) {
         (Some(version), Some(stored)) if version == stored => {
             tracing::info!(%version, "comprehensive rules unchanged; nothing to do");
+            // The taxonomy is compiled in, so a release can change it with no
+            // new CR to load: the table follows at that release's first refresh.
+            let mut tx = lease.pool().begin().await.context("begin")?;
+            sync_categories(&mut tx).await?;
+            tx.commit().await.context("committing categories")?;
             Ok(Outcome::Unchanged { version })
         }
         (published, _) => {

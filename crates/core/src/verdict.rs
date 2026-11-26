@@ -501,7 +501,8 @@ fn uncited_rules(answer: &str, citations: &[Citation]) -> Option<UncitedRules> {
             Citation::Rule { id, .. } => Some(id.as_ref()),
             Citation::ScryfallRuling { .. }
             | Citation::PriorCall { .. }
-            | Citation::OracleText { .. } => None,
+            | Citation::OracleText { .. }
+            | Citation::Legality { .. } => None,
         })
         .collect();
     let mut missing: Vec<RuleId> = Vec::new();
@@ -773,7 +774,8 @@ impl JsonSchema for Verdict<Unvalidated> {
 
 /// Whether `c` is supported by `ctx`: its referenced rule, ruling, prior call
 /// or card face is present there and its quote is a non-empty verbatim
-/// substring of that source. This is the (a)/(b) check of [`Verdict::validate`]
+/// substring of that source, or, for a legality citation, one whole entry of
+/// the card's legality. This is the (a)/(b) check of [`Verdict::validate`]
 /// on one citation, exported so the retirement pass can ask the same question
 /// of a stored call against *today's* data: a call is live exactly while every
 /// citation it was admitted with would still be admitted.
@@ -795,22 +797,34 @@ fn source_quote(c: &Citation, ctx: &Context) -> Option<Quote> {
     if q.is_empty() {
         return None;
     }
-    let found = match c {
-        Citation::Rule { id, .. } => ctx.rule(id).and_then(|r| r.locate_quote(q)),
+    let found: Option<Cow<'_, str>> = match c {
+        Citation::Rule { id, .. } => ctx
+            .rule(id)
+            .and_then(|r| r.locate_quote(q))
+            .map(Cow::Borrowed),
         Citation::ScryfallRuling { card, ruling, .. } => ctx
             .ruling(*card, ruling)
-            .and_then(|r| quote::locate(&r.text, q)),
+            .and_then(|r| quote::locate(&r.text, q))
+            .map(Cow::Borrowed),
         Citation::PriorCall { id, .. } => ctx
             .prior_call(*id)
-            .and_then(|p| quote::locate(&p.answer, q)),
+            .and_then(|p| quote::locate(&p.answer, q))
+            .map(Cow::Borrowed),
         Citation::OracleText { card, face, .. } => ctx
             .card(*card)
             .and_then(|c| c.face(*face))
-            .and_then(|f| f.locate_quote(q)),
+            .and_then(|f| f.locate_quote(q))
+            .map(Cow::Borrowed),
+        // An entry is rendered from the data, not stored as text, and only a
+        // whole one counts (`legality` module docs).
+        Citation::Legality { card, .. } => ctx
+            .legality(*card)
+            .and_then(|l| l.locate_entry(q))
+            .map(Cow::Owned),
     };
     // The span has the trimmed quote's length and starts and ends on a
     // non-space character, so it is never blank; `ok()` is not a leniency.
-    found.and_then(|span| Quote::try_new(span).ok())
+    found.and_then(|span| Quote::try_new(span.into_owned()).ok())
 }
 
 /// Replace each citation's quote with the source's own text for it, or report
@@ -1188,6 +1202,75 @@ mod tests {
         assert!(
             matches!(v.citations().first(), Some(Citation::OracleText { card, face: 0, .. }) if *card == waylay)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn legality_citations() -> Result<(), Box<dyn std::error::Error>> {
+        let waylay = waylay_id();
+        let mut c = ctx()?;
+        let cite = |quote: &str| -> Result<Citation, Box<dyn std::error::Error>> {
+            Ok(Citation::Legality {
+                card: waylay,
+                quote: Quote::try_new(quote)?,
+            })
+        };
+        // Not loaded (the question was not about legality): nothing to cite.
+        assert!(matches!(
+            verdict(vec![cite("Modern: banned")?]).validate(&c, CR),
+            Err(JudgeError::BadCitation(_))
+        ));
+        c.legality = vec![crate::CardLegality::from_scryfall(
+            waylay,
+            &serde_json::json!({"modern": "banned", "standard": "not_legal", "vintage": "legal"}),
+        )];
+        // A whole entry, and what is stored is the entry itself.
+        let ok = verdict(vec![cite(" Modern: banned ")?, cite("Vintage: legal")?])
+            .validate(&c, CR)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            ok.citations(),
+            [cite("Modern: banned")?, cite("Vintage: legal")?]
+        );
+        assert!(ok.citations().iter().all(|x| citation_supported(x, &c)));
+        // A part of an entry, another status, a format with no entry, two at once.
+        for bad in [
+            "banned",
+            "legal",
+            "Modern",
+            "Modern: legal",
+            "Standard: legal",
+            "Legacy: banned",
+            "Modern: banned · Vintage: legal",
+        ] {
+            let bad = cite(bad)?;
+            assert!(
+                matches!(verdict(vec![bad.clone()]).validate(&c, CR), Err(JudgeError::BadCitation(ref x)) if *x == bad),
+                "{bad}"
+            );
+        }
+        // Another card's line is not this card's.
+        let other = Citation::Legality {
+            card: CardId::new(Uuid::from_u128(77)),
+            quote: Quote::try_new("Modern: banned")?,
+        };
+        assert!(matches!(
+            verdict(vec![other]).validate(&c, CR),
+            Err(JudgeError::BadCitation(_))
+        ));
+        // A ban lifted: the stored citation is no longer supported.
+        c.legality = vec![crate::CardLegality::from_scryfall(
+            waylay,
+            &serde_json::json!({"modern": "legal"}),
+        )];
+        assert!(!citation_supported(&cite("Modern: banned")?, &c));
+        // Deserializes from the model's tagged form, kind first in the schema.
+        let json = r#"{"answer":"a","confidence":"low","citations":[{"kind":"legality","card":"00000000-0000-0000-0000-000000000009","quote":"Modern: banned"}],"category":"format_legality"}"#;
+        let v: Verdict<Unvalidated> = serde_json::from_str(json)?;
+        assert!(
+            matches!(v.citations().first(), Some(Citation::Legality { card, .. }) if *card == waylay)
+        );
+        assert_eq!(v.category(), Category::FormatLegality);
         Ok(())
     }
 

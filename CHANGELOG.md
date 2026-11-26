@@ -17,6 +17,17 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
+### Added
+
+- **Format legality answers.** "Is this legal in Modern?" and "is this banned in
+  Commander?" are answered from Scryfall's per-format legality, which the cards step
+  already stores, and cited like any other source: the citation quotes the card's entry,
+  such as `Modern: banned`. A question classified as about legality gets each card's
+  legality in the material; no other question's material changes. A banned-list change
+  retires the stored answers it contradicts at the next refresh. The HTTP API's citation
+  `kind` gains `legality`. Deck construction beyond a card's status is still tournament
+  policy and not answered. No migration and no new data load.
+
 ### Changed
 
 - **Building from source needs Rust 1.100** (`rust-toolchain.toml`, the `Dockerfile`).

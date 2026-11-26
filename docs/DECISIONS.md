@@ -2116,3 +2116,67 @@ signature check. serenity 0.12 is gone.
 - *A build without the gateway.* serenity's REST client needed the feature that pulls
   the old tungstenite in, and the gateway is the default delivery: only the HTTP
   deployments would have lost the advisories.
+
+## D44. Format legality
+
+*Decided 2026-11-25.*
+
+"Is this legal in Modern?" and "is this banned in Commander?" had no citable source. The
+Comprehensive Rules name no card as banned, the banned lists are not loaded, and the
+extraction prompt already sent Commander banned-list questions to an answerable source
+with nothing behind it but CR 903. The cards step has stored Scryfall's per-format
+legality for every card since the first release, and nothing read it. The judge now
+answers those questions from that data, cited like everything else.
+
+- **A category decides when it is shown.** `format_legality` is a category in
+  `data/categories.yaml`. A question the extractor files under it, as primary or
+  secondary, gets each resolved card's legality in the material
+  (`db::cards::load_legality` → `Context::legality`). Every other question's material is
+  byte-for-byte what it was.
+- **The material is one line per card**, `[legality <uuid>] **Name** — Standard: not
+  legal · Modern: banned · …`, with one entry per format Scryfall lists. The section's
+  heading carries the whole instruction for citing it, so the tuned synthesis system
+  prompt and its pinned digest are unchanged. The output schema gains the citation kind,
+  and the extraction prompt's `cr` and `commander` source lines each say that these
+  questions are theirs.
+- **A citation quotes one whole entry** (`Citation::Legality { card, quote }`,
+  `judge_core::legality`). A part of an entry is refused: `legal` is a substring of
+  `not legal`, and `Modern` alone says nothing. The check is equality with an entry under
+  the same typographic folding as every other quote, and what is stored is the entry.
+- **A banned-list change retires the answers it contradicts.** The retirement pass
+  re-checks a stored legality citation against the card's legality today, so a call that
+  cited `Modern: legal` is retired at the refresh after the card is banned, and restored
+  if the ban is undone.
+- **Formats are Scryfall's keys, not an enum.** A format Scryfall adds reaches the
+  material at the next refresh with no release. `legality::LABELS` gives the known keys
+  their names and order. An unknown key is shown as the key, and a status this build does
+  not know is left out, never guessed.
+- **A rejected citation is told what an entry is.** The retry notice names the card's
+  entry for the format only when the quote names that format exactly (`near_entry`):
+  `Historic Brawl` holds two formats' names, and a notice must not state a guess.
+- **The `categories` table follows the release.** The rules step now syncs it when the CR
+  is unchanged too, so a taxonomy change reaches it at the first refresh. Until then the
+  retriever uses the compiled list and logs a WARN per question.
+- **The gold set gains two questions** (`legality:` in `eval/gold.yaml`, the entries a
+  correct answer cites). They are about real cards whose status has not changed in years.
+  A banned-list change would make one stale, and the run's summary line says to check the
+  entry first.
+
+The data says whether a card may be in a deck for a format. It does not say why, or since
+when, and the material tells the model so. Deck construction beyond a card's status
+(sideboards, deck registration, a tournament's own rules) is still tournament policy and
+still not answered.
+
+**Rejected:**
+
+- *Loading the banned lists and format rules as documents.* They are announcements
+  and web pages with no stable structure, in several places per format. Scryfall
+  already reduces them to one status per card and format, refreshed daily.
+- *Showing legality for every question.* Twenty-odd entries per card on every question
+  about how a card works, and a changed material for every answer the prompts were tuned
+  on.
+- *A citation that is a typed format and status with no quote.* Every other kind carries
+  a quote the reader sees and the retirement pass re-checks. A whole-entry quote is the
+  same claim in that shape, with one validation path.
+- *A substring quote, as for rules.* It admits `legal` from `not legal`.
+- *An enum of formats.* A new format would be invisible until a release named it.

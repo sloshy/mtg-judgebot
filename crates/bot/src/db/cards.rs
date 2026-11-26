@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use judge_core::preview::{COVER_WINDOW_DAYS, Term, rules_terms};
-use judge_core::{Card, CardId, Face, JudgeError, Layout, Release};
+use judge_core::{Card, CardId, CardLegality, Face, JudgeError, Layout, Release};
 use nonempty::NonEmpty;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -104,6 +104,29 @@ pub(super) async fn load_card_text(
         .await?
         .into_iter()
         .map(|l| l.card)
+        .collect())
+}
+
+/// The format legality of these cards, as the cards step last stored it.
+/// A card with no row is absent; one Scryfall lists no format for has no
+/// entries.
+pub(super) async fn load_legality(
+    executor: impl sqlx::PgExecutor<'_>,
+    ids: &[Uuid],
+) -> Result<Vec<CardLegality>, JudgeError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query!(
+        "SELECT oracle_id, legalities FROM cards WHERE oracle_id = ANY($1) ORDER BY oracle_id",
+        ids
+    )
+    .fetch_all(executor)
+    .await
+    .map_err(upstream("card legality"))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| CardLegality::from_scryfall(CardId::new(r.oracle_id), &r.legalities))
         .collect())
 }
 

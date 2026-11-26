@@ -602,6 +602,7 @@ mod tests {
             usd: 0.0,
             grade: None,
             unreleased: None,
+            legality: None,
         }
     }
 

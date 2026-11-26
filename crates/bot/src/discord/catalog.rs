@@ -159,6 +159,8 @@ pub struct Messages {
     /// An Oracle-text citation's label: the face (from 2, when not the
     /// first) and card name.
     pub oracle_label: fn(Option<usize>, Option<&str>) -> String,
+    /// A legality citation's label: the card name.
+    pub legality_label: fn(Option<&str>) -> String,
     /// A prior call citation's label.
     pub prior_call_label: &'static str,
     /// Opens a citation's quote, after its label.
@@ -442,6 +444,10 @@ Press **Retry** to ask this again.",
             None => format!("Oracle text{face_note}"),
         }
     },
+    legality_label: |name| match name {
+        Some(name) => format!("Format legality — {name}"),
+        None => "Format legality".to_owned(),
+    },
     prior_call_label: "prior call",
     quote_open: "“",
     quote_close: "”",
@@ -649,6 +655,7 @@ pub const STUB: Messages = Messages {
             name.unwrap_or_default()
         )
     },
+    legality_label: |name| format!("⟦legality_label {}⟧", name.unwrap_or_default()),
     prior_call_label: "⟦prior_call_label⟧",
     quote_open: "⟦quote_open⟧",
     quote_close: "⟦quote_close⟧",
@@ -834,6 +841,7 @@ mod tests {
                 (m.ruling_label)(" (2018-07-13)", Some("Blood Moon")),
                 (m.ruling_label)("", None),
                 (m.oracle_label)(Some(2), None),
+                (m.legality_label)(Some("Sol Ring")),
                 m.prior_call_label.to_owned(),
                 m.quote_open.to_owned(),
                 m.quote_close.to_owned(),

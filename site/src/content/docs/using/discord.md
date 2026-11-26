@@ -25,7 +25,7 @@ reply in.
 
 The reply opens with a non-pinging `@you asked:` header, then the ruling, then a citation
 per line. Rule citations link to the rule on the Yawgatog mirror of the Comprehensive
-Rules. Rulings and Oracle text link to the card on Scryfall. The footer names the cards
+Rules. Rulings, Oracle text and format legality link to the card on Scryfall. The footer names the cards
 the question was resolved to, so you can check that "bob" was taken to mean Dark
 Confidant. It also gives the model's confidence and the CR version it answered from.
 
@@ -136,7 +136,8 @@ rules always outrank examples. Prior answers are rendered after the CR material 
 with their rating, and the model is told they are precedent, not authority.
 
 A past answer is retired automatically when its citations stop holding against the
-current rules, rulings or Oracle text (a new CR release, an erratum). It comes back if
+current rules, rulings, Oracle text or format legality (a new CR release, an erratum, a
+banned-list change). It comes back if
 the text is restored.
 
 ## `/help`

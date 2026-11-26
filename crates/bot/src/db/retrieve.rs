@@ -25,7 +25,7 @@ use pgvector::Vector;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{Vectors, bad_row, rules, upstream};
+use super::{Vectors, bad_row, cards, rules, upstream};
 
 /// Rule-level rows taken from the full-text search.
 pub const BM25_LIMIT: i64 = 12;
@@ -393,7 +393,14 @@ impl Retriever for PgRetriever {
             .flat_map(|c| c.faces.iter().map(|f| f.oracle_text.clone()))
             .collect();
 
-        let (mapped, matched, nearest, rulings, glossary, notes, prior) = tokio::try_join!(
+        // Legality is material only for a question classified as about it, so
+        // every other question reads what it read before the data was shown.
+        let legality_ids: &[Uuid] = if categories.contains(&Category::FormatLegality) {
+            &card_ids
+        } else {
+            &[]
+        };
+        let (mapped, matched, nearest, rulings, glossary, notes, prior, legality) = tokio::try_join!(
             self.category_map(&categories, &concepts, &q.text),
             rules::bm25(&self.pool, &concepts, &q.text, BM25_LIMIT),
             self.nearest(embedding.as_ref()),
@@ -401,6 +408,7 @@ impl Retriever for PgRetriever {
             self.glossary(&texts),
             self.notes(&card_ids),
             self.prior_calls(&categories, &card_ids, embedding.as_ref()),
+            cards::load_legality(&self.pool, legality_ids),
         )?;
 
         let mut ctx = Context {
@@ -409,6 +417,7 @@ impl Retriever for PgRetriever {
             glossary,
             notes,
             prior,
+            legality,
             ..Context::default()
         };
         let n_map = mapped
@@ -426,6 +435,7 @@ impl Retriever for PgRetriever {
             glossary = ctx.glossary.len(),
             notes = ctx.notes.len(),
             prior = ctx.prior.len(),
+            legality = ctx.legality.len(),
             "context built"
         );
         Ok(ctx)
