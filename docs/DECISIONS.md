@@ -131,7 +131,8 @@ questions have the shape "card A + card B + rule concept C", so:
   leaf and parent as covering each other.
 - **The category taxonomy is data.** `data/categories.yaml` generates the `Category` enum
   in `core/build.rs`, so a taxonomy edit is a recompile and every `match` stays exhaustive.
-  The extractor's schema makes the primary category required.
+  The extractor's schema makes the primary category required. Each category names its CR
+  sections by title, and the numbers are looked up in the loaded CR (D46).
 
 ## D5. Citation validation and the verdict lifecycle
 
@@ -2219,3 +2220,61 @@ where nothing can have changed underneath it.
 - *Writing new shapes so that an older build skips them silently.* The older build's
   readers are already released: what they do with an unknown kind cannot be changed
   from here.
+
+## D46. Taxonomy sections by title
+
+*Decided 2026-11-26.*
+
+Each category in `data/categories.yaml` lists the CR text a question in it always gets.
+The list held rule numbers, and the numbers move. The CR of 2026-11-06 gave meld cards
+their own section and moved every later section up by one. For three weeks the
+multi-faced category included Saga cards where it meant Adventurer cards, and had nothing
+for meld. Nothing reported it, because every number was still a valid section. Wizards
+adds a card-layout section most years.
+
+- **A category names titles.** `Adventurer Cards`, not `716`. Across nine releases from
+  2021 to 2026, sixteen sections were added, every section after each one changed number,
+  and one title was reworded (Tribals became Kindreds).
+- **Three forms** (`judge_core::taxonomy::SectionRef`). A whole section by its title. One
+  rule by its title inside a titled section (`Keyword Abilities` > `Lifelink`). A rule or
+  sub-rule with no title by its number inside a titled section (`Commander` > `.5`,
+  `State-Based Actions` > `.5q`): the section's number can move under it, and its own
+  position is all that names it. A release that inserts a rule before it inside the
+  section still moves it unreported; nine entries are of this form. `General` is the first section of every part, so it is
+  written with its part (`Zones` > `General`).
+- **The numbers are looked up at the load.** The CR load stores each section's title and
+  part in `rule_sections` and writes `categories.subsections` from them, in the load's
+  transaction (`sync_categories`). The retriever reads numbers, as before. A refresh that
+  finds the CR unchanged writes the table again, since a release can change the taxonomy
+  with no new CR.
+- **A title that matches nothing is left out and reported.** It is never pointed at
+  another section. The category keeps its other entries. The same goes for a title two
+  sections share. The entry is kept in `categories.unresolved`, so the load can tell one
+  that has just stopped resolving from one it already reported.
+- **Sections no category names are listed.** After a load the record holds them all, and
+  those whose title the previous release did not have are the news: a section the release
+  added that nothing includes.
+- **Both are told at most once.** They go to the log (WARN), the `rules` step of the
+  refresh's record (`cr::Taxonomy`) and, from the scheduled refresh, the alert webhook.
+  The alert is sent even when the run was stopped afterwards, because the step commits
+  what it found and no later run finds it again. For the same reason a process that dies
+  between that commit and the end of its run sends nothing, and neither does a run made
+  by hand: the WARN is then the only notice. The entries still unresolved are in every
+  run's record and logged at INFO by every refresh.
+- **A release loaded before this has no titles stored.** The first refresh loads the
+  stored release again to fill `rule_sections`. Until then `categories` keeps the numbers
+  it had. With no titles stored the table is not written at all, since every entry would
+  resolve to nothing.
+- **An older build** does not know this release's migration, so its refresh writes
+  nothing (`Skip::SchemaAhead`) and `categories` keeps the looked-up numbers (D45).
+
+**Rejected:**
+
+- *Assigning a new section to a category automatically.* Whether Case cards belong with
+  multi-faced cards is a judgement, and a wrong guess is the silent failure this replaces.
+- *A CI test that the titles resolve.* CI has no CR loaded, and a fixture's table of
+  contents would be as stale as the numbers were. The check runs where the CR is.
+- *Keeping the previous number when a title stops matching.* After a renumbering that
+  number is another section.
+- *Bare rule titles* (`Lifelink` alone). Rule headings repeat across sections, and a
+  prose rule's heading falls back to its section's title.

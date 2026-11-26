@@ -22,6 +22,7 @@ pub mod release;
 pub mod run;
 pub mod source;
 pub mod symbol;
+pub mod taxonomy;
 pub mod usage;
 pub mod verdict;
 

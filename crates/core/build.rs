@@ -9,10 +9,106 @@ struct File {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Entry {
     id: String,
     label: String,
-    subsections: Vec<String>,
+    sections: Vec<Reference>,
+}
+
+/// One entry of a category's `sections`: a section's title, or a mapping that
+/// qualifies it.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum Reference {
+    Title(String),
+    Qualified(Qualified),
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Qualified {
+    /// The title of the part the section is in (`Zones`), for a section title
+    /// that several parts use (`General`).
+    part: Option<String>,
+    /// The section's title.
+    section: String,
+    /// The title of one rule in the section (`Lifelink`).
+    rule: Option<String>,
+    /// One rule or sub-rule that has no title, by its number within the
+    /// section (`"5"`, `"5q"`). Quoted, so YAML does not read it as a number.
+    number: Option<String>,
+}
+
+/// A title as the CR writes it: not blank, not padded, and not a rule number
+/// (the reason this file names titles is that the numbers move).
+fn title(category: &str, key: &str, value: &str) -> Result<(), Box<dyn Error>> {
+    let numeric = value
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == '.' || c.is_ascii_lowercase())
+        && value.starts_with(|c: char| c.is_ascii_digit());
+    if value.is_empty() || value.trim() != value {
+        return Err(format!("category {category}: a blank or padded `{key}`: {value:?}").into());
+    }
+    if numeric {
+        return Err(format!(
+            "category {category}: `{key}` is a rule number ({value}); name the section by its \
+             title, and a rule without a title as {{ section: <title>, number: \"<n>\" }}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The Rust literal of one reference (`judge_core::taxonomy::SectionRef`).
+fn reference(category: &str, r: &Reference) -> Result<String, Box<dyn Error>> {
+    let q = match r {
+        Reference::Title(t) => {
+            title(category, "sections", t)?;
+            return Ok(format!(
+                "crate::taxonomy::SectionRef {{ part: None, section: {t:?}, within: crate::taxonomy::Within::Whole }}"
+            ));
+        }
+        Reference::Qualified(q) => q,
+    };
+    title(category, "section", &q.section)?;
+    if let Some(part) = &q.part {
+        title(category, "part", part)?;
+    }
+    let within = match (&q.rule, &q.number) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "category {category}: {:?} has both `rule` and `number`; a rule with a title \
+                 is named by it",
+                q.section
+            )
+            .into());
+        }
+        (Some(rule), None) => {
+            title(category, "rule", rule)?;
+            format!("crate::taxonomy::Within::Titled({rule:?})")
+        }
+        (None, Some(number)) => {
+            let digits = number.chars().take_while(char::is_ascii_digit).count();
+            let letters = number.get(digits..).unwrap_or_default();
+            let ok =
+                digits > 0 && letters.len() <= 2 && letters.chars().all(|c| c.is_ascii_lowercase());
+            if !ok {
+                return Err(format!(
+                    "category {category}: `number` under {:?} must be digits and at most two \
+                     letters (\"5\", \"5q\"), got {number:?}",
+                    q.section
+                )
+                .into());
+            }
+            format!("crate::taxonomy::Within::Numbered({number:?})")
+        }
+        (None, None) => "crate::taxonomy::Within::Whole".to_owned(),
+    };
+    Ok(format!(
+        "crate::taxonomy::SectionRef {{ part: {:?}, section: {:?}, within: {within} }}",
+        q.part, q.section
+    ))
 }
 
 fn pascal(id: &str) -> String {
@@ -94,11 +190,15 @@ fn generate(file: &File) -> Result<String, Box<dyn Error>> {
     }
     out.push_str("        }\n    }\n\n");
     out.push_str(
-        "    /// CR sections/subsections always injected into `Context` for this category.\n",
+        "    /// The CR text always included for this category, named by title\n    /// ([`crate::taxonomy`]): the rule numbers are looked up in the loaded CR.\n",
     );
-    out.push_str("    #[must_use]\n    pub const fn subsections(self) -> &'static [&'static str] {\n        match self {\n");
+    out.push_str("    #[must_use]\n    pub const fn sections(self) -> &'static [crate::taxonomy::SectionRef] {\n        match self {\n");
     for e in &file.categories {
-        let subs: Vec<String> = e.subsections.iter().map(|s| format!("{s:?}")).collect();
+        let subs = e
+            .sections
+            .iter()
+            .map(|r| reference(&e.id, r))
+            .collect::<Result<Vec<String>, _>>()?;
         writeln!(
             out,
             "            Category::{} => &[{}],",

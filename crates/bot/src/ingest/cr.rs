@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Context as _;
+use judge_core::taxonomy::{Outline, Section, Unresolved};
 use judge_core::{Category, CrVersion, EXAMPLE_PREFIX, GlossaryEntry, RuleChunk, RuleId};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
@@ -58,9 +59,15 @@ const USER_AGENT: &str = concat!(
 
 /// Parse and load the CR from `source` (path or `http(s)://` URL, cached under `cache_dir`).
 ///
+/// Returns what the taxonomy names in it ([`Taxonomy`]).
+///
 /// # Errors
 /// On download, parse or database failure.
-pub async fn run(lease: &mut RefreshLease, source: &str, cache_dir: &Path) -> anyhow::Result<()> {
+pub async fn run(
+    lease: &mut RefreshLease,
+    source: &str,
+    cache_dir: &Path,
+) -> anyhow::Result<Taxonomy> {
     let text = fetch(source, cache_dir).await?;
     let parsed = match parse(&text, source) {
         Ok(parsed) => parsed,
@@ -74,12 +81,77 @@ pub async fn run(lease: &mut RefreshLease, source: &str, cache_dir: &Path) -> an
         rules = parsed.rules.iter().filter(|r| r.parent_id.is_none()).count(),
         leaves = parsed.rules.iter().filter(|r| r.parent_id.is_some()).count(),
         glossary = parsed.glossary.len(),
+        sections = parsed.sections.len(),
         "parsed comprehensive rules"
     );
     if parsed.rules.is_empty() {
         anyhow::bail!("no rules parsed from {source}");
     }
     store(lease.pool(), &parsed).await
+}
+
+/// What the taxonomy (`data/categories.yaml`, [`judge_core::taxonomy`]) names in
+/// the loaded CR, as the write of the `categories` table found it. Part of
+/// [`Outcome`], so stored in a refresh run's record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Taxonomy {
+    /// Every entry that names nothing in the loaded CR. Its category is
+    /// answered without that text until a release names the current title.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved: Vec<Unresolved>,
+    /// Those of [`Self::unresolved`] that resolved at the previous write: the
+    /// news, told once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stopped: Vec<Unresolved>,
+    /// The sections no category names, whole or in part. Listed by a run that
+    /// loaded a release; a run that found the CR unchanged leaves it empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncovered: Vec<Section>,
+    /// Those of [`Self::uncovered`] whose title the previous release did not
+    /// have: sections a new release added that no category names. Empty when
+    /// no release was stored before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<Section>,
+}
+
+impl Taxonomy {
+    /// Whether there is nothing to report.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.unresolved.is_empty()
+            && self.stopped.is_empty()
+            && self.uncovered.is_empty()
+            && self.added.is_empty()
+    }
+
+    /// One line per finding. An entry that stopped resolving and a new
+    /// section nobody names are warnings; the standing lists are INFO.
+    fn log(&self) {
+        for u in &self.stopped {
+            tracing::warn!(
+                category = u.category,
+                reference = u.reference,
+                reason = %u.reason,
+                "a taxonomy entry names nothing in the loaded CR; its category is answered \
+                 without that text until data/categories.yaml names the current title"
+            );
+        }
+        if !self.unresolved.is_empty() {
+            let entries: Vec<String> = self.unresolved.iter().map(ToString::to_string).collect();
+            tracing::info!(count = entries.len(), entries = ?entries, "taxonomy entries that name nothing in the loaded CR");
+        }
+        for s in &self.added {
+            tracing::warn!(
+                section = %s,
+                "the loaded CR adds a section no category names; decide in data/categories.yaml \
+                 whether one should"
+            );
+        }
+        if !self.uncovered.is_empty() {
+            let sections: Vec<String> = self.uncovered.iter().map(ToString::to_string).collect();
+            tracing::info!(count = sections.len(), sections = ?sections, "CR sections no category names");
+        }
+    }
 }
 
 /// What [`run_latest`] found on the rules page and did about it. Stored in a
@@ -91,14 +163,34 @@ pub enum Outcome {
     Unchanged {
         /// The stored and published version.
         version: String,
+        /// What the taxonomy names in it. Left out of the stored object when
+        /// there is nothing to report.
+        #[serde(default, skip_serializing_if = "Taxonomy::is_empty")]
+        taxonomy: Taxonomy,
     },
-    /// A different release is published; it was fetched, parsed and stored.
+    /// A release was fetched, parsed and stored: a different one is published,
+    /// or the stored one has no section titles yet (it was loaded by a release
+    /// that kept none), so it was loaded again.
     Updated {
         /// The version in the link's file name, or `"unknown"` when it carries none.
         version: String,
         /// Where it was downloaded from.
         url: String,
+        /// What the taxonomy names in it. Left out of the stored object when
+        /// there is nothing to report.
+        #[serde(default, skip_serializing_if = "Taxonomy::is_empty")]
+        taxonomy: Taxonomy,
     },
+}
+
+impl Outcome {
+    /// What the taxonomy names in the CR this run left loaded.
+    #[must_use]
+    pub const fn taxonomy(&self) -> &Taxonomy {
+        match self {
+            Self::Unchanged { taxonomy, .. } | Self::Updated { taxonomy, .. } => taxonomy,
+        }
+    }
 }
 
 /// Load the CR release currently linked from [`RULES_PAGE_URL`], unless `rules`
@@ -129,22 +221,46 @@ pub async fn run_latest(lease: &mut RefreshLease, cache_dir: &Path) -> anyhow::R
         .await
         .context("reading the stored CR version")?;
     tracing::info!(url, published = ?published, stored = ?current, "current comprehensive rules release");
-    match (published, current) {
-        (Some(version), Some(stored)) if version == stored => {
+    if let (Some(version), Some(stored)) = (&published, &current)
+        && version == stored
+    {
+        // The taxonomy's titles are looked up in `rule_sections`, which a
+        // release loaded before that table existed left empty: without them
+        // the stored release is loaded again (`store` is idempotent).
+        let titled: bool = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM rule_sections WHERE cr_version = $1) AS "titled!""#,
+            version
+        )
+        .fetch_one(lease.pool())
+        .await
+        .context("reading the stored section titles")?;
+        if titled {
             tracing::info!(%version, "comprehensive rules unchanged; nothing to do");
             // The taxonomy is compiled in, so a release can change it with no
             // new CR to load: the table follows at that release's first refresh.
             let mut tx = lease.pool().begin().await.context("begin")?;
-            sync_categories(&mut tx).await?;
+            let taxonomy = sync_categories(&mut tx, &[]).await?;
             tx.commit().await.context("committing categories")?;
-            Ok(Outcome::Unchanged { version })
+            taxonomy.log();
+            return Ok(Outcome::Unchanged {
+                version: version.clone(),
+                // The standing list is in the record of the run that loaded
+                // the release; a daily copy of it would say nothing new.
+                taxonomy: Taxonomy {
+                    uncovered: Vec::new(),
+                    ..taxonomy
+                },
+            });
         }
-        (published, _) => {
-            run(lease, &url, cache_dir).await?;
-            let version = published.unwrap_or_else(|| "unknown".to_owned());
-            Ok(Outcome::Updated { version, url })
-        }
+        tracing::info!(%version, "the stored comprehensive rules have no section titles; loading the release again");
     }
+    let taxonomy = run(lease, &url, cache_dir).await?;
+    let version = published.unwrap_or_else(|| "unknown".to_owned());
+    Ok(Outcome::Updated {
+        version,
+        url,
+        taxonomy,
+    })
 }
 
 /// The download link for the current CR text on the rules page: the `href` whose
@@ -277,6 +393,9 @@ struct ParsedCr {
     pub rules: Vec<RuleChunk>,
     /// Glossary entries in document order (terms unique).
     pub glossary: Vec<GlossaryEntry>,
+    /// The sections that have rules, in document order, each with its part's
+    /// title: what the taxonomy's titles are looked up in.
+    pub sections: Vec<Section>,
 }
 
 /// What one line of the CR is.
@@ -286,8 +405,13 @@ enum Line<'a> {
     /// Indented continuation of the previous line.
     Continuation(&'a str),
     Example(&'a str),
+    /// `7. Additional Rules`
+    Part {
+        title: &'a str,
+    },
     /// `702. Keyword Abilities`
     Section {
+        id: &'a str,
         title: &'a str,
     },
     /// `702.19. Trample`
@@ -326,14 +450,24 @@ fn classify(raw: &str) -> Line<'_> {
     Line::Other(line)
 }
 
-/// `702. Title` | `702.19. text` | `702.19b text`, ASCII digits only.
+/// `7. Title` | `702. Title` | `702.19. text` | `702.19b text`, ASCII digits only.
 fn classify_numbered(line: &str) -> Option<Line<'_>> {
-    line.get(..3)
+    if let Some(title) = line
+        .strip_prefix(|c: char| c.is_ascii_digit())
+        .and_then(|rest| rest.strip_prefix(". "))
+    {
+        return Some(Line::Part {
+            title: title.trim(),
+        });
+    }
+    let id = line
+        .get(..3)
         .filter(|s| s.bytes().all(|b| b.is_ascii_digit()))?;
     let after = line.get(3..)?;
     let after = after.strip_prefix('.')?;
     if let Some(title) = after.strip_prefix(' ') {
         return Some(Line::Section {
+            id,
             title: title.trim(),
         });
     }
@@ -463,7 +597,12 @@ fn heading_of(text: &str, section_title: &str) -> String {
 struct Parser {
     mode: Mode,
     effective_line: Option<String>,
+    part_title: String,
+    /// The number of the section whose title is `section_title`.
+    section_id: String,
     section_title: String,
+    /// Every section a rule was read under, in order.
+    sections: Vec<Section>,
     rules: Vec<RuleBuilder>,
     current: Option<RuleBuilder>,
     last: Last,
@@ -487,7 +626,8 @@ impl Parser {
             Line::Other(t) if t.starts_with("These rules are effective as of") => {
                 self.effective_line = Some(t.to_owned());
             }
-            Line::Section { title } => title.clone_into(&mut self.section_title),
+            Line::Part { title } => title.clone_into(&mut self.part_title),
+            Line::Section { id, title } => self.start_section(id, title),
             Line::Rule { id, text } => {
                 self.mode = Mode::Rules;
                 self.start_rule(id, text);
@@ -496,7 +636,24 @@ impl Parser {
         }
     }
 
+    fn start_section(&mut self, id: &str, title: &str) {
+        id.clone_into(&mut self.section_id);
+        title.clone_into(&mut self.section_title);
+    }
+
     fn start_rule(&mut self, id: &str, text: &str) {
+        // A section is recorded when its first rule is read, so the table of
+        // contents (titles with no rules under them) records none, and the
+        // part is the one the rule sits in.
+        if id.get(..3) == Some(self.section_id.as_str())
+            && !self.sections.iter().any(|s| s.id == self.section_id)
+        {
+            self.sections.push(Section {
+                id: self.section_id.clone(),
+                title: self.section_title.clone(),
+                part: self.part_title.clone(),
+            });
+        }
         self.rules.extend(self.current.take());
         self.current = Some(new_rule(id, text, &self.section_title));
         self.last = Last::RuleLine;
@@ -505,7 +662,8 @@ impl Parser {
     fn rule_line(&mut self, line: Line<'_>) {
         match line {
             Line::Blank => {}
-            Line::Section { title } => title.clone_into(&mut self.section_title),
+            Line::Part { title } => title.clone_into(&mut self.part_title),
+            Line::Section { id, title } => self.start_section(id, title),
             Line::Rule { id, text } => self.start_rule(id, text),
             Line::Leaf { id, parent, text } => {
                 if self.current.as_ref().is_none_or(|c| c.id != parent) {
@@ -564,7 +722,8 @@ impl Parser {
                     l.push_str(t);
                 }
             }
-            Line::Section { .. }
+            Line::Part { .. }
+            | Line::Section { .. }
             | Line::Rule { .. }
             | Line::Leaf { .. }
             | Line::Example(_)
@@ -617,7 +776,7 @@ fn parse(text: &str, source: &str) -> anyhow::Result<ParsedCr> {
         CrVersion::try_new(cr_version).map_err(|e| anyhow::anyhow!("bad CR version: {e}"))?;
 
     let mut rules = Vec::with_capacity(p.rules.len() * 3);
-    for r in p.rules {
+    for r in std::mem::take(&mut p.rules) {
         let id = rule_id(&r.id)?;
         let subsection = rule_id(&r.subsection)?;
         rules.push(RuleChunk {
@@ -659,6 +818,7 @@ fn parse(text: &str, source: &str) -> anyhow::Result<ParsedCr> {
         cr_version,
         rules,
         glossary,
+        sections: p.sections,
     })
 }
 
@@ -768,7 +928,14 @@ fn version_from_effective_line(line: &str) -> Option<String> {
 /// same transaction, so a renumbered rule keeps the calls that cite it.
 /// Retired calls too: a call retired for an unrelated reason (a withdrawn
 /// ruling) must still follow the numbering, or it could never be restored.
-async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
+///
+/// The section titles are replaced with the release's, and the `categories`
+/// table is written from them ([`sync_categories`]).
+async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<Taxonomy> {
+    anyhow::ensure!(
+        !parsed.sections.is_empty(),
+        "no section titles parsed from the CR; the taxonomy's titles could not be looked up"
+    );
     let version = parsed.cr_version.as_ref().to_owned();
     let mut tx = pool.begin().await?;
     // Serializes with the retirement pass, which rewrites the same rows.
@@ -835,10 +1002,12 @@ async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
         .context("deleting stale glossary")?
         .rows_affected();
 
-    sync_categories(&mut tx).await?;
+    let previous_titles = replace_sections(&mut tx, parsed).await?;
+    let taxonomy = sync_categories(&mut tx, &previous_titles).await?;
     let relocated_calls = relocate_calls(&mut tx, &renumbered).await?;
 
     tx.commit().await?;
+    taxonomy.log();
     tracing::info!(
         rules = parsed.rules.len(),
         glossary = parsed.glossary.len(),
@@ -848,7 +1017,40 @@ async fn store(pool: &PgPool, parsed: &ParsedCr) -> anyhow::Result<()> {
         relocated_calls,
         "stored comprehensive rules"
     );
-    Ok(())
+    Ok(taxonomy)
+}
+
+/// Replace `rule_sections` with the release's sections. Returns the titles the
+/// table held before, so the caller can tell which sections the release added
+/// (empty when it held none).
+async fn replace_sections(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    parsed: &ParsedCr,
+) -> anyhow::Result<Vec<String>> {
+    let previous = sqlx::query_scalar!("SELECT title FROM rule_sections")
+        .fetch_all(&mut **tx)
+        .await
+        .context("reading the stored section titles")?;
+    sqlx::query!("DELETE FROM rule_sections")
+        .execute(&mut **tx)
+        .await
+        .context("clearing the section titles")?;
+    let version = parsed.cr_version.as_ref();
+    for batch in parsed.sections.chunks(BATCH) {
+        let mut qb: QueryBuilder<Postgres> =
+            QueryBuilder::new("INSERT INTO rule_sections (id, title, part, cr_version) ");
+        qb.push_values(batch, |mut b, s| {
+            b.push_bind(s.id.clone())
+                .push_bind(s.title.clone())
+                .push_bind(s.part.clone())
+                .push_bind(version);
+        });
+        qb.build()
+            .execute(&mut **tx)
+            .await
+            .context("storing the section titles")?;
+    }
+    Ok(previous)
 }
 
 /// Old id → new id for rules the new release renumbered, from the rows
@@ -917,18 +1119,88 @@ async fn relocate_calls(
     Ok(changed)
 }
 
-/// Mirror `judge_core::Category` (generated from `data/categories.yaml`) into the
-/// `categories` table, so the retriever's category map reads the same
-/// subsection lists the code was built with; stale rows are removed.
-async fn sync_categories(tx: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
+/// The titles of the CR now in `rules` and `rule_sections`.
+async fn stored_outline(tx: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<Outline> {
+    let sections = sqlx::query!("SELECT id, title, part FROM rule_sections ORDER BY id")
+        .fetch_all(&mut **tx)
+        .await
+        .context("reading the section titles")?
+        .into_iter()
+        .map(|r| Section {
+            id: r.id,
+            title: r.title,
+            part: r.part,
+        })
+        .collect();
+    let rules =
+        sqlx::query!(r#"SELECT id, heading, parent_id IS NOT NULL AS "sub_rule!" FROM rules"#)
+            .fetch_all(&mut **tx)
+            .await
+            .context("reading the rule titles")?
+            .into_iter()
+            .map(|r| (r.id, r.heading, r.sub_rule));
+    Ok(Outline::new(sections, rules))
+}
+
+/// Write the `categories` table from `judge_core::Category` (generated from
+/// `data/categories.yaml`): each category's titles are looked up in the CR now
+/// stored ([`Outline::resolve_taxonomy`]) and the rule numbers they name are
+/// what the retriever's category map reads. Stale rows are removed.
+///
+/// An entry that names nothing is left out of its category, whose other
+/// entries still resolve, and is kept in `categories.unresolved`, so the next
+/// write can tell an entry that has just stopped resolving
+/// ([`Taxonomy::stopped`]) from one already reported.
+///
+/// `previous_titles` are the section titles of the release this one replaced
+/// (none when no release was replaced): a section no category names whose title
+/// is not among them is one the release added ([`Taxonomy::added`]).
+///
+/// # Errors
+/// On a database failure, or when no section titles are stored: every entry
+/// would then name nothing, and the table keeps what it had.
+async fn sync_categories(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    previous_titles: &[String],
+) -> anyhow::Result<Taxonomy> {
+    let outline = stored_outline(tx).await?;
+    anyhow::ensure!(
+        !outline.is_empty(),
+        "no section titles are stored, so the taxonomy's titles cannot be looked up; the \
+         categories table is left as it was"
+    );
+    let resolution = outline.resolve_taxonomy();
+    let reported: std::collections::BTreeSet<(String, String)> =
+        sqlx::query!("SELECT id, unresolved FROM categories")
+            .fetch_all(&mut **tx)
+            .await
+            .context("reading the entries already reported")?
+            .into_iter()
+            .flat_map(|r| {
+                let id = r.id;
+                r.unresolved.into_iter().map(move |u| (id.clone(), u))
+            })
+            .collect();
+
     let ids: Vec<&str> = Category::ALL.iter().map(|c| c.id()).collect();
     let mut qb: QueryBuilder<Postgres> =
-        QueryBuilder::new("INSERT INTO categories (id, label, subsections) ");
-    qb.push_values(Category::ALL, |mut b, c| {
-        let subs: Vec<String> = c.subsections().iter().map(|s| (*s).to_owned()).collect();
-        b.push_bind(c.id()).push_bind(c.label()).push_bind(subs);
+        QueryBuilder::new("INSERT INTO categories (id, label, subsections, unresolved) ");
+    qb.push_values(&resolution.categories, |mut b, (c, resolved)| {
+        let unresolved: Vec<String> = resolution
+            .unresolved
+            .iter()
+            .filter(|u| u.category == c.id())
+            .map(|u| u.reference.clone())
+            .collect();
+        b.push_bind(c.id())
+            .push_bind(c.label())
+            .push_bind(resolved.clone())
+            .push_bind(unresolved);
     });
-    qb.push(" ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, subsections = EXCLUDED.subsections");
+    qb.push(
+        " ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, \
+         subsections = EXCLUDED.subsections, unresolved = EXCLUDED.unresolved",
+    );
     qb.build()
         .execute(&mut **tx)
         .await
@@ -941,8 +1213,39 @@ async fn sync_categories(tx: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Re
     .await
     .context("deleting stale categories")?
     .rows_affected();
-    tracing::info!(categories = ids.len(), stale, "synced categories");
-    Ok(())
+    tracing::info!(
+        categories = ids.len(),
+        stale,
+        unresolved = resolution.unresolved.len(),
+        "synced categories"
+    );
+
+    let stopped = resolution
+        .unresolved
+        .iter()
+        .filter(|u| !reported.contains(&(u.category.clone(), u.reference.clone())))
+        .cloned()
+        .collect();
+    let added = if previous_titles.is_empty() {
+        Vec::new()
+    } else {
+        resolution
+            .uncovered
+            .iter()
+            .filter(|s| {
+                !previous_titles
+                    .iter()
+                    .any(|t| t.eq_ignore_ascii_case(&s.title))
+            })
+            .cloned()
+            .collect()
+    };
+    Ok(Taxonomy {
+        unresolved: resolution.unresolved,
+        stopped,
+        uncovered: resolution.uncovered,
+        added,
+    })
 }
 
 #[cfg(test)]
@@ -1019,6 +1322,39 @@ mod tests {
             "no section-only rows"
         );
         assert!(!p.rules.iter().any(|r| r.body.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn sections_with_rules_keep_their_title_and_part() -> R {
+        let p = parsed()?;
+        let got: Vec<(&str, &str, &str)> = p
+            .sections
+            .iter()
+            .map(|s| (s.id.as_str(), s.title.as_str(), s.part.as_str()))
+            .collect();
+        // The table of contents lists every section and part; only those a
+        // rule was read under are kept, each under the part it sits in.
+        assert_eq!(
+            got,
+            vec![
+                ("100", "General", "Game Concepts"),
+                (
+                    "613",
+                    "Interaction of Continuous Effects",
+                    "Spells, Abilities, and Effects"
+                ),
+                ("702", "Keyword Abilities", "Additional Rules"),
+                ("707", "Copying Objects", "Additional Rules"),
+            ]
+        );
+        // A glossary definition numbered `1. …` is not a part.
+        assert!(
+            p.glossary
+                .iter()
+                .any(|g| g.text.lines().any(|l| l.starts_with("1. "))),
+            "the fixture has a numbered glossary definition"
+        );
         Ok(())
     }
 
@@ -1310,6 +1646,7 @@ mod tests {
             cr_version: version.clone(),
             rules: Vec::new(),
             glossary: old.glossary.clone(),
+            sections: old.sections.clone(),
         };
         for r in &old.rules {
             let mut r = r.clone();
@@ -1371,6 +1708,193 @@ mod tests {
         // A re-parse of the same release computes no map and rewrites nothing.
         store(&pool, &new).await?;
         assert_eq!(row(live).await?.0, cite("702.20b", &moved_quote));
+        Ok(())
+    }
+
+    /// `categories.subsections` and `.unresolved` for `id`.
+    async fn category(pool: &PgPool, id: &str) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        Ok(sqlx::query_as::<_, (Vec<String>, Vec<String>)>(
+            "SELECT subsections, unresolved FROM categories WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// `parsed` as a later release: every id of section `from` moved to `to`
+    /// (cross-references left alone; these tests read the taxonomy, not calls).
+    fn renumbered(old: &ParsedCr, version: &str, from: &str, to: &str) -> anyhow::Result<ParsedCr> {
+        let version = CrVersion::try_new(version.to_owned()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let moved = |id: &str| match id.strip_prefix(from) {
+            Some(rest) => format!("{to}{rest}"),
+            None => id.to_owned(),
+        };
+        let mut new = old.clone();
+        new.cr_version = version.clone();
+        for r in &mut new.rules {
+            r.id = rule_id(&moved(r.id.as_ref()))?;
+            r.parent_id = r
+                .parent_id
+                .as_ref()
+                .map(|p| rule_id(&moved(p.as_ref())))
+                .transpose()?;
+            r.subsection = rule_id(&moved(r.subsection.as_ref()))?;
+            r.body = r.body.replace(&format!("{from}."), &format!("{to}."));
+            r.cr_version = version.clone();
+        }
+        for s in &mut new.sections {
+            s.id = moved(&s.id);
+        }
+        Ok(new)
+    }
+
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn the_taxonomy_follows_titles_and_reports_once(pool: PgPool) -> R {
+        let old = parsed()?;
+        let first = store(&pool, &old).await?;
+
+        // The fixture has four sections: an entry naming one of them resolves
+        // to its number, and the rest of a category's entries are reported
+        // while the category keeps what resolved.
+        assert_eq!(
+            category(&pool, "layers").await?,
+            (vec!["613".to_owned()], vec![])
+        );
+        assert_eq!(
+            category(&pool, "copying").await?,
+            (vec!["707".to_owned()], vec!["Tokens".to_owned()])
+        );
+        // The fixture's 702 has Trample alone: the section is there and the
+        // rules named inside it are not.
+        assert_eq!(
+            category(&pool, "keyword_abilities").await?,
+            (
+                vec![],
+                vec![
+                    "Keyword Abilities > .1".to_owned(),
+                    "Keyword Abilities > Deathtouch".to_owned()
+                ]
+            )
+        );
+        let (subsections, unresolved) = category(&pool, "format_legality").await?;
+        assert_eq!(subsections, vec!["100"]);
+        assert_eq!(unresolved, vec!["Commander > .5"]);
+
+        // Everything unresolved is news the first time, and no section is
+        // "added": nothing was stored before.
+        assert!(!first.unresolved.is_empty());
+        assert_eq!(first.stopped, first.unresolved);
+        assert!(first.added.is_empty(), "{:?}", first.added);
+        let uncovered = |t: &Taxonomy| {
+            t.uncovered
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(uncovered(&first), vec!["702 Keyword Abilities"]);
+
+        // The same release again: the same entries are unresolved, none newly.
+        let again = store(&pool, &old).await?;
+        assert_eq!(again.unresolved, first.unresolved);
+        assert!(again.stopped.is_empty(), "{:?}", again.stopped);
+
+        // The next release inserts a section at 613, moving the layers to 614,
+        // and retitles Copying Objects.
+        let mut new = renumbered(&old, "20260919", "613", "614")?;
+        new.sections.push(Section {
+            id: "613".into(),
+            title: "Brand New Cards".into(),
+            part: "Spells, Abilities, and Effects".into(),
+        });
+        new.rules.push(RuleChunk {
+            id: rule_id("613.1")?,
+            parent_id: None,
+            subsection: rule_id("613")?,
+            heading: "Brand New Cards".into(),
+            body: "613.1. A card layout that did not exist before.".into(),
+            examples: vec![],
+            cr_version: new.cr_version.clone(),
+        });
+        for s in &mut new.sections {
+            if s.title == "Copying Objects" {
+                s.title = "Copies".into();
+            }
+        }
+        let next = store(&pool, &new).await?;
+
+        // The title follows its section; the number it had is another section's.
+        assert_eq!(
+            category(&pool, "layers").await?,
+            (vec!["614".to_owned()], vec![])
+        );
+        // The retitled section stops resolving: left out, never pointed elsewhere.
+        assert_eq!(
+            category(&pool, "copying").await?,
+            (
+                vec![],
+                vec!["Copying Objects".to_owned(), "Tokens".to_owned()]
+            )
+        );
+        let stopped: Vec<String> = next.stopped.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            stopped,
+            vec!["copying: Copying Objects (no section has this title)"]
+        );
+        // The inserted section and the retitled one are sections the release
+        // added that no category names.
+        let added: Vec<String> = next.added.iter().map(ToString::to_string).collect();
+        assert_eq!(added, vec!["613 Brand New Cards", "707 Copies"]);
+        assert_eq!(
+            uncovered(&next),
+            vec!["613 Brand New Cards", "702 Keyword Abilities", "707 Copies"]
+        );
+
+        // The record reads back, and one written before this field existed
+        // reads as nothing to report.
+        let outcome = Outcome::Updated {
+            version: "20260919".into(),
+            url: "https://example.test/cr.txt".into(),
+            taxonomy: next.clone(),
+        };
+        let json = serde_json::to_value(&outcome)?;
+        assert_eq!(serde_json::from_value::<Outcome>(json)?, outcome);
+        let older: Outcome =
+            serde_json::from_value(serde_json::json!({"cr": "unchanged", "version": "20260819"}))?;
+        assert_eq!(older.taxonomy(), &Taxonomy::default());
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "../bot/migrations")]
+    async fn a_release_with_no_section_titles_changes_nothing(pool: PgPool) -> R {
+        let old = parsed()?;
+        store(&pool, &old).await?;
+        let before = category(&pool, "layers").await?;
+
+        let mut untitled = renumbered(&old, "20260919", "613", "614")?;
+        untitled.sections.clear();
+        let Err(e) = store(&pool, &untitled).await else {
+            anyhow::bail!("a release with no section titles was stored");
+        };
+        assert!(format!("{e:#}").contains("no section titles"), "{e:#}");
+        // Neither the rules nor the categories moved.
+        assert_eq!(category(&pool, "layers").await?, before);
+        let stored: Option<String> = sqlx::query_scalar("SELECT max(cr_version) FROM rules")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(stored.as_deref(), Some("20260819"));
+
+        // A database migrated from a release that kept no titles: the write
+        // refuses rather than emptying every category.
+        sqlx::query("DELETE FROM rule_sections")
+            .execute(&pool)
+            .await?;
+        let mut tx = pool.begin().await?;
+        let Err(e) = sync_categories(&mut tx, &[]).await else {
+            anyhow::bail!("the categories were written with no titles to look up");
+        };
+        assert!(format!("{e:#}").contains("no section titles"), "{e:#}");
+        drop(tx);
+        assert_eq!(category(&pool, "layers").await?, before);
         Ok(())
     }
 }

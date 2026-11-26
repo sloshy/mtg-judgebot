@@ -44,7 +44,14 @@ mod tests {
     fn parses_known_ids_and_roundtrips() -> Result<(), UnknownCategory> {
         let layers: Category = "layers".parse()?;
         assert_eq!(layers, Category::Layers);
-        assert_eq!(layers.subsections(), &["613"]);
+        assert_eq!(
+            layers
+                .sections()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["Interaction of Continuous Effects"]
+        );
         for c in Category::ALL {
             assert_eq!(c.id().parse::<Category>()?, *c);
             assert_eq!(c.to_string(), c.id());
@@ -68,17 +75,5 @@ mod tests {
         assert_eq!(back, Category::ReplacementEffects);
         assert!(serde_json::from_str::<Category>("\"nope\"").is_err());
         Ok(())
-    }
-
-    #[test]
-    fn subsection_ids_are_valid_rule_ids() {
-        for c in Category::ALL {
-            for s in c.subsections() {
-                assert!(
-                    crate::RuleId::try_new((*s).to_owned()).is_ok(),
-                    "{c}: bad subsection {s}"
-                );
-            }
-        }
     }
 }

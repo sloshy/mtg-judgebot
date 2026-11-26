@@ -349,7 +349,7 @@ impl Job {
         match self {
             Self::Cards => scryfall::run(lease, cache_dir).await,
             Self::RulesLatest => cr::run_latest(lease, cache_dir).await.map(drop),
-            Self::Rules(source) => cr::run(lease, &source, cache_dir).await,
+            Self::Rules(source) => cr::run(lease, &source, cache_dir).await.map(drop),
             Self::Aliases(text) => aliases::run(lease, &text).await.map(drop),
             Self::Notes(text) => notes::run(lease, &text).await.map(drop),
             Self::Embed(embedder) => embed::run(lease, embedder.as_deref()).await.map(drop),

@@ -56,6 +56,37 @@ time. Editing it means a recompile, and every `match` over the enum has to be up
 The extractor must return a first (primary) category. An empty classification fails the
 model's output schema. The primary category's sections lead the retrieved material.
 
+### Sections
+
+A category names its CR text by title, never by number. A CR release that inserts a
+section moves every later number, and the titles stay. The numbers are looked up in the
+loaded CR at each CR load and each refresh. An entry of `sections` is one of:
+
+| Entry | Names |
+| --- | --- |
+| `Split Cards` | A whole section. |
+| `{ part: Zones, section: General }` | A section whose title several parts use. `General` is the first section of every part. |
+| `{ section: Keyword Abilities, rule: Lifelink }` | One rule, by its title. |
+| `{ section: Commander, number: "5" }` | One rule or sub-rule that has no title, by its number inside the section. Quote it. |
+
+The build rejects a rule number written where a title belongs. Whether a title exists is
+known only where a CR is loaded, so that is checked by the load:
+
+- An entry that names nothing is left out of its category. The load that first finds it
+  logs it at WARN, and every refresh lists it at INFO. The category's other entries
+  still apply.
+- A section a new release adds that no category names is logged at WARN. Whether a
+  category should include it is a decision for this file.
+- The scheduled refresh sends both to `JUDGE_ALERT_WEBHOOK`, at most once each.
+
+A numbered entry (`number: "5"`) is checked only for existing. A release that inserts a
+rule before it inside its section moves it without a report, so prefer a title wherever
+the rule has one.
+
+After editing the file, run `judgebot ingest rules latest` against a loaded database and
+read its log: `taxonomy entries that name nothing in the loaded CR` lists every entry
+that did not resolve.
+
 ## `eval/gold.yaml`: the gold set
 
 Rules questions, adversarially verified except one, whose reference answer is a human

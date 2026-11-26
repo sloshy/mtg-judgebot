@@ -105,8 +105,10 @@ impl PgRetriever {
             let wanted: Vec<String> = if let Some(r) = rows.iter().find(|r| r.id == c.id()) {
                 r.subsections.clone()
             } else {
-                tracing::warn!(category = %c, "no categories row; using the compiled subsection list");
-                c.subsections().iter().map(|s| (*s).to_owned()).collect()
+                // The compiled taxonomy names titles, and the numbers they
+                // stand for are known only to the load that wrote this table.
+                tracing::warn!(category = %c, "no categories row, so none of its curated sections; the next refresh writes it");
+                Vec::new()
             };
             let (subsections, exact) = rules::partition_ids(&wanted);
             sources.push(

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM rule_sections WHERE cr_version = $1) AS \"titled!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "titled!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fdd50339bdfc9d2c61251a4ed4b2063df03599c08f1377e05951c69f666897f2"
+}

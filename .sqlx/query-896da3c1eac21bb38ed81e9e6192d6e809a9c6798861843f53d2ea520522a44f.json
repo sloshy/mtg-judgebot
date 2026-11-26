@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, unresolved FROM categories",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "categories",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "unresolved",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "categories",
+            "name": "unresolved"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "896da3c1eac21bb38ed81e9e6192d6e809a9c6798861843f53d2ea520522a44f"
+}

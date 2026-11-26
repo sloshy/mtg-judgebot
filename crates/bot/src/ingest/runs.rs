@@ -1048,6 +1048,7 @@ mod tests {
                 summary: cr::Outcome::Updated {
                     version: "20260819".into(),
                     url: "https://example.test/cr.txt".into(),
+                    taxonomy: cr::Taxonomy::default(),
                 },
             }),
             StepReport::Lists(Outcome::Ok {

@@ -30,6 +30,16 @@ instead.
   retires the stored answers it contradicts at the next refresh. The HTTP API's citation
   `kind` gains `legality`. Deck construction beyond a card's status is still tournament
   policy and not answered. No migration and no new data load.
+- **The question taxonomy follows the Comprehensive Rules' titles.** Each category's
+  always-included sections are named by title, and their numbers are looked up in the
+  loaded CR, so a release that renumbers sections no longer points a category at the
+  wrong text. The load reports an entry that stops matching any title, and a section a
+  new release adds that no category includes: in the log, in the refresh's record and,
+  from the scheduled refresh, to `JUDGE_ALERT_WEBHOOK`, at most once each. One migration (a
+  `rule_sections` table and a `categories.unresolved` column). The first refresh after
+  the upgrade loads the stored CR again to record its titles, which costs no embedding.
+  No category's sections change. A 2.0 build started afterwards leaves them alone: its
+  refresh does not write into a schema it does not know.
 
 ### Fixed
 

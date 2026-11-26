@@ -1245,6 +1245,12 @@ With `JUDGE_ALERT_WEBHOOK` set, a scheduled run posts there:
   hand. A run after one that skipped too is not reposted.
 - a check that crashed (a panic), once until a run succeeds.
 - a run that never finished (its process died), once per streak of failures.
+- an entry of the question taxonomy that stopped matching any title in the loaded
+  Comprehensive Rules, and a section a new release added that no category includes
+  (D46), at most once each. Neither needs anything from the operator: both are fixed in
+  `data/categories.yaml`, in a judgebot release. Until then a question in that category
+  is answered without that section in its curated material, and search can still find
+  it.
 
 **The spend guard.** A scheduled run never pays for a mass re-embed. A manual or cron
 `judgebot ingest refresh` (`scripts/refresh-data.sh`) has no such ceiling: whoever installed

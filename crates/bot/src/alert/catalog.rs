@@ -153,6 +153,12 @@ pub struct Messages {
     pub embed_ceiling: fn(&str, u64, u64) -> String,
     /// The refresh check panicked, given the process.
     pub refresh_panicked: fn(&str) -> String,
+    /// Entries of the question taxonomy that stopped naming anything in the
+    /// loaded CR: the process and the entries (`category: Section Title`).
+    pub taxonomy_stopped: fn(&str, &[String]) -> String,
+    /// Sections a new CR release added that no category names: the process
+    /// and the sections (`713 Meld Cards`).
+    pub taxonomy_added: fn(&str, &[String]) -> String,
     /// A backup succeeded after a failure: its name and size in MB.
     pub backup_recovered: fn(&str, u64) -> String,
     /// The bucket can be listed again, and no backup is due.
@@ -189,6 +195,24 @@ pub const fn messages(locale: Locale) -> &'static Messages {
 
 /// The variable a [`Delivery`] alert names.
 const INTERACTIONS_ENV: &str = crate::discord::Delivery::ENV;
+
+/// The most items an alert lists by name: a webhook's message has a length
+/// limit, and the log has every one.
+const MOST_LISTED: usize = 8;
+
+/// `a; b; c`, and how many more past [`MOST_LISTED`].
+fn en_listed(items: &[String]) -> String {
+    let shown = items
+        .iter()
+        .take(MOST_LISTED)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("; ");
+    match items.len().saturating_sub(MOST_LISTED) {
+        0 => shown,
+        more => format!("{shown}; and {more} more (the log has them all)"),
+    }
+}
 
 /// English.
 pub const EN: Messages = Messages {
@@ -275,6 +299,32 @@ resume{}.",
             "judgebot `{process}`: the scheduled data refresh check crashed (a panic, recorded in the \
              log). It is tried again at every check. You will not be told again until a refresh \
              succeeds."
+        )
+    },
+    taxonomy_stopped: |process, entries| {
+        let (count, noun) = match entries.len() {
+            1 => ("one".to_owned(), "entry"),
+            n => (n.to_string(), "entries"),
+        };
+        format!(
+            "judgebot `{process}`: the Comprehensive Rules now loaded have nothing for {count} \
+             {noun} of the question taxonomy: {}. A question in that category is answered \
+             without that text in its curated material; search can still find it. The fix is \
+             a judgebot release whose `data/categories.yaml` names the current titles. You \
+             will not be told about the same {noun} again.",
+            en_listed(entries)
+        )
+    },
+    taxonomy_added: |process, sections| {
+        let what = match sections.len() {
+            1 => "a section that no question category includes".to_owned(),
+            n => format!("{n} sections that no question category includes"),
+        };
+        format!(
+            "judgebot `{process}`: the Comprehensive Rules just loaded add {what}: {}. Search \
+             can still find the rules there. Whether a category should always include one is \
+             decided in `data/categories.yaml`, in a judgebot release.",
+            en_listed(sections)
         )
     },
     backup_recovered: |name, mb| {
@@ -411,6 +461,12 @@ pub const STUB: Messages = Messages {
     },
     embed_ceiling: |process, rows, ceiling| format!("⟦embed_ceiling {process} {rows} {ceiling}⟧"),
     refresh_panicked: |process| format!("⟦refresh_panicked {process}⟧"),
+    taxonomy_stopped: |process, entries| {
+        format!("⟦taxonomy_stopped {process} {}⟧", entries.join(","))
+    },
+    taxonomy_added: |process, sections| {
+        format!("⟦taxonomy_added {process} {}⟧", sections.join(","))
+    },
     backup_recovered: |name, mb| format!("⟦backup_recovered {name} {mb}⟧"),
     backup_listed: "⟦backup_listed⟧",
     backup_failed: |f| {
@@ -438,6 +494,19 @@ pub const STUB: Messages = Messages {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_long_list_is_cut_and_says_how_many_more() {
+        let sections: Vec<String> = (0..11).map(|n| format!("7{n:02} Cards")).collect();
+        let text = (EN.taxonomy_added)("bot", &sections);
+        assert!(text.contains("707 Cards; and 3 more"), "{text}");
+        assert!(!text.contains("708 Cards"), "{text}");
+        let one = (EN.taxonomy_stopped)("bot", &["copying: Tokens".to_owned()]);
+        assert!(
+            one.contains("nothing for one entry of the question taxonomy: copying: Tokens."),
+            "{one}"
+        );
+    }
+
     /// Every locale renders every message.
     #[test]
     fn every_locale_renders_every_message() {
@@ -464,6 +533,8 @@ mod tests {
                 ),
                 (m.embed_ceiling)("judgebot", 900, 800),
                 (m.refresh_panicked)("judgebot"),
+                (m.taxonomy_stopped)("judgebot", &["copying: Tokens".to_owned()]),
+                (m.taxonomy_added)("judgebot", &["713 Meld Cards".to_owned()]),
                 (m.backup_recovered)("judgebot-x.dump.gz", 12),
                 m.backup_listed.to_owned(),
                 (m.backup_failed)(&BackupFailure {

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM rule_sections",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "223f12d5d16f6d1acba337a5d455da5915cc5efb2a91a5d0b9a0ca6b82b6859a"
+}

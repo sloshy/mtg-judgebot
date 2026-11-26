@@ -135,10 +135,11 @@ const AFTER_DROP: Duration = Duration::from_secs(30);
 /// statement within seconds rather than at [`STATEMENT_TIMEOUT`], and
 /// frees `CALLS_REWRITE_LOCK` for the answers still draining.
 pub const CLIENT_CHECK_INTERVAL: &str = "2s";
-/// The most texts one check posts to the webhook: that the run before never
-/// finished, this run's failure or recovery, and an embedding skipped at the
-/// ceiling ([`alerts`]; a panicking check posts one).
-const MOST_ALERTS: u32 = 3;
+/// The most texts one check posts to the webhook: the two findings about the
+/// question taxonomy, that the run before never finished, this run's failure
+/// or recovery, and an embedding skipped at the ceiling ([`alerts`]; a
+/// panicking check posts one).
+const MOST_ALERTS: u32 = 5;
 /// How long the scheduler's runtime waits for a blocking task (a DNS lookup)
 /// as the thread ends.
 const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(1);
@@ -315,12 +316,18 @@ pub fn with_unrecorded(mut history: RunHistory, since: Option<Duration>) -> RunH
 ///   there was none), saying so when the run timed out;
 /// * a recovery only when it did (that run may have been cron's, so the text
 ///   does not say whose);
-/// * a skipped embedding only when the previous run did not skip it too.
+/// * a skipped embedding only when the previous run did not skip it too;
+/// * what the `rules` step found of the question taxonomy
+///   ([`crate::ingest::cr::Taxonomy`]): entries that stopped naming anything in the loaded
+///   CR, and sections a new release added that no category names. The step
+///   reports each once, in the transaction that wrote it, so these are told
+///   whatever became of the run: no later run would find them again.
 ///
-/// A run that stopped (the schema is not its binary's, or its process shut
-/// down) is news to nobody: it alerts nothing, not even about the record
-/// before it, which the next run with a verdict tells. The texts name steps and
-/// counts, never an error message: those can carry URLs, and the log has them.
+/// Apart from the taxonomy, a run that stopped (the schema is not its
+/// binary's, or its process shut down) is news to nobody: it alerts nothing,
+/// not even about the record before it, which the next run with a verdict
+/// tells. The texts name steps, counts and CR titles, never an error message:
+/// those can carry URLs, and the log has them.
 #[must_use]
 pub fn alerts(
     locale: Locale,
@@ -330,6 +337,24 @@ pub fn alerts(
 ) -> Vec<String> {
     let m = alert::catalog::messages(locale);
     let mut out = Vec::new();
+    for step in &report.steps {
+        if let StepReport::Rules(Outcome::Ok { summary }) = step {
+            let taxonomy = summary.taxonomy();
+            if !taxonomy.stopped.is_empty() {
+                let entries: Vec<String> = taxonomy
+                    .stopped
+                    .iter()
+                    .map(|u| format!("{}: {}", u.category, u.reference))
+                    .collect();
+                out.push((m.taxonomy_stopped)(process, &entries));
+            }
+            if !taxonomy.added.is_empty() {
+                let sections: Vec<String> =
+                    taxonomy.added.iter().map(ToString::to_string).collect();
+                out.push((m.taxonomy_added)(process, &sections));
+            }
+        }
+    }
     if report.outcome() == RunOutcome::Stopped {
         // The next run with a verdict tells what this one would have.
         return out;
@@ -1415,6 +1440,72 @@ mod tests {
                 assert!(alerts(Locale::En, "bot", &previous, &stopped).is_empty());
             }
         }
+    }
+
+    /// What the `rules` step found of the taxonomy is told by the run that
+    /// found it, a stopped one included: the step reports each finding once.
+    #[test]
+    fn taxonomy_findings_are_told_by_the_run_that_made_them() {
+        use judge_core::taxonomy::{Missing, Section, Unresolved};
+
+        use crate::ingest::cr;
+
+        let taxonomy = cr::Taxonomy {
+            unresolved: Vec::new(),
+            stopped: vec![Unresolved {
+                category: "copying".into(),
+                reference: "Copying Objects".into(),
+                reason: Missing::NoSection,
+            }],
+            uncovered: Vec::new(),
+            added: vec![Section {
+                id: "713".into(),
+                title: "Meld Cards".into(),
+                part: "Additional Rules".into(),
+            }],
+        };
+        let rules = |taxonomy: cr::Taxonomy| {
+            StepReport::Rules(Outcome::Ok {
+                summary: cr::Outcome::Updated {
+                    version: "20261106".into(),
+                    url: "https://example.test/cr.txt".into(),
+                    taxonomy,
+                },
+            })
+        };
+        let told = alerts(
+            Locale::Stub,
+            "bot",
+            &RunHistory::default(),
+            &RunReport::of(vec![rules(taxonomy.clone())]),
+        );
+        assert_eq!(
+            told,
+            vec![
+                "⟦taxonomy_stopped bot copying: Copying Objects⟧".to_owned(),
+                "⟦taxonomy_added bot 713 Meld Cards⟧".to_owned(),
+            ]
+        );
+
+        // The rules step committed, then the process shut down.
+        let mut steps = vec![rules(taxonomy.clone())];
+        steps.extend(Step::ALL.iter().skip(2).map(|s| s.skipped(Skip::Shutdown)));
+        let stopped = RunReport::of(steps);
+        assert_eq!(stopped.outcome(), RunOutcome::Stopped);
+        assert_eq!(
+            alerts(Locale::En, "bot", &RunHistory::default(), &stopped).len(),
+            2
+        );
+
+        // Entries still unresolved, and sections still uncovered, are not news.
+        let standing = cr::Taxonomy {
+            unresolved: taxonomy.stopped.clone(),
+            uncovered: taxonomy.added,
+            ..cr::Taxonomy::default()
+        };
+        let quiet = RunReport::of(vec![rules(standing)]);
+        assert!(alerts(Locale::En, "bot", &RunHistory::default(), &quiet).is_empty());
+        assert!(usize::try_from(MOST_ALERTS).is_ok_and(|most| most >= 5));
     }
 
     /// A run a shutdown stopped is no attempt: the next check finds the

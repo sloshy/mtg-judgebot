@@ -29,7 +29,8 @@ offline data in `.sqlx/`).
 | --- | --- |
 | `rules` | Two levels of row. Rule-level rows (`702.19`) have a body that includes the lettered sub-rules and examples. They carry embeddings and feed retrieval. Leaf rows (`702.19b`, `parent_id` set) are what answers cite. Each load records a `cr_version`. |
 | `glossary` | Glossary entries, embedded. |
-| `categories` | The taxonomy from `data/categories.yaml` with each category's CR sections. |
+| `rule_sections` | The loaded CR's sections: number, title and the title of the part each is in. Replaced with each release. |
+| `categories` | The taxonomy from `data/categories.yaml`. `subsections` holds the rule numbers each category's titles have in the loaded CR, and `unresolved` the entries that name nothing in it. |
 
 A new CR release re-embeds only rules whose text changed. When rules are renumbered,
 stored calls keep their citations. Inside the load transaction, old and new rules are

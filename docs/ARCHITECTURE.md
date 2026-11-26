@@ -23,7 +23,8 @@ from that:
 - **Card names are entities** → extraction + lookup, not embeddings.
 - **CR is a numbered hierarchy** → chunk at the *rule* level (e.g. `702.19` with
   all lettered sub-rules and `Example:` lines), keep parent links, and map
-  question categories to whole subsections (e.g. `613`, `614`).
+  question categories to whole sections, named by title and looked up in the loaded CR
+  (`Interaction of Continuous Effects` is `613`; D46).
 - **Scryfall rulings are keyed by card** → fetch directly once cards resolve.
 - **Three retrieval sources** for the fuzzy part: category map (structured),
   BM25/full-text (keywords like "leaves the battlefield"), vector (semantic).
@@ -643,7 +644,8 @@ pictures, from one set of names:
 | Nicknames | hand-curated YAML, compiled in; the refresh reloads a built-in copy an upgrade changed | `card_aliases` (alias, oracle_id) |
 | Nightmare notes | hand-written markdown, likewise | `card_notes` (oracle_id, note) |
 | Curated list sources | written by each alias or note load, in its transaction | `curated_lists` (list, source `builtin`/`file`, digest, loaded_at): the refresh's `lists` step reloads only a `builtin` list whose digest is not the binary's (`judge_bot::ingest::lists`) |
-| Categories → subsections | YAML (single source of truth; the enum is generated from it) | `categories` |
+| CR section titles | with each CR load | `rule_sections` (id, title, part, cr_version): what the taxonomy's titles are looked up in |
+| Categories → sections | YAML (single source of truth; the enum is generated from it), naming sections by title; the numbers are looked up at each CR load and each refresh (D46) | `categories` (id, label, subsections — the rule numbers resolved —, unresolved — the entries that name nothing in the loaded CR) |
 | Calls | continuous; `retired_at`/`retired_reason` recomputed on each refresh from citation validity; deleted with their ratings past `JUDGE_CALL_RETENTION_DAYS` by the refresh's `prune` step (D34) | `calls` (id, thread_id, interface, asker_id, asker_name, private, locale, question, answer, category, citations jsonb, source, cr_version, retired_at, retired_reason, embedding, unreleased_cards — the cards its reply noted as unreleased, D42; a private call has no embedding) |
 | Failed calls | on each operator failure; pruned to 30 days / 500 rows on write | `failed_calls` (thread_id, interface, asker_id, asker_name, private, question, error, first_rejection, attempts) |
 | Judge runs | one row per built-in pipeline run, any outcome (D33) | `judge_runs` (started_at, finished_at, interface, private, outcome, retried, tool_round, call_id, failed_call_id) + `judge_run_charges` (run_id, seq, stage, provider, model, tokens, micro_usd, cost_estimated) |

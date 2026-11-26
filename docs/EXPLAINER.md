@@ -220,7 +220,8 @@ columns and indexes) and `pg_trgm` (trigram similarity). Migrations are in
 | `card_aliases` | `data/aliases.yaml` | when the built-in copy changes, detected daily | nicknames |
 | `card_notes` | `data/notes.yaml` | when the built-in copy changes, detected daily | nightmare cards |
 | `curated_lists` | each alias or note load | with the list | where each list came from (built-in or a file), and its digest |
-| `categories` | `data/categories.yaml`, via the compiled enum | with each CR load | category → CR subsections |
+| `rule_sections` | the CR `.txt` from Wizards | with each CR load | each section's title and part |
+| `categories` | `data/categories.yaml`, via the compiled enum | with each CR load and each refresh | category → CR sections, named by title in the file and stored as the numbers they have in the loaded CR |
 | `calls`, `ratings` | every interface | continuous | answers and their votes |
 | `embedding_space` | `ingest embed` | on switch | one row: which embedding model the vectors came from |
 | `agent_sessions` | the agent surface | continuous | state for the step-by-step agent mode |

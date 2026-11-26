@@ -221,6 +221,8 @@ Credits
 
 100.7. Certain cards are intended for casual play and may have features and text that aren’t covered by these rules. These include Mystery Booster playtest cards, promotional cards and cards in “Un-sets” that were printed with a silver border, and cards in the Unfinity™ expansion that have an acorn symbol at the bottom of the card.
 
+6. Spells, Abilities, and Effects
+
 613. Interaction of Continuous Effects
 
 613.1. The values of an object’s characteristics are determined by starting with the actual object. For a card, that means the values of the characteristics printed on that card. For a token or a copy of a spell or card, that means the values of the characteristics defined by the effect that created it. Then all applicable continuous effects are applied in a series of layers in the following order:
@@ -316,6 +318,8 @@ Example: One effect reads, “White creatures get +1/+1,” and another reads, �
 613.10. Some continuous effects affect players rather than objects. For example, an effect might give a player protection from red. All such effects are applied in timestamp order after the determination of objects’ characteristics. See also the rules for timestamp order and dependency (rules 613.7 and 613.8).
 
 613.11. Some continuous effects affect game rules rather than objects. For example, effects may modify a player’s maximum hand size, or say that a creature must attack this turn if able. These effects are applied after all other continuous effects have been applied. Continuous effects that affect the costs of spells or abilities are applied according to the order specified in rule 601.2f. All other such effects are applied in timestamp order. See also the rules for timestamp order and dependency (rules 613.7 and 613.8).
+
+7. Additional Rules
 
 702. Keyword Abilities
 

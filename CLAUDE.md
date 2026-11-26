@@ -27,7 +27,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   `JUDGE_SPEND_WARN_AT` (percentages of the cap, unset by default) warns before it, once
   per threshold per period, claimed in `spend_warnings` so one process sends each.
   `JUDGE_ALERT_WEBHOOK` is told when the cap trips or a warning is due, when the scheduled refresh fails (once
-  per streak), recovers or hits its embed ceiling, when a script fails
+  per streak), recovers or hits its embed ceiling, when the taxonomy stops matching the
+  loaded CR or a release adds a section no category names (D46), when a script fails
   (`scripts/alert.sh`), and when the Discord role finds `DISCORD_INTERACTIONS` and the
   application's Interactions Endpoint URL disagree, or refuses a signed interaction for
   its timestamp (once per streak; a wrong host clock refuses them all). Alerts are written
@@ -69,7 +70,7 @@ short versions of the model, web and API material and links to those pages.
 `npm --prefix site run build` runs the sync first. `publish-docs.yml` deploys `site/dist`
 to GitHub Pages on pushes touching the sources.
 
-`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D45),
+`docs/` holds five files: `ARCHITECTURE.md` (what exists), `DECISIONS.md` (why, D1–D46),
 `PROVIDERS.md` (the model-provider reference), `DEPLOYMENT.md`, `EXPLAINER.md`. Retired
 proposals live in git history only.
 
@@ -913,6 +914,30 @@ Key cross-file facts that aren't obvious from any one file:
   `crates/core/build.rs` generates the `Category` enum from it, so taxonomy edits are
   recompiles and matches stay exhaustive. The extractor's schema makes the primary
   category a required field, so an empty classification is an API-level schema violation.
+  - **A category names CR sections by title, never by number** (D46,
+    `judge_core::taxonomy`): `Split Cards`, `{ part: Zones, section: General }` (the
+    title every part's first section has), `{ section: Keyword Abilities, rule: Lifelink }`,
+    `{ section: Commander, number: "5" }` for a rule with no title. `build.rs` rejects a
+    number where a title belongs.
+  - The CR load stores each section's title and part in `rule_sections` and
+    `sync_categories` (`ingest/cr.rs`) writes `categories.subsections` (the numbers the
+    retriever reads) from `Outline::resolve_taxonomy`, in the load's transaction and again
+    at every refresh that finds the CR unchanged. With no titles stored it refuses and
+    the table keeps what it had; `run_latest` loads the stored release again when
+    `rule_sections` has no row for it (a database loaded before the table existed).
+  - An entry that names nothing (or a title two sections share) is left out, never
+    pointed elsewhere, and kept in `categories.unresolved`. A `number` entry is the
+    exception: it is checked only for existing, so a rule inserted before it inside its
+    section moves it unreported. `cr::Taxonomy` (in
+    `cr::Outcome`, so in the run's record) carries `unresolved`, `stopped` (those not
+    already in that column), `uncovered` (sections no category names, listed by a run
+    that loaded a release) and `added` (uncovered sections whose title the previous
+    release did not have). `stopped` and `added` are WARNs and `jobs::alerts` sends
+    them (`taxonomy_stopped`, `taxonomy_added`) even from a stopped run: the step
+    reports each once, so a process that dies before its run ends, or a manual run,
+    leaves only the WARN. `MOST_ALERTS` is 5 for that reason.
+  - No test checks the real titles (CI has no CR). After a taxonomy edit, run `judgebot
+    ingest rules <file>` against a scratch database and read `categories.unresolved`.
 - **Gold eval set** (`eval/gold.yaml`): 26 questions (21 adversarially verified, one a
   human correction of a reported wrong answer, two about invented unreleased cards: `fixture_cards`
   resolved by `eval::fixtures`, never in the database, and `unreleased: [card]`, checked by

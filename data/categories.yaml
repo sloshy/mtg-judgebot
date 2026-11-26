@@ -2,95 +2,193 @@
 # `crates/core/build.rs` generates `judge_core::Category` from this file.
 # id: stable snake_case identifier (becomes the enum variant and the serde name)
 # label: human-readable name
-# subsections: CR sections/subsections that are always injected into Context
+# sections: the Comprehensive Rules text always included in the material for a
+#   question in the category, named by title (judge_core::taxonomy). The rule
+#   numbers are looked up in the loaded CR, so a release that renumbers changes
+#   nothing here, and a title that stops matching is reported by the load
+#   (docs/DECISIONS.md D46). An entry is one of:
+#     - Split Cards                                      a whole section
+#     - { part: Zones, section: General }                a title several parts use
+#     - { section: Keyword Abilities, rule: Lifelink }   one rule, by its title
+#     - { section: Commander, number: "5" }              one rule or sub-rule that
+#                                                        has no title, quoted
 categories:
   - id: game_concepts
     label: General game concepts (winning, losing, mana, numbers)
-    subsections: ["100", "101", "104", "106", "107", "108"]
+    sections:
+      - { part: Game Concepts, section: General }
+      - The Magic Golden Rules
+      - Ending the Game
+      - Mana
+      - Numbers and Symbols
+      - Cards
   - id: card_types_and_characteristics
     label: Card characteristics, names, types, supertypes, subtypes
-    subsections: ["201", "202", "204", "205", "208", "305"]
+    sections:
+      - Name
+      - Mana Cost and Color
+      - Color Indicator
+      - Type Line
+      - Power/Toughness
+      - Lands
   - id: colors_and_color_identity
     label: Colors, colorless, color indicator, color identity
-    subsections: ["105", "202", "903.4"]
+    sections:
+      - Colors
+      - Mana Cost and Color
+      - { section: Commander, number: "4" }
   - id: zones
     label: Zones (library, hand, battlefield, graveyard, exile, command, stack)
-    subsections: ["400", "401", "403", "404", "405", "406", "408"]
+    sections:
+      - { part: Zones, section: General }
+      - Library
+      - Battlefield
+      - Graveyard
+      - Stack
+      - Exile
+      - Command
   - id: turn_structure
     label: Turn structure, phases and steps
-    subsections: ["500", "501", "502", "503", "504", "505", "506", "507", "508", "509", "510", "511", "512", "513", "514"]
+    sections:
+      - { part: Turn Structure, section: General }
+      - Beginning Phase
+      - Untap Step
+      - Upkeep Step
+      - Draw Step
+      - Main Phase
+      - Combat Phase
+      - Beginning of Combat Step
+      - Declare Attackers Step
+      - Declare Blockers Step
+      - Combat Damage Step
+      - End of Combat Step
+      - Ending Phase
+      - End Step
+      - Cleanup Step
   - id: combat
     label: "Combat: attacking, blocking, damage assignment"
-    subsections: ["506", "507", "508", "509", "510", "511"]
+    sections:
+      - Combat Phase
+      - Beginning of Combat Step
+      - Declare Attackers Step
+      - Declare Blockers Step
+      - Combat Damage Step
+      - End of Combat Step
   - id: casting_spells
     label: Casting spells, costs, additional and alternative costs
-    subsections: ["601", "118", "601.2"]
+    sections:
+      - Casting Spells
+      - Costs
+      - { section: Casting Spells, number: "2" }
   - id: activated_abilities
     label: Activated abilities and their costs
-    subsections: ["602", "113.3"]
+    sections:
+      - Activating Activated Abilities
+      - { section: Abilities, number: "3" }
   - id: triggered_abilities
     label: Triggered abilities, trigger conditions, leaves-the-battlefield triggers
-    subsections: ["603", "113.3"]
+    sections:
+      - Handling Triggered Abilities
+      - { section: Abilities, number: "3" }
   - id: static_abilities
     label: Static abilities and continuous effects
-    subsections: ["604", "611"]
+    sections:
+      - Handling Static Abilities
+      - Continuous Effects
   - id: stack_and_priority
     label: The stack, priority, resolving spells and abilities
-    subsections: ["117", "405", "608"]
+    sections:
+      - Timing and Priority
+      - Stack
+      - Resolving Spells and Abilities
   - id: targeting
     label: Targets, legality on resolution, fizzling
-    subsections: ["115", "608.2"]
+    sections:
+      - Targets
+      - { section: Resolving Spells and Abilities, number: "2" }
   - id: state_based_actions
     label: State-based actions
-    subsections: ["704"]
+    sections:
+      - State-Based Actions
   - id: layers
     label: Layers and interaction of continuous effects
-    subsections: ["613"]
+    sections:
+      - Interaction of Continuous Effects
   - id: replacement_effects
     label: Replacement and prevention effects
-    subsections: ["614", "615", "616"]
+    sections:
+      - Replacement Effects
+      - Prevention Effects
+      - Interaction of Replacement and/or Prevention Effects
   - id: copying
     label: Copying objects, copiable values, tokens that are copies
-    subsections: ["707", "111"]
+    sections:
+      - Copying Objects
+      - Tokens
   - id: counters
     label: Counters, +1/+1 and -1/-1 interaction, keyword counters
-    subsections: ["122", "704.5q"]
+    sections:
+      - Counters
+      - { section: State-Based Actions, number: "5q" }
   - id: damage_and_life
     label: Damage, life, lifelink and deathtouch
-    subsections: ["119", "120", "702.15", "702.2"]
-  # Section numbers as of the CR of 2026-11-06, which gave meld cards their own
-  # section (713, out of 712) and so moved every later one up: Adventurer cards are
-  # 716 (were 715) and Class cards 717 (were 716). A CR that inserts a section moves
-  # these again: check each number's title after a release that renumbers.
+    sections:
+      - Life
+      - Damage
+      - { section: Keyword Abilities, rule: Lifelink }
+      - { section: Keyword Abilities, rule: Deathtouch }
   - id: multi_faced_cards
     label: Double-faced, modal DFC, split, flip, adventure and meld cards
-    subsections: ["709", "710", "711", "712", "713", "716", "717", "701.42"]
+    sections:
+      - Split Cards
+      - Flip Cards
+      - Leveler Cards
+      - Double-Faced Cards
+      - Meld Cards
+      - Adventurer Cards
+      - Class Cards
+      - { section: Keyword Actions, rule: Meld }
   - id: keyword_abilities
     label: Keyword abilities (flying, trample, hexproof, ward, ...)
     # Only the general rules: all 195 keyword chunks of 702 would swamp the prompt.
     # Keyword names are strong lexemes, so BM25/vector (and the lookup_rules tool)
     # bring in the specific keyword's rule.
-    subsections: ["702.1", "702.2"]
+    sections:
+      - { section: Keyword Abilities, number: "1" }
+      - { section: Keyword Abilities, rule: Deathtouch }
   - id: keyword_actions
     label: Keyword actions (destroy, exile, sacrifice, mill, ...)
     # As for keyword_abilities: the general rule only; the specific action comes from full-text and vector search.
-    subsections: ["701.1"]
+    sections:
+      - { section: Keyword Actions, number: "1" }
   - id: mana_abilities
     label: Mana abilities and mana production
-    # 602.5: activation timing ("Activate only as an instant" mana abilities); 605.3 defers to it.
-    subsections: ["605", "106", "602.5"]
+    # Activating Activated Abilities .5: activation timing ("Activate only as an
+    # instant" mana abilities), which the Mana Abilities section defers to.
+    sections:
+      - Mana Abilities
+      - Mana
+      - { section: Activating Activated Abilities, number: "5" }
   - id: commander
     label: Commander format rules (command zone, commander damage, tax)
-    subsections: ["903"]
+    sections:
+      - Commander
   - id: multiplayer
     label: Multiplayer rules and variants
-    subsections: ["800", "801", "802", "805", "806"]
+    sections:
+      - { part: Multiplayer Rules, section: General }
+      - Limited Range of Influence Option
+      - Attack Multiple Players Option
+      - Shared Team Turns Option
+      - Free-for-All Variant
   # A question under this category gets each card's legality line in the material
-  # (judge_core::legality). 100 holds the deck-construction rules and what the CR
-  # says of banned cards; 903.5 the Commander deck's.
+  # (judge_core::legality). Game Concepts > General holds the deck-construction
+  # rules and what the CR says of banned cards; Commander .5 the Commander deck's.
   - id: format_legality
     label: Format legality (a card legal, banned or restricted in a format)
-    subsections: ["100", "903.5"]
+    sections:
+      - { part: Game Concepts, section: General }
+      - { section: Commander, number: "5" }
   - id: other
     label: Other or unclear
-    subsections: []
+    sections: []
