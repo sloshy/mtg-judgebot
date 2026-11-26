@@ -58,9 +58,13 @@ categories:
   - id: damage_and_life
     label: Damage, life, lifelink and deathtouch
     subsections: ["119", "120", "702.15", "702.2"]
+  # Section numbers as of the CR of 2026-11-06, which gave meld cards their own
+  # section (713, out of 712) and so moved every later one up: Adventurer cards are
+  # 716 (were 715) and Class cards 717 (were 716). A CR that inserts a section moves
+  # these again: check each number's title after a release that renumbers.
   - id: multi_faced_cards
     label: Double-faced, modal DFC, split, flip, adventure and meld cards
-    subsections: ["709", "710", "711", "712", "715", "716", "701.42"]
+    subsections: ["709", "710", "711", "712", "713", "716", "717", "701.42"]
   - id: keyword_abilities
     label: Keyword abilities (flying, trample, hexproof, ward, ...)
     # Only the general rules: all 195 keyword chunks of 702 would swamp the prompt.

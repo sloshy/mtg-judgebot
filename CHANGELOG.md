@@ -31,6 +31,14 @@ instead.
   `kind` gains `legality`. Deck construction beyond a card's status is still tournament
   policy and not answered. No migration and no new data load.
 
+### Fixed
+
+- **Questions about adventure and meld cards get their rules again.** The Comprehensive
+  Rules of 2026-11-06 gave meld cards their own section and moved every later one up, so
+  the multi-faced category's always-included sections pointed at Saga cards for
+  Adventurer cards and had none for meld. The list follows the new numbers. It reaches
+  the database at the first refresh after the upgrade.
+
 ### Changed
 
 - **Rolling back is guaranteed only between patch releases.** A patch release is fixes

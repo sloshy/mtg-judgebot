@@ -151,13 +151,13 @@ questions:
   - characteristics
   source: CR
   decisive_rule_ids:
-  - 712.11b
-  - 712.8a
+  - 712.8b
+  - 712.6a
   supporting_rule_ids:
-  - 712.11c
-  - 712.8f
+  - 712.8c
+  - 712.6e
   expected_answer: |-
-    Yes. Valki // Tibalt is a modal double-faced card: when you cast it you choose which face you're casting before it goes on the stack, and only that face is evaluated (712.11b, 712.11c), so you can cast Tibalt, Cosmic Impostor for {5}{B}{R} straight from your hand. Once chosen, the spell/permanent has only that face's characteristics (712.8f). But anywhere other than the stack or battlefield (hand, library, graveyard, exile) an MDFC has only its front face's characteristics (712.8a), so it is a legendary creature card named Valki, God of Lies there — never a planeswalker card.
+    Yes. Valki // Tibalt is a modal double-faced card: when you cast it you choose which face you're casting before it goes on the stack, and only that face is evaluated (712.8b, 712.8c), so you can cast Tibalt, Cosmic Impostor for {5}{B}{R} straight from your hand. Once chosen, the spell/permanent has only that face's characteristics (712.6e). But anywhere other than the stack or battlefield (hand, library, graveyard, exile) an MDFC has only its front face's characteristics (712.6a), so it is a legendary creature card named Valki, God of Lies there — never a planeswalker card.
   rationale: |-
     Tests MDFC face choice at casting and the front-face-only rule in hidden/non-battlefield zones, which is the most common MDFC confusion (people assume the back face 'exists' in hand or graveyard).
 - id: faces-002
@@ -173,13 +173,13 @@ questions:
   - exile
   source: CR
   decisive_rule_ids:
-  - 715.3d
-  - 715.3b
+  - 716.3d
+  - 716.3b
   supporting_rule_ids:
-  - 715.3a
-  - '715.4'
+  - 716.3a
+  - '716.4'
   expected_answer: |-
-    Your opponent is right. When an Adventure spell resolves it is exiled instead of going to the graveyard, and you may cast the card from exile — but only as the creature (Bonecrusher Giant), not as Stomp again (715.3d). And no, Stomp can't be hit by 'counter target creature spell': while on the stack as an Adventure the spell has only its alternative characteristics (715.3a, 715.3b), so it is a red instant, not a creature spell. Everywhere else, including exile, the card is just the creature card Bonecrusher Giant (715.4).
+    Your opponent is right. When an Adventure spell resolves it is exiled instead of going to the graveyard, and you may cast the card from exile — but only as the creature (Bonecrusher Giant), not as Stomp again (716.3d). And no, Stomp can't be hit by 'counter target creature spell': while on the stack as an Adventure the spell has only its alternative characteristics (716.3a, 716.3b), so it is a red instant, not a creature spell. Everywhere else, including exile, the card is just the creature card Bonecrusher Giant (716.4).
   rationale: |-
     Covers the adventure lifecycle (cast as Adventure -> exile -> cast the creature) and the 'only the Adventure characteristics exist on the stack' rule, a frequent point of confusion for counterspell/targeting interactions.
 - id: faces-003
@@ -203,21 +203,21 @@ questions:
   source: CR
   decisive_rule_ids:
   - '700.4'
-  - 712.21e
+  - 713.8e
   supporting_rule_ids:
-  - '712.21'
+  - '713.8'
   - 701.42a
-  - 712.4a
+  - 713.1a
   equivalent_rule_ids:
-    '712.4a':
+    '713.1a':
     - 701.42a
   expected_answer: |-
     Blood Artist does not trigger at all here: Path to Exile exiles Brisela, and Blood Artist
     triggers on a creature dying, which means being put into a graveyard from the battlefield
     (700.4). Exile is not dying. If Brisela instead died (say, to a Wrath of God), Blood Artist
     would trigger exactly once: one permanent left the battlefield, even though the melded
-    permanent is a single object represented by two cards (712.21, 701.42a). A trigger reading
-    "whenever a card is put into a graveyard" would see two cards (712.21e). Either way, the
+    permanent is a single object represented by two cards (713.8, 701.42a). A trigger reading
+    "whenever a card is put into a graveyard" would see two cards (713.8e). Either way, the
     search happens once and Bruna and Gisela both go to exile. It is Brisela's controller who
     searches, not the player who cast Path to Exile ("Its controller may search their library
     for a basic land card"), and any basic land will do, not only a Plains.
