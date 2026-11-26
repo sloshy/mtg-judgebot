@@ -349,6 +349,10 @@ minor. A patch release has no migration and stores no new shape of data (a new c
 kind, a new stored enum value); those belong in a minor, whose changelog entry says what
 an older build does with them. An older minor still starts against a newer minor's
 database, by design, with no promise that it reads everything.
+`scripts/release-version.sh` refuses a patch version (`X.Y.Z`, Z above 0, `-dev`
+included) whose migrations on disk differ from `vX.Y.0`'s (added, edited, renamed,
+deleted or untracked); without that tag in the clone it skips with a note, or fails when
+given a release tag (CI's lint job and `publish-image.yml` fetch the tags).
 
 **Maintenance during a major upgrade** (D32). `migrate::upgrade` is `InPlace` (migrate,
 then open) or `Major` (another major, a new major's pre-release, or no recorded

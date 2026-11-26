@@ -14,6 +14,12 @@
 # version, since the binaries report it and a pre-release works only with its
 # own build (judge_core::release), and no heading of its own. A tag with
 # build metadata (`+…`) is refused.
+#
+# A patch version (X.Y.Z with Z above 0, its `-dev` included) must have the
+# migrations of `vX.Y.0`, none added, edited, renamed or deleted: a patch release is the one kind that is safe to
+# roll back (CONTRIBUTING, Rolling back; docs/DECISIONS.md D45). Without that
+# tag in the clone the check is skipped with a note, except when releasing,
+# where it fails: fetch the tags.
 # Run from the repository root. Needs jq.
 
 set -euo pipefail
@@ -36,6 +42,36 @@ for dir in web site; do
     fi
   done
 done
+
+# The migrations a patch version adds, which must be none. `RELEASE_VERSION`
+# stands in for the tree's version so the check can be tried on any version.
+checked="${RELEASE_VERSION:-$version}"
+core="${checked%%-*}"
+patch="${core##*.}"
+base="v${core%.*}.0"
+if [ "$patch" != 0 ]; then
+  if git rev-parse -q --verify "refs/tags/$base" >/dev/null 2>&1; then
+    # Against the files on disk, not a commit: that is what sqlx embeds, and
+    # what every caller has (a staged tree in a scratch worktree included).
+    # Any difference counts. A renamed migration is a new one to sqlx, and an
+    # edited one fails its checksum.
+    changed="$(
+      git diff --name-status --no-renames "$base" -- crates/bot/migrations
+      git ls-files --others --exclude-standard -- crates/bot/migrations | sed 's/^/?	/'
+    )"
+    if [ -n "$changed" ]; then
+      echo "version $checked is a patch release, but its migrations differ from $base (A added, M edited, D deleted, ? untracked):" >&2
+      echo "  ${changed//$'\n'/$'\n'  }" >&2
+      echo "a patch release changes no migration (CONTRIBUTING, Rolling back): make it the next minor" >&2
+      ok=1
+    fi
+  elif [ $# -gt 0 ]; then
+    echo "cannot check that patch release $checked adds no migration: tag $base is not in this clone (git fetch --tags)" >&2
+    ok=1
+  else
+    echo "note: tag $base is not in this clone, so the no-migration check for patch version $checked was skipped" >&2
+  fi
+fi
 
 if [ $# -eq 0 ]; then
   exit "$ok"

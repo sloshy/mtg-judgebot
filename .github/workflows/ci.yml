@@ -151,7 +151,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # With the tags: a patch version is compared with its `vX.Y.0`
+      # (scripts/release-version.sh).
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       # cargo deny and cargo machete read `cargo metadata`; installed here
       # rather than left to rustup's auto-install from rust-toolchain.toml.
       - uses: dtolnay/rust-toolchain@master

@@ -135,6 +135,8 @@ release of the same major must still run against it:
 - **Not in a patch release:** any migration, and any new shape of stored data (a new
   citation kind, a new value in a stored enum). A patch release is fixes and dependency
   updates, which is what makes it safe to roll back (Releases, below).
+  `scripts/release-version.sh` refuses a patch version whose migrations differ from its
+  `vX.Y.0` tag's. Nothing checks the stored shapes: that part is review.
 - **Only in a major release:** dropping or renaming a column or table, changing a
   column's type, making a column `NOT NULL` without a default, and rewriting rows that
   earlier releases read or write (moving stored citations to a new key, say). This is

@@ -107,8 +107,11 @@ jobs:
       # The binaries report the crate version (the MCP server, the ingest
       # User-Agent): a release whose tag says otherwise, or whose changelog
       # still files its notes under Unreleased, publishes nothing.
+      # Every tag too: a patch release is compared with its `vX.Y.0`.
       - uses: actions/checkout@v7
         if: github.ref_type == 'tag'
+        with:
+          fetch-depth: 0
       - name: The version is the tag's
         if: github.ref_type == 'tag'
         run: |
