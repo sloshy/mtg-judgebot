@@ -505,7 +505,7 @@ mod tests {
             .iter()
             .map(|q| q.ids(Weight::Supporting).len())
             .sum();
-        assert_eq!((decisive, supporting), (41, 37));
+        assert_eq!((decisive, supporting), (43, 39));
         Ok(())
     }
 }

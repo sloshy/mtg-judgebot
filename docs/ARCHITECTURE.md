@@ -798,7 +798,7 @@ judge : Question -> IO[Either[JudgeError, Verdict]]
 The build was eval-first: retrieval was measured before any synthesis existed.
 
 1. A gold set of adversarially verified questions with expected rule ids
-   (`eval/gold.yaml`, 26 questions today, one of them a human correction, two about unreleased cards and two about format legality).
+   (`eval/gold.yaml`, 27 questions today, one of them a human correction, two about unreleased cards and two about format legality).
 2. Ingest.
 3. Extraction and resolution, tested on the gold set's card mentions.
 4. Retrieval, behind a **gate of ≥ 90% of gold rule ids present in the Context**.

@@ -34,7 +34,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   its timestamp (once per streak; a wrong host clock refuses them all). Alerts are written
   in `JUDGE_LOCALE` (`judge_bot::alert::catalog`). `judge-cli stats` reads the ledger and the period and cap the processes record in `budget_setting`. The cap *reserves*
   worst-case cost before sending, so caps under ~$0.36 refuse synthesis outright. Develop
-  against wiremock, not the live API. A full 26-question gold run costs ~$2.10.
+  against wiremock, not the live API. A full 27-question gold run costs ~$2.20.
 - Claude manages commits in this repo: commit completed, verified steps without asking.
   Never commit `.env`, `.cache/`, or `eval/runs/`. A run worth publishing is copied to
   `eval/published/` on purpose, and the README's Results table and the site's Sample
@@ -550,7 +550,7 @@ judge-mcp                                               # the MCP server on stdi
 cargo run -p judge-eval -- recall [--vectors]           # retrieval gate, no API keys (--vectors: the configured
                                                         # embedder, ~$0.001), exit≠0 below 90% retrieved or 75%
                                                         # shown under the synthesis budget
-cargo run -p judge-eval -- answer --label L --limit 26 --max-usd 6.00   # full live gold run (~$2.10)
+cargo run -p judge-eval -- answer --label L --limit 27 --max-usd 6.00   # full live gold run (~$2.20)
                                                         # --config judge.toml runs it on other providers
 cargo run -p judge-eval -- grade eval/runs/<run>.json   # the synthesis model grades each answer: follows from
                                                         # its quotes? agrees with the reference? (~$0.40, D28;
@@ -938,7 +938,7 @@ Key cross-file facts that aren't obvious from any one file:
     leaves only the WARN. `MOST_ALERTS` is 5 for that reason.
   - No test checks the real titles (CI has no CR). After a taxonomy edit, run `judgebot
     ingest rules <file>` against a scratch database and read `categories.unresolved`.
-- **Gold eval set** (`eval/gold.yaml`): 26 questions (21 adversarially verified, one a
+- **Gold eval set** (`eval/gold.yaml`): 27 questions (22 adversarially verified, one a
   human correction of a reported wrong answer, two about invented unreleased cards: `fixture_cards`
   resolved by `eval::fixtures`, never in the database, and `unreleased: [card]`, checked by
   `UnreleasedCheck`; two about format legality: `legality: ['Format: status']`, the

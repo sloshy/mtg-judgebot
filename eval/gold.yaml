@@ -1,6 +1,6 @@
 _meta:
   version: 0
-  count: 24
+  count: 27
   generated: '2026-08-29'
   note: |-
     Authored and adversarially verified by judge-persona agents against the current Comprehensive Rules and Oracle text, and audited against Oracle text, rulings and CR text on 2026-09-20. No human judge has reviewed it, except tokens-manufactor-shelob-food-copy, whose expected answer is a human correction of a reported wrong answer. Rule IDs must be re-verified on each CR release. decisive_rule_ids are the rules a correct answer must cite, and recall is scored on them; supporting_rule_ids are background rules a good answer may leave out, reported when cited and never counted as a miss. Both feed the retrieval gate.
@@ -271,6 +271,26 @@ questions:
     No. Ignore the printed 'interrupt' text and use the current Oracle wording (108.1): 'Discard your hand, Sacrifice this artifact: Add three mana of any one color. Activate only as an instant.' It is still a mana ability — the timing restriction doesn't change that (605.1) — but 'Activate only as an instant' means you may only activate it when you have priority (602.5e), so you can't activate it while paying for a spell the way 605.3a normally allows for mana abilities. The correct play is to cast Infernal Tutor with Tutor as the last card in hand, hold priority, then activate LED in response; when Tutor resolves you are hellbent and the mana is still floating.
   rationale: |-
     LED's printed 'interrupt'/'mana source' wording misleads players into treating it as usable mid-cast; the Oracle 'Activate only as an instant' restriction (602.5e) plus 605.1's clarification is the key to the well-known Storm line.
+- id: faces-006
+  question: |-
+    cast Coil and Catch off my [[Marang River Regent]] and it resolved. my friend says the card goes to exile and i get to cast the dragon later like an adventure, is that how omens work? also while it was on the stack could he have hit it with a 'counter target creature spell'?
+  cards:
+  - Marang River Regent // Coil and Catch
+  nicknames_used: []
+  categories:
+  - multi-face-cards
+  - casting-spells
+  source: CR
+  decisive_rule_ids:
+  - 721.3d
+  - 721.3b
+  supporting_rule_ids:
+  - '721.3'
+  - '721.4'
+  expected_answer: |-
+    No, that is how Adventures work, not Omens. As an Omen spell resolves, its controller shuffles the card into its owner's library instead of putting it into the graveyard (721.3d), so the card is shuffled into your library, not exiled, and there is nothing to cast later. And no, it could not have been countered as a creature spell: as you cast an omen card you choose whether to cast it normally or as an Omen (721.3), and while it is on the stack as an Omen the spell has only its alternative characteristics (721.3b), so Coil and Catch is an instant spell, not a creature spell. In every other zone the card has only its normal characteristics (721.4): it is the creature card Marang River Regent.
+  rationale: |-
+    Omen cards share the Adventurer frame and differ in where the card goes on resolution, so the common error is answering with the Adventure rule (exile, then cast the creature). Also the first question whose decisive rules are in a card-layout section added after the taxonomy was written.
 - id: stack-01
   question: |-
     ok so I have [[Blood Artist]] out and my opponent wraths with [[Wrath of God]]. Blood Artist dies at the same time as everything else so does it even see the other creatures die? do I drain for all of them or just itself?

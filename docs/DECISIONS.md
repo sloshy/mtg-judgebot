@@ -2268,6 +2268,19 @@ adds a card-layout section most years.
 - **An older build** does not know this release's migration, so its refresh writes
   nothing (`Skip::SchemaAhead`) and `categories` keeps the looked-up numbers (D45).
 
+**Membership.** The multi-faced category gained Prototype, Omen and Preparation cards,
+which have two sets of characteristics on one face and were in no category. A question
+about one, filed under the category, got none of its section: the category's other
+sections filled the material, and filed elsewhere it got one rule from search or none.
+With the three added, such a question filed under the category retrieves its whole
+section. Leveler and Class cards
+have one face and stay: without them a question about one filed here loses its section,
+and with them nothing else changes, because the sections are ranked against the question
+and an unrelated one falls outside the synthesis budget. The existing gold questions
+retrieve the same rules under every membership tried, so a gold question about an Omen
+card (`faces-006`) was added: none of its four rules were shown before, and three are
+now.
+
 **Rejected:**
 
 - *Assigning a new section to a category automatically.* Whether Case cards belong with

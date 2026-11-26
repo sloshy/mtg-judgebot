@@ -38,11 +38,16 @@ instead.
   from the scheduled refresh, to `JUDGE_ALERT_WEBHOOK`, at most once each. One migration (a
   `rule_sections` table and a `categories.unresolved` column). The first refresh after
   the upgrade loads the stored CR again to record its titles, which costs no embedding.
-  No category's sections change. A 2.0 build started afterwards leaves them alone: its
+  A 2.0 build started afterwards leaves them alone: its
   refresh does not write into a schema it does not know.
 
 ### Fixed
 
+- **Questions about Omen, Prototype and Preparation cards get their rules.** The
+  multi-faced category did not include those three sections, and its other sections
+  filled the material, so such a question filed under that category was answered
+  without its own card layout's rules. They are included now. They reach the database at the first refresh after the
+  upgrade.
 - **Questions about adventure and meld cards get their rules again.** The Comprehensive
   Rules of 2026-11-06 gave meld cards their own section and moved every later one up, so
   the multi-faced category's always-included sections pointed at Saga cards for

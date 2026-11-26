@@ -137,6 +137,12 @@ categories:
       - Damage
       - { section: Keyword Abilities, rule: Lifelink }
       - { section: Keyword Abilities, rule: Deathtouch }
+  # Every card layout with more than one face or more than one set of
+  # characteristics. Leveler and Class cards have one face and are here because
+  # no other category includes them: a question about one filed here gets its
+  # whole section, and filed elsewhere gets a rule or two from search. The
+  # sections are ranked against the question, so one that is not asked about
+  # falls outside the synthesis budget.
   - id: multi_faced_cards
     label: Double-faced, modal DFC, split, flip, adventure and meld cards
     sections:
@@ -147,6 +153,9 @@ categories:
       - Meld Cards
       - Adventurer Cards
       - Class Cards
+      - Prototype Cards
+      - Omen Cards
+      - Preparation Cards
       - { section: Keyword Actions, rule: Meld }
   - id: keyword_abilities
     label: Keyword abilities (flying, trample, hexproof, ward, ...)
