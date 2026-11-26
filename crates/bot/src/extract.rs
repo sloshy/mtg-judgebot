@@ -356,7 +356,7 @@ mod tests {
 
     async fn first_body(server: &MockServer) -> Result<Value, serde_json::Error> {
         let reqs = server.received_requests().await.unwrap_or_default();
-        serde_json::from_slice(&reqs.first().map(|r| r.body.clone()).unwrap_or_default())
+        serde_json::from_slice(&reqs.first().map_or_default(|r| r.body.clone()))
     }
 
     /// A neutral response as the backend would hand it over.
@@ -384,8 +384,7 @@ mod tests {
         let schema = req
             .output
             .as_ref()
-            .map(|o| o.schema.clone().to_value())
-            .unwrap_or_default();
+            .map_or_default(|o| o.schema.clone().to_value());
         // The schema requires a primary category: an empty classification is an API-level error.
         let required = at(&schema, "/required");
         assert!(
@@ -682,8 +681,7 @@ mod tests {
 
         // Assert what actually went over the wire.
         let reqs = server.received_requests().await.unwrap_or_default();
-        let sent: Value =
-            serde_json::from_slice(&reqs.first().map(|r| r.body.clone()).unwrap_or_default())?;
+        let sent: Value = serde_json::from_slice(&reqs.first().map_or_default(|r| r.body.clone()))?;
         assert_eq!(at(&sent, "/model"), "claude-opus-5-5");
         assert_eq!(at(&sent, "/output_config/effort"), "low");
         assert_eq!(at(&sent, "/output_config/format/type"), "json_schema");
@@ -801,8 +799,7 @@ mod tests {
         x.extract(&question(), &history(), &judge_core::Tally::new())
             .await?;
         let reqs = server.received_requests().await.unwrap_or_default();
-        let sent: Value =
-            serde_json::from_slice(&reqs.first().map(|r| r.body.clone()).unwrap_or_default())?;
+        let sent: Value = serde_json::from_slice(&reqs.first().map_or_default(|r| r.body.clone()))?;
         assert_eq!(at(&sent, "/output_config/effort"), "medium");
         assert_eq!(at(&sent, "/max_tokens"), 777);
         let user = at(&sent, "/messages/0/content/0/text")

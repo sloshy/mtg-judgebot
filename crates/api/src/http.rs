@@ -1235,8 +1235,7 @@ mod tests {
         let choices = j
             .pointer("/spans/0/choices")
             .and_then(|c| c.as_array())
-            .map(|c| c.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-            .unwrap_or_default();
+            .map_or_default(|c| c.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
         assert_eq!(choices, vec!["Urza's Tower", "Urza's Mine"]);
         // Nothing is persisted for an ambiguous outcome.
         assert!(persisted(&store).is_empty());

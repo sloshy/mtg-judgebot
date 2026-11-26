@@ -2,5 +2,5 @@
 # Cargo.toml's rust-version. Pinning it here makes a contributor's rustfmt and
 # clippy agree with CI's, so formatting and lint results do not drift by host.
 [toolchain]
-channel = "1.99"
+channel = "1.100"
 components = ["rustfmt", "clippy"]

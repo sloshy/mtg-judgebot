@@ -94,8 +94,7 @@ impl Options {
             (Some(l), _) => l.clone(),
             (None, Some(o)) => o
                 .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+                .map_or_default(|s| s.to_string_lossy().into_owned()),
             (None, None) => anyhow::bail!("--label <name> is required (or pass --out <path>)"),
         };
         let out = out.unwrap_or_else(|| PathBuf::from("eval/runs").join(format!("{label}.json")));
@@ -455,8 +454,7 @@ pub async fn run(
         } else {
             config
                 .extract()
-                .map(judge_bot::config::Stage::label)
-                .unwrap_or_default()
+                .map_or_default(judge_bot::config::Stage::label)
         },
         extract_effort: (!opts.gold_extraction)
             .then(|| {
@@ -467,8 +465,7 @@ pub async fn run(
             .flatten(),
         synth: config
             .synth()
-            .map(judge_bot::config::Stage::label)
-            .unwrap_or_default(),
+            .map_or_default(judge_bot::config::Stage::label),
         synth_effort: config
             .synth()
             .map(|s| format!("{:?}", s.effort).to_lowercase()),

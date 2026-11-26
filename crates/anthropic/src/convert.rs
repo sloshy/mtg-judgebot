@@ -171,15 +171,12 @@ pub fn from_wire(resp: &MessagesResponse) -> Result<ChatResponse, serde_json::Er
         Some(StopReason::EndTurn | StopReason::StopSequence) => Stop::EndTurn,
         Some(StopReason::MaxTokens) => Stop::MaxTokens,
         Some(StopReason::ToolUse) => Stop::ToolUse,
-        Some(StopReason::Refusal) => Stop::Refusal(
-            resp.stop_details
-                .as_ref()
-                .map(|d| Refusal {
-                    category: d.category.clone(),
-                    explanation: d.explanation.clone(),
-                })
-                .unwrap_or_default(),
-        ),
+        Some(StopReason::Refusal) => {
+            Stop::Refusal(resp.stop_details.as_ref().map_or_default(|d| Refusal {
+                category: d.category.clone(),
+                explanation: d.explanation.clone(),
+            }))
+        }
         Some(StopReason::PauseTurn) => Stop::Other("pause_turn".into()),
         Some(StopReason::Unknown) => Stop::Other("unknown".into()),
         None => Stop::Other("none".into()),

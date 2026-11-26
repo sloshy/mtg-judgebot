@@ -677,7 +677,7 @@ mod tests {
     const MCP: (&str, &str) = ("MCP_TOKEN", "0123456789abcdef0123456789abcdef");
 
     fn error(r: anyhow::Result<Plan>) -> String {
-        r.err().map(|e| format!("{e:#}")).unwrap_or_default()
+        r.err().map_or_default(|e| format!("{e:#}"))
     }
 
     /// The problems a launch reports, as `Unstartable` holds them.
@@ -1018,8 +1018,7 @@ mod tests {
         let text = |api, roles| {
             refuse_api_interfaces(api, roles, false)
                 .err()
-                .map(|e| format!("{e:#}"))
-                .unwrap_or_default()
+                .map_or_default(|e| format!("{e:#}"))
         };
         let t = text(Some("--api --mcp"), None);
         assert!(
@@ -1043,8 +1042,7 @@ mod tests {
         // Roles on the command line: JUDGE_ROLES is not read, so no line.
         let t = refuse_api_interfaces(Some("--api"), None, true)
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             t.contains("the command line already names") && !t.contains("JUDGE_ROLES"),
             "{t}"

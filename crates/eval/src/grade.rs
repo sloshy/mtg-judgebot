@@ -820,7 +820,7 @@ mod tests {
             "b's grade is current, c is out of scope, an error has no verdict"
         );
         assert_eq!(saves, 1, "saved after each new grade");
-        let seen = seen.lock().map(|s| s.clone()).unwrap_or_default();
+        let seen = seen.lock().map_or_default(|s| s.clone());
         assert_eq!(seen.len(), 1);
         assert!(
             seen.first()
@@ -862,7 +862,7 @@ mod tests {
         let pass = grade_rows(&model, &meter, &mut run, &gold()?, false, 1, |_| Ok(())).await?;
         assert_eq!((pass.failed, pass.complete()), (1, false));
         assert!(pass.stopped.is_some());
-        assert_eq!(seen.lock().map(|s| s.len()).unwrap_or_default(), 1);
+        assert_eq!(seen.lock().map_or_default(|s| s.len()), 1);
         Ok(())
     }
 }

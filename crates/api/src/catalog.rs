@@ -200,7 +200,7 @@ answer, and it is shown on this answer's public page, without your name."
     },
     already_rated: "You already rated this answer Correct. Nothing changed.",
     confirm_replace: |earlier, category, new| {
-        let category = category.map(|c| format!(" ({c})")).unwrap_or_default();
+        let category = category.map_or_default(|c| format!(" ({c})"));
         format!("You already rated this answer {earlier}{category}. Replace it with {new}?")
     },
     feedback_rate_limited: "You've rated many answers in a short time. Please wait a few minutes.",

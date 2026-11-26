@@ -151,8 +151,7 @@ pub async fn run(cmd: Command) -> Result<()> {
                 Attempt::Failed { stage, name } => anyhow::bail!(
                     "the backup failed while {}{}; the log above has the error",
                     stage.clause(judge_core::Locale::En),
-                    name.map(|n| format!(" (after {n} was uploaded)"))
-                        .unwrap_or_default()
+                    name.map_or_default(|n| format!(" (after {n} was uploaded)"))
                 ),
             }
         }

@@ -826,7 +826,7 @@ mod tests {
                 },
             )
             .await?;
-            let path = seen.lock().map(|p| p.clone()).unwrap_or_default();
+            let path = seen.lock().map_or_default(|p| p.clone());
             (path, socket)
         };
         if path != "/?v=10&encoding=json" {

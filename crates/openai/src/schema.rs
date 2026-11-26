@@ -69,8 +69,7 @@ impl Transform for OpenAiStrict {
                 let names: Vec<Value> = obj
                     .get("properties")
                     .and_then(Value::as_object)
-                    .map(|p| p.keys().map(|k| Value::String(k.clone())).collect())
-                    .unwrap_or_default();
+                    .map_or_default(|p| p.keys().map(|k| Value::String(k.clone())).collect());
                 obj.insert("required".to_owned(), Value::Array(names));
             }
             for k in UNSUPPORTED_KEYS {
@@ -135,13 +134,11 @@ mod tests {
                 let props: Vec<&String> = m
                     .get("properties")
                     .and_then(Value::as_object)
-                    .map(|p| p.keys().collect())
-                    .unwrap_or_default();
+                    .map_or_default(|p| p.keys().collect());
                 let required: Vec<&str> = m
                     .get("required")
                     .and_then(Value::as_array)
-                    .map(|r| r.iter().filter_map(Value::as_str).collect())
-                    .unwrap_or_default();
+                    .map_or_default(|r| r.iter().filter_map(Value::as_str).collect());
                 assert_eq!(
                     props.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     required,
@@ -247,8 +244,7 @@ mod tests {
         let required: Vec<&str> = schema
             .pointer("/required")
             .and_then(Value::as_array)
-            .map(|r| r.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
+            .map_or_default(|r| r.iter().filter_map(Value::as_str).collect());
         assert_eq!(
             required,
             ["maybe", "list", "count", "tags", "name"],

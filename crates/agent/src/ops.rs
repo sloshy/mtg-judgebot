@@ -1256,8 +1256,7 @@ fn citation_view(c: &Citation, ctx: Option<&Context>) -> CitationView {
         Citation::ScryfallRuling { card, ruling, .. } => {
             let date = ctx
                 .and_then(|x| x.ruling(*card, ruling))
-                .map(|r| format!(" ({})", r.published_at))
-                .unwrap_or_default();
+                .map_or_default(|r| format!(" ({})", r.published_at));
             let label = match card_name(*card) {
                 Some(name) => format!("Ruling{date} — {name}"),
                 None => format!("Ruling{date} — card {card}"),

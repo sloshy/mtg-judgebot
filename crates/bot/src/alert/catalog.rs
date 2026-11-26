@@ -233,9 +233,9 @@ resume{}.",
     },
     refresh_failed: |process, failure| {
         let timed_out = |hours: Option<u64>| {
-            hours
-                .map(|h| format!(", timing out after {h} h, so the steps after it were not run"))
-                .unwrap_or_default()
+            hours.map_or_default(|h| {
+                format!(", timing out after {h} h, so the steps after it were not run")
+            })
         };
         let what = match failure {
             RefreshFailure::Dropped { after_mins } => {

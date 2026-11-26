@@ -1548,8 +1548,7 @@ mod tests {
         let required: Vec<&str> = s
             .get("required")
             .and_then(|r| r.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
-            .unwrap_or_default();
+            .map_or_default(|a| a.iter().filter_map(|x| x.as_str()).collect());
         assert!(required.contains(&"primary"), "{s}");
         assert!(!required.contains(&"secondary"), "{s}");
         let e: Result<Extraction, _> =

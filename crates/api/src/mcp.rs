@@ -313,14 +313,13 @@ mod gate_tests {
         reply
             .pointer("/result/tools")
             .and_then(serde_json::Value::as_array)
-            .map(|tools| {
+            .map_or_default(|tools| {
                 tools
                     .iter()
                     .filter_map(|t| t.get("name").and_then(serde_json::Value::as_str))
                     .map(str::to_owned)
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     /// `MCP_TOKEN` neither lists nor calls an admin tool; `MCP_ADMIN_TOKEN`

@@ -50,7 +50,7 @@ pub fn request_locale(
     accept_language: Option<&str>,
     fallback: Locale,
 ) -> Locale {
-    let accepted = accept_language.map(accepted_languages).unwrap_or_default();
+    let accepted = accept_language.map_or_default(accepted_languages);
     Locale::negotiate(
         body.into_iter().chain(accepted.iter().map(String::as_str)),
         fallback,
@@ -366,8 +366,7 @@ pub fn citation_view(m: &Messages, c: &Citation, labels: &impl Labels) -> Citati
         Citation::ScryfallRuling { card, ruling, .. } => {
             let date = labels
                 .ruling_date(*card, ruling)
-                .map(|d| format!(" ({d})"))
-                .unwrap_or_default();
+                .map_or_default(|d| format!(" ({d})"));
             let label = (m.ruling_label)(&date, card_name(*card).as_deref());
             CitationView {
                 kind: CitationKind::Ruling,

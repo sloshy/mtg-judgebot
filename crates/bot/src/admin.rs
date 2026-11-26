@@ -790,8 +790,7 @@ mod tests {
     fn error(pairs: &[(&str, &str)]) -> String {
         AdminSettings::from_vars(vars(pairs))
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default()
+            .map_or_default(|e| format!("{e:#}"))
     }
 
     #[test]
@@ -853,8 +852,7 @@ mod tests {
             let text =
                 McpAdminToken::from_vars(vars(&[(MCP_ADMIN_TOKEN_ENV, TOKEN), (other, TOKEN)]))
                     .err()
-                    .map(|e| format!("{e:#}"))
-                    .unwrap_or_default();
+                    .map_or_default(|e| format!("{e:#}"));
             assert!(text.contains(needle), "{text}");
         }
         let short = McpAdminToken::from_vars(vars(&[(MCP_ADMIN_TOKEN_ENV, "short")]));

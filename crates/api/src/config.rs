@@ -194,15 +194,13 @@ impl ApiConfig {
         let mcp_judge_window =
             parse_min(var("MCP_JUDGE_WINDOW_SECS"), "MCP_JUDGE_WINDOW_SECS", 1u64)?
                 .map_or(Self::DEFAULT_MCP_JUDGE_WINDOW, Duration::from_secs);
-        let mcp_hosts = var("MCP_ALLOWED_HOSTS")
-            .map(|v| {
-                v.split(',')
-                    .map(str::trim)
-                    .filter(|h| !h.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mcp_hosts = var("MCP_ALLOWED_HOSTS").map_or_default(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|h| !h.is_empty())
+                .map(str::to_owned)
+                .collect()
+        });
         Ok(Self {
             addr,
             web_dist,

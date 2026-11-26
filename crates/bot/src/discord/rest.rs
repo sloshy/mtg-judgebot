@@ -591,8 +591,7 @@ mod tests {
             .respond(id(7), &token(), &Response::Acknowledge)
             .await
             .err()
-            .map(|e| format!("{e} {e:?}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e} {e:?}"));
         assert!(!err.is_empty());
         assert!(
             !err.contains("itok") && !err.contains("bot-secret"),

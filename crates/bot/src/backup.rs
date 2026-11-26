@@ -543,8 +543,7 @@ mod tests {
         let requests = server.received_requests().await.unwrap_or_default();
         let body = requests
             .first()
-            .map(|r| String::from_utf8_lossy(&r.body).into_owned())
-            .unwrap_or_default();
+            .map_or_default(|r| String::from_utf8_lossy(&r.body).into_owned());
         assert!(
             body.contains("R2_SECRET_ACCESS_KEY") && body.contains("BACKUP_S3_ENDPOINT"),
             "{body}"

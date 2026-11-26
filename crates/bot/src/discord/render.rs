@@ -319,8 +319,7 @@ pub fn citation_line(
             // same Scryfall page.
             let date = ctx
                 .and_then(|x| x.ruling(*card, ruling))
-                .map(|r| format!(" ({})", r.published_at))
-                .unwrap_or_default();
+                .map_or_default(|r| format!(" ({})", r.published_at));
             let label = (m.ruling_label)(&date, card_name(*card).as_deref());
             format!("[{label}]({}) {open}", scryfall_url(*card))
         }
@@ -1088,7 +1087,7 @@ pub fn fit_lines(locale: Locale, lines: &[Rendered], limit: usize) -> String {
     if dropped > 0 {
         if out.is_empty() {
             // Even the first line did not fit: cut it rather than show nothing.
-            return lines.first().map(|l| l.fit(limit)).unwrap_or_default();
+            return lines.first().map_or_default(|l| l.fit(limit));
         }
         out.push_str("\n");
         out.push_str(&more(dropped));
@@ -2506,9 +2505,7 @@ mod retry_tests {
         }
         let longest = "é".repeat(RETRY_QUESTION_LIMIT);
         assert!(RetryPrompt::new(Locale::En, u64::MAX, &longest).is_some());
-        let content = RetryPrompt::new(Locale::En, 1, "q")
-            .map(|p| p.render())
-            .unwrap_or_default();
+        let content = RetryPrompt::new(Locale::En, 1, "q").map_or_default(|p| p.render());
         assert_eq!(RetryPrompt::parse(Locale::En, &format!("{content} ")), None);
         assert_eq!(
             RetryPrompt::parse(Locale::En, &content.replace("<@1>", "<@x>")),

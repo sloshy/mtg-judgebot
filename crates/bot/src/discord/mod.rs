@@ -2311,14 +2311,12 @@ mod tests {
             question,
             &spans("urza"),
         );
-        let ids = out
-            .map(|o| {
-                o.components
-                    .into_iter()
-                    .flat_map(custom_ids)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let ids = out.map_or_default(|o| {
+            o.components
+                .into_iter()
+                .flat_map(custom_ids)
+                .collect::<Vec<_>>()
+        });
         assert!(
             matches!(ids.first(), Some(ButtonAction::Pick(p)) if p.span.is_none() && p.audience == Audience::Private),
             "{ids:?}"

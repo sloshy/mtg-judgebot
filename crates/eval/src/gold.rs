@@ -369,10 +369,7 @@ mod tests {
     }
 
     fn err(fields: &str) -> String {
-        question(fields)
-            .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default()
+        question(fields).err().map_or_default(|e| format!("{e:#}"))
     }
 
     #[test]

@@ -472,8 +472,7 @@ mod tests {
         let err = run(&mut lease, Some(&wrong), true, false)
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             err.contains("probing openai/nomic-embed-text (768 dims)")
                 && err.contains("1024-dimensional vector, not 768"),
@@ -497,8 +496,7 @@ mod tests {
         let err = run(&mut lease, Some(&capped), true, false)
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             err.contains("nothing was cleared") && err.contains("JUDGE_MAX_USD=1.00"),
             "{err}"
@@ -511,8 +509,7 @@ mod tests {
         let err = run(&mut lease, Some(&nomic), false, false)
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             err.contains("dry run, nothing changed") && err.contains("switch and re-embed"),
             "{err}"
@@ -572,8 +569,7 @@ mod tests {
         let err = run(&mut lease, Some(&nomic), false, false)
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(err.contains("embed the rows still empty"), "{err}");
         assert!(holds(&pool, "Lifelink", &marker).await?);
 
@@ -595,15 +591,13 @@ mod tests {
         let err = run(&mut lease, Some(&nomic), false, false)
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(err.contains("do nothing: no row is empty"), "{err}");
         // --clear without --yes is a dry run that says what it would clear.
         let err = run(&mut lease, Some(&nomic), false, true)
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(err.contains("clear and re-embed every row"), "{err}");
         assert!(holds(&pool, "Lifelink", &marker).await?);
 

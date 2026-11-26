@@ -176,7 +176,7 @@ impl Region {
     /// # Errors
     /// What the value must be, when it is not that.
     pub fn parse(raw: Option<&str>) -> Result<Self, String> {
-        let r = raw.map(str::trim).unwrap_or_default();
+        let r = raw.map_or_default(str::trim);
         if r.is_empty() {
             return Ok(Self(DEFAULT_REGION.to_owned()));
         }
@@ -237,7 +237,7 @@ impl Addressing {
     /// # Errors
     /// What the value must be, when it is not that.
     pub fn parse(raw: Option<&str>) -> Result<Self, String> {
-        let a = raw.map(str::trim).unwrap_or_default();
+        let a = raw.map_or_default(str::trim);
         if a.is_empty() {
             return Ok(Self::default());
         }
@@ -345,7 +345,7 @@ impl Prefix {
     /// # Errors
     /// What the value must be, when it is not that.
     pub fn parse(raw: Option<&str>) -> Result<Self, String> {
-        let p = raw.map(str::trim).unwrap_or_default().trim_matches('/');
+        let p = raw.map_or_default(str::trim).trim_matches('/');
         if p.is_empty() {
             return Ok(Self(DEFAULT_PREFIX.to_owned()));
         }

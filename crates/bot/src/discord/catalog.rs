@@ -356,7 +356,7 @@ beside the answer."
     },
     rated_public: |label, category, as_judge| {
         let who = if as_judge { " as a judge ruling" } else { "" };
-        let category = category.map(|c| format!(" ({c})")).unwrap_or_default();
+        let category = category.map_or_default(|c| format!(" ({c})"));
         format!(
             "Recorded your rating{who}: {label}{category}. The operator sees your reason beside the \
 answer, and it is shown on the answer's public web page without your name."
@@ -368,13 +368,13 @@ answer, and it is shown on the answer's public web page without your name."
     call_gone: "This answer is no longer stored, so it can't be rated.",
     already_rated: "You already rated this answer **Correct**. Nothing changed.",
     replace_prompt: |earlier, category, new| {
-        let category = category.map(|c| format!(" ({c})")).unwrap_or_default();
+        let category = category.map_or_default(|c| format!(" ({c})"));
         format!("You already rated this answer **{earlier}**{category}. Replace it with **{new}**?")
     },
     replace_label: "Replace",
     keep_label: "Keep",
     on_record: |label, category| {
-        let category = category.map(|c| format!(" ({c})")).unwrap_or_default();
+        let category = category.map_or_default(|c| format!(" ({c})"));
         format!("Nothing changed. Your rating on record: **{label}**{category}.")
     },
     no_rating: "Nothing changed. You have no rating on this answer.",
@@ -436,7 +436,7 @@ Press **Retry** to ask this again.",
         None => format!("Scryfall ruling{date}"),
     },
     oracle_label: |face, name| {
-        let face_note = face.map(|n| format!(", face {n}")).unwrap_or_default();
+        let face_note = face.map_or_default(|n| format!(", face {n}"));
         match name {
             Some(name) => format!("Oracle text{face_note} — {name}"),
             None => format!("Oracle text{face_note}"),
@@ -491,7 +491,7 @@ Fan Content under the Fan Content Policy, not endorsed by Wizards of the Coast. 
     data_heading: "**Data.**",
     data_unknown: "**Data.** Unknown: the database did not answer.",
     contact: |username, email| {
-        let email = email.map(|e| format!(" or `{e}`")).unwrap_or_default();
+        let email = email.map_or_default(|e| format!(" or `{e}`"));
         format!(
             "**Who runs this bot.** `@{username}` on Discord{email}. Contact them about problems with \
 this bot."
@@ -768,8 +768,7 @@ fn en_forgotten(f: Forgotten) -> String {
     let mut chars = joined.chars();
     let capitalized: String = chars
         .next()
-        .map(|c| c.to_uppercase().chain(chars).collect())
-        .unwrap_or_default();
+        .map_or_default(|c| c.to_uppercase().chain(chars).collect());
     format!("{capitalized}.")
 }
 

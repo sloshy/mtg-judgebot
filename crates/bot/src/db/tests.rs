@@ -1729,8 +1729,7 @@ async fn switch_space_retypes_columns_clears_vectors_and_rebuilds_indexes_atomic
     let rules_idx = after
         .iter()
         .find(|(n, _)| n == "rules_embedding_idx")
-        .map(|(_, d)| d.clone())
-        .unwrap_or_default();
+        .map_or_default(|(_, d)| d.clone());
     assert!(
         rules_idx.contains("USING hnsw")
             && rules_idx.contains("vector_cosine_ops")
@@ -1765,8 +1764,7 @@ async fn switch_space_retypes_columns_clears_vectors_and_rebuilds_indexes_atomic
     let err = switch_space(&pool, &huge)
         .await
         .err()
-        .map(|e| format!("{e:#}"))
-        .unwrap_or_default();
+        .map_or_default(|e| format!("{e:#}"));
     assert!(
         err.contains("ALTER TABLE rules ALTER COLUMN embedding TYPE vector(20000)"),
         "{err}"
@@ -1792,8 +1790,7 @@ async fn switch_space_retypes_columns_clears_vectors_and_rebuilds_indexes_atomic
     let err = switch_space(&pool, &wide)
         .await
         .err()
-        .map(|e| format!("{e:#}"))
-        .unwrap_or_default();
+        .map_or_default(|e| format!("{e:#}"));
     assert!(err.contains("CREATE INDEX rules_embedding_idx"), "{err}");
     assert_eq!(column_width(&pool, "rules").await?, 768);
     assert_eq!(stored_counts(&pool).await?, held);

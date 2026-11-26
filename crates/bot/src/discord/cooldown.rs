@@ -148,7 +148,7 @@ mod tests {
         // One more user evicts the oldest window only.
         let late = t0 + Duration::from_secs(10);
         assert_eq!(c.take(u64::MAX, late), Ok(()));
-        let tracked = c.windows.lock().map(|w| w.len()).unwrap_or_default();
+        let tracked = c.windows.lock().map_or_default(|w| w.len());
         assert_eq!(tracked, MAX_TRACKED);
         assert!(
             c.take(1, late).is_err(),

@@ -1379,8 +1379,7 @@ mod tests {
         let err = RefreshLease::acquire_within(&pool, "test", Duration::from_millis(300))
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(err.contains("still held"), "{err}");
         assert!(
             err.contains("judgebot refresh lease (holder) since "),
@@ -1686,8 +1685,7 @@ mod tests {
         let err = RefreshLease::acquire_within(&pool, "test", bound * 4)
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(err.contains("still held"), "{err}");
         // A standby's statement outlives it too, on the same session.
         let gateway = try_gateway(&pool, "first").await?.context("gateway free")?;

@@ -486,15 +486,13 @@ mod tests {
             .embed(&["a", "b"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(err.contains("returned 1 vectors for 2 texts"), "{err}");
         let err = e
             .embed(&["a"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(
             err.contains("3-dimensional") && err.contains("configured space is 2"),
             "{err}"
@@ -503,8 +501,7 @@ mod tests {
             .embed(&[], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(err.contains("no texts"), "{err}");
         Ok(())
     }
@@ -531,8 +528,7 @@ mod tests {
             .embed(&["a", "b"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(err.contains("index Some(1) where 0 was expected"), "{err}");
         Ok(())
     }
@@ -557,8 +553,7 @@ mod tests {
             .embed(&["a"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "embeddings 401 Unauthorized: Incorrect API key provided"
@@ -619,8 +614,7 @@ mod tests {
             .embed(&["a"], InputKind::Document, &judge_core::Tally::new())
             .await
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert_eq!(err, "embeddings 503 Service Unavailable: overloaded");
         assert_eq!(
             server.received_requests().await.map_or(0, |r| r.len()),

@@ -485,8 +485,7 @@ mod tests {
         let err = run(&mut lease, Some(&capped))
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             err.contains("stopped at the spend cap") && err.contains("JUDGE_MAX_USD"),
             "{err}"
@@ -514,8 +513,7 @@ mod tests {
         let err = run(&mut lease, Some(&wrong))
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(err.contains("has 768 dimensions, expected 1024"), "{err}");
         assert_eq!(
             (stored_space(&pool).await?, embedded_glossary(&pool).await?),
@@ -546,8 +544,7 @@ mod tests {
         let err = run(&mut lease, Some(&fake))
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             err.contains("embedding space mismatch")
                 && err.contains("openai/nomic-embed-text (1024 dims)")
@@ -585,8 +582,7 @@ mod tests {
         let err = run(&mut lease, Some(&fake))
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             err.contains("changed while embedding") && err.contains("embedding space mismatch"),
             "{err}"
@@ -609,8 +605,7 @@ mod tests {
         let err = run(&mut lease, Some(&fake))
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             err.contains("rules.embedding is vector(1024)")
                 && err.contains("768-dimensional")
@@ -638,8 +633,7 @@ mod tests {
         let err = run(&mut lease, Some(&fake))
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             err.contains(
                 "the database holds voyage/voyage-3.5 (1024 dims): configure that model, or"
@@ -661,8 +655,7 @@ mod tests {
         let err = run(&mut lease, Some(&fake))
             .await
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(
             err.contains("1 vectors are stored but embedding_space is empty"),
             "{err}"

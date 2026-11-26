@@ -201,8 +201,7 @@ async fn guard(State(editor): State<Arc<Editor>>, req: Request, next: Next) -> R
     let sent = req
         .headers()
         .get(TOKEN_HEADER)
-        .map(axum::http::HeaderValue::as_bytes)
-        .unwrap_or_default();
+        .map_or_default(axum::http::HeaderValue::as_bytes);
     let want = editor.token.as_bytes();
     // Constant time over the expected length.
     let same = sent.len() == want.len()
@@ -540,7 +539,7 @@ fn report(editor: &Editor, r: &Rendered, locale: Locale) -> Json {
 /// replaced variable is named with `~` and no value; any other line is
 /// never shown, whatever it holds.
 fn env_diff(old: Option<&str>, new: &str, replaced: &[String], m: &Messages) -> Vec<Json> {
-    let old_lines: Vec<&str> = old.map(|o| o.lines().collect()).unwrap_or_default();
+    let old_lines: Vec<&str> = old.map_or_default(|o| o.lines().collect());
     let shown = |line: &str| {
         env::assignment(line).is_some_and(|(name, _)| {
             Setting::named(name).is_some() && !replaced.iter().any(|r| r == name)
@@ -660,8 +659,7 @@ fn stage(path: &Path, text: &str, secret: bool) -> Result<Staged, Failure> {
         .unwrap_or(Path::new("."));
     let name = target
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     let tmp = dir.join(format!(
         ".{name}.{}.judge-config.tmp",
         uuid::Uuid::new_v4().simple()

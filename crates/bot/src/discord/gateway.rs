@@ -861,8 +861,7 @@ mod tests {
         let err = tokio::time::timeout(HANG, held)
             .await??
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(err.contains("did not close within"), "{err}");
         assert!(err.contains("gateway lease lost"), "names the cause: {err}");
         Ok(())
@@ -960,8 +959,7 @@ mod tests {
         let err = tokio::time::timeout(HANG, held)
             .await??
             .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default();
+            .map_or_default(|e| format!("{e:#}"));
         assert!(err.contains("still open at the drain's limit"), "{err}");
         assert!(asked.elapsed() >= limit, "held until the drain's limit");
         // The lease went with the role, before the process exits.

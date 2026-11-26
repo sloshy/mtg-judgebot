@@ -17,6 +17,11 @@ migration is not supported. Restore the backup taken before the upgrade instead.
 
 ## [Unreleased]
 
+### Changed
+
+- **Building from source needs Rust 1.100** (`rust-toolchain.toml`, the `Dockerfile`).
+- **cloudflared 2026.11.1** for the tunnel.
+
 ## [2.0.0] - 2026-11-25
 
 2.0.0 is a major release. Its migrations cannot run beside 1.x, its compose file runs one

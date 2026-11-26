@@ -3204,7 +3204,7 @@ model = "qwen3:8b"
                 matches!(bad, Err(ConfigError::BadDimensions { .. })),
                 "{value}: {bad:?}"
             );
-            let msg = bad.err().map(|e| e.to_string()).unwrap_or_default();
+            let msg = bad.err().map_or_default(|e| e.to_string());
             assert!(msg.contains("1..=2000") && msg.contains("HNSW"), "{msg}");
         }
         let base = Config::from_vars(|k| match k {
@@ -3231,14 +3231,12 @@ model = "qwen3:8b"
         let msg = nobody
             .discord_operator()
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(msg.contains("JUDGE_OPERATOR_DISCORD"), "{msg}");
         let msg = nobody
             .network_operator()
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(msg.contains("JUDGE_OPERATOR_EMAIL"), "{msg}");
         // Blank is unset, not invalid.
         let blank = Config::from_vars(|k| match k {
@@ -3280,7 +3278,7 @@ model = "qwen3:8b"
             ("JUDGE_OPERATOR_EMAIL", "judge at example dot org"),
         ] {
             let bad = Config::from_vars(|k| (k == var).then(|| value.to_owned()));
-            let msg = bad.err().map(|e| e.to_string()).unwrap_or_default();
+            let msg = bad.err().map_or_default(|e| e.to_string());
             assert!(msg.contains(var) && msg.contains(value), "{msg}");
         }
         // The file branch reads the same variables.
@@ -3504,33 +3502,22 @@ model = "qwen3:8b"
         let typo = MINIMAL.replace("api_key_env", "api_key_evn");
         let err = load(&typo, &[("ANTHROPIC_API_KEY", "k")])
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(err.contains("api_key_evn"), "{err}");
         assert!(err.starts_with("judge.toml:"), "{err}");
         let typo = FULL.replace("strict_tools = false", "strict_tool = false");
-        let err = load(&typo, &[])
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let err = load(&typo, &[]).err().map_or_default(|e| e.to_string());
         assert!(err.contains("strict_tool"), "{err}");
         let typo = FULL.replace("[models.synth.pricing]", "[models.synth.pricng]");
-        let err = load(&typo, &[])
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let err = load(&typo, &[]).err().map_or_default(|e| e.to_string());
         assert!(err.contains("pricng"), "{err}");
         let bad_value = FULL.replace("pricing = \"free\"", "pricing = \"cheap\"");
         let err = load(&bad_value, &[])
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(err.contains("cheap") && err.contains("free"), "{err}");
         let bad_kind = MINIMAL.replace("kind = \"anthropic\"", "kind = \"antropic\"");
-        let err = load(&bad_kind, &[])
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let err = load(&bad_kind, &[]).err().map_or_default(|e| e.to_string());
         assert!(err.contains("antropic"), "{err}");
     }
 
@@ -3586,7 +3573,7 @@ model = "qwen3:8b"
                 matches!(r, Err(ConfigError::Parse { .. })),
                 "{from} -> {to}: {r:?}"
             );
-            let err = r.err().map(|e| e.to_string()).unwrap_or_default();
+            let err = r.err().map_or_default(|e| e.to_string());
             assert!(err.starts_with("judge.toml:"), "{err}");
             if from.starts_with("base_url") {
                 assert!(
@@ -3639,8 +3626,7 @@ model = "qwen3:8b"
         assert!(priced_free != FULL, "replacement applied");
         let err = load(&priced_free, &env)
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "models.synth.pricing: providers.ollama is pricing = \"free\"; remove one or the other"
@@ -3652,8 +3638,7 @@ model = "qwen3:8b"
         );
         let err = load(&auth_no_key, &env)
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "providers.ollama: auth needs api_key_env (there is no key to send)"
@@ -3665,8 +3650,7 @@ model = "qwen3:8b"
         );
         let err = load(&effort_dropped, &env)
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(
             err.starts_with("models.extract.effort: providers.ollama has reasoning_effort = false"),
             "{err}"
@@ -3709,8 +3693,7 @@ model = "qwen3:8b"
             &[("ANTHROPIC_API_KEY", "k"), ("JUDGE_MAX_USD", "$5")],
         )
         .err()
-        .map(|e| e.to_string())
-        .unwrap_or_default();
+        .map_or_default(|e| e.to_string());
         assert!(bad.starts_with("JUDGE_MAX_USD"), "{bad}");
         Ok(())
     }
@@ -3769,10 +3752,7 @@ model = "qwen3:8b"
 
     #[test]
     fn a_missing_or_blank_secret_is_an_error_naming_the_variable() {
-        let err = load(MINIMAL, &[])
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let err = load(MINIMAL, &[]).err().map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "providers.anthropic: ANTHROPIC_API_KEY (api_key_env) is not set"
@@ -3781,8 +3761,7 @@ model = "qwen3:8b"
         assert!(matches!(err, Err(ConfigError::MissingEnv { .. })));
         let err = load(FULL, &[("ANTHROPIC_API_KEY", "k"), ("VOYAGE_API_KEY", "k")])
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "providers.litellm: LITELLM_KEY (api_key_env) is not set"
@@ -3790,8 +3769,7 @@ model = "qwen3:8b"
         // The implied voyage provider reads VOYAGE_API_KEY.
         let err = load(FULL, &[("ANTHROPIC_API_KEY", "k"), ("LITELLM_KEY", "k")])
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "providers.voyage: VOYAGE_API_KEY (api_key_env) is not set"
@@ -3814,8 +3792,7 @@ model = "qwen3:8b"
             ],
         )
         .err()
-        .map(|e| e.to_string())
-        .unwrap_or_default();
+        .map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "models.synth: no price for litellm/gpt-5; add [models.synth.pricing] (input, output per million tokens) or pricing = \"free\" on [providers.litellm]"
@@ -3856,10 +3833,7 @@ model = "qwen3:8b"
             ("VOYAGE_API_KEY", "k"),
         ];
         let missing = FULL.replace("provider = \"ollama\"", "provider = \"olama\"");
-        let err = load(&missing, &env)
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let err = load(&missing, &env).err().map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "models.extract.provider = \"olama\" names no [providers.olama] table"
@@ -3869,10 +3843,7 @@ model = "qwen3:8b"
         // A [providers.voyage] table with its own variable, and an embed entry naming no provider, both resolve.
         let own_var = FULL.replace("provider = \"voyage\"\n", "")
             + "\n[providers.voyage]\nkind = \"voyage\"\napi_key_env = \"MY_VOYAGE\"\n";
-        let err = load(&own_var, &env)
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let err = load(&own_var, &env).err().map_or_default(|e| e.to_string());
         assert_eq!(err, "providers.voyage: MY_VOYAGE (api_key_env) is not set");
         let c = load(
             &own_var,
@@ -3889,10 +3860,7 @@ model = "qwen3:8b"
                 .map(|e| e.provider.as_str()),
             Some("voyage")
         );
-        let err = load(&wrong, &env)
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let err = load(&wrong, &env).err().map_or_default(|e| e.to_string());
         assert!(
             err.starts_with(
                 "models.extract: providers.voyage is kind = \"voyage\", which cannot serve extract"
@@ -3905,8 +3873,7 @@ model = "qwen3:8b"
         );
         let err = load(&embed_on_chat, &env)
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(
             err.starts_with("models.embed: providers.anthropic is kind = \"anthropic\""),
             "{err}"
@@ -3923,8 +3890,7 @@ model = "qwen3:8b"
         let unknown_embed = FULL.replace("provider = \"voyage\"", "provider = \"voyag\"");
         let err = load(&unknown_embed, &env)
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "models.embed.provider = \"voyag\" names no [providers.voyag] table"
@@ -4008,8 +3974,7 @@ model = "qwen3:8b"
         let no_width = on_litellm.replace("dimensions = 1536\n", "");
         let err = load(&no_width, &env)
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(
             err.starts_with(
                 "models.embed.dimensions is required on providers.litellm (kind = \"openai\")"
@@ -4145,8 +4110,7 @@ model = "qwen3:8b"
         );
         let err = load(&no_url, &[("ANTHROPIC_API_KEY", "k")])
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "providers.anthropic: base_url is required for endpoint = \"proxy\""
@@ -4157,17 +4121,13 @@ model = "qwen3:8b"
         );
         let err = load(&auth_on_direct, &[("ANTHROPIC_API_KEY", "k")])
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "providers.anthropic: auth applies only to endpoint = \"proxy\""
         );
         let no_key = MINIMAL.replace("api_key_env = \"ANTHROPIC_API_KEY\"\n", "");
-        let err = load(&no_key, &[])
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let err = load(&no_key, &[]).err().map_or_default(|e| e.to_string());
         assert_eq!(
             err,
             "providers.anthropic: api_key_env is required for endpoint = \"direct\""
@@ -4178,8 +4138,7 @@ model = "qwen3:8b"
         );
         let err = load(&unknown, &[("ANTHROPIC_API_KEY", "k")])
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(err.contains("sideways") && err.contains("bedrock"), "{err}");
         Ok(())
     }
@@ -4220,8 +4179,7 @@ model = "qwen3:8b"
         let err = |extra: &str| {
             load(&anthropic_with(extra), &[])
                 .err()
-                .map(|e| e.to_string())
-                .unwrap_or_default()
+                .map_or_default(|e| e.to_string())
         };
         let e = err("endpoint = \"bedrock\"\nregion = \"us-east-1\"\nrefusal_fallbacks = true");
         assert!(
@@ -4351,10 +4309,7 @@ model = "qwen3:8b"
         // A bare id, or `anthropic.` anywhere but as a whole segment, is refused at load naming the stage.
         for model in ["claude-opus-5-5", "claude-opus-5-anthropic.x"] {
             let bare = bedrock.replace("anthropic.claude-opus-5-5", model);
-            let err = load(&bare, &[])
-                .err()
-                .map(|e| e.to_string())
-                .unwrap_or_default();
+            let err = load(&bare, &[]).err().map_or_default(|e| e.to_string());
             assert!(
                 err.starts_with(&format!("models.extract.model = {model:?}"))
                     && err.contains("anthropic."),
@@ -4423,8 +4378,7 @@ model = "qwen3:8b"
         let err = |extra: &str| {
             load(&anthropic_with(extra), &[])
                 .err()
-                .map(|e| e.to_string())
-                .unwrap_or_default()
+                .map_or_default(|e| e.to_string())
         };
         for (extra, key) in [
             ("endpoint = \"bedrock\"\nregion = \"us-east-1/\"", "region"),
@@ -4475,8 +4429,7 @@ model = "qwen3:8b"
         let err = |extra: &str| {
             load(&anthropic_with(extra), &[("ANTHROPIC_API_KEY", "k")])
                 .err()
-                .map(|e| e.to_string())
-                .unwrap_or_default()
+                .map_or_default(|e| e.to_string())
         };
         // Misplaced keys are errors on every build; missing ones on a built endpoint.
         for (extra, expect) in [
@@ -4635,8 +4588,7 @@ model = "qwen3:8b"
         let missing = dir.join("nope.toml");
         let err = Config::load_from(Some(&missing))
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(
             err.contains("nope.toml") && err.contains("not found"),
             "{err}"
@@ -4645,8 +4597,7 @@ model = "qwen3:8b"
         std::fs::write(&bad, "[models\n")?;
         let err = Config::load_from(Some(&bad))
             .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+            .map_or_default(|e| e.to_string());
         assert!(err.starts_with(&format!("{}:", bad.display())), "{err}");
         std::fs::remove_dir_all(&dir)?;
         Ok(())

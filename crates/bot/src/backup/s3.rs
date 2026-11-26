@@ -97,7 +97,7 @@ pub enum S3Error {
     },
     /// The store refused, with its error code and message when it sent them
     /// (`NoSuchKey`, `SignatureDoesNotMatch`, `AccessDenied`).
-    #[error("{op}: HTTP {status}{}{}", code.as_ref().map(|c| format!(" {c}")).unwrap_or_default(), message.as_ref().map(|m| format!(": {m}")).unwrap_or_default())]
+    #[error("{op}: HTTP {status}{}{}", code.as_ref().map_or_default(|c| format!(" {c}")), message.as_ref().map_or_default(|m| format!(": {m}")))]
     Status {
         /// The operation.
         op: Op,

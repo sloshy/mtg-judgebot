@@ -227,7 +227,7 @@ whether each is set, and can replace one with a value you type.
         BadEnv::Unreadable { line } => format!(
             ".env{}: dotenvy cannot read it (an unquoted space, an unclosed quote?), so the \
              binaries would refuse it too",
-            line.map(|n| format!(" line {n}")).unwrap_or_default()
+            line.map_or_default(|n| format!(" line {n}"))
         ),
         BadEnv::Duplicate(n) => format!(".env assigns {n} more than once, so keep one line"),
         BadEnv::Unplaced(n) => {
@@ -605,8 +605,7 @@ mod tests {
         let english = catalogs
             .iter()
             .find(|(name, _)| name == "EN")
-            .map(|(_, keys)| keys.clone())
-            .unwrap_or_default();
+            .map_or_default(|(_, keys)| keys.clone());
         assert!(
             english.len() > 50,
             "English names {} messages",

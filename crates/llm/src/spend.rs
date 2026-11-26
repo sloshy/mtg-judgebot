@@ -934,18 +934,12 @@ mod tests {
             cache_read: 1_000_000,
             cache_write: 1_000_000,
         };
-        let usd = pricing_for(ANTHROPIC, "claude-opus-5-5")
-            .map(|p| p.usd(&u))
-            .unwrap_or_default();
+        let usd = pricing_for(ANTHROPIC, "claude-opus-5-5").map_or_default(|p| p.usd(&u));
         assert!((usd - (4.0 + 20.0 + 0.2 + 5.0)).abs() < 1e-9, "{usd}");
-        let usd = pricing_for(ANTHROPIC, "claude-sonnet-5-5")
-            .map(|p| p.usd(&u))
-            .unwrap_or_default();
+        let usd = pricing_for(ANTHROPIC, "claude-sonnet-5-5").map_or_default(|p| p.usd(&u));
         assert!((usd - (2.0 + 10.0 + 0.2 + 2.5)).abs() < 1e-9, "{usd}");
         // Haiku 5.5's 4M-token prompt is past 100K, so every token is on the long card.
-        let usd = pricing_for(ANTHROPIC, "claude-haiku-5-5")
-            .map(|p| p.usd(&u))
-            .unwrap_or_default();
+        let usd = pricing_for(ANTHROPIC, "claude-haiku-5-5").map_or_default(|p| p.usd(&u));
         assert!((usd - (0.5 + 2.5 + 0.05 + 0.625)).abs() < 1e-9, "{usd}");
         // Up to 100K prompt tokens, counting cache reads and writes, it is the base card.
         let short = |input, cache_read| Usage {
@@ -958,15 +952,11 @@ mod tests {
             setting: "test",
             value: String::new(),
         });
-        let usd = haiku
-            .as_ref()
-            .map(|r| r.usd(&short(100_000, 0)))
-            .unwrap_or_default();
+        let usd = haiku.as_ref().map_or_default(|r| r.usd(&short(100_000, 0)));
         assert!((usd - (0.01 + 0.5)).abs() < 1e-9, "{usd}");
         let usd = haiku
             .as_ref()
-            .map(|r| r.usd(&short(60_000, 40_001)))
-            .unwrap_or_default();
+            .map_or_default(|r| r.usd(&short(60_000, 40_001)));
         assert!((usd - (0.03 + 2.5 + 0.002_000_05)).abs() < 1e-9, "{usd}");
         // The reservation takes the long card from two thirds of the threshold on, so a
         // prompt the tokenizer counts higher than four bytes a token is not under-reserved.
