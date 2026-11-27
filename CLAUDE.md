@@ -912,7 +912,10 @@ Key cross-file facts that aren't obvious from any one file:
     mounts it into `refresh` as well.
 - **Category taxonomy is data.** `data/categories.yaml` is the source of truth.
   `crates/core/build.rs` generates the `Category` enum from it, so taxonomy edits are
-  recompiles and matches stay exhaustive. The extractor's schema makes the primary
+  recompiles and matches stay exhaustive. A category's `label` is what the extractor
+  files questions by (the prompt's taxonomy line, the schema's description); its `name`
+  (`Category::name()`, required, one line, ≤40 chars, unique) is what the dashboard
+  shows, with the label behind an info button (#72). The extractor's schema makes the primary
   category a required field, so an empty classification is an API-level schema violation.
   - **A category names CR sections by title, never by number** (D46,
     `judge_core::taxonomy`): `Split Cards`, `{ part: Zones, section: General }` (the
