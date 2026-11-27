@@ -13,8 +13,13 @@ struct File {
 struct Entry {
     id: String,
     label: String,
+    /// The short name the dashboard shows, the label being its detail.
+    name: String,
     sections: Vec<Reference>,
 }
+
+/// The longest a category's `name` may be: a name, not a description.
+const NAME_MAX_CHARS: usize = 40;
 
 /// One entry of a category's `sections`: a section's title, or a mapping that
 /// qualifies it.
@@ -125,6 +130,7 @@ fn pascal(id: &str) -> String {
 
 fn generate(file: &File) -> Result<String, Box<dyn Error>> {
     let mut seen = HashSet::new();
+    let mut names = HashSet::new();
     for e in &file.categories {
         let snake =
             e.id.chars()
@@ -142,6 +148,37 @@ fn generate(file: &File) -> Result<String, Box<dyn Error>> {
         }
         if !seen.insert(e.id.as_str()) {
             return Err(format!("duplicate category id: {}", e.id).into());
+        }
+        let name = e.name.trim();
+        if name.is_empty()
+            || name != e.name
+            || name
+                .chars()
+                .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+        {
+            return Err(format!(
+                "category {}: `name` must be one line of text, not blank, not padded and with no \
+                 control character",
+                e.id
+            )
+            .into());
+        }
+        if name.chars().count() > NAME_MAX_CHARS {
+            return Err(format!(
+                "category {}: `name` {name:?} is over {NAME_MAX_CHARS} characters; the detail \
+                 belongs in `label`",
+                e.id
+            )
+            .into());
+        }
+        // Two names a reader cannot tell apart are the same name.
+        let folded = name
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        if !names.insert(folded) {
+            return Err(format!("category {}: `name` {name:?} is used twice", e.id).into());
         }
     }
 
@@ -186,6 +223,16 @@ fn generate(file: &File) -> Result<String, Box<dyn Error>> {
             "            Category::{} => {:?},",
             pascal(&e.id),
             e.label
+        )?;
+    }
+    out.push_str("        }\n    }\n\n");
+    out.push_str("    /// Its short name, as the dashboard shows it; [`Self::label`] is the detail.\n    #[must_use]\n    pub const fn name(self) -> &'static str {\n        match self {\n");
+    for e in &file.categories {
+        writeln!(
+            out,
+            "            Category::{} => {:?},",
+            pascal(&e.id),
+            e.name
         )?;
     }
     out.push_str("        }\n    }\n\n");

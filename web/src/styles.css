@@ -2102,9 +2102,84 @@ code {
   border-top: 1px solid var(--line);
 }
 
+/* The tip of an info button is placed against the label's column, so it
+   never runs past the list at phone width. */
 .bar-label {
+  position: relative;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* A short label's info button, and what it stands for under it on hover,
+   focus or a tap. */
+
+.bar-detail {
+  display: inline;
+}
+
+.bar-info {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin: -4px 0 -4px 2px;
+  padding: 0;
+  vertical-align: middle;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: help;
+}
+
+.bar-detail:hover .bar-info,
+.bar-info:focus-visible,
+.bar-info[data-open] {
+  color: var(--accent);
+}
+
+.bar-info:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.bar-tip {
+  display: none;
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 0;
+  width: max-content;
+  max-width: min(30rem, 100%);
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: 0.875rem;
+  line-height: 1.4;
+  overflow-wrap: normal;
+}
+
+/* Covers the gap above the tip, so the pointer can cross onto it. */
+.bar-tip::before {
+  content: "";
+  position: absolute;
+  inset: -8px 0 auto;
+  height: 8px;
+}
+
+.bar-detail:hover .bar-tip,
+.bar-info:focus-visible + .bar-tip,
+.bar-info[data-open] + .bar-tip {
+  display: block;
+}
+
+/* Escape or a closing tap: hidden until the button loses focus or the
+   pointer comes back. Later than the rules above, at their specificity. */
+.bar-info[data-dismissed] + .bar-tip {
+  display: none;
 }
 
 .bar-label code {

@@ -161,7 +161,9 @@ schema, both fail until you update them:
 
 **Taxonomy changes.** `data/categories.yaml` generates the `Category` enum at build
 time (`crates/core/build.rs`), so editing it is a recompile, and every `match` over the
-enum has to be updated. A category names its CR sections by title, never by number. The
+enum has to be updated. A category's `label` is what the extractor files questions by;
+its `name` is the short form the dashboard shows. A category names its CR sections by
+title, never by number. The
 build cannot know whether a title exists, so after an edit run `judgebot ingest rules
 latest` against a loaded database and check that its log lists no entry that names
 nothing. `data/aliases.yaml` and `data/notes.yaml` are compiled in as

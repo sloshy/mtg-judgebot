@@ -1,7 +1,11 @@
 # Single source of truth for the question taxonomy.
 # `crates/core/build.rs` generates `judge_core::Category` from this file.
 # id: stable snake_case identifier (becomes the enum variant and the serde name)
-# label: human-readable name
+# label: what the category covers. The extractor files a question by it (it is
+#   the taxonomy line in the extraction prompt and the schema's description),
+#   so it names everything that belongs.
+# name: the short name the dashboard shows, with the label as its detail. A few
+#   words, alternatives joined by " / ". Required, and unique.
 # sections: the Comprehensive Rules text always included in the material for a
 #   question in the category, named by title (judge_core::taxonomy). The rule
 #   numbers are looked up in the loaded CR, so a release that renumbers changes
@@ -15,6 +19,7 @@
 categories:
   - id: game_concepts
     label: General game concepts (winning, losing, mana, numbers)
+    name: Game concepts
     sections:
       - { part: Game Concepts, section: General }
       - The Magic Golden Rules
@@ -24,6 +29,7 @@ categories:
       - Cards
   - id: card_types_and_characteristics
     label: Card characteristics, names, types, supertypes, subtypes
+    name: Card types / characteristics
     sections:
       - Name
       - Mana Cost and Color
@@ -33,12 +39,14 @@ categories:
       - Lands
   - id: colors_and_color_identity
     label: Colors, colorless, color indicator, color identity
+    name: Colors / color identity
     sections:
       - Colors
       - Mana Cost and Color
       - { section: Commander, number: "4" }
   - id: zones
     label: Zones (library, hand, battlefield, graveyard, exile, command, stack)
+    name: Zones
     sections:
       - { part: Zones, section: General }
       - Library
@@ -49,6 +57,7 @@ categories:
       - Command
   - id: turn_structure
     label: Turn structure, phases and steps
+    name: Turn structure
     sections:
       - { part: Turn Structure, section: General }
       - Beginning Phase
@@ -67,6 +76,7 @@ categories:
       - Cleanup Step
   - id: combat
     label: "Combat: attacking, blocking, damage assignment"
+    name: Combat
     sections:
       - Combat Phase
       - Beginning of Combat Step
@@ -76,62 +86,74 @@ categories:
       - End of Combat Step
   - id: casting_spells
     label: Casting spells, costs, additional and alternative costs
+    name: Casting spells
     sections:
       - Casting Spells
       - Costs
       - { section: Casting Spells, number: "2" }
   - id: activated_abilities
     label: Activated abilities and their costs
+    name: Activated abilities
     sections:
       - Activating Activated Abilities
       - { section: Abilities, number: "3" }
   - id: triggered_abilities
     label: Triggered abilities, trigger conditions, leaves-the-battlefield triggers
+    name: Triggered abilities
     sections:
       - Handling Triggered Abilities
       - { section: Abilities, number: "3" }
   - id: static_abilities
     label: Static abilities and continuous effects
+    name: Static abilities / continuous effects
     sections:
       - Handling Static Abilities
       - Continuous Effects
   - id: stack_and_priority
     label: The stack, priority, resolving spells and abilities
+    name: Stack / priority
     sections:
       - Timing and Priority
       - Stack
       - Resolving Spells and Abilities
   - id: targeting
     label: Targets, legality on resolution, fizzling
+    name: Targeting
     sections:
       - Targets
       - { section: Resolving Spells and Abilities, number: "2" }
   - id: state_based_actions
     label: State-based actions
+    name: State-based actions
     sections:
       - State-Based Actions
   - id: layers
     label: Layers and interaction of continuous effects
+    name: Layers
     sections:
       - Interaction of Continuous Effects
   - id: replacement_effects
     label: Replacement and prevention effects
+    name: Replacement / prevention effects
     sections:
       - Replacement Effects
       - Prevention Effects
       - Interaction of Replacement and/or Prevention Effects
   - id: copying
     label: Copying objects, copiable values, tokens that are copies
+    name: Copying
     sections:
       - Copying Objects
       - Tokens
   - id: counters
     label: Counters, +1/+1 and -1/-1 interaction, keyword counters
+    name: Counters
     sections:
       - Counters
       - { section: State-Based Actions, number: "5q" }
   - id: damage_and_life
     label: Damage, life, lifelink and deathtouch
+    name: Damage / life
     sections:
       - Life
       - Damage
@@ -146,6 +168,7 @@ categories:
   # label, so a layout the label does not name is mostly filed elsewhere (D46).
   - id: multi_faced_cards
     label: "Special card layouts: double-faced, modal DFC, split, flip, adventure, omen, prototype, preparation, meld, leveler and class cards"
+    name: Special card layouts
     sections:
       - Split Cards
       - Flip Cards
@@ -160,6 +183,7 @@ categories:
       - { section: Keyword Actions, rule: Meld }
   - id: keyword_abilities
     label: Keyword abilities (flying, trample, hexproof, ward, ...)
+    name: Keyword abilities
     # Only the general rules: all 195 keyword chunks of 702 would swamp the prompt.
     # Keyword names are strong lexemes, so BM25/vector (and the lookup_rules tool)
     # bring in the specific keyword's rule.
@@ -168,11 +192,13 @@ categories:
       - { section: Keyword Abilities, rule: Deathtouch }
   - id: keyword_actions
     label: Keyword actions (destroy, exile, sacrifice, mill, ...)
+    name: Keyword actions
     # As for keyword_abilities: the general rule only; the specific action comes from full-text and vector search.
     sections:
       - { section: Keyword Actions, number: "1" }
   - id: mana_abilities
     label: Mana abilities and mana production
+    name: Mana abilities
     # Activating Activated Abilities .5: activation timing ("Activate only as an
     # instant" mana abilities), which the Mana Abilities section defers to.
     sections:
@@ -181,10 +207,12 @@ categories:
       - { section: Activating Activated Abilities, number: "5" }
   - id: commander
     label: Commander format rules (command zone, commander damage, tax)
+    name: Commander
     sections:
       - Commander
   - id: multiplayer
     label: Multiplayer rules and variants
+    name: Multiplayer / variants
     sections:
       - { part: Multiplayer Rules, section: General }
       - Limited Range of Influence Option
@@ -196,9 +224,11 @@ categories:
   # rules and what the CR says of banned cards; Commander .5 the Commander deck's.
   - id: format_legality
     label: Format legality (a card legal, banned or restricted in a format)
+    name: Format legality
     sections:
       - { part: Game Concepts, section: General }
       - { section: Commander, number: "5" }
   - id: other
     label: Other or unclear
+    name: Other
     sections: []

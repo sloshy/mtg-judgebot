@@ -190,7 +190,8 @@ curl 'http://localhost:8787/api/stats?days=90&interface=discord'
               "refused": 0, "failed": 1},
  "ratings": {"discord": {"correct": 9, "partial": 2, "incorrect": 1},
              "web": {"correct": 3, "partial": 0, "incorrect": 4}},
- "categories": [{"category": "combat", "label": "Combat: attacking, blocking, damage assignment", "questions": 9}, …],
+ "categories": [{"category": "combat", "name": "Combat",
+                 "label": "Combat: attacking, blocking, damage assignment", "questions": 9}, …],
  "cards": [{"id": "…", "name": "Blood Moon", "questions": 4}, …],
  "top_askers": [{"name": "alice", "questions": 7}, …]}
 ```
@@ -212,7 +213,8 @@ the runs that finished in the range: `failed` is every failure of the pipeline (
 that never validated, the spend cap, an upstream error), and a run whose caller went away
 is in none. Runs record no asker, so with `user` it is `null`. `ratings` are the ratings
 of these calls, Discord's and the web's apart. `categories`, `cards` and `top_askers` list
-ten each, commonest first.
+ten each, commonest first. A category has a short `name` and a `label` that says what it
+covers.
 
 With `JUDGE_PUBLIC_COST=true` the reply also has `cost`: `{"usd", "questions",
 "per_question_usd", "estimated"}`, what these calls' runs cost (`questions` counts the

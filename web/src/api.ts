@@ -462,7 +462,8 @@ export interface Dashboard {
   /** Null under a user filter: runs record no asker. */
   outcomes: Outcomes | null;
   ratings: { discord: RatingCounts; web: RatingCounts };
-  categories: { category: string; label: string; questions: number }[];
+  /** `name` is the short one; `label` says what the category covers. */
+  categories: { category: string; name: string; label: string; questions: number }[];
   cards: { id: string; name: string; questions: number }[];
   top_askers: { name: string; questions: number }[];
   /** Only where the operator shows cost. */

@@ -266,6 +266,8 @@ export type Messages = {
   /** No ratings in the range. */
   noRatings: string;
   categoriesTitle: string;
+  /** The info button beside a short name, which shows what it covers. */
+  detailOf: (name: string) => string;
   cardsTitle: string;
   askersTitle: string;
   costTitle: string;
@@ -589,6 +591,7 @@ export const en = {
   includeWebToggle: (n) => `Include ${enCount.format(n)} from the web`,
   noRatings: "No ratings in this range.",
   categoriesTitle: "Most-asked topics",
+  detailOf: (name) => `What ${name} covers`,
   cardsTitle: "Most-asked cards",
   askersTitle: "Most active askers",
   costTitle: "Cost",

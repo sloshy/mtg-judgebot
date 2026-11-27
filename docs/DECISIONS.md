@@ -2296,6 +2296,12 @@ label's opening words could also draw a question about a layout the category doe
 include (Saga, Case); no gold question tests that. The id
 stays `multi_faced_cards`: stored calls carry it.
 
+**The name.** A label written for the extractor grows with every layout it has to name,
+and the dashboard printed it beside a bar (four lines at 390 px). Each category also has a
+short `name` (`Special card layouts`), which the dashboard shows with the label behind an
+info button beside it (#72). The extraction prompt and the schema read the label alone,
+so neither changed. `build.rs` requires a name, one line, unique, at most 40 characters.
+
 **Rejected:**
 
 - *Assigning a new section to a category automatically.* Whether Case cards belong with

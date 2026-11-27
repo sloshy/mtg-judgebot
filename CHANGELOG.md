@@ -58,6 +58,11 @@ instead.
 
 ### Changed
 
+- **Short topic names on the dashboard.** "Most-asked topics" shows each category's short
+  name ("Special card layouts", "Card types / characteristics"), with an info button
+  beside it that shows what the category covers. The full description was up to four
+  lines long on a phone. The stats reply (`/api/stats`, `/admin/api/usage`) gives each
+  category a `name` beside its `label`.
 - **Rolling back is guaranteed only between patch releases.** A patch release is fixes
   and dependency updates, with no migration and nothing new stored. A minor release may
   migrate or store what the previous minor cannot read, so going back from one is not

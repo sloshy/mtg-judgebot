@@ -555,7 +555,10 @@ pub struct RatingMix {
 pub struct CategoryCount {
     /// The category id (`judge_core::Category`).
     pub category: String,
-    /// Its label, from `data/categories.yaml`.
+    /// Its short name, from `data/categories.yaml`: what the dashboard shows.
+    pub name: String,
+    /// Its label, from `data/categories.yaml`: what the category covers, the
+    /// name's detail.
     pub label: String,
     /// Calls.
     pub questions: i64,
@@ -878,11 +881,16 @@ async fn dashboard(
     });
     let categories = json::<Vec<CategoryRow>>(row.categories, "categories")?
         .into_iter()
-        .map(|c| CategoryCount {
-            label: Category::from_str(&c.category)
-                .map_or_else(|_| c.category.clone(), |k| k.label().to_owned()),
-            category: c.category,
-            questions: c.questions,
+        .map(|c| {
+            // A category this build does not know (stored by a newer one)
+            // shows its id.
+            let known = Category::from_str(&c.category).ok();
+            CategoryCount {
+                name: known.map_or_else(|| c.category.clone(), |k| k.name().to_owned()),
+                label: known.map_or_else(|| c.category.clone(), |k| k.label().to_owned()),
+                category: c.category,
+                questions: c.questions,
+            }
         })
         .collect();
     let outcomes = match p.user {

@@ -5,7 +5,16 @@
 // and the most-asked categories, cards and askers as bar lists. Cost and
 // models appear only when the report carries them.
 
-import { createMemo, For, type JSX, Show } from "solid-js";
+import {
+  createMemo,
+  createSignal,
+  createUniqueId,
+  For,
+  type JSX,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 import type { Dashboard, DayCount, Interface, Outcomes, RatingCounts } from "./api";
 import type { Messages } from "./messages";
 import { toggleWeb, webRatingsShown } from "./Rating";
@@ -54,6 +63,74 @@ export interface BarItem {
   n: number;
   /** Beside the count, such as its share. */
   note?: string;
+  /** What a short label stands for, behind an info button beside it. */
+  detail?: { name: string; text: string };
+}
+
+/** An info button that shows `text` on hover (the tip included, so the
+ * pointer can move onto it), on keyboard focus and on a click or tap, which
+ * toggles it. A click is not followed by focus in every browser (Safari,
+ * Firefox on macOS), so a pointer press elsewhere closes it rather than a
+ * blur, as does a tap on the tip, which covers the row under it. Escape,
+ * wherever focus is, closes it and hides a hovered or focused
+ * tip until the pointer comes back or the button loses focus; so does the
+ * closing tap, which a touch screen would otherwise leave hovered. */
+function Detail(props: { m: Messages; name: string; text: string }) {
+  const id = createUniqueId();
+  const [open, setOpen] = createSignal(false);
+  const [dismissed, setDismissed] = createSignal(false);
+  let root: HTMLSpanElement | undefined;
+  let tip: HTMLSpanElement | undefined;
+  const onPointerDown = (e: PointerEvent) => {
+    const target = e.target instanceof Node ? e.target : null;
+    if (target && tip?.contains(target)) {
+      setOpen(false);
+      setDismissed(true);
+    } else if (open() && !(target && root?.contains(target))) {
+      setOpen(false);
+    }
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      setOpen(false);
+      setDismissed(true);
+    }
+  };
+  onMount(() => {
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+  });
+  onCleanup(() => {
+    document.removeEventListener("pointerdown", onPointerDown);
+    document.removeEventListener("keydown", onKeyDown);
+  });
+  return (
+    <span ref={root} class="bar-detail" onPointerEnter={() => setDismissed(false)}>
+      <button
+        type="button"
+        class="bar-info"
+        aria-label={props.m.detailOf(props.name)}
+        aria-describedby={id}
+        data-open={open() ? "" : undefined}
+        data-dismissed={dismissed() ? "" : undefined}
+        onClick={() => {
+          setDismissed(open());
+          setOpen(!open());
+        }}
+        onBlur={() => setDismissed(false)}
+      >
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+          <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5" />
+          <rect x="7.25" y="7" width="1.5" height="5" rx="0.75" fill="currentColor" />
+          <circle cx="8" cy="4.75" r="1" fill="currentColor" />
+        </svg>
+      </button>
+
+      <span id={id} role="tooltip" class="bar-tip" ref={tip}>
+        {props.text}
+      </span>
+    </span>
+  );
 }
 
 /** Counts as labelled horizontal bars, each against the largest. */
@@ -68,7 +145,12 @@ export function BarList(props: { m: Messages; items: BarItem[]; empty?: string }
         <For each={props.items}>
           {(item) => (
             <li>
-              <span class="bar-label">{item.label}</span>
+              <span class="bar-label">
+                {item.label}
+                <Show when={item.detail}>
+                  {(d) => <Detail m={props.m} name={d().name} text={d().text} />}
+                </Show>
+              </span>
               <span class="bar-value">
                 {props.m.count(item.n)}
                 <Show when={item.note}>{(note) => <span class="bar-note"> · {note()}</span>}</Show>
@@ -336,7 +418,12 @@ export function DashboardSections(props: { m: Messages; d: Dashboard; links: Sta
       <StatsSection id="stats-categories" title={m().categoriesTitle}>
         <BarList
           m={m()}
-          items={d().categories.map((c) => ({ key: c.category, label: c.label, n: c.questions }))}
+          items={d().categories.map((c) => ({
+            key: c.category,
+            label: c.name,
+            n: c.questions,
+            detail: c.label === c.name ? undefined : { name: c.name, text: c.label },
+          }))}
         />
       </StatsSection>
 

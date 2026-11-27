@@ -467,8 +467,10 @@ async fn the_public_report_never_counts_a_private_call_or_run(pool: PgPool) -> a
     );
     assert_eq!(categories.first().map(String::as_str), Some("combat"));
     assert_eq!(
-        d.categories.first().map(|c| c.label.as_str()),
-        Some(Category::Combat.label())
+        d.categories
+            .first()
+            .map(|c| (c.name.as_str(), c.label.as_str())),
+        Some((Category::Combat.name(), Category::Combat.label()))
     );
     assert_eq!(cards, ["Blood Moon", "Oko, Thief of Crowns"]);
     assert_eq!(
