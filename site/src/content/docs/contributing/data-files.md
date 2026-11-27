@@ -93,6 +93,10 @@ Rules questions, adversarially verified except one, whose reference answer is a 
 correction of a reported wrong answer. Each question has:
 
 - The cards it mentions and the categories expected.
+- Its `source` (`CR`, `Commander`, `Tournament` or `OutOfScope`), or a list when more
+  than one is correct (`[Commander, CR]` for a question about Vintage and Commander).
+  The first is the one the gold extraction uses. The sources in a list must agree on
+  whether the bot answers.
 - The rule ids a correct answer must cite (`decisive_rule_ids`), which recall is scored
   on, and background rule ids a good answer may leave out (`supporting_rule_ids`). An id
   is in one list or the other, and the retrieval gate counts both.

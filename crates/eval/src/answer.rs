@@ -641,7 +641,7 @@ fn score_row(
                 outcome,
                 cited,
                 counts,
-                score::source_matches(&q.source, v.source()),
+                q.sources.accepts(v.source()),
                 q.is_answerable(),
             )
         }
@@ -659,9 +659,7 @@ fn score_row(
                 JudgeError::Upstream(_) => "Upstream",
             };
             let (source_ok, shape) = match e {
-                JudgeError::OutOfScope(s) => {
-                    (score::source_matches(&q.source, *s), !q.is_answerable())
-                }
+                JudgeError::OutOfScope(s) => (q.sources.accepts(*s), !q.is_answerable()),
                 _ => (false, false),
             };
             (
@@ -696,7 +694,7 @@ fn score_row(
         id: q.id.clone(),
         question: q.question.clone(),
         expected_answer: q.expected_answer.clone(),
-        expected_source: q.source.clone(),
+        expected_source: q.sources.label(),
         expected_rule_ids,
         supporting_rule_ids,
         supporting_cited,
@@ -954,10 +952,6 @@ fn retries_line(run: &Run) -> String {
     )
 }
 
-/// `eval show <run.json>`: question, expected answer and bot answer side by side.
-///
-/// # Errors
-/// If the file cannot be read or parsed.
 /// Re-score a stored run against the CURRENT gold file (equivalence lists and
 /// edited expectations apply retroactively; nothing is re-asked of the model).
 /// Recomputes each row's recall from its stored `cited_rule_ids` and rewrites
@@ -974,6 +968,13 @@ fn regraded(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Resu
     let mut run: Run =
         serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
     let gold = crate::gold::load(gold_path)?;
+    regrade(&mut run, &gold);
+    Ok(run)
+}
+
+/// [`regraded`]'s work on a run already read: every derived column of each
+/// row recomputed against `gold`.
+fn regrade(run: &mut Run, gold: &crate::gold::Gold) {
     for row in &mut run.rows {
         let Some(q) = gold.questions.iter().find(|q| q.id == row.id) else {
             tracing::warn!(id = %row.id, "row not in gold file; keeping stored recall");
@@ -981,6 +982,23 @@ fn regraded(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Resu
         };
         row.expected_rule_ids = q.ids(Weight::Decisive);
         row.supporting_rule_ids = q.ids(Weight::Supporting);
+        row.expected_source = q.sources.label();
+        // A verdict stores the source it named; an error row stores only its
+        // variant, so its stored match stands.
+        match &row.outcome {
+            Outcome::Verdict { source, .. } => {
+                row.correct_shape = q.is_answerable();
+                match serde_json::from_value::<judge_core::Source>(source.as_str().into()) {
+                    Ok(s) => row.source_ok = q.sources.accepts(s),
+                    Err(_) => {
+                        tracing::warn!(id = %row.id, source, "stored source unreadable; keeping stored match");
+                    }
+                }
+            }
+            Outcome::Error { variant, .. } => {
+                row.correct_shape = variant == "OutOfScope" && !q.is_answerable();
+            }
+        }
         if row
             .grade
             .as_ref()
@@ -998,7 +1016,6 @@ fn regraded(path: &std::path::Path, gold_path: &std::path::Path) -> anyhow::Resu
             row.any_expected_cited = row.recall.any_hit();
         }
     }
-    Ok(run)
 }
 
 /// `eval show <run.json>`, graded against the current gold file as
@@ -1269,7 +1286,7 @@ mod tests {
             cards: vec![],
             nicknames_used: vec![],
             categories: vec![],
-            source: "Tournament".into(),
+            sources: crate::gold::Sources::single(judge_core::Source::Tournament),
             expected: vec![],
             expected_answer: String::new(),
             unreleased: Vec::new(),
@@ -1348,7 +1365,7 @@ mod tests {
             cards: vec![],
             nicknames_used: vec![],
             categories: vec![],
-            source: "CR".into(),
+            sources: crate::gold::Sources::single(judge_core::Source::Cr),
             expected: vec![
                 expected("702.15", Weight::Decisive)?,
                 expected("100.2", Weight::Decisive)?,
@@ -1425,7 +1442,7 @@ mod tests {
             cards: vec![],
             nicknames_used: vec![],
             categories: vec![],
-            source: "CR".into(),
+            sources: crate::gold::Sources::single(judge_core::Source::Cr),
             expected: vec![expected("702.15", Weight::Decisive)?],
             expected_answer: String::new(),
             unreleased: Vec::new(),
@@ -1509,6 +1526,63 @@ mod tests {
         let t = table(&run);
         assert!(t.contains("verdict/high    ?"), "{t}");
         assert!(t.contains("not recorded"), "{t}");
+        Ok(())
+    }
+
+    #[test]
+    fn rescore_recomputes_the_source_columns() -> anyhow::Result<()> {
+        let row = |id: &str, outcome: &str, source_ok: bool| -> anyhow::Result<Row> {
+            Ok(serde_json::from_str(&format!(
+                r#"{{"id": "{id}", "question": "q", "expected_answer": "a", "expected_source": "CR",
+                    "expected_rule_ids": [], "outcome": {outcome},
+                    "cited_rule_ids": [], "recall": {{"hit": [], "missed": []}},
+                    "source_ok": {source_ok}, "correct_shape": true, "elapsed_ms": 1, "calls": 1, "usd": 0.01}}"#
+            ))?)
+        };
+        let verdict = |source: &str| {
+            format!(
+                r#"{{"kind": "verdict", "answer": "a", "confidence": "high", "citations": [],
+                    "category": "c", "source": "{source}", "cr_version": "v"}}"#
+            )
+        };
+        let gold: crate::gold::Gold = serde_yaml_ng::from_str(
+            "questions:\n\
+             - {id: two, question: q, source: [Commander, CR]}\n\
+             - {id: one, question: q, source: CR}\n\
+             - {id: out, question: q, source: Tournament}\n",
+        )?;
+        let mut run = Run {
+            label: "l".into(),
+            gold: "g".into(),
+            max_usd: 1.0,
+            models: None,
+            traced: false,
+            rows: vec![
+                row("two", &verdict("cr"), false)?,
+                row("one", &verdict("commander"), true)?,
+                row("out", &verdict("cr"), false)?,
+                row("one", &verdict(""), true)?,
+            ],
+            total_usd: 0.04,
+            total_calls: 4,
+            capped: false,
+        };
+        regrade(&mut run, &gold);
+        let cols: Vec<_> = run
+            .rows
+            .iter()
+            .map(|r| (r.expected_source.as_str(), r.source_ok, r.correct_shape))
+            .collect();
+        assert_eq!(
+            cols,
+            vec![
+                ("Commander | CR", true, true),
+                ("CR", false, true),
+                ("Tournament", false, false),
+                // An unreadable stored source keeps its stored match.
+                ("CR", true, true),
+            ]
+        );
         Ok(())
     }
 

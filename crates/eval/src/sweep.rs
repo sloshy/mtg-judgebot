@@ -777,7 +777,7 @@ async fn extract_scored(
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))
             .unwrap_or_default(),
-        source_ok: crate::score::source_matches(&q.source, e.source),
+        source_ok: q.sources.accepts(e.source),
         cards: cards.map(|c| c.into_iter().map(|c| c.name).collect()),
         cards_ok,
         primary: e.primary_category().to_string(),

@@ -609,14 +609,14 @@ questions:
   nicknames_used: []
   categories:
   - format_legality
-  source: Commander
+  source: [Commander, CR]
   legality:
   - 'Vintage: restricted'
   - 'Commander: banned'
   expected_answer: |-
     In Vintage, yes, but only one copy: Black Lotus is restricted there. In Commander, no: it is banned.
   rationale: |-
-    Format legality (D44). The Comprehensive Rules name no banned card, so the answer has to come from the card's legality line and cite its entries whole. "Restricted" is not "legal" and not "banned": the answer must say one copy. Black Lotus's status in these two formats has not changed in decades, but a banned-list change would make this question stale, and the entries here would then need updating before the bot is blamed.
+    Format legality (D44). The Comprehensive Rules name no banned card, so the answer has to come from the card's legality line and cite its entries whole. "Restricted" is not "legal" and not "banned": the answer must say one copy. Black Lotus's status in these two formats has not changed in decades, but a banned-list change would make this question stale, and the entries here would then need updating before the bot is blamed. The question asks about Vintage and Commander, and the extraction prompt files legality in any format but Commander as `cr` and in Commander as `commander`, so either source is correct; both are answered from the same material.
 - id: legality-sol-ring-commander-legacy
   question: |-
     is sol ring legal in commander? and legacy?

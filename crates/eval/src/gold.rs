@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use judge_core::{Category, CategoryGuess, Confidence, Extraction, RuleId, Source};
+use nonempty::NonEmpty;
 use serde::Deserialize;
 
 use crate::categories;
@@ -63,6 +64,108 @@ pub struct Expected {
     pub equivalents: Vec<RuleId>,
 }
 
+/// The sources a correct extraction may name, the first being the one the
+/// gold extraction uses. Made only by [`Sources::parse`], so every label is
+/// known, none is listed twice and all of them agree on whether the bot
+/// answers: a question is never both scored for recall and expected refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sources(NonEmpty<Source>);
+
+impl Sources {
+    /// Parse the YAML labels (`CR`, `Commander`, `Tournament`, `OutOfScope`,
+    /// any case).
+    fn parse(q: &str, labels: &NonEmpty<String>) -> anyhow::Result<Self> {
+        let parse = |l: &String| -> anyhow::Result<Source> {
+            Ok(match l.to_ascii_lowercase().as_str() {
+                "cr" => Source::Cr,
+                "commander" => Source::Commander,
+                "tournament" => Source::Tournament,
+                "outofscope" | "out_of_scope" => Source::OutOfScope,
+                _ => anyhow::bail!(
+                    "question {q}: source {l:?} is not CR, Commander, Tournament or OutOfScope"
+                ),
+            })
+        };
+        let sources = NonEmpty {
+            head: parse(&labels.head)?,
+            tail: labels
+                .tail
+                .iter()
+                .map(parse)
+                .collect::<anyhow::Result<_>>()?,
+        };
+        for (i, s) in sources.iter().enumerate() {
+            anyhow::ensure!(
+                !sources.iter().take(i).any(|t| t == s),
+                "question {q}: source {} is listed twice",
+                label(*s)
+            );
+            anyhow::ensure!(
+                s.is_answerable() == sources.head.is_answerable(),
+                "question {q}: sources {} and {} disagree on whether the bot answers",
+                label(sources.head),
+                label(*s)
+            );
+        }
+        Ok(Self(sources))
+    }
+
+    /// One source, which is always valid.
+    #[cfg(test)]
+    #[must_use]
+    pub fn single(s: Source) -> Self {
+        Self(NonEmpty::new(s))
+    }
+
+    /// The source the gold extraction uses: the first listed.
+    #[must_use]
+    pub fn primary(&self) -> Source {
+        self.0.head
+    }
+
+    /// Whether an extraction naming `actual` has the source right.
+    #[must_use]
+    pub fn accepts(&self, actual: Source) -> bool {
+        self.0.contains(&actual)
+    }
+
+    /// Whether the bot is supposed to answer (every source agrees).
+    #[must_use]
+    pub fn is_answerable(&self) -> bool {
+        self.0.head.is_answerable()
+    }
+
+    /// The labels as the gold file writes them, `CR | Commander`.
+    #[must_use]
+    pub fn label(&self) -> String {
+        self.0
+            .iter()
+            .map(|s| label(*s))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+}
+
+/// A source's label as the gold file writes it.
+fn label(s: Source) -> &'static str {
+    match s {
+        Source::Cr => "CR",
+        Source::Commander => "Commander",
+        Source::Tournament => "Tournament",
+        Source::OutOfScope => "OutOfScope",
+    }
+}
+
+/// One label or a list of them, as `source` is written.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OneOrMany {
+    /// `source: CR`.
+    One(String),
+    /// `source: [CR, Commander]`.
+    Many(Vec<String>),
+}
+
 /// One gold question, validated: made only from [`RawQuestion`], so every
 /// id parses, no id is both decisive and supporting, and every equivalent
 /// hangs off an expected id.
@@ -79,8 +182,10 @@ pub struct GoldQuestion {
     pub nicknames_used: Vec<String>,
     /// Free-form category labels (mapped onto `judge_core::Category` best-effort).
     pub categories: Vec<String>,
-    /// `CR`, `Commander`, `Tournament` or `OutOfScope`.
-    pub source: String,
+    /// The acceptable sources: `CR`, `Commander`, `Tournament` or
+    /// `OutOfScope`, one or a list (a question about two formats may be
+    /// either).
+    pub sources: Sources,
     /// Expected rule ids, decisive first, each in file order.
     pub expected: Vec<Expected>,
     /// The reference answer, for side-by-side human review.
@@ -109,7 +214,9 @@ struct RawQuestion {
     nicknames_used: Vec<String>,
     #[serde(default)]
     categories: Vec<String>,
-    source: String,
+    /// One label, or a list when more than one is correct; the first is the
+    /// one the gold extraction uses.
+    source: OneOrMany,
     /// Rule ids a correct answer must cite.
     #[serde(default)]
     decisive_rule_ids: Vec<YamlScalar>,
@@ -158,6 +265,12 @@ impl TryFrom<RawQuestion> for GoldQuestion {
 
     fn try_from(raw: RawQuestion) -> anyhow::Result<Self> {
         let q = raw.id.as_str();
+        let labels = match raw.source {
+            OneOrMany::One(l) => NonEmpty::new(l),
+            OneOrMany::Many(ls) => NonEmpty::from_vec(ls)
+                .with_context(|| format!("question {q}: source is an empty list"))?,
+        };
+        let sources = Sources::parse(q, &labels)?;
         let mut expected: Vec<Expected> = Vec::new();
         for (list, weight, what) in [
             (&raw.decisive_rule_ids, Weight::Decisive, "decisive rule id"),
@@ -241,7 +354,7 @@ impl TryFrom<RawQuestion> for GoldQuestion {
             cards: raw.cards,
             nicknames_used: raw.nicknames_used,
             categories: raw.categories,
-            source: raw.source,
+            sources,
             expected,
             expected_answer: raw.expected_answer,
         })
@@ -280,21 +393,10 @@ impl GoldQuestion {
             .collect()
     }
 
-    /// The gold `source` label as a `Source` (anything unknown is out of scope).
-    #[must_use]
-    pub fn source(&self) -> Source {
-        match self.source.to_ascii_lowercase().as_str() {
-            "cr" => Source::Cr,
-            "commander" => Source::Commander,
-            "tournament" => Source::Tournament,
-            _ => Source::OutOfScope,
-        }
-    }
-
     /// Whether the bot is supposed to answer (and so retrieval is scored).
     #[must_use]
     pub fn is_answerable(&self) -> bool {
-        self.source().is_answerable()
+        self.sources.is_answerable()
     }
 
     /// The `Extraction` a perfect extractor would produce from the gold
@@ -331,7 +433,7 @@ impl GoldQuestion {
                 .collect(),
             primary,
             secondary,
-            source: self.source(),
+            source: self.sources.primary(),
         }
     }
 }
@@ -389,6 +491,41 @@ mod tests {
 
     fn err(fields: &str) -> String {
         question(fields).err().map_or_default(|e| format!("{e:#}"))
+    }
+
+    fn sourced(source: &str) -> anyhow::Result<GoldQuestion> {
+        Ok(serde_yaml_ng::from_str(&format!(
+            "id: a\nquestion: q\nsource: {source}\n"
+        ))?)
+    }
+
+    #[test]
+    fn a_question_may_accept_more_than_one_source() -> anyhow::Result<()> {
+        let one = sourced("commander")?;
+        assert!(one.sources.accepts(Source::Commander));
+        assert!(!one.sources.accepts(Source::Cr));
+        let two = sourced("[Commander, CR]")?;
+        assert_eq!(two.sources.primary(), Source::Commander);
+        assert_eq!(two.extraction().source, Source::Commander);
+        assert!(two.sources.accepts(Source::Cr) && two.sources.accepts(Source::Commander));
+        assert!(!two.sources.accepts(Source::Tournament));
+        assert_eq!(two.sources.label(), "Commander | CR");
+        assert!(two.is_answerable());
+        assert!(
+            sourced("[Tournament, OutOfScope]")?
+                .sources
+                .accepts(Source::OutOfScope)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_bad_source_list_is_rejected() {
+        let err = |s: &str| sourced(s).err().map_or_default(|e| format!("{e:#}"));
+        assert!(err("Cr2").contains("is not CR, Commander"));
+        assert!(err("[]").contains("empty list"));
+        assert!(err("[CR, cr]").contains("listed twice"));
+        assert!(err("[CR, Tournament]").contains("disagree"));
     }
 
     #[test]

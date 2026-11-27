@@ -112,28 +112,6 @@ pub fn recall_with(cited: &[String], expected: &[String], equivalents: &Equivale
     Recall { hit, missed }
 }
 
-/// The gold `source` label as it would appear from the model (`snake_case`).
-#[must_use]
-pub fn normalize_source(label: &str) -> String {
-    match label.to_ascii_lowercase().as_str() {
-        "cr" => "cr".into(),
-        "commander" => "commander".into(),
-        "tournament" => "tournament".into(),
-        "outofscope" | "out_of_scope" => "out_of_scope".into(),
-        other => other.to_owned(),
-    }
-}
-
-/// Whether a gold source label matches a pipeline `Source`.
-#[must_use]
-pub fn source_matches(label: &str, actual: judge_core::Source) -> bool {
-    let actual = serde_json::to_value(actual)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default();
-    normalize_source(label) == actual
-}
-
 #[cfg(test)]
 mod tests {
     /// Equivalence-free shorthand used by the pre-existing tests.
@@ -159,7 +137,7 @@ mod tests {
     }
 
     use super::*;
-    use judge_core::{RuleId, Source};
+    use judge_core::RuleId;
 
     fn v(xs: &[&str]) -> Vec<String> {
         xs.iter().map(|s| (*s).to_owned()).collect()
@@ -257,13 +235,5 @@ mod tests {
 
     fn uuid_nil() -> uuid::Uuid {
         uuid::Uuid::nil()
-    }
-
-    #[test]
-    fn sources_match_case_insensitively() {
-        assert!(source_matches("CR", Source::Cr));
-        assert!(source_matches("OutOfScope", Source::OutOfScope));
-        assert!(source_matches("Tournament", Source::Tournament));
-        assert!(!source_matches("CR", Source::Commander));
     }
 }
